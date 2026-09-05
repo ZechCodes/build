@@ -24,6 +24,8 @@ use crate::harness::surfaces::AgentSurfaces;
 /// Things that can go wrong starting or driving a harness session.
 #[derive(Debug, thiserror::Error)]
 pub enum HarnessError {
+    #[error("harness setup error: {0}")]
+    Setup(String),
     #[error("harness session error: {0}")]
     Session(String),
     #[error("io error: {0}")]

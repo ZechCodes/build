@@ -38,6 +38,11 @@ def test_production_auth_is_passkey_only():
     assert method_types == {"passkey"}
 
 
+def test_production_enables_oauth_for_the_public_desktop_client():
+    config = load_config("app.yaml")
+    assert config["oauth2_enabled"] is True
+
+
 def test_dummy_auth_stays_dev_only():
     dev_types = {m["type"] for m in load_config("app.dev.yaml")["auth"]["methods"].values()}
     assert "dummy" in dev_types
@@ -94,7 +99,7 @@ def test_production_csp_core_directives_are_self():
     assert "'self'" in directives["script-src"]
     assert "'unsafe-inline'" not in directives["script-src"]
     assert "'unsafe-eval'" not in directives["script-src"]
-    assert directives["form-action"] == ["'self'"]
+    assert directives["form-action"] == ["'self'", "getbuilding:"]
     assert directives["base-uri"] == ["'self'"]
     assert directives["frame-ancestors"] == ["'none'"]
     assert directives["object-src"] == ["'none'"]

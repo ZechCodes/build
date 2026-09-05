@@ -84,7 +84,7 @@ impl Harness for CodexAppServerHarness {
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
-    ) -> HarnessSpec {
+    ) -> Result<HarnessSpec, HarnessError> {
         let mut spec = HarnessSpec::new("codex")
             .unset_all(INHERITED_AGENT_MARKERS)
             .arg("app-server")
@@ -98,7 +98,7 @@ impl Harness for CodexAppServerHarness {
         for override_arg in CodexMcpConfig::new(options, context).overrides() {
             spec = spec.arg("--config").arg(override_arg);
         }
-        spec
+        Ok(spec)
     }
 
     fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {

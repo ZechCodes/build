@@ -1,35 +1,16 @@
-// Which agent a new one is created on — an account setting, held by the bridge.
-//
-// Every harness is an agent of its own, and an agent is LOCKED to the one it
-// was created on: its conversation lives in that program, so nothing ever moves
-// it. That makes the account's answer a starting point rather than a mode — it
-// names the harness a new agent is created on where nobody said otherwise,
-// which is the option the chat tab's new-agent view leads with and the one the
-// bridge falls back to when it has to deliver.
-//
-// The bridge is the authority (settings.get / settings.set, persisted), so
-// every device gets the same answer. The names are the client's one naming
-// table (core/modelPicker.js), so this control and an agent's own bubble can
-// never call the same harness two different things.
+// The account fallback harness, held by the bridge. It is used only when a
+// coding-agent creation request does not name a provider. Visible creation
+// pickers send their displayed Claude Code or Codex provider and override it.
+// The bridge's provider catalog supplies this selector's choices and labels.
 
-import { providerOptionsHtml, STARTABLE_PROVIDERS } from "./modelPicker.js";
+import { providerOptionsHtml } from "./modelPicker.js";
 
-/** What a bridge that has never been told means. */
-const DEFAULT_HARNESS = STARTABLE_PROVIDERS[0].id;
-
-/** The words a bridge that predates `default_harness` speaks, both ways. Only
- *  the two claude harnesses are sayable in them — a bridge that old has no
- *  other question to ask. */
-const HARNESS_OF_CLAUDE_MODE = { headless: "claude_adk", tui: "claude" };
-const CLAUDE_MODE_OF_HARNESS = { claude_adk: "headless", claude: "tui" };
-
-/** The harness a settings payload names, read through the old key when that is
- *  all the bridge answers with, and defaulted rather than left empty when it
- *  answers with neither. */
-export function defaultHarnessOf(settings) {
-  const named = (settings && settings.default_harness) || "";
-  if (STARTABLE_PROVIDERS.some((provider) => provider.id === named)) return named;
-  return HARNESS_OF_CLAUDE_MODE[(settings && settings.claude_mode) || ""] || DEFAULT_HARNESS;
+export function defaultHarnessOf(settings, providers) {
+  const defaultHarness = settings?.default_harness;
+  if (typeof defaultHarness !== "string" || !providers.some((provider) => provider.id === defaultHarness)) {
+    throw new Error("settings.default_harness is missing, malformed, or absent from models.list.providers");
+  }
+  return defaultHarness;
 }
 
 /** The panel, empty. `mountDefaultHarness` fills the select from the bridge —
@@ -37,10 +18,10 @@ export function defaultHarnessOf(settings) {
  *  account's. */
 export function defaultHarnessPanelHtml() {
   return `<div class="panel">
-      <h3>🖥️ Default agent</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">The agent a new one is created on when nobody picks: the option a branch's first message leads with, and the one Build creates for itself when it has something to deliver. Every agent keeps the one it was created on, so its conversation stays where it started. Choose Claude Code TUI here and every new Claude Code agent runs in a terminal of its own, on its TUI tab.</div>
+      <h3>🖥️ Fallback agent</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">This account fallback is used only when a coding-agent creation request does not name a provider. Creation pickers send the displayed Claude Code or Codex provider and override this fallback.</div>
       <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">
-        <div class="field" style="flex:1;min-width:180px"><label for="defaultharness">Default agent</label>
+        <div class="field" style="flex:1;min-width:180px"><label for="defaultharness">Fallback agent</label>
           <select id="defaultharness" disabled><option>loading…</option></select></div>
       </div>
       <div class="dim" id="harnesssaved" style="font-size:12px;min-height:16px"></div>
@@ -49,7 +30,7 @@ export function defaultHarnessPanelHtml() {
 }
 
 /** Wire the panel to the bridge: paint from settings.get, save with
- *  settings.set, and repaint from whatever the bridge answers — the control
+ *  settings.set, and repaint from whatever the bridge answers. The control
  *  shows what the account actually holds, never what was merely attempted. */
 export async function mountDefaultHarness(host, { callRpc }) {
   const select = host.querySelector("#defaultharness");
@@ -57,27 +38,27 @@ export async function mountDefaultHarness(host, { callRpc }) {
   const error = host.querySelector("#harnesserr");
   if (!select) return;
 
-  const paint = (settings) => {
-    select.innerHTML = providerOptionsHtml(STARTABLE_PROVIDERS, defaultHarnessOf(settings));
+  let catalogProviders;
+  const clearUnconfirmedSelection = () => {
+    select.innerHTML = "";
+    select.disabled = true;
   };
-
-  // The save, and the same save in the words an older bridge speaks. A bridge
-  // that does not know `default_harness` refuses it; the two claude harnesses
-  // are still sayable there, and a Codex default honestly is not — that
-  // bridge's own refusal is what the human reads.
-  const save = async (harness) => {
-    try {
-      return await callRpc("settings.set", { default_harness: harness });
-    } catch (refusal) {
-      const claudeMode = CLAUDE_MODE_OF_HARNESS[harness];
-      if (!claudeMode) throw refusal;
-      return callRpc("settings.set", { claude_mode: claudeMode });
-    }
+  const renderConfirmedSettings = (settings) => {
+    select.innerHTML = providerOptionsHtml(
+      catalogProviders,
+      defaultHarnessOf(settings, catalogProviders),
+    );
   };
 
   try {
-    paint(await callRpc("settings.get"));
+    const [settings, catalog] = await Promise.all([callRpc("settings.get"), callRpc("models.list")]);
+    if (!Array.isArray(catalog?.providers) || catalog.providers.length === 0) {
+      throw new Error("models.list.providers is missing, malformed, or empty");
+    }
+    catalogProviders = catalog.providers;
+    renderConfirmedSettings(settings);
   } catch (e) {
+    clearUnconfirmedSelection();
     error.textContent = e.message;
     return;
   }
@@ -89,17 +70,19 @@ export async function mountDefaultHarness(host, { callRpc }) {
     error.textContent = "";
     saved.textContent = "Saving…";
     try {
-      paint(await save(chosen));
-      saved.textContent = "Saved. New agents are created on this one; the agents already here keep the one they were created on.";
-    } catch (e) {
-      error.textContent = e.message;
+      renderConfirmedSettings(await callRpc("settings.set", { default_harness: chosen }));
+      saved.textContent = "Saved. This fallback applies when a coding-agent creation request does not name a provider.";
+      select.disabled = false;
+    } catch (saveError) {
+      error.textContent = saveError.message;
       saved.textContent = "";
       try {
-        paint(await callRpc("settings.get"));
-      } catch {
-        /* the refusal is already on screen; a second failure adds nothing */
+        renderConfirmedSettings(await callRpc("settings.get"));
+        select.disabled = false;
+      } catch (reloadError) {
+        clearUnconfirmedSelection();
+        error.textContent = `${saveError.message}. Reload failed: ${reloadError.message}`;
       }
     }
-    select.disabled = false;
   };
 }

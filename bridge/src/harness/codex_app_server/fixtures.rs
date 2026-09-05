@@ -89,8 +89,9 @@ pub(super) fn spawn_options() -> SpawnOptions {
 
 pub(super) fn harness_context() -> HarnessContext {
     HarnessContext {
-        bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-        mcp_socket: "/tmp/build.sock".to_string(),
+        bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+        mcp_socket: PathBuf::from("/tmp/build.sock"),
+        state_root: PathBuf::from("/tmp/build-state"),
     }
 }
 

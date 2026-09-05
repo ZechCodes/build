@@ -476,7 +476,12 @@ describe("the issue view", () => {
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
     await flush();
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
-    expect(dispatched[1]).toEqual({ issue_id: "issue-1", base_branch: "release", thread_limit: FIRST_PAGE_ITEMS });
+    expect(dispatched[1]).toEqual({
+      issue_id: "issue-1",
+      base_branch: "release",
+      provider: "claude_adk",
+      thread_limit: FIRST_PAGE_ITEMS,
+    });
     view.dispose();
   });
 
@@ -570,7 +575,12 @@ describe("the issue view", () => {
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
     await flush();
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
-    expect(dispatched[1]).toEqual({ issue_id: "issue-1", worktree_id: "wt-1", thread_limit: FIRST_PAGE_ITEMS });
+    expect(dispatched[1]).toEqual({
+      issue_id: "issue-1",
+      worktree_id: "wt-1",
+      provider: "claude_adk",
+      thread_limit: FIRST_PAGE_ITEMS,
+    });
     view.dispose();
   });
 

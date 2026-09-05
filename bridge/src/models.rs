@@ -32,6 +32,7 @@ pub enum AgentProvider {
     ClaudeAdk,
     #[serde(rename = "codex_app_server")]
     CodexAppServer,
+    Pi,
 }
 
 impl AgentProvider {
@@ -39,11 +40,12 @@ impl AgentProvider {
     /// anything that has to visit them all — the catalog RPC, the tests that
     /// hold each harness to the same contract — reads this rather than writing
     /// the list out again.
-    pub const ALL: [AgentProvider; 4] = [
+    pub const ALL: [AgentProvider; 5] = [
         AgentProvider::Claude,
         AgentProvider::Codex,
         AgentProvider::ClaudeAdk,
         AgentProvider::CodexAppServer,
+        AgentProvider::Pi,
     ];
 
     /// How a provider is spelled on the wire and in the store. Matches the
@@ -54,6 +56,7 @@ impl AgentProvider {
             AgentProvider::Codex => "codex",
             AgentProvider::ClaudeAdk => "claude_adk",
             AgentProvider::CodexAppServer => "codex_app_server",
+            AgentProvider::Pi => "pi",
         }
     }
 
@@ -153,8 +156,8 @@ pub fn provider_catalogs() -> Vec<ProviderCatalog> {
         .collect()
 }
 
-/// An agent's model selection (chosen at plan or run dispatch). `None` means the
-/// harness default — the user's own Claude Code configuration decides.
+/// An agent's model selection (chosen at plan or run dispatch). `None` means
+/// the selected provider's configured default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
     #[serde(default)]
@@ -291,6 +294,22 @@ mod tests {
             );
         }
         assert_eq!(AgentProvider::from_wire("adk"), None);
+    }
+
+    #[test]
+    fn pi_round_trips_with_an_empty_catalog_and_its_thinking_levels() {
+        assert_eq!(AgentProvider::Pi.wire_id(), "pi");
+        assert_eq!(AgentProvider::from_wire("pi"), Some(AgentProvider::Pi));
+        let pi = provider_catalogs()
+            .into_iter()
+            .find(|catalog| catalog.id == AgentProvider::Pi)
+            .expect("Pi is advertised");
+        assert_eq!(pi.label, "Pi");
+        assert!(pi.models.is_empty());
+        assert_eq!(
+            pi.efforts,
+            &["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
     }
 
     #[test]

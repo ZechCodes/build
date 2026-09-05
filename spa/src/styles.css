@@ -1000,6 +1000,24 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .modal-create .create-row { align-items:center; }
 .modal-create .create-preview { flex:1; min-width:0; font-size:11px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
+/* The Branch tab's picker: the field filters, the list underneath says what
+   pressing each branch would do. The verb leads because it is the promise —
+   check out, fetch, adopt, open — and the marks trail on the right, dim, so a
+   long branch name never has to fight them for the row. */
+.modal-create .branch-picker { margin-top:8px; max-height:200px; overflow-y:auto;
+  border:1px solid var(--line); border-radius:8px; }
+.modal-create .branch-picker:empty { display:none; }
+.modal-create .branch-row { display:flex; align-items:baseline; gap:8px; width:100%;
+  padding:6px 10px; background:none; border:0; border-bottom:1px solid var(--line2);
+  text-align:left; font:inherit; font-size:12px; color:var(--ink); cursor:pointer; }
+.modal-create .branch-row:last-child { border-bottom:0; }
+.modal-create .branch-row:hover { background:var(--panel2); }
+.modal-create .branch-row.on { background:var(--accent-soft); }
+.modal-create .branch-row-verb { flex:none; font-size:11px; color:var(--ink2); }
+.modal-create .branch-row-name { flex:1; min-width:0; font-family:var(--mono); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.modal-create .branch-row-mark, .modal-create .branch-row-detail { flex:none; font-size:11px; color:var(--dim); }
+.modal-create .branch-picker-note { padding:6px 10px; font-size:12px; }
 .modal.modal-surface { max-width:640px; max-height:78vh; display:flex; flex-direction:column; padding:14px 16px; }
 .modal-surface h3 { margin:0 0 8px; font-size:15px; }
 .modal-surface .surface-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; }

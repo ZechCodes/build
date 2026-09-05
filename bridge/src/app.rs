@@ -12,7 +12,7 @@
 //! over MCP; the orchestrator code path is identical.
 
 use std::collections::HashMap;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,15 +27,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
-    SessionOpenRequest, SessionOutput, TerminalOpenOptions, TerminalView, Turn,
+    SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, TerminalView,
+    Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, AdoptionScope, Agent, AgentTurn, Orchestrator, OrchestratorError,
-    ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource, SessionLocatorFactory, SpawnOptions,
-    TranscriptProbe,
+    ActivePlan, ActiveRun, AdoptionScope, Agent, AgentLaunch, AgentTurn, Orchestrator,
+    OrchestratorError, PreparedAgentLaunch, ReportConsumed, ReportOutcome, ResumeIdProbe,
+    RunSource, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -764,36 +765,42 @@ impl Tab {
         }
     }
 
-    fn carry_replaced_screen(&mut self, screen: Option<TermScreen>) {
-        let Some(screen) = screen else {
-            return;
+    fn adopt_replaced_screen(mut self, carried: Option<TermScreen>, term_id: &str) -> Self {
+        let Some(screen) = carried else {
+            return self;
         };
-        match self.session.terminal() {
-            Some(terminal) => {
-                let _ = terminal.resize(terminal_size(screen.cols, screen.rows));
-                self.screen = Some(screen);
-            }
-            None => close_a_screen_with_no_terminal(&screen, &self.tab_id),
-        }
+        let Some(terminal) = self.session.terminal() else {
+            close_a_screen_with_no_terminal(&screen, term_id);
+            return self;
+        };
+        let _ = terminal.resize(terminal_size(screen.cols, screen.rows));
+        self.screen = Some(screen);
+        self
     }
 
-    fn carry_waiting_screen(&mut self, waiting: Option<TermScreen>) {
+    fn adopt_waiting_screen(mut self, waiting: Option<TermScreen>, term_id: &str) -> Self {
         let Some(waiting) = waiting else {
-            return;
+            return self;
         };
-        let tab_id = self.tab_id.clone();
-        match self.require_terminal_and_screen() {
-            Ok((terminal, screen)) => {
-                let _ = terminal.resize(terminal_size(waiting.cols, waiting.rows));
-                screen.set_size(waiting.cols, waiting.rows);
-                for client in &waiting.attached {
-                    screen.register(&client.sender);
-                }
-            }
-            Err(_) => close_a_screen_with_no_terminal(&waiting, &tab_id),
+        let Ok((terminal, screen)) = self.require_terminal_and_screen() else {
+            close_a_screen_with_no_terminal(&waiting, term_id);
+            return self;
+        };
+        let _ = terminal.resize(terminal_size(waiting.cols, waiting.rows));
+        screen.set_size(waiting.cols, waiting.rows);
+        for client in &waiting.attached {
+            screen.register(&client.sender);
         }
+        self
     }
 
+    /// Open an agent's session through its provider and wrap it in a tab, with
+    /// the output subscribed before the first word can be missed.
+    ///
+    /// The grid is made together with the terminal, or not at all: a session
+    /// with no terminal paints nothing, so there is no screen to hold and no
+    /// byte pump to run — its work reaches the conversation through the
+    /// activity pump instead.
     fn spawn_agent(
         owner: String,
         agent_id: String,
@@ -817,6 +824,9 @@ impl Tab {
         ))
     }
 
+    /// The human's own shell: always a terminal, and the one session never
+    /// handed a turn, so it is not waited on — a login shell may never announce
+    /// a line editor at all and `term.create` holds the state lock across this.
     fn spawn_shell(
         spec: &HarnessSpec,
         tab_id: String,
@@ -829,7 +839,7 @@ impl Tab {
             TerminalOpenOptions {
                 size,
                 turn_ready_grace: None,
-                session_locator: None,
+                identity: None,
             },
         )
         .map_err(|error| error.to_string())?;
@@ -887,6 +897,79 @@ enum Spawned {
 /// giving up. Comfortably past a harness's own readiness grace, because the
 /// winner holds the reservation across it.
 const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
+
+struct AgentSpawnReservation {
+    state: Arc<Mutex<AppState>>,
+    key: TabKey,
+    agent_id: String,
+    session_token: String,
+    active: bool,
+}
+
+impl AgentSpawnReservation {
+    fn claim(
+        state: &Arc<Mutex<AppState>>,
+        app: &mut AppState,
+        key: TabKey,
+        agent_id: &str,
+    ) -> Self {
+        let session_token = uuid::Uuid::new_v4().to_string();
+        app.mcp_session_tokens
+            .insert(agent_id.to_string(), session_token.clone());
+        app.agent_spawns_in_flight.insert(key.clone());
+        Self {
+            state: Arc::clone(state),
+            key,
+            agent_id: agent_id.to_string(),
+            session_token,
+            active: true,
+        }
+    }
+}
+
+impl Drop for AgentSpawnReservation {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut app = self.state.lock().unwrap();
+        app.agent_spawns_in_flight.remove(&self.key);
+        if app
+            .mcp_session_tokens
+            .get(&self.agent_id)
+            .is_some_and(|current| constant_time_token_eq(current, &self.session_token))
+        {
+            app.mcp_session_tokens.remove(&self.agent_id);
+        }
+    }
+}
+
+struct ReservedAgentTab {
+    reservation: AgentSpawnReservation,
+    launch: AgentLaunch,
+    continue_session: bool,
+    resume_session_id: Option<String>,
+    phase: &'static str,
+    carried: Option<TermScreen>,
+    locator_factory: SessionLocatorFactory,
+}
+
+struct AgentTabPublication {
+    root: std::path::PathBuf,
+    key: TabKey,
+    owner: String,
+    agent_id: String,
+    model_choice: ModelChoice,
+    phase: &'static str,
+    tab: Tab,
+    reservation: AgentSpawnReservation,
+}
+
+enum AgentTabClaim {
+    Warm(String),
+    Waiting,
+    Reserved(Box<ReservedAgentTab>),
+}
 
 /// Who is on the other end of an authenticated MCP control frame.
 ///
@@ -1274,11 +1357,6 @@ struct BranchDispatchCreations {
     /// The checkout `branch.dispatch` cut for itself, when the branch it was
     /// asked for did not exist yet.
     minted_worktree: Option<crate::worktree::Worktree>,
-    /// Whether the branch under that checkout is one this call cut. A dispatch
-    /// onto a named branch that already existed adds a checkout for it and
-    /// nothing more: the branch is somebody's work, so cleanup takes the
-    /// directory and leaves the ref.
-    minted_branch: bool,
     /// The run `branch.dispatch` adopted the checkout into, minted or found.
     adopted_run: Option<String>,
 }
@@ -1621,13 +1699,7 @@ fn run_diffstat(worktree: &std::path::Path, base_branch: &str) -> Value {
         .as_ref()
         .and_then(|(_, _, committed_at)| committed_at.as_deref());
     let uncommitted = crate::diff::stat_uncommitted(worktree)
-        .map(|stat| {
-            json!({
-                "files_changed": stat.files_changed,
-                "insertions": stat.insertions,
-                "deletions": stat.deletions,
-            })
-        })
+        .map(|stat| stat.to_json())
         .unwrap_or(Value::Null);
     crate::diff::stat_against_base(worktree, base_branch)
         .map(|stat| {
@@ -1817,7 +1889,7 @@ fn wait_for_first_diff_value(state: &Arc<Mutex<AppState>>, key: &DiffCacheKey, b
 /// streamed to attached clients. The closure is shared across projects via
 /// `Agent: Clone`; which provider it builds for is decided per spawn, by the
 /// `ModelChoice` the entity carries.
-fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
+fn build_agent(qa_agent: bool, context: HarnessContext) -> Agent {
     if qa_agent {
         // A warm no-op harness that drains stdin like a real interactive CLI
         // (a non-reading child would let the PTY input queue fill and block
@@ -1837,13 +1909,6 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
         // Real agents are interactive TUIs. The provider's own `Harness` owns
         // argv, environment and whatever the worktree needs to be prepared
         // with; Orchestrator submits the prompt through the session.
-        let context = HarnessContext {
-            bridge_exe: std::env::current_exe()
-                .ok()
-                .and_then(|path| path.to_str().map(str::to_string))
-                .unwrap_or_else(|| "build-bridge".to_string()),
-            mcp_socket,
-        };
         Agent::WarmBuilder(Arc::new(
             move |_prompt: &str, choice: &ModelChoice, options: &SpawnOptions| {
                 let harness = harness_for(choice.provider);
@@ -1915,6 +1980,8 @@ pub struct AppState {
     default_harness: AgentProvider,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
+    #[cfg(test)]
+    config_persist_failure: Option<ConfigPersistStep>,
     agent: Agent,
     harness: String,
     /// Project-scoped plans, keyed by `plan_id`.
@@ -1932,9 +1999,13 @@ pub struct AppState {
     /// Single-flight per capture: one router at a time decides where one thing
     /// the user said goes, however many times something asks for it to.
     router_sessions: HashMap<String, crate::router::RouterSession>,
-    /// Build's own state directory — where router scratch is cut, beside the
-    /// store rather than inside any repository.
+    /// Build's own state directory, fixed at construction. Router scratch is
+    /// cut here, beside the store; attaching a store validates its parent and
+    /// never changes this root.
     state_root: std::path::PathBuf,
+    /// The canonical executable fact supplied by [`HarnessContext`]. Every
+    /// project orchestrator receives this same path for MCP scaffolding.
+    bridge_exe: std::path::PathBuf,
     /// The provider/model routing runs on when the config file names one.
     /// `None` is the account default at low effort.
     router_choice: Option<ModelChoice>,
@@ -2060,9 +2131,10 @@ pub struct AppState {
     /// queue and this counter are what tell the idle sweep the difference
     /// between an agent on its way and an agent that never arrived.
     agent_turns_in_flight: HashMap<String, usize>,
-    /// Current unlogged MCP capability per lifecycle owner. Knowing an Issue or
-    /// implementation id is intentionally insufficient to forge local control
-    /// frames; replacing an agent tab rotates this token.
+    /// Current unlogged MCP capability, keyed by agent id for that agent's
+    /// current session. Knowing an Issue or implementation id is intentionally
+    /// insufficient to forge local control frames; replacing an agent tab
+    /// rotates that agent's token.
     mcp_session_tokens: HashMap<String, String>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
     next_term: u64,
@@ -2108,6 +2180,81 @@ pub struct AppState {
     changes: Arc<ChangeBus>,
 }
 
+struct StoredTasks {
+    store: Store,
+    plans: Vec<PersistedPlan>,
+    runs: Vec<PersistedRun>,
+    archived_worktrees: Vec<PersistedArchivedWorktree>,
+    captures: Vec<crate::capture::Capture>,
+    attention: HashMap<String, crate::attention::Attention>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("read config {}: {source}", path.display())]
+    Read {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("parse config {}: {source}", path.display())]
+    Parse {
+        path: std::path::PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigPersistStep {
+    Write,
+    Rename,
+}
+
+fn read_config(path: &std::path::Path) -> Result<Option<Value>, ConfigError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn load_stored_tasks(dir: std::path::PathBuf) -> Result<StoredTasks, String> {
+    let store = Store::new(dir).map_err(|error| error.to_string())?;
+    store
+        .refuse_a_rolled_back_store()
+        .map_err(|error| error.to_string())?;
+    match store.import_json_store() {
+        Ok(0) => {}
+        Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
+        Err(error) => return Err(format!("store import failed: {error}")),
+    }
+    Ok(StoredTasks {
+        plans: store.load_all_plans().map_err(|error| error.to_string())?,
+        runs: store.load_all_runs().map_err(|error| error.to_string())?,
+        archived_worktrees: store
+            .load_all_archived_worktrees()
+            .map_err(|error| error.to_string())?,
+        captures: store
+            .load_all_captures()
+            .map_err(|error| error.to_string())?,
+        attention: store.load_attention(),
+        store,
+    })
+}
+
 fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
     let actual = actual.as_bytes();
     let expected = expected.as_bytes();
@@ -2149,6 +2296,115 @@ fn bind_done_listener(path: &std::path::Path) -> std::io::Result<tokio::net::Uni
     Ok(listener)
 }
 
+#[cfg(unix)]
+async fn serve_done_listener(state: Arc<Mutex<AppState>>, listener: tokio::net::UnixListener) {
+    let mut accept_backoff =
+        crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                accept_backoff.reset();
+                tokio::spawn(handle_done_stream(Arc::clone(&state), stream));
+            }
+            Err(error) => {
+                let wait = accept_backoff.current();
+                eprintln!("done socket: accept error: {error}; retrying in {wait:?}");
+                tokio::time::sleep(wait).await;
+                accept_backoff.increase();
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn handle_done_stream(state: Arc<Mutex<AppState>>, stream: tokio::net::UnixStream) {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut lines = tokio::io::BufReader::new(read_half).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(response) = handle_authenticated_mcp_frame(&state, &frame) {
+            let _ = write_half.write_all(response.to_string().as_bytes()).await;
+            let _ = write_half.write_all(b"\n").await;
+            let _ = write_half.flush().await;
+        }
+    }
+}
+
+fn handle_authenticated_mcp_frame(state: &Arc<Mutex<AppState>>, frame: &Value) -> Option<Value> {
+    let addressed = {
+        let app = state.lock().unwrap();
+        authenticated_mcp_owner(frame, &app.mcp_session_tokens)
+            .map(str::to_string)
+            .and_then(|agent_id| app.addressed_session(agent_id))
+    };
+    match addressed {
+        Some(AddressedSession::Router { capture_id, .. }) => {
+            handle_router_mcp_frame(state, frame, &capture_id)
+        }
+        Some(AddressedSession::Coding {
+            entity_id,
+            agent_id,
+        }) => handle_coding_mcp_frame(state, frame, &entity_id, &agent_id),
+        None => Some(json!({ "ok": false, "error": "unauthorized MCP session" })),
+    }
+}
+
+fn handle_router_mcp_frame(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    capture_id: &str,
+) -> Option<Value> {
+    if let Ok(report) =
+        serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
+    {
+        state.lock().unwrap().on_router_done(capture_id, report);
+        return None;
+    }
+    let action = serde_json::from_value::<BridgeAction>(
+        frame.get("request").cloned().unwrap_or(Value::Null),
+    )
+    .ok()?;
+    let result = state
+        .lock()
+        .unwrap()
+        .on_router_mcp_action(capture_id, action);
+    deliver_pending_agent_turns(state);
+    Some(mcp_action_response(result))
+}
+
+fn handle_coding_mcp_frame(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    entity_id: &str,
+    agent_id: &str,
+) -> Option<Value> {
+    if let Ok(report) =
+        serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
+    {
+        state.lock().unwrap().on_agent_done(entity_id, report);
+        deliver_pending_agent_turns(state);
+        return None;
+    }
+    let action = serde_json::from_value::<BridgeAction>(
+        frame.get("request").cloned().unwrap_or(Value::Null),
+    )
+    .ok()?;
+    let result = state
+        .lock()
+        .unwrap()
+        .on_agent_mcp_action(entity_id, agent_id, action);
+    Some(mcp_action_response(result))
+}
+
+fn mcp_action_response(result: Result<Value, String>) -> Value {
+    match result {
+        Ok(result) => json!({ "ok": true, "result": result }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
 impl AppState {
     pub fn new(
         repo_path: impl Into<std::path::PathBuf>,
@@ -2156,6 +2412,40 @@ impl AppState {
         base_branch: impl Into<String>,
         qa_agent: bool,
         mcp_socket: impl Into<String>,
+    ) -> Self {
+        let context = HarnessContext::resolved(mcp_socket.into().into(), default_state_root())
+            .expect("resolve the default harness context");
+        Self::new_with_context(
+            Some(repo_path.into()),
+            worktrees_root.into(),
+            base_branch.into(),
+            qa_agent,
+            context,
+        )
+    }
+
+    pub fn new_configured(
+        repo_path: impl Into<std::path::PathBuf>,
+        worktrees_root: impl Into<std::path::PathBuf>,
+        base_branch: impl Into<String>,
+        qa_agent: bool,
+        context: HarnessContext,
+    ) -> Self {
+        Self::new_with_context(
+            Some(repo_path.into()),
+            worktrees_root.into(),
+            base_branch.into(),
+            qa_agent,
+            context,
+        )
+    }
+
+    fn new_with_context(
+        repo_path: Option<std::path::PathBuf>,
+        worktrees_root: std::path::PathBuf,
+        base_branch: String,
+        qa_agent: bool,
+        context: HarnessContext,
     ) -> Self {
         let harness = if qa_agent { "QA agent" } else { "Claude Code" }.to_string();
         let transcript_probe: TranscriptProbe = if qa_agent {
@@ -2168,22 +2458,28 @@ impl AppState {
         } else {
             default_session_locator_factory()
         };
+        let state_root = context.state_root.clone();
+        let bridge_exe = context.bridge_exe.clone();
+        let agent = build_agent(qa_agent, context);
         let mut state = AppState {
             projects: Vec::new(),
             entity_project: HashMap::new(),
             entity_project_path: HashMap::new(),
-            worktrees_root: worktrees_root.into(),
+            worktrees_root,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
             config_path: None,
-            agent: build_agent(qa_agent, mcp_socket.into()),
+            #[cfg(test)]
+            config_persist_failure: None,
+            agent,
             harness,
             plans: HashMap::new(),
             runs: HashMap::new(),
             store: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),
-            state_root: default_state_root(),
+            state_root,
+            bridge_exe,
             router_choice: None,
             archived_worktrees: HashMap::new(),
             entity_created_at: HashMap::new(),
@@ -2224,7 +2520,9 @@ impl AppState {
             notify_throttle: NotifyThrottle::default(),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
         };
-        state.add_project(repo_path.into(), base_branch.into());
+        if let Some(repo_path) = repo_path {
+            state.add_project(repo_path, base_branch);
+        }
         state
     }
 
@@ -2238,16 +2536,30 @@ impl AppState {
         qa_agent: bool,
         mcp_socket: impl Into<String>,
     ) -> Self {
-        let mut state = Self::new(
-            "/nonexistent",
-            worktrees_root,
-            base_branch,
+        let context = HarnessContext::resolved(mcp_socket.into().into(), default_state_root())
+            .expect("resolve the default harness context");
+        Self::new_with_context(
+            None,
+            worktrees_root.into(),
+            base_branch.into(),
             qa_agent,
-            mcp_socket,
-        );
-        state.projects.clear();
-        state.next_project = 1;
-        state
+            context,
+        )
+    }
+
+    pub fn new_unrooted_configured(
+        worktrees_root: impl Into<std::path::PathBuf>,
+        base_branch: impl Into<String>,
+        qa_agent: bool,
+        context: HarnessContext,
+    ) -> Self {
+        Self::new_with_context(
+            None,
+            worktrees_root.into(),
+            base_branch.into(),
+            qa_agent,
+            context,
+        )
     }
 
     /// Enable web-push attention notifications: every task-state change into a
@@ -2259,66 +2571,78 @@ impl AppState {
 
     /// Enable persistence at `path`: load any saved projects + projects-dir from it
     /// (skipping repos that no longer exist), and remember it for future writes.
-    pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+    pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Result<Self, ConfigError> {
         let path = path.into();
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&text) {
-                if let Some(dir) = cfg.get("projects_dir").and_then(Value::as_str) {
-                    self.projects_dir = expand_tilde(dir);
-                }
-                if let Some(named) = cfg.get("default_harness").and_then(Value::as_str) {
-                    match AgentProvider::from_wire(named) {
-                        Some(harness) => self.default_harness = harness,
-                        None => {
-                            eprintln!(
-                                "config default_harness: unknown {named:?}; using the default"
-                            )
-                        }
-                    }
-                } else if let Some(named) = cfg.get("claude_mode").and_then(Value::as_str) {
-                    match models::carrier_of_claude_mode(named) {
-                        Some(harness) => self.default_harness = harness,
-                        None => {
-                            eprintln!("config claude_mode: unknown {named:?}; using the default")
-                        }
-                    }
-                }
-                // Routing runs on the account default at low effort unless this
-                // names something else. A choice the harness would refuse is
-                // dropped rather than kept: a router that cannot spawn would
-                // fail every capture on the device.
-                if let Some(choice) = cfg
-                    .get("router_model")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value::<ModelChoice>(value).ok())
-                {
-                    match choice.validate() {
-                        Ok(()) => self.router_choice = Some(choice),
-                        Err(error) => eprintln!("config router_model: {error}; using the default"),
-                    }
-                }
-                for p in cfg
-                    .get("projects")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(repo) = p.get("path").and_then(Value::as_str) {
-                        let base = p
-                            .get("base_branch")
-                            .and_then(Value::as_str)
-                            .unwrap_or("main")
-                            .to_string();
-                        let repo = std::path::PathBuf::from(repo);
-                        if repo.exists() {
-                            self.add_project(repo, base);
-                        }
-                    }
-                }
-            }
+        if let Some(config) = read_config(&path)? {
+            self.apply_config(&config);
         }
         self.config_path = Some(path);
-        self
+        Ok(self)
+    }
+
+    fn apply_config(&mut self, config: &Value) {
+        if let Some(dir) = config.get("projects_dir").and_then(Value::as_str) {
+            self.projects_dir = expand_tilde(dir);
+        }
+        self.apply_default_harness_config(config);
+        self.apply_router_config(config);
+        self.restore_configured_projects(config);
+    }
+
+    fn apply_default_harness_config(&mut self, config: &Value) {
+        let configured = config
+            .get("default_harness")
+            .and_then(Value::as_str)
+            .map(|named| ("default_harness", named, AgentProvider::from_wire(named)))
+            .or_else(|| {
+                config
+                    .get("claude_mode")
+                    .and_then(Value::as_str)
+                    .map(|named| ("claude_mode", named, models::carrier_of_claude_mode(named)))
+            });
+        match configured {
+            Some((_, _, Some(harness))) => self.default_harness = harness,
+            Some((key, named, None)) => {
+                eprintln!("config {key}: unknown {named:?}; using the default")
+            }
+            None => {}
+        }
+    }
+
+    fn apply_router_config(&mut self, config: &Value) {
+        let Some(choice) = config
+            .get("router_model")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<ModelChoice>(value).ok())
+        else {
+            return;
+        };
+        match crate::router::validate_router_choice(&choice) {
+            Ok(()) => self.router_choice = Some(choice),
+            Err(error) => eprintln!("config router_model: {error}; using the default"),
+        }
+    }
+
+    fn restore_configured_projects(&mut self, config: &Value) {
+        let projects = config
+            .get("projects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        for project in projects {
+            let Some(repo) = project.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let base = project
+                .get("base_branch")
+                .and_then(Value::as_str)
+                .unwrap_or("main")
+                .to_string();
+            let repo = std::path::PathBuf::from(repo);
+            if repo.exists() {
+                self.add_project(repo, base);
+            }
+        }
     }
 
     /// Override where cloned repos land and the browser starts (e.g. from an env).
@@ -2333,60 +2657,55 @@ impl AppState {
     /// rather than silently dropping a task.
     pub fn with_task_store(mut self, dir: impl Into<std::path::PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
-        // Router scratch belongs beside the store, in Build's own state
-        // directory: one place that is neither a repository nor a temp dir the
-        // system may clear under a running session.
-        if let Some(parent) = dir.parent() {
-            self.state_root = parent.to_path_buf();
+        let parent = dir
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let resolved_parent = std::fs::canonicalize(parent)
+            .map_err(|error| format!("resolve task store parent {}: {error}", parent.display()))?;
+        if resolved_parent != self.state_root {
+            return Err(format!(
+                "task store parent {} does not match configured state root {}",
+                resolved_parent.display(),
+                self.state_root.display()
+            ));
         }
-        let store = Store::new(dir).map_err(|e| e.to_string())?;
-        // One-way import of the JSON record tree this store replaced. A no-op
-        // once it has run; the imported files are parked, never deleted, so a
-        // database that turns out to be wrong can be thrown away and rebuilt.
-        // Before anything is read: if an older bridge has been run against this
-        // directory since the import, two copies of the user's work exist and
-        // only one of them is about to be served.
-        store
-            .refuse_a_rolled_back_store()
-            .map_err(|error| error.to_string())?;
-        match store.import_json_store() {
-            Ok(0) => {}
-            Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
-            Err(error) => return Err(format!("store import failed: {error}")),
-        }
-        let plans = store.load_all_plans().map_err(|e| e.to_string())?;
-        let runs = store.load_all_runs().map_err(|e| e.to_string())?;
-        let archived_worktrees = store
-            .load_all_archived_worktrees()
-            .map_err(|e| e.to_string())?;
-        let captures = store.load_all_captures().map_err(|e| e.to_string())?;
-        // Attention survives a restart, or Monday would look like a fresh install.
-        self.attention = store.load_attention();
-        self.store = Some(store);
-        self.archived_worktrees = archived_worktrees
+        let stored = load_stored_tasks(dir)?;
+        self.restore_stored_tasks(stored)?;
+        Ok(self)
+    }
+
+    fn restore_stored_tasks(&mut self, stored: StoredTasks) -> Result<(), String> {
+        self.attention = stored.attention;
+        self.store = Some(stored.store);
+        self.archived_worktrees = stored
+            .archived_worktrees
             .into_iter()
             .map(|record| (record.worktree_id.clone(), record))
             .collect();
-        self.recover_captures(captures)?;
+        self.recover_captures(stored.captures)?;
         self.recover_completed_worktree_finishes();
-        // Plans first: a run re-derives its `plan_path` from the owning plan's
-        // record, so the plan must already be in the map.
+        self.restore_plans_before_runs(stored.plans, stored.runs)?;
+        self.seed_conversation_attention_sequences();
+        self.seed_anchors_for_records_without_one();
+        self.resume_stored_issue_schedulers()
+    }
+
+    fn restore_plans_before_runs(
+        &mut self,
+        plans: Vec<PersistedPlan>,
+        runs: Vec<PersistedRun>,
+    ) -> Result<(), String> {
         for record in plans {
             self.recover_plan(record)?;
         }
         for record in runs {
             self.recover_run(record)?;
         }
-        // Everything on disk has already been announced. Seed the push
-        // watermarks from it so the restart re-announces nothing, and so the
-        // next attention event is news rather than a first observation.
-        self.seed_conversation_attention_sequences();
-        // Every entity that predates anchors gets the one it would have had.
-        self.seed_anchors_for_records_without_one();
-        // Issue implementation intent is the scheduler's durable source of
-        // truth. Reconcile it only after every implementation lineage record
-        // has been restored, so an approved waiting stage can resume without
-        // minting a duplicate worktree after a daemon restart.
+        Ok(())
+    }
+
+    fn resume_stored_issue_schedulers(&mut self) -> Result<(), String> {
         let issue_ids = self
             .plans
             .iter()
@@ -2396,7 +2715,7 @@ impl AppState {
         for issue_id in issue_ids {
             self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))?;
         }
-        Ok(self)
+        Ok(())
     }
 
     /// Re-attach one persisted plan on boot. The canonical docs live in the
@@ -2571,7 +2890,7 @@ impl AppState {
                 .ok_or_else(|| "the original project/branch is unavailable".to_string())
                 .and_then(|project_id| {
                     self.orch_for(project_id)?
-                        .restore_run_worktree(&active.worktree)
+                        .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
                         .map_err(err)
                 });
             match restored {
@@ -3016,17 +3335,17 @@ impl AppState {
     /// to. A warm delivery never calls this — the session it continues is
     /// already open, and a second `start_session` would read back as an agent
     /// restart that never happened.
-    fn record_agent_session_start(&mut self, turn: &PendingAgentTurn) {
+    fn record_agent_session_start(&mut self, owner: &str, model_choice: &ModelChoice, phase: &str) {
         // A router owns no conversation — it decides which one the capture
         // becomes. What its session start records is that there is now a
         // process to have lost, which is what makes a dead one detectable.
-        if let Some(session) = self.router_sessions.get_mut(&turn.owner) {
-            session.started = true;
+        if let Some(session) = self.router_sessions.get_mut(owner) {
+            session.mark_started();
             self.note_board_changed();
             return;
         }
-        self.edit_owner_thread("record_agent_session_start", &turn.owner, |thread| {
-            open_session_lineage(thread, turn)
+        self.edit_owner_thread("record_agent_session_start", owner, |thread| {
+            open_session_lineage(thread, model_choice, phase)
         });
         self.note_board_changed();
     }
@@ -3627,24 +3946,98 @@ impl AppState {
         }
     }
 
-    /// Persist projects + projects-dir to the config file, if one is configured.
-    fn persist(&self) {
-        let Some(path) = &self.config_path else {
-            return;
-        };
-        let cfg = json!({
-            "projects_dir": self.projects_dir.display().to_string(),
-            "default_harness": self.default_harness,
+    fn config_value(
+        &self,
+        projects_dir: &std::path::Path,
+        default_harness: AgentProvider,
+    ) -> Value {
+        self.config_value_with_project(projects_dir, default_harness, None)
+    }
+
+    fn config_value_with_project(
+        &self,
+        projects_dir: &std::path::Path,
+        default_harness: AgentProvider,
+        prospective_project: Option<&Project>,
+    ) -> Value {
+        json!({
+            "projects_dir": projects_dir.display().to_string(),
+            "default_harness": default_harness,
             "router_model": self.router_choice,
-            "projects": self.projects.iter().map(|p| json!({
+            "projects": self.projects.iter().chain(prospective_project).map(|p| json!({
                 "path": p.repo_path.display().to_string(),
                 "base_branch": p.base_branch,
             })).collect::<Vec<_>>(),
-        });
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        })
+    }
+
+    /// Persist projects and settings atomically, if persistence is configured.
+    fn persist_config(&self, config: &Value) -> Result<(), String> {
+        let Some(path) = &self.config_path else {
+            return Ok(());
+        };
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("write config {}: {error}", path.display()))?;
         }
-        let _ = std::fs::write(path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
+        let bytes = serde_json::to_vec_pretty(config)
+            .map_err(|error| format!("serialize config {}: {error}", path.display()))?;
+        let temporary = path.with_extension("tmp");
+        match std::fs::remove_file(&temporary) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "prepare config {}: cannot remove {}: {error}",
+                    path.display(),
+                    temporary.display()
+                ))
+            }
+        }
+        let write_result = (|| -> Result<(), String> {
+            #[cfg(test)]
+            if self.config_persist_failure == Some(ConfigPersistStep::Write) {
+                return Err(format!(
+                    "write config {}: injected write failure",
+                    path.display()
+                ));
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| format!("write config {}: {error}", path.display()))?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| format!("write config {}: {error}", path.display()))?;
+            #[cfg(test)]
+            if self.config_persist_failure == Some(ConfigPersistStep::Rename) {
+                return Err(format!(
+                    "write config {}: injected rename failure",
+                    path.display()
+                ));
+            }
+            std::fs::rename(&temporary, path)
+                .map_err(|error| format!("write config {}: {error}", path.display()))
+        })();
+        if let Err(write_error) = write_result {
+            match std::fs::remove_file(&temporary) {
+                Ok(()) => return Err(write_error),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(write_error)
+                }
+                Err(cleanup_error) => {
+                    return Err(format!(
+                        "{write_error}; cannot remove temporary config {}: {cleanup_error}",
+                        temporary.display()
+                    ))
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Register a project (repo + base branch) and return its id. Idempotent: a
@@ -3655,8 +4048,12 @@ impl AppState {
         if let Some(existing) = self.projects.iter().find(|p| p.repo_path == repo_path) {
             return existing.id.clone();
         }
+        let project = self.project_candidate(repo_path, base_branch);
+        self.insert_project(project)
+    }
+
+    fn project_candidate(&self, repo_path: std::path::PathBuf, base_branch: String) -> Project {
         let id = format!("proj-{}", self.next_project);
-        self.next_project += 1;
         let name = repo_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -3668,20 +4065,64 @@ impl AppState {
             worktrees,
             self.agent.clone(),
             Templates::default(),
+            self.bridge_exe.clone(),
         );
-        self.projects.push(Project {
-            id: id.clone(),
+        Project {
+            id,
             name,
             repo_path,
             base_branch,
             orch,
             external_scan: None,
             primary_summary: None,
-        });
+        }
+    }
+
+    fn insert_project(&mut self, project: Project) -> String {
+        let id = project.id.clone();
+        self.projects.push(project);
+        self.next_project += 1;
         // A project is a section of the feed; registering one adds every row
         // its checkouts stand behind.
         self.note_board_changed();
         id
+    }
+
+    /// Persist a prospective project before making it visible in memory. When
+    /// the caller created the checkout, remove only that checkout if persistence
+    /// fails; an existing user repository is never cleanup-owned here.
+    fn register_project_transaction(
+        &mut self,
+        repo_path: std::path::PathBuf,
+        base_branch: String,
+        created_checkout: Option<std::path::PathBuf>,
+    ) -> Result<Value, String> {
+        let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
+        if let Some(existing) = self.projects.iter().find(|p| p.repo_path == repo_path) {
+            return Ok(project_json(existing));
+        }
+        let project = self.project_candidate(repo_path, base_branch);
+        let prospective = self.config_value_with_project(
+            &self.projects_dir,
+            self.default_harness,
+            Some(&project),
+        );
+        if let Err(persist_error) = self.persist_config(&prospective) {
+            return Err(match created_checkout {
+                Some(path) => match std::fs::remove_dir_all(&path) {
+                    Ok(()) => persist_error,
+                    Err(cleanup_error) => format!(
+                        "{persist_error}; cannot remove created project {}: {cleanup_error}",
+                        path.display()
+                    ),
+                },
+                None => persist_error,
+            });
+        }
+        self.insert_project(project);
+        Ok(project_json(
+            self.projects.last().expect("inserted project"),
+        ))
     }
 
     /// Canonical paths of every Build-bound worktree — one per run: they are
@@ -4240,15 +4681,23 @@ impl AppState {
         self.release_diff_refresh(&DiffCacheKey::PrimarySummary(project_id.to_string()));
     }
 
+    /// The runs of a project that have not finished, with the id each is
+    /// keyed by. Reading a run's branch costs a HEAD read on disk, so callers
+    /// that want one branch stop at it rather than describing them all.
+    fn live_runs_of<'a>(
+        &'a self,
+        project_id: &'a str,
+    ) -> impl Iterator<Item = (&'a String, &'a ActiveRun)> {
+        self.runs.iter().filter(move |(run_id, active)| {
+            !active.run.state.is_terminal()
+                && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+        })
+    }
+
     /// The live run that owns a branch in a project, if one does.
     fn run_on_branch(&self, project_id: &str, branch: &str) -> Option<String> {
-        self.runs
-            .iter()
-            .find(|(run_id, active)| {
-                !active.run.state.is_terminal()
-                    && active.worktree.branch() == branch
-                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
-            })
+        self.live_runs_of(project_id)
+            .find(|(_, active)| active.worktree.branch() == branch)
             .map(|(run_id, _)| run_id.clone())
     }
 
@@ -4425,122 +4874,7 @@ impl AppState {
                 }
             };
             eprintln!("done socket: listening on {path}");
-            // A single accept error must not permanently stop `done` reporting, but
-            // a *persistent* one (EMFILE/ENFILE on fd exhaustion) leaves the listener
-            // readable so accept returns Err immediately — `continue` alone would spin
-            // a worker at 100% CPU and flood the log. Back off between failed accepts;
-            // reset the moment one succeeds.
-            let mut accept_backoff =
-                crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
-            loop {
-                let (stream, _) = match listener.accept().await {
-                    Ok(pair) => {
-                        accept_backoff.reset();
-                        pair
-                    }
-                    Err(e) => {
-                        let wait = accept_backoff.current();
-                        eprintln!("done socket: accept error: {e}; retrying in {wait:?}");
-                        tokio::time::sleep(wait).await;
-                        accept_backoff.increase();
-                        continue;
-                    }
-                };
-                let state = Arc::clone(&state);
-                tokio::spawn(async move {
-                    let (read_half, mut write_half) = stream.into_split();
-                    let mut lines = tokio::io::BufReader::new(read_half).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-                            continue;
-                        };
-                        // The legacy `task_id` spelling remains opaque and
-                        // compatible, but it is not authentication. Only the
-                        // current harness process knows the rotated capability.
-                        let addressed = {
-                            let guard = state.lock().unwrap();
-                            authenticated_mcp_owner(&v, &guard.mcp_session_tokens)
-                                .map(str::to_string)
-                                .and_then(|agent_id| guard.addressed_session(agent_id))
-                        };
-                        // A router session is neither a plan nor a run, and its
-                        // tools are not a coding agent's. The split is made
-                        // here, once, off the authenticated identity — so a
-                        // harness writing its own frames still only ever
-                        // reaches the surface it was spawned on.
-                        if let Some(AddressedSession::Router {
-                            capture_id,
-                            agent_id: _,
-                        }) = &addressed
-                        {
-                            let capture_id = capture_id.clone();
-                            if let Ok(report) = serde_json::from_value::<DoneReport>(
-                                v.get("report").cloned().unwrap_or(Value::Null),
-                            ) {
-                                state.lock().unwrap().on_router_done(&capture_id, report);
-                                continue;
-                            }
-                            if let Ok(action) = serde_json::from_value::<BridgeAction>(
-                                v.get("request").cloned().unwrap_or(Value::Null),
-                            ) {
-                                let response = match state
-                                    .lock()
-                                    .unwrap()
-                                    .on_router_mcp_action(&capture_id, action)
-                                {
-                                    Ok(result) => json!({ "ok": true, "result": result }),
-                                    Err(error) => json!({ "ok": false, "error": error }),
-                                };
-                                // A dispatch queues the branch agent's first
-                                // turn; sending it needs the lock free.
-                                deliver_pending_agent_turns(&state);
-                                let _ = write_half.write_all(response.to_string().as_bytes()).await;
-                                let _ = write_half.write_all(b"\n").await;
-                                let _ = write_half.flush().await;
-                            }
-                            continue;
-                        }
-                        let Some(AddressedSession::Coding {
-                            entity_id,
-                            agent_id,
-                        }) = addressed
-                        else {
-                            let response =
-                                json!({ "ok": false, "error": "unauthorized MCP session" });
-                            let _ = write_half.write_all(response.to_string().as_bytes()).await;
-                            let _ = write_half.write_all(b"\n").await;
-                            let _ = write_half.flush().await;
-                            continue;
-                        };
-                        if let Ok(report) = serde_json::from_value::<DoneReport>(
-                            v.get("report").cloned().unwrap_or(Value::Null),
-                        ) {
-                            state.lock().unwrap().on_agent_done(&entity_id, report);
-                            // A report can start the next phase (a built stage
-                            // hands itself to validation). The turn is queued
-                            // under the lock above; sending it needs the lock
-                            // free, exactly as on the relay's frame path.
-                            deliver_pending_agent_turns(&state);
-                            continue;
-                        }
-                        if let Ok(action) = serde_json::from_value::<BridgeAction>(
-                            v.get("request").cloned().unwrap_or(Value::Null),
-                        ) {
-                            let response = match state
-                                .lock()
-                                .unwrap()
-                                .on_agent_mcp_action(&entity_id, &agent_id, action)
-                            {
-                                Ok(result) => json!({ "ok": true, "result": result }),
-                                Err(error) => json!({ "ok": false, "error": error }),
-                            };
-                            let _ = write_half.write_all(response.to_string().as_bytes()).await;
-                            let _ = write_half.write_all(b"\n").await;
-                            let _ = write_half.flush().await;
-                        }
-                    }
-                });
-            }
+            serve_done_listener(state, listener).await;
         });
     }
 
@@ -4557,10 +4891,10 @@ impl AppState {
     }
 
     /// Execute an MCP thread request against the conversation owner resolved
-    /// from the lifecycle owner baked into that session's MCP command. Planned
-    /// implementations report `done` as their run id, but all unread/reply
-    /// actions resolve to the owning Issue (legacy plan id). Planless adopted
-    /// runs retain their independent worktree conversation.
+    /// from the agent identity baked into that session's MCP command. The
+    /// authenticated agent resolves to its current plan or run; planned runs
+    /// resolve unread/reply actions to the owning Issue (legacy plan id), while
+    /// planless adopted runs retain their independent worktree conversation.
     #[cfg(test)]
     fn on_mcp_action(&mut self, entity_id: &str, action: BridgeAction) -> Result<Value, String> {
         let agent_id = self.entity_agents(entity_id)?.resolve(None)?.id.clone();
@@ -5154,7 +5488,7 @@ impl AppState {
             let project_id = self.project_of(run_id)?;
             let worktree = self
                 .orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree)
+                .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
                 .map_err(err)?;
             let checkout =
                 git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
@@ -6478,14 +6812,7 @@ impl AppState {
             .unwrap_or_else(|| "main".to_string());
         repo.revparse_single(&base_branch)
             .map_err(|_| format!("base branch '{base_branch}' not found in repo"))?;
-        let id = self.add_project(repo_path, base_branch);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        self.register_project_transaction(repo_path, base_branch, None)
     }
 
     /// Browse host directories so the user can pick a repo without typing a path.
@@ -6636,15 +6963,19 @@ impl AppState {
         if projects_dir.is_none() && default_harness.is_none() {
             return Err("settings.set: nothing to set".to_string());
         }
-        if let Some(dir) = projects_dir {
+        let prospective_projects_dir = if let Some(dir) = projects_dir {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-            self.projects_dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-        }
-        if let Some(harness) = default_harness {
-            self.default_harness = harness;
-        }
-        self.persist();
+            std::fs::canonicalize(&dir)
+                .map_err(|error| format!("cannot resolve {}: {error}", dir.display()))?
+        } else {
+            self.projects_dir.clone()
+        };
+        let prospective_default_harness = default_harness.unwrap_or(self.default_harness);
+        let prospective = self.config_value(&prospective_projects_dir, prospective_default_harness);
+        self.persist_config(&prospective)?;
+        self.projects_dir = prospective_projects_dir;
+        self.default_harness = prospective_default_harness;
         Ok(self.settings_get())
     }
 
@@ -6682,7 +7013,7 @@ impl AppState {
                     ));
                 }
             }
-            return self.register_clone(params, dest);
+            return self.register_clone(params, dest, None);
         }
         let out = std::process::Command::new("git")
             .arg("clone")
@@ -6696,7 +7027,7 @@ impl AppState {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
-        self.register_clone(params, dest)
+        self.register_clone(params, dest.clone(), Some(dest))
     }
 
     /// Register a freshly cloned (or already-present) checkout as a project,
@@ -6705,6 +7036,7 @@ impl AppState {
         &mut self,
         params: &Value,
         dest: std::path::PathBuf,
+        created_checkout: Option<std::path::PathBuf>,
     ) -> Result<Value, String> {
         let base = params
             .get("base_branch")
@@ -6712,14 +7044,7 @@ impl AppState {
             .map(str::to_string)
             .or_else(|| git_default_branch(&dest))
             .unwrap_or_else(|| "main".to_string());
-        let id = self.add_project(dest, base);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        self.register_project_transaction(dest, base, created_checkout)
     }
 
     /// Create a brand-new git repo (with an initial commit so its base branch
@@ -6780,14 +7105,7 @@ impl AppState {
         {
             git_in(&dest, &["remote", "add", "origin", remote])?;
         }
-        let id = self.add_project(dest, base_branch);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        self.register_project_transaction(dest.clone(), base_branch, Some(dest))
     }
 
     /// Set (or clear, with an empty url) a project's `origin` remote.
@@ -6795,12 +7113,7 @@ impl AppState {
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
         let url = url.trim();
-        let repo_path = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .map(|p| p.repo_path.clone())
-            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let repo_path = self.project_for(&project_id)?.repo_path.clone();
         if url.is_empty() {
             // Clearing: removing a missing origin is not an error.
             let _ = std::process::Command::new("git")
@@ -6813,7 +7126,6 @@ impl AppState {
         } else {
             git_in(&repo_path, &["remote", "add", "origin", url])?;
         }
-        self.persist();
         let project = self
             .projects
             .iter()
@@ -6822,32 +7134,29 @@ impl AppState {
         Ok(project_json(project))
     }
 
-    /// The orchestrator for a project id.
-    fn orch_for(&self, project_id: &str) -> Result<&Orchestrator, String> {
+    /// The registered project a client names by id, or the one refusal every
+    /// verb that takes a `project_id` gives when nothing is registered under it.
+    fn project_for(&self, project_id: &str) -> Result<&Project, String> {
         self.projects
             .iter()
             .find(|p| p.id == project_id)
-            .map(|p| &p.orch)
-            .ok_or_else(|| format!("unknown project: {project_id}"))
+            .ok_or_else(|| format!("unknown project_id: {project_id}"))
+    }
+
+    /// The orchestrator for a project id.
+    fn orch_for(&self, project_id: &str) -> Result<&Orchestrator, String> {
+        Ok(&self.project_for(project_id)?.orch)
     }
 
     /// The base branch configured for a project id.
     fn base_for(&self, project_id: &str) -> Result<String, String> {
-        self.projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .map(|p| p.base_branch.clone())
-            .ok_or_else(|| format!("unknown project: {project_id}"))
+        Ok(self.project_for(project_id)?.base_branch.clone())
     }
 
     /// A project's primary checkout — the repo root, the same directory
     /// `TermScope::Primary` resolves to.
     fn repo_path_for(&self, project_id: &str) -> Result<std::path::PathBuf, String> {
-        self.projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .map(|p| p.repo_path.clone())
-            .ok_or_else(|| format!("unknown project: {project_id}"))
+        Ok(self.project_for(project_id)?.repo_path.clone())
     }
 
     /// Whether a run was adopted around its project's primary checkout rather
@@ -6965,17 +7274,9 @@ impl AppState {
                     "base_branch": base_branch,
                     "unpushed": w.unpushed,
                     "upstream": w.upstream,
-                    "diffstat": {
-                        "files_changed": w.diffstat.files_changed,
-                        "insertions": w.diffstat.insertions,
-                        "deletions": w.diffstat.deletions,
-                    },
+                    "diffstat": w.diffstat.to_json(),
                     // What is sitting in the tree unsaved — the rail's +/−.
-                    "uncommitted": {
-                        "files_changed": w.uncommitted.files_changed,
-                        "insertions": w.uncommitted.insertions,
-                        "deletions": w.uncommitted.deletions,
-                    },
+                    "uncommitted": w.uncommitted.to_json(),
                     "adoptable": adoptable,
                     "agent_working": agent_working,
                     "can_finish": can_finish,
@@ -7164,12 +7465,7 @@ impl AppState {
         work: fn(&GitScope, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let scope = self.resolve_git_scope(params)?;
-        Ok(self.defer_git_work(
-            GitTarget::Checkout(scope),
-            GitWork::Checkout(work),
-            params,
-            invalidates,
-        ))
+        Ok(self.defer_git_work(scope, work, params, invalidates))
     }
 
     /// [`AppState::defer_git`] for the verbs that address the repository's
@@ -7181,12 +7477,25 @@ impl AppState {
         work: fn(&BranchScope, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let scope = self.resolve_branch_scope(params)?;
-        Ok(self.defer_git_work(
-            GitTarget::Branch(scope),
-            GitWork::Branch(work),
-            params,
-            invalidates,
-        ))
+        Ok(self.defer_git_work(scope, work, params, invalidates))
+    }
+
+    /// [`AppState::defer_branch_git`] for the verbs that render the project's
+    /// branches. They alone carry [`ProjectCheckouts`], which a checkout verb
+    /// has no row to stamp with; the drain asks git who holds what.
+    fn defer_branch_listing(
+        &mut self,
+        params: &Value,
+        invalidates: bool,
+        work: fn(&BranchListingScope, &Value) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let checkout = self.resolve_branch_scope(params)?;
+        let checkouts = self.project_checkouts(&checkout.project_id, false)?;
+        let scope = BranchListingScope {
+            checkout,
+            checkouts,
+        };
+        Ok(self.defer_git_work(scope, work, params, invalidates))
     }
 
     /// Hand a resolved diff to the drain, which renders it with the mutex
@@ -7202,17 +7511,16 @@ impl AppState {
         Value::Null
     }
 
-    fn defer_git_work(
+    fn defer_git_work<S: GitCallScope + 'static>(
         &mut self,
-        scope: GitTarget,
-        work: GitWork,
+        scope: S,
+        work: fn(&S, &Value) -> Result<Value, String>,
         params: &Value,
         invalidates: bool,
     ) -> Value {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            scope,
+            call: Box::new(ScopedGitCall { scope, work }),
             params: params.clone(),
-            work,
             invalidates,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
@@ -7235,25 +7543,21 @@ impl AppState {
         if !git.invalidates || result.is_err() {
             return result;
         }
-        match &git.scope {
-            GitTarget::Checkout(scope) => {
-                if self.git_scope_is_current(scope) {
-                    self.invalidate_git_scope_caches(scope);
-                }
-            }
-            GitTarget::Branch(scope) => {
-                if self.projects.iter().any(|p| p.id == scope.project_id) {
-                    // A branch switch swaps the whole tree, so whichever
-                    // summary described it is stale.
-                    if scope.external_worktree {
-                        self.invalidate_external_scan(&scope.project_id);
-                    } else {
-                        self.invalidate_primary_summary(&scope.project_id);
-                    }
-                }
-            }
-        }
+        git.call.invalidate(self);
         result
+    }
+
+    /// A branch switch swaps the whole tree, so whichever summary described
+    /// the scoped checkout is stale.
+    fn invalidate_branch_scope_caches(&mut self, scope: &BranchScope) {
+        if !self.projects.iter().any(|p| p.id == scope.project_id) {
+            return;
+        }
+        if scope.external_worktree {
+            self.invalidate_external_scan(&scope.project_id);
+        } else {
+            self.invalidate_primary_summary(&scope.project_id);
+        }
     }
 
     /// Whether the entity a git scope spoke for is still on the board.
@@ -7367,36 +7671,55 @@ impl AppState {
             return Err("branch operations are project- or worktree-scope only".to_string());
         }
         let project_id = require_str(params, "project_id")?;
-        let base_branch = self.base_for(&project_id)?;
-        // Best-effort: a scan failure here costs the switcher its "adopt from
-        // here" affordance, not the branch list itself.
+        let project = self.project_for(&project_id)?;
+        let base_branch = project.base_branch.clone();
+        let primary_repo_path = project.repo_path.clone();
+        let (repo_path, external_worktree) = match params.get("worktree_id").and_then(Value::as_str)
+        {
+            Some(worktree_id) => (
+                self.resolve_external_worktree(&project_id, worktree_id)?
+                    .path,
+                true,
+            ),
+            None => (primary_repo_path, false),
+        };
+        Ok(BranchScope {
+            project_id,
+            repo_path,
+            base_branch,
+            external_worktree,
+        })
+    }
+
+    /// The checkouts of a project the mutex can name without touching the
+    /// disk: the external scan the board already holds, every live run's
+    /// checkout, and the primary. Which branch each one holds is git's to
+    /// answer, and [`ProjectCheckouts::holders`] asks it.
+    ///
+    /// Two callers pay disk cost on the lock knowingly. `force` rescans the
+    /// external worktrees here and now, for a verb about to act on the answer
+    /// rather than describe it; and `worktree.create {branch}` follows this
+    /// call with `holders` on the lock too, because a one-shot user action
+    /// that git would otherwise refuse is worth the wait. Every other caller
+    /// takes the cached scan and asks `holders` in the deferred half.
+    fn project_checkouts(
+        &mut self,
+        project_id: &str,
+        force: bool,
+    ) -> Result<ProjectCheckouts, String> {
         let external_branches = self
-            .external_worktrees(&project_id, false)
-            .unwrap_or_default()
+            .external_worktrees(project_id, force)?
             .into_iter()
             .filter_map(|worktree| Some((worktree.branch?, worktree.id)))
             .collect();
-        if let Some(worktree_id) = params.get("worktree_id").and_then(Value::as_str) {
-            let external = self.resolve_external_worktree(&project_id, worktree_id)?;
-            return Ok(BranchScope {
-                project_id,
-                repo_path: external.path,
-                base_branch,
-                external_worktree: true,
-                external_branches,
-            });
-        }
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .ok_or_else(|| "unknown project_id".to_string())?;
-        Ok(BranchScope {
-            project_id: project.id.clone(),
-            repo_path: project.repo_path.clone(),
-            base_branch,
-            external_worktree: false,
+        let run_checkouts = self
+            .live_runs_of(project_id)
+            .map(|(run_id, active)| (run_id.clone(), active.worktree.clone()))
+            .collect();
+        Ok(ProjectCheckouts {
+            primary_repo_path: self.repo_path_for(project_id)?,
             external_branches,
+            run_checkouts,
         })
     }
 
@@ -7431,16 +7754,11 @@ impl AppState {
         })
     }
 
-    /// `git.branches` — the local branch list of the scoped checkout (the same
-    /// list either way: branches are the repository's, not one checkout's).
+    /// `git.branches` — every branch the project can offer, once each (the same
+    /// list whichever checkout is scoped: branches are the repository's, not
+    /// one checkout's), each stamped with the checkout that holds it.
     fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_branch_git(params, false, |scope, _| {
-            crate::gitgui::branch_list(
-                &scope.repo_path,
-                &scope.base_branch,
-                &scope.external_branches,
-            )
-        })
+        self.defer_branch_listing(params, false, |scope, _| stamped_branch_list(scope))
     }
 
     /// `git.checkout` — switch the scoped checkout to (or create) a branch,
@@ -7459,18 +7777,14 @@ impl AppState {
 
     /// `git.branch_delete` — delete a local branch, then the fresh branch list.
     fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_branch_git(params, false, |scope, params| {
+        self.defer_branch_listing(params, false, |scope, params| {
             let branch = require_str(params, "branch")?;
             let force = params
                 .get("force")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            crate::gitgui::branch_delete(&scope.repo_path, &branch, force)?;
-            crate::gitgui::branch_list(
-                &scope.repo_path,
-                &scope.base_branch,
-                &scope.external_branches,
-            )
+            crate::gitgui::branch_delete(&scope.checkout.repo_path, &branch, force)?;
+            stamped_branch_list(scope)
         })
     }
 
@@ -7511,44 +7825,114 @@ impl AppState {
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
     /// never adopts.
-    /// Mint a bare worktree on a fresh branch off the project's base — no run,
-    /// no agent, no session. It is the "somewhere to work" affordance beside
-    /// issue creation: the human opens a terminal or an agent tab in it, and it
-    /// stays unbound (the scan reports it like any hand-made worktree) until a
-    /// mutating action adopts it.
+    /// Mint a bare worktree — no run, no agent, no session. It is the
+    /// "somewhere to work" affordance beside issue creation: the human opens a
+    /// terminal or an agent tab in it, and it stays unbound (the scan reports
+    /// it like any hand-made worktree) until a mutating action adopts it.
     ///
-    /// `name` is what the human typed, and it decides both the directory and the
-    /// branch. It is UNTRUSTED text on its way to a path and a `git` argv, so it
-    /// goes through the same slugifier every branch name does: ASCII alphanumerics
-    /// and single hyphens, nothing else, so no separator, dot-segment or leading
-    /// dash can survive it. A name that would slugify away to nothing is refused
-    /// rather than silently replaced — being handed a worktree you did not name is
-    /// worse than being told the name will not do.
+    /// The two slots mean opposite things, and exactly one is given. `branch`
+    /// names a branch that already exists — here or on a remote — and Build
+    /// borrows it a directory, cutting nothing. `name` is words to cut a new
+    /// branch after, and no branch of that spelling is consulted.
     fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let name = require_str(params, "name")?;
+        let checkout = match (
+            params.get("branch").and_then(Value::as_str),
+            params.get("name").and_then(Value::as_str),
+        ) {
+            (Some(branch), None) => self.checkout_worktree_on_branch(&project_id, branch)?,
+            (None, Some(name)) => self.create_bare_worktree_for(&project_id, name)?,
+            _ => {
+                return Err(
+                    "worktree.create takes exactly one of branch (a branch that \
+                            already exists) and name (words to cut a new branch after)"
+                        .to_string(),
+                )
+            }
+        };
+        let canonical = self.register_created_checkout(&project_id, &checkout.worktree);
+        Ok(created_worktree_json(&project_id, &checkout, &canonical))
+    }
+
+    /// Cut `build/<slug>` off the project's base and add a worktree for it —
+    /// the one way Build cuts a branch for itself, for every caller that has
+    /// words rather than a branch.
+    ///
+    /// `name` is what the human (or the router) typed. It is UNTRUSTED text on
+    /// its way to a path and a `git` argv, so it goes through the same
+    /// slugifier every branch name does: ASCII alphanumerics and single
+    /// hyphens, nothing else, so no separator, dot-segment or leading dash can
+    /// survive it. A name that would slugify away to nothing is refused rather
+    /// than silently replaced — being handed a worktree you did not name is
+    /// worse than being told the name will not do.
+    fn create_bare_worktree_for(
+        &mut self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
         if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
             return Err("a worktree name needs at least one letter or number".to_string());
         }
-        let slug = crate::worktree::slugify(&name);
-        let base = self.base_for(&project_id)?;
-        let worktree = self
-            .orch_for(&project_id)?
-            .create_bare_worktree(&slug, &base)
-            .map_err(err)?;
-        // The scan keys worktrees by canonical path; mirror that here so the
-        // caller can navigate to the surface without waiting for a rescan.
-        let canonical = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
-        // The new worktree must be visible to the very next board poll, not up
-        // to EXTERNAL_SCAN_INTERVAL later.
-        self.invalidate_external_scan(&project_id);
-        Ok(json!({
-            "project_id": project_id,
-            "worktree_id": crate::worktree::external_worktree_id(&canonical),
-            "branch": worktree.branch(),
-            "name": worktree.name,
-            "path": canonical.display().to_string(),
-        }))
+        let base = self.base_for(project_id)?;
+        self.orch_for(project_id)?
+            .create_bare_worktree(&crate::worktree::slugify(name), &base)
+            .map_err(err)
+    }
+
+    /// Add a worktree for a branch that already exists, so the human can work
+    /// on it without losing what it carries: a local branch is checked out as
+    /// it stands, and one only a remote has is fetched and made local with its
+    /// upstream set.
+    ///
+    /// Git refuses to check one branch out twice, and its refusal names
+    /// nothing the client can act on, so the checkout already holding the
+    /// branch is named here instead — the run to open, the worktree to adopt,
+    /// or the repository's own checkout. The listing the picker reads carries
+    /// the same three stamps and is where a user should learn this; the guard
+    /// is for what changed between the listing and the press.
+    fn checkout_worktree_on_branch(
+        &mut self,
+        project_id: &str,
+        branch: &str,
+    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
+        if !crate::worktree::is_ref_name(branch) {
+            return Err(format!("{branch:?} is not a branch name"));
+        }
+        if let Some(refusal) = self.branch_holder_now(project_id, branch)?.refusal(branch) {
+            return Err(refusal);
+        }
+        let base = self.base_for(project_id)?;
+        self.orch_for(project_id)?
+            .create_worktree_on_existing_branch(branch, &base)
+            .map_err(err)
+    }
+
+    /// Which of the project's checkouts holds `branch` right now — decided
+    /// against a forced rescan, because the caller is about to act on the
+    /// answer rather than describe it. `worktree.create {branch}` and
+    /// `branch.dispatch` both ask here, so the two verbs never disagree about
+    /// who has a branch.
+    fn branch_holder_now(
+        &mut self,
+        project_id: &str,
+        branch: &str,
+    ) -> Result<BranchHolder, String> {
+        let ownership = self.project_checkouts(project_id, true)?.holders()?;
+        Ok(BranchHolder::of(&ownership, branch))
+    }
+
+    /// Make a checkout that was just created visible to the very next board
+    /// poll rather than up to a scan interval later, and answer with the path
+    /// the scan keys it by: its canonical one.
+    ///
+    /// Every creator ends here, so post-creation invalidation is spelled once.
+    fn register_created_checkout(
+        &mut self,
+        project_id: &str,
+        worktree: &crate::worktree::Worktree,
+    ) -> std::path::PathBuf {
+        self.invalidate_external_scan(project_id);
+        Self::canonical_root(&worktree.path)
     }
 
     /// Finish an external worktree selected only by server-resolved ids.
@@ -8123,11 +8507,7 @@ impl AppState {
     /// whichever worktree happened to notice it.
     fn primary_checkout_of(&self, entity_id: &str) -> Result<std::path::PathBuf, String> {
         let project_id = self.project_of(entity_id)?;
-        self.projects
-            .iter()
-            .find(|project| project.id == project_id)
-            .map(|project| project.repo_path.clone())
-            .ok_or_else(|| format!("unknown project: {project_id}"))
+        self.repo_path_for(&project_id)
     }
 
     /// Whether `entity_id` names something the attention map keeps a record
@@ -9025,15 +9405,13 @@ impl AppState {
         // The router routes TO projects; with none there is no destination to
         // reach and no point spawning one to discover that.
         let project_id = self.default_project()?;
-        let choice = crate::router::router_model_choice(
-            self.default_agent_provider(),
-            self.router_choice.as_ref(),
-        );
-        let session = crate::router::RouterSession::new(capture_id, &self.state_root, choice);
-        std::fs::create_dir_all(&session.scratch_dir).map_err(|error| {
+        let choice = crate::router::router_model_choice(self.router_choice.as_ref());
+        let session = crate::router::RouterSession::new(capture_id, &self.state_root, choice)
+            .map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(session.scratch_dir()).map_err(|error| {
             format!(
                 "could not cut router scratch at {}: {error}",
-                session.scratch_dir.display()
+                session.scratch_dir().display()
             )
         })?;
         // Written before the turn is queued: the router reads the record, and
@@ -9054,10 +9432,10 @@ impl AppState {
         self.entity_project
             .insert(capture_id.to_string(), project_id);
         self.pending_agent_turns.push(PendingAgentTurn {
-            root: session.scratch_dir.clone(),
+            root: session.scratch_dir().to_path_buf(),
             owner: capture_id.to_string(),
-            agent_id: session.agent_id.clone(),
-            model_choice: session.choice.clone(),
+            agent_id: session.agent_id().to_string(),
+            model_choice: session.choice().clone(),
             // A router is one decision long, so there is no warm half: every
             // turn it ever hears is the whole job — and no conversation, so no
             // catch-up packet either.
@@ -9070,23 +9448,13 @@ impl AppState {
         Ok(())
     }
 
-    /// The provider a device routes on when nothing has been configured.
-    ///
-    /// Pinned rather than read off the account: routing is a headless-shaped
-    /// job — one decision long, with no terminal for anyone to watch — and
-    /// there is exactly one headless carrier. A human whose default harness is
-    /// a TUI must not have every capture stranded on it.
-    fn default_agent_provider(&self) -> AgentProvider {
-        AgentProvider::ClaudeAdk
-    }
-
     /// The capture a router session speaks for, from the agent id its harness
     /// authenticated with.
     fn capture_of_router_agent(&self, agent_id: &str) -> Option<String> {
         self.router_sessions
             .values()
-            .find(|session| session.agent_id == agent_id)
-            .map(|session| session.capture_id.clone())
+            .find(|session| session.agent_id() == agent_id)
+            .map(|session| session.capture_id().to_string())
     }
 
     /// Execute one router tool against Build.
@@ -9564,23 +9932,23 @@ impl AppState {
         let Some(session) = self.router_sessions.remove(capture_id) else {
             return;
         };
-        let root = Self::canonical_root(&session.scratch_dir);
-        if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
+        let root = Self::canonical_root(session.scratch_dir());
+        if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, session.agent_id())) {
             let wire_id = tab.wire_id();
             tab.session.end();
             if let Some(screen) = &tab.screen {
                 screen.push_closed(&wire_id, "agent_session_ended");
             }
         }
-        self.mcp_session_tokens.remove(&session.agent_id);
+        self.mcp_session_tokens.remove(session.agent_id());
         self.entity_project.remove(capture_id);
         // Bridge-owned, per capture, and holding nothing but what the harness
         // wrote for itself — so it goes with the session that made it.
-        if let Err(error) = std::fs::remove_dir_all(&session.scratch_dir) {
+        if let Err(error) = std::fs::remove_dir_all(session.scratch_dir()) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 eprintln!(
                     "router {capture_id}: could not wipe {}: {error}",
-                    session.scratch_dir.display()
+                    session.scratch_dir().display()
                 );
             }
         }
@@ -9596,14 +9964,14 @@ impl AppState {
         let finished: Vec<String> = self
             .router_sessions
             .values()
-            .filter(|session| session.started)
+            .filter(|session| session.started())
             .filter(|session| {
                 !self.agent_is_live(
-                    &Self::canonical_root(&session.scratch_dir),
-                    &session.agent_id,
+                    &Self::canonical_root(session.scratch_dir()),
+                    session.agent_id(),
                 )
             })
-            .map(|session| session.capture_id.clone())
+            .map(|session| session.capture_id().to_string())
             .collect();
         for capture_id in &finished {
             self.settle_router_session(capture_id);
@@ -10044,7 +10412,7 @@ impl AppState {
             )
         } else {
             self.orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree)
+                .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
                 .map_err(err)
         };
         match restored {
@@ -12254,7 +12622,7 @@ impl AppState {
     /// Prune a merged run's worktree once its `Merged` verdict is durable.
     fn prune_merged_worktree(&self, project_id: &str, worktree: &Worktree) {
         if let Ok(orch) = self.orch_for(project_id) {
-            orch.discard_worktree(worktree);
+            orch.discard_checkout(worktree);
         }
     }
 
@@ -12483,7 +12851,7 @@ impl AppState {
                 .as_deref()
                 .and_then(|pid| self.orch_for(pid).ok())
             {
-                orch.discard_worktree(&worktree);
+                orch.discard_checkout(&worktree);
             }
         }
 
@@ -12534,8 +12902,14 @@ impl AppState {
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
-                crate::worktree::describe_primary_checkout(&repo_path, &base)
-                    .map_err(|e| e.to_string())?,
+                crate::worktree::find_primary_checkout(&repo_path, &base)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "the primary checkout at {} has no working tree to adopt",
+                            repo_path.display()
+                        )
+                    })?,
                 AdoptionScope::PrimaryCheckout,
             )
         } else {
@@ -13560,28 +13934,35 @@ impl AppState {
         params: &Value,
         created: &mut BranchDispatchCreations,
     ) -> Result<Value, String> {
-        let run_id = match branch
-            .as_deref()
-            .and_then(|branch| self.run_on_branch(project_id, branch))
-        {
+        // A dispatch that named no branch has nothing to look for: it always
+        // cuts a new branch rather than adopting whatever is lying around.
+        let holder = match branch.as_deref() {
+            Some(branch) => self.branch_holder_now(project_id, branch)?,
+            None => BranchHolder::nobody(),
+        };
+        let run_id = match holder.held_by(crate::branch::BranchSource::Run) {
             // Build already runs this branch: the dispatch joins the checkout
             // that is there, and creates no checkout of its own.
-            Some(run_id) => run_id,
+            Some(run_id) => run_id.to_string(),
             None => {
                 let worktree_id =
-                    match self.bare_checkout_on_branch(project_id, branch.as_deref())? {
-                        Some(worktree_id) => worktree_id,
+                    match holder.held_by(crate::branch::BranchSource::ExternalWorktree) {
+                        Some(worktree_id) => worktree_id.to_string(),
                         None => {
+                            if let Some(refusal) =
+                                branch.as_deref().and_then(|branch| holder.refusal(branch))
+                            {
+                                return Err(refusal);
+                            }
                             let minted = self.cut_branch_for_dispatch(
                                 project_id,
                                 branch.as_deref(),
                                 instruction,
                             )?;
                             let worktree_id = crate::worktree::external_worktree_id(
-                                &Self::canonical_root(&minted.worktree.path),
+                                &self.register_created_checkout(project_id, &minted.worktree),
                             );
                             created.minted_worktree = Some(minted.worktree);
-                            created.minted_branch = minted.branch_was_cut;
                             worktree_id
                         }
                     };
@@ -13649,26 +14030,6 @@ impl AppState {
         }))
     }
 
-    /// The checkout of `branch` that no run owns yet, if this project has one.
-    /// A dispatch that named no branch has nothing to look for: it always cuts
-    /// a new branch rather than adopting whatever happens to be lying around.
-    fn bare_checkout_on_branch(
-        &mut self,
-        project_id: &str,
-        branch: Option<&str>,
-    ) -> Result<Option<String>, String> {
-        let Some(branch) = branch else {
-            return Ok(None);
-        };
-        // Forced, for the same reason adoption forces it: a dispatch must
-        // decide against the checkouts that exist now, not a cached summary.
-        Ok(self
-            .external_worktrees(project_id, true)?
-            .into_iter()
-            .find(|worktree| worktree.branch.as_deref() == Some(branch))
-            .map(|worktree| worktree.id))
-    }
-
     /// Cut the branch a dispatch has nowhere else to put its work.
     ///
     /// A `branch` that is already a branch name is used exactly as it stands —
@@ -13682,32 +14043,15 @@ impl AppState {
         branch: Option<&str>,
         instruction: &str,
     ) -> Result<crate::worktree::NamedBranchCheckout, String> {
-        let base = self.base_for(project_id)?;
-        let checkout = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
-            Some(name) => self
-                .orch_for(project_id)?
-                .create_worktree_on_named_branch(name, &base)
-                .map_err(err)?,
-            None => {
-                let name = branch.unwrap_or(instruction);
-                if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
-                    return Err(format!(
-                        "branch.dispatch: {name:?} has no letter or number to name a branch after"
-                    ));
-                }
-                crate::worktree::NamedBranchCheckout {
-                    worktree: self
-                        .orch_for(project_id)?
-                        .create_bare_worktree(&crate::worktree::slugify(name), &base)
-                        .map_err(err)?,
-                    branch_was_cut: true,
-                }
+        match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
+            Some(name) => {
+                let base = self.base_for(project_id)?;
+                self.orch_for(project_id)?
+                    .create_worktree_cutting_named_branch(name, &base)
+                    .map_err(err)
             }
-        };
-        // The checkout must be visible to the adoption that follows it, and to
-        // the very next board poll, rather than up to a scan interval later.
-        self.invalidate_external_scan(project_id);
-        Ok(checkout)
+            None => self.create_bare_worktree_for(project_id, branch.unwrap_or(instruction)),
+        }
     }
 
     /// Put back what a failed `branch.dispatch` created, newest first.
@@ -13725,8 +14069,7 @@ impl AppState {
         }
         if let Some(worktree) = created.minted_worktree {
             match self.orch_for(project_id) {
-                Ok(orch) if created.minted_branch => orch.discard_worktree(&worktree),
-                Ok(orch) => orch.discard_checkout_keeping_branch(&worktree),
+                Ok(orch) => orch.discard_checkout(&worktree),
                 Err(error) => eprintln!("branch.dispatch cleanup: {error}"),
             }
             self.invalidate_external_scan(project_id);
@@ -14866,13 +15209,8 @@ fn diff_json(diff: &crate::diff::WorktreeDiff) -> Value {
         .iter()
         .map(|file| json!({ "path": file.path, "status": format!("{:?}", file.status) }))
         .collect();
-    let stat = diff.stat();
     json!({
-        "stat": {
-            "files_changed": stat.files_changed,
-            "insertions": stat.insertions,
-            "deletions": stat.deletions,
-        },
+        "stat": diff.stat().to_json(),
         "files": files,
         "patch": diff.patch(),
     })
@@ -15112,9 +15450,9 @@ fn default_projects_dir() -> std::path::PathBuf {
     expand_tilde("~/.build/projects")
 }
 
-/// Build's own state directory, `~/.build` — where the store lives, and where
-/// router scratch is cut. Overridden by whatever directory the store is
-/// actually configured at, so a test's temp store keeps its scratch beside it.
+/// The default state root for constructors without an explicit
+/// [`HarnessContext`]. A task store must share this parent; attaching one never
+/// changes the root.
 fn default_state_root() -> std::path::PathBuf {
     expand_tilde("~/.build")
 }
@@ -15300,7 +15638,7 @@ fn requested_default_harness(params: &Value) -> Result<Option<AgentProvider>, St
             AgentProvider::from_wire(named).ok_or_else(|| {
                 format!(
                     "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
-                     \"codex\" or \"codex_app_server\")"
+                     \"codex\", \"codex_app_server\" or \"pi\")"
                 )
             })
         })
@@ -15471,11 +15809,199 @@ struct BranchScope {
     repo_path: std::path::PathBuf,
     base_branch: String,
     external_worktree: bool,
+}
+
+/// A project's checkouts as the app mutex knows them, snapshotted for the
+/// drain: the on-lock half of a branch listing's ownership. A listing builds
+/// it from the scan the board already holds; `worktree.create {branch}` and
+/// `branch.dispatch` force a rescan into it on the lock knowingly (see
+/// [`AppState::project_checkouts`]). A run's checkout is the record the run
+/// already carries.
+struct ProjectCheckouts {
+    /// The repository's own checkout, which the external scan deliberately
+    /// leaves out — so without it the branch the repo root is on would look
+    /// free to check out a second time, which git refuses.
+    primary_repo_path: std::path::PathBuf,
+    /// Branch name → worktree id, for every OTHER worktree of this project
+    /// Build has not adopted, from the scan the board already holds.
+    external_branches: std::collections::HashMap<String, String>,
+    /// Every live run of this project and the checkout it works in.
+    run_checkouts: Vec<(String, crate::worktree::Worktree)>,
+}
+
+impl ProjectCheckouts {
+    /// Ask git which branch each checkout holds.
+    ///
+    /// A branch listing asks this in its deferred half, with the lock free.
+    /// `worktree.create {branch}` asks it on the lock, knowingly: it is about
+    /// to add a checkout git would refuse if another one already held the
+    /// branch, and a one-shot user action is worth that wait.
+    ///
+    /// A primary checkout holding no branch (detached HEAD, bare repository)
+    /// costs the rows a primary-checkout holder and nothing else.
+    /// Every other failure is returned, because a repository that cannot be
+    /// read must say so rather than quietly answer "nothing holds this
+    /// branch" — the answer that sends the user into a checkout git refuses.
+    fn holders(&self) -> Result<BranchOwnershipIndex, String> {
+        let run_branches = self
+            .run_checkouts
+            .iter()
+            .map(|(run_id, worktree)| (worktree.branch(), run_id.clone()))
+            .collect();
+        let primary = crate::worktree::primary_checkout_holder(&self.primary_repo_path)
+            .map_err(|e| e.to_string())?;
+        Ok(BranchOwnershipIndex {
+            external_branches: self.external_branches.clone(),
+            run_branches,
+            primary,
+        })
+    }
+}
+
+/// Which of a project's checkouts holds each of its branches — the three
+/// lookups a branch listing stamps its rows from.
+struct BranchOwnershipIndex {
     /// Branch name → worktree id, for every OTHER worktree of this project
     /// Build has not adopted. The switcher reads this to offer "adopt and
     /// open" in place of a checkout git would refuse (a branch already
     /// checked out elsewhere).
     external_branches: std::collections::HashMap<String, String>,
+    /// Branch name → the live run of this project holding it. A branch a run
+    /// owns is not a checkout to make; it is a run to open.
+    run_branches: std::collections::HashMap<String, String>,
+    /// The primary checkout's worktree id and the branch it holds, or `None`
+    /// when it holds no branch.
+    primary: Option<(String, String)>,
+}
+
+/// A branch verb that answers with the project's branches: the checkout it
+/// was scoped to, plus the checkouts the rows are stamped from.
+struct BranchListingScope {
+    checkout: BranchScope,
+    checkouts: ProjectCheckouts,
+}
+
+/// What the app layer knows about a branch beyond git's own facts: which of
+/// the project's checkouts holds it, as one holder rather than three parallel
+/// answers. More than one source can describe the same branch — a run adopted
+/// over the primary checkout is both — and
+/// [`crate::branch::BranchSource`]'s own order says which of them speaks for
+/// it, so a row names exactly one thing to press. `None` is a branch nothing
+/// holds, free to check out somewhere new.
+struct BranchHolder {
+    holder: Option<(crate::branch::BranchSource, String)>,
+}
+
+impl BranchHolder {
+    /// A branch nothing holds — the answer for a caller that named no branch
+    /// at all, so it never has to ask.
+    fn nobody() -> Self {
+        Self { holder: None }
+    }
+
+    fn of(ownership: &BranchOwnershipIndex, branch: &str) -> Self {
+        let holders = [
+            (
+                crate::branch::BranchSource::Run,
+                ownership.run_branches.get(branch).cloned(),
+            ),
+            (
+                crate::branch::BranchSource::PrimaryCheckout,
+                ownership
+                    .primary
+                    .as_ref()
+                    .filter(|(_, held)| held == branch)
+                    .map(|(worktree_id, _)| worktree_id.clone()),
+            ),
+            (
+                crate::branch::BranchSource::ExternalWorktree,
+                ownership.external_branches.get(branch).cloned(),
+            ),
+        ];
+        Self {
+            holder: holders
+                .into_iter()
+                .filter_map(|(source, id)| Some((source, id?)))
+                .min_by_key(|(source, _)| *source),
+        }
+    }
+
+    fn held_by(&self, source: crate::branch::BranchSource) -> Option<&str> {
+        self.holder
+            .as_ref()
+            .filter(|(holder, _)| *holder == source)
+            .map(|(_, id)| id.as_str())
+    }
+
+    /// Why a branch this one holds cannot be checked out somewhere new, naming
+    /// what holds it so the client can offer the verb that does apply.
+    fn refusal(&self, branch: &str) -> Option<String> {
+        self.holder.as_ref().map(|(source, id)| {
+            format!(
+                "branch {branch:?} is already checked out by {} {id}",
+                source.holder_noun()
+            )
+        })
+    }
+
+    /// The holder as one wire fact — `{ "kind", "id" }` or null — so the rule
+    /// that picks it lives here alone and no reader re-applies it.
+    fn into_json(self) -> Value {
+        json!(self
+            .holder
+            .map(|(source, id)| json!({ "kind": source.as_str(), "id": id })))
+    }
+}
+
+/// The answer every `worktree.create` gives, over the checkout it made and the
+/// canonical path the scan will find it at.
+fn created_worktree_json(
+    project_id: &str,
+    checkout: &crate::worktree::NamedBranchCheckout,
+    canonical: &std::path::Path,
+) -> Value {
+    json!({
+        "project_id": project_id,
+        "worktree_id": crate::worktree::external_worktree_id(canonical),
+        "branch": checkout.worktree.branch(),
+        "name": checkout.worktree.name,
+        "path": canonical.display().to_string(),
+        "branch_was_cut": checkout.teardown.deletes_branch(),
+    })
+}
+
+/// What a run can prove about its own checkout when git's registration for it
+/// is gone. A run Build dispatched works in a checkout
+/// [`crate::worktree::WorktreeManager::create`] made and nothing else, so the
+/// value the pruned registration carried is known. An adopted run's checkout
+/// may be one Build only checked out over somebody's branch, and with the
+/// registration gone nothing on disk says which — so it is not restored at
+/// all, rather than restored under a guess that could delete the branch.
+fn unregistered_restore_for(active: &ActiveRun) -> crate::worktree::UnregisteredRestore {
+    if active.adopted {
+        crate::worktree::UnregisteredRestore::Refuse
+    } else {
+        crate::worktree::UnregisteredRestore::Write(crate::worktree::BranchTeardown::DeletesBranch)
+    }
+}
+
+/// The answer `git.branches` and `git.branch_delete` share: gitgui's git facts
+/// about every offerable branch, each row stamped with the checkout holding it.
+fn stamped_branch_list(scope: &BranchListingScope) -> Result<Value, String> {
+    let ownership = scope.checkouts.holders()?;
+    let listing =
+        crate::gitgui::branch_list(&scope.checkout.repo_path, &scope.checkout.base_branch)?;
+    let branches: Vec<Value> = listing
+        .rows
+        .into_iter()
+        .map(|row| {
+            let holder = BranchHolder::of(&ownership, &row.name);
+            let mut fields = row.into_json();
+            fields["holder"] = holder.into_json();
+            fields
+        })
+        .collect();
+    Ok(json!({ "current": listing.current, "branches": branches }))
 }
 
 /// Parse the required `paths` param of `git.stage`/`git.unstage`: a non-empty
@@ -15856,16 +16382,11 @@ impl ReadSubject {
                     .unwrap_or_else(|| "HEAD".to_string());
                 let diff =
                     crate::diff::diff_against_head(repo_path).map_err(|error| error.to_string())?;
-                let stat = diff.stat();
                 Ok(json!({
                     "project_id": project_id,
                     "branch": branch,
                     "path": repo_path.display().to_string(),
-                    "stat": {
-                        "files_changed": stat.files_changed,
-                        "insertions": stat.insertions,
-                        "deletions": stat.deletions,
-                    },
+                    "stat": diff.stat().to_json(),
                     "files": diff_file_rows(&diff),
                     "patch": diff.patch(),
                 }))
@@ -15876,7 +16397,6 @@ impl ReadSubject {
             } => {
                 let diff = crate::diff::diff_against_merge_base(&external.path, base_branch)
                     .map_err(|error| error.to_string())?;
-                let stat = diff.stat();
                 let adoptable = external
                     .branch
                     .as_deref()
@@ -15891,11 +16411,7 @@ impl ReadSubject {
                     "dirty_files": external.dirty_files,
                     "path": external.path.display().to_string(),
                     "adoptable": adoptable,
-                    "stat": {
-                        "files_changed": stat.files_changed,
-                        "insertions": stat.insertions,
-                        "deletions": stat.deletions,
-                    },
+                    "stat": diff.stat().to_json(),
                     "files": diff_file_rows(&diff),
                     "patch": diff.patch(),
                 }))
@@ -15950,38 +16466,73 @@ fn diff_file_rows(diff: &crate::diff::WorktreeDiff) -> Vec<Value> {
 /// A `git status` walks the whole worktree and a `git fetch` waits on a
 /// network; the review surfaces poll both. Neither may hold the daemon still.
 struct DeferredGit {
-    scope: GitTarget,
+    call: Box<dyn DeferredGitWork>,
     params: Value,
-    work: GitWork,
     /// Whether a successful call made the scope's cached summaries stale.
     invalidates: bool,
     #[cfg(test)]
     gate: Option<OffLockGate>,
 }
 
-/// Which resolution a git verb asked for: the checkout's own scope, or the
-/// repository-wide branch scope.
-enum GitTarget {
-    Checkout(GitScope),
-    Branch(BranchScope),
+/// The git call a verb handed to the drain: what to run with the mutex
+/// released, and which cached summaries to drop once it has changed the tree
+/// underneath them.
+trait DeferredGitWork: Send {
+    fn run(&self, params: &Value) -> Result<Value, String>;
+    fn invalidate(&self, app: &mut AppState);
 }
 
-/// The git call itself, as a plain function of the checkout and the request —
-/// it holds no state, so it cannot reach the daemon while it runs.
-enum GitWork {
-    Checkout(fn(&GitScope, &Value) -> Result<Value, String>),
-    Branch(fn(&BranchScope, &Value) -> Result<Value, String>),
+/// A resolution the app mutex made for a git verb — which checkout, which
+/// project, which cached summaries describe it — and what to drop from those
+/// caches once a call against it has changed the tree.
+trait GitCallScope: Send {
+    fn invalidate(&self, app: &mut AppState);
+}
+
+impl GitCallScope for GitScope {
+    fn invalidate(&self, app: &mut AppState) {
+        if app.git_scope_is_current(self) {
+            app.invalidate_git_scope_caches(self);
+        }
+    }
+}
+
+impl GitCallScope for BranchScope {
+    fn invalidate(&self, app: &mut AppState) {
+        app.invalidate_branch_scope_caches(self);
+    }
+}
+
+impl GitCallScope for BranchListingScope {
+    fn invalidate(&self, app: &mut AppState) {
+        self.checkout.invalidate(app);
+    }
+}
+
+/// One resolved scope and the call to make against it.
+///
+/// The scope and the function are one value because they are one decision —
+/// the verb that defers the work picks both at once, and no other pairing can
+/// be spelled. The call itself is a plain function of the scope and the
+/// request, so it holds no state and cannot reach the daemon while it runs.
+struct ScopedGitCall<S: GitCallScope> {
+    scope: S,
+    work: fn(&S, &Value) -> Result<Value, String>,
+}
+
+impl<S: GitCallScope> DeferredGitWork for ScopedGitCall<S> {
+    fn run(&self, params: &Value) -> Result<Value, String> {
+        (self.work)(&self.scope, params)
+    }
+
+    fn invalidate(&self, app: &mut AppState) {
+        self.scope.invalidate(app);
+    }
 }
 
 impl DeferredGit {
     fn run(&self) -> Result<Value, String> {
-        match (&self.scope, &self.work) {
-            (GitTarget::Checkout(scope), GitWork::Checkout(work)) => work(scope, &self.params),
-            (GitTarget::Branch(scope), GitWork::Branch(work)) => work(scope, &self.params),
-            // Unreachable by construction: `defer_git` and `defer_branch_git`
-            // are the only ways to build one, and each pairs its own halves.
-            _ => Err("git scope and git work disagree".to_string()),
-        }
+        self.call.run(&self.params)
     }
 }
 
@@ -16157,65 +16708,171 @@ impl WorktreeFinishJob {
     }
 }
 
-/// The destructive half of a finish: push or merge what the action promised to
-/// keep, delete the branch, and remove the checkout. The record is the only
-/// authority for what is acted on — a client path never reaches here.
+/// The destructive half of a finish, over the steps the chosen action owns.
+/// The record is the only authority for what is acted on — a client path never
+/// reaches here.
 fn run_finish_git_steps(
     project_path: &std::path::Path,
     base_branch: &str,
     record: &PersistedArchivedWorktree,
 ) -> Result<(), String> {
     let worktree_path = validate_finish_record_path(record, project_path)?;
-    match record.action {
-        WorktreeFinishAction::Cleanup => {
-            if worktree_path.exists() {
-                remove_registered_worktree(project_path, &worktree_path, false)?;
-            }
+    (record.action.git_steps())(&FinishContext {
+        project_path,
+        base_branch,
+        record,
+        worktree_path: &worktree_path,
+    })
+}
+
+/// Everything a finish action's steps may act on, resolved once. Each step
+/// reads the fields its own work needs and nothing else.
+struct FinishContext<'a> {
+    project_path: &'a std::path::Path,
+    base_branch: &'a str,
+    record: &'a PersistedArchivedWorktree,
+    worktree_path: &'a std::path::Path,
+}
+
+/// What one finish action does to the repository, once its checkout has been
+/// resolved.
+type FinishGitSteps = fn(&FinishContext<'_>) -> Result<(), String>;
+
+/// How a finish action lands the work it promised to keep before the checkout
+/// goes away. An action that promises nothing lands nothing.
+type FinishLanding = fn(&std::path::Path, &str, &str) -> Result<(), String>;
+
+impl WorktreeFinishAction {
+    /// The steps this action owns — the one place a finish action decides
+    /// anything from its own kind.
+    fn git_steps(self) -> FinishGitSteps {
+        match self {
+            WorktreeFinishAction::Cleanup => remove_finished_checkout,
+            WorktreeFinishAction::Push => push_then_remove_finished_checkout,
+            WorktreeFinishAction::Merge => merge_finished_checkout,
+            WorktreeFinishAction::Delete => delete_finished_checkout,
         }
-        WorktreeFinishAction::Push => {
-            if worktree_path.exists() {
-                crate::gitgui::push(&worktree_path, false)?;
-                remove_registered_worktree(project_path, &worktree_path, false)?;
-            }
+    }
+
+    /// What the human called for, as the wire spells it — the word a failure
+    /// names this finish by.
+    fn verb(self) -> &'static str {
+        match self {
+            WorktreeFinishAction::Cleanup => "cleanup",
+            WorktreeFinishAction::Push => "push",
+            WorktreeFinishAction::Merge => "merge",
+            WorktreeFinishAction::Delete => "delete",
         }
-        WorktreeFinishAction::Merge | WorktreeFinishAction::Delete => {
-            let merging = record.action == WorktreeFinishAction::Merge;
-            let verb = if merging { "merge" } else { "delete" };
-            let branch_exists = record
-                .branch
-                .as_deref()
-                .map(|branch| local_branch_exists(project_path, branch))
-                .transpose()?
-                .unwrap_or(false);
-            if !worktree_path.exists() && branch_exists {
-                return Err(format!(
-                    "worktree.finish {verb} lost its worktree before branch deletion"
-                ));
-            }
-            if worktree_path.exists() {
-                let deleted_branch =
-                    if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
-                        if merging {
-                            merge_external_branch(project_path, branch, base_branch)?;
-                        }
-                        delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
-                        true
-                    } else {
-                        false
-                    };
-                if let Err(remove_error) =
-                    remove_registered_worktree(project_path, &worktree_path, true)
-                {
-                    restore_finish_branch_after_removal_failure(
-                        project_path,
-                        record,
-                        deleted_branch,
-                        &remove_error,
-                    )?;
-                    return Err(remove_error);
-                }
-            }
-        }
+    }
+}
+
+fn remove_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    if context.worktree_path.exists() {
+        remove_registered_worktree(context.project_path, context.worktree_path, false)?;
+    }
+    Ok(())
+}
+
+fn push_then_remove_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    if context.worktree_path.exists() {
+        crate::gitgui::push(context.worktree_path, false)?;
+        remove_registered_worktree(context.project_path, context.worktree_path, false)?;
+    }
+    Ok(())
+}
+
+fn merge_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    finish_by_landing_then_removing(context, Some(merge_external_branch))
+}
+
+fn delete_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    finish_by_landing_then_removing(context, None)
+}
+
+/// Land what the action promised to keep, then take the checkout away — and
+/// its branch with it when the checkout says teardown owns it.
+fn finish_by_landing_then_removing(
+    context: &FinishContext<'_>,
+    land: Option<FinishLanding>,
+) -> Result<(), String> {
+    let branch = finish_branch_still_present(context)?;
+    if !refuse_finish_that_lost_its_checkout(context, branch)? {
+        return Ok(());
+    }
+    let deleted_branch = match branch {
+        Some(branch) => land_then_delete_branch_if_owned(context, branch, land)?,
+        None => false,
+    };
+    remove_finished_checkout_restoring_branch_on_failure(context, deleted_branch)
+}
+
+/// The branch this finish acts on, if the record names one and git still has
+/// it. A checkout with no branch (a detached HEAD) or whose branch is already
+/// gone has nothing for the finish to land or delete.
+fn finish_branch_still_present<'a>(context: &FinishContext<'a>) -> Result<Option<&'a str>, String> {
+    match context.record.branch.as_deref() {
+        Some(branch) => Ok(local_branch_exists(context.project_path, branch)?.then_some(branch)),
+        None => Ok(None),
+    }
+}
+
+/// Whether there is still a checkout to act on. A checkout that vanished
+/// while a branch is still at stake is refused: the finish promised to land
+/// or delete that branch from a checkout it no longer has. One that vanished
+/// with no branch behind it has simply finished already.
+fn refuse_finish_that_lost_its_checkout(
+    context: &FinishContext<'_>,
+    branch: Option<&str>,
+) -> Result<bool, String> {
+    if context.worktree_path.exists() {
+        return Ok(true);
+    }
+    match branch {
+        Some(_) => Err(format!(
+            "worktree.finish {} lost its worktree before branch deletion",
+            context.record.action.verb()
+        )),
+        None => Ok(false),
+    }
+}
+
+/// Land the branch as the action promised, then delete it when the checkout
+/// says teardown owns it. Answers whether the branch was deleted, so a
+/// removal that fails afterwards knows what to put back.
+///
+/// The teardown is read here, before `remove_registered_worktree` prunes the
+/// admin directory the answer lives in.
+fn land_then_delete_branch_if_owned(
+    context: &FinishContext<'_>,
+    branch: &str,
+    land: Option<FinishLanding>,
+) -> Result<bool, String> {
+    let deletes_branch = crate::worktree::branch_teardown(context.worktree_path)
+        .map_err(|error| error.to_string())?
+        .deletes_branch();
+    if let Some(land) = land {
+        land(context.project_path, branch, context.base_branch)?;
+    }
+    if deletes_branch {
+        delete_local_branch_for_finish(context.project_path, branch, &context.record.head_sha)?;
+    }
+    Ok(deletes_branch)
+}
+
+fn remove_finished_checkout_restoring_branch_on_failure(
+    context: &FinishContext<'_>,
+    deleted_branch: bool,
+) -> Result<(), String> {
+    if let Err(remove_error) =
+        remove_registered_worktree(context.project_path, context.worktree_path, true)
+    {
+        restore_finish_branch_after_removal_failure(
+            context.project_path,
+            context.record,
+            deleted_branch,
+            &remove_error,
+        )?;
+        return Err(remove_error);
     }
     Ok(())
 }
@@ -16874,17 +17531,21 @@ fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
 
 /// Open a conversation's session lineage for a newly spawned agent process,
 /// chaining it off the previous session so the thread still reads as a chain.
-fn open_session_lineage(thread: &mut crate::thread::Thread, turn: &PendingAgentTurn) {
+fn open_session_lineage(
+    thread: &mut crate::thread::Thread,
+    model_choice: &ModelChoice,
+    phase: &str,
+) {
     let session_id = thread.start_session(
-        turn.model_choice.provider.label(),
-        turn.model_choice.model.as_deref(),
-        turn.model_choice.effort.as_deref(),
-        turn.phase,
+        model_choice.provider.label(),
+        model_choice.model.as_deref(),
+        model_choice.effort.as_deref(),
+        phase,
         &now_rfc3339(),
     );
     thread.push_event(
         crate::thread::ThreadEventKind::RunStarted,
-        Some(format!("{} run started", turn.phase)),
+        Some(format!("{phase} run started")),
         Some(session_id),
         None,
         now_rfc3339(),
@@ -17847,6 +18508,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             &turn.owner,
             &turn.agent_id,
             &turn.model_choice,
+            turn.phase,
             &turn.cold,
             &turn.warm,
         )?
@@ -17857,15 +18519,11 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             &turn.owner,
             &turn.agent_id,
             &turn.model_choice,
+            turn.phase,
         )?
     };
 
     let mut s = state.lock().unwrap();
-    // A fresh process is a new session either way — the lineage must not depend
-    // on whether there happened to be mail.
-    if spawned == Spawned::Fresh {
-        s.record_agent_session_start(&turn);
-    }
     s.touch_attention(&entity_id);
     Ok(json!({
         "term_id": term_id,
@@ -17933,20 +18591,74 @@ fn attach_to_tab(
     }))
 }
 
-enum AgentSpawnReservation {
-    Warm(String),
-    InFlight,
-    Reserved(Box<ReservedAgentSpawn>),
+/// Find-or-create the one agent tab rooted at `root`.
+fn ensure_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    root: &std::path::Path,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+    phase: &'static str,
+) -> Result<(String, Spawned), String> {
+    let root = AppState::canonical_root(root);
+    let key = TabKey::agent(&root, agent_id);
+    let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
+    loop {
+        match claim_agent_tab(state, &root, &key, owner, agent_id, model_choice, phase)? {
+            AgentTabClaim::Warm(wire_id) => return Ok((wire_id, Spawned::Warm)),
+            AgentTabClaim::Waiting => wait_for_agent_claim(&root, deadline)?,
+            AgentTabClaim::Reserved(reserved) => {
+                return spawn_reserved_agent_tab(
+                    state,
+                    root,
+                    key,
+                    owner,
+                    agent_id,
+                    model_choice,
+                    *reserved,
+                )
+            }
+        }
+    }
 }
 
-struct ReservedAgentSpawn {
-    request: SessionOpenRequest,
-    carried_screen: Option<TermScreen>,
-    session_token: String,
+fn claim_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    root: &std::path::Path,
+    key: &TabKey,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+    phase: &'static str,
+) -> Result<AgentTabClaim, String> {
+    let mut app = state.lock().unwrap();
+    if let Some(wire_id) = live_agent_wire_id(&app, key, owner) {
+        return Ok(AgentTabClaim::Warm(wire_id));
+    }
+    if app.agent_spawns_in_flight.contains(key) {
+        return Ok(AgentTabClaim::Waiting);
+    }
+    let carried = app.remove_replaced_agent(key);
+    app.close_stale_agents(root, owner);
+    let project_id = project_for_agent(&app, owner, agent_id)?;
+    let (continue_session, resume_session_id) =
+        app.agent_resume_options(root, owner, agent_id, model_choice.provider);
+    let launch = app.orch_for(&project_id)?.agent_launch();
+    let locator_factory = Arc::clone(&app.session_locator_factory);
+    let reservation = AgentSpawnReservation::claim(state, &mut app, key.clone(), agent_id);
+    Ok(AgentTabClaim::Reserved(Box::new(ReservedAgentTab {
+        reservation,
+        launch,
+        continue_session,
+        resume_session_id,
+        phase,
+        carried,
+        locator_factory,
+    })))
 }
 
-fn live_agent_wire_id(state: &AppState, key: &TabKey, owner: &str) -> Option<String> {
-    let tab = state.tabs.get(key)?;
+fn live_agent_wire_id(app: &AppState, key: &TabKey, owner: &str) -> Option<String> {
+    let tab = app.tabs.get(key)?;
     let same_owner = matches!(
         &tab.role,
         TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
@@ -17954,144 +18666,19 @@ fn live_agent_wire_id(state: &AppState, key: &TabKey, owner: &str) -> Option<Str
     (same_owner && tab.session_is_live()).then(|| tab.wire_id())
 }
 
-impl AppState {
-    fn take_replaced_agent_screen(&mut self, key: &TabKey) -> Option<TermScreen> {
-        self.tabs.remove(key).and_then(|tab| {
-            tab.session.end();
-            tab.screen
-        })
-    }
-
-    fn retire_stale_agent_tabs(&mut self, root: &std::path::Path, owner: &str) {
-        let stale: Vec<TabKey> = self
-            .tabs
-            .iter()
-            .filter(|(key, tab)| {
-                key.root == root
-                    && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in stale {
-            if let Some(tab) = self.tabs.remove(&key) {
-                let wire_id = tab.wire_id();
-                tab.session.end();
-                if let Some(screen) = &tab.screen {
-                    screen.push_closed(&wire_id, "closed");
-                }
-            }
-        }
-    }
-}
-
-fn project_for_agent_spawn(
-    state: &AppState,
-    owner: &str,
-    agent_id: &str,
-) -> Result<String, String> {
-    match state.project_of(owner) {
+fn project_for_agent(app: &AppState, owner: &str, agent_id: &str) -> Result<String, String> {
+    match app.project_of(owner) {
         Ok(project_id) => Ok(project_id),
         Err(unknown) if crate::router::is_router_agent(agent_id) => {
-            state.default_project().map_err(|_| unknown)
+            app.default_project().map_err(|_| unknown)
         }
         Err(unknown) => Err(unknown),
     }
 }
 
-impl AppState {
-    fn resume_options_for_agent(
-        &mut self,
-        root: &std::path::Path,
-        owner: &str,
-        agent_id: &str,
-        provider: AgentProvider,
-    ) -> (Option<String>, bool) {
-        let resume_session_id = match self.recorded_resume_id(owner, agent_id) {
-            Some(named) if (self.resume_id_probe)(root, provider, &named) => Some(named),
-            Some(_) => {
-                self.record_agent_resume_id(owner, agent_id, None);
-                None
-            }
-            None => None,
-        };
-        let continue_session = resume_session_id.is_none()
-            && self.may_pick_up_a_conversation(owner, agent_id)
-            && (self.transcript_probe)(root, provider);
-        (resume_session_id, continue_session)
-    }
-
-    fn build_agent_session_request(
-        &mut self,
-        root: &std::path::Path,
-        owner: &str,
-        agent_id: &str,
-        model_choice: &ModelChoice,
-    ) -> Result<(SessionOpenRequest, String), String> {
-        let project_id = project_for_agent_spawn(self, owner, agent_id)?;
-        let (resume_session_id, continue_session) =
-            self.resume_options_for_agent(root, owner, agent_id, model_choice.provider);
-        let session_locator = (self.session_locator_factory)(root, model_choice.provider);
-        let orchestrator = self.orch_for(&project_id)?;
-        orchestrator
-            .scaffold_agent_worktree(root, agent_id)
-            .map_err(err)?;
-        let session_token = uuid::Uuid::new_v4().to_string();
-        let spec = orchestrator.agent_harness_spec(
-            agent_id,
-            root,
-            model_choice,
-            continue_session,
-            resume_session_id.clone(),
-            &session_token,
-        );
-        let request = SessionOpenRequest {
-            spec,
-            root: root.to_path_buf(),
-            choice: model_choice.clone(),
-            terminal: TerminalOpenOptions {
-                size: orchestrator.pty_size(),
-                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
-                session_locator,
-            },
-            resume_session_id,
-        };
-        Ok((request, session_token))
-    }
-
-    fn reserve_agent_spawn(
-        &mut self,
-        key: &TabKey,
-        root: &std::path::Path,
-        owner: &str,
-        agent_id: &str,
-        model_choice: &ModelChoice,
-    ) -> Result<AgentSpawnReservation, String> {
-        if let Some(wire_id) = live_agent_wire_id(self, key, owner) {
-            return Ok(AgentSpawnReservation::Warm(wire_id));
-        }
-        if self.agent_spawns_in_flight.contains(key) {
-            return Ok(AgentSpawnReservation::InFlight);
-        }
-        let carried_screen = self.take_replaced_agent_screen(key);
-        self.retire_stale_agent_tabs(root, owner);
-        let (request, session_token) =
-            self.build_agent_session_request(root, owner, agent_id, model_choice)?;
-        self.mcp_session_tokens
-            .insert(agent_id.to_string(), session_token.clone());
-        self.agent_spawns_in_flight.insert(key.clone());
-        Ok(AgentSpawnReservation::Reserved(Box::new(
-            ReservedAgentSpawn {
-                request,
-                carried_screen,
-                session_token,
-            },
-        )))
-    }
-}
-
-fn wait_for_agent_spawn(
-    deadline: std::time::Instant,
+fn wait_for_agent_claim(
     root: &std::path::Path,
+    deadline: std::time::Instant,
 ) -> Result<(), String> {
     if std::time::Instant::now() >= deadline {
         return Err(format!(
@@ -18103,115 +18690,184 @@ fn wait_for_agent_spawn(
     Ok(())
 }
 
-impl AppState {
-    fn clear_failed_agent_spawn(&mut self, key: &TabKey, agent_id: &str, session_token: &str) {
-        self.agent_spawns_in_flight.remove(key);
-        if self
-            .mcp_session_tokens
-            .get(agent_id)
-            .is_some_and(|current| constant_time_token_eq(current, session_token))
-        {
-            self.mcp_session_tokens.remove(agent_id);
-        }
-    }
-
-    fn take_waiting_agent_screen(&mut self, key: &TabKey) -> Option<TermScreen> {
-        if let Some(waiting) = self.agent_screens_awaiting_spawn.remove(key) {
-            return Some(waiting);
-        }
-        let first_agent = !self
-            .tabs
-            .keys()
-            .any(|other| other.is_agent() && other.root == key.root);
-        first_agent.then(|| {
-            self.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-                &key.root,
-                &crate::worktree::external_worktree_id(&key.root),
-            ))
-        })?
-    }
-
-    fn publish_agent_tab(
-        &mut self,
-        key: &TabKey,
-        owner: &str,
-        agent_id: &str,
-        model_choice: &ModelChoice,
-        mut tab: Tab,
-    ) -> String {
-        let wire_id = tab.wire_id();
-        let waiting = self.take_waiting_agent_screen(key);
-        tab.carry_waiting_screen(waiting);
-        let active_model = tab
-            .session
-            .active_model()
-            .or_else(|| model_choice.model.clone());
-        self.tabs.insert(key.clone(), tab);
-        self.agent_spawns_in_flight.remove(key);
-        self.record_agent_active_model(owner, agent_id, active_model);
-        wire_id
+/// Everything a provider needs to open the agent `prepared` describes.
+///
+/// A terminal names its conversation from the launch contract when the spec
+/// fixes it, and otherwise from the provider's pre-spawn transcript watcher;
+/// a protocol carrier ignores the terminal mechanics and announces its own id.
+fn agent_open_request(
+    prepared: PreparedAgentLaunch,
+    root: std::path::PathBuf,
+    model_choice: &ModelChoice,
+    resume_session_id: Option<String>,
+    locator: Option<Box<dyn crate::harness::SessionLocator>>,
+) -> SessionOpenRequest {
+    let identity = match &prepared.spec.known_session_id {
+        Some(known) => Some(SessionIdentitySource::Known(known.clone())),
+        None => locator.map(SessionIdentitySource::Located),
+    };
+    SessionOpenRequest {
+        spec: prepared.spec,
+        root,
+        choice: model_choice.clone(),
+        terminal: TerminalOpenOptions {
+            size: prepared.pty_size,
+            turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+            identity,
+        },
+        resume_session_id,
     }
 }
 
-fn spawn_reserved_agent(
+fn spawn_reserved_agent_tab(
     state: &Arc<Mutex<AppState>>,
+    root: std::path::PathBuf,
     key: TabKey,
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
-    reserved: Box<ReservedAgentSpawn>,
+    reserved: ReservedAgentTab,
 ) -> Result<(String, Spawned), String> {
-    let ReservedAgentSpawn {
-        request,
-        carried_screen,
-        session_token,
-    } = *reserved;
-    let spawned = Tab::spawn_agent(owner.to_string(), agent_id.to_string(), request);
-    let (mut tab, output) = match spawned {
-        Ok(spawned) => spawned,
-        Err(error) => {
-            state
-                .lock()
-                .unwrap()
-                .clear_failed_agent_spawn(&key, agent_id, &session_token);
-            return Err(error);
-        }
-    };
-    tab.carry_replaced_screen(carried_screen);
-    let wire_id = state
-        .lock()
-        .unwrap()
-        .publish_agent_tab(&key, owner, agent_id, model_choice, tab);
+    let ReservedAgentTab {
+        reservation,
+        launch,
+        continue_session,
+        resume_session_id,
+        phase,
+        carried,
+        locator_factory,
+    } = reserved;
+    let locator = locator_factory(&root, model_choice.provider);
+    let prepared = launch
+        .prepare(
+            agent_id,
+            &root,
+            model_choice,
+            continue_session,
+            resume_session_id.clone(),
+            &reservation.session_token,
+        )
+        .map_err(err)?;
+    let (tab, output) = Tab::spawn_agent(
+        owner.to_string(),
+        agent_id.to_string(),
+        agent_open_request(
+            prepared,
+            root.clone(),
+            model_choice,
+            resume_session_id,
+            locator,
+        ),
+    )?;
+    let tab = tab.adopt_replaced_screen(carried, &key.tab_id);
+    let wire_id = tab.wire_id();
+    {
+        let mut app = state.lock().unwrap();
+        app.publish_agent_tab(AgentTabPublication {
+            root,
+            key: key.clone(),
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            model_choice: model_choice.clone(),
+            phase,
+            tab,
+            reservation,
+        });
+    }
     spawn_tab_pumps(state, key, output);
     Ok((wire_id, Spawned::Fresh))
 }
 
-/// Find-or-create the one agent tab rooted at `root`.
-fn ensure_agent_tab(
-    state: &Arc<Mutex<AppState>>,
-    root: &std::path::Path,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
-) -> Result<(String, Spawned), String> {
-    let root = AppState::canonical_root(root);
-    let key = TabKey::agent(&root, agent_id);
-    let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
-    loop {
-        let reservation = state.lock().unwrap().reserve_agent_spawn(
-            &key,
-            &root,
-            owner,
-            agent_id,
-            model_choice,
-        )?;
-        match reservation {
-            AgentSpawnReservation::Warm(wire_id) => return Ok((wire_id, Spawned::Warm)),
-            AgentSpawnReservation::InFlight => wait_for_agent_spawn(deadline, &root)?,
-            AgentSpawnReservation::Reserved(reserved) => {
-                return spawn_reserved_agent(state, key, owner, agent_id, model_choice, reserved)
+impl AppState {
+    fn remove_replaced_agent(&mut self, key: &TabKey) -> Option<TermScreen> {
+        self.tabs.remove(key).and_then(|dead| {
+            dead.session.end();
+            dead.screen
+        })
+    }
+
+    fn close_stale_agents(&mut self, root: &std::path::Path, owner: &str) {
+        let stale = self
+            .tabs
+            .iter()
+            .filter(|(other, tab)| {
+                other.root == root
+                    && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
+            })
+            .map(|(other, _)| other.clone())
+            .collect::<Vec<_>>();
+        for key in stale {
+            if let Some(tab) = self.tabs.remove(&key) {
+                let wire_id = tab.wire_id();
+                tab.session.end();
+                if let Some(screen) = &tab.screen {
+                    screen.push_closed(&wire_id, "closed");
+                }
             }
         }
+    }
+
+    fn agent_resume_options(
+        &mut self,
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        provider: AgentProvider,
+    ) -> (bool, Option<String>) {
+        let resume_session_id = match self.recorded_resume_id(owner, agent_id) {
+            Some(named) if (self.resume_id_probe)(root, provider, &named) => Some(named),
+            Some(_) => {
+                self.record_agent_resume_id(owner, agent_id, None);
+                None
+            }
+            None => None,
+        };
+        let continue_session = resume_session_id.is_none()
+            && self.may_pick_up_a_conversation(owner, agent_id)
+            && (self.transcript_probe)(root, provider);
+        (continue_session, resume_session_id)
+    }
+
+    fn take_waiting_screen(&mut self, root: &std::path::Path, key: &TabKey) -> Option<TermScreen> {
+        let first_here = !self
+            .tabs
+            .keys()
+            .any(|other| other.is_agent() && other.root == root);
+        self.agent_screens_awaiting_spawn.remove(key).or_else(|| {
+            first_here.then(|| {
+                self.agent_screens_awaiting_spawn.remove(&TabKey::agent(
+                    root,
+                    &crate::worktree::external_worktree_id(root),
+                ))
+            })?
+        })
+    }
+
+    fn publish_agent_tab(&mut self, mut publication: AgentTabPublication) {
+        let waiting = self.take_waiting_screen(&publication.root, &publication.key);
+        publication.tab = publication
+            .tab
+            .adopt_waiting_screen(waiting, &publication.key.tab_id);
+        let running = publication
+            .tab
+            .session
+            .active_model()
+            .or_else(|| publication.model_choice.model.clone());
+        self.tabs.insert(publication.key.clone(), publication.tab);
+        self.complete_spawn_reservation(publication.reservation);
+        self.record_agent_active_model(&publication.owner, &publication.agent_id, running);
+        // The caller starts the output pumps only after this publication lock is
+        // released, so EOF cannot close the session before its start is visible.
+        self.record_agent_session_start(
+            &publication.owner,
+            &publication.model_choice,
+            publication.phase,
+        );
+    }
+
+    fn complete_spawn_reservation(&mut self, mut reservation: AgentSpawnReservation) {
+        self.agent_spawns_in_flight.remove(&reservation.key);
+        reservation.active = false;
     }
 }
 
@@ -18254,10 +18910,11 @@ fn deliver(
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
+    phase: &'static str,
     cold: &str,
     warm: &str,
 ) -> Result<(String, Spawned), String> {
-    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice)?;
+    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice, phase)?;
     let prompt = match spawned {
         Spawned::Fresh => cold,
         Spawned::Warm => warm,
@@ -18296,9 +18953,9 @@ fn deliver(
 /// Send every turn the verbs that just ran queued, now that the state lock is
 /// free.
 ///
-/// A cold delivery starts a new harness process, so it opens the conversation's
-/// session lineage — the record the thread reads back as "the revise agent
-/// started here". A warm delivery continues the session already open.
+/// A cold delivery starts a new harness process, whose publication has already
+/// opened the conversation's session lineage. A warm delivery continues the
+/// session already open.
 fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
     // Taking the queue and marking those owners in flight happen under ONE lock
     // acquisition, so there is no instant in which a queued turn is invisible to
@@ -18342,22 +18999,19 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
             &turn.owner,
             &turn.agent_id,
             &turn.model_choice,
+            turn.phase,
             &turn.cold,
             &turn.warm,
         );
         let mut s = state.lock().unwrap();
-        match delivered {
-            Ok((_, Spawned::Fresh)) => s.record_agent_session_start(&turn),
-            Ok((_, Spawned::Warm)) => {}
+        if let Err(error) = delivered {
             // The turn stays durable on the thread — the agent picks it up with
             // `read_unread_messages` the next time a tab opens — but nothing is
             // reading that thread right now, so the entity itself has to carry
             // the reason. The idle sweep finishes the job: an entity left
             // working with no agent tab is demoted on the next pass.
-            Err(error) => {
-                eprintln!("deliver to {}: {error}", turn.owner);
-                s.record_agent_delivery_failure(&turn, &error);
-            }
+            eprintln!("deliver to {}: {error}", turn.owner);
+            s.record_agent_delivery_failure(&turn, &error);
         }
         // Off the queue and out of flight: from here the entity's agent tab is
         // the whole truth about whether an agent is there.
@@ -18973,7 +19627,7 @@ fn b64decode(s: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use crate::harness::claude;
@@ -18983,6 +19637,13 @@ mod tests {
     use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
     use crate::harness::{AgentSession, HarnessError, Turn};
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
+
+    fn test_build_agent(mcp_socket: impl Into<std::path::PathBuf>) -> Agent {
+        build_agent(
+            false,
+            HarnessContext::resolved(mcp_socket.into(), default_state_root()).unwrap(),
+        )
+    }
 
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
@@ -18997,6 +19658,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo_named(dir.path(), "repo");
         (dir, repo)
+    }
+
+    fn test_bridge_exe() -> PathBuf {
+        std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap()
     }
 
     /// A repository under `parent`, named. A project is named after its
@@ -19142,6 +19807,174 @@ mod tests {
     }
 
     #[test]
+    fn project_add_persistence_failures_leave_state_and_user_repo_unchanged() {
+        for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+            let directory = tempfile::tempdir().unwrap();
+            let (_initial_repo_directory, initial_repo) = init_repo();
+            let (_added_repo_directory, added_repo) = init_repo();
+            let config = directory.path().join("config.json");
+            let mut state = AppState::new(
+                initial_repo,
+                directory.path().join("worktrees"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&config)
+            .unwrap();
+            let projects_before = state.project_list();
+            let next_project_before = state.next_project;
+            state.config_persist_failure = Some(failure);
+
+            let response = state.handle(req(
+                "project.add",
+                json!({ "path": added_repo.to_str().unwrap() }),
+            ));
+
+            assert_eq!(response["ok"], false, "{response:?}");
+            assert!(response["error"].as_str().unwrap().contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(added_repo.join(".git").exists(), "user repo must remain");
+        }
+    }
+
+    #[test]
+    fn project_clone_persistence_failures_leave_state_and_remove_new_clone() {
+        for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+            let directory = tempfile::tempdir().unwrap();
+            let (_initial_repo_directory, initial_repo) = init_repo();
+            let (_source_directory, source_repo) = init_repo();
+            let config = directory.path().join("config.json");
+            let projects_dir = directory.path().join("projects");
+            std::fs::create_dir(&projects_dir).unwrap();
+            let existing_clone_path = projects_dir.join("existing-project");
+            git2::Repository::clone(source_repo.to_str().unwrap(), &existing_clone_path).unwrap();
+            let clone_path = projects_dir.join("cloned-project");
+            let mut state = AppState::new(
+                initial_repo,
+                directory.path().join("worktrees"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&config)
+            .unwrap();
+            state.projects_dir = projects_dir;
+            let projects_before = state.project_list();
+            let next_project_before = state.next_project;
+            state.config_persist_failure = Some(failure);
+
+            let existing_response = state.handle(req(
+                "project.clone",
+                json!({
+                    "url": source_repo.to_str().unwrap(),
+                    "name": "existing-project",
+                }),
+            ));
+
+            assert_eq!(existing_response["ok"], false, "{existing_response:?}");
+            assert!(existing_response["error"]
+                .as_str()
+                .unwrap()
+                .contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(
+                existing_clone_path.join(".git").exists(),
+                "an existing checkout is user-owned"
+            );
+
+            let response = state.handle(req(
+                "project.clone",
+                json!({
+                    "url": source_repo.to_str().unwrap(),
+                    "name": "cloned-project",
+                }),
+            ));
+
+            assert_eq!(response["ok"], false, "{response:?}");
+            assert!(response["error"].as_str().unwrap().contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(
+                !clone_path.exists(),
+                "failed clone registration is cleaned up"
+            );
+            assert!(source_repo.join(".git").exists(), "source repo must remain");
+        }
+    }
+
+    #[test]
+    fn project_create_persistence_failures_leave_state_and_remove_new_repo() {
+        for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+            let directory = tempfile::tempdir().unwrap();
+            let (_initial_repo_directory, initial_repo) = init_repo();
+            let config = directory.path().join("config.json");
+            let parent = directory.path().join("created-projects");
+            let created_path = parent.join("new-project");
+            let mut state = AppState::new(
+                initial_repo,
+                directory.path().join("worktrees"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&config)
+            .unwrap();
+            let projects_before = state.project_list();
+            let next_project_before = state.next_project;
+            state.config_persist_failure = Some(failure);
+
+            let response = state.handle(req(
+                "project.create",
+                json!({
+                    "name": "new-project",
+                    "parent": parent.to_str().unwrap(),
+                }),
+            ));
+
+            assert_eq!(response["ok"], false, "{response:?}");
+            assert!(response["error"].as_str().unwrap().contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(
+                !created_path.exists(),
+                "failed project creation is cleaned up"
+            );
+        }
+    }
+
+    #[test]
+    fn project_remote_change_does_not_write_unchanged_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_directory, repo) = init_repo();
+        let config = directory.path().join("config.json");
+        let mut state = AppState::new(
+            repo.clone(),
+            directory.path().join("worktrees"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(config)
+        .unwrap();
+        let project_id = state.projects[0].id.clone();
+        state.config_persist_failure = Some(ConfigPersistStep::Write);
+
+        let response = state.handle(req(
+            "project.set_remote",
+            json!({ "project_id": project_id, "url": "https://example.com/repo.git" }),
+        ));
+
+        assert_eq!(response["ok"], true, "{response:?}");
+        assert_eq!(
+            git_remote_origin(&repo).as_deref(),
+            Some("https://example.com/repo.git")
+        );
+    }
+
+    #[test]
     fn fs_list_browses_dirs_and_flags_git_repos() {
         let (dir_a, repo_a) = init_repo();
         let mut state = AppState::new(
@@ -19253,7 +20086,8 @@ mod tests {
                 true,
                 "/tmp/test-mcp.sock",
             )
-            .with_config(&cfg);
+            .with_config(&cfg)
+            .unwrap();
             state.handle(req(
                 "project.add",
                 json!({ "path": repo_b.to_str().unwrap() }),
@@ -19271,7 +20105,8 @@ mod tests {
             true,
             "/tmp/test-mcp.sock",
         )
-        .with_config(&cfg);
+        .with_config(&cfg)
+        .unwrap();
         assert_eq!(
             reloaded.handle(req("project.list", json!({})))["result"]["projects"]
                 .as_array()
@@ -19284,6 +20119,66 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("myprojects")
+        );
+    }
+
+    #[test]
+    fn missing_config_is_the_only_absent_config_case() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing-config.json");
+        assert_eq!(read_config(&missing).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_config_fails_with_its_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("malformed-config.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let error = read_config(&path).unwrap_err().to_string();
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(error.contains("parse"), "{error}");
+    }
+
+    #[test]
+    fn config_read_failure_fails_with_its_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = read_config(directory.path()).unwrap_err().to_string();
+        assert!(
+            error.contains(directory.path().to_str().unwrap()),
+            "{error}"
+        );
+        assert!(error.contains("read"), "{error}");
+    }
+
+    #[test]
+    fn settings_write_failure_is_reported_and_leaves_the_default_harness_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let config = directory.path().join("config.json");
+        let mut state = AppState::new(
+            repo,
+            directory.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+        std::fs::create_dir(&config).unwrap();
+
+        let response = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+
+        assert_eq!(response["ok"], false, "{response:?}");
+        assert!(
+            response["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(config.to_str().unwrap())),
+            "{response:?}"
+        );
+        assert_eq!(state.default_harness, DEFAULT_HARNESS);
+        assert!(
+            !config.with_extension("tmp").exists(),
+            "a failed atomic write leaves no temporary config behind"
         );
     }
 
@@ -19322,7 +20217,8 @@ mod tests {
                 true,
                 "/tmp/test-mcp.sock",
             )
-            .with_config(&cfg);
+            .with_config(&cfg)
+            .unwrap();
             state.handle(req(
                 "settings.set",
                 json!({ "projects_dir": tmp.path().join("myprojects").to_str().unwrap() }),
@@ -19339,7 +20235,8 @@ mod tests {
             true,
             "/tmp/test-mcp.sock",
         )
-        .with_config(&cfg);
+        .with_config(&cfg)
+        .unwrap();
         let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
         assert_eq!(settings["default_harness"], "claude");
         assert_eq!(settings["claude_mode"], "tui");
@@ -19349,6 +20246,37 @@ mod tests {
                 .unwrap()
                 .contains("myprojects"),
             "setting one field moves no other: {settings:?}"
+        );
+    }
+
+    #[test]
+    fn pi_round_trips_as_the_persisted_coding_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let config = temp.path().join("config.json");
+        let mut state = AppState::new(
+            repo.clone(),
+            temp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+        let set = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+        assert_eq!(set["result"]["default_harness"], "pi");
+        let mut reloaded = AppState::new(
+            repo,
+            temp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(config)
+        .unwrap();
+        assert_eq!(
+            reloaded.handle(req("settings.get", json!({})))["result"]["default_harness"],
+            "pi"
         );
     }
 
@@ -19377,7 +20305,7 @@ mod tests {
         assert_eq!(
             refused["error"].as_str().unwrap(),
             "unknown default_harness \"telepathy\" (expected \"claude_adk\", \"claude\", \
-             \"codex\" or \"codex_app_server\")"
+             \"codex\", \"codex_app_server\" or \"pi\")"
         );
         assert_eq!(
             state.handle(req("settings.get", json!({})))["result"],
@@ -19433,7 +20361,8 @@ mod tests {
                 true,
                 "/tmp/test-mcp.sock",
             )
-            .with_config(cfg);
+            .with_config(cfg)
+            .unwrap();
             state.handle(req("settings.get", json!({})))["result"].clone()
         };
 
@@ -19556,6 +20485,7 @@ mod tests {
             ("claude_adk", AgentProvider::ClaudeAdk),
             ("codex", AgentProvider::Codex),
             ("codex_app_server", AgentProvider::CodexAppServer),
+            ("pi", AgentProvider::Pi),
         ] {
             assert_eq!(
                 carrier_of(
@@ -19566,6 +20496,34 @@ mod tests {
                 "{token} names one harness"
             );
         }
+    }
+
+    #[test]
+    fn pi_setting_drives_omitted_coding_provider_without_overriding_a_concrete_provider() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let set = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+        assert_eq!(set["ok"], true, "{set:?}");
+
+        let omitted = state.handle(req(
+            "plan.create",
+            json!({ "goal": "use the account default", "dispatch": false }),
+        ));
+        assert_eq!(omitted["ok"], true, "{omitted:?}");
+        assert_eq!(omitted["result"]["provider"], "pi", "{omitted:?}");
+        assert_eq!(omitted["result"]["agents"][0]["provider"], "pi");
+
+        let concrete = state.handle(req(
+            "plan.create",
+            json!({
+                "goal": "keep the provider displayed by the client",
+                "dispatch": false,
+                "provider": "codex",
+            }),
+        ));
+        assert_eq!(concrete["ok"], true, "{concrete:?}");
+        assert_eq!(concrete["result"]["provider"], "codex", "{concrete:?}");
+        assert_eq!(concrete["result"]["agents"][0]["provider"], "codex");
     }
 
     /// A client that names a concrete carrier gets that carrier. The setting
@@ -19584,7 +20542,7 @@ mod tests {
             state.plans[&plan_id_of(&filed)].model_choice.provider
         };
 
-        for default in ["claude_adk", "claude", "codex", "codex_app_server"] {
+        for default in ["claude_adk", "claude", "codex", "codex_app_server", "pi"] {
             let set = state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(set["ok"], true, "{set:?}");
             assert_eq!(
@@ -19630,11 +20588,14 @@ mod tests {
     fn the_router_pins_the_headless_carrier_under_every_default() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        assert_eq!(state.default_agent_provider(), AgentProvider::ClaudeAdk);
-        for default in ["claude", "codex", "claude_adk", "codex_app_server"] {
+        assert_eq!(
+            crate::router::router_model_choice(state.router_choice.as_ref()).provider,
+            AgentProvider::ClaudeAdk
+        );
+        for default in ["claude", "codex", "claude_adk", "codex_app_server", "pi"] {
             state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(
-                state.default_agent_provider(),
+                crate::router::router_model_choice(state.router_choice.as_ref()).provider,
                 AgentProvider::ClaudeAdk,
                 "the router does not follow a default of {default}"
             );
@@ -20131,6 +21092,7 @@ mod tests {
             "run-attach",
             &crate::agent::derived_agent_id("run-attach"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -20178,6 +21140,7 @@ mod tests {
             "run-unclosable",
             &crate::agent::derived_agent_id("run-unclosable"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -20403,6 +21366,7 @@ mod tests {
             "run-one-agent",
             &crate::agent::derived_agent_id("run-one-agent"),
             &choice,
+            "start",
         )
         .expect("the agent spawns");
         let (second_id, second) = ensure_agent_tab(
@@ -20411,6 +21375,7 @@ mod tests {
             "run-one-agent",
             &crate::agent::derived_agent_id("run-one-agent"),
             &choice,
+            "start",
         )
         .expect("the agent is found");
 
@@ -20459,6 +21424,7 @@ mod tests {
                     "run-race",
                     &crate::agent::derived_agent_id("run-race"),
                     &ModelChoice::default(),
+                    "start",
                 )
             }));
         }
@@ -20486,6 +21452,56 @@ mod tests {
         assert!(s.agent_spawns_in_flight.is_empty());
     }
 
+    #[test]
+    fn harness_spec_construction_does_not_hold_the_app_state_lock() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-slow-spec");
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        {
+            let release_rx = Arc::clone(&release_rx);
+            let agent = Agent::WarmBuilder(Arc::new(move |_, _, _| {
+                arrived_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Ok(HarnessSpec::new("sh")
+                    .arg("-c")
+                    .arg("printf '\\033[?2004h'; cat >/dev/null"))
+            }));
+            let mut app = state.lock().unwrap();
+            let worktrees = app.worktrees_root.clone();
+            app.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
+        }
+        let spawning_state = Arc::clone(&state);
+        let spawn = std::thread::spawn(move || {
+            ensure_agent_tab(
+                &spawning_state,
+                &root,
+                "run-slow-spec",
+                &crate::agent::derived_agent_id("run-slow-spec"),
+                &ModelChoice::default(),
+                "start",
+            )
+        });
+        arrived_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the harness builder started");
+
+        assert!(
+            state.try_lock().is_ok(),
+            "unrelated app state remains available while a harness spec is built"
+        );
+
+        release_tx.send(()).unwrap();
+        spawn.join().unwrap().unwrap();
+    }
+
     /// The cold/warm rule: a tab that had to be spawned gets the full prompt (a
     /// cold agent has no context to read messages into), and a tab that was
     /// already alive gets the short nudge — the messages are already durable in
@@ -20503,6 +21519,7 @@ mod tests {
             "run-deliver",
             &crate::agent::derived_agent_id("run-deliver"),
             &choice,
+            "build",
             "COLD-CONTEXT-PROMPT",
             "WARM-NUDGE-PROMPT",
         )
@@ -20524,6 +21541,7 @@ mod tests {
             "run-deliver",
             &crate::agent::derived_agent_id("run-deliver"),
             &choice,
+            "build",
             "COLD-CONTEXT-PROMPT",
             "WARM-NUDGE-PROMPT",
         )
@@ -20604,6 +21622,7 @@ mod tests {
             "run-lock",
             &agent_id,
             &ModelChoice::default(),
+            "build",
             "COLD-CONTEXT-PROMPT",
             "WARM-NUDGE-PROMPT",
         )
@@ -20719,19 +21738,11 @@ mod tests {
         let (state, _handler) = shared_state_and_handler(&repo, dir.path());
         let (tab_key, _wire_id) =
             insert_live_run(&state, &repo, dir.path().join("side"), "run-eof");
-        state
-            .lock()
-            .unwrap()
-            .record_agent_session_start(&PendingAgentTurn {
-                root: tab_key.root.clone(),
-                owner: "run-eof".into(),
-                agent_id: crate::agent::derived_agent_id("run-eof"),
-                model_choice: ModelChoice::default(),
-                cold: String::new(),
-                warm: String::new(),
-                phase: "build",
-                wants_catch_up: false,
-            });
+        state.lock().unwrap().record_agent_session_start(
+            "run-eof",
+            &ModelChoice::default(),
+            "build",
+        );
         assert_eq!(open_session_count(&state, "run-eof"), 1);
 
         state.lock().unwrap().tabs[&tab_key].session.end();
@@ -21077,8 +22088,13 @@ mod tests {
     /// Point a QA state's only project at a different agent — the seam every
     /// test that cares about what actually gets spawned goes through.
     fn use_agent(state: &Arc<Mutex<AppState>>, repo: &std::path::Path, wt: PathBuf, agent: Agent) {
-        state.lock().unwrap().projects[0].orch =
-            Orchestrator::new(repo.to_path_buf(), wt, agent, Templates::default());
+        state.lock().unwrap().projects[0].orch = Orchestrator::new(
+            repo.to_path_buf(),
+            wt,
+            agent,
+            Templates::default(),
+            test_bridge_exe(),
+        );
     }
 
     /// The rendered turn is always multi-line (the conversation protocol block
@@ -21097,11 +22113,11 @@ mod tests {
             dir.path().join("wt2"),
             Agent::WarmBuilder(std::sync::Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                    HarnessSpec::new("sh")
+                    Ok(HarnessSpec::new("sh")
                         .arg("-c")
                         .arg("cat > \"$1\"")
                         .arg("build-agent-capture")
-                        .arg(capture_for_builder.to_string_lossy())
+                        .arg(capture_for_builder.to_string_lossy()))
                 },
             )),
         );
@@ -21112,6 +22128,7 @@ mod tests {
             "run-paste",
             &crate::agent::derived_agent_id("run-paste"),
             &ModelChoice::default(),
+            "build",
             "Paste framing marker\nsecond line",
             "warm",
         )
@@ -21140,46 +22157,107 @@ mod tests {
         );
     }
 
-    /// The prompt-write race, end to end: a harness that exits instantly closes
-    /// its PTY (the write fails with EIO) *before* the OS makes its exit status
-    /// reapable, so a single status poll says "running". That must not
-    /// fail the delivery — the tab is still the agent's tab, and the crash is
-    /// the idle monitor's to report, not the delivery's.
-    #[tokio::test]
-    async fn a_harness_that_exits_under_the_prompt_write_still_keeps_its_tab() {
+    /// A fresh session is recorded before its output pump can observe EOF. An
+    /// immediately exiting child used to let the pump record the end first and
+    /// the delivery record a stale open session afterward.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_immediately_exiting_harness_leaves_one_closed_session() {
         let (dir, repo) = init_repo();
         let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-exits");
         use_agent(&state, &repo, dir.path().join("wt2"), instant_exit_agent());
+        let agent_id = crate::agent::derived_agent_id("run-exits");
+        {
+            let mut app = state.lock().unwrap();
+            app.runs.insert(
+                "run-exits".into(),
+                crate::orchestrator::ActiveRun::reattach(
+                    &fake_run_record("run-exits"),
+                    ".build/plan.md".into(),
+                ),
+            );
+            app.pending_agent_turns.push(PendingAgentTurn {
+                root: AppState::canonical_root(&root),
+                owner: "run-exits".into(),
+                agent_id: agent_id.clone(),
+                model_choice: ModelChoice::default(),
+                cold: "cold".into(),
+                warm: "warm".into(),
+                phase: "build",
+                wants_catch_up: false,
+            });
+        }
 
-        let delivered = deliver(
-            &state,
-            &root,
-            "run-exits",
-            &crate::agent::derived_agent_id("run-exits"),
-            &ModelChoice::default(),
-            "cold",
-            "warm",
-        );
+        deliver_pending_agent_turns(&state);
 
-        assert!(
-            delivered.is_ok(),
-            "a write against an exiting harness is benign: {delivered:?}"
-        );
+        let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the pump observes the child exit");
         let s = state.lock().unwrap();
-        assert!(
-            s.tabs.contains_key(&derived_agent_key(
-                &AppState::canonical_root(&root),
-                "run-exits"
-            )),
-            "the tab is retained so the crash is legible"
+        let thread = primary_thread(&s.runs["run-exits"].agents);
+        assert_eq!(
+            thread
+                .sessions
+                .iter()
+                .filter(|session| session.ended_at.is_none())
+                .count(),
+            0,
+            "EOF must not be followed by a stale session start: {:?}",
+            thread.sessions
         );
+        let session_events = thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event)
+                    if matches!(
+                        event.event,
+                        crate::thread::ThreadEventKind::RunStarted
+                            | crate::thread::ThreadEventKind::SessionEnded
+                    ) =>
+                {
+                    Some((event.event, event.sequence))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            session_events
+                .iter()
+                .filter(|(kind, _)| *kind == crate::thread::ThreadEventKind::SessionEnded)
+                .count(),
+            1,
+            "the process produces exactly one session end: {session_events:?}"
+        );
+        assert_eq!(
+            session_events.len(),
+            2,
+            "one start and one end are the whole session timeline: {session_events:?}"
+        );
+        assert_eq!(
+            session_events[0].0,
+            crate::thread::ThreadEventKind::RunStarted,
+            "the fresh session starts before it can end: {session_events:?}"
+        );
+        assert_eq!(
+            session_events[1].0,
+            crate::thread::ThreadEventKind::SessionEnded,
+            "no stale start may appear after the end: {session_events:?}"
+        );
+        assert!(
+            session_events[0].1 < session_events[1].1,
+            "the recorded start precedes the recorded end: {session_events:?}"
+        );
+        assert!(!s.tabs[&key].live, "the retained tab is non-live");
     }
 
     /// An agent that is gone before it reads a byte.
     fn instant_exit_agent() -> Agent {
         Agent::WarmBuilder(std::sync::Arc::new(
             |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                HarnessSpec::new("sh").arg("-c").arg("exit 0")
+                Ok(HarnessSpec::new("sh").arg("-c").arg("exit 0"))
             },
         ))
     }
@@ -21205,6 +22283,7 @@ mod tests {
             "run-cap",
             &crate::agent::derived_agent_id("run-cap"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
         // One of the human's own shells, held as a tab rather than in `terms`.
@@ -21269,6 +22348,97 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticated_listener_rejects_rotated_and_wrong_tokens_and_keeps_canonical_errors() {
+        async fn request(path: &Path, frame: Value) -> Value {
+            let mut stream = tokio::net::UnixStream::connect(path).await.unwrap();
+            stream
+                .write_all(format!("{frame}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut response = String::new();
+            tokio::io::BufReader::new(stream)
+                .read_line(&mut response)
+                .await
+                .unwrap();
+            serde_json::from_str(&response).unwrap()
+        }
+
+        let (directory, repo) = init_repo();
+        let mut app = qa_state(&repo, directory.path());
+        let created = app.handle(req(
+            "plan.create",
+            json!({ "goal": "authenticate MCP", "dispatch": false }),
+        ));
+        let entity_id = plan_id_of(&created);
+        let agent_id = crate::agent::derived_agent_id(&entity_id);
+        let state = app.shared();
+        let (stale_reservation, current_reservation, stale_token, current_token) = {
+            let mut app = state.lock().unwrap();
+            let key = TabKey::agent(directory.path(), &agent_id);
+            let stale = AgentSpawnReservation::claim(&state, &mut app, key.clone(), &agent_id);
+            let stale_token = stale.session_token.clone();
+            let current = AgentSpawnReservation::claim(&state, &mut app, key, &agent_id);
+            let current_token = current.session_token.clone();
+            (stale, current, stale_token, current_token)
+        };
+        let socket = directory.path().join("authenticated-mcp.sock");
+        let listener = bind_done_listener(&socket).unwrap();
+        let server = tokio::spawn(serve_done_listener(Arc::clone(&state), listener));
+
+        for token in [stale_token.as_str(), "wrong-token"] {
+            let response = request(
+                &socket,
+                json!({
+                    "task_id": agent_id,
+                    "session_token": token,
+                    "request": { "action": "read_unread_messages" }
+                }),
+            )
+            .await;
+            assert_eq!(
+                response,
+                json!({ "ok": false, "error": "unauthorized MCP session" })
+            );
+        }
+
+        let accepted = request(
+            &socket,
+            json!({
+                "task_id": agent_id,
+                "session_token": current_token,
+                "request": { "action": "read_unread_messages" }
+            }),
+        )
+        .await;
+        assert_eq!(accepted["ok"], true, "{accepted}");
+
+        let done = crate::mcp::DoneServer::for_owner(&agent_id).handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build"}}}"#,
+        );
+        let done_error: Value = serde_json::from_str(done.reply.as_deref().unwrap()).unwrap();
+        assert_eq!(done_error["result"]["isError"], true);
+        assert!(done_error["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("invalid done arguments:"));
+
+        let post = crate::mcp::DoneServer::for_owner(&agent_id).handle_message(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{}}}"#,
+        );
+        let post_error: Value = serde_json::from_str(post.reply.as_deref().unwrap()).unwrap();
+        assert_eq!(post_error["result"]["isError"], true);
+        assert_eq!(
+            post_error["result"]["content"][0]["text"],
+            "body is required"
+        );
+
+        server.abort();
+        drop(current_reservation);
+        drop(stale_reservation);
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn done_socket_is_explicitly_owner_only() {
         use std::os::unix::fs::PermissionsExt;
@@ -21283,21 +22453,24 @@ mod tests {
     /// An agent tab is a MANAGED agent: the spec it spawns from carries Build's
     /// `done` MCP server and the owner id that routes reports back through the
     /// owner lookup. The socket lives inside the harness builder's closure, so
-    /// `agent_harness_spec` is the only way the app layer can reach it — and a
-    /// spec that dropped the config or the owner would open an agent Build
-    /// cannot talk to, in a tab that looks entirely healthy.
+    /// launch preparation is the only way the app layer can reach it — and a
+    /// prepared spec that dropped the config or the owner would open an agent
+    /// Build cannot talk to, in a tab that looks entirely healthy.
     #[test]
-    fn agent_harness_spec_carries_the_done_mcp_server_and_the_owner_id() {
+    fn prepared_agent_spec_carries_the_done_mcp_server_and_the_owner_id() {
         // claude's pre-trust writes a registry; keep it off the developer's own.
         let config_dir = tempfile::tempdir().unwrap();
         std::env::set_var("CLAUDE_CONFIG_DIR", config_dir.path());
+        let (directory, repo) = init_repo();
+        let cwd = directory.path().join("wt-1");
+        std::fs::create_dir(&cwd).unwrap();
         let orch = Orchestrator::new(
-            "/repo",
-            "/repo/.worktrees",
-            build_agent(false, "/tmp/build mcp.sock".into()),
+            repo,
+            directory.path().join("worktrees"),
+            test_build_agent("/tmp/build mcp.sock"),
             Templates::default(),
+            test_bridge_exe(),
         );
-        let cwd = std::path::Path::new("/repo/.worktrees/wt-1");
         let claude = ModelChoice {
             provider: AgentProvider::Claude,
             model: None,
@@ -21309,28 +22482,38 @@ mod tests {
             effort: None,
         };
 
-        let spec = orch.agent_harness_spec("agent-42", cwd, &claude, false, None, "token-42");
-        assert_eq!(spec.binary, "claude");
-        let args = spec.args.join(" ");
+        let spec = orch
+            .agent_launch()
+            .prepare("agent-42", &cwd, &claude, false, None, "token-42")
+            .unwrap();
+        assert_eq!(spec.spec.binary, "claude");
+        let args = spec.spec.args.join(" ");
         assert!(
             args.contains("--mcp-config .build/mcp-agent-42.json --strict-mcp-config"),
             "the harness reads the config written for THIS agent: {args}"
         );
         assert!(!args.contains("--continue"), "{args}");
         assert!(
-            spec.env
+            spec.spec
+                .env
                 .iter()
                 .any(|(key, value)| key == "BRIDGE_MCP_SOCKET" && value == "/tmp/build mcp.sock"),
             "{:?}",
-            spec.env
+            spec.spec.env
         );
         // A replaced tab picks its own conversation back up.
-        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true, None, "token-43");
-        assert!(resumed.args.join(" ").contains("--continue"));
+        let resumed = orch
+            .agent_launch()
+            .prepare("run-42", &cwd, &claude, true, None, "token-43")
+            .unwrap();
+        assert!(resumed.spec.args.join(" ").contains("--continue"));
 
-        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false, None, "token-42");
-        assert_eq!(spec.binary, "codex");
-        let args = spec.args.join(" ");
+        let spec = orch
+            .agent_launch()
+            .prepare("run-42", &cwd, &codex, false, None, "token-42")
+            .unwrap();
+        assert_eq!(spec.spec.binary, "codex");
+        let args = spec.spec.args.join(" ");
         assert!(
             args.contains(r#"mcp_servers.build.args=["mcp","--task","run-42"]"#),
             "{args}"
@@ -21340,14 +22523,202 @@ mod tests {
             "{args}"
         );
         assert!(
-            args.contains(r#"projects."/repo/.worktrees/wt-1".trust_level="trusted""#),
+            args.contains(&format!(
+                r#"projects."{}".trust_level="trusted""#,
+                cwd.display()
+            )),
             "{args}"
         );
         assert!(!args.ends_with("resume --last"), "{args}");
-        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true, None, "token-43");
-        assert!(resumed.args.join(" ").ends_with("resume --last"));
+        let resumed = orch
+            .agent_launch()
+            .prepare("run-42", &cwd, &codex, true, None, "token-43")
+            .unwrap();
+        assert!(resumed.spec.args.join(" ").ends_with("resume --last"));
 
         std::env::remove_var("CLAUDE_CONFIG_DIR");
+    }
+
+    #[test]
+    fn pi_launch_identity_reaches_the_session_through_tab_spawn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let repo = init_repo_named(directory.path(), "repo");
+        let worktree = directory.path().join("pi-worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let state_root = directory.path().join("state");
+        let context = HarnessContext::resolved(directory.path().join("mcp.sock"), state_root)
+            .expect("resolve isolated Pi context");
+        let orchestrator = Orchestrator::new(
+            repo,
+            directory.path().join("worktrees"),
+            build_agent(false, context),
+            Templates::default(),
+            test_bridge_exe(),
+        );
+        let agent_id = "agent-pi-tab-spawn";
+        let mut prepared = orchestrator
+            .agent_launch()
+            .prepare(
+                agent_id,
+                &worktree,
+                &ModelChoice {
+                    provider: AgentProvider::Pi,
+                    model: None,
+                    effort: None,
+                },
+                false,
+                None,
+                "pi-token",
+            )
+            .expect("prepare the production Pi launch");
+        let fake_pi = directory.path().join("pi");
+        std::fs::write(
+            &fake_pi,
+            "#!/bin/sh\nprintf '\\033[?2004h'\ncat >/dev/null\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o700)).unwrap();
+        prepared.spec.binary = fake_pi.to_string_lossy().into_owned();
+
+        let (tab, _output) = Tab::spawn_agent(
+            "run-pi-identity".to_string(),
+            agent_id.to_string(),
+            agent_open_request(
+                prepared,
+                AppState::canonical_root(&worktree),
+                &ModelChoice {
+                    provider: AgentProvider::Pi,
+                    model: None,
+                    effort: None,
+                },
+                None,
+                None,
+            ),
+        )
+        .expect("the Pi-shaped tab spawns");
+
+        assert_eq!(
+            tab.session.session_id().as_deref(),
+            Some(agent_id),
+            "Tab::spawn must carry Pi's launch-known identity into AgentSession"
+        );
+        tab.session.end();
+    }
+
+    fn pi_extension_child_death_spec(directory: &Path, agent_id: &str) -> HarnessSpec {
+        use std::os::unix::fs::PermissionsExt;
+
+        let extension = directory.join("build-tools.mjs");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/harness/build-tools.ts"),
+            &extension,
+        )
+        .unwrap();
+        let child = directory.join("fake-build-bridge");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi-mcp-child.mjs"),
+            &child,
+        )
+        .unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        HarnessSpec::new("node")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/pi-extension-driver.mjs")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .known_session_id(agent_id)
+            .env("BUILD_PI_EXTENSION_PATH", extension.to_string_lossy())
+            .env("BUILD_PI_MCP_COMMAND", child.to_string_lossy())
+            .env("BUILD_PI_MCP_OWNER", agent_id)
+            .env("BRIDGE_MCP_SOCKET", "/tmp/build-pi-death.sock")
+            .env("BRIDGE_MCP_TOKEN", "pi-death-token")
+            .env("BUILD_PI_MCP_TIMEOUT_MS", "5000")
+            .env("FAKE_MCP_MODE", "child_exit")
+            .env("PI_DRIVER_SCENARIO", "happy")
+    }
+
+    #[tokio::test]
+    async fn pi_mcp_child_death_runs_the_normal_tab_exit_path() {
+        let (directory, repo) = init_repo();
+        let mut app = qa_state(&repo, directory.path());
+        let run_id = "run-pi-mcp-death";
+        let root = insert_run(
+            &mut app,
+            &repo,
+            directory.path(),
+            run_id,
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id(run_id);
+        let key = TabKey::agent(&root, &agent_id);
+        let choice = ModelChoice {
+            provider: AgentProvider::Pi,
+            model: None,
+            effort: None,
+        };
+        app.runs.get_mut(run_id).unwrap().model_choice = choice.clone();
+        app.runs
+            .get_mut(run_id)
+            .unwrap()
+            .agents
+            .resolve_mut(None)
+            .unwrap()
+            .choice = choice.clone();
+        app.record_agent_session_start(run_id, &choice, "build");
+        let (mut tab, output) = Tab::spawn_agent(
+            run_id.to_string(),
+            agent_id.clone(),
+            agent_open_request(
+                PreparedAgentLaunch {
+                    spec: pi_extension_child_death_spec(directory.path(), &agent_id),
+                    pty_size: terminal_size(120, 40),
+                },
+                root,
+                &choice,
+                None,
+                None,
+            ),
+        )
+        .expect("the Pi extension fixture starts through a PTY");
+        assert_eq!(tab.session.session_id().as_deref(), Some(agent_id.as_str()));
+        let (sender, mut pushes, session_key) = SessionSender::observable("pi-death-observer");
+        screen_of_mut(&mut tab).register(&sender);
+        app.tabs.insert(key.clone(), tab);
+        let state = app.shared();
+        spawn_tab_pumps(&state, key.clone(), output);
+
+        wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed"
+                && push["term_id"] == key.tab_id
+                && push["reason"] == "agent_session_ended"
+        })
+        .await;
+        wait_for(Duration::from_secs(5), || {
+            (open_session_count(&state, run_id) == 0).then_some(())
+        })
+        .await
+        .expect("normal exit handling closes the conversation session");
+
+        let app = state.lock().unwrap();
+        let retained = &app.tabs[&key];
+        assert!(!retained.live, "the retained Pi tab must be non-live");
+        assert!(
+            matches!(retained.session.status(), AgentStatus::Ended { .. }),
+            "the Pi process must be reaped as ended"
+        );
+        assert!(primary_thread(&app.runs[run_id].agents)
+            .items
+            .iter()
+            .any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::SessionEnded
+            )));
     }
 
     /// The tab spawns the spec the orchestrator built FOR IT: the run as
@@ -21366,16 +22737,21 @@ mod tests {
                 move |prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     assert!(prompt.is_empty(), "a turn never rides in argv: {prompt:?}");
                     recorder.lock().unwrap().push(options.clone());
-                    HarnessSpec::new("sh").arg("-c").arg(
+                    Ok(HarnessSpec::new("sh").arg("-c").arg(
                         "printf 'SPEC-FROM-THE-ORCHESTRATOR'; printf '\\033[?2004h'; cat >/dev/null",
-                    )
+                    ))
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.transcript_probe = Arc::new(|_, _| true);
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         ensure_agent_tab(
@@ -21384,6 +22760,7 @@ mod tests {
             "run-wired",
             &crate::agent::derived_agent_id("run-wired"),
             &ModelChoice::default(),
+            "start",
         )
         .expect("the agent spawns");
 
@@ -21410,6 +22787,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_harness_spec_error_releases_the_reservation_and_never_spawns() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-spec-fail");
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let attempts = Arc::clone(&attempts);
+            let agent = Agent::WarmBuilder(Arc::new(move |_, _, _| {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(HarnessError::Setup("injected Pi setup failure".to_string()))
+            }));
+            let mut app = state.lock().unwrap();
+            let worktrees = app.worktrees_root.clone();
+            app.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
+        }
+        let agent_id = crate::agent::derived_agent_id("run-spec-fail");
+        let error = ensure_agent_tab(
+            &state,
+            &root,
+            "run-spec-fail",
+            &agent_id,
+            &ModelChoice::default(),
+            "start",
+        )
+        .unwrap_err();
+        assert!(error.contains("injected Pi setup failure"), "{error}");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let app = state.lock().unwrap();
+        let key = derived_agent_key(&root, "run-spec-fail");
+        assert!(!app.agent_spawns_in_flight.contains(&key));
+        assert!(!app.mcp_session_tokens.contains_key(&agent_id));
+        assert!(!app.tabs.contains_key(&key));
+    }
+
     /// The registry key is the CANONICAL worktree path, so the same worktree
     /// reaching the daemon by a different spelling — a run scope hands back
     /// `worktrees_root/<name>` uncanonicalized while an external worktree is
@@ -21428,6 +22845,7 @@ mod tests {
             "run-alias",
             &crate::agent::derived_agent_id("run-alias"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
         let (aliased_id, aliased) = ensure_agent_tab(
@@ -21436,6 +22854,7 @@ mod tests {
             "run-alias",
             &crate::agent::derived_agent_id("run-alias"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -21460,6 +22879,7 @@ mod tests {
             "run-detach",
             &crate::agent::derived_agent_id("run-detach"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
         handler(
@@ -21548,6 +22968,213 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e == "ultra"));
+        let pi = providers
+            .iter()
+            .find(|provider| provider["id"] == "pi")
+            .unwrap();
+        assert_eq!(pi["label"], "Pi");
+        assert_eq!(pi["models"], json!([]));
+        assert_eq!(
+            pi["efforts"],
+            json!(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+        );
+    }
+
+    #[test]
+    fn pi_specs_use_the_configured_store_state_root() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let private_state = state_dir.path().join("configured-state");
+        let worktree = state_dir.path().join("worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let context =
+            HarnessContext::resolved(state_dir.path().join("mcp.sock"), private_state.clone())
+                .unwrap();
+        let state = AppState::new_configured(
+            repo,
+            state_dir.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        )
+        .with_task_store(private_state.join("tasks"))
+        .unwrap();
+        assert_eq!(
+            state.state_root,
+            std::fs::canonicalize(&private_state).unwrap()
+        );
+        let Agent::WarmBuilder(build) = &state.agent else {
+            panic!("real agent is provider-aware");
+        };
+        let spec = build(
+            "",
+            &ModelChoice {
+                provider: AgentProvider::Pi,
+                model: None,
+                effort: Some("minimal".to_string()),
+            },
+            &SpawnOptions {
+                owner_id: "agent-state-root".to_string(),
+                mcp_session_token: "token".to_string(),
+                cwd: worktree,
+                ..SpawnOptions::default()
+            },
+        )
+        .unwrap();
+        let canonical_state = std::fs::canonicalize(&private_state).unwrap();
+        assert!(Path::new(&spec.args[3]).starts_with(canonical_state.join("harness/pi")));
+        assert!(Path::new(&spec.args[5]).starts_with(canonical_state.join("harness/pi")));
+        let bridge = spec
+            .env
+            .iter()
+            .find(|(key, _)| key == "BUILD_PI_MCP_COMMAND")
+            .unwrap();
+        assert!(Path::new(&bridge.1).is_absolute());
+        assert_eq!(
+            PathBuf::from(&bridge.1),
+            std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn every_harness_path_uses_the_contexts_canonical_bridge_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let bridge_exe = directory.path().join("canonical-build-bridge");
+        std::fs::write(&bridge_exe, "test executable").unwrap();
+        let bridge_exe = std::fs::canonicalize(bridge_exe).unwrap();
+        let state_root = directory.path().join("state");
+        std::fs::create_dir(&state_root).unwrap();
+        let context = HarnessContext {
+            bridge_exe: bridge_exe.clone(),
+            mcp_socket: directory.path().join("mcp.sock"),
+            state_root: std::fs::canonicalize(state_root).unwrap(),
+        };
+        let state = AppState::new_configured(
+            repo,
+            directory.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        );
+        let Agent::WarmBuilder(build) = &state.agent else {
+            panic!("real agent is provider-aware");
+        };
+        let worktree = directory.path().join("agent-worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let options = SpawnOptions {
+            owner_id: "agent-one-executable".to_string(),
+            mcp_session_token: "token".to_string(),
+            cwd: worktree.clone(),
+            ..SpawnOptions::default()
+        };
+
+        let pi = build(
+            "",
+            &ModelChoice {
+                provider: AgentProvider::Pi,
+                model: None,
+                effort: None,
+            },
+            &options,
+        )
+        .unwrap();
+        assert!(pi.env.iter().any(|(key, value)| {
+            key == "BUILD_PI_MCP_COMMAND" && Path::new(value) == bridge_exe
+        }));
+
+        let codex = build(
+            "",
+            &ModelChoice {
+                provider: AgentProvider::Codex,
+                model: None,
+                effort: None,
+            },
+            &options,
+        )
+        .unwrap();
+        let bridge_exe_text = bridge_exe.to_string_lossy();
+        assert!(
+            codex.args.join(" ").contains(bridge_exe_text.as_ref()),
+            "Codex must receive the same executable: {:?}",
+            codex.args
+        );
+
+        state.projects[0]
+            .orch
+            .agent_launch()
+            .prepare(
+                &options.owner_id,
+                &worktree,
+                &ModelChoice::default(),
+                false,
+                None,
+                &options.mcp_session_token,
+            )
+            .unwrap();
+        let scaffold: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                worktree.join(crate::orchestrator::mcp_config_path(&options.owner_id)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            scaffold["mcpServers"]["build"]["command"],
+            bridge_exe.to_string_lossy().as_ref(),
+            "Claude's scaffold must use the same executable fact"
+        );
+    }
+
+    #[test]
+    fn task_store_parent_must_match_the_configured_state_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let configured_state = directory.path().join("configured-state");
+        let other_state = directory.path().join("other-state");
+        std::fs::create_dir(&other_state).unwrap();
+        let context =
+            HarnessContext::resolved(directory.path().join("mcp.sock"), configured_state.clone())
+                .unwrap();
+
+        let error = AppState::new_configured(
+            repo,
+            directory.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        )
+        .with_task_store(other_state.join("tasks"))
+        .err()
+        .expect("a detached task store must be rejected");
+
+        assert!(
+            error.contains(&configured_state.display().to_string()),
+            "{error}"
+        );
+        assert!(
+            error.contains(&other_state.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn configured_pi_router_is_rejected_and_the_default_stays_claude_adk() {
+        let (dir, repo) = init_repo();
+        let config = dir.path().join("config.json");
+        std::fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "router_model": { "provider": "pi", "effort": "low" },
+                "projects": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/mcp.sock")
+            .with_config(config)
+            .unwrap();
+        assert!(state.router_choice.is_none());
     }
 
     /// Build mints a fresh worktree per run, and an interactive harness gates a
@@ -21558,7 +23185,7 @@ mod tests {
     /// `--config`, so nothing outside this spawn is touched.
     #[test]
     fn codex_argv_pre_trusts_the_worktree_it_will_run_in() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/m.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -21572,7 +23199,8 @@ mod tests {
                 cwd: std::path::PathBuf::from("/tmp/build worktrees/run-9"),
                 ..SpawnOptions::default()
             },
-        );
+        )
+        .unwrap();
         let args = spec.args.join(" ");
         assert!(
             args.contains(r#"projects."/tmp/build worktrees/run-9".trust_level="trusted""#),
@@ -21587,14 +23215,14 @@ mod tests {
     /// detector must be disabled for every Codex process it owns.
     #[test]
     fn codex_argv_disables_the_fallback_paste_burst_detector() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/m.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
             provider: AgentProvider::Codex,
             ..ModelChoice::default()
         };
-        let spec = build("one line", &choice, &SpawnOptions::default());
+        let spec = build("one line", &choice, &SpawnOptions::default()).unwrap();
 
         assert!(
             spec.args
@@ -21607,7 +23235,7 @@ mod tests {
 
     #[test]
     fn real_tui_argv_includes_the_selected_model_and_effort() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/m.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -21615,7 +23243,7 @@ mod tests {
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
         };
-        let spec = build("do the thing", &choice, &SpawnOptions::default());
+        let spec = build("do the thing", &choice, &SpawnOptions::default()).unwrap();
         let args = spec.args.join(" ");
         assert_eq!(spec.binary, "claude");
         assert!(!args
@@ -21630,7 +23258,8 @@ mod tests {
             "do the thing",
             &ModelChoice::default(),
             &SpawnOptions::default(),
-        );
+        )
+        .unwrap();
         assert!(!spec.args.join(" ").contains("--model"));
         // A continuation spawn resumes the cwd's conversation, flag placed right
         // after the permission arg and before any model args.
@@ -21641,7 +23270,8 @@ mod tests {
                 continue_session: true,
                 ..SpawnOptions::default()
             },
-        );
+        )
+        .unwrap();
         let args = spec.args.join(" ");
         assert!(
             args.contains("--dangerously-skip-permissions --continue --model"),
@@ -21651,7 +23281,7 @@ mod tests {
 
     #[test]
     fn codex_tui_argv_wires_done_mcp_and_resumes_by_cwd() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/build mcp.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/build mcp.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -21664,7 +23294,7 @@ mod tests {
             owner_id: "run-7".into(),
             ..SpawnOptions::default()
         };
-        let spec = build("do the thing", &choice, &options);
+        let spec = build("do the thing", &choice, &options).unwrap();
         assert_eq!(spec.binary, "codex");
         let args = spec.args.join(" ");
         assert!(!args.contains("exec"), "{args}");
@@ -21692,7 +23322,8 @@ mod tests {
                 owner_id: "run-7".into(),
                 ..SpawnOptions::default()
             },
-        );
+        )
+        .unwrap();
         assert!(resumed.args.join(" ").ends_with("resume --last"));
     }
 
@@ -22699,6 +24330,26 @@ mod tests {
         git_in_dir(dest, &["config", "user.name", "O"]);
     }
 
+    /// Another dev pushes one commit on `branch` to `origin`; the path returned
+    /// is a fresh clone that has fetched it but never checked it out, so the
+    /// branch exists there only as `origin/<branch>`.
+    fn origin_with_pushed_branch(
+        dir: &tempfile::TempDir,
+        origin: &std::path::Path,
+        branch: &str,
+    ) -> std::path::PathBuf {
+        let other = dir.path().join("other");
+        clone_working(origin, &other);
+        git_in_dir(&other, &["checkout", "-b", branch]);
+        std::fs::write(other.join("work.rs"), "one\n").unwrap();
+        git_in_dir(&other, &["add", "."]);
+        git_in_dir(&other, &["commit", "-m", "remote work"]);
+        git_in_dir(&other, &["push", "origin", branch]);
+        let clone = dir.path().join("clone");
+        clone_working(origin, &clone);
+        clone
+    }
+
     #[test]
     fn git_status_carries_the_repo_management_fields() {
         let (dir, repo) = init_repo();
@@ -22971,13 +24622,14 @@ mod tests {
             .find(|b| b["name"] == "feature-elsewhere")
             .unwrap();
         assert_eq!(
-            elsewhere["external_worktree_id"], worktree_id,
+            elsewhere["holder"],
+            json!({ "kind": "external_worktree", "id": worktree_id }),
             "{elsewhere:?}"
         );
         let main = branches.iter().find(|b| b["name"] == "main").unwrap();
-        assert!(
-            main["external_worktree_id"].is_null(),
-            "the checked-out-here branch is not flagged: {main:?}"
+        assert_eq!(
+            main["holder"]["kind"], "primary_checkout",
+            "the checked-out-here branch is the repository's own: {main:?}"
         );
     }
 
@@ -22999,7 +24651,253 @@ mod tests {
             .iter()
             .find(|b| b["name"] == "feature-adopted")
             .unwrap();
-        assert!(adopted["external_worktree_id"].is_null(), "{adopted:?}");
+        assert_eq!(adopted["holder"]["kind"], "run", "{adopted:?}");
+    }
+
+    /// A branch nobody here has ever checked out is still work the user can
+    /// start: it is listed once, named by the local branch it would become,
+    /// and it says which remote a fetch would come from. The clone's
+    /// `origin/HEAD` is a symbolic pointer at another branch, not a branch —
+    /// it never becomes a row — and `main`, which has both a local ref and a
+    /// remote-tracking ref, is one row carrying its upstream.
+    #[test]
+    fn git_branches_lists_a_remote_only_branch_with_its_remote() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
+        let mut state = git_gui_state(&dir, &clone);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+
+        let feature = branches
+            .iter()
+            .find(|b| b["name"] == "feature-x")
+            .unwrap_or_else(|| panic!("the remote-only branch is offerable: {branches:?}"));
+        assert_eq!(feature["remote"], "origin", "{feature:?}");
+        assert_eq!(feature["is_current"], false, "{feature:?}");
+        assert!(feature["upstream"].is_null(), "{feature:?}");
+        assert!(feature["holder"].is_null(), "{feature:?}");
+        assert_eq!(feature["stat"]["insertions"], 1, "{feature:?}");
+
+        assert!(
+            !branches.iter().any(|b| b["name"] == "HEAD"),
+            "a symbolic remote ref is not a branch: {branches:?}"
+        );
+        let mains: Vec<&Value> = branches.iter().filter(|b| b["name"] == "main").collect();
+        assert_eq!(mains.len(), 1, "{branches:?}");
+        assert!(mains[0]["remote"].is_null(), "{mains:?}");
+        assert_eq!(mains[0]["upstream"], "origin/main", "{mains:?}");
+    }
+
+    /// A remote branch whose name has a slash is one branch named
+    /// `feature/nested`, not a branch `nested` under some other heading: the
+    /// name is everything after `refs/remotes/<remote>/`, however many
+    /// segments that is. Nested names are the common case for a team's
+    /// branches, so a listing that dropped them would offer the user almost
+    /// nothing.
+    #[test]
+    fn git_branches_lists_a_remote_only_branch_whose_name_has_a_slash() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let clone = origin_with_pushed_branch(&dir, &origin, "feature/nested");
+        let mut state = git_gui_state(&dir, &clone);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+
+        let nested: Vec<&Value> = branches
+            .iter()
+            .filter(|b| b["name"] == "feature/nested")
+            .collect();
+        assert_eq!(nested.len(), 1, "{branches:?}");
+        assert_eq!(nested[0]["remote"], "origin", "{nested:?}");
+        assert!(
+            !branches.iter().any(|b| b["name"] == "nested"),
+            "the name is the whole suffix, not its last segment: {branches:?}"
+        );
+    }
+
+    /// A branch two remotes both carry is still one branch to offer. It is
+    /// listed once, from the remote a fetch would come from: `origin` when
+    /// origin has it, whatever the other remote is called — git lists remotes
+    /// alphabetically, and `fork` sorts before `origin`.
+    #[test]
+    fn git_branches_lists_a_branch_two_remotes_carry_once_preferring_origin() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
+        git_in_dir(&clone, &["remote", "add", "fork", origin.to_str().unwrap()]);
+        git_in_dir(&clone, &["fetch", "fork"]);
+        let mut state = git_gui_state(&dir, &clone);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let features: Vec<&Value> = branches
+            .iter()
+            .filter(|b| b["name"] == "feature-x")
+            .collect();
+        assert_eq!(features.len(), 1, "{branches:?}");
+        assert_eq!(features[0]["remote"], "origin", "{features:?}");
+        let mains: Vec<&Value> = branches.iter().filter(|b| b["name"] == "main").collect();
+        assert_eq!(mains.len(), 1, "{branches:?}");
+    }
+
+    /// A branch Build already runs is not a checkout the picker can offer —
+    /// it is a run to open — so the row names the run holding it.
+    #[test]
+    fn git_branches_names_the_run_that_owns_a_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let adopted = branches
+            .iter()
+            .find(|b| b["name"] == "feature-adopted")
+            .unwrap();
+        assert_eq!(
+            adopted["holder"],
+            json!({ "kind": "run", "id": run_id }),
+            "{adopted:?}"
+        );
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert_eq!(main["holder"]["kind"], "primary_checkout", "{main:?}");
+    }
+
+    /// The repository's own checkout is deliberately absent from the external
+    /// scan, so without asking after it the branch it holds would look free to
+    /// check out a second time — which git refuses. The row names it, with the
+    /// worktree id `run.adopt` adopts the primary by.
+    #[test]
+    fn git_branches_names_the_primary_checkout_holding_a_branch() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "feature-idle"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
+            .unwrap()
+            .unwrap()
+            .id;
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert_eq!(
+            main["holder"],
+            json!({ "kind": "primary_checkout", "id": primary_id }),
+            "{main:?}"
+        );
+        let idle = branches
+            .iter()
+            .find(|b| b["name"] == "feature-idle")
+            .unwrap();
+        assert!(idle["holder"].is_null(), "{idle:?}");
+    }
+
+    /// A run adopted over the primary checkout is two holders of one branch,
+    /// and only one of them can be pressed: the run knows the branch's
+    /// lifecycle, so the row names the run and says nothing about the checkout
+    /// underneath it.
+    #[test]
+    fn git_branches_lets_the_run_win_the_primary_checkout_it_adopted() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert_eq!(
+            main["holder"],
+            json!({ "kind": "run", "id": run_id }),
+            "the run that adopted the primary speaks for its branch: {main:?}"
+        );
+    }
+
+    /// A repository whose HEAD is detached has no branch in its primary
+    /// checkout to hold anything. That costs the rows a primary-checkout
+    /// holder and nothing else — the branches are still listed, and still
+    /// offerable.
+    #[test]
+    fn git_branches_lists_every_branch_when_the_primary_holds_none() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "feature-idle"]);
+        git_in_dir(&repo, &["checkout", "--detach"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        assert!(
+            branches.iter().any(|b| b["name"] == "feature-idle"),
+            "{branches:?}"
+        );
+        assert!(
+            branches
+                .iter()
+                .all(|b| b["holder"]["kind"] != json!("primary_checkout")),
+            "a detached primary holds no branch: {branches:?}"
+        );
+    }
+
+    /// A repository that cannot be read refuses the listing rather than
+    /// answering with rows nothing is stamped on. "Nothing holds this branch"
+    /// is the answer that sends the user into a checkout git refuses, so it
+    /// is never invented from a failed lookup.
+    #[test]
+    fn git_branches_refuses_a_project_whose_repository_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_repo = dir.path().join("plain");
+        std::fs::create_dir(&not_a_repo).unwrap();
+        let mut state = git_gui_state(&dir, &not_a_repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+
+        assert_eq!(res["ok"], false, "{res:?}");
+        assert!(
+            res["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("could not find repository"),
+            "git's own refusal reaches the caller: {res:?}"
+        );
+    }
+
+    /// The mirror of the refusal above, for the checkouts a row is stamped
+    /// from: a project whose repository vanished after registration has no
+    /// checkouts to ask, and the listing says so rather than answering with
+    /// rows nothing holds.
+    #[test]
+    fn git_branches_refuses_a_project_whose_checkouts_cannot_be_read() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::remove_dir_all(&repo).unwrap();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+
+        assert_eq!(res["ok"], false, "{res:?}");
+        assert!(
+            res["result"].get("branches").is_none(),
+            "no rows are invented for a repository that cannot be read: {res:?}"
+        );
     }
 
     #[test]
@@ -23231,15 +25129,11 @@ mod tests {
     /// and `run.create` reads/writes through it, so every lifecycle test needs
     /// one.
     fn qa_state(repo: &std::path::Path, dir: &std::path::Path) -> AppState {
-        AppState::new(
-            repo.to_path_buf(),
-            dir.join("wt"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .with_task_store(dir.join("store"))
-        .unwrap()
+        let context = HarnessContext::resolved(dir.join("test-mcp.sock"), dir.to_path_buf())
+            .expect("resolve QA harness context");
+        AppState::new_configured(repo.to_path_buf(), dir.join("wt"), "main", true, context)
+            .with_task_store(dir.join("store"))
+            .unwrap()
     }
 
     /// A QA daemon behind the shared `Arc` plus its frame handler — the entry
@@ -24633,15 +26527,12 @@ mod tests {
             recovery_id = state.runs[&run_id].recovery.as_ref().unwrap().id.clone();
         }
 
-        let state = AppState::new(
-            repo,
-            dir.path().join("wt"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .with_task_store(dir.path().join("store"))
-        .expect("a pending recovery must not abort daemon startup");
+        let context =
+            HarnessContext::resolved(dir.path().join("test-mcp.sock"), dir.path().to_path_buf())
+                .unwrap();
+        let state = AppState::new_configured(repo, dir.path().join("wt"), "main", true, context)
+            .with_task_store(dir.path().join("store"))
+            .expect("a pending recovery must not abort daemon startup");
         let recovery = state.runs[&run_id]
             .recovery
             .as_ref()
@@ -29776,7 +31667,7 @@ mod tests {
              \n\
              So the file contains exactly: BUILD-DELIVERED\n";
 
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/unused-e2e.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/unused-e2e.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -29793,7 +31684,7 @@ mod tests {
         };
         // Building the spec is what pre-trusts the workspace — the dialog this
         // guards against fires precisely because the directory is brand new.
-        let spec = build(prompt, &choice, &options);
+        let spec = build(prompt, &choice, &options).unwrap();
 
         // The three lines under test, mirroring what `open_session` waits out
         // and what `deliver` then hands over — spelled out against the concrete
@@ -29984,6 +31875,7 @@ mod tests {
             dir.path().join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
 
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
@@ -30224,6 +32116,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
         let (mut active, _turn) = side
@@ -30387,7 +32280,7 @@ mod tests {
             terminal: TerminalOpenOptions {
                 size,
                 turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
-                session_locator: None,
+                identity: None,
             },
             resume_session_id: None,
         }
@@ -30671,6 +32564,7 @@ mod tests {
             "run-spoken-to",
             &crate::agent::derived_agent_id("run-spoken-to"),
             &ModelChoice::default(),
+            "build",
             "get to work",
             "there is more",
         )
@@ -31128,16 +33022,14 @@ mod tests {
         let runs_dir = dir.path().join("store").join("runs");
         std::fs::create_dir_all(&runs_dir).unwrap();
         std::fs::write(runs_dir.join("run-bad.json"), "{ not json").unwrap();
-        let err = AppState::new(
-            repo.clone(),
-            dir.path().join("wt"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .with_task_store(dir.path().join("store"))
-        .err()
-        .expect("boot should fail on a corrupt record");
+        let context =
+            HarnessContext::resolved(dir.path().join("test-mcp.sock"), dir.path().to_path_buf())
+                .unwrap();
+        let err =
+            AppState::new_configured(repo.clone(), dir.path().join("wt"), "main", true, context)
+                .with_task_store(dir.path().join("store"))
+                .err()
+                .expect("boot should fail on a corrupt record");
         assert!(err.contains("run-bad.json"), "{err}");
     }
 
@@ -32100,6 +33992,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
         let (active, _turn) = side
@@ -32156,6 +34049,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
         let (active, _turn) = side
@@ -32421,7 +34315,7 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let projects_dir = transcripts.path().to_path_buf();
@@ -32430,8 +34324,13 @@ mod tests {
             s.transcript_probe = Arc::new(move |cwd, provider| {
                 provider == AgentProvider::Claude && claude::transcript_exists(&projects_dir, cwd)
             });
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             // Both are respawns: a session of each agent's own has opened
             // before, which is what puts them in the crash window a guess is
             // for. What separates them is only what is on disk.
@@ -32555,6 +34454,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let (active, _turn) = side
             .dispatch_plan(
@@ -33169,6 +35069,7 @@ mod tests {
             "run-waited-for",
             &crate::agent::derived_agent_id("run-waited-for"),
             &ModelChoice::default(),
+            "build",
             "COLD-PROMPT-FOR-A-WAITING-CLIENT",
             "WARM-NUDGE",
         )
@@ -33239,6 +35140,7 @@ mod tests {
             "run-respawn-race",
             &crate::agent::derived_agent_id("run-respawn-race"),
             &choice,
+            "build",
             "FIRST-SESSION",
             "warm",
         )
@@ -33272,6 +35174,7 @@ mod tests {
             "run-respawn-race",
             &crate::agent::derived_agent_id("run-respawn-race"),
             &choice,
+            "build",
             "SECOND-SESSION",
             "warm",
         )
@@ -33307,10 +35210,15 @@ mod tests {
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         let agent = Agent::WarmBuilder(Arc::new(
-            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| spec.clone(),
+            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| Ok(spec.clone()),
         ));
-        s.projects[0].orch =
-            Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+        s.projects[0].orch = Orchestrator::new(
+            repo.to_path_buf(),
+            worktrees,
+            agent,
+            Templates::default(),
+            test_bridge_exe(),
+        );
         ModelChoice {
             provider: AgentProvider::ClaudeAdk,
             ..ModelChoice::default()
@@ -33352,6 +35260,7 @@ mod tests {
             "run-headless-wait",
             &agent_id,
             &choice,
+            "build",
             "cold",
             "warm",
         )
@@ -33405,6 +35314,7 @@ mod tests {
             "run-carrier-swap",
             &agent_id,
             &ModelChoice::default(),
+            "build",
             "FIRST-SESSION",
             "warm",
         )
@@ -33435,6 +35345,7 @@ mod tests {
             "run-carrier-swap",
             &agent_id,
             &choice,
+            "build",
             "SECOND-SESSION",
             "warm",
         )
@@ -34005,6 +35916,7 @@ mod tests {
             "run-closed-client",
             &crate::agent::derived_agent_id("run-closed-client"),
             &ModelChoice::default(),
+            "build",
             "COLD-PROMPT",
             "WARM-NUDGE",
         )
@@ -34280,6 +36192,436 @@ mod tests {
         assert!(
             state.handle(req("worktree.create", json!({ "project_id": project_id })))["ok"]
                 == false
+        );
+    }
+
+    /// The create modal's other half: a branch that already exists is checked
+    /// out into a Build-managed worktree, with nothing cut and no commit of
+    /// its lost. The branch is somebody's work; Build is only borrowing it a
+    /// directory.
+    #[test]
+    fn worktree_create_checks_out_an_existing_local_branch_without_cutting() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["checkout", "-q", "-b", "theirs"]);
+        std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
+        git_in_dir(&repo, &["add", "."]);
+        git_in_dir(&repo, &["commit", "-m", "their work"]);
+        git_in_dir(&repo, &["checkout", "-q", "main"]);
+        let tip = git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("theirs", git2::BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["branch"], "theirs", "{result:?}");
+        assert_eq!(result["branch_was_cut"], false, "{result:?}");
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(path.join("theirs.txt")).unwrap(),
+            "their work\n",
+            "the checkout carries the branch's own work"
+        );
+        assert_eq!(
+            git2::Repository::open(&repo)
+                .unwrap()
+                .find_branch("theirs", git2::BranchType::Local)
+                .unwrap()
+                .get()
+                .target()
+                .unwrap(),
+            tip,
+            "the branch itself was not moved"
+        );
+        assert!(state.runs.is_empty(), "a checkout is not a run");
+        let listed = state.external_worktrees(&project_id, true).unwrap();
+        assert!(listed
+            .iter()
+            .any(|w| w.id == result["worktree_id"].as_str().unwrap()));
+    }
+
+    /// A branch only a remote carries is fetched and made local with its
+    /// upstream set — the bug this affordance exists to fix was cutting an
+    /// empty branch of the same name over the top of the team's work.
+    #[test]
+    fn worktree_create_fetches_a_branch_only_a_remote_carries() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
+        let mut state = qa_state(&clone, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "feature-x" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["branch"], "feature-x", "{result:?}");
+        assert_eq!(result["branch_was_cut"], false, "{result:?}");
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap());
+        assert!(
+            path.join("work.rs").is_file(),
+            "the remote work came with it"
+        );
+        let config = git2::Repository::open(&clone).unwrap().config().unwrap();
+        assert_eq!(
+            config.get_string("branch.feature-x.remote").unwrap(),
+            "origin"
+        );
+        assert_eq!(
+            config.get_string("branch.feature-x.merge").unwrap(),
+            "refs/heads/feature-x"
+        );
+    }
+
+    /// Git refuses to check one branch out twice, and the raw refusal tells
+    /// the user nothing they can act on. Every checkout that could be holding
+    /// it is named instead — the run to open, the worktree to adopt, or the
+    /// repository's own checkout.
+    #[test]
+    fn worktree_create_names_the_checkout_already_holding_a_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "run-owned");
+        add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
+        let external_worktree_id = external_id(&mut state, &project_id, Some("by-hand"));
+        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
+            .unwrap()
+            .unwrap()
+            .id;
+
+        for (branch, holder) in [
+            ("run-owned", run_id.as_str()),
+            ("by-hand", external_worktree_id.as_str()),
+            ("main", primary_id.as_str()),
+        ] {
+            let refused = state.handle(req(
+                "worktree.create",
+                json!({ "project_id": project_id, "branch": branch }),
+            ));
+            assert_eq!(refused["ok"], false, "{branch}: {refused:?}");
+            let error = refused["error"].as_str().unwrap();
+            assert!(error.contains(branch), "{branch}: {error}");
+            assert!(
+                error.contains(holder),
+                "{branch}: {error} names no checkout to act on"
+            );
+        }
+    }
+
+    /// Naming a branch means that branch. A name nothing anywhere holds is a
+    /// mistake to be told about, never a fresh empty branch wearing it —
+    /// cutting one from base is what `name` is for.
+    #[test]
+    fn worktree_create_refuses_a_branch_no_ref_holds() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "nobody-cut-this" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("nobody-cut-this", git2::BranchType::Local)
+            .is_err());
+
+        for spelling in ["HEAD", "-dashed", "not a ref name", ""] {
+            let refused = state.handle(req(
+                "worktree.create",
+                json!({ "project_id": project_id, "branch": spelling }),
+            ));
+            assert_eq!(refused["ok"], false, "{spelling:?}: {refused:?}");
+        }
+    }
+
+    /// The two slots mean opposite things — a branch that exists, or words to
+    /// cut a new one after — so a call that gives both has said nothing.
+    #[test]
+    fn worktree_create_takes_exactly_one_of_branch_and_name() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "theirs"]);
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs", "name": "theirs" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+
+        let refused = state.handle(req("worktree.create", json!({ "project_id": project_id })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let message = refused["error"].as_str().unwrap();
+        assert!(
+            message.contains("branch") && message.contains("name"),
+            "the refusal names both slots: {message}"
+        );
+    }
+
+    /// The whole point of not cutting: finishing the checkout hands the branch
+    /// back. A worktree Build cut its own branch for is finished the way it
+    /// always was, and the branch goes with it.
+    #[test]
+    fn finishing_a_borrowed_checkout_keeps_its_branch_and_a_cut_one_does_not() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "theirs"]);
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let borrowed = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(borrowed["ok"], true, "{borrowed:?}");
+        let cut = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "ours" }),
+        ));
+        assert_eq!(cut["ok"], true, "{cut:?}");
+
+        for created in [&borrowed, &cut] {
+            let finished = state.handle(req(
+                "worktree.finish",
+                json!({
+                    "project_id": project_id,
+                    "worktree_id": created["result"]["worktree_id"],
+                    "action": "delete",
+                }),
+            ));
+            assert_eq!(finished["ok"], true, "{finished:?}");
+        }
+
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_branch("theirs", git2::BranchType::Local).is_ok(),
+            "a branch Build only borrowed survives the checkout it lent"
+        );
+        assert!(
+            r.find_branch("build/ours", git2::BranchType::Local)
+                .is_err(),
+            "a branch Build cut goes with it"
+        );
+    }
+
+    /// Merge still merges: withholding the deletion is the whole difference a
+    /// borrowed branch makes, so the work lands on the base and the branch is
+    /// left exactly where it was.
+    #[test]
+    fn finishing_a_borrowed_checkout_with_merge_merges_and_keeps_the_branch() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["checkout", "-b", "theirs"]);
+        std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
+        git_in_dir(&repo, &["add", "."]);
+        git_in_dir(&repo, &["commit", "-m", "their work"]);
+        git_in_dir(&repo, &["checkout", "main"]);
+        let r = git2::Repository::open(&repo).unwrap();
+        let tip = r
+            .find_branch("theirs", git2::BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let borrowed = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(borrowed["ok"], true, "{borrowed:?}");
+
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({
+                "project_id": project_id,
+                "worktree_id": borrowed["result"]["worktree_id"],
+                "action": "merge",
+            }),
+        ));
+
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(
+            repo.join("theirs.txt").is_file(),
+            "the work merged into the base"
+        );
+        assert_eq!(
+            r.find_branch("theirs", git2::BranchType::Local)
+                .expect("the branch Build only borrowed is still here")
+                .get()
+                .target()
+                .unwrap(),
+            tip,
+            "and still where its owner left it"
+        );
+    }
+
+    /// The finish reads whose branch it is from the checkout, and a checkout
+    /// that cannot answer stops the finish. Guessing there deletes a ref
+    /// nobody asked Build to touch, so nothing is removed and nothing is
+    /// deleted.
+    #[test]
+    fn finishing_a_checkout_that_cannot_say_whose_branch_it_is_aborts() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "unreadable" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let path = std::path::PathBuf::from(created["result"]["path"].as_str().unwrap());
+        std::fs::write(path.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
+
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({
+                "project_id": project_id,
+                "worktree_id": created["result"]["worktree_id"],
+                "action": "delete",
+            }),
+        ));
+
+        assert_eq!(finished["ok"], false, "{finished:?}");
+        assert!(path.exists(), "nothing was removed");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("build/unreadable", git2::BranchType::Local)
+            .is_ok());
+    }
+
+    /// With a checkout's registration pruned, nothing on disk says whether
+    /// teardown owns its branch, and the run either knows or does not. A run
+    /// Build dispatched works in a checkout Build cut, so it can vouch. An
+    /// adopted run's checkout may be one Build only borrowed, so it cannot,
+    /// and its recovery stops rather than restoring under a guess that would
+    /// hand somebody's branch to the next teardown.
+    #[test]
+    fn only_a_run_build_cut_its_own_checkout_for_vouches_for_its_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "borrowed");
+
+        assert_eq!(
+            unregistered_restore_for(state.runs.get(&run_id).unwrap()),
+            crate::worktree::UnregisteredRestore::Refuse
+        );
+
+        state.runs.get_mut(&run_id).unwrap().adopted = false;
+        assert_eq!(
+            unregistered_restore_for(state.runs.get(&run_id).unwrap()),
+            crate::worktree::UnregisteredRestore::Write(
+                crate::worktree::BranchTeardown::DeletesBranch
+            )
+        );
+    }
+
+    /// The same rule at the call site that acts on it: an adopted run's
+    /// checkout may be one Build only borrowed, so with its registration gone
+    /// recovery stops instead of re-adding it under a guess that would hand
+    /// somebody's branch to the next teardown.
+    #[test]
+    fn recovering_an_adopted_checkout_whose_registration_is_gone_refuses() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "theirs"]);
+        // Adoption records the checkout's canonical path, and the managed-root
+        // guard compares it to the configured root, so the test's root is the
+        // canonical one a real install has.
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let mut state = qa_state(&repo, &root);
+        let project_id = state.projects[0].id.clone();
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({
+                "project_id": project_id,
+                "worktree_id": created["result"]["worktree_id"],
+            }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+        let worktree = state.runs[&run_id].worktree.clone();
+        let head_sha = git2::Repository::open(&repo)
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        git_in_dir(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.path.to_str().unwrap(),
+            ],
+        );
+        let recovery_id = "recovery-adopted".to_string();
+        state.runs.get_mut(&run_id).unwrap().recovery = Some(crate::run::RecoveryAttempt {
+            id: recovery_id.clone(),
+            requested_stage_id: String::new(),
+            branch: worktree.recorded_branch.clone(),
+            state: crate::run::RecoveryState::Started,
+            report: None,
+            started_at: now_rfc3339(),
+            completed_at: None,
+        });
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Recover,
+                status: DoneStatus::Completed,
+                summary: "exact branch recovered".into(),
+                outputs: DoneOutputs {
+                    recovery: Some(crate::mcp::RecoveryReport {
+                        recovery_id,
+                        recovered: true,
+                        branch: worktree.recorded_branch.clone(),
+                        head_sha,
+                        findings: "the branch is still here".into(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+
+        let active = &state.runs[&run_id];
+        assert_eq!(
+            active.recovery.as_ref().unwrap().state,
+            crate::run::RecoveryState::Failed
+        );
+        let error = active.last_error.clone().unwrap_or_default();
+        assert!(error.contains("registration is gone"), "{error}");
+        assert!(!worktree.path.exists(), "nothing was re-added");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_worktree(&worktree.name)
+            .is_err());
+        assert!(
+            git2::Repository::open(&repo)
+                .unwrap()
+                .find_branch("theirs", git2::BranchType::Local)
+                .is_ok(),
+            "the branch it borrowed is untouched"
         );
     }
 
@@ -34985,6 +37327,7 @@ mod tests {
             "run-pulse",
             &crate::agent::derived_agent_id("run-pulse"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -37127,11 +39470,16 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorded.lock().unwrap().push(options.clone());
-                    spec.clone()
+                    Ok(spec.clone())
                 },
             ));
-            s.projects[0].orch =
-                Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.to_path_buf(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             ModelChoice {
                 provider: AgentProvider::ClaudeAdk,
                 ..ModelChoice::default()
@@ -37159,10 +39507,12 @@ mod tests {
                 },
                 options,
                 &crate::harness::HarnessContext {
-                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                    bridge_exe: std::path::PathBuf::from("/usr/local/bin/build-bridge"),
+                    mcp_socket: std::path::PathBuf::from("/tmp/build-mcp.sock"),
+                    state_root: std::path::PathBuf::from("/tmp/build-state"),
                 },
             )
+            .unwrap()
             .args
             .join(" ")
     }
@@ -37399,7 +39749,7 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let mut s = state.lock().unwrap();
@@ -37408,8 +39758,13 @@ mod tests {
             // picked up is the whole question.
             s.transcript_probe = Arc::new(|_, _| true);
             s.resume_id_probe = Arc::new(|_, _, id| id == "sess-named");
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             // 1. A name Build wrote down, and the provider still holds it.
             s.runs
                 .get_mut("run-named")
@@ -37522,14 +39877,19 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.resume_id_probe = Arc::new(|_, _, id| id == "sess-pty");
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         let posted = call(
@@ -37614,10 +39974,12 @@ mod tests {
                 &ModelChoice::default(),
                 options,
                 &crate::harness::HarnessContext {
-                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                    bridge_exe: std::path::PathBuf::from("/usr/local/bin/build-bridge"),
+                    mcp_socket: std::path::PathBuf::from("/tmp/build-mcp.sock"),
+                    state_root: std::path::PathBuf::from("/tmp/build-state"),
                 },
             )
+            .unwrap()
             .args
             .join(" ")
     }
@@ -37638,15 +40000,20 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
                     // Announces its line editor, takes the turn, and leaves.
-                    HarnessSpec::new("sh")
+                    Ok(HarnessSpec::new("sh")
                         .arg("-c")
-                        .arg("printf '\\033[?2004h'; exit 0")
+                        .arg("printf '\\033[?2004h'; exit 0"))
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         let posted = call(
@@ -37688,12 +40055,17 @@ mod tests {
         );
         {
             let agent = Agent::WarmBuilder(Arc::new(
-                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| warm_tui_spec(),
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| Ok(warm_tui_spec()),
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         let chosen = call(
@@ -37847,16 +40219,21 @@ mod tests {
         {
             let agent = Agent::WarmBuilder(Arc::new(
                 |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                    HarnessSpec::new("sh")
+                    Ok(HarnessSpec::new("sh")
                         .arg("-c")
-                        .arg("printf '\\033[?2004h'; exit 0")
+                        .arg("printf '\\033[?2004h'; exit 0"))
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.resume_id_probe = Arc::new(|_, _, _| true);
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             s.runs
                 .get_mut("run-quiet")
                 .expect("the run")
@@ -37904,14 +40281,19 @@ mod tests {
         let agent = Agent::WarmBuilder(Arc::new(
             move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                 recorder.lock().unwrap().push(options.clone());
-                warm_tui_spec()
+                Ok(warm_tui_spec())
             },
         ));
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         s.transcript_probe = Arc::new(|_, _| true);
-        s.projects[0].orch =
-            Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+        s.projects[0].orch = Orchestrator::new(
+            repo.to_path_buf(),
+            worktrees,
+            agent,
+            Templates::default(),
+            test_bridge_exe(),
+        );
         drop(s);
         specs_built
     }
@@ -38048,14 +40430,19 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.resume_id_probe = Arc::new(|_, _, _| false);
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             s.runs
                 .get_mut("run-poisoned")
                 .expect("the run")
@@ -38759,6 +41146,7 @@ mod tests {
             "run-in-the-worktree",
             &crate::agent::derived_agent_id("run-in-the-worktree"),
             &ModelChoice::default(),
+            "start",
         )
         .expect("the agent spawns");
         assert_eq!(
@@ -38836,6 +41224,7 @@ mod tests {
             "agent-in-the-worktree",
             &crate::agent::derived_agent_id("agent-in-the-worktree"),
             &ModelChoice::default(),
+            "start",
         )
         .expect("the agent spawns");
         assert!(
@@ -42928,6 +45317,35 @@ mod tests {
         assert!(state.pending_agent_turns.is_empty());
     }
 
+    /// A branch the repository's own checkout is on is one git refuses to
+    /// check out a second time, and its refusal names nothing the caller can
+    /// act on. The dispatch answers with the checkout that holds the branch,
+    /// as `worktree.create {branch}` does — one resolution for both.
+    #[test]
+    fn branch_dispatch_names_the_primary_checkout_holding_its_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "main",
+                "instruction": "work on main itself",
+            }),
+        ));
+
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let message = refused["error"].as_str().unwrap();
+        assert!(message.contains("primary checkout"), "{message}");
+        assert!(state.runs.is_empty(), "nothing was created");
+        assert!(state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .is_empty());
+    }
+
     /// Refusals come before anything is created: an unknown project and an
     /// empty instruction both leave the repo untouched.
     #[test]
@@ -43493,7 +45911,7 @@ mod tests {
         let created = state.handle(req("capture.create", json!({ "text": text })));
         assert_eq!(created["ok"], true, "{created:?}");
         let capture_id = created["result"]["id"].as_str().unwrap().to_string();
-        let agent_id = state.router_sessions[&capture_id].agent_id.clone();
+        let agent_id = state.router_sessions[&capture_id].agent_id().to_string();
         (capture_id, agent_id)
     }
 
@@ -43518,20 +45936,23 @@ mod tests {
         );
         let session = state.router_sessions[&capture_id].clone();
         assert_eq!(
-            session.scratch_dir,
-            dir.path().join("router-scratch").join(&capture_id)
+            session.scratch_dir(),
+            std::fs::canonicalize(dir.path())
+                .unwrap()
+                .join("router-scratch")
+                .join(&capture_id)
         );
         assert!(
-            session.scratch_dir.is_dir(),
+            session.scratch_dir().is_dir(),
             "the scratch is cut before the spawn"
         );
         assert!(
-            !session.scratch_dir.starts_with(&repo),
+            !session.scratch_dir().starts_with(&repo),
             "a router never works inside a checkout: {}",
-            session.scratch_dir.display()
+            session.scratch_dir().display()
         );
         assert_eq!(
-            session.choice.effort.as_deref(),
+            session.choice().effort.as_deref(),
             Some("low"),
             "routing is cheap thinking over a lot of context"
         );
@@ -43542,7 +45963,7 @@ mod tests {
             .find(|turn| turn.owner == capture_id)
             .expect("the router is given a turn");
         assert_eq!(turn.agent_id, agent_id);
-        assert_eq!(turn.root, session.scratch_dir);
+        assert_eq!(turn.root, session.scratch_dir());
         assert_eq!(turn.phase, "route");
         assert!(turn.cold.contains("fix the login redirect"));
         assert!(turn.cold.contains("dispatch_branch"));
@@ -43566,7 +45987,7 @@ mod tests {
         state.begin_routing(&capture_id).unwrap();
         state.begin_routing(&capture_id).unwrap();
 
-        assert_eq!(state.router_sessions[&capture_id].agent_id, agent_id);
+        assert_eq!(state.router_sessions[&capture_id].agent_id(), agent_id);
         assert!(
             state.pending_agent_turns.is_empty(),
             "the router already deciding this capture is the one deciding it"
@@ -44003,7 +46424,9 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, _) = captured(&mut state, "make the thing faster");
         asked_with_two_options(&mut state, &capture_id);
-        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+        let scratch = state.router_sessions[&capture_id]
+            .scratch_dir()
+            .to_path_buf();
 
         let cancelled = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
         assert_eq!(cancelled["ok"], true, "{cancelled:?}");
@@ -44098,7 +46521,8 @@ mod tests {
 
         let session = state.router_sessions[&capture_id].clone();
         assert_ne!(
-            session.agent_id, primary_agent,
+            session.agent_id(),
+            primary_agent,
             "a fresh session decides again"
         );
         let turn = state
@@ -44145,7 +46569,9 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, _) = captured(&mut state, "ship it");
-        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+        let scratch = state.router_sessions[&capture_id]
+            .scratch_dir()
+            .to_path_buf();
 
         state.on_router_done(
             &capture_id,
@@ -44175,7 +46601,9 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
-        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+        let scratch = state.router_sessions[&capture_id]
+            .scratch_dir()
+            .to_path_buf();
         state
             .on_router_mcp_action(
                 &capture_id,
@@ -44221,7 +46649,7 @@ mod tests {
         );
 
         // The one whose harness came up, and then went away with it.
-        state.router_sessions.get_mut(&died).unwrap().started = true;
+        state.router_sessions.get_mut(&died).unwrap().mark_started();
         assert_eq!(state.reap_finished_router_sessions(), vec![died.clone()]);
 
         assert_eq!(capture_record(&mut state, &died)["state"], "failed");
@@ -44441,7 +46869,7 @@ mod tests {
         let retried = state.handle(req("capture.reroute", json!({ "capture_id": capture_id })));
         assert_eq!(retried["ok"], true, "{retried:?}");
         assert_eq!(retried["result"]["state"], "routing");
-        assert_ne!(state.router_sessions[&capture_id].agent_id, primary_agent);
+        assert_ne!(state.router_sessions[&capture_id].agent_id(), primary_agent);
         assert!(state
             .pending_agent_turns
             .iter()

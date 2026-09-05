@@ -51,6 +51,29 @@ pub enum BranchSource {
     ExternalWorktree,
 }
 
+impl BranchSource {
+    /// What this kind of holder is called on the wire, so a client picks the
+    /// verb a held branch offers by reading a name rather than by re-deciding
+    /// which of several stamps outranks the others.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BranchSource::Run => "run",
+            BranchSource::PrimaryCheckout => "primary_checkout",
+            BranchSource::ExternalWorktree => "external_worktree",
+        }
+    }
+
+    /// What this kind of holder is called, for a user being told which one has
+    /// the branch they asked for.
+    pub fn holder_noun(self) -> &'static str {
+        match self {
+            BranchSource::Run => "run",
+            BranchSource::PrimaryCheckout => "the primary checkout",
+            BranchSource::ExternalWorktree => "worktree",
+        }
+    }
+}
+
 /// The identity rows fold on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WorkItemKey {

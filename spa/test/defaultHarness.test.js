@@ -1,14 +1,9 @@
 // @vitest-environment jsdom
-// The account's answer to "which agent does a new one start as".
+// The account fallback used when a coding-agent creation request does not name
+// a provider. Visible creation pickers name their Claude Code or Codex provider
+// and override it.
 //
-// Every harness is an agent of its own, and an agent is locked to the one it
-// was created on — its conversation lives there. So the account setting is not
-// about how an agent runs any more: it names the harness a NEW agent is created
-// on where nobody said otherwise, which is the option the new-agent view leads
-// with and the one the bridge falls back to when it has to deliver.
-//
-// One select, sharing the new-agent view's exact vocabulary, so the two can
-// never drift. The word "headless" stays out of every string a person reads.
+// The word "headless" stays out of every string a person reads.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
@@ -25,117 +20,159 @@ const panel = () => {
 };
 const select = () => document.getElementById("defaultharness");
 const optionText = (control) => [...control.options].map((option) => option.textContent);
+const PROVIDERS = [
+  { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
+  { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
+  { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+  { id: "codex", label: "Codex TUI", models: [], efforts: [] },
+  { id: "pi", label: "Pi", models: [], efforts: [] },
+];
+const CATALOG = { default_provider: "claude_adk", providers: PROVIDERS };
 
 beforeEach(() => {
   document.body.innerHTML = "";
 });
 
 describe("the harness a settings payload names", () => {
-  it("takes the bridge's answer when it names one", () => {
-    expect(defaultHarnessOf({ default_harness: "claude" })).toBe("claude");
-    expect(defaultHarnessOf({ default_harness: "codex_app_server" })).toBe("codex_app_server");
-    expect(defaultHarnessOf({ default_harness: "codex" })).toBe("codex");
+  it("takes the bridge's exact answer when the provider catalog contains it", () => {
+    expect(defaultHarnessOf({ default_harness: "claude" }, PROVIDERS)).toBe("claude");
+    expect(defaultHarnessOf({ default_harness: "pi" }, PROVIDERS)).toBe("pi");
   });
 
-  it("reads a bridge that only speaks the old key through it", () => {
-    expect(defaultHarnessOf({ claude_mode: "tui" })).toBe("claude");
-    expect(defaultHarnessOf({ claude_mode: "headless" })).toBe("claude_adk");
-  });
-
-  it("reads silence and nonsense as the default rather than an empty control", () => {
-    expect(defaultHarnessOf({})).toBe("claude_adk");
-    expect(defaultHarnessOf({ default_harness: "gemini" })).toBe("claude_adk");
-    expect(defaultHarnessOf(null)).toBe("claude_adk");
+  it.each([
+    ["missing", {}],
+    ["malformed", { default_harness: 7 }],
+    ["unknown", { default_harness: "gemini" }],
+  ])("rejects a %s default instead of selecting another provider", (_kind, settings) => {
+    expect(() => defaultHarnessOf(settings, PROVIDERS)).toThrow(/default_harness/i);
   });
 });
 
-describe("the default-agent panel", () => {
-  it("is one select, naming all four harnesses — the one place a carrier is chosen", async () => {
-    const callRpc = vi.fn(async () => ({ default_harness: "claude_adk", claude_mode: "headless" }));
+describe("the fallback-agent panel", () => {
+  it("derives its options from the provider catalog, including Pi", async () => {
+    const callRpc = vi.fn(async (method) => {
+      if (method === "settings.get") return { default_harness: "pi" };
+      if (method === "models.list") return CATALOG;
+      return {};
+    });
     const host = panel();
     await mountDefaultHarness(host, { callRpc });
     await flush();
 
     expect(callRpc).toHaveBeenCalledWith("settings.get");
+    expect(callRpc).toHaveBeenCalledWith("models.list");
     expect(host.querySelectorAll("select")).toHaveLength(1);
-    expect(select().value).toBe("claude_adk");
-    expect(optionText(select())).toEqual(["Claude Code", "Claude Code TUI", "Codex", "Codex TUI"]);
+    expect(select().value).toBe("pi");
+    expect(optionText(select())).toEqual(["Claude Code", "Claude Code TUI", "Codex", "Codex TUI", "Pi"]);
     // Not one visible word about how any of them is carried.
     expect(host.textContent).not.toMatch(/headless/i);
     expect(host.textContent).not.toMatch(/carrier/i);
   });
 
-  it("says what choosing Claude Code TUI does, since no other screen can", async () => {
+  it("explains exactly when the fallback applies and when pickers override it", async () => {
     const host = panel();
-    await mountDefaultHarness(host, { callRpc: vi.fn(async () => ({ default_harness: "claude_adk" })) });
+    await mountDefaultHarness(host, {
+      callRpc: vi.fn(async (method) =>
+        method === "settings.get" ? { default_harness: "claude_adk" } : CATALOG,
+      ),
+    });
     await flush();
 
-    expect(host.textContent).toContain("Claude Code TUI");
-    expect(host.textContent).toContain("terminal");
-    expect(host.textContent).not.toMatch(/headless/i);
+    expect(host.textContent).toContain(
+      "This account fallback is used only when a coding-agent creation request does not name a provider.",
+    );
+    expect(host.textContent).toContain(
+      "Creation pickers send the displayed Claude Code or Codex provider and override this fallback.",
+    );
+    expect(host.textContent).not.toMatch(/branch|every new/i);
   });
 
-  it("saves the chosen harness on the bridge and repaints from what it answers", async () => {
+  it("persists Pi on the bridge and repaints from what it answers", async () => {
+    const callRpc = vi.fn(async (method) => {
+      if (method === "settings.get") return { default_harness: "claude_adk" };
+      if (method === "models.list") return CATALOG;
+      return { default_harness: "pi" };
+    });
+    await mountDefaultHarness(panel(), { callRpc });
+    await flush();
+
+    select().value = "pi";
+    select().dispatchEvent(new Event("change"));
+    await flush();
+
+    expect(callRpc).toHaveBeenCalledWith("settings.set", { default_harness: "pi" });
+    expect(select().value).toBe("pi");
+    expect(select().disabled).toBe(false);
+    expect(document.getElementById("harnesssaved").textContent).toContain("Saved");
+    expect(document.getElementById("harnesssaved").textContent).toBe(
+      "Saved. This fallback applies when a coding-agent creation request does not name a provider.",
+    );
+  });
+
+  it.each([
+    ["missing", {}],
+    ["malformed", { default_harness: { id: "pi" } }],
+    ["unknown", { default_harness: "gemini" }],
+  ])("shows a Settings error for a %s bridge default", async (_kind, settings) => {
+    const callRpc = vi.fn(async (method) => (method === "settings.get" ? settings : CATALOG));
+    await mountDefaultHarness(panel(), { callRpc });
+    await flush();
+
+    expect(document.getElementById("harnesserr").textContent).toMatch(/default_harness/i);
+    expect(select().options).toHaveLength(0);
+    expect(select().value).toBe("");
+    expect(select().disabled).toBe(true);
+  });
+
+  it.each([
+    ["missing providers", {}],
+    ["null providers", { providers: null }],
+    ["empty providers", { providers: [] }],
+  ])("shows a Settings error for a catalog with %s", async (_kind, models) => {
     const callRpc = vi.fn(async (method) =>
-      method === "settings.get" ? { default_harness: "claude_adk" } : { default_harness: "codex_app_server" },
+      method === "settings.get" ? { default_harness: "pi" } : models,
     );
     await mountDefaultHarness(panel(), { callRpc });
     await flush();
 
-    select().value = "codex_app_server";
-    select().dispatchEvent(new Event("change"));
-    await flush();
-
-    expect(callRpc).toHaveBeenCalledWith("settings.set", { default_harness: "codex_app_server" });
-    expect(select().value).toBe("codex_app_server");
-    expect(select().disabled).toBe(false);
-    expect(document.getElementById("harnesssaved").textContent).toContain("Saved");
-    // What it changes and what it does not: the agents already here keep theirs.
-    expect(document.getElementById("harnesssaved").textContent).toMatch(/already|new agents/i);
+    expect(document.getElementById("harnesserr").textContent).toMatch(/models\.list\.providers/i);
+    expect(select().options).toHaveLength(0);
+    expect(select().value).toBe("");
+    expect(select().disabled).toBe(true);
   });
 
-  it("falls back to the old key when the bridge does not know the new one", async () => {
-    // An older bridge under a newer client. The two claude harnesses are still
-    // sayable there, in the words that bridge speaks.
-    const callRpc = vi.fn(async (method, params) => {
-      if (method === "settings.get") return { claude_mode: "headless" };
-      if (params.default_harness) throw new Error("settings.set: nothing to set");
-      return { claude_mode: "tui" };
-    });
-    await mountDefaultHarness(panel(), { callRpc });
-    await flush();
-
-    select().value = "claude";
-    select().dispatchEvent(new Event("change"));
-    await flush();
-
-    expect(callRpc).toHaveBeenCalledWith("settings.set", { default_harness: "claude" });
-    expect(callRpc).toHaveBeenCalledWith("settings.set", { claude_mode: "tui" });
-    expect(select().value).toBe("claude");
-    expect(document.getElementById("harnesserr").textContent).toBe("");
-  });
-
-  it("says the bridge's own refusal for a harness the old key cannot name", async () => {
+  it.each([
+    ["missing", {}],
+    ["malformed", { default_harness: 7 }],
+    ["unknown", { default_harness: "gemini" }],
+  ])("rejects a %s settings.set response and restores the confirmed value", async (_kind, response) => {
+    let settingsReads = 0;
     const callRpc = vi.fn(async (method) => {
-      if (method === "settings.get") return { claude_mode: "headless" };
-      throw new Error("settings.set: nothing to set");
+      if (method === "models.list") return CATALOG;
+      if (method === "settings.get") {
+        settingsReads += 1;
+        return { default_harness: "claude_adk" };
+      }
+      return response;
     });
     await mountDefaultHarness(panel(), { callRpc });
-    await flush();
 
-    select().value = "codex_app_server";
+    select().value = "pi";
     select().dispatchEvent(new Event("change"));
     await flush();
     await flush();
 
-    expect(callRpc).not.toHaveBeenCalledWith("settings.set", expect.objectContaining({ claude_mode: expect.anything() }));
-    expect(document.getElementById("harnesserr").textContent).toContain("nothing to set");
+    expect(document.getElementById("harnesserr").textContent).toMatch(/default_harness/i);
+    expect(document.getElementById("harnesssaved").textContent).toBe("");
+    expect(settingsReads).toBe(2);
     expect(select().value).toBe("claude_adk");
+    expect(select().disabled).toBe(false);
   });
 
   it("names a refused save and puts the control back on what the bridge holds", async () => {
     const callRpc = vi.fn(async (method) => {
       if (method === "settings.get") return { default_harness: "claude_adk" };
+      if (method === "models.list") return CATALOG;
       throw new Error("cannot write the config file");
     });
     await mountDefaultHarness(panel(), { callRpc });
@@ -151,20 +188,44 @@ describe("the default-agent panel", () => {
     expect(select().disabled).toBe(false);
   });
 
+  it("shows both failures when a refused save cannot reload the bridge setting", async () => {
+    let settingsReads = 0;
+    const callRpc = vi.fn(async (method) => {
+      if (method === "models.list") return CATALOG;
+      if (method === "settings.get" && settingsReads++ === 0) return { default_harness: "claude_adk" };
+      if (method === "settings.get") throw new Error("device went offline");
+      throw new Error("cannot write the config file");
+    });
+    await mountDefaultHarness(panel(), { callRpc });
+
+    select().value = "pi";
+    select().dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+
+    expect(document.getElementById("harnesserr").textContent).toContain("cannot write the config file");
+    expect(document.getElementById("harnesserr").textContent).toContain("device went offline");
+    expect(select().options).toHaveLength(0);
+    expect(select().value).toBe("");
+    expect(select().disabled).toBe(true);
+  });
+
   it("says the bridge is unreachable instead of offering a choice it cannot keep", async () => {
-    const callRpc = vi.fn(async () => {
+    const callRpc = vi.fn(async (method) => {
+      if (method === "models.list") return CATALOG;
       throw new Error("device offline");
     });
     await mountDefaultHarness(panel(), { callRpc });
     await flush();
 
     expect(document.getElementById("harnesserr").textContent).toContain("device offline");
+    expect(select().options).toHaveLength(0);
+    expect(select().value).toBe("");
     expect(select().disabled).toBe(true);
   });
 });
 
-// Where the choice actually lives: Account → Settings, beside the other
-// account-wide preferences, painted from the same bridge every device reads.
+// The account fallback lives in Settings beside the other agent preferences.
 describe("the Settings page", () => {
   const renderWith = async (call) => {
     vi.resetModules();
@@ -189,7 +250,7 @@ describe("the Settings page", () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude" };
-      if (method === "models.list") return { default_provider: "claude", providers: [] };
+      if (method === "models.list") return CATALOG;
       return {};
     });
 
@@ -197,48 +258,41 @@ describe("the Settings page", () => {
     expect(document.getElementById("root").textContent).not.toMatch(/headless/i);
   }, SLOW_IMPORT_MS);
 
-  it("offers the agent defaults the two agents, not the four harnesses", async () => {
+  // Visible creation pickers send Claude Code or Codex and therefore override
+  // the separate fallback selector.
+  it("offers the agent defaults two agents, not every default harness", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude_adk" };
-      if (method === "models.list") {
-        return {
-          default_provider: "claude_adk",
-          providers: [
-            { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
-            { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
-            { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
-            { id: "codex", label: "Codex TUI", models: [], efforts: [] },
-          ],
-        };
-      }
+      if (method === "models.list") return CATALOG;
       return {};
     });
 
     const defaults = document.getElementById("defprovider");
     expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
     expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
-    // The account's own question is still asked, once, in its own panel.
+    // The account fallback still exposes every provider from the catalog.
     expect([...document.getElementById("defaultharness").options].map((option) => option.textContent)).toEqual([
       "Claude Code",
       "Claude Code TUI",
       "Codex",
       "Codex TUI",
+      "Pi",
     ]);
   }, SLOW_IMPORT_MS);
 
-  it("puts the default agent beside the other agent preferences", async () => {
+  it("puts the fallback agent beside the other agent preferences", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude_adk" };
-      if (method === "models.list") return { default_provider: "claude_adk", providers: [] };
+      if (method === "models.list") return CATALOG;
       return {};
     });
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
     expect(at("Agent defaults")).toBeGreaterThan(-1);
-    expect(at("Default agent")).toBe(at("Agent defaults") + 1);
-    expect(at("Appearance")).toBe(at("Default agent") + 1);
+    expect(at("Fallback agent")).toBe(at("Agent defaults") + 1);
+    expect(at("Appearance")).toBe(at("Fallback agent") + 1);
   }, SLOW_IMPORT_MS);
 });

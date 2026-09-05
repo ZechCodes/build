@@ -93,7 +93,7 @@ impl Harness for AdkHarness {
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
-    ) -> HarnessSpec {
+    ) -> Result<HarnessSpec, HarnessError> {
         let mut spec = HarnessSpec::new("claude")
             .unset_all(INHERITED_AGENT_MARKERS)
             .arg("-p")
@@ -122,8 +122,12 @@ impl Harness for AdkHarness {
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }
-        spec.env("BRIDGE_MCP_SOCKET", &context.mcp_socket)
-            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
+        Ok(spec
+            .env(
+                "BRIDGE_MCP_SOCKET",
+                context.mcp_socket.to_string_lossy().into_owned(),
+            )
+            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token))
     }
 
     fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
@@ -166,9 +170,8 @@ impl Harness for AdkHarness {
         ClaudeHarness.holds_conversation(home, cwd, id)
     }
 
-    /// No locator, and it is the only provider that answers so. This session
-    /// reads its own id off the `init` line the child sent, and a locator
-    /// beside that would be two records of one answer, free to disagree.
+    /// This protocol session reads its own id off the child's `init` line, so a
+    /// transcript locator beside it would be a second answer free to disagree.
     fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {
         let _ = (home, cwd);
         None
@@ -2618,8 +2621,9 @@ mod tests {
 
     fn context() -> HarnessContext {
         HarnessContext {
-            bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-            mcp_socket: "/tmp/build-mcp.sock".to_string(),
+            bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+            mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
+            state_root: PathBuf::from("/tmp/build-state"),
         }
     }
 
@@ -2633,7 +2637,9 @@ mod tests {
             model: Some("claude-fable-5-1".to_string()),
             effort: Some("high".to_string()),
         };
-        let spec = AdkHarness.spec(&choice, &spawn_options(), &context());
+        let spec = AdkHarness
+            .spec(&choice, &spawn_options(), &context())
+            .unwrap();
 
         assert_eq!(spec.binary, "claude");
         let args = spec.args.join(" ");
@@ -2656,14 +2662,16 @@ mod tests {
             "a submit key is how a prompt is typed into a line editor, and there is none here"
         );
 
-        let resumed = AdkHarness.spec(
-            &choice,
-            &SpawnOptions {
-                continue_session: true,
-                ..spawn_options()
-            },
-            &context(),
-        );
+        let resumed = AdkHarness
+            .spec(
+                &choice,
+                &SpawnOptions {
+                    continue_session: true,
+                    ..spawn_options()
+                },
+                &context(),
+            )
+            .unwrap();
         assert!(
             resumed.args.contains(&"--continue".to_string()),
             "a headless session picks the worktree's conversation back up: {:?}",
@@ -2677,18 +2685,20 @@ mod tests {
     /// asking for both is asking for two different conversations.
     #[test]
     fn a_recorded_session_id_is_resumed_by_name_instead_of_by_the_cwd_guess() {
-        let by_name = AdkHarness.spec(
-            &ModelChoice::default(),
-            &SpawnOptions {
-                // Both offered, exactly as the daemon offers them: the probe
-                // answers for every Build-owned checkout, and the record
-                // answers for an agent that has run before.
-                continue_session: true,
-                resume_session_id: Some("sess-adk".to_string()),
-                ..spawn_options()
-            },
-            &context(),
-        );
+        let by_name = AdkHarness
+            .spec(
+                &ModelChoice::default(),
+                &SpawnOptions {
+                    // Both offered, exactly as the daemon offers them: the probe
+                    // answers for every Build-owned checkout, and the record
+                    // answers for an agent that has run before.
+                    continue_session: true,
+                    resume_session_id: Some("sess-adk".to_string()),
+                    ..spawn_options()
+                },
+                &context(),
+            )
+            .unwrap();
         let args = by_name.args.join(" ");
         assert!(args.contains("--resume sess-adk"), "{args}");
         assert!(
@@ -2699,15 +2709,17 @@ mod tests {
         // And nothing recorded leaves the shipped fallback exactly as it was:
         // an agent whose session died before announcing itself must not be a
         // spawn that fails.
-        let by_guess = AdkHarness.spec(
-            &ModelChoice::default(),
-            &SpawnOptions {
-                continue_session: true,
-                resume_session_id: None,
-                ..spawn_options()
-            },
-            &context(),
-        );
+        let by_guess = AdkHarness
+            .spec(
+                &ModelChoice::default(),
+                &SpawnOptions {
+                    continue_session: true,
+                    resume_session_id: None,
+                    ..spawn_options()
+                },
+                &context(),
+            )
+            .unwrap();
         let args = by_guess.args.join(" ");
         assert!(args.contains("--continue"), "{args}");
         assert!(!args.contains("--resume"), "{args}");
@@ -2724,8 +2736,10 @@ mod tests {
             ..ModelChoice::default()
         };
         let options = spawn_options();
-        let headless = AdkHarness.spec(&choice, &options, &context());
-        let interactive = ClaudeHarness.spec(&ModelChoice::default(), &options, &context());
+        let headless = AdkHarness.spec(&choice, &options, &context()).unwrap();
+        let interactive = ClaudeHarness
+            .spec(&ModelChoice::default(), &options, &context())
+            .unwrap();
 
         assert_eq!(
             headless.env, interactive.env,

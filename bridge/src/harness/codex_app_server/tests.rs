@@ -2538,8 +2538,12 @@ fn app_server_spec_reuses_codex_mcp_config_without_experimental_flags() {
     let options = spawn_options();
     let context = harness_context();
     let choice = selected_choice();
-    let app = super::CodexAppServerHarness.spec(&choice, &options, &context);
-    let tui = crate::harness::codex::CodexHarness.spec(&choice, &options, &context);
+    let app = super::CodexAppServerHarness
+        .spec(&choice, &options, &context)
+        .expect("the app-server spec builds");
+    let tui = crate::harness::codex::CodexHarness
+        .spec(&choice, &options, &context)
+        .expect("the TUI spec builds");
     let configs = |args: &[String]| {
         args.windows(2)
             .filter(|pair| pair[0] == "--config" && pair[1].starts_with("mcp_servers.build"))
@@ -2961,7 +2965,9 @@ fn a_hostile_error_message_reports_within_the_activity_bound() {
 #[test]
 fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
     let options = spawn_options();
-    let spec = super::CodexAppServerHarness.spec(&selected_choice(), &options, &harness_context());
+    let spec = super::CodexAppServerHarness
+        .spec(&selected_choice(), &options, &harness_context())
+        .expect("the app-server spec builds");
 
     for marker in crate::harness::INHERITED_AGENT_MARKERS {
         assert!(spec.unset.iter().any(|key| key == marker), "{marker}");

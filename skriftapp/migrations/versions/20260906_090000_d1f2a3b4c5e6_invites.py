@@ -14,8 +14,6 @@ import sqlalchemy as sa
 from advanced_alchemy.types import GUID, DateTimeUTC
 from alembic import op
 
-from buildapp.waitlist_address import MAX_WAITLIST_ADDRESS_LENGTH
-
 # revision identifiers, used by Alembic.
 revision: str = "d1f2a3b4c5e6"
 down_revision: Union[str, None] = "20bec806d0e5"
@@ -28,7 +26,9 @@ def upgrade() -> None:
         "invites",
         sa.Column("id", GUID(length=16), nullable=False),
         sa.Column("token_hash", sa.String(length=64), nullable=False),
-        sa.Column("email", sa.String(length=MAX_WAITLIST_ADDRESS_LENGTH), nullable=False),
+        # 254, the width waitlist_address.MAX_WAITLIST_ADDRESS_LENGTH had when this
+        # revision was written. A migration is a snapshot: it never reads live code.
+        sa.Column("email", sa.String(length=254), nullable=False),
         sa.Column("invited_by", GUID(length=16), nullable=True),
         sa.Column("expires_at", DateTimeUTC(timezone=True), nullable=False),
         sa.Column("redeemed_by", GUID(length=16), nullable=True),

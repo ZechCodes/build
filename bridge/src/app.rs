@@ -5928,10 +5928,15 @@ impl AppState {
     /// writing the git down — so every drain in the daemon, frame, MCP control
     /// socket and test twin alike, inherits the rule.
     ///
+    /// The queue can be SHORTER than it was measured: a request that retires
+    /// an agent drops that agent's turns however early they were queued, and
+    /// a refusal after that must find nothing of its own left, not a panic.
+    ///
     /// [`dispatch_deferring`]: AppState::dispatch_deferring
     /// [`apply_deferred`]: AppState::apply_deferred
     fn drop_turns_queued_since(&mut self, queued_before: usize) {
-        let mut queued_by_this_request = self.pending_agent_turns.split_off(queued_before);
+        let queued_by_others = queued_before.min(self.pending_agent_turns.len());
+        let mut queued_by_this_request = self.pending_agent_turns.split_off(queued_by_others);
         queued_by_this_request.retain(|turn| turn.survives_refusal);
         self.pending_agent_turns.append(&mut queued_by_this_request);
     }
@@ -44050,6 +44055,56 @@ mod tests {
         let agents = listed["result"]["agents"].as_array().unwrap();
         assert_eq!(agents.len(), 1, "the removal was persisted: {listed:?}");
         assert_eq!(agents[0]["id"], primary_agent);
+    }
+
+    /// A request that retires an agent takes that agent's queued turn with it,
+    /// and the turn may have been queued before the request began — another
+    /// worker answered a verb and has not drained yet. When the request then
+    /// fails, the rule that drops what IT queued must see a queue shorter than
+    /// the one it measured, and answer the refusal rather than panic under the
+    /// app mutex.
+    #[test]
+    fn a_refused_agent_remove_that_dropped_an_earlier_turn_is_answered_not_a_panic() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-refused-remove");
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "agent_id": second_agent, "body": "only you" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.agent_id == second_agent),
+            "the fixture needs a turn queued for the agent before the request starts"
+        );
+        state.store.as_ref().unwrap().fail_next_write();
+
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": second_agent }),
+        ));
+
+        assert_eq!(removed["ok"], false, "{removed:?}");
+        assert!(
+            removed["error"]
+                .as_str()
+                .unwrap()
+                .contains("injected store failure"),
+            "{removed:?}"
+        );
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .all(|turn| turn.agent_id != second_agent),
+            "the retired agent's turn outlived it"
+        );
     }
 
     /// `agent.remove` refuses exactly what `agent.add` refuses: an unknown

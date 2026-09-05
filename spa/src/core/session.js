@@ -22,10 +22,10 @@ export const DEFAULT_RPC_TIMEOUT_MS = 12000;
 const DEFAULT_ACCEPT_TIMEOUT_MS = 10000;
 
 /** Whether this rejection is that timer rather than a refusal — the difference
- *  between "the daemon said no" and "the daemon has not said yet". A caller
- *  that can carry on without the reply (the record it made is on the board, and
- *  the push will bring it) asks this before calling the call a failure. */
-export const rpcTimedOut = (error) => Boolean(error && error.timedOut);
+ *  between "the daemon said no" and "the daemon has not said yet". This
+ *  module's own, deliberately: `replyOrNothing` below is the one answer callers
+ *  get, so no call site can re-derive the rule and reach a different verdict. */
+const rpcTimedOut = (error) => Boolean(error && error.timedOut);
 
 /**
  * The reply, or nothing when the browser stopped waiting for it.

@@ -7717,10 +7717,9 @@ impl AppState {
             .create_bare_worktree(&slug, &base, isolation)
             .map_err(err)?;
         // A worktree nobody has started an agent in has no conversation to
-        // carry the note yet, so the log is where this one is said.
-        if let Some(reason) = downgrade {
-            announce_isolation_downgrade(&reason);
-        }
+        // carry the note, so the answer to the ask is where the human who made
+        // it hears the same sentence the log does.
+        let isolation_note = downgrade.map(|reason| announce_isolation_downgrade(&reason));
         // The scan keys worktrees by canonical path; mirror that here so the
         // caller can navigate to the surface without waiting for a rescan.
         let canonical = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
@@ -7733,6 +7732,8 @@ impl AppState {
             "branch": worktree.branch(),
             "name": worktree.name,
             "path": canonical.display().to_string(),
+            "isolation": Isolation::of(&canonical),
+            "isolation_note": isolation_note,
         }))
     }
 
@@ -20138,6 +20139,39 @@ mod tests {
                 "Created a git worktree: copy-on-write isolation is unavailable here — "
             ) && note.contains("linked worktree"),
             "the note carries the volume's own sentence: {note}"
+        );
+    }
+
+    /// A bare worktree has no run, no agent and no conversation, so the only
+    /// place the fallback can reach the human who asked for it is the answer to
+    /// the ask — the same sentence the log and every thread carry.
+    #[test]
+    fn a_bare_worktree_that_cannot_be_cloned_says_so_in_its_answer() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "somewhere to work" }),
+        ));
+
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["isolation"], "worktree", "{result:?}");
+        let note = result["isolation_note"].as_str().unwrap_or_default();
+        assert!(
+            note.starts_with(
+                "Created a git worktree: copy-on-write isolation is unavailable here — "
+            ) && note.contains("linked worktree"),
+            "the answer carries the volume's own sentence: {result:?}"
+        );
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap_or_default());
+        assert_eq!(
+            Isolation::of(&path),
+            Some(Isolation::Worktree),
+            "and the checkout is the one this volume can make: {path:?}"
         );
     }
 

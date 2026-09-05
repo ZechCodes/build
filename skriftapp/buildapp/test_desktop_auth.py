@@ -48,7 +48,10 @@ def test_non_desktop_tokens_never_identify_a_user(payload):
     assert desktop_token_user_id(payload) is None
 
 
-def _allow_every_member(monkeypatch, member: bool = True) -> None:
+def _stub_membership(monkeypatch, *, member: bool) -> None:
+    """Stand in for the membership check. Every caller states the answer it is
+    testing against, so no test reads as the opposite of what it asserts."""
+
     async def require(db_session, user_id):
         if not member:
             raise PermissionDeniedException(INVITE_ONLY_DETAIL)
@@ -66,7 +69,7 @@ async def test_desktop_guard_rejects_a_missing_bearer():
 @pytest.mark.asyncio
 async def test_desktop_guard_accepts_a_verified_desktop_token(monkeypatch):
     user_id = uuid4()
-    _allow_every_member(monkeypatch)
+    _stub_membership(monkeypatch, member=True)
 
     async def verify_token(token, secret, db_session):
         assert token == "desktop-token"
@@ -107,7 +110,7 @@ async def test_desktop_guard_accepts_a_verified_desktop_token(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_session_that_is_not_an_alpha_member_is_refused(monkeypatch):
-    _allow_every_member(monkeypatch, member=False)
+    _stub_membership(monkeypatch, member=False)
     connection = _session_connection(uuid4())
     with pytest.raises(PermissionDeniedException) as refusal:
         await build_auth_guard(connection, None)
@@ -116,7 +119,7 @@ async def test_a_session_that_is_not_an_alpha_member_is_refused(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_session_that_is_an_alpha_member_passes(monkeypatch):
-    _allow_every_member(monkeypatch)
+    _stub_membership(monkeypatch, member=True)
     user_id = uuid4()
     connection = _session_connection(user_id)
     await build_auth_guard(connection, None)
@@ -125,7 +128,7 @@ async def test_a_session_that_is_an_alpha_member_passes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_membership_is_checked_after_the_desktop_token_resolves_too(monkeypatch):
-    _allow_every_member(monkeypatch, member=False)
+    _stub_membership(monkeypatch, member=False)
     monkeypatch.setattr(
         "buildapp.desktop_auth.verify_oauth_token",
         _verified_desktop_payload(uuid4()),

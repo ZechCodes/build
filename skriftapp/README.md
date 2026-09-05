@@ -138,4 +138,18 @@ Alpha membership has one definition, in `buildapp/alpha_membership.py`: a
 redeemed invite that has not been revoked. There is no members table — revoking
 someone's redeemed invite from /admin/invites is how they lose access.
 
+Two rules as built differ from the design contract the streams branched from,
+and this is the text to read instead:
+
+- **Redemption.** An invite redeems only when its state is OPEN **and**
+  `canonical_address(user_email) == canonical_address(invite.email)` — casing and
+  whitespace, nothing more (`buildapp/waitlist_address.py`). Issuing an invite
+  still applies the waitlist's deliverability rule, so the stored address is
+  already normalized; *matching* one must not, or a dev or QA account at an
+  address the waitlist refuses (`qa@localhost`) could never redeem the invite the
+  compose stack seeds for it.
+- **Invite mail.** `compose_email` takes one `action=EmailAction(...)` value
+  rather than a separate `action_url=` and `action_label=`, so a link cannot go
+  out with half of it missing (`EmailAction` lives in `buildapp/email_template.py`).
+
 Tests: `uv run pytest buildapp/` (from this directory).

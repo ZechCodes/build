@@ -37,8 +37,10 @@ def desktop_token_user_id(payload: dict | None) -> UUID | None:
 
 
 async def _bearer_user_id(connection: ASGIConnection) -> UUID | None:
-    """The user behind this app's OAuth access token, or ``None`` when there is no
-    usable bearer at all."""
+    """The user behind this app's OAuth access token. A request carrying no bearer at
+    all is not authenticated and raises; a bearer that verifies but is not one of this
+    app's desktop tokens returns ``None``, so the caller can refuse it on its own
+    terms."""
     authorization = connection.headers.get("authorization", "")
     if not authorization.startswith("Bearer "):
         raise NotAuthorizedException("Authentication required")

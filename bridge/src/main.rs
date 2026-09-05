@@ -90,8 +90,7 @@ fn backup() {
         eprintln!("usage: build-bridge backup <path>");
         std::process::exit(2);
     };
-    let home = std::env::var("HOME").unwrap_or_default();
-    let tasks_dir = env("BRIDGE_TASKS_DIR", &format!("{home}/.build/tasks"));
+    let tasks_dir = env("BRIDGE_TASKS_DIR", &default_tasks_dir());
     let store = match build_bridge::store::Store::new(&tasks_dir) {
         Ok(store) => store,
         Err(error) => {
@@ -190,9 +189,8 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
         std::env::var("BRIDGE_QA_AGENT").as_deref(),
         Ok("1") | Ok("true")
     );
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let tasks_dir =
-        std::path::PathBuf::from(env("BRIDGE_TASKS_DIR", &format!("{home}/.build/tasks")));
+    let home = home_dir();
+    let tasks_dir = std::path::PathBuf::from(env("BRIDGE_TASKS_DIR", &default_tasks_dir()));
     let state_root = tasks_dir
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -202,7 +200,11 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
     Ok(RuntimePaths {
         device_url,
         worktrees: config.worktrees.to_string_lossy().into_owned(),
-        config_path: env("BRIDGE_CONFIG", &format!("{home}/.build/config.json")).into(),
+        config_path: env(
+            "BRIDGE_CONFIG",
+            &format!("{}/.build/config.json", home.display()),
+        )
+        .into(),
         mcp_socket: config.mcp_socket.to_string_lossy().into_owned(),
         config,
         tasks_dir,
@@ -647,6 +649,13 @@ fn home_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"))
 }
 
+/// Where the state dir lives unless `BRIDGE_TASKS_DIR` says otherwise. `serve`
+/// and `backup` both resolve it and must agree, or a backup copies a database
+/// the daemon never wrote.
+fn default_tasks_dir() -> String {
+    format!("{}/.build/tasks", home_dir().display())
+}
+
 /// Resolve the runtime config from BRIDGE_* env against $HOME.
 fn bridge_config() -> build_bridge::config::BridgeConfig {
     build_bridge::config::resolve(|key| std::env::var(key).ok(), &home_dir())
@@ -828,12 +837,15 @@ mod tests {
         );
     }
 
-    /// `$HOME` is one fact, so it is read in one place: every caller that wants
-    /// the home directory asks `home_dir()`.
+    /// `$HOME` is one fact with one fallback rule, so it is read in one place:
+    /// every caller that wants the home directory asks `home_dir()`. A second
+    /// read is a second rule, and the two that used to exist disagreed about a
+    /// missing HOME — an empty string in `backup`, `.` in `resolve_runtime_paths`
+    /// — each quietly putting the bridge's state somewhere nobody asked for.
     #[test]
     fn home_is_read_in_exactly_one_place() {
         // Split so this assertion is not itself an occurrence.
-        let read_home = concat!(r#"std::env::var("HOME")"#, ".expect");
+        let read_home = concat!("std::env::var(\"HOME", "\")");
         let source = include_str!("main.rs");
         assert_eq!(
             source.matches(read_home).count(),

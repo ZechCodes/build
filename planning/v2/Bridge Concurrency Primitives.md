@@ -1140,6 +1140,8 @@ settled differently, and why:
   `a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing`,
   `rerouting_a_capture_to_a_branch_cuts_it_with_the_state_lock_free`,
   `a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_free`,
+  `a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run_is_durable`,
+  `a_refused_agent_remove_that_dropped_an_earlier_turn_is_answered_not_a_panic`,
   and the injected-failure dispatch tests, which now also assert the
   reservation is gone.
 - **One fault carrier, one seam per variant.** `BranchDispatchStep` and
@@ -1169,6 +1171,21 @@ settled differently, and why:
   path as given, so a root that could not be created leaves every placeholder
   id minted from a path the checkouts never land on. `main.rs` panics with the
   path named rather than swallowing the error.
+- **A dispatch's route is written before the write that opens its run.**
+  `answer_dispatch` recorded the capture's route after `finish_run_mutation`,
+  and `record_routing` can refuse — the capture can be cancelled while the app
+  mutex is free for the git, and its store write can fail — which left a
+  persisted run reported as a failure, its turn dropped and its checkout
+  re-amended onto the board as a second card. `record_dispatch_route` now runs
+  ahead of `open_run` on the cut arm and ahead of `take_run` on the join arm,
+  `record_routing` takes the entity id its caller knows instead of looking
+  the run up by branch, and `RouteRecorded::answer` — what is left after the
+  write — cannot refuse. `answer_dispatch` is deleted.
+- **`drop_turns_queued_since` clamps its index.** A request that retires an
+  agent drops that agent's turns however early they were queued, so a refusal
+  after that can find the queue shorter than it measured; `split_off` past the
+  end panicked under the app mutex and poisoned it. The split is at the shorter
+  of the measured length and the queue's.
 
 - **Boundary** `bridge/src/lifecycle.rs` (new; `WorktreeFinishJob` moves here as
   one mutation), between a lifecycle verb's decision and the git that carries it

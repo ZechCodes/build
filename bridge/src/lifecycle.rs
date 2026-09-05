@@ -24,7 +24,10 @@ use std::time::Instant;
 use crate::app::AppState;
 use crate::models::ModelChoice;
 use crate::orchestrator::{AdoptableCheckout, AdoptionScope, ImplementableIssue, Orchestrator};
-use crate::worktree::{ExternalWorktree, NamedBranchCheckout};
+use crate::worktree::{
+    git_default_branch, git_in, git_remote_origin, remotes_match, ExternalWorktree,
+    NamedBranchCheckout,
+};
 use serde_json::Value;
 
 /// One lifecycle verb's git work, and the reservation waiting on it.
@@ -1081,12 +1084,12 @@ fn open_repo(
     let repo =
         git2::Repository::open(&path).map_err(|error| format!("not a git repository: {error}"))?;
     let base = requested_base
-        .or_else(|| crate::app::git_default_branch(&path))
+        .or_else(|| git_default_branch(&path))
         .unwrap_or_else(|| "main".to_string());
     repo.revparse_single(&base)
         .map_err(|_| format!("base branch '{base}' not found in repo"))?;
     Ok(crate::app::ProjectAdded {
-        remote: crate::app::git_remote_origin(&path),
+        remote: git_remote_origin(&path),
         path,
         base,
     })
@@ -1132,8 +1135,8 @@ impl WorktreeMutation for CloneRepo {
                     self.name
                 ));
             }
-            if let Some(origin) = crate::app::git_remote_origin(&self.dest) {
-                if !crate::app::remotes_match(&origin, &self.url) {
+            if let Some(origin) = git_remote_origin(&self.dest) {
+                if !remotes_match(&origin, &self.url) {
                     return Err(format!(
                         "'{}' already exists with a different remote ({origin})",
                         self.name
@@ -1190,12 +1193,12 @@ impl CreateRepo {
         }
         std::fs::create_dir_all(dest)
             .map_err(|error| format!("cannot create {}: {error}", self.name))?;
-        crate::app::git_in(dest, &["init", "-b", &self.base_branch])?;
+        git_in(dest, &["init", "-b", &self.base_branch])?;
         std::fs::write(dest.join("README.md"), format!("# {}\n", self.name))
             .map_err(|error| format!("cannot write README: {error}"))?;
-        crate::app::git_in(dest, &["add", "."])?;
+        git_in(dest, &["add", "."])?;
         // Commit with an explicit identity so it never depends on host git config.
-        crate::app::git_in(
+        git_in(
             dest,
             &[
                 "-c",
@@ -1208,7 +1211,7 @@ impl CreateRepo {
             ],
         )?;
         if let Some(remote) = &self.remote {
-            crate::app::git_in(dest, &["remote", "add", "origin", remote])?;
+            git_in(dest, &["remote", "add", "origin", remote])?;
         }
         Ok(())
     }
@@ -1243,7 +1246,7 @@ impl WorktreeMutation for SetRemote {
     fn perform(self: Box<Self>) -> Result<Performed, String> {
         let remote = match (
             self.url.is_empty(),
-            crate::app::git_remote_origin(&self.repo_path).is_some(),
+            git_remote_origin(&self.repo_path).is_some(),
         ) {
             (true, _) => {
                 let _ = std::process::Command::new("git")
@@ -1254,11 +1257,11 @@ impl WorktreeMutation for SetRemote {
                 None
             }
             (false, true) => {
-                crate::app::git_in(&self.repo_path, &["remote", "set-url", "origin", &self.url])?;
+                git_in(&self.repo_path, &["remote", "set-url", "origin", &self.url])?;
                 Some(self.url)
             }
             (false, false) => {
-                crate::app::git_in(&self.repo_path, &["remote", "add", "origin", &self.url])?;
+                git_in(&self.repo_path, &["remote", "add", "origin", &self.url])?;
                 Some(self.url)
             }
         };

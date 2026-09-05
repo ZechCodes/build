@@ -70,8 +70,8 @@ use crate::thread::ThreadDetail;
 use crate::timing::{FrameClock, FrameTimer};
 use crate::transport::Frame;
 use crate::worktree::{
-    bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees, ExternalWorktree,
-    Worktree,
+    bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees,
+    git_remote_origin, git_stdout, ExternalWorktree, Worktree,
 };
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
@@ -15967,24 +15967,6 @@ fn requested_base_branch(params: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Run a git subcommand in `dir`, mapping a non-zero exit to a readable error.
-pub(crate) fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(())
-}
-
 /// Expand a leading `~` / `~/` to the user's home directory; otherwise return the
 /// path unchanged. Lets path fields accept `~/code/foo`.
 pub(crate) fn expand_tilde(path: &str) -> std::path::PathBuf {
@@ -16019,48 +16001,6 @@ fn repo_name_from_url(url: &str) -> String {
     let trimmed = url.trim_end_matches('/');
     let last = trimmed.rsplit(['/', ':']).next().unwrap_or("repo");
     last.strip_suffix(".git").unwrap_or(last).to_string()
-}
-
-/// The `origin` remote URL of a repo, if it has one.
-pub(crate) fn git_remote_origin(dir: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!url.is_empty()).then_some(url)
-}
-
-/// Whether two clone URLs point at the same repo, ignoring a trailing `/` or
-/// `.git`. A loose check — enough to catch "already cloned" without surprises.
-pub(crate) fn remotes_match(a: &str, b: &str) -> bool {
-    let norm = |s: &str| {
-        s.trim()
-            .trim_end_matches('/')
-            .trim_end_matches(".git")
-            .to_string()
-    };
-    norm(a) == norm(b)
-}
-
-/// The checked-out branch name of a freshly cloned repo (its default branch).
-pub(crate) fn git_default_branch(dir: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
 
 /// Parse and validate the optional provider/model/effort params of a request,
@@ -18158,26 +18098,6 @@ fn classify_stage_publication(
     } else {
         StagePublication::Local
     }
-}
-
-fn git_stdout(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|error| format!("could not run git: {error}"))?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = [stderr.trim(), stdout.trim()]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Err(format!("git {args:?}: {detail}"))
 }
 
 /// What the checkout's archive record adds to an archived row: how it was
@@ -21111,6 +21031,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::Command;
+
+    use crate::worktree::git_in;
 
     use crate::harness::claude;
     use crate::harness::stream_fixtures::{

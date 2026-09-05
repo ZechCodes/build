@@ -426,6 +426,88 @@ impl WorktreeManager {
     }
 }
 
+/// Run a git subcommand in `dir`, mapping a non-zero exit to a readable error.
+pub(crate) fn git_in(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// The `origin` remote URL of a repo, if it has one.
+pub(crate) fn git_remote_origin(dir: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
+/// Whether two clone URLs point at the same repo, ignoring a trailing `/` or
+/// `.git`. A loose check — enough to catch "already cloned" without surprises.
+pub(crate) fn remotes_match(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.trim()
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .to_string()
+    };
+    norm(a) == norm(b)
+}
+
+/// The checked-out branch name of a freshly cloned repo (its default branch).
+pub(crate) fn git_default_branch(dir: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!branch.is_empty() && branch != "HEAD").then_some(branch)
+}
+
+/// Run a git subcommand in `dir` and hand back its stdout; a non-zero exit
+/// becomes an error carrying whatever git said on either stream.
+pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| format!("could not run git: {error}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!("git {args:?}: {detail}"))
+}
+
 pub(crate) fn configured_remote_for_branch(
     repo: &git2::Repository,
     branch: &str,
@@ -1251,8 +1333,8 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let wt = mgr.create("recover-local", "main").unwrap();
         std::fs::write(wt.path.join("stage.txt"), "kept\n").unwrap();
-        git_in(&wt.path, &["add", "stage.txt"]);
-        git_in(&wt.path, &["commit", "-m", "stage"]);
+        run_git(&wt.path, &["add", "stage.txt"]);
+        run_git(&wt.path, &["commit", "-m", "stage"]);
         let head = git2::Repository::open(&wt.path)
             .unwrap()
             .head()
@@ -1300,7 +1382,7 @@ mod tests {
     fn restore_fetches_the_original_branch_when_only_origin_has_it() {
         let (dir, repo) = init_repo();
         let origin = dir.path().join("origin.git");
-        git_in(
+        run_git(
             dir.path(),
             &[
                 "clone",
@@ -1309,19 +1391,19 @@ mod tests {
                 origin.to_str().unwrap(),
             ],
         );
-        git_in(
+        run_git(
             &repo,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
         let mgr = manager(&dir, &repo);
         let wt = mgr.create("recover-remote", "main").unwrap();
         std::fs::write(wt.path.join("remote-stage.txt"), "remote\n").unwrap();
-        git_in(&wt.path, &["add", "remote-stage.txt"]);
-        git_in(&wt.path, &["commit", "-m", "remote stage"]);
-        git_in(&wt.path, &["push", "-u", "origin", &wt.recorded_branch]);
+        run_git(&wt.path, &["add", "remote-stage.txt"]);
+        run_git(&wt.path, &["commit", "-m", "remote stage"]);
+        run_git(&wt.path, &["push", "-u", "origin", &wt.recorded_branch]);
         mgr.remove(&wt, true).unwrap();
-        git_in(&repo, &["branch", "-D", &wt.recorded_branch]);
-        git_in(
+        run_git(&repo, &["branch", "-D", &wt.recorded_branch]);
+        run_git(
             &repo,
             &[
                 "update-ref",
@@ -1354,7 +1436,7 @@ mod tests {
         );
     }
 
-    fn git_in(dir: &Path, args: &[&str]) {
+    fn run_git(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
             .current_dir(dir)
@@ -1382,7 +1464,7 @@ mod tests {
     fn discovery_lists_a_user_worktree_and_skips_the_primary() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-a");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -1413,7 +1495,7 @@ mod tests {
     fn one_checkout_describes_itself_the_way_the_scan_describes_it() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-one");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
         );
@@ -1449,14 +1531,14 @@ mod tests {
     fn discovery_separates_what_is_uncommitted_from_what_the_branch_carries() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-mixed");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "mixed"],
         );
         // One committed line, then two uncommitted ones on top of it.
         std::fs::write(wt_path.join("committed.txt"), "one\n").unwrap();
-        git_in(&wt_path, &["add", "committed.txt"]);
-        git_in(&wt_path, &["commit", "-m", "committed work"]);
+        run_git(&wt_path, &["add", "committed.txt"]);
+        run_git(&wt_path, &["commit", "-m", "committed work"]);
         std::fs::write(wt_path.join("dirty.txt"), "two\nthree\n").unwrap();
 
         let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
@@ -1472,8 +1554,8 @@ mod tests {
     /// Commit `name` in `dir` as a new file of the same name.
     fn commit_file(dir: &Path, name: &str) {
         std::fs::write(dir.join(format!("{name}.txt")), "x\n").unwrap();
-        git_in(dir, &["add", "."]);
-        git_in(dir, &["commit", "-m", name]);
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", name]);
     }
 
     /// A tracked branch compares both directions with its upstream. Movement on
@@ -1482,14 +1564,14 @@ mod tests {
     fn a_tracking_branch_compares_both_directions_with_its_upstream() {
         let (dir, repo) = init_repo();
         let remote = dir.path().join("origin.git");
-        git_in(&repo, &["init", "--bare", remote.to_str().unwrap()]);
-        git_in(
+        run_git(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        run_git(
             &repo,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
 
         let wt_path = dir.path().join("wt-tracked");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -1499,9 +1581,9 @@ mod tests {
                 "tracked",
             ],
         );
-        git_in(&wt_path, &["push", "-u", "origin", "tracked"]);
+        run_git(&wt_path, &["push", "-u", "origin", "tracked"]);
         let other = dir.path().join("other");
-        git_in(
+        run_git(
             dir.path(),
             &[
                 "clone",
@@ -1511,16 +1593,16 @@ mod tests {
                 other.to_str().unwrap(),
             ],
         );
-        git_in(&other, &["config", "user.email", "other@build.ing"]);
-        git_in(&other, &["config", "user.name", "Other"]);
+        run_git(&other, &["config", "user.email", "other@build.ing"]);
+        run_git(&other, &["config", "user.name", "Other"]);
 
         // Two local commits past the shared tip, and one remote commit the local
         // branch does not have.
         commit_file(&wt_path, "a");
         commit_file(&wt_path, "b");
         commit_file(&other, "remote");
-        git_in(&other, &["push", "origin", "tracked"]);
-        git_in(&repo, &["fetch", "origin"]);
+        run_git(&other, &["push", "origin", "tracked"]);
+        run_git(&repo, &["fetch", "origin"]);
         // Main moves twice to prove it is not the selected comparison ref.
         commit_file(&repo, "on-main");
         commit_file(&repo, "on-main-again");
@@ -1544,7 +1626,7 @@ mod tests {
     fn an_untracked_branch_has_all_of_its_work_unpushed() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-untracked");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
         );
@@ -1566,7 +1648,7 @@ mod tests {
     fn a_level_worktree_is_neither_stale_nor_unpushed() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-level");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "level"],
         );
@@ -1584,7 +1666,7 @@ mod tests {
     fn discovery_excludes_bound_paths() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-bound");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -1606,7 +1688,7 @@ mod tests {
     fn discovery_reports_detached_head() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-d");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", "--detach", wt_path.to_str().unwrap()],
         );
@@ -1625,7 +1707,7 @@ mod tests {
         // invalidation relies on.
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-c");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -1640,8 +1722,8 @@ mod tests {
         let sha_before = before[0].head_sha.clone();
 
         std::fs::write(wt_path.join("more.txt"), "more\n").unwrap();
-        git_in(&wt_path, &["add", "more.txt"]);
-        git_in(&wt_path, &["commit", "-m", "more work"]);
+        run_git(&wt_path, &["add", "more.txt"]);
+        run_git(&wt_path, &["commit", "-m", "more work"]);
 
         let after = discover_external_worktrees(&repo, "main", &excluded).unwrap();
         assert_ne!(before[0].head_sha, after[0].head_sha);

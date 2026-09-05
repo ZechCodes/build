@@ -794,6 +794,10 @@ pub enum Agent {
 
 /// Owns project configuration and drives plans and runs through their
 /// lifecycles.
+///
+/// Cloneable, and cheaply: a verb clones its project's orchestrator under the
+/// app mutex and then runs the git with the mutex released.
+#[derive(Clone)]
 pub struct Orchestrator {
     repo_path: PathBuf,
     /// Run (and legacy task) worktrees: `build/<slug>` branches.

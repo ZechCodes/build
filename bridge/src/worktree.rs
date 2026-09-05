@@ -125,6 +125,7 @@ pub struct NamedBranchCheckout {
 }
 
 /// Owns worktree creation and teardown for a single project repository.
+#[derive(Clone)]
 pub struct WorktreeManager {
     repo_path: PathBuf,
     worktrees_root: PathBuf,

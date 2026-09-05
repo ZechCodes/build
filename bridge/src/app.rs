@@ -25,6 +25,7 @@ use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
+use crate::delivery::{AgentSpawnPlan, SessionProbes};
 use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
     Turn,
@@ -607,10 +608,13 @@ struct PendingAgentTurn {
     /// agent; a verb the rail addressed names the agent whose bubble was open.
     agent_id: String,
     model_choice: ModelChoice,
-    /// For a tab that had to be spawned: the full run context.
-    cold: String,
-    /// For a tab already in the conversation: the bare instruction.
-    warm: String,
+    /// What to say once the tab is open — `None` for a turn that only wants
+    /// the agent there.
+    ///
+    /// "Start this agent" and "tell this agent something" are one job with one
+    /// queue: the tab has to exist either way, and the spawn is the same spawn.
+    /// The difference is whether anything is written into it afterwards.
+    say: Option<TurnText>,
     /// The phase recorded on the conversation's session lineage if the turn
     /// turns out to be cold — a cold delivery is a new agent process.
     phase: &'static str,
@@ -622,6 +626,19 @@ struct PendingAgentTurn {
     /// the router's: a router is one decision long, works no conversation, and
     /// its prompt deliberately carries none.
     wants_catch_up: bool,
+}
+
+/// The two halves of one turn's text: which one travels is decided by whether
+/// the tab had to be spawned to hear it.
+///
+/// `cold` carries the full run context, because an agent that was just started
+/// has none to read the words into; `warm` is the bare instruction, because a
+/// live agent is already in the conversation and everything said to it is
+/// already durable on the thread for `read_unread_messages` to pull.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TurnText {
+    cold: String,
+    warm: String,
 }
 
 /// The live implementation an Issue's conversation actually speaks to: the
@@ -636,6 +653,12 @@ struct ImplementationTarget {
 }
 
 impl PendingAgentTurn {
+    /// What this turn says, for a test that queued one that says something.
+    #[cfg(test)]
+    fn said(&self) -> &TurnText {
+        self.say.as_ref().expect("this turn carries text")
+    }
+
     /// Address a run's turn to the run's worktree. Canonical, because the same
     /// worktree reaches the tab registry under several scope shapes.
     ///
@@ -663,8 +686,10 @@ impl PendingAgentTurn {
             owner: owner.to_string(),
             agent_id: agent_id.to_string(),
             model_choice: active.agents.turn_choice(agent_id, &active.model_choice),
-            cold: turn.cold,
-            warm: turn.warm,
+            say: Some(TurnText {
+                cold: turn.cold,
+                warm: turn.warm,
+            }),
             phase: turn.phase,
             wants_catch_up: true,
         }
@@ -682,8 +707,10 @@ impl PendingAgentTurn {
             owner: owner.to_string(),
             model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
             agent_id,
-            cold: turn.cold,
-            warm: turn.warm,
+            say: Some(TurnText {
+                cold: turn.cold,
+                warm: turn.warm,
+            }),
             phase: turn.phase,
             wants_catch_up: true,
         })
@@ -715,8 +742,10 @@ impl PendingAgentTurn {
             owner: owner.to_string(),
             model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
             agent_id,
-            cold: primed.clone(),
-            warm: primed,
+            say: Some(TurnText {
+                cold: primed.clone(),
+                warm: primed,
+            }),
             phase: "recover",
             wants_catch_up: true,
         })
@@ -1726,6 +1755,12 @@ pub struct AppState {
     /// same lock acquisition that observed the tab's absence — is what keeps a
     /// second delivery from starting a second harness in one worktree.
     agent_spawns_in_flight: std::collections::HashSet<TabKey>,
+    /// Signalled whenever a spawn releases its claim above. A caller that lost
+    /// the race waits here with the app mutex given back, which is what makes
+    /// losing the race free: the winner needs this mutex to publish its tab,
+    /// and a loser polling for it every 25 ms was taking the mutex away from
+    /// the spawn it was waiting for.
+    agent_spawn_finished: Arc<std::sync::Condvar>,
     /// Canonical worktree root → the screen its Agent tab shows before any
     /// agent has ever run there.
     ///
@@ -1924,6 +1959,7 @@ impl AppState {
             streams: HashMap::new(),
             tabs: HashMap::new(),
             agent_spawns_in_flight: std::collections::HashSet::new(),
+            agent_spawn_finished: Arc::new(std::sync::Condvar::new()),
             agent_screens_awaiting_spawn: HashMap::new(),
             pending_agent_turns: Vec::new(),
             agent_turns_in_flight: HashMap::new(),
@@ -2939,6 +2975,16 @@ impl AppState {
                 .by_id(agent_id)
                 .is_some_and(|agent| !agent.thread.sessions.is_empty())
         })
+    }
+
+    /// The three transcript-tree reads a spawn makes, taken together so the
+    /// disk work can be handed over in one piece.
+    fn session_probes(&self) -> SessionProbes {
+        SessionProbes::new(
+            Arc::clone(&self.transcript_probe),
+            Arc::clone(&self.resume_id_probe),
+            Arc::clone(&self.session_locator_factory),
+        )
     }
 
     /// The name the agent's record says its conversation has — `None` for one
@@ -4247,8 +4293,10 @@ impl AppState {
                                     Err(error) => json!({ "ok": false, "error": error }),
                                 };
                                 // A dispatch queues the branch agent's first
-                                // turn; sending it needs the lock free.
-                                deliver_pending_agent_turns(&state, &timer);
+                                // turn; it is sent on a thread of its own, so
+                                // the harness that asked is answered now.
+                                let turns = timer.lock(&state).take_pending_turns();
+                                DeliveryRunner::spawn(&state, turns);
                                 let _ = write_half.write_all(response.to_string().as_bytes()).await;
                                 let _ = write_half.write_all(b"\n").await;
                                 let _ = write_half.flush().await;
@@ -4271,11 +4319,13 @@ impl AppState {
                             v.get("report").cloned().unwrap_or(Value::Null),
                         ) {
                             timer.lock(&state).on_agent_done(&entity_id, report);
-                            // A report can start the next phase (a built stage
-                            // hands itself to validation). The turn is queued
-                            // under the lock above; sending it needs the lock
-                            // free, exactly as on the relay's frame path.
-                            deliver_pending_agent_turns(&state, &timer);
+                            // A report can start the next phase (a built
+                            // stage hands itself to validation). The turn is
+                            // queued under the lock above and delivered off
+                            // this socket's thread, exactly as on the relay's
+                            // frame path.
+                            let turns = timer.lock(&state).take_pending_turns();
+                            DeliveryRunner::spawn(&state, turns);
                             continue;
                         }
                         if let Ok(action) = serde_json::from_value::<BridgeAction>(
@@ -8806,8 +8856,10 @@ impl AppState {
             // A router is one decision long, so there is no warm half: every
             // turn it ever hears is the whole job — and no conversation, so no
             // catch-up packet either.
-            cold: prompt.clone(),
-            warm: prompt,
+            say: Some(TurnText {
+                cold: prompt.clone(),
+                warm: prompt,
+            }),
             phase: "route",
             wants_catch_up: false,
         });
@@ -8989,6 +9041,34 @@ impl AppState {
             &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
             thread,
         )
+    }
+
+    /// Take everything the verbs that just ran queued, and mark their owners in
+    /// flight in the same breath.
+    ///
+    /// One acquisition for both halves, because between them an entity that is
+    /// working has neither a queued turn nor an agent tab, and the idle sweep
+    /// reading it there would demote a run whose agent is on its way.
+    fn take_pending_turns(&mut self) -> PendingTurns {
+        let mut queued = std::mem::take(&mut self.pending_agent_turns);
+        for turn in &queued {
+            *self
+                .agent_turns_in_flight
+                .entry(turn.owner.clone())
+                .or_default() += 1;
+        }
+        // The one door every cold prompt passes: the conversation is read and
+        // closed onto the prompt HERE, so the packet carries what the store
+        // holds under the tail and what was said while the turn waited.
+        for turn in &mut queued {
+            if !turn.wants_catch_up {
+                continue;
+            }
+            if let Some(say) = turn.say.as_mut() {
+                say.cold = self.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &say.cold);
+            }
+        }
+        PendingTurns(queued)
     }
 
     /// The default destination: an issue on the best-guess project, with its
@@ -11257,8 +11337,10 @@ impl AppState {
             // already durable on the thread, so the harness is told to read
             // them — wrapped, when it is a new process, in the catch-up packet
             // it has no other way to reconstruct.
-            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-            warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            say: Some(TurnText {
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            }),
             phase: "revive",
             wants_catch_up: true,
         });
@@ -13375,8 +13457,10 @@ impl AppState {
             owner: run_id.clone(),
             agent_id: agent_id.clone(),
             model_choice,
-            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-            warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            say: Some(TurnText {
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            }),
             phase: "dispatch",
             wants_catch_up: true,
         });
@@ -17212,11 +17296,13 @@ fn dispatch_frame(
                 }
                 None => dispatched,
             };
-            // A verb speaks to a worktree's agent by queuing a turn: it runs
-            // under the state lock and `deliver` needs that lock free (a cold
-            // spawn blocks for seconds on the harness's readiness wait).
+            // A verb speaks to a worktree's agent by queuing a turn, and the
+            // frame's own answer never waits for it to arrive: the mutation is
+            // durable, and a cold spawn blocks for seconds on the harness's
+            // readiness wait while the browser gives up at twelve.
             if dispatched.is_ok() {
-                deliver_pending_agent_turns(state, &timer);
+                let turns = timer.lock(state).take_pending_turns();
+                DeliveryRunner::spawn(state, turns);
             }
             dispatched
         }
@@ -17556,13 +17642,15 @@ fn agent_attach(
 /// Every other way to get an agent is a turn: you say something and the agent
 /// is spawned to hear it. That leaves no way to simply have one running, and no
 /// way back after an exit short of inventing a message. This verb is that way,
-/// and it is the only spawn path with no prompt behind it.
+/// and it is the only spawn with no prompt behind it — which is why the turn it
+/// queues carries no text.
 ///
-/// It carries no turn, so it needs no queue: `ensure_agent_tab` is idempotent on
-/// a live tab (`Warm`, same process) and replaces a dead one (`Fresh`, screen
-/// carried), which is exactly start-vs-restart. The owner must be an entity that
-/// owns a worktree — `.build/mcp.json` routes `done` per owner, so an agent with
-/// nobody to report to is worse than none.
+/// It takes the same queue every other turn does, so the reply is the entity's
+/// state and never the harness's: the tab id it answers with is the one the
+/// agent's own identity mints, reserved here and filled in when the session
+/// opens. The owner must be an entity that owns a worktree — `.build/mcp.json`
+/// routes `done` per owner, so an agent with nobody to report to is worse than
+/// none.
 fn agent_start(
     state: &Arc<Mutex<AppState>>,
     params: &Value,
@@ -17584,7 +17672,7 @@ fn agent_start(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
-    let (turn, waiting) = {
+    let (turns, agent_id, waiting) = {
         let mut s = timer.lock(state);
         // The Agent tab's provider picker rides the start itself. Parsed under
         // the lock — what "claude" opens is the account's setting to answer —
@@ -17604,76 +17692,47 @@ fn agent_start(
             None => s.ensure_primary_agent(&entity_id)?,
             named => s.resolve_agent(&entity_id, named)?.id,
         };
+        let root = s.entity_agent_root(&entity_id)?;
         let roster = s.entity_agents(&entity_id)?;
         let thread = &roster
             .by_id(&agent_id)
             .expect("the agent was just resolved on this roster")
             .thread;
+        // The button means "give me an agent", not "go do something" — so a
+        // start with nothing waiting says nothing, and the human drives from
+        // there. But the reviewer's words are durable on the thread and an
+        // agent only learns of them by being TOLD to call
+        // `read_unread_messages`; a fresh harness has no reason to. Restarting
+        // after a crash with messages outstanding would silently ignore every
+        // one of them.
+        let waiting = thread.has_unread();
         // The agent's own harness, not the entity's: the Resume the TUI pane
         // offers names no provider precisely because the agent is locked to
         // one, and a branch's several agents need not share it.
         let model_choice = roster.turn_choice(&agent_id, &s.entity_model_choice(&entity_id)?);
-        (
-            PendingAgentTurn {
-                root: s.entity_agent_root(&entity_id)?,
-                owner: entity_id.clone(),
-                agent_id: agent_id.clone(),
-                model_choice,
-                // Only sent when something is actually waiting (below). A hand-
-                // started agent has no context, so it gets the cold form: the
-                // conversation protocol and the catch-up packet around the nudge.
+        s.pending_agent_turns.push(PendingAgentTurn {
+            root,
+            owner: entity_id.clone(),
+            agent_id: agent_id.clone(),
+            model_choice,
+            // A hand-started agent has no context, so what waits for it gets
+            // the cold form: the conversation protocol and the catch-up packet
+            // around the nudge.
+            say: waiting.then(|| TurnText {
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                phase: "start",
-                wants_catch_up: true,
-            },
-            thread.has_unread(),
-        )
+            }),
+            phase: "start",
+            wants_catch_up: true,
+        });
+        s.touch_attention(&entity_id);
+        (s.take_pending_turns(), agent_id, waiting)
     };
+    DeliveryRunner::spawn(state, turns);
 
-    // The button means "give me an agent", not "go do something" — so a start
-    // with nothing waiting says nothing, and the human drives from there.
-    // But the reviewer's words are durable on the thread and an agent only
-    // learns of them by being TOLD to call `read_unread_messages`; a fresh
-    // harness has no reason to. Restarting after a crash with messages
-    // outstanding would silently ignore every one of them.
-    let (term_id, spawned) = if waiting {
-        deliver(
-            state,
-            &turn.root,
-            &turn.owner,
-            &turn.agent_id,
-            &turn.model_choice,
-            &turn.cold,
-            &turn.warm,
-            timer,
-        )?
-    } else {
-        ensure_agent_tab(
-            state,
-            &turn.root,
-            &turn.owner,
-            &turn.agent_id,
-            &turn.model_choice,
-            timer,
-        )?
-    };
-
-    let mut s = timer.lock(state);
-    // A fresh process is a new session either way — the lineage must not depend
-    // on whether there happened to be mail.
-    if spawned == Spawned::Fresh {
-        s.record_agent_session_start(&turn);
-    }
-    s.touch_attention(&entity_id);
     Ok(json!({
-        "term_id": term_id,
-        "agent_id": turn.agent_id,
-        "live": true,
-        "spawned": match spawned {
-            Spawned::Fresh => "fresh",
-            Spawned::Warm => "warm",
-        },
+        "term_id": agent_tab_id(&agent_id),
+        "agent_id": agent_id,
         "notified": waiting,
     }))
 }
@@ -17742,206 +17801,321 @@ fn ensure_agent_tab(
     agent_id: &str,
     model_choice: &ModelChoice,
     timer: &FrameTimer,
-) -> Result<(String, Spawned), String> {
+) -> Result<Option<(String, Spawned)>, String> {
     let root = AppState::canonical_root(root);
     let key = TabKey::agent(&root, agent_id);
     let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
-    loop {
-        // Under the lock: hand back a live tab, or reserve the spawn. The lock
-        // is dropped across the spawn below (it blocks for seconds on the
-        // harness's readiness wait, and every terminal pump needs this lock),
-        // so the reservation is what the losing caller waits on.
-        let reserved = {
-            let mut s = timer.lock(state);
+    // Under the lock: hand back a live tab, wait out the spawn somebody else is
+    // already making, or reserve this one. The wait gives the mutex back for
+    // its whole duration and wakes on the winner's claim being released, so a
+    // caller that lost the race costs the daemon nothing while it waits.
+    let reserved = {
+        let mut s = timer.lock(state);
+        loop {
+            if !s.owner_still_has_a_session(owner) {
+                return Ok(None);
+            }
             if let Some(tab) = s.tabs.get(&key) {
                 let same_owner = matches!(
                     &tab.role,
                     TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
                 );
                 if same_owner && tab.session_is_live() {
-                    return Ok((tab.wire_id(), Spawned::Warm));
+                    return Ok(Some((tab.wire_id(), Spawned::Warm)));
                 }
             }
-            if s.agent_spawns_in_flight.contains(&key) {
-                None
-            } else {
-                let carried = s
-                    .retire_tab_keeping_screen(&key)
-                    .and_then(|(_reaping, screen)| screen);
-                // A checkout outlives the entity that owned it — a planning
-                // worktree is torn down and a run cuts a new one at the same
-                // path, an adopted worktree is released and re-adopted. Agents
-                // of the entity that USED to own this directory are stale: they
-                // would keep working in it and report `done` for an owner that
-                // no longer holds it. Several agents of the CURRENT owner are
-                // exactly what a branch is allowed to have, so only the others
-                // go.
-                let stale: Vec<TabKey> = s
-                    .tabs
-                    .iter()
-                    .filter(|(other, tab)| {
-                        other.root == root
-                            && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
-                    })
-                    .map(|(other, _)| other.clone())
-                    .collect();
-                for other in stale {
-                    s.retire_tab(&other, "closed");
-                }
-                // A router session belongs to no project — deciding which one
-                // the capture belongs to is its job. Any project's
-                // orchestrator builds the same harness spec for it, since the
-                // spec is made from the cwd and the owner id alone.
-                let project_id = match s.project_of(owner) {
-                    Ok(project_id) => project_id,
-                    Err(unknown) if crate::router::is_router_agent(agent_id) => {
-                        s.default_project().map_err(|_| unknown)?
-                    }
-                    Err(unknown) => return Err(unknown),
-                };
-                // What this spawn picks back up, decided in order, and the
-                // order is the rule.
-                //
-                // 1. A recorded name the provider still holds is resumed
-                //    EXACTLY — the conversation Build was speaking to, with no
-                //    cwd guess beside it. Verified first, so a dead name costs
-                //    zero restarts instead of one, and the claude uuid an agent
-                //    carried onto codex is cleared here rather than choking the
-                //    resume.
-                let resume_session_id = match s.recorded_resume_id(owner, agent_id) {
-                    Some(named) if (s.resume_id_probe)(&root, model_choice.provider, &named) => {
-                        Some(named)
-                    }
-                    Some(_gone) => {
-                        s.record_agent_resume_id(owner, agent_id, None);
-                        None
-                    }
-                    None => None,
-                };
-                // 2. No name, but this agent's record shows history: the same
-                //    agent continuing its own conversation, which `--continue`
-                //    guesses at as the newest one in the checkout, still gated
-                //    on the transcript probe.
-                // 3. Otherwise fresh, on every carrier. A brand-new agent
-                //    record has no conversation to pick up, and the checkout's
-                //    old one belongs to whoever had it — adoption included:
-                //    Build cannot show a history it never heard.
-                let continue_session = resume_session_id.is_none()
-                    && s.may_pick_up_a_conversation(owner, agent_id)
-                    && (s.transcript_probe)(&root, model_choice.provider);
-                // Built here, before the child exists, so the transcripts it
-                // snapshots as "not mine" cannot include the child's own.
-                let locator = (s.session_locator_factory)(&root, model_choice.provider);
-                let orch = s.orch_for(&project_id)?;
-                // Unconditional: under `--strict-mcp-config` a missing config
-                // kills the harness before it reads a byte of the prompt, and
-                // the scaffold is idempotent. The config is written per AGENT,
-                // so two agents sharing a checkout report as themselves.
-                orch.scaffold_agent_worktree(&root, agent_id).map_err(err)?;
-                let session_token = uuid::Uuid::new_v4().to_string();
-                let spec = orch.agent_harness_spec(
-                    agent_id,
-                    &root,
-                    model_choice,
-                    continue_session,
-                    resume_session_id,
-                    &session_token,
-                );
-                let size = orch.pty_size();
-                s.mcp_session_tokens
-                    .insert(agent_id.to_string(), session_token.clone());
-                s.agent_spawns_in_flight.insert(key.clone());
-                Some((spec, size, carried, session_token, locator))
+            if !s.agent_spawns_in_flight.contains(&key) {
+                break;
             }
-        };
-
-        let Some((spec, size, carried, session_token, locator)) = reserved else {
-            // Someone else is spawning this root's agent: wait for their tab
-            // rather than start a second harness beside it.
-            if std::time::Instant::now() >= deadline {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
                 return Err(format!(
                     "timed out waiting for the agent starting in {}",
                     root.display()
                 ));
             }
-            std::thread::sleep(Duration::from_millis(25));
-            continue;
-        };
+            let finished = Arc::clone(&s.agent_spawn_finished);
+            s = s.wait_until(&finished, left, |state| {
+                !state.agent_spawns_in_flight.contains(&key)
+            });
+        }
+        reserve_agent_spawn(state, &mut s, &key, &root, owner, agent_id, model_choice)?
+    };
+    let ReservedSpawn {
+        plan,
+        claim,
+        carried,
+        session_token,
+    } = reserved;
 
-        let spawned = Tab::spawn(
-            TabRole::Agent {
-                owner: owner.to_string(),
-                agent_id: agent_id.to_string(),
-                provider: model_choice.provider,
-            },
-            &spec,
-            key.tab_id.clone(),
-            root.clone(),
-            size.cols,
-            size.rows,
-            locator,
-        );
-        let (mut tab, rx) = match spawned {
-            Ok(spawned) => spawned,
-            Err(error) => {
-                // The dead session's grid was kept for the session that was
-                // going to paint it, and there is none — see
-                // [`SPAWN_NEVER_OPENED`].
-                if let Some(screen) = &carried {
-                    screen.close(SPAWN_NEVER_OPENED);
+    // With the mutex released: the three transcript reads, the scaffold, and
+    // the child itself. Between them they walk a tree the daemon does not own
+    // and wait on a harness's readiness, and every terminal pump needs this
+    // mutex while they do.
+    let ready = match plan.probe_and_scaffold() {
+        Ok(ready) => ready,
+        Err(error) => {
+            return Err(abandon_spawn(
+                state,
+                claim,
+                carried,
+                agent_id,
+                &session_token,
+                error,
+                timer,
+            ))
+        }
+    };
+    let spawned = Tab::spawn(
+        TabRole::Agent {
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            provider: model_choice.provider,
+        },
+        &ready.spec,
+        key.tab_id.clone(),
+        root.clone(),
+        ready.size.cols,
+        ready.size.rows,
+        ready.locator,
+    );
+    let (mut tab, rx) = match spawned {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            return Err(abandon_spawn(
+                state,
+                claim,
+                carried,
+                agent_id,
+                &session_token,
+                error,
+                timer,
+            ))
+        }
+    };
+    if let Some(screen) = carried {
+        // Reconnect is snapshot + cursor: a replacement process must
+        // never rewind that cursor, and clients already attached stay
+        // attached. The new PTY takes the retained screen's grid so the
+        // two agree.
+        tab.screen = Some(screen);
+        match tab.terminal_handle() {
+            Ok(terminal) => terminal.fit_child_to_screen(),
+            // The replacement paints nothing, so the retained grid has
+            // nothing to become — see [`NO_TERMINAL_LEFT`].
+            Err(_) => {
+                if let Some(screen) = tab.screen.take() {
+                    screen.close(NO_TERMINAL_LEFT);
                 }
-                let mut state = timer.lock(state);
-                state.agent_spawns_in_flight.remove(&key);
-                if state
-                    .mcp_session_tokens
-                    .get(agent_id)
-                    .is_some_and(|current| constant_time_token_eq(current, &session_token))
-                {
-                    state.mcp_session_tokens.remove(agent_id);
-                }
-                return Err(error);
             }
-        };
-        if let Some(screen) = carried {
-            // Reconnect is snapshot + cursor: a replacement process must
-            // never rewind that cursor, and clients already attached stay
-            // attached. The new PTY takes the retained screen's grid so the
-            // two agree.
-            tab.screen = Some(screen);
-            match tab.terminal_handle() {
-                Ok(terminal) => terminal.fit_child_to_screen(),
-                // The replacement paints nothing, so the retained grid has
-                // nothing to become — see [`NO_TERMINAL_LEFT`].
-                Err(_) => {
-                    if let Some(screen) = tab.screen.take() {
-                        screen.close(NO_TERMINAL_LEFT);
-                    }
-                }
-            }
         }
-        let wire_id = tab.wire_id();
-        let pumps;
-        let inherited;
-        {
-            let mut s = timer.lock(state);
-            inherited = inherit_waiting_clients(&mut s, &key, &root, &tab);
-            let running = tab
-                .session
-                .active_model()
-                .or_else(|| model_choice.model.clone());
-            pumps = tab.pumps(rx);
-            s.tabs.insert(key.clone(), tab);
-            s.agent_spawns_in_flight.remove(&key);
-            s.record_agent_active_model(owner, agent_id, running);
+    }
+    let wire_id = tab.wire_id();
+    let pumps;
+    let inherited;
+    let stranded;
+    {
+        let mut s = timer.lock(state);
+        // The probe read the recorded name and the provider no longer holds it.
+        // Forgetting it is a state write, so it happens here rather than in the
+        // probe that found out.
+        if ready.recorded_name_is_gone {
+            s.record_agent_resume_id(owner, agent_id, None);
         }
-        if let Some(inherited) = inherited {
-            inherited.fit_child_to_screen();
+        inherited = inherit_waiting_clients(&mut s, &key, &root, &tab);
+        let running = tab
+            .session
+            .active_model()
+            .or_else(|| model_choice.model.clone());
+        pumps = tab.pumps(rx);
+        s.tabs.insert(key.clone(), tab);
+        claim.settle(&mut s);
+        s.record_agent_active_model(owner, agent_id, running);
+        // The entity may have lost its session while this harness was starting
+        // — an issue approved under its own planning agent. The insert is the
+        // instant the agent becomes addressable, so it is the instant the gate
+        // that closed has to reach it, and no earlier check is atomic with it.
+        stranded = !s.owner_still_has_a_session(owner);
+        if stranded {
+            s.retire_tab(&key, "closed");
         }
-        spawn_tab_pumps(state, key, pumps);
-        return Ok((wire_id, Spawned::Fresh));
+    }
+    if stranded {
+        return Ok(None);
+    }
+    if let Some(inherited) = inherited {
+        inherited.fit_child_to_screen();
+    }
+    spawn_tab_pumps(state, key, pumps);
+    Ok(Some((wire_id, Spawned::Fresh)))
+}
+
+/// What the lock-held half of a spawn hands to the lock-free half.
+struct ReservedSpawn {
+    plan: AgentSpawnPlan,
+    claim: SpawnClaim,
+    /// The grid of the dead session this spawn replaces, kept for the session
+    /// about to paint it.
+    carried: Option<ScreenHandle>,
+    session_token: String,
+}
+
+/// Take the spawn reservation and read everything the disk work will need.
+///
+/// Every field of the plan is owned — the project's orchestrator is cloned, the
+/// probes are `Arc`s — so nothing it does afterwards can reach back into the
+/// registry this read it out of.
+fn reserve_agent_spawn(
+    state: &Arc<Mutex<AppState>>,
+    s: &mut AppState,
+    key: &TabKey,
+    root: &std::path::Path,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+) -> Result<ReservedSpawn, String> {
+    let carried = s
+        .retire_tab_keeping_screen(key)
+        .and_then(|(_reaping, screen)| screen);
+    // A checkout outlives the entity that owned it — a planning
+    // worktree is torn down and a run cuts a new one at the same
+    // path, an adopted worktree is released and re-adopted. Agents
+    // of the entity that USED to own this directory are stale: they
+    // would keep working in it and report `done` for an owner that
+    // no longer holds it. Several agents of the CURRENT owner are
+    // exactly what a branch is allowed to have, so only the others
+    // go.
+    let stale: Vec<TabKey> = s
+        .tabs
+        .iter()
+        .filter(|(other, tab)| {
+            other.root == *root
+                && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
+        })
+        .map(|(other, _)| other.clone())
+        .collect();
+    for other in stale {
+        s.retire_tab(&other, "closed");
+    }
+    // A router session belongs to no project — deciding which one
+    // the capture belongs to is its job. Any project's
+    // orchestrator builds the same harness spec for it, since the
+    // spec is made from the cwd and the owner id alone.
+    let project_id = match s.project_of(owner) {
+        Ok(project_id) => project_id,
+        Err(unknown) if crate::router::is_router_agent(agent_id) => {
+            s.default_project().map_err(|_| unknown)?
+        }
+        Err(unknown) => return Err(unknown),
+    };
+    let project = s.orch_for(&project_id)?.clone();
+    let session_token = uuid::Uuid::new_v4().to_string();
+    // Before the child exists, because the child dials the done socket as soon
+    // as it is up and an unregistered token is an unauthorized report.
+    s.mcp_session_tokens
+        .insert(agent_id.to_string(), session_token.clone());
+    let plan = AgentSpawnPlan::new(
+        project,
+        root.to_path_buf(),
+        agent_id.to_string(),
+        model_choice.clone(),
+        s.recorded_resume_id(owner, agent_id),
+        s.may_pick_up_a_conversation(owner, agent_id),
+        s.session_probes(),
+        session_token.clone(),
+    );
+    Ok(ReservedSpawn {
+        plan,
+        claim: SpawnClaim::take(s, state, key),
+        carried,
+        session_token,
+    })
+}
+
+/// Give back everything a spawn that never opened was holding, and hand the
+/// caller the reason it never opened.
+///
+/// The reservation took the dead session's tab out of the registry and kept its
+/// grid, telling the clients on it NOTHING, because they were about to be
+/// handed to the session replacing it. There is no such session now, and the
+/// grid is in no registry for a reaper or a close to reach: they are told here
+/// or they are told never.
+fn abandon_spawn(
+    state: &Arc<Mutex<AppState>>,
+    claim: SpawnClaim,
+    carried: Option<ScreenHandle>,
+    agent_id: &str,
+    session_token: &str,
+    error: String,
+    timer: &FrameTimer,
+) -> String {
+    if let Some(screen) = &carried {
+        screen.close(SPAWN_NEVER_OPENED);
+    }
+    let mut s = timer.lock(state);
+    if s.mcp_session_tokens
+        .get(agent_id)
+        .is_some_and(|current| constant_time_token_eq(current, session_token))
+    {
+        s.mcp_session_tokens.remove(agent_id);
+    }
+    claim.settle(&mut s);
+    error
+}
+
+/// One worktree's agent spawn, reserved.
+///
+/// Held from the acquisition that found no live tab to the acquisition that
+/// publishes the new one, so two callers of one tab produce one harness — two
+/// agents in one worktree would both report `done` for the same owner, and the
+/// second report is an illegal transition that lands on the thread as a bogus
+/// failure. Every way out of a spawn releases it: [`SpawnClaim::settle`] under
+/// a lock the caller already holds, and [`Drop`] on any path that never got
+/// there, a panic included.
+struct SpawnClaim {
+    key: TabKey,
+    state: std::sync::Weak<Mutex<AppState>>,
+    finished: Arc<std::sync::Condvar>,
+    settled: bool,
+}
+
+impl SpawnClaim {
+    fn take(s: &mut AppState, state: &Arc<Mutex<AppState>>, key: &TabKey) -> SpawnClaim {
+        s.agent_spawns_in_flight.insert(key.clone());
+        SpawnClaim {
+            key: key.clone(),
+            state: Arc::downgrade(state),
+            finished: Arc::clone(&s.agent_spawn_finished),
+            settled: false,
+        }
+    }
+
+    /// Release the claim under a lock the caller is already holding, and wake
+    /// everyone waiting behind it.
+    fn settle(mut self, s: &mut AppState) {
+        s.agent_spawns_in_flight.remove(&self.key);
+        self.settled = true;
+        self.finished.notify_all();
     }
 }
 
+impl Drop for SpawnClaim {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        if let Some(state) = self.state.upgrade() {
+            // Through a poisoned mutex deliberately: a spawn that ended by
+            // panicking still has to give its claim back, and a destructor that
+            // panics during an unwind aborts the process.
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.agent_spawns_in_flight.remove(&self.key);
+        }
+        self.finished.notify_all();
+    }
+}
 /// Move the clients that were waiting for `tab`'s agent onto the screen it will
 /// paint, and hand back the child's half of the move.
 ///
@@ -18022,31 +18196,34 @@ const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
 /// The one pipe from Build to a worktree's agent.
 ///
-/// Ensures the tab exists, then hands the agent exactly one turn — a value the
-/// carrier decides how to say, which for a PTY is the harness's own submit key
-/// and bracketed paste framing and never a raw write with a hardcoded `\r`.
-/// Which text travels
-/// is decided by whether the tab had to be spawned: `cold` for an agent with no
-/// context to read messages into, `warm` for one already in the conversation,
-/// whose messages are already durable in the thread for `read_unread_messages`
-/// to pull. Returns the tab's wire id and which half travelled — a `Fresh`
-/// delivery is a new agent process, which the conversation records as the start
-/// of a session.
-#[allow(clippy::too_many_arguments)]
+/// Ensures the tab exists, then hands the agent the turn it was queued with —
+/// a value the carrier decides how to say, which for a PTY is the harness's own
+/// submit key and bracketed paste framing and never a raw write with a
+/// hardcoded `\r`. Which half of the text travels is decided by whether the tab
+/// had to be spawned; a turn that says nothing at all is a start, and the tab
+/// existing is the whole of it. Returns the tab's wire id and which half
+/// travelled — a `Fresh` delivery is a new agent process, which the
+/// conversation records as the start of a session.
 fn deliver(
     state: &Arc<Mutex<AppState>>,
     root: &std::path::Path,
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
-    cold: &str,
-    warm: &str,
+    say: Option<&TurnText>,
     timer: &FrameTimer,
-) -> Result<(String, Spawned), String> {
-    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice, timer)?;
+) -> Result<Option<(String, Spawned)>, String> {
+    let Some((wire_id, spawned)) =
+        ensure_agent_tab(state, root, owner, agent_id, model_choice, timer)?
+    else {
+        return Ok(None);
+    };
+    let Some(say) = say else {
+        return Ok(Some((wire_id, spawned)));
+    };
     let prompt = match spawned {
-        Spawned::Fresh => cold,
-        Spawned::Warm => warm,
+        Spawned::Fresh => &say.cold,
+        Spawned::Warm => &say.warm,
     };
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
     // The handle comes out of the registry so the turn travels with the
@@ -18076,84 +18253,112 @@ fn deliver(
     if let Some(tab) = timer.lock(state).tabs.get_mut(&key) {
         tab.last_delivered_at = Some(std::time::Instant::now());
     }
-    Ok((wire_id, spawned))
+    Ok(Some((wire_id, spawned)))
 }
 
-/// Send every turn the verbs that just ran queued, now that the state lock is
-/// free.
+/// The turns one lock acquisition took off the queue, on their way to their
+/// agents.
 ///
-/// A cold delivery starts a new harness process, so it opens the conversation's
-/// session lineage — the record the thread reads back as "the revise agent
-/// started here". A warm delivery continues the session already open.
-fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
-    // Taking the queue and marking those owners in flight happen under ONE lock
-    // acquisition, so there is no instant in which a queued turn is invisible to
-    // the idle sweep and its entity looks agentless.
-    let queued = {
-        let mut s = timer.lock(state);
-        let taken = std::mem::take(&mut s.pending_agent_turns);
-        // An issue whose session is over (approved, abandoned) holds no
-        // workspace — and its checkout is the project's primary one, which is
-        // emphatically not a place to spawn a replacement for work nobody is
-        // doing. A turn queued before that gate closed is dropped here.
-        let (queued, closed): (Vec<PendingAgentTurn>, Vec<PendingAgentTurn>) = taken
-            .into_iter()
-            .partition(|turn| s.owner_still_has_a_session(&turn.owner));
-        for turn in &closed {
-            eprintln!(
-                "deliver to {}: the entity's session is over; the turn stays on its thread",
-                turn.owner
+/// A frame answers the moment its own state change is durable, so the queue is
+/// taken here and delivered somewhere else. The owners are marked in flight
+/// under the SAME acquisition that empties the queue, so there is no instant in
+/// which a queued turn is invisible to the idle sweep and its entity looks
+/// agentless.
+struct PendingTurns(Vec<PendingAgentTurn>);
+
+impl PendingTurns {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Where a delivery's own time is charged. A spawn is not the frame that asked
+/// for it, and counting it there would make every verb that speaks to an agent
+/// look like the daemon's slowest.
+const AGENT_DELIVERY_METHOD: &str = "agent.deliver";
+
+/// Sending the queued turns, off the frame that queued them.
+///
+/// DELIBERATE, and the whole of spec step 2: a cold delivery spawns a harness
+/// and waits on its readiness for up to [`HARNESS_READY_GRACE`], and the
+/// browser gives up at twelve seconds. The verb's own state change is durable
+/// before the queue is even taken, so nothing about the reply depends on the
+/// agent being up. What the delivery does reaches the browser the way every
+/// other background outcome does: the entity's own record
+/// ([`AppState::record_agent_session_start`],
+/// [`AppState::record_agent_delivery_failure`]) and a push invalidation.
+///
+/// [`HARNESS_READY_GRACE`]: crate::orchestrator::HARNESS_READY_GRACE
+struct DeliveryRunner;
+
+impl DeliveryRunner {
+    /// Deliver `turns` on a thread of the runtime's, and return at once.
+    ///
+    /// With no runtime under it — the synchronous unit tests — there is no
+    /// thread to hand the work to and it runs here, which is the same
+    /// delivery, made on the caller's time.
+    fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns) {
+        if turns.is_empty() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            DeliveryRunner::run(state, turns);
+            return;
+        };
+        let state = Arc::clone(state);
+        runtime.spawn_blocking(move || DeliveryRunner::run(&state, turns));
+    }
+
+    /// Send every turn, one at a time, and write down what each one did.
+    ///
+    /// A cold delivery starts a new harness process, so it opens the
+    /// conversation's session lineage — the record the thread reads back as
+    /// "the revise agent started here". A warm delivery continues the session
+    /// already open.
+    fn run(state: &Arc<Mutex<AppState>>, turns: PendingTurns) {
+        let timer = Arc::clone(&state.lock().unwrap().frame_clock).frame(AGENT_DELIVERY_METHOD);
+        for turn in turns.0 {
+            let delivered = deliver(
+                state,
+                &turn.root,
+                &turn.owner,
+                &turn.agent_id,
+                &turn.model_choice,
+                turn.say.as_ref(),
+                &timer,
             );
-        }
-        for turn in &queued {
-            *s.agent_turns_in_flight
-                .entry(turn.owner.clone())
-                .or_default() += 1;
-        }
-        // The one door every cold prompt passes: the conversation is read and
-        // closed onto the prompt HERE, so the packet carries what the store
-        // holds under the tail and what was said while the turn waited.
-        let mut queued = queued;
-        for turn in &mut queued {
-            if turn.wants_catch_up {
-                turn.cold = s.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &turn.cold);
+            let mut s = timer.lock(state);
+            match delivered {
+                // An issue whose session is over (approved, abandoned) holds no
+                // workspace — and its checkout is the project's primary one,
+                // which is emphatically not a place to spawn a replacement for
+                // work nobody is doing.
+                Ok(None) => eprintln!(
+                    "deliver to {}: the entity's session is over; the turn stays on its thread",
+                    turn.owner
+                ),
+                Ok(Some((_, Spawned::Fresh))) => s.record_agent_session_start(&turn),
+                Ok(Some((_, Spawned::Warm))) => {}
+                // The turn stays durable on the thread — the agent picks it up
+                // with `read_unread_messages` the next time a tab opens — but
+                // nothing is reading that thread right now, so the entity
+                // itself has to carry the reason. The idle sweep finishes the
+                // job: an entity left working with no agent tab is demoted on
+                // the next pass.
+                Err(error) => {
+                    eprintln!("deliver to {}: {error}", turn.owner);
+                    s.record_agent_delivery_failure(&turn, &error);
+                }
             }
-        }
-        queued
-    };
-    for turn in queued {
-        let delivered = deliver(
-            state,
-            &turn.root,
-            &turn.owner,
-            &turn.agent_id,
-            &turn.model_choice,
-            &turn.cold,
-            &turn.warm,
-            timer,
-        );
-        let mut s = timer.lock(state);
-        match delivered {
-            Ok((_, Spawned::Fresh)) => s.record_agent_session_start(&turn),
-            Ok((_, Spawned::Warm)) => {}
-            // The turn stays durable on the thread — the agent picks it up with
-            // `read_unread_messages` the next time a tab opens — but nothing is
-            // reading that thread right now, so the entity itself has to carry
-            // the reason. The idle sweep finishes the job: an entity left
-            // working with no agent tab is demoted on the next pass.
-            Err(error) => {
-                eprintln!("deliver to {}: {error}", turn.owner);
-                s.record_agent_delivery_failure(&turn, &error);
-            }
-        }
-        // Off the queue and out of flight: from here the entity's agent tab is
-        // the whole truth about whether an agent is there.
-        if let std::collections::hash_map::Entry::Occupied(mut in_flight) =
-            s.agent_turns_in_flight.entry(turn.owner.clone())
-        {
-            *in_flight.get_mut() -= 1;
-            if *in_flight.get() == 0 {
-                in_flight.remove();
+            // Off the queue and out of flight: from here the entity's agent tab
+            // is the whole truth about whether an agent is there.
+            if let std::collections::hash_map::Entry::Occupied(mut in_flight) =
+                s.agent_turns_in_flight.entry(turn.owner.clone())
+            {
+                *in_flight.get_mut() -= 1;
+                if *in_flight.get() == 0 {
+                    in_flight.remove();
+                }
             }
         }
     }
@@ -18914,9 +19119,9 @@ mod tests {
                 model_choice,
                 &a_frame(state),
             )
+            .map(|opened| opened.expect("the owner still has a session"))
         }
 
-        #[allow(clippy::too_many_arguments)]
         pub(super) fn deliver(
             state: &Arc<Mutex<AppState>>,
             root: &std::path::Path,
@@ -18926,20 +19131,27 @@ mod tests {
             cold: &str,
             warm: &str,
         ) -> Result<(String, Spawned), String> {
+            let say = TurnText {
+                cold: cold.to_string(),
+                warm: warm.to_string(),
+            };
             super::super::deliver(
                 state,
                 root,
                 owner,
                 agent_id,
                 model_choice,
-                cold,
-                warm,
+                Some(&say),
                 &a_frame(state),
             )
+            .map(|delivered| delivered.expect("the owner still has a session"))
         }
 
+        /// Take the queue and deliver it here and now, the way a test with no
+        /// runtime under it has to.
         pub(super) fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
-            super::super::deliver_pending_agent_turns(state, &a_frame(state))
+            let turns = state.lock().unwrap().take_pending_turns();
+            DeliveryRunner::run(state, turns)
         }
     }
     use untimed::{
@@ -19770,48 +19982,239 @@ mod tests {
             .unwrap_or_else(|| panic!("no {field} in {line}"))
     }
 
-    /// This step exists to give the steps after it a before/after number, and
-    /// the longest hold on the frame path is the delivery path's: `agent.start`
-    /// probes, scaffolds and spawns a harness with the app mutex held. A frame
-    /// that spends its time there has to report it as `held` and be named as
-    /// the lock holder while it does — a cold start that reads as seconds of
-    /// `total` against milliseconds of `held`, with `bridge.stats` saying
-    /// nobody holds the lock, describes the opposite of what is happening.
-    #[tokio::test]
-    async fn a_frames_delivery_path_reports_its_hold_and_names_its_method() {
+    /// A delivery is not the frame that asked for it.
+    ///
+    /// Its spawn probes a transcript tree and waits out a harness's readiness,
+    /// and charging that to `agent.start` would make every verb that speaks to
+    /// an agent read as the daemon's slowest while saying nothing about where
+    /// the time actually went. The delivery is timed under a method of its own,
+    /// and the frame that queued it answers before any of it has happened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_delivery_is_timed_under_its_own_method_and_never_the_frames() {
         let (dir, repo) = init_repo();
         let (clock, lines) = recording_clock();
         let (state, handler) = state_and_handler_timed_by(Arc::clone(&clock), &repo, dir.path());
         insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-timed");
 
-        // The spawn's session locator is built with the app mutex held, so a
-        // factory that takes its time is a hold of a length the test chose.
-        let holder_while_spawning: Arc<Mutex<Value>> = Arc::new(Mutex::new(Value::Null));
-        let sampled = Arc::clone(&holder_while_spawning);
-        let sampling_clock = Arc::clone(&clock);
+        // The spawn's session locator runs with the app mutex released, so a
+        // factory that takes its time is time the delivery spends and the frame
+        // that queued it does not.
         state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
             std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
-            *sampled.lock().unwrap() = sampling_clock.stats()["lock_holder"].clone();
             None
         });
 
         let started = call(&handler, "agent.start", json!({ "id": "run-timed" }));
         assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(
-            *holder_while_spawning.lock().unwrap(),
-            "agent.start",
-            "the stats name the frame whose spawn is holding the app mutex"
+
+        let line = wait_for(Duration::from_secs(20), || {
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|line| line.starts_with("slow frame agent.deliver "))
+                .cloned()
+        })
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the delivery logged no slow frame of its own: {:?}",
+                lines.lock().unwrap()
+            )
+        });
+        assert!(
+            slow_frame_millis(&line, "total=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
+            "the spawn's seconds are the delivery's own: {line}"
+        );
+        let lines = lines.lock().unwrap();
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("slow frame agent.start ")),
+            "the start answered before the harness it asked for was up: {lines:?}"
+        );
+    }
+
+    /// A session locator that stops where the test says. It is the first thing
+    /// a spawn's lock-free phase does, so a spawn parked here is a delivery in
+    /// flight and nothing else about the daemon is holding still.
+    fn spawns_parked_at(state: &Arc<Mutex<AppState>>) -> OffLockGateHandle {
+        let (gate, handle) = OffLockGate::new();
+        state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
+            gate.arrive();
+            None
+        });
+        handle
+    }
+
+    /// The whole of spec step 2, in one frame: a message is answered when the
+    /// message is durable, and never when the agent is up.
+    ///
+    /// A cold spawn waits on the harness's readiness for up to
+    /// `HARNESS_READY_GRACE` and the browser gives up at twelve seconds, so a
+    /// reply that waited for the spawn was the reply the human never saw. The
+    /// rest of the daemon is free while it happens.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_message_is_answered_before_its_agent_has_spawned() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-answered");
+        let spawning = spawns_parked_at(&state);
+
+        let asked_at = std::time::Instant::now();
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-answered", "body": "start on this" }),
+        );
+        let answered_in = asked_at.elapsed();
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            answered_in < Duration::from_millis(100),
+            "the post waited for the spawn it triggered: {answered_in:?}"
         );
 
-        let lines = lines.lock().unwrap();
-        let line = lines
-            .iter()
-            .find(|line| line.starts_with("slow frame agent.start "))
-            .unwrap_or_else(|| panic!("the cold start logged no slow frame: {lines:?}"));
-        assert!(
-            slow_frame_millis(line, "held=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
-            "the spawn's hold is the frame's own: {line}"
+        spawning.wait_for_arrival();
+        let board = call(&handler, "board.list", json!({}));
+        assert_eq!(
+            board["ok"], true,
+            "the daemon reads while a cold spawn is in flight: {board:?}"
         );
+        spawning.release();
+
+        wait_for_agent_tab(&state, &derived_agent_key(&root, "run-answered")).await;
+    }
+
+    /// The same rule for the verb that exists only to open an agent. Its reply
+    /// carries the tab id the agent's own identity mints — reserved under the
+    /// lock, addressable before the harness behind it exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn agent_start_answers_with_the_reserved_tab_before_the_harness_is_up() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-reserved");
+        let spawning = spawns_parked_at(&state);
+
+        let asked_at = std::time::Instant::now();
+        let started = call(&handler, "agent.start", json!({ "id": "run-reserved" }));
+        let answered_in = asked_at.elapsed();
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert!(
+            answered_in < Duration::from_millis(100),
+            "the start waited for its harness: {answered_in:?}"
+        );
+        let key = derived_agent_key(&root, "run-reserved");
+        assert_eq!(
+            started["result"]["term_id"], key.tab_id,
+            "the reply addresses the tab the spawn is about to fill: {started:?}"
+        );
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "and it answered before that tab existed"
+        );
+
+        spawning.wait_for_arrival();
+        spawning.release();
+        wait_for_agent_tab(&state, &key).await;
+    }
+
+    /// A delivery that never reached an agent is made on a thread of its own,
+    /// so the reply cannot carry the failure. It reaches the browser the way
+    /// every background outcome does: written onto the entity, and announced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_delivery_that_fails_in_the_background_lands_on_its_entity() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-unreachable");
+        {
+            // The checkout its agent would work in is not a directory, so the
+            // scaffold every spawn makes fails and no agent can be reached.
+            let mut s = state.lock().unwrap();
+            s.runs
+                .get_mut("run-unreachable")
+                .expect("the run")
+                .worktree
+                .path = std::path::PathBuf::from("/dev/null/there-is-no-worktree-here");
+        }
+        settled_pushes(&mut rx, &key).await;
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-unreachable", "body": "are you there" }),
+        );
+        assert_eq!(
+            posted["ok"], true,
+            "the message is durable whatever the delivery does: {posted:?}"
+        );
+        wait_for_deliveries(&state).await;
+
+        let got = call(&handler, "run.get", json!({ "run_id": "run-unreachable" }));
+        assert!(
+            got["result"]["last_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("could not reach the agent"),
+            "the failure is legible on the run: {got:?}"
+        );
+        let events = change_events(&settled_pushes(&mut rx, &key).await);
+        assert!(
+            events.contains(&json!({ "type": "entity.changed", "id": "run-unreachable" })),
+            "and the browser is told to look: {events:?}"
+        );
+    }
+
+    /// A caller that lost the spawn race waits on the winner, and waits holding
+    /// nothing.
+    ///
+    /// The winner needs the app mutex to publish its tab, so a loser that
+    /// polled for it — the 25 ms sleep loop this replaces — was taking the
+    /// mutex away from the spawn it was waiting for. One harness comes out of
+    /// it either way; a daemon that answers meanwhile does not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_callers_of_one_tab_spawn_one_harness_without_spinning() {
+        let (dir, repo) = init_repo();
+        let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-queued");
+        let spawning = spawns_parked_at(&state);
+        let asking = || {
+            let state = Arc::clone(&state);
+            let root = root.clone();
+            tokio::task::spawn_blocking(move || {
+                ensure_agent_tab(
+                    &state,
+                    &root,
+                    "run-queued",
+                    &crate::agent::derived_agent_id("run-queued"),
+                    &ModelChoice::default(),
+                )
+            })
+        };
+
+        let winner = asking();
+        spawning.wait_for_arrival();
+        let loser = asking();
+        // Long enough for the second caller to have reached the wait, so the
+        // read below is answered from behind it and not in front of it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let board = call(&handler, "board.list", json!({}));
+        assert_eq!(
+            board["ok"], true,
+            "the daemon reads while a caller waits out another's spawn: {board:?}"
+        );
+        spawning.release();
+
+        let (won_id, won) = winner.await.unwrap().expect("the winner spawns");
+        let (lost_id, lost) = loser.await.unwrap().expect("the loser gets the tab");
+        assert_eq!(won, Spawned::Fresh);
+        assert_eq!(
+            lost,
+            Spawned::Warm,
+            "the loser is handed the winner's tab, never a second harness"
+        );
+        assert_eq!(won_id, lost_id, "both callers address one tab");
+        let s = state.lock().unwrap();
+        assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+        assert!(s.agent_spawns_in_flight.is_empty(), "the claim went back");
     }
 
     /// A frame that finds another frame already computing a cache entry nobody
@@ -21764,8 +22167,10 @@ mod tests {
                     owner: "run-lineage".into(),
                     agent_id: crate::agent::derived_agent_id("run-lineage"),
                     model_choice: ModelChoice::default(),
-                    cold: "COLD-TURN".into(),
-                    warm: "WARM-TURN".into(),
+                    say: Some(TurnText {
+                        cold: "COLD-TURN".into(),
+                        warm: "WARM-TURN".into(),
+                    }),
                     phase: "build",
                     wants_catch_up: false,
                 });
@@ -21833,8 +22238,7 @@ mod tests {
                 owner: "run-eof".into(),
                 agent_id: crate::agent::derived_agent_id("run-eof"),
                 model_choice: ModelChoice::default(),
-                cold: String::new(),
-                warm: String::new(),
+                say: None,
                 phase: "build",
                 wants_catch_up: false,
             });
@@ -24707,7 +25111,7 @@ mod tests {
         let queued = &state.pending_agent_turns[0];
         assert_eq!(queued.owner, issue_id);
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Start with the endpoint."),
             "the message that started the session is in the prompt it is handed: {delivered}"
@@ -25577,38 +25981,43 @@ mod tests {
             .find(|turn| turn.owner == run_id && turn.phase == "recover")
             .expect("recovery turn is queued");
         assert!(
-            recovery_turn.cold.contains(&recovery.id),
+            recovery_turn.said().cold.contains(&recovery.id),
             "{}",
-            recovery_turn.cold
+            recovery_turn.said().cold
         );
         assert!(
-            recovery_turn.cold.contains("Build conversation protocol"),
+            recovery_turn
+                .said()
+                .cold
+                .contains("Build conversation protocol"),
             "{}",
-            recovery_turn.cold
+            recovery_turn.said().cold
         );
-        assert!(recovery_turn.cold.contains("read_unread_messages"));
+        assert!(recovery_turn.said().cold.contains("read_unread_messages"));
         assert!(recovery_turn
+            .said()
             .cold
             .contains("Ordered Issue stage-plan catalog"));
         let catalog = recovery_turn
+            .said()
             .cold
             .split("Ordered Issue stage-plan catalog (authoritative order):")
             .nth(1)
             .unwrap();
         assert!(catalog.find("first-half") < catalog.find("second-half"));
-        assert!(recovery_turn.warm.contains("read_unread_messages"));
+        assert!(recovery_turn.said().warm.contains("read_unread_messages"));
         // A warm recovery is a live process that lived this conversation, and
         // the protocol block it keeps tells it to read what it missed — so the
         // packet is the cold half's alone, and is composed at delivery.
         assert!(
-            !recovery_turn.warm.contains("Catch-up packet"),
+            !recovery_turn.said().warm.contains("Catch-up packet"),
             "{}",
-            recovery_turn.warm
+            recovery_turn.said().warm
         );
         assert!(
-            !recovery_turn.cold.contains("Catch-up packet"),
+            !recovery_turn.said().cold.contains("Catch-up packet"),
             "{}",
-            recovery_turn.cold
+            recovery_turn.said().cold
         );
         assert!(issue_view["result"]["thread"]["items"]
             .as_array()
@@ -25777,17 +26186,24 @@ mod tests {
             .find(|turn| turn.owner == run_id && turn.phase == "recover")
             .expect("restart requeues the recovery agent");
         assert!(
-            turn.cold.contains("Build conversation protocol"),
+            turn.said().cold.contains("Build conversation protocol"),
             "{}",
-            turn.cold
+            turn.said().cold
         );
-        assert!(turn.cold.contains("read_unread_messages"), "{}", turn.cold);
         assert!(
-            turn.cold.contains("Ordered Issue stage-plan catalog"),
+            turn.said().cold.contains("read_unread_messages"),
             "{}",
-            turn.cold
+            turn.said().cold
+        );
+        assert!(
+            turn.said()
+                .cold
+                .contains("Ordered Issue stage-plan catalog"),
+            "{}",
+            turn.said().cold
         );
         let catalog = turn
+            .said()
             .cold
             .split("Ordered Issue stage-plan catalog (authoritative order):")
             .nth(1)
@@ -26774,11 +27190,12 @@ mod tests {
             "the turn is addressed to the worktree, not to the run"
         );
         assert_eq!(
-            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            queued.said().warm,
+            NEW_THREAD_MESSAGES_PROMPT,
             "an agent already in the conversation is only told to read the thread"
         );
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains(NEW_THREAD_MESSAGES_PROMPT)
                 && delivered.contains("rename the symbol")
@@ -26855,14 +27272,15 @@ mod tests {
             "the turn is addressed to the worktree, not to the run"
         );
         assert_eq!(
-            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            queued.said().warm,
+            NEW_THREAD_MESSAGES_PROMPT,
             "an agent already in the conversation is only told to read the thread"
         );
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent gets the run context and the conversation protocol: {}",
-            queued.cold
+            queued.said().cold
         );
         let posted = primary_thread(&state.runs["run-message"].agents)
             .items
@@ -26913,20 +27331,20 @@ mod tests {
         assert_eq!(queued.owner, run_id);
         assert_eq!(queued.root, root);
         assert!(
-            queued.warm.contains("Second half"),
+            queued.said().warm.contains("Second half"),
             "the stage instruction travels whether the agent is warm or cold: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "a warm agent is not re-taught the protocol it is already following: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent gets the same instruction plus the conversation it missed: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -27024,21 +27442,21 @@ mod tests {
         );
         assert_eq!(queued.phase, "build");
         assert!(
-            queued.warm.contains("add the migration")
-                && queued.warm.contains("the migration is missing"),
+            queued.said().warm.contains("add the migration")
+                && queued.said().warm.contains("the migration is missing"),
             "the reviewer's note and the failed findings both travel: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "the agent that just failed validation is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a replacement agent gets the same fix plus the conversation it missed: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -27097,23 +27515,26 @@ mod tests {
         );
         assert_eq!(queued.phase, "revise");
         assert!(
-            queued.warm.contains("read_unread_messages"),
+            queued.said().warm.contains("read_unread_messages"),
             "the comments travel through MCP; the turn only points at them: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "an agent already in the run is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.contains("02-second-half.md")
-                && queued.cold.contains("Build conversation protocol")
-                && queued.cold.contains("Ordered Issue stage-plan catalog")
-                && queued.cold.find("\n- first-half").unwrap()
-                    < queued.cold.find("\n- second-half").unwrap(),
+            queued.said().cold.contains("02-second-half.md")
+                && queued.said().cold.contains("Build conversation protocol")
+                && queued
+                    .said()
+                    .cold
+                    .contains("Ordered Issue stage-plan catalog")
+                && queued.said().cold.find("\n- first-half").unwrap()
+                    < queued.said().cold.find("\n- second-half").unwrap(),
             "a cold agent is primed with the ordered catalog and stage doc it must revise: {}",
-            queued.cold
+            queued.said().cold
         );
         let comments = primary_thread(&state.plans[&plan_id].agents).doc_comments();
         assert_eq!(
@@ -27169,20 +27590,20 @@ mod tests {
         );
         assert_eq!(queued.phase, "build");
         assert!(
-            queued.warm.contains("Second half"),
+            queued.said().warm.contains("Second half"),
             "the next stage's instruction travels warm or cold: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "the agent that built stage one is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a replacement agent gets the same instruction plus the conversation: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -27203,6 +27624,7 @@ mod tests {
         // handler is the thing that delivers, and delivering opens the agent.
         let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert_eq!(opened["ok"], true, "{opened:?}");
+        wait_for_deliveries(&state).await;
         let key = derived_agent_key(&root, &run_id);
         let first_stage_pid = {
             let s = state.lock().unwrap();
@@ -27269,6 +27691,7 @@ mod tests {
                 &run_id,
             )
         };
+        wait_for_deliveries(&state).await;
         let first_pid = {
             let s = state.lock().unwrap();
             let tab = s
@@ -27285,6 +27708,7 @@ mod tests {
             json!({ "run_id": run_id, "stage_id": "second-half" }),
         );
         assert_eq!(next["ok"], true, "{next:?}");
+        wait_for_deliveries(&state).await;
         let s = state.lock().unwrap();
         assert_eq!(
             s.tabs.get(&key).and_then(agent_pid),
@@ -27303,7 +27727,11 @@ mod tests {
         assert_eq!(
             s.tabs.len(),
             1,
-            "no harness may be spawned beside the tab's agent"
+            "no harness may be spawned beside the tab's agent {:?}",
+            s.tabs
+                .iter()
+                .map(|(k, t)| (k.clone(), t.role.clone()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -27333,6 +27761,7 @@ mod tests {
             }),
         );
         assert_eq!(first["ok"], true, "{first:?}");
+        wait_for_deliveries(&state).await;
         let first_pid = {
             let s = state.lock().unwrap();
             let tab = s
@@ -27351,6 +27780,7 @@ mod tests {
             }),
         );
         assert_eq!(second["ok"], true, "{second:?}");
+        wait_for_deliveries(&state).await;
         let s = state.lock().unwrap();
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
         assert_eq!(
@@ -27531,20 +27961,20 @@ mod tests {
             "the stage is validated in the worktree it was built in"
         );
         assert!(
-            queued.warm.contains("VALIDATION agent"),
+            queued.said().warm.contains("VALIDATION agent"),
             "the validation instruction travels warm or cold: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "the agent that just reported is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a replacement agent gets the same instruction plus the conversation: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -27631,13 +28061,21 @@ mod tests {
         assert_eq!(queued.root, root, "triage reads the diff where it lives");
         let (hunk_ids, revision_sha) = diff_vocabulary(&state, &run_id);
         for hunk_id in &hunk_ids {
-            assert!(queued.warm.contains(hunk_id), "{hunk_id}: {}", queued.warm);
+            assert!(
+                queued.said().warm.contains(hunk_id),
+                "{hunk_id}: {}",
+                queued.said().warm
+            );
         }
-        assert!(queued.warm.contains(&revision_sha), "{}", queued.warm);
         assert!(
-            queued.warm.contains("crypto.rs — key derivation"),
+            queued.said().warm.contains(&revision_sha),
+            "{}",
+            queued.said().warm
+        );
+        assert!(
+            queued.said().warm.contains("crypto.rs — key derivation"),
             "the completion report seeds the pass: {}",
-            queued.warm
+            queued.said().warm
         );
     }
 
@@ -27702,7 +28140,11 @@ mod tests {
             .last()
             .expect("a new revision is triaged again");
         assert_eq!(queued.phase, "triage");
-        assert!(queued.warm.contains(&second_revision), "{}", queued.warm);
+        assert!(
+            queued.said().warm.contains(&second_revision),
+            "{}",
+            queued.said().warm
+        );
     }
 
     /// Triage asks the reviewer for nothing, so it must not ring their bell.
@@ -28173,6 +28615,7 @@ mod tests {
         let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert_eq!(opened["ok"], true, "{opened:?}");
         let key = derived_agent_key(&root, &run_id);
+        wait_for_agent_tab(&state, &key).await;
         let (build_pid, session_token) = {
             let s = state.lock().unwrap();
             let tab = s
@@ -28256,8 +28699,9 @@ mod tests {
                 .insert(agent_id.clone(), session_token.clone());
             (agent_id, session_token)
         };
-        // A spawn builds its session locator with the app mutex held, so a
-        // factory that takes its time is a hold of a length the test chose.
+        // A spawn builds its session locator with the app mutex released, so a
+        // factory that takes its time is time the delivery spends and the frame
+        // that queued it does not.
         state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
             std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
             None
@@ -28291,7 +28735,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .find(|line| line.starts_with("slow frame mcp.control "))
+                    .find(|line| line.starts_with("slow frame agent.deliver "))
                     .cloned();
                 if let Some(line) = logged {
                     return line;
@@ -28302,14 +28746,23 @@ mod tests {
         .await
         .unwrap_or_else(|_| {
             panic!(
-                "the report's frame logged nothing under mcp.control: {:?}",
+                "the report's delivery logged nothing of its own: {:?}",
                 lines.lock().unwrap()
             )
         });
 
         assert!(
-            slow_frame_millis(&line, "held=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
-            "the spawn's hold is the reporting frame's own: {line}"
+            slow_frame_millis(&line, "total=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
+            "the spawn's seconds are the delivery's own: {line}"
+        );
+        assert!(
+            !lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.starts_with("slow frame mcp.control ")),
+            "the reporting frame answered before the harness it triggered was up: {:?}",
+            lines.lock().unwrap()
         );
         let stats = clock.stats();
         assert!(
@@ -28405,14 +28858,15 @@ mod tests {
         );
         assert_eq!(queued.phase, "revise");
         assert_eq!(
-            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            queued.said().warm,
+            NEW_THREAD_MESSAGES_PROMPT,
             "an agent already drafting is only told to read the thread"
         );
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent gets the plan context AND the instruction: {}",
-            queued.cold
+            queued.said().cold
         );
         let durable = primary_thread(&state.plans[&notes_plan].agents)
             .items
@@ -28437,12 +28891,12 @@ mod tests {
         assert_eq!(queued.owner, notes_plan);
         assert_eq!(queued.root, notes_root);
         assert_eq!(queued.phase, "message");
-        assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
+        assert_eq!(queued.said().warm, NEW_THREAD_MESSAGES_PROMPT);
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.said().cold.contains("Build conversation protocol"),
             "{}",
-            queued.cold
+            queued.said().cold
         );
         let durable = primary_thread(&state.plans[&notes_plan].agents)
             .items
@@ -28468,20 +28922,20 @@ mod tests {
         assert_eq!(queued.root, stage_root);
         assert_eq!(queued.phase, "revise");
         assert!(
-            queued.warm.contains("read_unread_messages"),
+            queued.said().warm.contains("read_unread_messages"),
             "the comments travel through MCP; the turn only points at them: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "an agent already drafting is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.contains(".build/plan/01-first-half.md")
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(".build/plan/01-first-half.md")
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent is pointed at the stage doc it must revise: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -28510,6 +28964,7 @@ mod tests {
                 &plan_id,
             )
         };
+        wait_for_deliveries(&state).await;
         let drafting_pid = {
             let s = state.lock().unwrap();
             let tab = s
@@ -28535,6 +28990,7 @@ mod tests {
         ] {
             let done = call(&handler, method, params);
             assert_eq!(done["ok"], true, "{method}: {done:?}");
+            wait_for_deliveries(&state).await;
             let s = state.lock().unwrap();
             assert_eq!(
                 s.tabs.get(&key).and_then(agent_pid),
@@ -31974,8 +32430,10 @@ mod tests {
             owner: owner.to_string(),
             agent_id: crate::agent::derived_agent_id(owner),
             model_choice: ModelChoice::default(),
-            cold: "cold turn".into(),
-            warm: "warm turn".into(),
+            say: Some(TurnText {
+                cold: "cold turn".into(),
+                warm: "warm turn".into(),
+            }),
             phase: "build",
             wants_catch_up: false,
         }
@@ -32522,7 +32980,7 @@ mod tests {
             json!({ "id": run_id, "agent_id": agent_id }),
         );
         assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(started["result"]["spawned"], "fresh", "{started:?}");
+        wait_for_deliveries(&state).await;
         let root = AppState::canonical_root(&state.lock().unwrap().runs[&run_id].worktree.path);
         assert_eq!(
             spawned_provider(&state, &root, &agent_id),
@@ -32560,6 +33018,7 @@ mod tests {
             json!({ "id": run_id, "agent_id": second }),
         );
         assert_eq!(started["ok"], true, "{started:?}");
+        wait_for_deliveries(&state).await;
         let root = AppState::canonical_root(&state.lock().unwrap().runs[&run_id].worktree.path);
         assert_eq!(
             spawned_provider(&state, &root, &second),
@@ -33103,9 +33562,11 @@ mod tests {
         let started = call(&handler, "agent.start", json!({ "id": run_id }));
         assert_eq!(started["ok"], true, "{started:?}");
         assert_eq!(
-            started["result"]["spawned"], "fresh",
-            "the first start opens the agent: {started:?}"
+            started["result"]["term_id"],
+            agent_tab_id(started["result"]["agent_id"].as_str().unwrap()),
+            "the reply reserves the tab id the agent's own identity mints: {started:?}"
         );
+        wait_for_deliveries(&state).await;
         let root = AppState::canonical_root(&repo);
         {
             let s = state.lock().unwrap();
@@ -33122,7 +33583,11 @@ mod tests {
             );
         }
         let again = call(&handler, "agent.start", json!({ "id": run_id }));
-        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            again["result"]["term_id"], started["result"]["term_id"],
+            "a second start addresses the agent the first one opened: {again:?}"
+        );
     }
 
     #[test]
@@ -33397,27 +33862,24 @@ mod tests {
 
         let started = call(&handler, "agent.start", json!({ "id": "run-start" }));
         assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(
-            started["result"]["spawned"], "fresh",
-            "the first start opens the agent"
-        );
-        assert_eq!(started["result"]["live"], true);
         let wire_id = started["result"]["term_id"].as_str().unwrap().to_string();
         assert!(
             wire_id.starts_with("agent:"),
             "an agent is addressed by its worktree: {wire_id}"
         );
+        wait_for_agent_tab(&state, &key).await;
         let pid = {
             let s = state.lock().unwrap();
             agent_pid(s.tabs.get(&key).expect("the agent tab exists"))
         };
 
         let again = call(&handler, "agent.start", json!({ "id": "run-start" }));
-        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(again["ok"], true, "{again:?}");
         assert_eq!(
             again["result"]["term_id"], wire_id,
             "a second start addresses the same tab"
         );
+        wait_for_deliveries(&state).await;
         assert_eq!(
             agent_pid(state.lock().unwrap().tabs.get(&key).unwrap()),
             pid,
@@ -33437,6 +33899,7 @@ mod tests {
 
         let first = call(&handler, "agent.start", json!({ "id": "run-restart" }));
         assert_eq!(first["ok"], true, "{first:?}");
+        wait_for_agent_tab(&state, &key).await;
         let first_pid = {
             let s = state.lock().unwrap();
             agent_pid(s.tabs.get(&key).unwrap())
@@ -33454,10 +33917,10 @@ mod tests {
         let restarted = call(&handler, "agent.start", json!({ "id": "run-restart" }));
         assert_eq!(restarted["ok"], true, "{restarted:?}");
         assert_eq!(
-            restarted["result"]["spawned"], "fresh",
-            "a dead agent is replaced, not reported as running"
+            restarted["result"]["term_id"], first["result"]["term_id"],
+            "a restart addresses the tab the agent already had: {restarted:?}"
         );
-        assert_eq!(restarted["result"]["live"], true);
+        wait_for_deliveries(&state).await;
         let s = state.lock().unwrap();
         let tab = s.tabs.get(&key).expect("the tab came back");
         assert!(tab.live, "the restarted agent is live");
@@ -33482,6 +33945,7 @@ mod tests {
         let key = derived_agent_key(&root, "run-revive");
         let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
         assert_eq!(started["ok"], true, "{started:?}");
+        wait_for_agent_tab(&state, &key).await;
         let dead_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
 
         // The harness dies the way a real one does, and the tab is RETAINED so
@@ -33503,6 +33967,7 @@ mod tests {
         );
 
         assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for_deliveries(&state).await;
         {
             let s = state.lock().unwrap();
             let tab = s.tabs.get(&key).expect("the agent came back");
@@ -33579,7 +34044,7 @@ mod tests {
         // turn is handed over — so this is the prompt the revived agent opens
         // on, not the one the queue is holding.
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("still there?"),
             "the revived agent opens on what was said to it: {delivered}"
@@ -33657,6 +34122,7 @@ mod tests {
             assert_eq!(posted["ok"], true, "{posted:?}");
         }
 
+        wait_for_deliveries(&state).await;
         let built = specs_built.lock().unwrap().clone();
         let spawned_in = |root: &std::path::Path| {
             let root = AppState::canonical_root(root);
@@ -33793,7 +34259,7 @@ mod tests {
             json!({ "id": run_id, "provider": "codex" }),
         );
         assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(started["result"]["spawned"], "fresh", "{started:?}");
+        wait_for_deliveries(&state).await;
         let choice = state.lock().unwrap().runs[&run_id].model_choice.clone();
         assert_eq!(choice.provider, AgentProvider::Codex);
         assert_eq!(
@@ -34108,7 +34574,8 @@ mod tests {
     async fn agent_start_naming_the_live_agents_own_provider_is_idempotent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        let _ = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
+        let (key, wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
+        let live_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
         // The live run is on the TUI carrier, which is what "claude" names.
         let again = call(
             &handler,
@@ -34116,7 +34583,13 @@ mod tests {
             json!({ "id": "run-same", "provider": "claude" }),
         );
         assert_eq!(again["ok"], true, "{again:?}");
-        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(again["result"]["term_id"], wire_id, "{again:?}");
+        wait_for_deliveries(&state).await;
+        assert_eq!(
+            agent_pid(&state.lock().unwrap().tabs[&key]),
+            live_pid,
+            "the live session is the one the start hands back, not a replacement"
+        );
     }
 
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works
@@ -35549,13 +36022,13 @@ mod tests {
             "a cold prompt wants the conversation"
         );
         assert!(
-            !queued.cold.contains("Catch-up packet"),
+            !queued.said().cold.contains("Catch-up packet"),
             "the packet is not baked in at queue time: {}",
-            queued.cold
+            queued.said().cold
         );
 
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Catch-up packet from the durable conversation"),
             "{delivered}"
@@ -36158,6 +36631,33 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    /// Wait for every turn the verbs just run queued to have been delivered.
+    ///
+    /// The queue is taken and its owners marked in flight under the acquisition
+    /// the verb's own reply comes out of, so a caller that has its reply and
+    /// finds neither is looking at a delivery that has finished.
+    async fn wait_for_deliveries(state: &Arc<Mutex<AppState>>) {
+        wait_for(Duration::from_secs(20), || {
+            let s = state.lock().unwrap();
+            (s.pending_agent_turns.is_empty() && s.agent_turns_in_flight.is_empty()).then_some(())
+        })
+        .await
+        .expect("every queued turn reached its agent");
+    }
+
+    /// Wait for the tab a queued turn's delivery opens.
+    ///
+    /// A verb answers as soon as its own state change is durable and the turn
+    /// it queued is delivered on a thread of its own, so the reply is never the
+    /// moment the agent tab arrives.
+    async fn wait_for_agent_tab(state: &Arc<Mutex<AppState>>, key: &TabKey) {
+        wait_for(Duration::from_secs(10), || {
+            state.lock().unwrap().tabs.contains_key(key).then_some(())
+        })
+        .await
+        .unwrap_or_else(|| panic!("the delivery never opened {key:?}"));
     }
 
     fn activity_rows(thread: &crate::thread::Thread) -> Vec<crate::thread::ThreadEvent> {
@@ -37758,6 +38258,14 @@ mod tests {
             json!({ "entity_id": "run-outlived", "body": "kick off the reindex" }),
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
+        // The delivery is made off the frame that queued it, so the session
+        // opens after the reply: wait for the work it started to reach the
+        // timeline before asking whether the session that started it is over.
+        wait_for(Duration::from_secs(10), || {
+            (background_rows(&state, "run-outlived").len() == 1).then_some(())
+        })
+        .await
+        .expect("the agent started the work it was sent");
         wait_for(Duration::from_secs(10), || {
             (open_session_count(&state, "run-outlived") == 0).then_some(())
         })
@@ -38336,6 +38844,7 @@ mod tests {
             assert_eq!(posted["ok"], true, "{posted:?}");
         }
 
+        wait_for_deliveries(&state).await;
         let built = specs_built.lock().unwrap().clone();
         let spawned_in = |root: &std::path::Path| {
             let root = AppState::canonical_root(root);
@@ -38435,6 +38944,7 @@ mod tests {
             json!({ "entity_id": "run-pty", "body": "start something" }),
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for_deliveries(&state).await;
         assert_eq!(
             state
                 .lock()
@@ -38842,6 +39352,7 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
+        wait_for_deliveries(&state).await;
         let spawned = specs_built
             .lock()
             .unwrap()
@@ -38908,6 +39419,7 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
+        wait_for_deliveries(&state).await;
         let spawned = specs_built
             .lock()
             .unwrap()
@@ -38969,6 +39481,7 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
+        wait_for_deliveries(&state).await;
         let spawned = specs_built
             .lock()
             .unwrap()
@@ -38985,7 +39498,7 @@ mod tests {
                 .unwrap()
                 .recorded_resume_id("run-poisoned", &agent_id),
             None,
-            "and it is cleared where it was read, so no later spawn spends it either"
+            "and the apply phase forgets it, so no later spawn spends it either"
         );
     }
 
@@ -41930,6 +42443,7 @@ mod tests {
             );
             assert_eq!(started["ok"], true, "{started:?}");
         }
+        wait_for_deliveries(&state).await;
         let pid =
             agent_pid(&state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]).unwrap();
 
@@ -42119,6 +42633,7 @@ mod tests {
         );
         assert_eq!(two["ok"], true, "{two:?}");
         assert_ne!(two["result"]["term_id"], one["result"]["term_id"]);
+        wait_for_deliveries(&state).await;
 
         let s = state.lock().unwrap();
         assert!(s.tabs.contains_key(&TabKey::agent(&root, &primary_agent)));
@@ -42471,7 +42986,7 @@ mod tests {
         assert_eq!(queued.agent_id, second_agent);
         assert_ne!(queued.agent_id, primary_agent);
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("second-agent-comment"),
             "a cold spawn catches up on ITS conversation: {delivered}"
@@ -43557,12 +44072,12 @@ mod tests {
         assert_eq!(queued.agent_id, agent_id);
         assert_eq!(queued.root, AppState::canonical_root(&active.worktree.path));
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Add a health endpoint"),
             "a cold agent reads the instruction out of the packet composed at delivery: {delivered}"
         );
-        assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
+        assert_eq!(queued.said().warm, NEW_THREAD_MESSAGES_PROMPT);
 
         // …and the work is on the feed as one branch row.
         let board = state.handle(req("board.list", json!({})));
@@ -43692,7 +44207,7 @@ mod tests {
             "the harness it spawns is the one this agent was dispatched on"
         );
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Also cover the empty case"),
             "{delivered}"
@@ -44446,10 +44961,11 @@ mod tests {
         assert_eq!(turn.agent_id, agent_id);
         assert_eq!(turn.root, session.scratch_dir);
         assert_eq!(turn.phase, "route");
-        assert!(turn.cold.contains("fix the login redirect"));
-        assert!(turn.cold.contains("dispatch_branch"));
+        assert!(turn.said().cold.contains("fix the login redirect"));
+        assert!(turn.said().cold.contains("dispatch_branch"));
         assert_eq!(
-            turn.cold, turn.warm,
+            turn.said().cold,
+            turn.said().warm,
             "a router is one decision long: there is no conversation to continue"
         );
         assert_eq!(capture_record(&mut state, &capture_id)["state"], "routing");
@@ -44529,9 +45045,9 @@ mod tests {
         );
         assert_eq!(turns[0].phase, "plan");
         assert!(
-            turns[0].cold.contains("fix the login redirect"),
+            turns[0].said().cold.contains("fix the login redirect"),
             "the turn carries what the user said: {}",
-            turns[0].cold
+            turns[0].said().cold
         );
 
         let record = capture_record(&mut state, &capture_id);
@@ -44796,8 +45312,12 @@ mod tests {
             .iter()
             .find(|turn| turn.owner == capture_id)
             .expect("the router is re-fired with the choice in hand");
-        assert!(turn.cold.contains("proj-do"), "{}", turn.cold);
-        assert!(turn.cold.contains("New branch on Do"), "{}", turn.cold);
+        assert!(turn.said().cold.contains("proj-do"), "{}", turn.said().cold);
+        assert!(
+            turn.said().cold.contains("New branch on Do"),
+            "{}",
+            turn.said().cold
+        );
     }
 
     /// A client that tracked positions rather than ids taps the same choice.
@@ -45008,8 +45528,12 @@ mod tests {
             .iter()
             .find(|turn| turn.owner == capture_id)
             .expect("the router is re-fired");
-        assert!(turn.cold.contains("the bridge"), "{}", turn.cold);
-        assert!(turn.cold.contains("make the thing faster"));
+        assert!(
+            turn.said().cold.contains("the bridge"),
+            "{}",
+            turn.said().cold
+        );
+        assert!(turn.said().cold.contains("make the thing faster"));
     }
 
     #[test]

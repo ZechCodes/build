@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -301,6 +301,39 @@ pub struct LockedFor<'a, T> {
     acquired_at: Instant,
 }
 
+impl<'a, T> LockedFor<'a, T> {
+    /// Release the mutex, wait for `condvar` until `ready` holds or `timeout`
+    /// expires, and take it again.
+    ///
+    /// The wait is the one way a frame gives the mutex back without ending its
+    /// hold, so it is also the one way the frame's four durations could lie: it
+    /// closes the hold before waiting and charges the reacquisition to lock
+    /// wait, which is what the wait actually is.
+    pub fn wait_until(
+        mut self,
+        condvar: &Condvar,
+        timeout: Duration,
+        mut ready: impl FnMut(&mut T) -> bool,
+    ) -> LockedFor<'a, T> {
+        let guard = self.guard.take().expect("held until drop");
+        self.timer.clock.hold_ended();
+        self.timer
+            .held_micros
+            .fetch_add(micros(self.acquired_at.elapsed()), Ordering::Relaxed);
+        let asked_at = Instant::now();
+        let (guard, _) = condvar
+            .wait_timeout_while(guard, timeout, |state| !ready(state))
+            .expect("the app mutex is never poisoned by a waiter");
+        self.timer
+            .lock_wait_micros
+            .fetch_add(micros(asked_at.elapsed()), Ordering::Relaxed);
+        self.timer.clock.hold_began(&self.timer.method);
+        self.acquired_at = Instant::now();
+        self.guard = Some(guard);
+        self
+    }
+}
+
 impl<T> std::ops::Deref for LockedFor<'_, T> {
     type Target = T;
 
@@ -506,6 +539,41 @@ mod tests {
             spent.held
         );
         assert!(spent.total >= spent.held);
+    }
+
+    #[test]
+    fn a_frame_waiting_on_a_condvar_holds_nothing_and_charges_the_wait_to_the_lock() {
+        let (clock, _) = recording_clock();
+        let state = Arc::new(Mutex::new(false));
+        let woken = Arc::new(Condvar::new());
+
+        let waker_state = Arc::clone(&state);
+        let waker = Arc::clone(&woken);
+        let sampling_clock = Arc::clone(&clock);
+        let holder_while_waiting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            let seen = sampling_clock.stats()["lock_holder"].clone();
+            *waker_state.lock().unwrap() = true;
+            waker.notify_all();
+            seen
+        });
+
+        let timer = clock.frame("agent.deliver");
+        let held = timer
+            .lock(&state)
+            .wait_until(&woken, Duration::from_secs(5), |ready| *ready);
+        assert!(*held, "the waiter woke on the condition, not the timeout");
+        drop(held);
+
+        assert_eq!(
+            holder_while_waiting.join().unwrap(),
+            Value::Null,
+            "a waiting frame holds the mutex for nobody"
+        );
+        assert!(
+            timer.spent().lock_wait >= Duration::from_millis(15),
+            "the wait is charged to lock wait, not to the hold"
+        );
     }
 
     #[test]

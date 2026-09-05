@@ -459,69 +459,75 @@ the spec's load test.
 
 ## 3. `DeliveryRunner` — the background delivery runner
 
-- **Boundary** `bridge/src/delivery.rs` (new; `deliver`,
-  `deliver_pending_agent_turns` and `ensure_agent_tab` move here), between a
-  verb's durable state change and the agent process that hears about it.
+Shipped. What it does differs from what was declared here in four places, each
+noted below.
+
+- **Boundary** `bridge/src/delivery.rs` (new) holds the lock-free half of a
+  spawn — `SessionProbes`, `SessionPickup`, `AgentSpawnPlan`, `ReadyToSpawn` —
+  and cannot name `AppState`. `deliver`, `ensure_agent_tab` and
+  `DeliveryRunner` stay in `app.rs`. **Deviation from the declared boundary**,
+  argued: those three are `AppState`'s own bookkeeping (the tab registry, the
+  in-flight claim, the resume record, the roster, the project map, the session
+  tokens), and moving them across a module line would have made twenty private
+  fields and ten private methods `pub(crate)` — an interface as large as the
+  implementation behind it, which is the shallow module the rules forbid. What
+  moved is what genuinely holds nothing.
 - **Interface**
 
   ```rust
-  pub struct PendingTurns(Vec<PendingAgentTurn>);   // what one lock acquisition took
+  struct PendingTurns(Vec<PendingAgentTurn>);      // what one lock acquisition took
   impl AppState { fn take_pending_turns(&mut self) -> PendingTurns; }
+  struct DeliveryRunner;
   impl DeliveryRunner {
-      pub fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns);  // returns at once
-      pub fn run(state: &Arc<Mutex<AppState>>, turns: PendingTurns);    // no runtime: sync tests
+      fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns);  // returns at once
+      fn run(state: &Arc<Mutex<AppState>>, turns: PendingTurns);    // no runtime: sync tests
   }
 
   /// Find-or-spawn one agent tab. Idempotent per tab however many callers ask
   /// at once: it owns the single-flight claim, the wait, and the release.
-  pub fn ensure_agent_tab(
+  /// `Ok(None)` — the entity lost its session; nothing was published.
+  fn ensure_agent_tab(
       state: &Arc<Mutex<AppState>>, root: &Path, owner: &str,
-      agent_id: &str, choice: &ModelChoice,
-  ) -> Result<(String, Spawned), String>;
+      agent_id: &str, choice: &ModelChoice, timer: &FrameTimer,
+  ) -> Result<Option<(String, Spawned)>, String>;
   ```
 
 - **A turn's message is optional, so there is one delivery path.**
-  `PendingAgentTurn.cold` / `.warm` become `say: Option<TurnText>`
-  (`TurnText { cold: String, warm: String }`); `agent.start` (app.rs:17744)
-  queues `None` when nothing is unread and stops branching between `deliver`
-  and a bare `ensure_agent_tab`.
+  `PendingAgentTurn.cold` / `.warm` became `say: Option<TurnText>`
+  (`TurnText { cold: String, warm: String }`); `agent.start` queues `None` when
+  nothing is unread and no longer branches between `deliver` and a bare
+  `ensure_agent_tab`. Its reply drops `live` and `spawned` — neither is knowable
+  before the harness exists — and keeps `term_id`, `agent_id` and `notified`.
 - **Hides** which half of a turn travels, the readiness wait, the
   `PROMPT_WRITE_EXIT_GRACE` exit race, the in-flight bookkeeping, the
   resume/transcript/locator order — no verb knows a harness exists.
-- **Replaces** every site that drains the queue on the caller's thread:
-  `dispatch_frame`'s inline `deliver_pending_agent_turns` (app.rs:17483) and
-  the MCP done socket's two (4457, 4484) → `DeliveryRunner::spawn`.
-  `ensure_agent_tab`'s `sleep(25 ms)` loop against `AGENT_SPAWN_WAIT` → the
-  condvar wait below; its dead-tab `session.end()` →
-  `retire_tab_keeping_screen`; its stale-owner sweep's → `retire_tab`.
-  `scaffold_agent_worktree`, `resume_id_probe`, `transcript_probe`,
-  `session_locator_factory` and `agent_harness_spec` leave the reservation
-  block for `probe_and_scaffold`.
+- **Replaces** every site that drained the queue on the caller's thread:
+  `dispatch_frame`'s inline `deliver_pending_agent_turns`, the MCP done
+  socket's two, and `agent.start`'s inline `deliver` → `take_pending_turns` +
+  `DeliveryRunner::spawn`. `ensure_agent_tab`'s `sleep(25 ms)` loop against
+  `AGENT_SPAWN_WAIT` → the condvar wait below. `scaffold_agent_worktree`,
+  `resume_id_probe`, `transcript_probe`, `session_locator_factory` and
+  `agent_harness_spec` left the reservation block for `probe_and_scaffold`.
+  `Orchestrator` and `WorktreeManager` gained `#[derive(Clone)]` so the
+  reservation can hand the project's orchestrator over.
 - **The spawn plan carries what builds a spec, not a spec**, because the spec's
   inputs (`continue_session`, `resume_session_id`) are the probes' outputs and
   the probes are disk reads:
 
   ```rust
-  struct AgentSpawnPlan {
+  pub struct AgentSpawnPlan {
       project: Orchestrator,          // cloned under the lock; builds the spec off it
-      root: PathBuf, owner: String, agent_id: String, model_choice: ModelChoice,
+      root: PathBuf, agent_id: String, model_choice: ModelChoice,
       recorded_resume_id: Option<String>,
       may_pick_up_a_conversation: bool,
       probes: SessionProbes,          // the three Arc closures, cloned
       session_token: String,
-      carried: Option<ScreenHandle>,  // from retire_tab_keeping_screen
-      claim: SpawnClaim,
   }
-  impl AgentSpawnPlan { fn probe_and_scaffold(self) -> Result<ReadyToSpawn, String>; }
+  impl AgentSpawnPlan { pub fn probe_and_scaffold(self) -> Result<ReadyToSpawn, String>; }
 
   /// The pick-up rule — resume an exact name, else `--continue` a transcript,
   /// else fresh — in one place.
   pub struct SessionProbes;           // Clone
-  impl SessionProbes {
-      fn pickup(&self, root: &Path, provider: Provider, recorded: Option<String>,
-                may_pick_up: bool) -> SessionPickup;
-      fn locator(&self, root: &Path, provider: Provider) -> SessionLocator;
-  }
   pub struct SessionPickup {
       resume_session_id: Option<String>,
       continue_session: bool,
@@ -530,38 +536,69 @@ the spec's load test.
       /// write and has no business in a probe.
       recorded_name_is_gone: bool,
   }
-  struct ReadyToSpawn { spec: HarnessSpec, size: PtySize, locator: SessionLocator,
-                        pickup: SessionPickup, carried: Option<ScreenHandle>,
-                        claim: SpawnClaim }
+  pub struct ReadyToSpawn { spec: HarnessSpec, size: PtySize,
+                            locator: Option<Box<dyn SessionLocator>>,
+                            recorded_name_is_gone: bool }
   ```
 
+  **Deviation:** the plan carries neither `carried: Option<ScreenHandle>` nor
+  `claim: SpawnClaim` and no `owner`. The screen and the claim are `AppState`'s
+  and travel beside the plan in `ReservedSpawn`; the harness spec is built from
+  the cwd and the agent id alone, so `owner` was never one of its inputs.
 - **The single-flight claim has no public surface.** `ensure_agent_tab` owns
   both ends. Under one acquisition it returns the live tab, or takes the claim
   (`AppState.agent_spawns_in_flight`, read in the same acquisition as the tab
   registry or two callers spawn two harnesses), or hands the guard to
   `AppState.agent_spawn_finished: Arc<Condvar>` and looks again when a spawn
-  ends. `SpawnClaim` travels through the plan and is consumed by the acquisition
+  ends. `SpawnClaim` travels beside the plan and is consumed by the acquisition
   that inserts the tab; its `Drop` releases the claim and notifies every waiter
-  on any path that never got there, a panic included. `AGENT_SPAWN_WAIT` is the
-  condvar's timeout.
+  on any path that never got there, a panic included — through a poisoned mutex
+  deliberately, because a destructor that panics during an unwind aborts the
+  process. `AGENT_SPAWN_WAIT` is the condvar's deadline.
+- **The wait is a `FrameClock` primitive, not a bare condvar call.**
+  `LockedFor::wait_until(condvar, timeout, ready)` (timing.rs) ends the frame's
+  hold, clears the holder slot, waits with the mutex given back, and charges the
+  reacquisition to lock wait. A frame that waited would otherwise report the
+  wait as `held` and name itself as the lock holder while holding nothing.
+- **A delivery is a frame of its own.** `DeliveryRunner::run` opens a
+  `FrameTimer` under `AGENT_DELIVERY_METHOD` (`agent.deliver`), so `bridge.stats`
+  reports a cold spawn's seconds against the delivery rather than against every
+  verb that ever spoke to an agent.
+- **The session gate is asked where the answer is atomic.** An issue whose
+  session is over (approved, abandoned) holds no workspace, and its checkout is
+  the project's primary one — no place to spawn a replacement for work nobody is
+  doing. **Deviation:** the declared design filtered the queue in
+  `take_pending_turns`; delivery now outlives the frame that queued it, so the
+  gate can close between the take and the spawn. `ensure_agent_tab` asks
+  `owner_still_has_a_session` twice — in the reserve acquisition, which costs
+  nothing and skips the spawn, and again in the acquisition that publishes the
+  tab, which is the only check atomic with the insert; a tab published into a
+  closed session is retired in that same acquisition. Both answer `Ok(None)`,
+  which the runner logs and never records as a delivery failure.
 - **Lock discipline** Three acquisitions. **Take**: the queue, the in-flight
-  marks, the reserved tab id, `retire_tab_keeping_screen` for the dead tab this
-  spawn replaces and `retire_tab` for the stale-owner sweep — one acquisition,
-  as today, so the idle sweep never sees a gap; the receipts are dropped.
-  **Run**: probe, scaffold, build the spec, spawn, `send_turn` — none.
-  **Apply**: insert the tab, consume the claim,
-  `record_agent_resume_id(.., None)` when `recorded_name_is_gone`,
-  `record_agent_session_start` / `record_agent_delivery_failure`,
-  `note_entity_changed`. A verb that queues a turn answers with the tab id
-  reserved under the lock; the outcome reaches the browser through the
-  entity's push event.
-- **Tests** `a_message_is_answered_before_its_agent_has_spawned`,
+  marks, the reserved tab id (`agent_tab_id(agent_id)` — the agent's own
+  identity mints it, so no registry entry is needed to name it), one
+  acquisition, so the idle sweep never sees a gap. **Reserve**:
+  `retire_tab_keeping_screen` for the dead tab this spawn replaces and
+  `retire_tab` for the stale-owner sweep (receipts dropped), the orchestrator
+  clone, the probe inputs, the session token, the claim. **Run**: probe,
+  scaffold, build the spec, spawn, `send_turn` — none. **Apply**: insert the
+  tab, consume the claim, `record_agent_resume_id(.., None)` when
+  `recorded_name_is_gone`, `record_agent_session_start` /
+  `record_agent_delivery_failure`, `note_entity_changed`. A verb that queues a
+  turn answers with the reserved tab id; the outcome reaches the browser through
+  the entity's push event.
+- **Tests** `a_message_is_answered_before_its_agent_has_spawned` (which also
+  proves a board read answers while a cold spawn is parked),
   `agent_start_answers_with_the_reserved_tab_before_the_harness_is_up`,
-  `a_board_read_completes_while_a_cold_spawn_waits_for_readiness`,
+  `a_delivery_that_fails_in_the_background_lands_on_its_entity`,
   `two_callers_of_one_tab_spawn_one_harness_without_spinning`,
-  `a_dead_recorded_resume_name_is_forgotten_in_the_apply_phase`,
-  `a_spawn_that_replaces_a_wedged_tab_answers_before_it_dies`,
-  `a_restarted_agent_keeps_its_attached_terminal`.
+  `a_delivery_is_timed_under_its_own_method_and_never_the_frames`,
+  `a_frame_waiting_on_a_condvar_holds_nothing_and_charges_the_wait_to_the_lock`
+  (timing.rs), and the four pick-up-rule tests in `delivery.rs`. Already
+  standing and now covering the apply phase:
+  `a_recorded_name_the_provider_no_longer_holds_is_cleared_before_it_is_spent`,
+  `a_client_attaching_inside_a_respawn_is_carried_without_rewinding_the_cursor`.
 
 ## 4. The diff cache — one read, one owner
 

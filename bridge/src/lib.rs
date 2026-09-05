@@ -50,6 +50,7 @@ pub mod branch;
 pub mod capture;
 pub mod changes;
 pub mod config;
+pub mod delivery;
 pub mod diff;
 pub mod gitgui;
 pub mod harness;

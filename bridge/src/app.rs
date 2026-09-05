@@ -705,6 +705,13 @@ impl PendingAgentTurn {
         self.say.as_ref().expect("this turn carries text")
     }
 
+    /// Whether the agent is TOLD anything once the tab is open. A turn that
+    /// says nothing opens a harness and sends it nothing, so it promises the
+    /// agent nothing to read.
+    fn says_something(&self) -> bool {
+        self.say.is_some()
+    }
+
     /// The registry entry this turn is on its way to. The same key
     /// [`ensure_agent_tab`] will reserve, so a turn in the queue, a turn
     /// mid-delivery and a spawn in flight are all one agent's under one name.
@@ -3274,28 +3281,35 @@ impl AppState {
                 .any(|turn| turn.owner == owner)
     }
 
-    /// Is a harness for this agent already coming?
-    ///
-    /// Three states, one question, because a turn on its way passes through all
-    /// three and is never in none of them: queued, taken off the queue and
-    /// mid-delivery, and claimed by the spawn that delivery makes. The delivery
-    /// gives its in-flight mark back only after the spawn claim it became has
-    /// been settled, so the three overlap and leave no window in which an agent
-    /// on its way reads as absent.
+    /// Is a turn that will TELL this agent to read its thread already coming?
     ///
     /// Asked by every verb that would otherwise queue a SECOND turn for it: two
     /// harnesses in one checkout both report `done` for the same owner, and
     /// even where the spawn claim prevents that, the second turn survives as a
     /// duplicate `read_unread_messages` nudge. Keyed per (root, agent), so a
     /// branch's second agent is never suppressed by its first agent's turn.
+    ///
+    /// Only a turn with words counts. The verb that asks is about to leave a
+    /// message durable on the thread, and a harness that opens on a cold
+    /// prompt is told to call `read_unread_messages` — so that turn reads the
+    /// message, and a second turn is a duplicate. A turn that says nothing
+    /// (`agent.start` with nothing unread) opens a harness and sends it
+    /// nothing: it promises the agent nothing to read, so the message has to
+    /// queue its own turn, which lands Warm on the tab the start opened. The
+    /// spawn claim is not consulted: a textful delivery gives its mark back
+    /// only after settling the claim it became, so the mark already covers the
+    /// claim's whole lifetime, and a claim with no textful mark behind it is a
+    /// textless spawn.
+    ///
+    /// Two states, then, and a turn with words is never in neither: queued,
+    /// and taken off the queue and mid-delivery.
     fn agent_is_on_its_way(&self, root: &std::path::Path, agent_id: &str) -> bool {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
-        self.agent_spawns_in_flight.contains(&key)
-            || self.turns_in_flight.holds_agent(&key)
+        self.turns_in_flight.holds_agent(&key)
             || self
                 .pending_agent_turns
                 .iter()
-                .any(|queued| queued.tab_key() == key)
+                .any(|queued| queued.says_something() && queued.tab_key() == key)
     }
 
     /// Move `entity_state_changed_at` only when the entity's wire state
@@ -9183,10 +9197,6 @@ impl AppState {
     /// queues a duplicate turn behind the one already on its way.
     fn take_pending_turns(&mut self) -> PendingTurns {
         let mut queued = std::mem::take(&mut self.pending_agent_turns);
-        let owed = queued
-            .iter()
-            .map(|turn| self.turns_in_flight.take(turn))
-            .collect();
         // The one door every cold prompt passes: the conversation is read and
         // closed onto the prompt HERE, so the packet carries what the store
         // holds under the tail and what was said while the turn waited.
@@ -9198,9 +9208,15 @@ impl AppState {
                 say.cold = self.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &say.cold);
             }
         }
+        let turns = queued
+            .into_iter()
+            .map(|turn| {
+                let mark = self.turns_in_flight.take(&turn);
+                (turn, mark)
+            })
+            .collect();
         PendingTurns {
-            owed,
-            turns: queued.into(),
+            turns,
             state: self.settling_handle(),
         }
     }
@@ -11443,10 +11459,12 @@ impl AppState {
         }
         // Two harnesses in one checkout would both report `done` for the same
         // owner, and the second report is an illegal transition that lands on
-        // the conversation as a bogus failure. A harness already on its way is
-        // the one that reads this message: it opens on the cold prompt, which
-        // tells it to call `read_unread_messages`, and the message is durable
-        // on the thread before it can ask.
+        // the conversation as a bogus failure. A harness already on its way
+        // WITH WORDS for it is the one that reads this message: it opens on
+        // the cold prompt, which tells it to call `read_unread_messages`, and
+        // the message is durable on the thread before it can ask. A start
+        // that says nothing promises no such read, so this turn is queued
+        // behind it and lands Warm on the tab it opens.
         if self.agent_is_on_its_way(&root, agent_id) {
             return;
         }
@@ -18411,10 +18429,13 @@ fn deliver(
 /// [`Drop`] settles whatever is left, because an owner still marked in flight is
 /// spared by the idle sweep forever — a run left Working with no agent and
 /// nothing in the daemon able to demote it.
+///
+/// A mark travels with the turn it was taken for, so the turn that landed is
+/// the only one whose mark can be given back. Found by owner instead, a batch
+/// carrying two turns for one owner on two agents could settle the OTHER
+/// agent's mark and leave its undelivered turn reading as absent.
 struct PendingTurns {
-    turns: std::collections::VecDeque<PendingAgentTurn>,
-    /// One entry per mark this batch has yet to give back.
-    owed: Vec<TurnMark>,
+    turns: std::collections::VecDeque<(PendingAgentTurn, TurnMark)>,
     state: SettlingHandle,
 }
 
@@ -18425,8 +18446,10 @@ struct PendingTurns {
 /// neither answers the other. The idle sweep asks about an OWNER: between a
 /// verb's transition and the tab its turn spawns, a working entity legitimately
 /// has no agent tab. The verbs that would queue a second turn ask about an
-/// AGENT TAB: a harness already on its way is the one that reads the next
-/// message, and a turn queued behind it is a duplicate nudge.
+/// AGENT TAB: a harness already on its way with words for it is the one that
+/// reads the next message, and a turn queued behind it is a duplicate nudge.
+/// Every turn counts under its owner; only a turn that says something counts
+/// under its agent, because only that turn tells the agent to read.
 ///
 /// Counted rather than flagged, because one batch can carry several turns for
 /// one owner and several for one agent.
@@ -18439,23 +18462,37 @@ struct TurnsInFlight {
 /// One turn's pair of marks, owed back by whoever took them.
 struct TurnMark {
     owner: String,
-    agent: TabKey,
+    /// The agent this turn will tell to read its thread — `None` for a turn
+    /// that says nothing.
+    told_agent: Option<TabKey>,
+}
+
+impl TurnMark {
+    /// Give this turn's marks back, under a lock the caller holds. Consumes the
+    /// mark, so one turn settles once.
+    fn settle(self, s: &mut AppState) {
+        s.turns_in_flight.give_back(&self);
+    }
 }
 
 impl TurnsInFlight {
     fn take(&mut self, turn: &PendingAgentTurn) -> TurnMark {
         let mark = TurnMark {
             owner: turn.owner.clone(),
-            agent: turn.tab_key(),
+            told_agent: turn.says_something().then(|| turn.tab_key()),
         };
         *self.owners.entry(mark.owner.clone()).or_default() += 1;
-        *self.agents.entry(mark.agent.clone()).or_default() += 1;
+        if let Some(agent) = &mark.told_agent {
+            *self.agents.entry(agent.clone()).or_default() += 1;
+        }
         mark
     }
 
     fn give_back(&mut self, mark: &TurnMark) {
         Self::drop_one(&mut self.owners, &mark.owner);
-        Self::drop_one(&mut self.agents, &mark.agent);
+        if let Some(agent) = &mark.told_agent {
+            Self::drop_one(&mut self.agents, agent);
+        }
     }
 
     fn holds_owner(&self, owner: &str) -> bool {
@@ -18489,28 +18526,20 @@ impl PendingTurns {
         self.turns.is_empty()
     }
 
-    fn next_turn(&mut self) -> Option<PendingAgentTurn> {
+    /// The next turn to deliver, with the mark to settle once it has landed.
+    fn next_turn(&mut self) -> Option<(PendingAgentTurn, TurnMark)> {
         self.turns.pop_front()
-    }
-
-    /// Give one delivered turn's marks back, under a lock the caller holds.
-    fn settle(&mut self, owner: &str, s: &mut AppState) {
-        let Some(at) = self.owed.iter().position(|owed| owed.owner == owner) else {
-            return;
-        };
-        let mark = self.owed.swap_remove(at);
-        s.turns_in_flight.give_back(&mark);
     }
 }
 
 impl Drop for PendingTurns {
     fn drop(&mut self) {
-        let owed = std::mem::take(&mut self.owed);
-        if owed.is_empty() {
+        let undelivered = std::mem::take(&mut self.turns);
+        if undelivered.is_empty() {
             return;
         }
         self.state.settle(|s| {
-            for mark in owed {
+            for (_, mark) in undelivered {
                 s.turns_in_flight.give_back(&mark);
             }
         });
@@ -18577,7 +18606,7 @@ impl DeliveryRunner {
     /// already open.
     fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
         let timer = Arc::clone(&state.lock().unwrap().frame_clock).frame(AGENT_DELIVERY_METHOD);
-        while let Some(turn) = turns.next_turn() {
+        while let Some((turn, mark)) = turns.next_turn() {
             let delivered = deliver(
                 state,
                 &turn.root,
@@ -18612,7 +18641,7 @@ impl DeliveryRunner {
             }
             // Off the queue and out of flight: from here the entity's agent tab
             // is the whole truth about whether an agent is there.
-            turns.settle(&turn.owner, &mut s);
+            mark.settle(&mut s);
         }
     }
 }
@@ -33058,6 +33087,114 @@ mod tests {
         );
     }
 
+    /// A textless start promises the agent nothing to read, so a message
+    /// posted while it is on its way has to queue its own turn.
+    ///
+    /// The guard on a second turn assumes the harness already coming opens on
+    /// a cold prompt that tells it to call `read_unread_messages`. A start with
+    /// nothing unread carries no prompt at all: the harness opens and is sent
+    /// nothing, and a message posted between the button and the harness would
+    /// sit durable on the thread with nobody told about it. The spawn claim
+    /// still guarantees one harness; the turn queued here lands Warm on the tab
+    /// the start opened.
+    #[test]
+    fn a_message_posted_during_a_textless_start_queues_its_own_turn() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-started-bare",
+            RunState::Building,
+        );
+        let root = app.entity_agent_root("run-started-bare").unwrap();
+        let agent_id = primary_agent_id(&app, "run-started-bare");
+        app.pending_agent_turns.push(PendingAgentTurn {
+            root: root.clone(),
+            owner: "run-started-bare".into(),
+            agent_id: agent_id.clone(),
+            model_choice: ModelChoice::default(),
+            say: None,
+            phase: "start",
+            wants_catch_up: true,
+        });
+        let state = app.shared();
+
+        // Off the queue, mid-delivery: the harness is coming, with nothing to say.
+        let _delivering = state.lock().unwrap().take_pending_turns();
+        assert!(state.lock().unwrap().pending_agent_turns.is_empty());
+
+        let posted = state.lock().unwrap().handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-started-bare", "body": "read this" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.pending_agent_turns.len(),
+            1,
+            "a start that says nothing is not the turn that reads this message"
+        );
+        let queued = &s.pending_agent_turns[0];
+        assert_eq!(queued.agent_id, agent_id);
+        assert!(
+            queued.says_something(),
+            "the queued turn is the one that tells it to read"
+        );
+    }
+
+    /// One batch, one owner, two agents: settling the delivered turn gives
+    /// back that turn's mark and nobody else's.
+    ///
+    /// The mark travels with the turn it was taken for. Looked up by owner
+    /// alone, the first settle could hand back the OTHER agent's mark, and the
+    /// agent whose turn was still undelivered would read as absent — the window
+    /// the count exists to close.
+    #[test]
+    fn settling_one_agents_turn_leaves_the_other_agents_mark_in_flight() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-two-agents",
+            RunState::Building,
+        );
+        let first = unreachable_turn("run-two-agents");
+        let mut second = unreachable_turn("run-two-agents");
+        second.agent_id = "agent-second".into();
+        let root = first.root.clone();
+        let first_agent = first.agent_id.clone();
+        state.pending_agent_turns.push(first);
+        state.pending_agent_turns.push(second);
+
+        let mut delivering = state.take_pending_turns();
+        let (delivered, mark) = delivering.next_turn().expect("the first turn");
+        assert_eq!(delivered.agent_id, first_agent);
+        mark.settle(&mut state);
+
+        assert!(
+            !state.agent_is_on_its_way(&root, &first_agent),
+            "the delivered turn's agent is settled"
+        );
+        assert!(
+            state.agent_is_on_its_way(&root, "agent-second"),
+            "the undelivered turn's agent is still on its way"
+        );
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
+            "and so is the owner"
+        );
+        let (_, mark) = delivering.next_turn().expect("the second turn");
+        mark.settle(&mut state);
+        assert!(
+            !state.agent_is_on_its_way(&root, "agent-second"),
+            "both marks are back once both turns have landed"
+        );
+    }
+
     /// The tabless anomaly must not fire on the gap the queue opens: a verb
     /// transitions the run under the state lock and the turn is delivered after
     /// it, so for the seconds a cold spawn takes there is a working run whose
@@ -33090,7 +33227,8 @@ mod tests {
         );
 
         // Once the delivery is over and no tab appeared, it IS the anomaly.
-        delivering.settle("run-dispatching", &mut state);
+        let (_, mark) = delivering.next_turn().expect("the one turn");
+        mark.settle(&mut state);
         assert_eq!(
             state.mark_idle_tasks(Duration::from_secs(3600)),
             vec!["run-dispatching".to_string()]
@@ -34460,12 +34598,13 @@ mod tests {
     }
 
     /// The guard on revival: an agent whose harness is being started RIGHT NOW
-    /// must not get a second one. Two harnesses in one checkout both report
-    /// `done` for the same owner, and the second report is an illegal
-    /// transition that lands on the conversation as a bogus failure. The spawn
-    /// already in flight is the one that reads this message: it opens on the
-    /// cold prompt, which tells it to call `read_unread_messages`, and the post
-    /// made the message durable before the harness could ask.
+    /// to hear a message must not get a second one. Two harnesses in one
+    /// checkout both report `done` for the same owner, and the second report
+    /// is an illegal transition that lands on the conversation as a bogus
+    /// failure. The turn already mid-delivery is the one that reads this
+    /// message: it opens on the cold prompt, which tells it to call
+    /// `read_unread_messages`, and the post made the message durable before
+    /// the harness could ask.
     #[test]
     fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
         let (dir, repo) = init_repo();
@@ -34474,9 +34613,18 @@ mod tests {
         let root = state.entity_agent_root(&run_id).unwrap();
         let agent_id = primary_agent_id(&state, &run_id);
         state.pending_agent_turns.clear();
-        state
-            .agent_spawns_in_flight
-            .insert(TabKey::agent(&root, &agent_id));
+        let first = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "the first thing" }),
+        ));
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "the first message is what brings the agent back"
+        );
+        // Off the queue and mid-delivery: the harness is starting to hear it.
+        let mut delivering = state.take_pending_turns();
 
         let posted = state.handle(req(
             "thread.post",
@@ -34492,7 +34640,9 @@ mod tests {
 
         // …and with nothing in flight, the same message is what brings the
         // agent back.
-        state.agent_spawns_in_flight.clear();
+        while let Some((_, mark)) = delivering.next_turn() {
+            mark.settle(&mut state);
+        }
         let again = state.handle(req(
             "thread.post",
             json!({ "entity_id": run_id, "body": "still there?" }),
@@ -45557,8 +45707,6 @@ mod tests {
             )
             .unwrap();
         let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-        let agent_id = primary_agent_id(&state, &issue_id);
-        let key = TabKey::agent(&AppState::canonical_root(&repo), &agent_id);
 
         // The turn from the route is still queued.
         state.start_routed_issue_agent(&issue_id);
@@ -45572,9 +45720,8 @@ mod tests {
             "the turn already queued is the one that reads the capture"
         );
 
-        // The queue drained and the spawn is in flight.
-        state.pending_agent_turns.clear();
-        state.agent_spawns_in_flight.insert(key.clone());
+        // The queue drained and the turn is mid-delivery, its harness coming.
+        let mut delivering = state.take_pending_turns();
         state.start_routed_issue_agent(&issue_id);
         assert!(
             state.pending_agent_turns.is_empty(),
@@ -45583,7 +45730,9 @@ mod tests {
 
         // And once nothing is coming, the issue that already has its session
         // is still not restarted: starting is a first turn, not a nudge.
-        state.agent_spawns_in_flight.remove(&key);
+        while let Some((_, mark)) = delivering.next_turn() {
+            mark.settle(&mut state);
+        }
         state.start_routed_issue_agent(&issue_id);
         assert!(
             state.pending_agent_turns.is_empty(),

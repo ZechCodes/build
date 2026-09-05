@@ -17458,17 +17458,17 @@ pub trait DiscardSettlement: Send {
 /// `run.abandon`'s apply half: the agents are dead, the checkout is gone, and
 /// what is left is the verdict — on the run, on the stages the removal made
 /// unverifiable, and on the Issue the run was implementing.
-pub struct RunAbandoned {
-    pub run_id: String,
-    pub project_id: String,
+struct RunAbandoned {
+    run_id: String,
+    project_id: String,
     /// The Issue this run was implementing, told what it lost.
-    pub issue_id: Option<String>,
-    pub detail: crate::thread::ThreadDetail,
+    issue_id: Option<String>,
+    detail: crate::thread::ThreadDetail,
     /// What the run's stages are judged against, and git's answer once
     /// [`DiscardSettlement::judge_before_removal`] has asked. An abandon is the
     /// only verb that asks, so it is the only one that carries the query.
-    pub stages: StagePublicationQuery,
-    pub published: StagePublications,
+    stages: StagePublicationQuery,
+    published: StagePublications,
 }
 
 impl DiscardSettlement for RunAbandoned {
@@ -17490,23 +17490,28 @@ impl DiscardSettlement for RunAbandoned {
 /// says the delete is happening: the removal cannot fail. A crash in between
 /// leaves the record for boot to reload and the vanished-run sweep to archive,
 /// the same story every other reservation has.
-pub struct RunDeleted {
-    pub run_id: String,
+///
+/// A store that refuses the delete puts the run back where the decide phase
+/// took it from: the record still stands, so the card must too, and the delete
+/// is retried like any other failed write.
+struct RunDeleted {
+    run_id: String,
     /// The project whose board loses the card, when the run still has one: a
     /// run recovered after its repository moved has no project mapping, and
     /// clearing that stale card is exactly what a delete is for.
-    pub project_id: Option<String>,
+    project_id: Option<String>,
     /// The directory the run worked in, consulted to tell a checkout that
     /// survived the delete — the user's own files — from one that was pruned.
-    pub checkout: std::path::PathBuf,
+    checkout: std::path::PathBuf,
 }
 
 impl DiscardSettlement for RunDeleted {
-    fn settle(self: Box<Self>, state: &mut AppState, _active: ActiveRun) -> Result<Value, String> {
+    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String> {
         if let Some(store) = &state.store {
-            store
-                .delete_run(&self.run_id)
-                .map_err(|error| format!("run store: {error}"))?;
+            if let Err(error) = store.delete_run(&self.run_id) {
+                state.runs.insert(self.run_id.clone(), active);
+                return Err(format!("run store: {error}"));
+            }
         }
         state.forget_run(&self.run_id);
         if let Some(project_id) = self.project_id.filter(|_| self.checkout.exists()) {
@@ -17981,7 +17986,7 @@ fn remove_registered_worktree(
 
 /// Everything one run's stage publications have to be decided against, taken
 /// under the state lock so the deciding needs none.
-pub struct StagePublicationQuery {
+struct StagePublicationQuery {
     run_id: String,
     repo_path: Option<std::path::PathBuf>,
     branch: String,
@@ -17993,7 +17998,7 @@ pub struct StagePublicationQuery {
 
 /// What git says about each of a run's completed stages.
 #[derive(Default)]
-pub struct StagePublications(HashMap<String, StagePublication>);
+struct StagePublications(HashMap<String, StagePublication>);
 
 /// One vanished run, with git's verdict on its stages already in hand.
 struct DecidedVanishedRun {
@@ -18039,7 +18044,7 @@ impl OffLockJob for VanishedRunSweep {
 impl StagePublicationQuery {
     /// The git half: a bounded fetch and two graph walks per completed stage.
     /// MUST run with the state lock released.
-    pub fn classify(&self) -> StagePublications {
+    fn classify(&self) -> StagePublications {
         let Some(repo_path) = self.repo_path.as_ref() else {
             return StagePublications::default();
         };
@@ -36611,6 +36616,67 @@ mod tests {
         );
         let board = state.handle(req("board.list", json!({})));
         assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
+    }
+
+    /// The run is off the board for the length of the removal, and the record
+    /// is the one thing the board can rebuild it from — so a delete the store
+    /// refuses puts the run back where the decide phase took it from, answers
+    /// with the refusal, and is retried like any other failed write. Dropping
+    /// the run there would clear the card with the record still standing,
+    /// and a restart would bring it back.
+    #[test]
+    fn a_delete_the_store_refuses_puts_the_run_back_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "kept-by-refusal");
+        // Only a terminal run can be deleted.
+        state.runs.get_mut(&run_id).unwrap().run.state = RunState::Failed;
+        state
+            .store
+            .as_ref()
+            .expect("the QA daemon keeps a store")
+            .fail_next_write();
+
+        let deleted = state.handle(req("run.delete", json!({ "run_id": run_id })));
+
+        assert_eq!(deleted["ok"], false, "{deleted:?}");
+        assert!(
+            deleted["error"]
+                .as_str()
+                .unwrap()
+                .contains("injected store failure"),
+            "{deleted:?}"
+        );
+        assert!(
+            state.runs.contains_key(&run_id),
+            "the run the store would not delete is back on the board"
+        );
+        let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            got["ok"], true,
+            "the refused delete left the card standing: {got:?}"
+        );
+        assert!(state.pending_rows.is_empty(), "the placeholder is retired");
+        let persisted = state
+            .store
+            .as_ref()
+            .unwrap()
+            .load_all_runs()
+            .expect("the store answers");
+        assert!(
+            persisted.iter().any(|run| run.id == run_id),
+            "the durable record survives the refusal"
+        );
+
+        let retried = state.handle(req("run.delete", json!({ "run_id": run_id })));
+        assert_eq!(
+            retried["ok"], true,
+            "the delete is retryable once the store answers: {retried:?}"
+        );
+        assert!(
+            !state.runs.contains_key(&run_id),
+            "the retry clears the card"
+        );
     }
 
     /// A run recovered after its repository moved off disk has no project

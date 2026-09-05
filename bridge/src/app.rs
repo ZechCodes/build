@@ -34,7 +34,8 @@ use crate::harness::{
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
 use crate::lifecycle::{
     CreateWorktree, DispatchCheckout, DispatchTarget, LifecycleEpilogue, LifecycleOutcome,
-    PendingRow, PendingState, Performed, WorktreeChange, WorktreeLifecycleJob, WorktreeMutation,
+    OpenPlanWorkspace, PendingRow, PendingState, Performed, WorktreeChange, WorktreeLifecycleJob,
+    WorktreeMutation,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -9932,8 +9933,47 @@ impl AppState {
             return Ok(view);
         }
         let project = self.orch_for(&project_id)?.clone();
-        let workspace = project.prepare_plan_workspace(&plan_id).map_err(err)?;
-        let mut active = project.create_plan(PlanId::new(&plan_id), goal, &base, model_choice);
+        let row = PendingRow {
+            entity_id: plan_id.clone(),
+            project_id: project_id.clone(),
+            title: goal.clone(),
+            // A plan cuts no branch and claims no checkout: it is written
+            // against the primary one, so nothing else can collide with it.
+            branch: None,
+            state: PendingState::Creating,
+            checkout_id: None,
+            since: std::time::Instant::now(),
+        };
+        self.defer_lifecycle(
+            row,
+            Box::new(OpenPlanWorkspace {
+                project,
+                project_id,
+                plan_id,
+                goal,
+                base_branch: base,
+                model_choice,
+                detail: thread_detail(params),
+            }),
+        )
+    }
+
+    /// `plan.create`'s apply half: the Issue's record, its first turn, and the
+    /// view the caller asked for. The workspace its agent works in is on disk
+    /// by now, which is why nothing here can fail on a directory.
+    fn open_planned_issue(&mut self, opened: PlanWorkspaceOpened) -> Result<Value, String> {
+        let PlanWorkspaceOpened {
+            project_id,
+            plan_id,
+            goal,
+            base_branch,
+            model_choice,
+            workspace,
+            detail,
+        } = opened;
+        let project = self.orch_for(&project_id)?.clone();
+        let mut active =
+            project.create_plan(PlanId::new(&plan_id), goal, &base_branch, model_choice);
         let turn = project
             .open_plan_drafting(&mut active, workspace)
             .map_err(err)?;
@@ -9943,7 +9983,7 @@ impl AppState {
         if self.qa_agent {
             self.qa_simulate_plan(&project_id, &mut active)?;
         }
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, detail);
         persisted?;
         Ok(view)
     }
@@ -16256,6 +16296,24 @@ impl LifecycleEpilogue for WorktreeCreated {
             "name": self.name,
             "path": self.path.display().to_string(),
         }))
+    }
+}
+
+/// `plan.create`'s apply half. The planning workspace is written; what is left
+/// is the Issue that works in it.
+pub struct PlanWorkspaceOpened {
+    pub project_id: String,
+    pub plan_id: String,
+    pub goal: String,
+    pub base_branch: String,
+    pub model_choice: ModelChoice,
+    pub workspace: crate::orchestrator::PlanWorkspace,
+    pub detail: ThreadDetail,
+}
+
+impl LifecycleEpilogue for PlanWorkspaceOpened {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.open_planned_issue(*self)
     }
 }
 
@@ -43267,6 +43325,232 @@ mod tests {
             pending_on_the_board(&board).is_empty(),
             "the placeholder outlived the run it stood for: {board:?}"
         );
+    }
+
+    /// An approved Issue with two approved stages, ready to be implemented.
+    fn approved_issue(app: &mut AppState, goal: &str) -> String {
+        let issue = app.handle(req("issue.create", json!({ "goal": goal })));
+        let issue_id = issue["result"]["issue_id"]
+            .as_str()
+            .expect("the issue was filed")
+            .to_string();
+        for stage_id in ["first-half", "second-half"] {
+            app.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        app.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        issue_id
+    }
+
+    /// `run.create` cuts a checkout, scaffolds it and commits the Issue's plan
+    /// docs into it — `git worktree add` plus two commits, seconds of it on a
+    /// real repository. Every other frame goes through meanwhile.
+    #[test]
+    fn run_create_opens_its_implementation_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "implement off the lock");
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-run",
+            "run.create",
+            json!({ "plan_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "run.create is holding the app mutex through its git"
+        );
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the implementation checkout is being cut");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(pending.len(), 1, "{board:?}");
+        assert_eq!(pending[0]["state"], "creating", "{pending:?}");
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the implementation checkout is being cut");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("run.create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert!(
+            created["result"]["run_id"].as_str().is_some(),
+            "{created:?}"
+        );
+        let board = frame_on_a_thread(&state, "s-after", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers");
+        assert!(
+            pending_on_the_board(&board).is_empty(),
+            "the placeholder outlived the run it stood for: {board:?}"
+        );
+    }
+
+    /// The scheduler cuts the same checkout on the way to a stage, so it waits
+    /// off the lock too — and answers with the Issue, not the run, once it has.
+    #[test]
+    fn issue_implement_all_opens_its_implementation_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "schedule off the lock");
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-implement",
+            "issue.implement_all",
+            json!({ "issue_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the scheduler is holding the app mutex through its git"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the implementation checkout is being cut");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the scheduler answers once its git is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        assert_eq!(
+            implemented["result"]["issue_id"], issue_id,
+            "a scheduled implementation answers with the Issue it advanced: {implemented:?}"
+        );
+        assert_eq!(
+            implemented["result"]["implementation_lineage"]
+                .as_array()
+                .expect("the Issue reports its lineage")
+                .len(),
+            1,
+            "{implemented:?}"
+        );
+    }
+
+    /// A stage whose checkout was deleted outside Build puts it back with
+    /// `git worktree add` — and, when the branch is only on a remote, a fetch.
+    #[test]
+    fn implement_stage_restores_a_missing_checkout_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "restore off the lock");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let worktree = app.runs[&run_id].worktree.path.clone();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-stage",
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the restore is holding the app mutex through its git"
+        );
+        let got = frame_on_a_thread(
+            &state,
+            "s-get",
+            "issue.get",
+            json!({ "issue_id": issue_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the Issue answers while its checkout is being put back");
+        assert_eq!(got["ok"], true, "{got:?}");
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the stage answers once its git is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        assert!(worktree.exists(), "the checkout is back: {implemented:?}");
+    }
+
+    /// `plan.create` writes the planning workspace its agent works in — a
+    /// scratch docs dir and the `.build/` config in the primary checkout.
+    #[test]
+    fn plan_create_prepares_its_workspace_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let filed = frame_on_a_thread(
+            &state,
+            "s-plan",
+            "plan.create",
+            json!({ "goal": "draft off the lock" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "plan.create is holding the app mutex through its workspace"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let filed = filed
+            .recv_timeout(Duration::from_secs(30))
+            .expect("plan.create answers once its workspace is written");
+        assert_eq!(filed["ok"], true, "{filed:?}");
+        // The QA plan agent answers as soon as it is spawned, so a dispatched
+        // plan is already at its review gate: what matters here is that it was
+        // dispatched at all, not filed inert.
+        assert_eq!(filed["result"]["state"], "plan_review", "{filed:?}");
     }
 
     /// A git read is the other thing that costs seconds on a big checkout —

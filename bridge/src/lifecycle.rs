@@ -246,6 +246,44 @@ impl WorktreeMutation for CreateWorktree {
     }
 }
 
+/// `plan.create` with a session — the workspace its planning agent works in:
+/// the scratch docs dir this Issue alone writes into, and the `.build/` config
+/// in the primary checkout that routes the agent's `done` reports back to it.
+///
+/// Directories and files, on a checkout that may be huge and on a disk that may
+/// be busy: off the app mutex like every other verb's disk.
+pub struct OpenPlanWorkspace {
+    pub project: Orchestrator,
+    pub project_id: String,
+    pub plan_id: String,
+    pub goal: String,
+    pub base_branch: String,
+    pub model_choice: ModelChoice,
+    pub detail: crate::thread::ThreadDetail,
+}
+
+impl WorktreeMutation for OpenPlanWorkspace {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        let workspace = self
+            .project
+            .prepare_plan_workspace(&self.plan_id)
+            .map_err(|error| error.to_string())?;
+        Ok(Performed {
+            // No checkout was cut: a plan is written against the primary one.
+            change: WorktreeChange::nothing(),
+            epilogue: Box::new(crate::app::PlanWorkspaceOpened {
+                project_id: self.project_id,
+                plan_id: self.plan_id,
+                goal: self.goal,
+                base_branch: self.base_branch,
+                model_choice: self.model_choice,
+                workspace,
+                detail: self.detail,
+            }),
+        })
+    }
+}
+
 /// Tests only: where to fail a `branch.dispatch`, so the cleanup that has to
 /// undo what the call created can be exercised at each seam it opens. One
 /// variant is one seam, and every seam is checked through [`fail_dispatch_at`].

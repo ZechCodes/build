@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from litestar.handlers import HTTPRouteHandler
 
+from buildapp import devices_controller as devices_controller_module
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.devices_controller import DevicesController
 from buildapp.internal_auth import internal_auth_guard
+from buildapp.token_hash import token_hash
 
 
 def _route_handlers() -> list[HTTPRouteHandler]:
@@ -50,3 +52,8 @@ def test_no_localhost_only_inline_check_remains():
         __import__("buildapp.devices_controller", fromlist=["_require_localhost"]),
         "_require_localhost",
     )
+
+
+def test_the_token_hash_rule_is_the_shared_one_not_a_private_copy():
+    assert not hasattr(devices_controller_module, "_token_hash")
+    assert devices_controller_module.token_hash is token_hash

@@ -9,15 +9,19 @@ import asyncio
 from pathlib import Path
 
 from litestar import Controller, Request, get
+from litestar.di import Provide
 from litestar.exceptions import NotFoundException
 from litestar.response import Redirect, Response
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from skrift.db.models.user import User
-
+from buildapp import releases
+from buildapp.accounts import account_email
+from buildapp.alpha_membership import is_alpha_member
 from buildapp.desktop_auth import build_auth_guard
-from buildapp.session_auth import require_user, session_user_id
+from buildapp.email_message import provide_public_base_url
+from buildapp.releases import provide_releases_repo
+from buildapp.invite_pages import APP_PATH, invite_only_outcome
+from buildapp.session_auth import login_redirect, require_user, session_user_id
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -40,6 +44,10 @@ MEDIA_TYPES = {
 
 class BuildController(Controller):
     path = "/app"
+    dependencies = {
+        "public_base_url": Provide(provide_public_base_url, sync_to_thread=False),
+        "releases_repo": Provide(provide_releases_repo, sync_to_thread=False),
+    }
 
     @get("/")
     async def index(self, request: Request, db_session: AsyncSession) -> Response | Redirect:
@@ -49,7 +57,10 @@ class BuildController(Controller):
         # the board afterwards, never the empty CMS root.
         user_id = session_user_id(request)
         if user_id is None:
-            return Redirect("/auth/login?next=/app/")
+            return login_redirect(APP_PATH)
+        if not await is_alpha_member(db_session, user_id):
+            email = await account_email(db_session, user_id)
+            return invite_only_outcome(email).response()
 
         return await self._render_spa(user_id, db_session)
 
@@ -57,11 +68,15 @@ class BuildController(Controller):
     async def desktop(self, request: Request, db_session: AsyncSession) -> Response:
         return await self._render_spa(require_user(request), db_session)
 
+    @get("/downloads", guards=[build_auth_guard])
+    async def downloads(self, public_base_url: str, releases_repo: str) -> dict:
+        """Where an alpha member gets the bridge. Every URL and label comes from
+        ``releases``; this handler only names the two values it is handed."""
+        return releases.downloads_payload(releases_repo, public_base_url)
+
     @staticmethod
     async def _render_spa(user_id, db_session: AsyncSession) -> Response:
-        result = await db_session.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        email = getattr(user, "email", None) or "user"
+        email = await account_email(db_session, user_id) or "user"
 
         html = await asyncio.to_thread((STATIC_DIR / "index.html").read_text)
         html = html.replace("{{USER0}}", email[0:1].upper())

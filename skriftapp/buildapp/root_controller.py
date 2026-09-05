@@ -5,10 +5,12 @@ the page, so it is written once in ``waitlist.html`` and substituted into both s
 import asyncio
 
 from litestar import Controller, get
+from litestar.di import Provide
 from litestar.enums import MediaType
 from litestar.exceptions import NotFoundException
-from litestar.response import Response
+from litestar.response import Redirect, Response
 
+from buildapp import releases
 from buildapp.landing_page import (
     LANDING_DIR,
     fill_slots,
@@ -50,11 +52,25 @@ def render_landing_page() -> str:
 
 class RootController(Controller):
     path = ""
+    dependencies = {
+        "releases_repo": Provide(releases.provide_releases_repo, sync_to_thread=False),
+    }
 
     @get("/")
     async def root(self) -> Response:
         html = await asyncio.to_thread(render_landing_page)
         return Response(html, media_type=MediaType.HTML)
+
+    @get(releases.INSTALL_SCRIPT_PATH)
+    async def install_script(self, releases_repo: str) -> Redirect:
+        """The one-liner's target: ``curl -fsSL <host>/install.sh | sh``. Redirects to
+        the script published with the latest release rather than serving a copy, so
+        there is exactly one install script and it is the one the release signed.
+
+        Until the first release is published this 302 lands on a GitHub 404."""
+        return Redirect(
+            releases.latest_asset_url(releases_repo, releases.INSTALL_SCRIPT_ASSET)
+        )
 
     @get("/landing/{asset_path:path}", sync_to_thread=True)
     def landing_asset(self, asset_path: str) -> Response:

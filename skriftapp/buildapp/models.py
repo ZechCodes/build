@@ -101,6 +101,43 @@ class WaitlistSignup(Base):
     )
 
 
+class Invite(Base):
+    """One invitation to the alpha. The token is held as a hash (raw shown once, in the
+    email); the address it was sent to binds it, so a redemption proves the account and
+    the invite are the same person. ``redeemed_by`` with no ``revoked_at`` IS the alpha
+    membership marker — there is no separate members table, and revoking a redeemed
+    invite is the operator's "remove member" action (``buildapp.alpha_membership``).
+    """
+
+    __tablename__ = "invites"
+
+    token_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
+    # Normalized by waitlist_address.normalize_waitlist_address — the same rule the
+    # waitlist accepts, so an invite and a signup name one address identically.
+    email: Mapped[str] = mapped_column(
+        String(MAX_WAITLIST_ADDRESS_LENGTH), index=True, nullable=False
+    )
+    # The admin who sent it. SET NULL: deleting an operator must not delete the
+    # invites they issued, nor the membership those invites carry.
+    invited_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTimeUTC(timezone=True), nullable=False
+    )
+    redeemed_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    redeemed_at: Mapped[datetime | None] = mapped_column(
+        DateTimeUTC(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTimeUTC(timezone=True), nullable=True
+    )
+
+
 class TransportSession(Base):
     """One client session's transport life, as the bridge reported it
     (``planning/v2/Transport Telemetry Spec.md`` §Storage). Content-free: ids,

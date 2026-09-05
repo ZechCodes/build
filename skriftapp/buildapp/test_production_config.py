@@ -11,11 +11,18 @@ from pathlib import Path
 import yaml
 from skrift.config import RateLimitConfig
 
+from buildapp.invites import INVITE_PATH_PREFIX
 from buildapp.waitlist_controller import JOIN_ROUTE_PATH
 
 SKRIFTAPP_DIR = Path(__file__).resolve().parent.parent
 PRODUCTION_BASE_URL = "https://getbuild.ing"
 JOIN_RATE_LIMIT_WINDOWS = [(3, 60.0), (100, 86400.0)]
+INVITE_OPEN_RATE_LIMIT_WINDOWS = [(30, 60.0)]
+INVITE_CONTROLLERS = (
+    "buildapp.invites_controller:InvitesController",
+    "buildapp.invites_admin:InvitesAdminController",
+)
+SAMPLE_INVITE_PATH = f"{INVITE_PATH_PREFIX}inv_a-token"
 
 
 def load_config(config_name: str) -> dict:
@@ -123,3 +130,17 @@ def test_rtc_controller_registered_in_every_config():
         assert "buildapp.rtc_controller:RtcController" in controllers, (
             f"{config_name} does not serve the ICE-servers route the SPA upgrades with"
         )
+
+
+def test_both_invite_controllers_are_registered_in_every_config():
+    for config_name in ("app.yaml", "app.dev.yaml", "app.mail.yaml"):
+        controllers = load_config(config_name)["controllers"]
+        for controller in INVITE_CONTROLLERS:
+            assert controller in controllers, f"{config_name} does not serve {controller}"
+
+
+def test_opening_an_invite_link_is_rate_limited_because_the_token_is_a_secret():
+    rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
+    policy = rate_limit.resolve(SAMPLE_INVITE_PATH, "GET")
+    assert policy.key == "ip"
+    assert policy.limits == INVITE_OPEN_RATE_LIMIT_WINDOWS

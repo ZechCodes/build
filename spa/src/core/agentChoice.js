@@ -51,6 +51,7 @@ export function chosenProviderId(catalog, choice) {
  * account has already answered. An agent that already exists is locked to its
  * own harness and asks none of this: its picker is the composer's model menu.
  */
+// eslint-disable-next-line complexity -- ratchet: agentChoicePanelHtml is at 11, cap 10 — reduce it, then drop this line
 export function agentChoicePanelHtml(catalog, choice, { prefix = "agent-choice", open = false } = {}) {
   const offered = creatableCatalog(catalog || {});
   const providerId = chosenProviderId(offered, choice);

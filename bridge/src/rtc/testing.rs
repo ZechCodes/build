@@ -72,6 +72,7 @@ pub async fn browser_peer(
 }
 
 /// [`browser_peer`], gathering as `ice` says.
+#[allow(clippy::cognitive_complexity)] // ratchet: browser_peer_with is at 19, threshold 15 — bring it under, then remove
 pub async fn browser_peer_with(
     session_id: &str,
     session_key: &str,

@@ -53,6 +53,7 @@ function delimiterAlignments(line) {
   return alignments;
 }
 
+// eslint-disable-next-line complexity -- ratchet: renderMarkdown is at 18, cap 10 — reduce it, then drop this line
 export function renderMarkdown(markdown) {
   const lines = (markdown || "").split("\n");
   let html = "";

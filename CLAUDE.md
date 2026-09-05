@@ -22,6 +22,25 @@ The system spans four repos:
 3. The terminal is the basement: always accessible, never the default view.
 4. Review (plan + diff) is the product.
 
+## Complexity gates
+
+Every tier caps how complex one function may be, and CI runs the cap:
+
+| tier | rule | gate |
+| --- | --- | --- |
+| `skriftapp/` | ruff `C901`, max-complexity 10 | `uv run --frozen ruff check buildapp` |
+| `bridge/` | clippy `cognitive_complexity`, threshold 15 (`bridge/clippy.toml`) | `cargo clippy --all-targets -- -D warnings` |
+| `spa/` | eslint `complexity`, max 10 (`spa/eslint.config.js`) | `npm run lint` |
+| `*.sh` | shellcheck | `git ls-files '*.sh' \| xargs shellcheck` |
+
+The functions that were already over the cap when the gates landed carry a
+one-line ratchet annotation — `# noqa: C901`, `#[allow(clippy::cognitive_complexity)]`,
+`// eslint-disable-next-line complexity` — each naming its score and what would
+retire it. They are debt, listed so main is green, not permission.
+
+**The rule: no PR adds to a ratchet list.** Removing one is welcome in its own
+commit. A new function over the cap is split, not annotated.
+
 ## bridge/ (Rust)
 
 ```

@@ -70,6 +70,7 @@ export function emptyStackText(totalFiles, changedOnly) {
  * - `statusHtml()` is the live claim in the bar (e.g. the agent is working).
  * - `onSent()` runs after comments go out, for whatever the surface does next.
  */
+// eslint-disable-next-line complexity -- ratchet: createReviewPlug is at 16, cap 10 — reduce it, then drop this line
 export function createReviewPlug({
   fetchDiff,
   submit = null,
@@ -301,6 +302,7 @@ export function createReviewPlug({
     render();
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
   const paint = async () => {
     if (!host || isOffline()) return;
     let payload;

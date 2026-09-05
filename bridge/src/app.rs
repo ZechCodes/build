@@ -12079,8 +12079,8 @@ impl AppState {
             // workspace is disk, so it is reserved below, once the record this
             // frame is holding is back in its map.
             let inert = active.plan.state == PlanState::Created && active.workspace.is_none();
-            if inert {
-            } else if let Some(implementation) = implementation_target {
+            let awake = implementation_target.filter(|_| !inert);
+            if let Some(implementation) = awake {
                 // The Issue owns the conversation, but its live implementation
                 // owns the checkout/PTY. Addressing thread.post to the Issue
                 // must therefore wake that implementation agent — and the same
@@ -12107,7 +12107,7 @@ impl AppState {
                         )
                     })
                     .map(|_| run_id);
-            } else if let Some(workspace) = &active.workspace {
+            } else if let Some(workspace) = active.workspace.as_ref().filter(|_| !inert) {
                 active.agents.resolve(Some(&agent_id))?;
                 self.tell_the_agent_a_message_is_waiting(
                     &workspace.checkout,

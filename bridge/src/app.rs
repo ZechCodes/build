@@ -8715,8 +8715,8 @@ impl AppState {
     // ---- Store accessor + take/finish plumbing --------------------------------
 
     /// The durable store, or a clean error. Plans and runs both require one:
-    /// plan docs are canonical in the store, and `dispatch_run` writes/reads
-    /// through it. Only unit tests that never create a plan/run skip it.
+    /// plan docs are canonical in the store, and `prepare_run_checkout`
+    /// writes/reads through it. Only unit tests that never create a plan/run skip it.
     fn require_store(&self) -> Result<&Store, String> {
         self.store
             .as_ref()
@@ -10179,9 +10179,30 @@ impl AppState {
         params: &Value,
         blocked_stage: Option<String>,
     ) -> Result<Value, String> {
-        match self.advance_issue_scheduler(issue_id, params) {
-            Ok(Some(job)) => Ok(self.defer_job(job)),
-            Ok(None) => self.issue_view_full(issue_id, thread_detail(params)),
+        match self.defer_issue_scheduler(issue_id, params, blocked_stage)? {
+            Some(placeholder) => Ok(placeholder),
+            None => self.issue_view_full(issue_id, thread_detail(params)),
+        }
+    }
+
+    /// Advance one Issue's scheduler and hand whatever git it owes to the
+    /// drain. `Some` is the placeholder the drain replaces with the job's own
+    /// answer; `None` means the pass settled here and the caller answers.
+    ///
+    /// Every caller that HAS a drain comes through here — a frame asking for
+    /// an implementation, a stage approval that wakes a parked scheduler, an
+    /// agent's own recovery report — so no request cuts a checkout under the
+    /// app mutex. A refusal before any git blocks the scheduler, the same way
+    /// the job's own refusal does.
+    fn defer_issue_scheduler(
+        &mut self,
+        issue_id: &str,
+        request: &Value,
+        blocked_stage: Option<String>,
+    ) -> Result<Option<Value>, String> {
+        match self.advance_issue_scheduler(issue_id, request) {
+            Ok(Some(job)) => Ok(Some(self.defer_job(job))),
+            Ok(None) => Ok(None),
             Err(error) => {
                 self.block_issue_scheduler(issue_id, blocked_stage, &error);
                 Err(error)
@@ -10264,9 +10285,10 @@ impl AppState {
     }
 
     /// Reconcile one Issue's durable intent with its implementation lineage,
-    /// and run whatever git that owes right here — for the callers that have no
-    /// frame to hand it to: boot, an agent's own report, and a stage approval
-    /// that unblocks a waiting scheduler.
+    /// and run whatever git that owes right here — for boot, which reconciles
+    /// every armed Issue before the first frame is served and has no drain to
+    /// hand git to. Everything with one uses
+    /// [`AppState::defer_issue_scheduler`] instead.
     fn advance_issue_scheduler_here(
         &mut self,
         issue_id: &str,
@@ -11029,11 +11051,17 @@ impl AppState {
             .get(&plan_id)
             .is_some_and(|issue| issue.plan.implementation_intent != ImplementationIntent::None)
         {
-            let request = json!({ "issue_id": plan_id });
-            if let Err(error) = self.advance_issue_scheduler_here(&plan_id, &request) {
-                self.block_issue_scheduler(&plan_id, Some(stage_id), &error);
-                return Err(error);
-            }
+            // The approval this frame just made is what an armed Implement All
+            // was parked on, so this hop cuts the whole implementation
+            // checkout. It goes to the drain like every other frame's git —
+            // and the Issue view it answers with is the one this verb was
+            // going to answer with anyway, read after the hop rather than
+            // before it.
+            return self.implement_issue(
+                &plan_id,
+                &scheduler_request(&plan_id, params),
+                Some(stage_id),
+            );
         }
         Ok(view)
     }
@@ -15901,6 +15929,13 @@ fn thread_cursor(params: &Value) -> Option<u64> {
 /// falls back to the default page, not to the unbounded answer. (The garbage
 /// cursor above can afford to read as absent: what it falls back to is
 /// bounded.)
+/// What an Issue's scheduler is asked with when the frame that woke it was
+/// about something else: the Issue to advance, and the thread paging that
+/// frame's own answer is cut to.
+fn scheduler_request(issue_id: &str, params: &Value) -> Value {
+    json!({ "issue_id": issue_id, "thread_limit": params.get("thread_limit") })
+}
+
 fn thread_detail(params: &Value) -> ThreadDetail {
     match params.get("thread_limit") {
         // `null` is how a client spells a field it is not sending.
@@ -43883,6 +43918,75 @@ mod tests {
                 .len(),
             1,
             "{implemented:?}"
+        );
+    }
+
+    /// Approving a stage an armed Implement All is parked on is what starts
+    /// the whole implementation: the approval frame cuts the checkout, so it
+    /// hands that git to the drain like every other frame does.
+    #[test]
+    fn a_stage_approval_that_implements_cuts_its_checkout_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue = app.handle(req(
+            "issue.create",
+            json!({ "goal": "approve, then build" }),
+        ));
+        let issue_id = issue["result"]["issue_id"]
+            .as_str()
+            .expect("the issue was filed")
+            .to_string();
+        app.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        // Armed while stage one is unapproved: the scheduler parks, and the
+        // approval below is what wakes it.
+        let armed = app.handle(req("issue.implement_all", json!({ "issue_id": issue_id })));
+        assert_eq!(armed["ok"], true, "{armed:?}");
+        assert!(
+            app.current_issue_implementation_id(&issue_id).is_none(),
+            "the scheduler cut a checkout before its first stage was approved"
+        );
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let approved = frame_on_a_thread(
+            &state,
+            "s-approve",
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "first-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the stage approval is holding the app mutex through its git"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the approval's checkout is being cut");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let approved = approved
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the approval answers once its git is done");
+        assert_eq!(approved["ok"], true, "{approved:?}");
+        assert_eq!(
+            approved["result"]["issue_id"], issue_id,
+            "a stage approval answers with the Issue it advanced: {approved:?}"
+        );
+        assert_eq!(
+            approved["result"]["implementation_lineage"]
+                .as_array()
+                .expect("the Issue reports its lineage")
+                .len(),
+            1,
+            "{approved:?}"
         );
     }
 

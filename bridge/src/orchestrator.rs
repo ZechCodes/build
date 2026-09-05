@@ -14,7 +14,9 @@
 //!   the per-stage `approve_plan_stage` / `send_plan_stage_notes`), and the
 //!   interaction verbs (`message_plan` / `resume_plan` / `abandon_plan`).
 //! - An [`ActiveRun`] (worktree-scoped) is one implementation attempt on a
-//!   `build/<slug>` branch. Its seams: `dispatch_run`, `on_run_done` (build +
+//!   `build/<slug>` branch. Its seams: `prepare_run_checkout` +
+//!   `open_prepared_run` (and `open_adopted_implementation` on a checkout that
+//!   already exists), `on_run_done` (build +
 //!   validation, plus the sequential stage gate `dispatch_run_stage` /
 //!   `fix_run_stage`), `run_diff`, the interaction verbs (`message_run` /
 //!   `resume_run` / `run_request_changes`), the git finishers
@@ -2239,7 +2241,7 @@ impl Orchestrator {
                 OrchestratorError::Gate(format!("stage {stage_id} is not in the plan's stage docs"))
             })?;
         // Run coarse-state legality first (Dispatch is legal from StageGate; the
-        // very first stage comes through `dispatch_run` instead) — nothing is
+        // very first stage comes through `open_prepared_run` instead) — nothing is
         // spawned for an illegal dispatch.
         run_transition(&active.run.state, RunEvent::Dispatch)
             .map_err(|e| OrchestratorError::Gate(format!("cannot dispatch a stage: {e}")))?;

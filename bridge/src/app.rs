@@ -40,8 +40,8 @@ use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneRe
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, AdoptableCheckout, AdoptionScope, Agent, AgentTurn, Orchestrator,
-    OrchestratorError, ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource,
+    ActivePlan, ActiveRun, AdoptableCheckout, AdoptionScope, Agent, AgentTurn, ImplementableIssue,
+    Orchestrator, OrchestratorError, ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource,
     SessionLocatorFactory, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
@@ -9931,9 +9931,11 @@ impl AppState {
             persisted?;
             return Ok(view);
         }
-        let (mut active, turn) = self
-            .orch_for(&project_id)?
-            .dispatch_plan(PlanId::new(&plan_id), goal, &base, model_choice)
+        let project = self.orch_for(&project_id)?.clone();
+        let workspace = project.prepare_plan_workspace(&plan_id).map_err(err)?;
+        let mut active = project.create_plan(PlanId::new(&plan_id), goal, &base, model_choice);
+        let turn = project
+            .open_plan_drafting(&mut active, workspace)
             .map_err(err)?;
         self.entity_project
             .insert(plan_id.clone(), project_id.clone());
@@ -11082,18 +11084,17 @@ impl AppState {
             } else {
                 plan.model_choice.clone()
             };
-            let (active, turn) = self
-                .orch_for(&project_id)?
-                .dispatch_run(
-                    RunId::new(&run_id),
-                    RunSource {
-                        plan,
-                        has_active_run,
-                    },
-                    &base,
-                    model_choice,
-                    store,
-                )
+            let issue = ImplementableIssue::judge(RunSource {
+                plan,
+                has_active_run,
+            })
+            .map_err(err)?;
+            let project = self.orch_for(&project_id)?;
+            let prepared = project
+                .prepare_run_checkout(&issue, &base, &run_id, store)
+                .map_err(err)?;
+            let (active, turn) = project
+                .open_prepared_run(RunId::new(&run_id), plan, prepared, model_choice)
                 .map_err(err)?;
             (project_id, active, turn)
         };
@@ -11189,17 +11190,20 @@ impl AppState {
         let adopted = {
             let store = self.require_store()?;
             let plan = &self.plans[issue_id];
-            self.orch_for(&project_id)?
-                .adopt_implementation(
-                    &mut active,
-                    RunSource {
-                        plan,
-                        has_active_run,
-                    },
-                    model_choice,
-                    store,
-                )
-                .map_err(err)
+            ImplementableIssue::judge(RunSource {
+                plan,
+                has_active_run,
+            })
+            .map_err(err)
+            .and_then(|issue| {
+                let project = self.orch_for(&project_id)?;
+                let base_sha = project
+                    .prepare_adopted_checkout(&issue, &active.worktree.path, store)
+                    .map_err(err)?;
+                project
+                    .open_adopted_implementation(&mut active, plan, base_sha, model_choice)
+                    .map_err(err)
+            })
         };
         let (turn, agent_id) = match adopted {
             Ok(opened) => opened,
@@ -32872,10 +32876,30 @@ mod tests {
     /// orchestrator's own `approved_plan` fixture. Runs only ever implement a
     /// plan, so a test that needs a run driven by a PARTICULAR harness builds a
     /// plan on that harness's orchestrator first.
-    fn approved_side_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
-        let (mut plan, _turn) = orch
-            .dispatch_plan(PlanId::new(id), "side goal", "main", Default::default())
+    /// A run of `plan` on a side orchestrator, prepared and opened the way
+    /// `run.create` prepares and opens one — the fixture's twin of the two
+    /// halves the verb runs on either side of the app mutex.
+    fn dispatch_side_run(
+        orch: &Orchestrator,
+        store: &Store,
+        plan: &ActivePlan,
+        run_id: &str,
+    ) -> (ActiveRun, AgentTurn) {
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run: false,
+        })
+        .unwrap();
+        let prepared = orch
+            .prepare_run_checkout(&issue, "main", run_id, store)
             .unwrap();
+        orch.open_prepared_run(RunId::new(run_id), plan, prepared, Default::default())
+            .unwrap()
+    }
+
+    fn approved_side_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
+        let mut plan = orch.create_plan(PlanId::new(id), "side goal", "main", Default::default());
+        orch.start_plan_drafting(&mut plan).unwrap();
         let docs_dir = plan
             .workspace
             .as_ref()
@@ -32921,18 +32945,7 @@ mod tests {
             Templates::default(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let (mut active, _turn) = side
-            .dispatch_run(
-                RunId::new(run_id),
-                RunSource {
-                    plan: &plan,
-                    has_active_run: false,
-                },
-                "main",
-                Default::default(),
-                &store,
-            )
-            .unwrap();
+        let (mut active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
         active.run.state = run_state;
         let root = AppState::canonical_root(&active.worktree.path);
         let project_id = state.projects[0].id.clone();
@@ -35061,18 +35074,7 @@ mod tests {
             Templates::default(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let (active, _turn) = side
-            .dispatch_run(
-                RunId::new(run_id),
-                RunSource {
-                    plan: &plan,
-                    has_active_run: false,
-                },
-                "main",
-                Default::default(),
-                &store,
-            )
-            .unwrap();
+        let (active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
         let root = AppState::canonical_root(&active.worktree.path);
         let (tab, rx) = Tab::spawn(
             TabRole::Agent {
@@ -35120,18 +35122,7 @@ mod tests {
             Templates::default(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let (active, _turn) = side
-            .dispatch_run(
-                RunId::new(run_id),
-                RunSource {
-                    plan: &plan,
-                    has_active_run: false,
-                },
-                "main",
-                Default::default(),
-                &store,
-            )
-            .unwrap();
+        let (active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
         let root = AppState::canonical_root(&active.worktree.path);
         let mut s = state.lock().unwrap();
         let project_id = s.projects[0].id.clone();
@@ -35531,14 +35522,13 @@ mod tests {
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
         );
-        let (active, _turn) = side
-            .dispatch_plan(
-                PlanId::new(plan_id),
-                "side goal",
-                "main",
-                Default::default(),
-            )
-            .unwrap();
+        let mut active = side.create_plan(
+            PlanId::new(plan_id),
+            "side goal",
+            "main",
+            Default::default(),
+        );
+        side.start_plan_drafting(&mut active).unwrap();
         let mut s = state.lock().unwrap();
         let project_id = s.projects[0].id.clone();
         s.entity_project.insert(plan_id.to_string(), project_id);

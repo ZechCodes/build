@@ -8,7 +8,8 @@
 //!
 //! - An [`ActivePlan`] (project-scoped) is authored by an agent running in the
 //!   project's PRIMARY checkout, writing into a scratch docs dir outside the
-//!   repo; its canonical docs live in the store. Its seams: `dispatch_plan`,
+//!   repo; its canonical docs live in the store. Its seams: `create_plan` +
+//!   `prepare_plan_workspace` / `open_plan_drafting`,
 //!   `on_plan_done`, the plan-review gates (`approve_plan`, `send_plan_notes`,
 //!   the per-stage `approve_plan_stage` / `send_plan_stage_notes`), and the
 //!   interaction verbs (`message_plan` / `resume_plan` / `abandon_plan`).
@@ -586,40 +587,77 @@ pub struct RunSource<'a> {
     pub has_active_run: bool,
 }
 
-/// What every implementation of an Issue must be true of before any checkout is
-/// touched, whichever worktree it is going to run in: the plan is ready, nobody
-/// else is writing for it, and the stage the first session would build is one
-/// the human approved.
-fn gate_implementation(
-    plan_link: &ActivePlan,
-    has_active_run: bool,
-) -> Result<(), OrchestratorError> {
-    if plan_link.plan.state != PlanState::Approved {
-        return Err(OrchestratorError::Gate(format!(
-            "only an approved plan can be implemented (plan {} is {:?})",
-            plan_link.plan.id.0, plan_link.plan.state
-        )));
-    }
-    if has_active_run {
-        return Err(OrchestratorError::Gate(format!(
-            "plan {} already has an active run — a second concurrent run is \
-             rejected (single-active-writer)",
-            plan_link.plan.id.0
-        )));
-    }
-    // Dispatch spawns the first stage's build session immediately, so its doc
-    // must carry a live approval. `approve_plan` already guarantees this for
-    // natively approved plans; migrated plans (and revision-staled docs on a
-    // re-run) are re-gated here.
-    if let Some(first_stage) = plan_link.stages.first() {
-        if first_stage.state != StageDocState::Approved {
+/// The checkout an implementation opens in, as the git left it: on its own
+/// branch, scaffolded, with the Issue's canonical docs committed. `base_sha` is
+/// that commit — the baseline the review diff is read against.
+pub struct PreparedImplementation {
+    pub worktree: Worktree,
+    pub base_sha: String,
+}
+
+/// An Issue cleared to have an implementation opened for it, and everything
+/// opening one needs before any git runs: the words its checkout is named
+/// after, and the plan whose canonical docs are committed into it as the
+/// review baseline.
+///
+/// Construction IS the gate — a plan that is not ready, one somebody else is
+/// already writing for, or one whose first stage the human has not approved
+/// never becomes one — so nothing downstream can cut a checkout for work that
+/// was refused.
+pub struct ImplementableIssue {
+    plan_id: String,
+    goal: String,
+    slug: String,
+}
+
+impl ImplementableIssue {
+    /// What every implementation of an Issue must be true of before any
+    /// checkout is touched, whichever worktree it is going to run in: the plan
+    /// is ready, nobody else is writing for it, and the stage the first session
+    /// would build is one the human approved.
+    pub fn judge(source: RunSource<'_>) -> Result<ImplementableIssue, OrchestratorError> {
+        let RunSource {
+            plan: plan_link,
+            has_active_run,
+        } = source;
+        if plan_link.plan.state != PlanState::Approved {
             return Err(OrchestratorError::Gate(format!(
-                "cannot implement plan {}: stage {:?} is not approved",
-                plan_link.plan.id.0, first_stage.id
+                "only an approved plan can be implemented (plan {} is {:?})",
+                plan_link.plan.id.0, plan_link.plan.state
             )));
         }
+        if has_active_run {
+            return Err(OrchestratorError::Gate(format!(
+                "plan {} already has an active run — a second concurrent run is \
+                 rejected (single-active-writer)",
+                plan_link.plan.id.0
+            )));
+        }
+        // Dispatch spawns the first stage's build session immediately, so its doc
+        // must carry a live approval. `approve_plan` already guarantees this for
+        // natively approved plans; migrated plans (and revision-staled docs on a
+        // re-run) are re-gated here.
+        if let Some(first_stage) = plan_link.stages.first() {
+            if first_stage.state != StageDocState::Approved {
+                return Err(OrchestratorError::Gate(format!(
+                    "cannot implement plan {}: stage {:?} is not approved",
+                    plan_link.plan.id.0, first_stage.id
+                )));
+            }
+        }
+        Ok(ImplementableIssue {
+            plan_id: plan_link.plan.id.0.clone(),
+            goal: plan_link.plan.goal.clone(),
+            slug: slugify(&plan_link.plan.goal),
+        })
     }
-    Ok(())
+
+    /// What the checkout this implementation cuts is named after — the board's
+    /// placeholder id is hashed from the path it makes, so the decide phase and
+    /// the git that follows it must read the slug from one place.
+    pub fn slug(&self) -> &str {
+        &self.slug
+    }
 }
 
 /// Per-spawn context an interactive harness builder may honor.
@@ -1009,6 +1047,18 @@ impl Orchestrator {
         active: &mut ActivePlan,
     ) -> Result<AgentTurn, OrchestratorError> {
         let workspace = self.prepare_plan_workspace(&active.plan.id.0)?;
+        self.open_plan_drafting(active, workspace)
+    }
+
+    /// The second half of that, once the workspace is real: the plan leaves
+    /// `Created`, reads everything the human has said to it so far, and the
+    /// turn that spawns its session is rendered. Pure bookkeeping — the disk
+    /// work was [`prepare_plan_workspace`](Self::prepare_plan_workspace).
+    pub fn open_plan_drafting(
+        &self,
+        active: &mut ActivePlan,
+        workspace: PlanWorkspace,
+    ) -> Result<AgentTurn, OrchestratorError> {
         active.plan.apply(PlanEvent::Dispatch)?;
         active.workspace = Some(workspace);
         // Everything the user said before this moment is what the session is
@@ -1033,27 +1083,16 @@ impl Orchestrator {
     /// Make that workspace real: the scratch docs dir exists, and the primary
     /// checkout carries this issue's MCP config so its `done` reports route
     /// back here.
-    fn prepare_plan_workspace(&self, plan_id: &str) -> Result<PlanWorkspace, OrchestratorError> {
+    pub fn prepare_plan_workspace(
+        &self,
+        plan_id: &str,
+    ) -> Result<PlanWorkspace, OrchestratorError> {
         let workspace = self.plan_workspace(plan_id);
         // The stage-doc directory is made up front so the agent only ever has
         // to write files into a directory that is already there.
         std::fs::create_dir_all(workspace.docs_dir.join(templates::STAGES_DIR))?;
         self.write_build_dir(&workspace.checkout, plan_id)?;
         Ok(workspace)
-    }
-
-    /// File a plan and start its session in one act — what `plan.create` does
-    /// when it is not asked for an inert record.
-    pub fn dispatch_plan(
-        &self,
-        id: PlanId,
-        goal: impl Into<String>,
-        base_branch: &str,
-        model_choice: ModelChoice,
-    ) -> Result<(ActivePlan, AgentTurn), OrchestratorError> {
-        let mut active = self.create_plan(id, goal, base_branch, model_choice);
-        let turn = self.start_plan_drafting(&mut active)?;
-        Ok((active, turn))
     }
 
     /// Consume a plan agent's `done` report. Doc persistence is TRANSACTIONAL:
@@ -1537,54 +1576,85 @@ impl Orchestrator {
         )?)
     }
 
-    /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
-    /// (the MCP config carries the run id), and spawn the first build session.
+    /// Cut the checkout an Issue's implementation works in and make it ready
+    /// to be worked in: `build/<slug>` off the base branch, `.build/`
+    /// scaffolded (the MCP config carries the run id), the plan's canonical
+    /// docs materialized out of the store and committed ("plan: <goal>" — the
+    /// intent record the scope doc keeps through merge).
     ///
-    /// The run materializes the plan's canonical docs from the store into the
-    /// fresh worktree and commits them ("plan: <goal>" — the intent record the
-    /// scope doc keeps through merge); that commit is recorded as the run's
-    /// `base_sha`, the baseline of the review diff, so the materialized docs
-    /// never show up as review noise.
+    /// That commit is the answer's `base_sha`, the baseline of the review diff,
+    /// so the materialized docs never show up as review noise.
     ///
-    /// Single-active-writer: at most one active run per plan. The caller owns
-    /// the runs map, so it passes its view via [`RunSource::has_active_run`];
-    /// `true` rejects the dispatch before anything is created.
+    /// Git and disk from end to end, seconds of it on a large repository: off
+    /// the app mutex, always. A failure after the checkout exists removes it,
+    /// so a preparation nobody can be handed leaves nothing behind.
+    pub fn prepare_run_checkout(
+        &self,
+        issue: &ImplementableIssue,
+        base_branch: &str,
+        run_id: &str,
+        store: &Store,
+    ) -> Result<PreparedImplementation, OrchestratorError> {
+        let worktree = self.worktrees.create(&issue.slug, base_branch)?;
+        let prepared = self.scaffold_build_dir(&worktree, run_id).and_then(|()| {
+            self.materialize_and_commit_plan_docs(
+                &issue.plan_id,
+                &worktree.path,
+                &issue.goal,
+                store,
+            )
+        });
+        match prepared {
+            Ok(base_sha) => Ok(PreparedImplementation { worktree, base_sha }),
+            Err(error) => {
+                self.discard_worktree(&worktree);
+                Err(error)
+            }
+        }
+    }
+
+    /// The same preparation on a checkout that already exists — the branch's
+    /// own uncommitted work is not part of what the implementation does, and it
+    /// must not vanish under the baseline either, so it lands as its own commit
+    /// below the docs commit.
+    ///
+    /// Two commits and a store read: off the app mutex, always.
+    pub fn prepare_adopted_checkout(
+        &self,
+        issue: &ImplementableIssue,
+        checkout: &Path,
+        store: &Store,
+    ) -> Result<String, OrchestratorError> {
+        self.commit_all_with_message(
+            checkout,
+            "Checkpoint: before Build implements an Issue here",
+        )?;
+        self.materialize_and_commit_plan_docs(&issue.plan_id, checkout, &issue.goal, store)
+    }
+
+    /// Open the run that stands for a prepared checkout: the record, the agent
+    /// that will do the work, and the turn that starts it.
+    ///
+    /// Pure bookkeeping — the git ran in [`prepare_run_checkout`], and the
+    /// refusals were made when the [`ImplementableIssue`] was judged.
     ///
     /// A multi-stage plan's first session is its first stage's build — the
     /// plan-level `Approved` gate covers starting stage one; later stages
     /// dispatch from the stage gate.
-    /// PERIPHERY: the stage-gate dispatch (StageGate → next stage / fix
-    /// session) lands with the stage flows.
-    pub fn dispatch_run(
+    ///
+    /// [`prepare_run_checkout`]: Self::prepare_run_checkout
+    pub fn open_prepared_run(
         &self,
         id: RunId,
-        source: RunSource<'_>,
-        base_branch: &str,
+        plan_link: &ActivePlan,
+        prepared: PreparedImplementation,
         model_choice: ModelChoice,
-        store: &Store,
     ) -> Result<(ActiveRun, AgentTurn), OrchestratorError> {
-        let RunSource {
-            plan: plan_link,
-            has_active_run,
-        } = source;
-        gate_implementation(plan_link, has_active_run)?;
-        let goal = plan_link.plan.goal.clone();
-
-        let slug = slugify(&goal);
-        let worktree = self.worktrees.create(&slug, base_branch)?;
-        self.scaffold_build_dir(&worktree, &id.0)?;
-        let base_sha =
-            match self.materialize_and_commit_plan_docs(plan_link, &worktree, &goal, store) {
-                Ok(sha) => Some(sha),
-                Err(error) => {
-                    // Nothing has been handed to the caller; don't leak the
-                    // half-prepared worktree.
-                    self.discard_worktree(&worktree);
-                    return Err(error);
-                }
-            };
-
-        let mut run = Run::new(id, Some(plan_link.plan.id.clone()), goal);
+        let mut run = Run::new(
+            id,
+            Some(plan_link.plan.id.clone()),
+            plan_link.plan.goal.clone(),
+        );
         run.apply(RunEvent::Dispatch)?;
 
         let agents = AgentRoster::with_first(
@@ -1594,8 +1664,8 @@ impl Orchestrator {
         );
         let mut active = ActiveRun {
             run,
-            worktree,
-            base_sha,
+            worktree: prepared.worktree,
+            base_sha: Some(prepared.base_sha),
             plan_path: plan_link.plan_path.clone(),
             stages: Vec::new(),
             current_stage_id: None,
@@ -1617,8 +1687,8 @@ impl Orchestrator {
 
     /// Bind an Issue's implementation to a checkout that already exists,
     /// instead of cutting `build/<slug>` for it. The branch's run adopts the
-    /// implementation: whatever the branch was carrying is checkpointed under
-    /// its own message, the stage docs are committed on top, and THAT commit is
+    /// implementation: whatever the branch was carrying was checkpointed under
+    /// its own message, the stage docs were committed on top, and THAT commit is
     /// the review baseline — so the diff the human reviews is exactly what the
     /// implementation adds to the branch.
     ///
@@ -1626,34 +1696,21 @@ impl Orchestrator {
     /// implementation stays a handoff), which is why the caller gets the new
     /// agent's id back: the turn is addressed to it, not to whatever agent was
     /// already talking on this branch.
-    pub fn adopt_implementation(
+    ///
+    /// Pure bookkeeping: `base_sha` is what
+    /// [`prepare_adopted_checkout`](Self::prepare_adopted_checkout) committed,
+    /// and the refusals were made when the [`ImplementableIssue`] was judged.
+    pub fn open_adopted_implementation(
         &self,
         active: &mut ActiveRun,
-        source: RunSource<'_>,
+        plan_link: &ActivePlan,
+        base_sha: String,
         model_choice: ModelChoice,
-        store: &Store,
     ) -> Result<(AgentTurn, String), OrchestratorError> {
-        let RunSource {
-            plan: plan_link,
-            has_active_run,
-        } = source;
-        gate_implementation(plan_link, has_active_run)?;
-        let goal = plan_link.plan.goal.clone();
-
-        // The branch's own uncommitted work is not part of what the
-        // implementation does, and it must not vanish under the baseline
-        // either: it lands as its own commit, below the docs commit.
-        self.commit_all_with_message(
-            &active.worktree.path,
-            "Checkpoint: before Build implements an Issue here",
-        )?;
-        let base_sha =
-            self.materialize_and_commit_plan_docs(plan_link, &active.worktree, &goal, store)?;
-
         let mut run = Run::new(
             active.run.id.clone(),
             Some(plan_link.plan.id.clone()),
-            goal.clone(),
+            plan_link.plan.goal.clone(),
         );
         run.apply(RunEvent::Dispatch)?;
         active.run = run;
@@ -1709,15 +1766,15 @@ impl Orchestrator {
     /// diff.
     fn materialize_and_commit_plan_docs(
         &self,
-        plan: &ActivePlan,
-        worktree: &Worktree,
+        plan_id: &str,
+        checkout: &Path,
         goal: &str,
         store: &Store,
     ) -> Result<String, OrchestratorError> {
-        store.materialize_plan_docs(&plan.plan.id.0, &worktree.path)?;
-        self.commit_all_with_message(&worktree.path, &format!("plan: {goal}"))?;
+        store.materialize_plan_docs(plan_id, checkout)?;
+        self.commit_all_with_message(checkout, &format!("plan: {goal}"))?;
         Ok(self
-            .git(&worktree.path, &["rev-parse", "HEAD"])?
+            .git(checkout, &["rev-parse", "HEAD"])?
             .trim()
             .to_string())
     }
@@ -3340,8 +3397,9 @@ mod tests {
         id: &str,
         goal: &str,
     ) -> (ActivePlan, AgentTurn) {
-        orch.dispatch_plan(PlanId::new(id), goal, "main", Default::default())
-            .unwrap()
+        let mut active = orch.create_plan(PlanId::new(id), goal, "main", Default::default());
+        let turn = orch.start_plan_drafting(&mut active).unwrap();
+        (active, turn)
     }
 
     /// Play the plan agent: write a single plan doc and report done, landing
@@ -3448,17 +3506,16 @@ mod tests {
         plan: &ActivePlan,
         id: &str,
     ) -> (ActiveRun, AgentTurn) {
-        orch.dispatch_run(
-            RunId::new(id),
-            RunSource {
-                plan,
-                has_active_run: false,
-            },
-            "main",
-            Default::default(),
-            store,
-        )
-        .unwrap()
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run: false,
+        })
+        .unwrap();
+        let prepared = orch
+            .prepare_run_checkout(&issue, "main", id, store)
+            .unwrap();
+        orch.open_prepared_run(RunId::new(id), plan, prepared, Default::default())
+            .unwrap()
     }
 
     /// A run implementing a single-doc plan: one build session, no stage
@@ -3490,7 +3547,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
+    async fn a_drafting_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
 
@@ -3898,7 +3955,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_run_rejects_a_plan_whose_first_stage_doc_is_unapproved() {
+    async fn an_implementable_issue_rejects_one_whose_first_stage_doc_is_unapproved() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
@@ -3907,16 +3964,10 @@ mod tests {
         let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         plan.stages[0].state = StageDocState::Planned;
 
-        let Err(error) = orch.dispatch_run(
-            RunId::new("run-1"),
-            RunSource {
-                plan: &plan,
-                has_active_run: false,
-            },
-            "main",
-            Default::default(),
-            &store,
-        ) else {
+        let Err(error) = ImplementableIssue::judge(RunSource {
+            plan: &plan,
+            has_active_run: false,
+        }) else {
             panic!("stage 0 must be approved before its build session spawns");
         };
         assert!(
@@ -4482,22 +4533,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_run_enforces_the_single_active_writer_rule() {
+    async fn an_implementable_issue_enforces_the_single_active_writer_rule() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = approved_plan(&orch, &store, "plan-1");
 
-        let err = match orch.dispatch_run(
-            RunId::new("run-2"),
-            RunSource {
-                plan: &plan,
-                has_active_run: true,
-            },
-            "main",
-            Default::default(),
-            &store,
-        ) {
+        let err = match ImplementableIssue::judge(RunSource {
+            plan: &plan,
+            has_active_run: true,
+        }) {
             Ok(_) => panic!("a second concurrent run of the same plan must be rejected"),
             Err(e) => e,
         };
@@ -4505,22 +4550,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_run_requires_an_approved_plan() {
+    async fn an_implementable_issue_requires_an_approved_plan() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = plan_in_review(&orch, &store, "plan-1");
 
-        let err = match orch.dispatch_run(
-            RunId::new("run-1"),
-            RunSource {
-                plan: &plan,
-                has_active_run: false,
-            },
-            "main",
-            Default::default(),
-            &store,
-        ) {
+        let err = match ImplementableIssue::judge(RunSource {
+            plan: &plan,
+            has_active_run: false,
+        }) {
             Ok(_) => panic!("only an approved plan can be implemented"),
             Err(e) => e,
         };

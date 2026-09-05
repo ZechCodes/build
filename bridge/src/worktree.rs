@@ -538,6 +538,9 @@ pub fn rfc3339_from_unix(seconds: i64) -> Option<String> {
         .ok()
 }
 
+const CHECKOUT_ID_PREFIX: &str = "wt-";
+const CHECKOUT_ID_DIGITS: usize = 12;
+
 /// The stable external-worktree id for a canonical absolute path.
 pub fn external_worktree_id(path: &Path) -> String {
     use sha2::{Digest, Sha256};
@@ -545,7 +548,16 @@ pub fn external_worktree_id(path: &Path) -> String {
     hasher.update(path.display().to_string().as_bytes());
     let digest = hasher.finalize();
     let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("wt-{}", &hex[..12])
+    format!("{CHECKOUT_ID_PREFIX}{}", &hex[..CHECKOUT_ID_DIGITS])
+}
+
+/// Whether `id` was minted by [`external_worktree_id`]. The one id shape whose
+/// only liveness test is the scan, so the one a caller has to be able to tell
+/// apart from a run, a plan or a row.
+pub fn is_checkout_id(id: &str) -> bool {
+    id.strip_prefix(CHECKOUT_ID_PREFIX).is_some_and(|hex| {
+        hex.len() == CHECKOUT_ID_DIGITS && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 /// Branch stems that carry no meaningful goal on their own — adoption falls

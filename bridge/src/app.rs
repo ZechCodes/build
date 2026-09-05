@@ -474,9 +474,6 @@ impl Tab {
             .ok_or_else(|| no_terminal_here(&self.wire_id()))
     }
 
-    /// Everything a tab's pumps need, taken before the tab is handed to the
-    /// registry: they run for the tab's whole life and must not have to ask
-    /// the registry for the handles they hold.
     /// Paint this session onto the grid its predecessor left behind.
     ///
     /// Reconnect is snapshot + cursor: a replacement process must never rewind
@@ -495,6 +492,9 @@ impl Tab {
         terminal.fit_child_to_screen();
     }
 
+    /// Everything a tab's pumps need, taken before the tab is handed to the
+    /// registry: they run for the tab's whole life and must not have to ask
+    /// the registry for the handles they hold.
     fn pumps(&self, output: SessionOutput) -> TabPumps {
         TabPumps {
             session: Arc::clone(&self.session),

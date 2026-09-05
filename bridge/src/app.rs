@@ -33,17 +33,17 @@ use crate::harness::{
 #[cfg(test)]
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
 use crate::lifecycle::{
-    CreateWorktree, DispatchCheckout, DispatchTarget, LifecycleEpilogue, LifecycleOutcome,
-    OpenPlanWorkspace, PendingRow, PendingState, Performed, WorktreeChange, WorktreeLifecycleJob,
-    WorktreeMutation,
+    AdoptImplementation, CreateWorktree, DispatchCheckout, DispatchTarget, LifecycleEpilogue,
+    LifecycleOutcome, OpenImplementation, OpenPlanWorkspace, PendingRow, PendingState, Performed,
+    RestoreImplementationCheckout, WorktreeChange, WorktreeLifecycleJob, WorktreeMutation,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, AdoptableCheckout, AdoptionScope, Agent, AgentTurn, ImplementableIssue,
-    Orchestrator, OrchestratorError, ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource,
-    SessionLocatorFactory, SpawnOptions, TranscriptProbe,
+    Orchestrator, OrchestratorError, PreparedImplementation, ReportConsumed, ReportOutcome,
+    ResumeIdProbe, RunSource, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -2170,7 +2170,7 @@ impl AppState {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for issue_id in issue_ids {
-            self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))?;
+            self.advance_issue_scheduler_here(&issue_id, &json!({ "issue_id": issue_id }))?;
         }
         Ok(self)
     }
@@ -5290,7 +5290,7 @@ impl AppState {
             }
             if succeeded {
                 if let Err(error) =
-                    self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))
+                    self.advance_issue_scheduler_here(&issue_id, &json!({ "issue_id": issue_id }))
                 {
                     self.block_issue_scheduler(&issue_id, None, &error);
                 }
@@ -7803,6 +7803,19 @@ impl AppState {
         row: PendingRow,
         mutation: Box<dyn WorktreeMutation>,
     ) -> Result<Value, String> {
+        let job = self.reserve_lifecycle(row, mutation)?;
+        Ok(self.defer_job(job))
+    }
+
+    /// The same reservation, handed back rather than deferred — for a caller
+    /// that has to decide where the git runs. Consume it with
+    /// [`AppState::defer_job`] or [`AppState::run_lifecycle_here`]: a job
+    /// dropped instead leaves its row on the board forever.
+    fn reserve_lifecycle(
+        &mut self,
+        row: PendingRow,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> Result<WorktreeLifecycleJob, String> {
         let job = WorktreeLifecycleJob::reserving(self.reserve_row(row)?, mutation);
         // Every lifecycle job is held open here, in one place, so no verb has
         // to remember to offer the tests a seam.
@@ -7812,8 +7825,24 @@ impl AppState {
             job.hold_at(self.off_lock_gate.clone());
             job
         };
+        Ok(job)
+    }
+
+    /// Hand one reserved job to the drain, which runs it with the app mutex
+    /// released. The `Value` is the placeholder [`AppState::deferred_work`]
+    /// documents: whichever drain runs the job replaces it with what
+    /// [`AppState::apply_lifecycle`] answers.
+    fn defer_job(&mut self, job: WorktreeLifecycleJob) -> Value {
         self.deferred_work = Some(DeferredWork::Lifecycle(Box::new(job)));
-        Ok(Value::Null)
+        Value::Null
+    }
+
+    /// Run one reserved job right here instead, with no mutex to release —
+    /// boot and an agent's own report have no frame to hand git to, and ran it
+    /// under the app mutex before this split too.
+    fn run_lifecycle_here(&mut self, job: WorktreeLifecycleJob) -> Result<Value, String> {
+        let outcome = job.run();
+        self.apply_lifecycle(outcome)
     }
 
     /// Write back what one lifecycle verb's git did: retire the placeholder,
@@ -10137,11 +10166,27 @@ impl AppState {
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         self.arm_issue_scheduler(&issue_id, ImplementationIntent::All)?;
-        if let Err(error) = self.advance_issue_scheduler(&issue_id, params) {
-            self.block_issue_scheduler(&issue_id, None, &error);
-            return Err(error);
+        self.implement_issue(&issue_id, params, None)
+    }
+
+    /// Advance one Issue's scheduler for a frame: either it is settled here and
+    /// the Issue is the answer, or it is waiting on git, which goes to the
+    /// drain and answers for it. A refusal before any git blocks the scheduler,
+    /// the same way the job's own refusal does.
+    fn implement_issue(
+        &mut self,
+        issue_id: &str,
+        params: &Value,
+        blocked_stage: Option<String>,
+    ) -> Result<Value, String> {
+        match self.advance_issue_scheduler(issue_id, params) {
+            Ok(Some(job)) => Ok(self.defer_job(job)),
+            Ok(None) => self.issue_view_full(issue_id, thread_detail(params)),
+            Err(error) => {
+                self.block_issue_scheduler(issue_id, blocked_stage, &error);
+                Err(error)
+            }
         }
-        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
@@ -10162,11 +10207,7 @@ impl AppState {
             ));
         }
         self.arm_issue_scheduler(&issue_id, ImplementationIntent::Stage(stage_id.clone()))?;
-        if let Err(error) = self.advance_issue_scheduler(&issue_id, params) {
-            self.block_issue_scheduler(&issue_id, Some(stage_id), &error);
-            return Err(error);
-        }
-        self.issue_view_full(&issue_id, thread_detail(params))
+        self.implement_issue(&issue_id, params, Some(stage_id))
     }
 
     /// Persist scheduler intent before any worktree/git/agent side effect. The
@@ -10222,10 +10263,34 @@ impl AppState {
         }
     }
 
+    /// Reconcile one Issue's durable intent with its implementation lineage,
+    /// and run whatever git that owes right here — for the callers that have no
+    /// frame to hand it to: boot, an agent's own report, and a stage approval
+    /// that unblocks a waiting scheduler.
+    fn advance_issue_scheduler_here(
+        &mut self,
+        issue_id: &str,
+        request: &Value,
+    ) -> Result<(), String> {
+        match self.advance_issue_scheduler(issue_id, request)? {
+            Some(job) => self.run_lifecycle_here(job).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
     /// Reconcile one Issue's durable intent with its implementation lineage.
     /// This is deliberately idempotent: boot, approval, and completion may all
     /// call it, but the single-active-writer gate prevents duplicate checkouts.
-    fn advance_issue_scheduler(&mut self, issue_id: &str, request: &Value) -> Result<(), String> {
+    ///
+    /// What comes back is the git the next step needs — cutting the checkout,
+    /// or putting back one that was deleted — reserved but not yet run. The
+    /// job's own epilogue carries on from where this stopped, so the caller
+    /// decides only where the git runs, never what happens after it.
+    fn advance_issue_scheduler(
+        &mut self,
+        issue_id: &str,
+        request: &Value,
+    ) -> Result<Option<WorktreeLifecycleJob>, String> {
         let intent = self
             .plans
             .get(issue_id)
@@ -10234,7 +10299,7 @@ impl AppState {
             .implementation_intent
             .clone();
         if intent == ImplementationIntent::None {
-            return Ok(());
+            return Ok(None);
         }
 
         let target_stage = match &intent {
@@ -10254,11 +10319,13 @@ impl AppState {
             ImplementationIntent::None => None,
         };
         let Some(target_stage) = target_stage else {
-            return self.set_issue_scheduler_activity(
-                issue_id,
-                Some(ImplementationIntent::None),
-                ImplementationActivity::Idle,
-            );
+            return self
+                .set_issue_scheduler_activity(
+                    issue_id,
+                    Some(ImplementationIntent::None),
+                    ImplementationActivity::Idle,
+                )
+                .map(|()| None);
         };
         let approved = self.plans[issue_id]
             .stages
@@ -10266,31 +10333,23 @@ impl AppState {
             .find(|stage| stage.id == target_stage)
             .is_some_and(|stage| stage.state == StageDocState::Approved);
         if !approved {
-            return self.set_issue_scheduler_activity(
-                issue_id,
-                None,
-                ImplementationActivity::WaitingApproval(target_stage),
-            );
-        }
-
-        let (run_id, worktree_just_created) = match self.current_issue_implementation_id(issue_id) {
-            Some(run_id) => (run_id, false),
-            None => {
-                self.set_issue_scheduler_activity(
+            return self
+                .set_issue_scheduler_activity(
                     issue_id,
                     None,
-                    ImplementationActivity::Preparing,
-                )?;
-                let created = self.run_create(&alias_param(request, "issue_id", "plan_id"))?;
-                (
-                    created
-                        .get("run_id")
-                        .and_then(Value::as_str)
-                        .ok_or("run.create returned no run_id")?
-                        .to_string(),
-                    true,
+                    ImplementationActivity::WaitingApproval(target_stage),
                 )
-            }
+                .map(|()| None);
+        }
+
+        // No implementation yet: cutting its checkout is the next step, and
+        // the job's epilogue resumes this scheduler on the run it opened.
+        let Some(run_id) = self.current_issue_implementation_id(issue_id) else {
+            self.set_issue_scheduler_activity(issue_id, None, ImplementationActivity::Preparing)?;
+            let waiting = self.issue_scheduler_waiting_on(issue_id, request, &intent);
+            return self
+                .open_implementation(issue_id, request, waiting)
+                .map(Some);
         };
 
         if let Some(attempt) = self.runs[&run_id]
@@ -10298,23 +10357,66 @@ impl AppState {
             .as_ref()
             .filter(|attempt| attempt.state == crate::run::RecoveryState::Started)
         {
-            return self.set_issue_scheduler_activity(
-                issue_id,
-                None,
-                ImplementationActivity::Blocked {
-                    stage_id: attempt.requested_stage_id.clone(),
-                    reason: self.runs[&run_id]
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| format!("verified recovery {} is running", attempt.id)),
-                },
-            );
+            return self
+                .set_issue_scheduler_activity(
+                    issue_id,
+                    None,
+                    ImplementationActivity::Blocked {
+                        stage_id: attempt.requested_stage_id.clone(),
+                        reason: self.runs[&run_id].last_error.clone().unwrap_or_else(|| {
+                            format!("verified recovery {} is running", attempt.id)
+                        }),
+                    },
+                )
+                .map(|()| None);
         }
 
-        if !worktree_just_created {
-            self.ensure_issue_implementation_worktree(issue_id, &run_id)?;
+        let waiting = self.issue_scheduler_waiting_on(issue_id, request, &intent);
+        if let Some(job) = self.ensure_issue_implementation_worktree(issue_id, &run_id, waiting)? {
+            return Ok(Some(job));
         }
+        self.dispatch_ready_stage(issue_id, &run_id, request)
+            .map(|()| None)
+    }
 
+    /// Who the scheduler is: what it hears when the checkout it is waiting on
+    /// exists, and which stage it marks blocked if that checkout never comes.
+    fn issue_scheduler_waiting_on(
+        &self,
+        issue_id: &str,
+        request: &Value,
+        intent: &ImplementationIntent,
+    ) -> Box<dyn ImplementationCaller> {
+        Box::new(IssueSchedulerWaiting {
+            issue_id: issue_id.to_string(),
+            request: request.clone(),
+            blocked_stage: match intent {
+                ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
+                ImplementationIntent::All | ImplementationIntent::None => None,
+            },
+        })
+    }
+
+    /// The rest of one scheduler pass, once the implementation's checkout is on
+    /// disk: dispatch the stage the intent named, or arm run-all and let the
+    /// run chain through the stages itself.
+    ///
+    /// This is where a pass that had to stop for git resumes — the job's
+    /// epilogue calls it with the run the git settled.
+    fn dispatch_ready_stage(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        request: &Value,
+    ) -> Result<(), String> {
+        let intent = self
+            .plans
+            .get(issue_id)
+            .ok_or("unknown issue_id")?
+            .plan
+            .implementation_intent
+            .clone();
+        let run_id = run_id.to_string();
         match intent {
             ImplementationIntent::Stage(stage_id) => {
                 let already_started = self.runs[&run_id].stage_progress(&stage_id).is_some();
@@ -10347,163 +10449,224 @@ impl AppState {
         }
     }
 
+    /// Make sure the implementation's checkout is where its run says it is.
+    /// `None` means it already was; a job means it is being put back with
+    /// `git worktree add` — and, when the branch is only on a remote, a fetch —
+    /// and the scheduler carries on from that job's epilogue.
     fn ensure_issue_implementation_worktree(
         &mut self,
         issue_id: &str,
         run_id: &str,
-    ) -> Result<(), String> {
+        caller: Box<dyn ImplementationCaller>,
+    ) -> Result<Option<WorktreeLifecycleJob>, String> {
         let worktree_existed = self
             .runs
             .get(run_id)
             .is_some_and(|run| run.worktree.path.exists());
         let adopted = self.runs.get(run_id).is_some_and(|run| run.adopted);
         if adopted && worktree_existed {
-            return Ok(());
+            return Ok(None);
         }
+        let project = self.orch_for(&self.project_of(run_id)?)?.clone();
+        // An adopted checkout is somebody else's directory: Build never cut it,
+        // so it cannot cut it again. There is no git to run — only the recovery
+        // agent to start and the Issue to tell.
+        if self.runs[run_id].adopted {
+            return Err(self.start_checkout_recovery(
+                issue_id,
+                run_id,
+                "adopted worktree is missing; its original checkout cannot be recreated safely",
+            )?);
+        }
+        let worktree = self.runs[run_id].worktree.clone();
+        let row = PendingRow {
+            entity_id: run_id.to_string(),
+            project_id: self.project_of(run_id)?,
+            title: self.runs[run_id].run.goal.clone(),
+            branch: None,
+            checkout_id: Some(crate::worktree::external_worktree_id(&worktree.path)),
+            state: PendingState::Creating,
+            since: std::time::Instant::now(),
+        };
+        self.reserve_lifecycle(
+            row,
+            Box::new(RestoreImplementationCheckout {
+                project,
+                issue_id: issue_id.to_string(),
+                run_id: run_id.to_string(),
+                worktree,
+                checkout_stood: worktree_existed,
+                caller,
+            }),
+        )
+        .map(Some)
+    }
+
+    /// Write down what the restore found: the checkout is back (or was never
+    /// really gone), and the Issue's conversation says which. A restore that
+    /// failed hands the run to the verified recovery agent instead — the run's
+    /// exact lineage is what is at stake, and only an agent can confirm it.
+    fn settle_restored_checkout(&mut self, restored: RestoredCheckout) -> Result<Value, String> {
+        let RestoredCheckout {
+            issue_id,
+            run_id,
+            checkout_stood,
+            restored,
+            caller,
+        } = restored;
+        let worktree = match restored {
+            Ok(worktree) => worktree,
+            Err(error) => {
+                let recovering = self
+                    .start_checkout_recovery(&issue_id, &run_id, &error)
+                    .unwrap_or_else(|persist_failure| persist_failure);
+                return Err(caller.refused(self, recovering));
+            }
+        };
+        let settled = (|| -> Result<(), String> {
+            let mut active = self.take_run(&run_id)?;
+            active.worktree = worktree;
+            active.last_error = None;
+            let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+            self.finish_run_mutation(run_id.clone(), active)?;
+            let mut issue = self.take_plan(&issue_id)?;
+            issue.agents.sole_thread_mut().push_event_with_links(
+                if checkout_stood {
+                    crate::thread::ThreadEventKind::WorktreeReused
+                } else {
+                    crate::thread::ThreadEventKind::WorktreeRecreated
+                },
+                Some(if checkout_stood {
+                    "Verified and reused the original Issue worktree".to_string()
+                } else {
+                    "Recreated the Issue worktree from its original branch".to_string()
+                }),
+                None,
+                None,
+                vec![
+                    crate::thread::ThreadLink::Implementation {
+                        issue_id: issue_id.clone(),
+                        implementation_id: run_id.clone(),
+                    },
+                    crate::thread::ThreadLink::Worktree { worktree_id },
+                ],
+                now_rfc3339(),
+            );
+            self.finish_plan_mutation(issue_id.clone(), issue)
+        })();
+        match settled {
+            Ok(()) => caller.opened(self, &run_id),
+            Err(error) => Err(caller.refused(self, error)),
+        }
+    }
+
+    /// Hand a run whose checkout could not be put back to the verified recovery
+    /// agent: a nonce-bound attempt on the record, the prompt that asks the
+    /// agent to prove the exact lineage, and the Issue told what happened. What
+    /// comes back is the message the caller refuses with.
+    fn start_checkout_recovery(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        error: &str,
+    ) -> Result<String, String> {
         let project_id = self.project_of(run_id)?;
         let mut active = self.take_run(run_id)?;
-        let restored = if active.adopted {
-            Err(
-                "adopted worktree is missing; its original checkout cannot be recreated safely"
-                    .to_string(),
-            )
-        } else {
-            self.orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree)
-                .map_err(err)
-        };
-        match restored {
-            Ok(worktree) => {
-                active.worktree = worktree;
-                active.last_error = None;
-                let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
-                let persisted = self.finish_run_mutation(run_id.to_string(), active);
-                persisted?;
-                let mut issue = self.take_plan(issue_id)?;
-                issue.agents.sole_thread_mut().push_event_with_links(
-                    if worktree_existed {
-                        crate::thread::ThreadEventKind::WorktreeReused
-                    } else {
-                        crate::thread::ThreadEventKind::WorktreeRecreated
-                    },
-                    Some(if worktree_existed {
-                        "Verified and reused the original Issue worktree".to_string()
-                    } else {
-                        "Recreated the Issue worktree from its original branch".to_string()
-                    }),
-                    None,
-                    None,
-                    vec![
-                        crate::thread::ThreadLink::Implementation {
-                            issue_id: issue_id.to_string(),
-                            implementation_id: run_id.to_string(),
-                        },
-                        crate::thread::ThreadLink::Worktree { worktree_id },
-                    ],
-                    now_rfc3339(),
-                );
-                self.finish_plan_mutation(issue_id.to_string(), issue)
-            }
-            Err(error) => {
-                if active
-                    .recovery
-                    .as_ref()
-                    .is_some_and(|attempt| attempt.state == crate::run::RecoveryState::Started)
-                {
-                    self.runs.insert(run_id.to_string(), active);
-                    return Err("verified Issue recovery is already running".to_string());
-                }
-                let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-                let requested_stage_id = match &issue.plan.implementation_intent {
-                    ImplementationIntent::Stage(stage_id) => stage_id.clone(),
-                    ImplementationIntent::All => issue
-                        .stages
-                        .iter()
-                        .find(|doc| {
-                            active.stage_progress(&doc.id).is_none_or(|progress| {
-                                progress.state != StageProgressState::Validated { passed: true }
-                                    || progress.invalidation_reason.is_some()
-                            })
-                        })
-                        .map(|doc| doc.id.clone())
-                        .unwrap_or_default(),
-                    ImplementationIntent::None => {
-                        active.current_stage_id.clone().unwrap_or_default()
-                    }
-                };
-                let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
-                let started_at = now_rfc3339();
-                active.recovery = Some(crate::run::RecoveryAttempt {
-                    id: recovery_id.clone(),
-                    requested_stage_id: requested_stage_id.clone(),
-                    branch: active.worktree.recorded_branch.clone(),
-                    state: crate::run::RecoveryState::Started,
-                    report: None,
-                    started_at: started_at.clone(),
-                    completed_at: None,
-                });
-                active.last_error = Some(format!(
-                    "automatic branch restoration failed: {error}; verified recovery agent started"
-                ));
-                let project_root = self
-                    .projects
-                    .iter()
-                    .find(|project| project.id == project_id)
-                    .map(|project| project.repo_path.clone())
-                    .ok_or("unknown project_id")?;
-                let prompt = recovery_agent_prompt(
-                    &recovery_id,
-                    issue_id,
-                    run_id,
-                    &requested_stage_id,
-                    &active.worktree,
-                    &error,
-                    &issue.stages,
-                );
-                match PendingAgentTurn::for_recovery(run_id, &active, &project_root, prompt) {
-                    Some(turn) => self.pending_agent_turns.push(turn),
-                    None => eprintln!("recover {run_id}: no agent to hand the recovery to"),
-                }
-                let persisted = self.finish_run_mutation(run_id.to_string(), active);
-                persisted?;
-                let mut issue = self.take_plan(issue_id)?;
-                let mut links = vec![
-                    crate::thread::ThreadLink::Implementation {
-                        issue_id: issue_id.to_string(),
-                        implementation_id: run_id.to_string(),
-                    },
-                    crate::thread::ThreadLink::Recovery {
-                        recovery_id: recovery_id.clone(),
-                    },
-                ];
-                if let Some(stage) = issue
-                    .stages
-                    .iter()
-                    .find(|stage| stage.id == requested_stage_id)
-                {
-                    links.push(crate::thread::ThreadLink::IssueStage {
-                        issue_id: issue_id.to_string(),
-                        stage_id: stage.id.clone(),
-                        path: stage.path.clone(),
-                    });
-                }
-                issue.agents.sole_thread_mut().push_event_with_links(
-                    crate::thread::ThreadEventKind::RecoveryStarted,
-                    Some(format!(
-                        "Verified recovery started after automatic restore failed: {error}"
-                    )),
-                    None,
-                    None,
-                    links,
-                    started_at,
-                );
-                let issue_persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
-                issue_persisted?;
-                Err(format!(
-                    "automatic restore failed; verified recovery {recovery_id} started"
-                ))
-            }
+        if active
+            .recovery
+            .as_ref()
+            .is_some_and(|attempt| attempt.state == crate::run::RecoveryState::Started)
+        {
+            self.runs.insert(run_id.to_string(), active);
+            return Ok("verified Issue recovery is already running".to_string());
         }
+        let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
+        let requested_stage_id = match &issue.plan.implementation_intent {
+            ImplementationIntent::Stage(stage_id) => stage_id.clone(),
+            ImplementationIntent::All => issue
+                .stages
+                .iter()
+                .find(|doc| {
+                    active.stage_progress(&doc.id).is_none_or(|progress| {
+                        progress.state != StageProgressState::Validated { passed: true }
+                            || progress.invalidation_reason.is_some()
+                    })
+                })
+                .map(|doc| doc.id.clone())
+                .unwrap_or_default(),
+            ImplementationIntent::None => active.current_stage_id.clone().unwrap_or_default(),
+        };
+        let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
+        let started_at = now_rfc3339();
+        active.recovery = Some(crate::run::RecoveryAttempt {
+            id: recovery_id.clone(),
+            requested_stage_id: requested_stage_id.clone(),
+            branch: active.worktree.recorded_branch.clone(),
+            state: crate::run::RecoveryState::Started,
+            report: None,
+            started_at: started_at.clone(),
+            completed_at: None,
+        });
+        active.last_error = Some(format!(
+            "automatic branch restoration failed: {error}; verified recovery agent started"
+        ));
+        let project_root = self
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.repo_path.clone())
+            .ok_or("unknown project_id")?;
+        let prompt = recovery_agent_prompt(
+            &recovery_id,
+            issue_id,
+            run_id,
+            &requested_stage_id,
+            &active.worktree,
+            error,
+            &issue.stages,
+        );
+        match PendingAgentTurn::for_recovery(run_id, &active, &project_root, prompt) {
+            Some(turn) => self.pending_agent_turns.push(turn),
+            None => eprintln!("recover {run_id}: no agent to hand the recovery to"),
+        }
+        let persisted = self.finish_run_mutation(run_id.to_string(), active);
+        persisted?;
+        let mut issue = self.take_plan(issue_id)?;
+        let mut links = vec![
+            crate::thread::ThreadLink::Implementation {
+                issue_id: issue_id.to_string(),
+                implementation_id: run_id.to_string(),
+            },
+            crate::thread::ThreadLink::Recovery {
+                recovery_id: recovery_id.clone(),
+            },
+        ];
+        if let Some(stage) = issue
+            .stages
+            .iter()
+            .find(|stage| stage.id == requested_stage_id)
+        {
+            links.push(crate::thread::ThreadLink::IssueStage {
+                issue_id: issue_id.to_string(),
+                stage_id: stage.id.clone(),
+                path: stage.path.clone(),
+            });
+        }
+        issue.agents.sole_thread_mut().push_event_with_links(
+            crate::thread::ThreadEventKind::RecoveryStarted,
+            Some(format!(
+                "Verified recovery started after automatic restore failed: {error}"
+            )),
+            None,
+            None,
+            links,
+            started_at,
+        );
+        let issue_persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
+        issue_persisted?;
+        Ok(format!(
+            "automatic restore failed; verified recovery {recovery_id} started"
+        ))
     }
 
     fn refresh_issue_scheduler_activity(&mut self, issue_id: &str) -> Result<(), String> {
@@ -10854,7 +11017,7 @@ impl AppState {
             .is_some_and(|issue| issue.plan.implementation_intent != ImplementationIntent::None)
         {
             let request = json!({ "issue_id": plan_id });
-            if let Err(error) = self.advance_issue_scheduler(&plan_id, &request) {
+            if let Err(error) = self.advance_issue_scheduler_here(&plan_id, &request) {
                 self.block_issue_scheduler(&plan_id, Some(stage_id), &error);
                 return Err(error);
             }
@@ -11088,6 +11251,29 @@ impl AppState {
     /// driven by the human who opened it.
     fn run_create(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
+        let job = self.open_implementation(
+            &plan_id,
+            params,
+            Box::new(RunOpenedView {
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
+    }
+
+    /// Settle everything an Issue's implementation needs before any git runs —
+    /// the run's id, the checkout it works in, the model its agent runs on —
+    /// and hand the git itself to the drain.
+    ///
+    /// Shared by `run.create` and by the Issue scheduler, which differ only in
+    /// `caller`: who is waiting for the run, and what a failure leaves written
+    /// on the Issue.
+    fn open_implementation(
+        &mut self,
+        issue_id: &str,
+        params: &Value,
+        caller: Box<dyn ImplementationCaller>,
+    ) -> Result<WorktreeLifecycleJob, String> {
         // Targeting: an Issue can be implemented into a checkout that already
         // exists instead of one cut for it (Decisions §Issue view — the stage
         // column's assignment control).
@@ -11097,64 +11283,62 @@ impl AppState {
             .filter(|id| !id.is_empty())
         {
             let worktree_id = worktree_id.to_string();
-            return self.run_create_in_worktree(&plan_id, &worktree_id, params);
+            return self.adopt_implementation_checkout(issue_id, &worktree_id, params, caller);
         }
-        let source_plan_id = plan_id.clone();
+        if !self.plans.contains_key(issue_id) {
+            return Err("unknown plan_id".to_string());
+        }
+        let project_id = self.project_of(issue_id)?;
         let requested_choice = model_choice_from(params, self.default_harness)?;
-        let base_override = params
+        let base = params
             .get("base_branch")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let run_id = format!("run-{}", uuid::Uuid::new_v4());
-
-        let (project_id, active, turn) = {
-            if !self.plans.contains_key(&plan_id) {
-                return Err("unknown plan_id".to_string());
-            }
-            let project_id = self.project_of(&plan_id)?;
-            let base = base_override.unwrap_or_else(|| self.plans[&plan_id].base_branch.clone());
-            let has_active_run = self.runs.values().any(|r| {
-                r.run.plan_id.as_ref().map(|p| &p.0) == Some(&plan_id) && !r.run.state.is_terminal()
-            });
-            let store = self.require_store()?;
-            let plan = &self.plans[&plan_id];
-            let model_choice = if has_agent_choice(params) {
-                requested_choice
-            } else {
-                plan.model_choice.clone()
-            };
-            let issue = ImplementableIssue::judge(RunSource {
-                plan,
-                has_active_run,
-            })
-            .map_err(err)?;
-            let project = self.orch_for(&project_id)?;
-            let prepared = project
-                .prepare_run_checkout(&issue, &base, &run_id, store)
-                .map_err(err)?;
-            let (active, turn) = project
-                .open_prepared_run(RunId::new(&run_id), plan, prepared, model_choice)
-                .map_err(err)?;
-            (project_id, active, turn)
+            .map(str::to_string)
+            .unwrap_or_else(|| self.plans[issue_id].base_branch.clone());
+        let has_active_run = self.runs.values().any(|r| {
+            r.run.plan_id.as_ref().map(|p| p.0.as_str()) == Some(issue_id)
+                && !r.run.state.is_terminal()
+        });
+        let store = self.require_store()?.clone();
+        let plan = &self.plans[issue_id];
+        let model_choice = if has_agent_choice(params) {
+            requested_choice
+        } else {
+            plan.model_choice.clone()
         };
-
-        let agent_id = active
-            .agents
-            .primary()
-            .expect("a dispatched run opens with its agent")
-            .id
-            .clone();
-        self.open_implementation_run(
-            run_id,
-            project_id,
-            source_plan_id,
-            active,
-            turn,
-            &agent_id,
-            crate::thread::ThreadEventKind::WorktreeCreated,
-            |run_id| format!("Created the Issue implementation worktree for {run_id}"),
-            thread_detail(params),
+        let title = plan.plan.goal.clone();
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run,
+        })
+        .map_err(err)?;
+        let project = self.orch_for(&project_id)?.clone();
+        let run_id = format!("run-{}", uuid::Uuid::new_v4());
+        let row = PendingRow {
+            entity_id: run_id.clone(),
+            project_id: project_id.clone(),
+            title,
+            // The ref this implementation is about to cut, so a create or a
+            // dispatch claiming the same one collides here rather than in git.
+            branch: Some(crate::worktree::branch_name_for(issue.slug())),
+            state: PendingState::Creating,
+            checkout_id: None,
+            since: std::time::Instant::now(),
+        };
+        self.reserve_lifecycle(
+            row,
+            Box::new(OpenImplementation {
+                project,
+                project_id,
+                issue_id: issue_id.to_string(),
+                issue,
+                base_branch: base,
+                run_id,
+                store,
+                model_choice,
+                caller,
+            }),
         )
     }
 
@@ -11165,12 +11349,13 @@ impl AppState {
     /// checkout Build has never seen is adopted first, and a branch already
     /// implementing a DIFFERENT Issue is refused: two Issues writing one branch
     /// would make neither one's diff readable.
-    fn run_create_in_worktree(
+    fn adopt_implementation_checkout(
         &mut self,
         issue_id: &str,
         worktree_id: &str,
         params: &Value,
-    ) -> Result<Value, String> {
+        caller: Box<dyn ImplementationCaller>,
+    ) -> Result<WorktreeLifecycleJob, String> {
         if !self.plans.contains_key(issue_id) {
             return Err("unknown plan_id".to_string());
         }
@@ -11226,44 +11411,43 @@ impl AppState {
         } else {
             self.plans[issue_id].model_choice.clone()
         };
-        let mut active = self.take_run(&run_id)?;
-        let adopted = {
-            let store = self.require_store()?;
-            let plan = &self.plans[issue_id];
-            ImplementableIssue::judge(RunSource {
-                plan,
-                has_active_run,
-            })
-            .map_err(err)
-            .and_then(|issue| {
-                let project = self.orch_for(&project_id)?;
-                let base_sha = project
-                    .prepare_adopted_checkout(&issue, &active.worktree.path, store)
-                    .map_err(err)?;
-                project
-                    .open_adopted_implementation(&mut active, plan, base_sha, model_choice)
-                    .map_err(err)
-            })
+        let store = self.require_store()?.clone();
+        let plan = &self.plans[issue_id];
+        let title = plan.plan.goal.clone();
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run,
+        })
+        .map_err(err)?;
+        let checkout = self.runs[&run_id].worktree.path.clone();
+        let project = self.orch_for(&project_id)?.clone();
+        // The run stays on the board while its checkout is checkpointed: it is
+        // the same run either way, and a run that vanished from every poll for
+        // the length of two commits would read as one that had been abandoned.
+        // What the row holds is the checkout, which nothing else may claim
+        // until this hand-over is written down.
+        let row = PendingRow {
+            entity_id: run_id.clone(),
+            project_id: project_id.clone(),
+            title,
+            branch: None,
+            state: PendingState::Creating,
+            checkout_id: Some(worktree_id.to_string()),
+            since: std::time::Instant::now(),
         };
-        let (turn, agent_id) = match adopted {
-            Ok(opened) => opened,
-            Err(error) => {
-                // Nothing was handed over: the branch keeps the run it had.
-                self.runs.insert(run_id, active);
-                return Err(error);
-            }
-        };
-        let branch = active.worktree.branch();
-        self.open_implementation_run(
-            run_id,
-            project_id,
-            issue_id.to_string(),
-            active,
-            turn,
-            &agent_id,
-            crate::thread::ThreadEventKind::WorktreeReused,
-            move |_| format!("Implementing into the existing checkout on {branch}"),
-            thread_detail(params),
+        self.reserve_lifecycle(
+            row,
+            Box::new(AdoptImplementation {
+                project,
+                project_id,
+                issue_id: issue_id.to_string(),
+                issue,
+                run_id,
+                checkout,
+                store,
+                model_choice,
+                caller,
+            }),
         )
     }
 
@@ -11284,29 +11468,123 @@ impl AppState {
             .map(|(run_id, _)| run_id.clone())
     }
 
+    /// `run.create`'s apply half on a checkout that was cut for it: open the
+    /// run around what the git prepared, and answer whoever asked.
+    fn open_prepared_implementation(
+        &mut self,
+        opened: ImplementationOpened,
+    ) -> Result<Value, String> {
+        let ImplementationOpened {
+            project_id,
+            issue_id,
+            run_id,
+            prepared,
+            model_choice,
+            caller,
+        } = opened;
+        let opened = (|| -> Result<OpenedImplementation, String> {
+            let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
+            let (active, turn) = self
+                .orch_for(&project_id)?
+                .open_prepared_run(RunId::new(&run_id), plan, prepared, model_choice)
+                .map_err(err)?;
+            let agent_id = active
+                .agents
+                .primary()
+                .expect("a dispatched run opens with its agent")
+                .id
+                .clone();
+            Ok(OpenedImplementation {
+                checkout_summary: format!("Created the Issue implementation worktree for {run_id}"),
+                run_id: run_id.clone(),
+                project_id,
+                issue_id,
+                active,
+                turn,
+                agent_id,
+                checkout_event: crate::thread::ThreadEventKind::WorktreeCreated,
+            })
+        })()
+        .and_then(|opened| self.open_implementation_run(opened));
+        match opened {
+            Ok(()) => caller.opened(self, &run_id),
+            Err(error) => Err(caller.refused(self, error)),
+        }
+    }
+
+    /// The same, on a checkout an existing run already owns: the run is taken
+    /// out, handed the implementation the git prepared it for, and put back.
+    fn open_adopted_implementation(
+        &mut self,
+        opened: ImplementationAdopted,
+    ) -> Result<Value, String> {
+        let ImplementationAdopted {
+            project_id,
+            issue_id,
+            run_id,
+            base_sha,
+            model_choice,
+            caller,
+        } = opened;
+        let mut active = match self.take_run(&run_id) {
+            Ok(active) => active,
+            Err(error) => return Err(caller.refused(self, error)),
+        };
+        let adopted = (|| -> Result<(AgentTurn, String), String> {
+            let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
+            self.orch_for(&project_id)?
+                .open_adopted_implementation(&mut active, plan, base_sha, model_choice)
+                .map_err(err)
+        })();
+        let (turn, agent_id) = match adopted {
+            Ok(opened) => opened,
+            Err(error) => {
+                // Nothing was handed over: the branch keeps the run it had.
+                self.runs.insert(run_id, active);
+                return Err(caller.refused(self, error));
+            }
+        };
+        let branch = active.worktree.branch();
+        let opened = self.open_implementation_run(OpenedImplementation {
+            checkout_summary: format!("Implementing into the existing checkout on {branch}"),
+            run_id: run_id.clone(),
+            project_id,
+            issue_id,
+            active,
+            turn,
+            agent_id,
+            checkout_event: crate::thread::ThreadEventKind::WorktreeReused,
+        });
+        match opened {
+            Ok(()) => caller.opened(self, &run_id),
+            Err(error) => Err(caller.refused(self, error)),
+        }
+    }
+
     /// The tail every implementation dispatch shares: address the first turn to
     /// the agent that will hear it, drive it under QA, persist the run, and
     /// record on the Issue's conversation which checkout the work went into.
-    #[allow(clippy::too_many_arguments)]
-    fn open_implementation_run(
-        &mut self,
-        run_id: String,
-        project_id: String,
-        issue_id: String,
-        mut active: ActiveRun,
-        turn: crate::orchestrator::AgentTurn,
-        agent_id: &str,
-        checkout_event: crate::thread::ThreadEventKind,
-        checkout_summary: impl Fn(&str) -> String,
-        thread_detail: ThreadDetail,
-    ) -> Result<Value, String> {
+    ///
+    /// The answer is not built here — who asked is what decides that, and by
+    /// this point they are as far apart as `run.create` and a scheduled stage.
+    fn open_implementation_run(&mut self, opened: OpenedImplementation) -> Result<(), String> {
+        let OpenedImplementation {
+            run_id,
+            project_id,
+            issue_id,
+            mut active,
+            turn,
+            agent_id,
+            checkout_event,
+            checkout_summary,
+        } = opened;
         let plan_docs = self.owning_plan_stage_docs(&active);
 
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
         self.pending_agent_turns
             .push(PendingAgentTurn::for_run_agent(
-                &run_id, agent_id, &active, turn,
+                &run_id, &agent_id, &active, turn,
             ));
         if self.qa_agent {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
@@ -11321,7 +11599,7 @@ impl AppState {
         };
         plan.agents.sole_thread_mut().push_event_with_links(
             checkout_event,
-            Some(checkout_summary(&run_id)),
+            Some(checkout_summary),
             None,
             None,
             vec![
@@ -11344,8 +11622,7 @@ impl AppState {
         let plan_persisted = self.finish_plan_mutation(issue_id, plan);
         plan_persisted?;
         self.auto_advance_run(&run_id);
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail, DigestScope::Detail))
+        Ok(())
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -16296,6 +16573,147 @@ impl LifecycleEpilogue for WorktreeCreated {
             "name": self.name,
             "path": self.path.display().to_string(),
         }))
+    }
+}
+
+/// A run opened around a checkout that is ready for it: the record, the agent
+/// its first turn is addressed to, and what the Issue's conversation says about
+/// where the work went.
+struct OpenedImplementation {
+    run_id: String,
+    project_id: String,
+    issue_id: String,
+    active: ActiveRun,
+    turn: AgentTurn,
+    agent_id: String,
+    checkout_event: crate::thread::ThreadEventKind,
+    checkout_summary: String,
+}
+
+/// Who asked for an implementation: what they hear once the run behind it is
+/// open, and what is left written down when the git that would have opened it
+/// failed.
+///
+/// It travels with the job, so one object answers both ways — a verb asking
+/// for a run hears the run; a scheduler asking for one carries on to the stage
+/// it was cutting the checkout for, and marks the Issue blocked if it cannot.
+pub trait ImplementationCaller: Send {
+    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String>;
+    /// The message the frame gets, after whatever the decide phase armed on the
+    /// strength of this implementation has been settled.
+    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> String;
+}
+
+/// `run.create` asked: it hears the run it opened, and a failure is its own
+/// answer — nothing was armed on the way in.
+struct RunOpenedView {
+    detail: ThreadDetail,
+}
+
+impl ImplementationCaller for RunOpenedView {
+    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String> {
+        let active = state.runs.get(run_id).ok_or("unknown run_id")?;
+        Ok(state.run_view(run_id, active, self.detail, DigestScope::Detail))
+    }
+
+    fn refused(self: Box<Self>, _state: &mut AppState, error: String) -> String {
+        error
+    }
+}
+
+/// An Issue's scheduler asked, on its way to a stage: it carries on from where
+/// the git stopped it, and answers with the Issue rather than the run — the
+/// scheduler is what the frame called, and the run is an implementation detail
+/// of the stage it was after.
+struct IssueSchedulerWaiting {
+    issue_id: String,
+    request: Value,
+    /// The stage a failure is recorded against. `None` for run-all, which
+    /// blocks on whichever stage the Issue is standing at.
+    blocked_stage: Option<String>,
+}
+
+impl ImplementationCaller for IssueSchedulerWaiting {
+    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String> {
+        match state.dispatch_ready_stage(&self.issue_id, run_id, &self.request) {
+            Ok(()) => state.issue_view_full(&self.issue_id, thread_detail(&self.request)),
+            Err(error) => Err(self.refused(state, error)),
+        }
+    }
+
+    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> String {
+        // The Issue said it was preparing something. Nothing is preparing it
+        // now, and a spinner nothing will ever clear is worse than the failure.
+        state.block_issue_scheduler(&self.issue_id, self.blocked_stage, &error);
+        error
+    }
+}
+
+/// A run's checkout, as the restore left it, on its way back under the app
+/// mutex. `Err` is not a failure of the job — it is the finding that the branch
+/// is gone, which the recovery agent is started for.
+pub struct RestoredCheckout {
+    pub issue_id: String,
+    pub run_id: String,
+    /// Whether the directory was still standing when the decide phase looked:
+    /// what the Issue's conversation says happened, reused or recreated.
+    pub checkout_stood: bool,
+    pub restored: Result<crate::worktree::Worktree, String>,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for RestoredCheckout {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.settle_restored_checkout(*self)
+    }
+}
+
+/// `run.create`'s apply half on a checkout cut for it: the git left a prepared
+/// checkout, and the run that stands for it is opened here, where the maps are.
+pub struct ImplementationOpened {
+    pub project_id: String,
+    pub issue_id: String,
+    pub run_id: String,
+    pub prepared: PreparedImplementation,
+    pub model_choice: ModelChoice,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for ImplementationOpened {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.open_prepared_implementation(*self)
+    }
+}
+
+/// The same, on a checkout an existing run already owns: the git left a
+/// checkpoint and a baseline commit, and the run is reset onto them.
+pub struct ImplementationAdopted {
+    pub project_id: String,
+    pub issue_id: String,
+    pub run_id: String,
+    pub base_sha: String,
+    pub model_choice: ModelChoice,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for ImplementationAdopted {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.open_adopted_implementation(*self)
+    }
+}
+
+/// The git that would have opened an implementation failed. It comes back as an
+/// epilogue rather than as an error because what a refusal leaves behind is
+/// state — an Issue that says it is preparing something nobody is preparing any
+/// more — and state is written under the app mutex.
+pub struct ImplementationRefused {
+    pub error: String,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for ImplementationRefused {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        Err(self.caller.refused(state, self.error))
     }
 }
 
@@ -43477,6 +43895,10 @@ mod tests {
             .status()
             .unwrap()
             .success());
+        // The turn the dispatch queued would spawn an agent in that checkout,
+        // and spawning one scaffolds the directory back into existence — which
+        // is a race with the restore, not the restore's own doing.
+        app.pending_agent_turns.clear();
         let (gate, gate_handle) = OffLockGate::new();
         app.off_lock_gate = Some(gate);
         let state = app.shared();

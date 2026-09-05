@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use crate::app::AppState;
 use crate::models::ModelChoice;
-use crate::orchestrator::{AdoptableCheckout, AdoptionScope, Orchestrator};
+use crate::orchestrator::{AdoptableCheckout, AdoptionScope, ImplementableIssue, Orchestrator};
 use crate::worktree::{ExternalWorktree, NamedBranchCheckout};
 use serde_json::Value;
 
@@ -241,6 +241,128 @@ impl WorktreeMutation for CreateWorktree {
                 branch: worktree.branch(),
                 name: worktree.name,
                 path,
+            }),
+        })
+    }
+}
+
+/// `run.create` and `issue.implement_*` — cut the checkout an Issue's
+/// implementation works in and make it ready: scaffolded, with the Issue's
+/// canonical docs committed as the baseline the review diff is read against.
+pub struct OpenImplementation {
+    pub project: Orchestrator,
+    pub project_id: String,
+    pub issue_id: String,
+    pub issue: ImplementableIssue,
+    pub base_branch: String,
+    pub run_id: String,
+    pub store: crate::store::Store,
+    pub model_choice: ModelChoice,
+    pub caller: Box<dyn crate::app::ImplementationCaller>,
+}
+
+impl WorktreeMutation for OpenImplementation {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        let prepared = self.project.prepare_run_checkout(
+            &self.issue,
+            &self.base_branch,
+            &self.run_id,
+            &self.store,
+        );
+        let epilogue: Box<dyn LifecycleEpilogue> = match prepared {
+            Ok(prepared) => Box::new(crate::app::ImplementationOpened {
+                project_id: self.project_id,
+                issue_id: self.issue_id,
+                run_id: self.run_id,
+                prepared,
+                model_choice: self.model_choice,
+                caller: self.caller,
+            }),
+            // The checkout it cut, if it got that far, is already removed —
+            // what is left to settle is what the Issue says it was doing.
+            Err(error) => Box::new(crate::app::ImplementationRefused {
+                error: error.to_string(),
+                caller: self.caller,
+            }),
+        };
+        Ok(Performed {
+            // A checkout a run owns is on no unbound list, so there is nothing
+            // for the board's scan to be told about either way.
+            change: WorktreeChange::nothing(),
+            epilogue,
+        })
+    }
+}
+
+/// The same, into a checkout that already exists: whatever the branch was
+/// carrying is checkpointed under its own message first, so the baseline commit
+/// is exactly what the implementation adds to it.
+pub struct AdoptImplementation {
+    pub project: Orchestrator,
+    pub project_id: String,
+    pub issue_id: String,
+    pub issue: ImplementableIssue,
+    pub run_id: String,
+    pub checkout: PathBuf,
+    pub store: crate::store::Store,
+    pub model_choice: ModelChoice,
+    pub caller: Box<dyn crate::app::ImplementationCaller>,
+}
+
+impl WorktreeMutation for AdoptImplementation {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        let prepared =
+            self.project
+                .prepare_adopted_checkout(&self.issue, &self.checkout, &self.store);
+        let epilogue: Box<dyn LifecycleEpilogue> = match prepared {
+            Ok(base_sha) => Box::new(crate::app::ImplementationAdopted {
+                project_id: self.project_id,
+                issue_id: self.issue_id,
+                run_id: self.run_id,
+                base_sha,
+                model_choice: self.model_choice,
+                caller: self.caller,
+            }),
+            Err(error) => Box::new(crate::app::ImplementationRefused {
+                error: error.to_string(),
+                caller: self.caller,
+            }),
+        };
+        Ok(Performed {
+            change: WorktreeChange::nothing(),
+            epilogue,
+        })
+    }
+}
+
+/// `issue.implement_*` — put back the checkout an Issue's implementation lost,
+/// from the exact branch its run recorded. `git worktree add`, and a fetch when
+/// the branch survives only on a remote.
+pub struct RestoreImplementationCheckout {
+    pub project: Orchestrator,
+    pub issue_id: String,
+    pub run_id: String,
+    pub worktree: crate::worktree::Worktree,
+    pub checkout_stood: bool,
+    pub caller: Box<dyn crate::app::ImplementationCaller>,
+}
+
+impl WorktreeMutation for RestoreImplementationCheckout {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        // A branch that is gone is a finding, not a failure of this job: the
+        // apply phase hands the run to the recovery agent over it.
+        let restored = self
+            .project
+            .restore_run_worktree(&self.worktree)
+            .map_err(|error| error.to_string());
+        Ok(Performed {
+            change: WorktreeChange::nothing(),
+            epilogue: Box::new(crate::app::RestoredCheckout {
+                issue_id: self.issue_id,
+                run_id: self.run_id,
+                checkout_stood: self.checkout_stood,
+                restored,
+                caller: self.caller,
             }),
         })
     }

@@ -476,14 +476,34 @@ noted below.
 
   ```rust
   /// What one lock acquisition took, and the marks it OWES back.
-  struct PendingTurns { turns: VecDeque<PendingAgentTurn>, owed: Vec<String>,
+  struct PendingTurns { turns: VecDeque<PendingAgentTurn>, owed: Vec<TurnMark>,
                         state: SettlingHandle }
   impl PendingTurns {
       fn next_turn(&mut self) -> Option<PendingAgentTurn>;
       fn settle(&mut self, owner: &str, s: &mut AppState);   // one delivered turn
   }
   impl Drop for PendingTurns { .. }                          // whatever is left
-  impl AppState { fn take_pending_turns(&mut self) -> PendingTurns; }
+
+  /// The turns that have left the queue and not yet reached an agent, counted
+  /// under an OWNER (the idle sweep's question) and under an AGENT TAB (the
+  /// question every verb that would queue a second turn asks).
+  struct TurnsInFlight { owners: HashMap<String, usize>, agents: HashMap<TabKey, usize> }
+  struct TurnMark { owner: String, agent: TabKey }
+  impl TurnsInFlight {
+      fn take(&mut self, turn: &PendingAgentTurn) -> TurnMark;
+      fn give_back(&mut self, mark: &TurnMark);
+      fn holds_owner(&self, owner: &str) -> bool;
+      fn holds_agent(&self, key: &TabKey) -> bool;
+  }
+  impl AppState {
+      fn take_pending_turns(&mut self) -> PendingTurns;
+      /// Queued, mid-delivery, or claimed by the spawn that delivery makes.
+      fn agent_is_on_its_way(&self, root: &Path, agent_id: &str) -> bool;
+      /// The whole reading a verb needs of the agent its parameters address.
+      fn addressed_agent(&mut self, params: &Value) -> Result<AddressedAgent, String>;
+  }
+  struct AddressedAgent { entity_id: String, agent_id: String, root: PathBuf,
+                          model_choice: ModelChoice, has_unread: bool }
   struct DeliveryRunner;
   impl DeliveryRunner {
       fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns);  // returns at once
@@ -612,12 +632,16 @@ noted below.
   impl AppState { fn settling_handle(&self) -> SettlingHandle; }
   ```
 
-  `take_pending_turns` marks every owner in flight, and an owner marked in
-  flight is spared by the idle sweep for as long as the mark stands — so a batch
-  that unwound without giving its marks back left its runs Working with no agent
-  and nothing in the daemon able to demote them. `PendingTurns::settle` returns
-  one turn's mark under the lock the runner already holds, and `Drop` returns
-  whatever the batch still owes. `DeliveryRunner::spawn` submits the blocking
+  `take_pending_turns` marks every turn in flight, and a marked turn is spared
+  by the idle sweep for as long as the mark stands — so a batch that unwound
+  without giving its marks back left its runs Working with no agent and nothing
+  in the daemon able to demote them. `PendingTurns::settle` returns one turn's
+  marks under the lock the runner already holds, and `Drop` returns whatever the
+  batch still owes. `SpawnClaim`'s `Drop` is the same guard one phase later, and
+  a leak there is worse: `agent_spawns_in_flight` is removed from in exactly two
+  places, so the claim would be held for the life of the daemon — every later
+  delivery to that tab waiting out `AGENT_SPAWN_WAIT` and then failing, the
+  entity reading as forever starting, `agent.remove` refusing the agent. `DeliveryRunner::spawn` submits the blocking
   half FIRST and joins it from a task of its own, so a delivery that panicked —
   or one a shutting-down runtime never ran — reaches the log rather than
   vanishing, and a single-threaded runtime still starts the delivery before its
@@ -642,6 +666,17 @@ noted below.
   tab, which is the only check atomic with the insert; a tab published into a
   closed session is retired in that same acquisition. Both answer `Ok(None)`,
   which the runner logs and never records as a delivery failure.
+- **"The agent is already coming" has one owner and one lifetime.** A turn
+  passes through three states — queued, off the queue and mid-delivery, claimed
+  by the spawn that delivery makes — and the delivery gives its in-flight mark
+  back only after settling the claim it became, so the three overlap and leave
+  no window. `agent_is_on_its_way` asks all three and is the only way to ask;
+  the revive/nudge guard and `start_routed_issue_agent` used to compute it by
+  hand from the queue and the claim alone, which since this step's split reads
+  false for the whole of a delivery. A second message landing there queued a
+  duplicate turn: the claim still stops a second harness, nothing stopped the
+  duplicate `read_unread_messages` nudge. The key is per (root, agent_id), so a
+  branch's second agent is never suppressed by its first agent's turn.
 - **Lock discipline** Three acquisitions. **Take**: the queue, the in-flight
   marks, the reserved tab id (`agent_tab_id(agent_id)` — the agent's own
   identity mints it, so no registry entry is needed to name it), one
@@ -660,6 +695,9 @@ noted below.
   `agent_start_answers_with_the_reserved_tab_before_the_harness_is_up`,
   `a_delivery_that_fails_in_the_background_lands_on_its_entity`,
   `a_delivery_that_panics_gives_its_in_flight_marks_back`,
+  `a_second_message_queues_nothing_while_the_first_is_mid_delivery`,
+  `a_spawn_that_panics_gives_its_claim_back`,
+  `a_claim_dropped_by_a_panic_under_the_app_mutex_does_not_deadlock`,
   `two_callers_of_one_tab_spawn_one_harness_without_spinning`,
   `a_delivery_is_timed_under_its_own_method_and_never_the_frames`,
   `a_frame_waiting_on_a_condvar_holds_nothing_and_charges_the_wait_to_the_lock`

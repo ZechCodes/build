@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
+from litestar import Litestar
 from litestar.exceptions import NotFoundException
 from litestar.response import Redirect, Response
 
@@ -1035,7 +1036,9 @@ def test_every_markup_class_has_a_rule_and_every_rule_class_is_applied():
 
 
 def test_install_sh_redirects_to_the_install_script_on_the_configured_release_repo():
-    response = asyncio.run(RootController.install_script.fn(None))
+    response = asyncio.run(
+        RootController.install_script.fn(None, releases.provide_releases_repo())
+    )
     assert isinstance(response, Redirect)
     assert response.url == (
         "https://github.com/ZechCodes/build-releases/releases/latest/download/install.sh"
@@ -1044,5 +1047,19 @@ def test_install_sh_redirects_to_the_install_script_on_the_configured_release_re
 
 def test_install_sh_follows_the_release_repo_the_environment_names(monkeypatch):
     monkeypatch.setenv(releases.RELEASES_REPO_ENV, "someone/forks")
-    response = asyncio.run(RootController.install_script.fn(None))
+    response = asyncio.run(
+        RootController.install_script.fn(None, releases.provide_releases_repo())
+    )
     assert response.url.startswith("https://github.com/someone/forks/releases/latest/")
+
+
+def test_the_install_script_route_is_handed_the_repo_by_the_shared_provider():
+    app = Litestar(route_handlers=[RootController], openapi_config=None)
+    handler = next(
+        iter(app.route_handler_method_map[releases.INSTALL_SCRIPT_PATH].values())
+    )
+    assert sorted(handler.resolve_dependencies()) == ["releases_repo"]
+    assert (
+        RootController.dependencies["releases_repo"].dependency
+        is releases.provide_releases_repo
+    )

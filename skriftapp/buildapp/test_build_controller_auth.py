@@ -26,7 +26,7 @@ from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_message import provide_public_base_url
 from buildapp.email_test_support import email_settings
 from buildapp.invite_pages import INVITE_ONLY_HEADING
-from buildapp.releases import PLATFORMS
+from buildapp.releases import PLATFORMS, provide_releases_repo
 
 SIGNED_IN_ADDRESS = "someone@example.com"
 
@@ -106,7 +106,9 @@ def test_the_downloads_route_carries_the_membership_guard():
 def test_the_downloads_route_answers_the_shared_payload():
     with patch.object(email_message, "get_settings", email_settings):
         payload = asyncio.run(
-            BuildController.downloads.fn(None, provide_public_base_url())
+            BuildController.downloads.fn(
+                None, provide_public_base_url(), provide_releases_repo()
+            )
         )
     assert [platform["key"] for platform in payload["platforms"]] == [
         key for key, _ in PLATFORMS
@@ -114,14 +116,22 @@ def test_the_downloads_route_answers_the_shared_payload():
     assert payload["install_command"].startswith("curl -fsSL ")
 
 
-def test_the_downloads_route_is_handed_its_origin_by_the_shared_provider():
-    """C3 gives /app/downloads no parameters. An origin the handler declares but the
-    app does not provide would silently become a query parameter, so this asserts the
-    registered route resolves it as a dependency — from the one shared provider."""
+def test_the_downloads_route_is_handed_both_halves_of_its_payload_by_providers():
+    """C3 gives /app/downloads no parameters. A value the handler declares but the app
+    does not provide would silently become a query parameter, so this asserts the
+    registered route resolves both as dependencies — from the two shared providers, so
+    neither handler reaches into the environment itself."""
     app = Litestar(route_handlers=[BuildController], openapi_config=None)
     handler = next(iter(app.route_handler_method_map["/app/downloads"].values()))
-    assert sorted(handler.resolve_dependencies()) == ["public_base_url"]
+    assert sorted(handler.resolve_dependencies()) == [
+        "public_base_url",
+        "releases_repo",
+    ]
     assert (
         BuildController.dependencies["public_base_url"].dependency
         is provide_public_base_url
+    )
+    assert (
+        BuildController.dependencies["releases_repo"].dependency
+        is provide_releases_repo
     )

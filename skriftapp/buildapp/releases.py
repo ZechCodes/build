@@ -9,6 +9,7 @@ URLs of their own; they render what this module returns.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 
 RELEASES_REPO_ENV = "RELEASES_REPO"
@@ -35,6 +36,12 @@ _LATEST_DOWNLOAD = f"{_RELEASES_LATEST}/download/{{name}}"
 def releases_repo(environment: Mapping[str, str]) -> str:
     """The GitHub ``owner/name`` holding the release assets."""
     return environment.get(RELEASES_REPO_ENV, "").strip() or DEFAULT_RELEASES_REPO
+
+
+def provide_releases_repo() -> str:
+    """The dependency every route serving a download URL takes, so no handler reads
+    the environment itself."""
+    return releases_repo(os.environ)
 
 
 def asset_name(key: str) -> str:

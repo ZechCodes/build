@@ -5,6 +5,7 @@ install.sh's uname table names."""
 
 from __future__ import annotations
 
+from buildapp import releases
 from buildapp.releases import (
     CHECKSUMS_ASSET,
     DEFAULT_RELEASES_REPO,
@@ -87,3 +88,11 @@ def test_the_repo_comes_from_the_environment_and_falls_back_to_the_default():
     assert releases_repo({}) == DEFAULT_RELEASES_REPO
     assert releases_repo({RELEASES_REPO_ENV: "  "}) == DEFAULT_RELEASES_REPO
     assert releases_repo({RELEASES_REPO_ENV: " someone/forks "}) == "someone/forks"
+
+
+def test_the_provider_reads_the_repo_from_the_process_environment(monkeypatch):
+    """One resolution of RELEASES_REPO, so no handler reaches into os.environ."""
+    monkeypatch.setenv(releases.RELEASES_REPO_ENV, "someone/forks")
+    assert releases.provide_releases_repo() == "someone/forks"
+    monkeypatch.delenv(releases.RELEASES_REPO_ENV)
+    assert releases.provide_releases_repo() == releases.DEFAULT_RELEASES_REPO

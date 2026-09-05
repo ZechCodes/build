@@ -6,7 +6,6 @@ assets under ``static/assets/`` (js, css, self-hosted fonts). Zero CDN.
 """
 
 import asyncio
-import os
 from pathlib import Path
 
 from litestar import Controller, Request, get
@@ -20,6 +19,7 @@ from buildapp.accounts import account_email
 from buildapp.alpha_membership import is_alpha_member
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_message import provide_public_base_url
+from buildapp.releases import provide_releases_repo
 from buildapp.invite_pages import APP_PATH, invite_only_outcome
 from buildapp.session_auth import login_redirect, require_user, session_user_id
 
@@ -46,6 +46,7 @@ class BuildController(Controller):
     path = "/app"
     dependencies = {
         "public_base_url": Provide(provide_public_base_url, sync_to_thread=False),
+        "releases_repo": Provide(provide_releases_repo, sync_to_thread=False),
     }
 
     @get("/")
@@ -68,12 +69,10 @@ class BuildController(Controller):
         return await self._render_spa(require_user(request), db_session)
 
     @get("/downloads", guards=[build_auth_guard])
-    async def downloads(self, public_base_url: str) -> dict:
+    async def downloads(self, public_base_url: str, releases_repo: str) -> dict:
         """Where an alpha member gets the bridge. Every URL and label comes from
-        ``releases``; this handler only resolves the repo."""
-        return releases.downloads_payload(
-            releases.releases_repo(os.environ), public_base_url
-        )
+        ``releases``; this handler only names the two values it is handed."""
+        return releases.downloads_payload(releases_repo, public_base_url)
 
     @staticmethod
     async def _render_spa(user_id, db_session: AsyncSession) -> Response:

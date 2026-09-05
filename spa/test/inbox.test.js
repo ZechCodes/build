@@ -263,8 +263,14 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(pending.canFinish).toBe(false);
   });
 
+  // The wire's real shape: the row names the run it settles as (`entity_id`)
+  // and the checkout it holds (`checkout_id`, a worktree hash). The run's card
+  // carries both, under its run id.
   it("says what is happening to a card that is already there, rather than adding a second row", () => {
-    const items = mergePendingRows([branch()], [creating({ entity_id: "run-1", state: "discarding", checkout_id: "run-1" })]);
+    const items = mergePendingRows(
+      [branch()],
+      [creating({ entity_id: "run-1", state: "discarding", checkout_id: "wt-1", title: "build/login" })],
+    );
     expect(items).toHaveLength(1);
     const entries = listed(items);
     expect(entries).toHaveLength(1);
@@ -273,10 +279,36 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(entries[0].state).toBe("working");
   });
 
-  it("leaves the record alone once it has landed under the placeholder's id", () => {
-    const landed = branch({ run_id: null, worktree_id: "wt-new", branch: "build/mascot-spike" });
-    const items = mergePendingRows([landed], [creating()]);
-    expect(items).toEqual([landed]);
+  // An adopt leaves the run on the board and publishes a pending row for it, so
+  // both are in the same snapshot. Two rows under one key is one row painted
+  // twice, which loses the state the second write did not carry.
+  it("keeps a run whose checkout is being claimed to one row", () => {
+    const items = mergePendingRows(
+      [branch()],
+      [creating({ entity_id: "run-1", checkout_id: "wt-1", implements: "iss-1", title: "build/login" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("run-1");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  // A planning workspace holds no checkout — it is written against the primary
+  // one — so its row names the issue and nothing else. The issue card is
+  // already listed, and that is where it is said.
+  it("says on an issue's own card that its planning workspace is being cut", () => {
+    const items = mergePendingRows(
+      [issue()],
+      [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("iss-1");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].state).toBe("working");
   });
 
   it("reads a state it has never heard of as work in flight, not as nothing", () => {

@@ -1946,23 +1946,35 @@ row it just asked for a session for, and `agentIsUp` is what keeps a message
 sent behind that press from starting a second harness. The vocabulary stays in
 the agent's own module; the overlay stays general.
 
-A reply the browser stopped waiting for is not a refusal, and the rejection now
-says which it is (`rpcTimedOut`, core/session.js; the 12 s timer is unchanged).
-Three verbs read it: `worktree.create` and `branch.dispatch` shut their form and
-let the board carry the work, and `issue.implement_*` refreshes the issue rather
-than reporting a refusal the daemon never made. A reply that lands but names
+A reply the browser stopped waiting for is not a refusal. The rejection says
+which it is (`rpcTimedOut`) and `replyOrNothing(pending)` is the behaviour, both
+in core/session.js beside the 12 s timer, which is unchanged: the reply, or null
+when the timer ended the call, and a refusal still raises. One rule, one place —
+every caller was writing it out again. Four verbs read it: `worktree.create` and
+`branch.dispatch` shut their form and let the board carry the work,
+`issue.implement_*` refreshes the issue rather than reporting a refusal the
+daemon never made, and `agent.start` — on the post's wake and on Resume — leaves
+the row wearing `AGENT_STARTING` rather than reverting it, so nothing paints a
+failure over a harness the daemon is spawning. A reply that lands but names
 nothing is the same story told by the payload instead of by the timer, and reads
 the same way: `agent.start` takes the agent off the entity's next answer, and
 `worktree.create` opens nothing and leaves the row where it stands.
 
 The `Creating` row is the daemon's, not the client's: `board.list`'s `pending`
 carries one row per lifecycle verb in flight, published before the git runs, and
-`mergePendingRows` (core/inbox.js) merges it into the feed — on its own under
-the id the record will settle as, or onto the card the verb is acting on
-(`checkout_id`). So `createBranch` needs no provisional row of its own and the
-placeholder needs no `rekey`: there is one row, and the record replaces it in
-place. A row with a verb in flight opens nowhere and offers no verbs; every one
-of them would race the verb already running.
+`mergePendingRows` (core/inbox.js) merges it into the feed. A row names two ids
+and a listed card may carry either — the record it will settle as (`entity_id`)
+or the checkout it holds (`checkout_id`, an `external_worktree_id` hash, while
+the card is keyed by its run id) — so a card matching either is the card the verb
+is running on and wears the state; only a row matching no card stands on its own.
+An adopt that leaves its run on the board and a `plan.create` that names only its
+issue both settle onto the card that is already there, which is what keeps two
+entries from patching one key. So `createBranch` needs no provisional row of its
+own and the placeholder needs no `rekey`: there is one row, and the record
+replaces it in place — `apply_lifecycle` releases the row and runs the epilogue
+under one acquisition, so no snapshot ever carries both. A row with a verb in
+flight opens nowhere and offers no verbs; every one of them would race the verb
+already running.
 
 The spec's load test, `bridge/tests/concurrency_load.rs`, is the only one that
 measures a number.

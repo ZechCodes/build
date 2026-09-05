@@ -217,6 +217,10 @@ describe("the inbox rail", () => {
     expect(settled.querySelector(".inbox-facts").textContent).not.toBe("Creating…");
   });
 
+  // The wire's real shape: the row names the run it settles as and the checkout
+  // it holds, and the run's card is listed under its run id. Both ids have to
+  // find the one card, or the placeholder is pushed as a second row under the
+  // same key and the two overwrite each other.
   it("says on the card itself that its checkout is being removed", () => {
     feed([branchRow()], [
       {
@@ -226,13 +230,56 @@ describe("the inbox rail", () => {
         title: "build/login",
         branch: "build/login",
         state: "discarding",
-        checkout_id: "run-1",
+        checkout_id: "wt-1",
         implements: null,
         pending_seconds: 0,
       },
     ]);
     expect(rows()).toHaveLength(1);
     expect(rowFor("run-1").querySelector(".inbox-facts").textContent).toBe("Removing…");
+    expect(rowFor("run-1").querySelector("[data-menu]")).toBeNull();
+  });
+
+  // An implement that adopts a checkout the run already owns leaves the run on
+  // the board AND publishes a row for it, so one snapshot carries both.
+  it("keeps a run whose checkout is being claimed to one row", () => {
+    feed([branchRow()], [
+      {
+        entity_id: "run-1",
+        project_id: "p1",
+        project: "relaydb",
+        title: "build/login",
+        branch: "build/login",
+        state: "creating",
+        checkout_id: "wt-1",
+        implements: "iss-1",
+        pending_seconds: 0,
+      },
+    ]);
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("run-1").querySelector(".inbox-facts").textContent).toBe("Creating…");
+    expect(rowFor("run-1").querySelector("[data-menu]")).toBeNull();
+  });
+
+  // A planning workspace is cut against the primary checkout, so its row holds
+  // no checkout at all — the issue's own card is where it is said.
+  it("says on an issue's own card that its planning workspace is being cut", () => {
+    feed([issueRow()], [
+      {
+        entity_id: "iss-1",
+        project_id: "p2",
+        project: "dotfiles",
+        title: "Rework the prompt cache",
+        branch: null,
+        state: "creating",
+        checkout_id: null,
+        implements: null,
+        pending_seconds: 0,
+      },
+    ]);
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("iss-1").querySelector(".inbox-facts").textContent).toBe("Creating…");
+    expect(rowFor("iss-1").querySelector("[data-menu]")).toBeNull();
   });
 
   it("never paints work that is over", () => {

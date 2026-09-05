@@ -126,17 +126,24 @@ const pendingItem = (row) => ({
  * The board's rows for the lifecycle verbs running right now, merged into the
  * rows the daemon already has.
  *
- * A verb acting on a card that is already there (`checkout_id` — an adopt, a
- * discard) is said ON that card: one piece of work, one row. A verb making a
- * card that is not there yet stands on its own until its record lands under the
- * same id, at which point the record is the row and the placeholder is gone.
+ * A row names two ids and a card may be listed under either: the record it will
+ * settle as (`entity_id` — a run, an issue) and the checkout it holds
+ * (`checkout_id`, a worktree hash). An adopt leaves the run on the board while
+ * it claims the checkout, and a planning workspace holds no checkout at all, so
+ * a card matching either id is the card this verb is running on and is said ON —
+ * one piece of work, one row. A verb making a card that is not there yet stands
+ * on its own until its record lands under the same id, at which point the record
+ * is the row and the placeholder is gone.
  */
 export function mergePendingRows(items = [], pending = []) {
   const rows = [...(items || [])];
   for (const row of pending || []) {
-    const standing = rows.findIndex((item) => entityIdOf(item) === (row.checkout_id || row.entity_id));
+    const standing = rows.findIndex((item) => {
+      const id = entityIdOf(item);
+      return id !== null && (id === row.entity_id || id === row.checkout_id);
+    });
     if (standing < 0) rows.push(pendingItem(row));
-    else if (row.checkout_id) rows[standing] = { ...rows[standing], pending: row.state, working: true };
+    else rows[standing] = { ...rows[standing], pending: row.state, working: true };
   }
   return rows;
 }

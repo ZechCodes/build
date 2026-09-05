@@ -9145,10 +9145,16 @@ impl AppState {
         let text = self.captures[&capture_id].text.clone();
         let rationale = Some("rerouted by the user".to_string());
         match kind.as_str() {
-            "issue" => {
-                self.route_to_issue(&capture_id, &project_id, &text, rationale)?;
-                self.capture_get(&json!({ "capture_id": capture_id }))
-            }
+            // The planning session's disk runs through the drain, so the
+            // capture this answers with is read once the session is real — in
+            // the apply phase, which is where the route is written down.
+            "issue" => self.route_to_issue(
+                &capture_id,
+                &project_id,
+                &text,
+                rationale,
+                capture_after_routing,
+            ),
             // The dispatch's git runs through the drain, so the row this answers
             // with is read once the branch is real — in the apply phase, which
             // is where the route is written down.
@@ -9431,7 +9437,13 @@ impl AppState {
                 project_id,
                 goal,
                 rationale,
-            } => self.route_to_issue(capture_id, &project_id, &goal, rationale),
+            } => self.route_to_issue(
+                capture_id,
+                &project_id,
+                &goal,
+                rationale,
+                the_dispatch_itself,
+            ),
             BridgeAction::DispatchBranch {
                 project_id,
                 branch,
@@ -9612,6 +9624,7 @@ impl AppState {
         project_id: &str,
         goal: &str,
         rationale: Option<String>,
+        answer: fn(&crate::capture::Capture, Value) -> Value,
     ) -> Result<Value, String> {
         let issue = self.plan_create(&json!({
             "project_id": project_id,
@@ -9633,65 +9646,29 @@ impl AppState {
             },
             &issue_id,
         )?;
-        let planning = self.start_routed_issue_agent(&issue_id);
-        Ok(json!({
-            "issue_id": issue_id,
-            "project_id": project_id,
-            // No branch was cut: that is what a router means by dispatched.
-            "dispatched": false,
-            // An agent IS reading the capture, on the primary checkout.
-            "planning": planning,
-        }))
-    }
-
-    /// Start the planning session for an issue a capture was just routed to,
-    /// and say whether one is now running for it.
-    ///
-    /// The same machinery the first `thread.post` to an inert issue uses
-    /// ([`start_inert_plan`]), for the same reason: the words are on the
-    /// conversation and somebody has to read them. The agent works in the
-    /// primary checkout — issues plan on main, they do not own a worktree.
-    ///
-    /// Never fatal to the route. The capture is already recorded as routed and
-    /// the issue already holds the text, so a session that could not start
-    /// leaves an inert, re-startable issue rather than losing the destination —
-    /// exactly what `thread.post` leaves behind when a dispatch fails.
-    ///
-    /// [`start_inert_plan`]: AppState::start_inert_plan
-    fn start_routed_issue_agent(&mut self, issue_id: &str) -> bool {
-        let Some(active) = self.plans.get(issue_id) else {
-            eprintln!("route: {issue_id} vanished before its agent could start");
-            return false;
+        // The planning agent works in the primary checkout — issues plan on
+        // main, they do not own a worktree — and the workspace it needs there
+        // is disk, so it goes to the drain like every other verb's.
+        //
+        // Never fatal to the route: the capture is recorded and the issue holds
+        // the text, so a session that could not start leaves an inert,
+        // re-startable issue rather than losing the destination.
+        let routed = RoutedIssueDrafting {
+            issue_id: issue_id.clone(),
+            project_id: project_id.to_string(),
+            capture_id: capture_id.to_string(),
+            answer,
         };
-        // Already has a session: this is a first turn, not a nudge, and a
-        // second harness in the same checkout would report `done` twice.
-        if active.workspace.is_some() {
-            return true;
-        }
-        let agent_id = active.agents.sole().id.clone();
-        let Ok(checkout) = self.primary_checkout_of(issue_id) else {
-            eprintln!("route: {issue_id} belongs to no project with a checkout");
-            return false;
-        };
-        if self.agent_is_on_its_way(&checkout, &agent_id) {
-            return true;
-        }
-        let mut active = match self.take_plan(issue_id) {
-            Ok(active) => active,
+        match self.reserve_plan_drafting(&issue_id, Box::new(routed.clone())) {
+            Ok(Some(job)) => Ok(self.defer_job(job)),
+            // Nothing to start: a session is already open for this issue, or
+            // one is already on its way to the same checkout.
+            Ok(None) => routed.reply(self, true),
             Err(error) => {
-                eprintln!("route: could not open {issue_id} to start it: {error}");
-                return false;
+                eprintln!("route: {issue_id} could not start planning: {error}");
+                routed.reply(self, false)
             }
-        };
-        let started = self.start_inert_plan(issue_id, &mut active);
-        let persisted = self.finish_plan_mutation(issue_id.to_string(), active);
-        if let Err(error) = &started {
-            eprintln!("route: {issue_id} could not start planning: {error}");
         }
-        if let Err(error) = persisted {
-            eprintln!("route: could not record {issue_id}: {error}");
-        }
-        started.is_ok()
     }
 
     /// The confident destination: an agent on a branch, working. One call, and
@@ -10024,16 +10001,21 @@ impl AppState {
             checkout_id: None,
             since: std::time::Instant::now(),
         };
+        let store = self.require_store()?.clone();
         self.defer_lifecycle(
             row,
             Box::new(OpenPlanWorkspace {
                 project,
-                project_id,
-                plan_id,
-                goal,
-                base_branch: base,
-                model_choice,
-                detail: thread_detail(params),
+                plan_id: plan_id.clone(),
+                store,
+                opening: Box::new(IssueOpened {
+                    project_id,
+                    plan_id,
+                    goal,
+                    base_branch: base,
+                    model_choice,
+                    detail: thread_detail(params),
+                }),
             }),
         )
     }
@@ -10047,14 +10029,17 @@ impl AppState {
     /// project drafts overwrites. Removing either is filesystem work, which an
     /// epilogue may not do; neither is a checkout or a branch, so no board is
     /// missing anything.
-    fn open_planned_issue(&mut self, opened: PlanWorkspaceOpened) -> Result<Value, String> {
-        let PlanWorkspaceOpened {
+    fn open_planned_issue(
+        &mut self,
+        opened: IssueOpened,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let IssueOpened {
             project_id,
             plan_id,
             goal,
             base_branch,
             model_choice,
-            workspace,
             detail,
         } = opened;
         let project = self.orch_for(&project_id)?.clone();
@@ -10074,23 +10059,107 @@ impl AppState {
         Ok(view)
     }
 
-    /// Start the planning session an inert issue has never had.
+    /// Reserve the workspace an inert Issue's first planning session needs.
     ///
-    /// Errors come back rather than being raised, so the caller can still
-    /// persist the record it is holding: a dispatch that could not start leaves
-    /// the issue inert and re-startable, with the message that tried on its
-    /// thread.
-    fn start_inert_plan(&mut self, issue_id: &str, active: &mut ActivePlan) -> Result<(), String> {
-        let project_id = self.project_of(issue_id)?;
-        let turn = self
-            .orch_for(&project_id)?
-            .start_plan_drafting(active)
-            .map_err(err)?;
-        self.queue_plan_turn(issue_id, active, turn);
-        if self.qa_agent {
-            self.qa_simulate_plan(&project_id, active)?;
+    /// `Ok(None)` is "there is nothing to start": the session is already
+    /// running, or another caller's spawn is already on its way to the same
+    /// checkout. `Err` is "no session can start here at all" — the caller
+    /// decides whether that is fatal, because a routed capture keeps its
+    /// destination either way.
+    ///
+    /// The Issue must be in its map: this reads the record it is about to
+    /// reserve a row for.
+    fn reserve_plan_drafting(
+        &mut self,
+        issue_id: &str,
+        opening: Box<dyn PlanSessionOpening>,
+    ) -> Result<Option<WorktreeLifecycleJob>, String> {
+        let active = self
+            .plans
+            .get(issue_id)
+            .ok_or_else(|| format!("unknown issue_id: {issue_id}"))?;
+        // Already has a session: this is a first turn, not a nudge, and a
+        // second harness in the same checkout would report `done` twice.
+        if active.workspace.is_some() {
+            return Ok(None);
         }
-        Ok(())
+        crate::plan::plan_transition(&active.plan.state, crate::plan::PlanEvent::Dispatch)
+            .map_err(|error| error.to_string())?;
+        let title = active.plan.goal.clone();
+        let agent_id = active.agents.sole().id.clone();
+        let checkout = self.primary_checkout_of(issue_id)?;
+        if self.agent_is_on_its_way(&checkout, &agent_id) {
+            return Ok(None);
+        }
+        self.reserve_plan_workspace(issue_id, title, opening)
+            .map(Some)
+    }
+
+    /// Reserve the workspace one door to an Issue's planning agent needs, and
+    /// build the job that writes it. The row stands on the Issue itself: what
+    /// it holds is the one workspace every door writes into, so a second door
+    /// waits rather than racing this one's `.build/` config.
+    fn reserve_plan_workspace(
+        &mut self,
+        issue_id: &str,
+        title: String,
+        opening: Box<dyn PlanSessionOpening>,
+    ) -> Result<WorktreeLifecycleJob, String> {
+        let project_id = self.project_of(issue_id)?;
+        let project = self.orch_for(&project_id)?.clone();
+        let store = self.require_store()?.clone();
+        let row = PendingRow {
+            entity_id: issue_id.to_string(),
+            project_id,
+            title,
+            // A plan cuts no branch and claims no checkout: it is written
+            // against the primary one, so nothing else can collide with it.
+            branch: None,
+            state: PendingState::Creating,
+            checkout_id: None,
+            since: std::time::Instant::now(),
+        };
+        self.reserve_lifecycle(
+            row,
+            Box::new(OpenPlanWorkspace {
+                project,
+                plan_id: issue_id.to_string(),
+                store,
+                opening,
+            }),
+        )
+    }
+
+    /// Start the planning session an inert Issue has never had, now that its
+    /// workspace is on disk: the dispatch reads everything said to it so far,
+    /// and the turn that spawns the session is queued.
+    ///
+    /// The record is persisted either way — a dispatch that could not start
+    /// leaves the Issue inert and re-startable, with what was said still on its
+    /// thread.
+    fn open_inert_plan_drafting(
+        &mut self,
+        issue_id: &str,
+        workspace: crate::orchestrator::PlanWorkspace,
+        detail: ThreadDetail,
+    ) -> Result<Value, String> {
+        let project_id = self.project_of(issue_id)?;
+        let mut active = self.take_plan(issue_id)?;
+        let started = (|| -> Result<(), String> {
+            let turn = self
+                .orch_for(&project_id)?
+                .open_plan_drafting(&mut active, workspace)
+                .map_err(err)?;
+            self.queue_plan_turn(issue_id, &active, turn);
+            if self.qa_agent {
+                self.qa_simulate_plan(&project_id, &mut active)?;
+            }
+            Ok(())
+        })();
+        let (view, persisted) = self.answer_plan_mutation(issue_id.to_string(), active, detail);
+        started?;
+        persisted?;
+        Ok(view)
     }
 
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -11044,22 +11113,26 @@ impl AppState {
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
         append_user_thread_messages(active.agents.sole_thread_mut(), messages);
-        let outcome = (|| -> Result<(), String> {
-            let store = self.require_store()?;
-            let turn = self
-                .orch_for(&project_id)?
-                .send_plan_notes(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
-                .map_err(err)?;
-            self.queue_plan_turn(&plan_id, &active, turn);
-            if self.qa_agent {
-                self.qa_simulate_plan(&project_id, &mut active)?;
-            }
-            Ok(())
-        })();
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
-        outcome?;
+        // Pure legality first, before any disk is asked for — and the notes are
+        // durable either way: an illegal revise leaves what the reviewer wrote
+        // on the conversation.
+        let gated =
+            crate::plan::plan_transition(&active.plan.state, crate::plan::PlanEvent::SendNotes)
+                .map_err(|error| error.to_string());
+        let title = active.plan.goal.clone();
+        let persisted = self.finish_plan_mutation(plan_id.clone(), active);
+        gated?;
         persisted?;
-        Ok(view)
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            title,
+            Box::new(PlanNotesSent {
+                plan_id: plan_id.clone(),
+                project_id,
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
     }
 
     fn plan_stage_approve(&mut self, params: &Value) -> Result<Value, String> {
@@ -11131,23 +11204,22 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&plan_id)?;
-        let mut active = self.take_plan(&plan_id)?;
-        let outcome = (|| -> Result<(), String> {
-            let store = self.require_store()?;
-            let turn = self
-                .orch_for(&project_id)?
-                .send_plan_stage_notes(&mut active, store, &stage_id)
-                .map_err(err)?;
-            self.queue_plan_turn(&plan_id, &active, turn);
-            if self.qa_agent {
-                self.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
-            }
-            Ok(())
-        })();
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
-        outcome?;
-        persisted?;
-        Ok(view)
+        let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
+        // Pure legality first — nothing is scaffolded for a revise that will be
+        // refused, and this changes nothing to have to put back.
+        crate::orchestrator::gate_plan_stage_notes(active, &stage_id).map_err(err)?;
+        let title = active.plan.goal.clone();
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            title,
+            Box::new(StageNotesSent {
+                plan_id: plan_id.clone(),
+                project_id,
+                stage_id,
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
     }
 
     /// A freeform human message to the plan's agent.
@@ -11163,26 +11235,24 @@ impl AppState {
             .agents
             .sole_thread_mut()
             .post_user(&message, None, now_rfc3339());
-        let outcome = (|| -> Result<(), String> {
-            let store = self.require_store()?;
-            let turn = self
-                .orch_for(&project_id)?
-                .message_plan(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
-                .map_err(err)?;
-            self.queue_plan_turn(&plan_id, &active, turn);
-            if self.qa_agent && active.plan.state == PlanState::Drafting {
-                if active.revising_stage_id.is_some() {
-                    self.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
-                } else {
-                    self.qa_simulate_plan(&project_id, &mut active)?;
-                }
-            }
-            Ok(())
-        })();
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
-        outcome?;
+        // Pure legality first, and the message is durable either way: a plan
+        // that refuses the freeform channel still heard what was said.
+        let gated = crate::orchestrator::gate_plan_message(&active, NEW_THREAD_MESSAGES_PROMPT)
+            .map_err(err);
+        let title = active.plan.goal.clone();
+        let persisted = self.finish_plan_mutation(plan_id.clone(), active);
+        gated?;
         persisted?;
-        Ok(view)
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            title,
+            Box::new(PlanMessaged {
+                plan_id: plan_id.clone(),
+                project_id,
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
     }
 
     fn plan_abandon(&mut self, params: &Value) -> Result<Value, String> {
@@ -11993,10 +12063,11 @@ impl AppState {
             let mut parked_implementation = None;
             // An inert issue has no session at all: this message is what starts
             // one. The dispatch reads everything said so far, so the planning
-            // agent opens on the goal AND on what the user just added.
-            let mut started_planning = Ok(());
-            if active.plan.state == PlanState::Created && active.workspace.is_none() {
-                started_planning = self.start_inert_plan(&entity_id, &mut active);
+            // agent opens on the goal AND on what the user just added — but its
+            // workspace is disk, so it is reserved below, once the record this
+            // frame is holding is back in its map.
+            let inert = active.plan.state == PlanState::Created && active.workspace.is_none();
+            if inert {
             } else if let Some(implementation) = implementation_target {
                 // The Issue owns the conversation, but its live implementation
                 // owns the checkout/PTY. Addressing thread.post to the Issue
@@ -12035,11 +12106,26 @@ impl AppState {
                 );
             }
             let (view, persisted) =
-                self.answer_plan_mutation(entity_id, active, thread_detail(params));
+                self.answer_plan_mutation(entity_id.clone(), active, thread_detail(params));
+            persisted?;
             // The message is durable either way: a dispatch that could not start
             // leaves the issue inert, with what was said still on its thread.
-            started_planning?;
-            persisted?;
+            if inert {
+                let started = self.reserve_plan_drafting(
+                    &entity_id,
+                    Box::new(PlanDraftingStarted {
+                        issue_id: entity_id.clone(),
+                        detail: thread_detail(params),
+                        posted_sequence,
+                    }),
+                )?;
+                if let Some(job) = started {
+                    // The Issue's own view comes back from the apply phase, so
+                    // the composer hears about the session that is starting
+                    // rather than about the one that was not there yet.
+                    return Ok(self.defer_job(job));
+                }
+            }
             if let Some(run_id) = parked_implementation {
                 let mut run = self.take_run(&run_id)?;
                 run.run
@@ -16881,21 +16967,267 @@ impl LifecycleEpilogue for ImplementationRefused {
     }
 }
 
-/// `plan.create`'s apply half. The planning workspace is written; what is left
-/// is the Issue that works in it.
+/// One door to an Issue's planning agent, waiting on the workspace it works
+/// in: `plan.create`'s first dispatch, the first message to an inert Issue, a
+/// batch of notes, one stage's comments, a freeform message.
+///
+/// Every door is gated before any disk work and settled here, after it — so
+/// the plan event, the prompt and the queued turn are the only things a door
+/// writes for itself. The disk is [`OpenPlanWorkspace`]'s, once.
+///
+/// [`OpenPlanWorkspace`]: crate::lifecycle::OpenPlanWorkspace
+pub trait PlanSessionOpening: Send {
+    /// The workspace is on disk: apply the event this door was gated on,
+    /// render the prompt, queue the turn, and answer whoever asked.
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String>;
+
+    /// The workspace could not be written. A refusal is the caller's error for
+    /// every door that asked for a session; a door that had already reached its
+    /// destination (a routed capture) says so instead and overrides this.
+    fn refused(self: Box<Self>, _state: &mut AppState, error: String) -> Result<Value, String> {
+        Err(error)
+    }
+}
+
+/// The planning workspace is written; what is left is the door that asked for
+/// it.
 pub struct PlanWorkspaceOpened {
-    pub project_id: String,
-    pub plan_id: String,
-    pub goal: String,
-    pub base_branch: String,
-    pub model_choice: ModelChoice,
     pub workspace: crate::orchestrator::PlanWorkspace,
-    pub detail: ThreadDetail,
+    pub opening: Box<dyn PlanSessionOpening>,
 }
 
 impl LifecycleEpilogue for PlanWorkspaceOpened {
     fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        state.open_planned_issue(*self)
+        self.opening.open(state, self.workspace)
+    }
+}
+
+/// The planning workspace could not be written. What that leaves behind is the
+/// door's own business, so it comes back as an epilogue rather than an error.
+pub struct PlanWorkspaceRefused {
+    pub error: String,
+    pub opening: Box<dyn PlanSessionOpening>,
+}
+
+impl LifecycleEpilogue for PlanWorkspaceRefused {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        self.opening.refused(state, self.error)
+    }
+}
+
+/// `plan.create` asked: the Issue's record, its first turn, and the view the
+/// caller wanted.
+struct IssueOpened {
+    project_id: String,
+    plan_id: String,
+    goal: String,
+    base_branch: String,
+    model_choice: ModelChoice,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for IssueOpened {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        state.open_planned_issue(*self, workspace)
+    }
+}
+
+/// The first message to an inert Issue asked: the session it never had, and the
+/// Issue's own view — with the sequence the message landed at, which is what
+/// the composer is waiting for.
+struct PlanDraftingStarted {
+    issue_id: String,
+    detail: ThreadDetail,
+    posted_sequence: Option<u64>,
+}
+
+impl PlanSessionOpening for PlanDraftingStarted {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let view = state.open_inert_plan_drafting(&self.issue_id, workspace, self.detail)?;
+        Ok(with_posted_sequence(view, self.posted_sequence))
+    }
+}
+
+/// A router or a reroute asked, on its way to a destination it has already
+/// reached: the capture is routed and the Issue holds the text whatever happens
+/// here, so a session that could not start says so and never fails the route.
+#[derive(Clone)]
+struct RoutedIssueDrafting {
+    issue_id: String,
+    project_id: String,
+    capture_id: String,
+    answer: fn(&crate::capture::Capture, Value) -> Value,
+}
+
+impl RoutedIssueDrafting {
+    /// What the route answers with: the capture as it now stands, or the
+    /// destination itself, and whether an agent is reading it.
+    fn reply(&self, state: &AppState, planning: bool) -> Result<Value, String> {
+        let capture = state
+            .captures
+            .get(&self.capture_id)
+            .ok_or("the capture went while its issue was being opened")?;
+        Ok((self.answer)(
+            capture,
+            json!({
+                "issue_id": self.issue_id,
+                "project_id": self.project_id,
+                // No branch was cut: that is what a router means by dispatched.
+                "dispatched": false,
+                // An agent IS reading the capture, on the primary checkout.
+                "planning": planning,
+            }),
+        ))
+    }
+}
+
+impl PlanSessionOpening for RoutedIssueDrafting {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let started =
+            state.open_inert_plan_drafting(&self.issue_id, workspace, ThreadDetail::Digest);
+        if let Err(error) = &started {
+            eprintln!("route: {} could not start planning: {error}", self.issue_id);
+        }
+        self.reply(state, started.is_ok())
+    }
+
+    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> Result<Value, String> {
+        eprintln!("route: {} could not start planning: {error}", self.issue_id);
+        self.reply(state, false)
+    }
+}
+
+/// A batch of plan notes asked: the revision session they go to.
+struct PlanNotesSent {
+    plan_id: String,
+    project_id: String,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for PlanNotesSent {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let PlanNotesSent {
+            plan_id,
+            project_id,
+            detail,
+        } = *self;
+        let mut active = state.take_plan(&plan_id)?;
+        let outcome = (|| -> Result<(), String> {
+            let turn = state
+                .orch_for(&project_id)?
+                .open_plan_notes(&mut active, workspace, NEW_THREAD_MESSAGES_PROMPT)
+                .map_err(err)?;
+            state.queue_plan_turn(&plan_id, &active, turn);
+            if state.qa_agent {
+                state.qa_simulate_plan(&project_id, &mut active)?;
+            }
+            Ok(())
+        })();
+        let (view, persisted) = state.answer_plan_mutation(plan_id, active, detail);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+}
+
+/// One stage's open comments asked: the revision session they are rendered
+/// into.
+struct StageNotesSent {
+    plan_id: String,
+    project_id: String,
+    stage_id: String,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for StageNotesSent {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let StageNotesSent {
+            plan_id,
+            project_id,
+            stage_id,
+            detail,
+        } = *self;
+        let mut active = state.take_plan(&plan_id)?;
+        let outcome = (|| -> Result<(), String> {
+            let turn = state
+                .orch_for(&project_id)?
+                .open_plan_stage_notes(&mut active, workspace, &stage_id)
+                .map_err(err)?;
+            state.queue_plan_turn(&plan_id, &active, turn);
+            if state.qa_agent {
+                state.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
+            }
+            Ok(())
+        })();
+        let (view, persisted) = state.answer_plan_mutation(plan_id, active, detail);
+        outcome?;
+        persisted?;
+        Ok(view)
+    }
+}
+
+/// A freeform message asked: the session that hears it, drafting or resumed.
+struct PlanMessaged {
+    plan_id: String,
+    project_id: String,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for PlanMessaged {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let PlanMessaged {
+            plan_id,
+            project_id,
+            detail,
+        } = *self;
+        let mut active = state.take_plan(&plan_id)?;
+        let outcome = (|| -> Result<(), String> {
+            let turn = state
+                .orch_for(&project_id)?
+                .open_plan_message(&mut active, workspace, NEW_THREAD_MESSAGES_PROMPT)
+                .map_err(err)?;
+            state.queue_plan_turn(&plan_id, &active, turn);
+            if state.qa_agent && active.plan.state == PlanState::Drafting {
+                if active.revising_stage_id.is_some() {
+                    state.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
+                } else {
+                    state.qa_simulate_plan(&project_id, &mut active)?;
+                }
+            }
+            Ok(())
+        })();
+        let (view, persisted) = state.answer_plan_mutation(plan_id, active, detail);
+        outcome?;
+        persisted?;
+        Ok(view)
     }
 }
 
@@ -33539,7 +33871,8 @@ mod tests {
 
     fn approved_side_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
         let mut plan = orch.create_plan(PlanId::new(id), "side goal", "main", Default::default());
-        orch.start_plan_drafting(&mut plan).unwrap();
+        let workspace = orch.prepare_plan_workspace(id, store).unwrap();
+        orch.open_plan_drafting(&mut plan, workspace).unwrap();
         let docs_dir = plan
             .workspace
             .as_ref()
@@ -36168,7 +36501,14 @@ mod tests {
             "main",
             Default::default(),
         );
-        side.start_plan_drafting(&mut active).unwrap();
+        let store = state
+            .lock()
+            .unwrap()
+            .require_store()
+            .expect("the daemon has a store")
+            .clone();
+        let workspace = side.prepare_plan_workspace(plan_id, &store).unwrap();
+        side.open_plan_drafting(&mut active, workspace).unwrap();
         let mut s = state.lock().unwrap();
         let project_id = s.projects[0].id.clone();
         s.entity_project.insert(plan_id.to_string(), project_id);
@@ -44553,6 +44893,168 @@ mod tests {
         assert_eq!(filed["result"]["state"], "plan_review", "{filed:?}");
     }
 
+    /// Every other door to an Issue's planning agent writes the same workspace,
+    /// so every other door writes it off the lock too. A stage revision is the
+    /// one that costs most — the docs are re-materialized into the scratch dir
+    /// when the agent is not already working in it.
+    #[test]
+    fn a_stage_revision_writes_its_workspace_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let issue = app.handle(req("plan.create", json!({ "goal": "revise off the lock" })));
+        let issue_id = plan_id_of(&issue);
+        app.handle(req(
+            "plan.comment_add",
+            json!({ "plan_id": issue_id, "stage_id": "first-half", "body": "split further" }),
+        ));
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let revised = frame_on_a_thread(
+            &state,
+            "s-revise",
+            "plan.stage_send_notes",
+            json!({ "plan_id": issue_id, "stage_id": "first-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "plan.stage_send_notes is holding the app mutex through its workspace"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let revised = revised
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the revision answers once its workspace is written");
+        assert_eq!(revised["ok"], true, "{revised:?}");
+        // The QA plan agent answers the revision as soon as it is spawned, so
+        // the stage is back at its gate with the comment resolved.
+        assert_eq!(revised["result"]["state"], "plan_review", "{revised:?}");
+        let app = state.lock().unwrap();
+        assert!(
+            app.pending_rows.is_empty(),
+            "the revision left its row on the board"
+        );
+    }
+
+    /// The same for a batch of plan notes, whose own message is durable before
+    /// any disk is asked for.
+    #[test]
+    fn plan_notes_write_their_workspace_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let issue = app.handle(req(
+            "plan.create",
+            json!({ "goal": "take notes off the lock" }),
+        ));
+        let issue_id = plan_id_of(&issue);
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let noted = frame_on_a_thread(
+            &state,
+            "s-notes",
+            "plan.send_notes",
+            json!({ "plan_id": issue_id, "comments": "tighten step two" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "plan.send_notes is holding the app mutex through its workspace"
+        );
+        {
+            let app = state.lock().unwrap();
+            let thread = &app.plans[&issue_id].agents.sole().thread;
+            assert!(
+                thread.items.iter().any(|item| matches!(
+                    item,
+                    crate::thread::ThreadItem::Message(message)
+                        if message.body.contains("tighten step two")
+                )),
+                "the notes are durable before the workspace they are revised in"
+            );
+        }
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let noted = noted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the notes answer once their workspace is written");
+        assert_eq!(noted["ok"], true, "{noted:?}");
+        assert_eq!(noted["result"]["state"], "plan_review", "{noted:?}");
+    }
+
+    /// And for the first message to an inert Issue, which is what starts the
+    /// session it never had.
+    #[test]
+    fn an_inert_issues_first_message_starts_its_session_off_the_lock() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let issue = app.handle(req(
+            "plan.create",
+            json!({ "goal": "file me inert", "dispatch": false }),
+        ));
+        let issue_id = plan_id_of(&issue);
+        assert_eq!(issue["result"]["state"], "created", "{issue:?}");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let said = frame_on_a_thread(
+            &state,
+            "s-say",
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "and here is what I meant" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "thread.post is holding the app mutex through the workspace it starts"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let said = said
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the message answers once the session it started is open");
+        assert_eq!(said["ok"], true, "{said:?}");
+        assert_eq!(said["result"]["state"], "plan_review", "{said:?}");
+        assert!(
+            said["result"]["posted_sequence"].as_u64().is_some(),
+            "the composer is told where its message landed: {said:?}"
+        );
+    }
+
     /// A git read is the other thing that costs seconds on a big checkout —
     /// `git status` walks the whole tree — and the review surfaces poll it. It
     /// runs off the lock for the same reason a finish does.
@@ -49272,7 +49774,10 @@ mod tests {
         let issue_id = filed["issue_id"].as_str().unwrap().to_string();
 
         // The turn from the route is still queued.
-        state.start_routed_issue_agent(&issue_id);
+        assert!(
+            routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
+            "the issue already has its session"
+        );
         assert_eq!(
             state
                 .pending_agent_turns
@@ -49285,7 +49790,10 @@ mod tests {
 
         // The queue drained and the turn is mid-delivery, its harness coming.
         let mut delivering = state.take_pending_turns();
-        state.start_routed_issue_agent(&issue_id);
+        assert!(
+            routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
+            "a harness already coming up is the one that reads the capture"
+        );
         assert!(
             state.pending_agent_turns.is_empty(),
             "a harness already coming up is the one that reads the capture"
@@ -49296,11 +49804,36 @@ mod tests {
         while let Some((_, mark)) = delivering.next_turn() {
             mark.settle(&mut state);
         }
-        state.start_routed_issue_agent(&issue_id);
+        assert!(
+            routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
+            "an issue with a planning session already open is not dispatched again"
+        );
         assert!(
             state.pending_agent_turns.is_empty(),
             "an issue with a planning session already open is not dispatched again"
         );
+    }
+
+    /// What a route finds when it asks for a planning session a second time.
+    /// `None` is "nothing to start", which is the whole answer this is asked
+    /// for: a job would mean a second harness on the same issue.
+    fn routed_planning_start(
+        state: &mut AppState,
+        issue_id: &str,
+        capture_id: &str,
+    ) -> Option<WorktreeLifecycleJob> {
+        let project_id = state.project_of(issue_id).expect("the issue has a project");
+        state
+            .reserve_plan_drafting(
+                issue_id,
+                Box::new(RoutedIssueDrafting {
+                    issue_id: issue_id.to_string(),
+                    project_id,
+                    capture_id: capture_id.to_string(),
+                    answer: capture_after_routing,
+                }),
+            )
+            .expect("the issue is on the board")
     }
 
     /// The confident destination. `dispatch_branch` is the one-call handoff, so

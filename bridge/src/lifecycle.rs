@@ -388,40 +388,47 @@ impl WorktreeMutation for RestoreImplementationCheckout {
     }
 }
 
-/// `plan.create` with a session — the workspace its planning agent works in:
-/// the scratch docs dir this Issue alone writes into, and the `.build/` config
-/// in the primary checkout that routes the agent's `done` reports back to it.
+/// The workspace an Issue's planning agent works in: the scratch docs dir this
+/// Issue alone writes into, holding the docs as they stand, and the `.build/`
+/// config in the primary checkout that routes the agent's `done` reports back
+/// to it.
 ///
 /// Directories and files, on a checkout that may be huge and on a disk that may
-/// be busy: off the app mutex like every other verb's disk.
+/// be busy: off the app mutex like every other verb's disk. Every door to a
+/// planning agent — the first dispatch, a batch of notes, one stage's comments,
+/// a freeform message, a resume — is this one mutation and its own
+/// [`PlanSessionOpening`](crate::app::PlanSessionOpening), which is what keeps
+/// the workspace off the lock at all of them rather than at one.
 pub struct OpenPlanWorkspace {
     pub project: Orchestrator,
-    pub project_id: String,
     pub plan_id: String,
-    pub goal: String,
-    pub base_branch: String,
-    pub model_choice: ModelChoice,
-    pub detail: crate::thread::ThreadDetail,
+    pub store: crate::store::Store,
+    /// What this door does with the workspace once it is real.
+    pub opening: Box<dyn crate::app::PlanSessionOpening>,
 }
 
 impl WorktreeMutation for OpenPlanWorkspace {
     fn perform(self: Box<Self>) -> Result<Performed, String> {
-        let workspace = self
+        let prepared = self
             .project
-            .prepare_plan_workspace(&self.plan_id)
-            .map_err(|error| error.to_string())?;
+            .prepare_plan_workspace(&self.plan_id, &self.store);
+        let epilogue: Box<dyn LifecycleEpilogue> = match prepared {
+            Ok(workspace) => Box::new(crate::app::PlanWorkspaceOpened {
+                workspace,
+                opening: self.opening,
+            }),
+            // A door decides for itself what an unwritable workspace means —
+            // an error to the caller, or a routed capture that says no agent
+            // is reading it — so the refusal travels as an epilogue.
+            Err(error) => Box::new(crate::app::PlanWorkspaceRefused {
+                error: error.to_string(),
+                opening: self.opening,
+            }),
+        };
         Ok(Performed {
             // No checkout was cut: a plan is written against the primary one.
             change: WorktreeChange::nothing(),
-            epilogue: Box::new(crate::app::PlanWorkspaceOpened {
-                project_id: self.project_id,
-                plan_id: self.plan_id,
-                goal: self.goal,
-                base_branch: self.base_branch,
-                model_choice: self.model_choice,
-                workspace,
-                detail: self.detail,
-            }),
+            epilogue,
         })
     }
 }

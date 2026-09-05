@@ -854,6 +854,58 @@ fn plan_docs_dir_display(active: &ActivePlan) -> String {
         .unwrap_or_default()
 }
 
+/// What a stage revision needs to be legal, and the doc it is against.
+/// Pure, and checked before any disk work: nothing is scaffolded for a
+/// revise that will be refused.
+pub fn gate_plan_stage_notes(
+    active: &ActivePlan,
+    stage_id: &str,
+) -> Result<usize, OrchestratorError> {
+    let index = active
+        .stage_doc_index(stage_id)
+        .map_err(OrchestratorError::Gate)?;
+    plan_transition(&active.plan.state, PlanEvent::SendNotes)
+        .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
+    if active.open_comments_for(stage_id).is_empty() {
+        return Err(OrchestratorError::Gate(format!(
+            "no open comments on stage {stage_id}"
+        )));
+    }
+    Ok(index)
+}
+
+/// What a freeform message costs the plan machine: nothing while it is
+/// drafting, a `Reply` out of a parked state. Pure, and the refusals are
+/// made here — before any disk work, and before the caller has anything to
+/// persist but the message itself.
+pub fn gate_plan_message(
+    active: &ActivePlan,
+    message: &str,
+) -> Result<Option<PlanEvent>, OrchestratorError> {
+    if message.trim().is_empty() {
+        return Err(OrchestratorError::Gate("message must not be empty".into()));
+    }
+    use crate::plan::PlanState as S;
+    let event = match active.plan.state {
+        S::Drafting => None,
+        S::Blocked | S::Failed | S::IdleUnreported | S::Interrupted => Some(PlanEvent::Reply),
+        S::PlanReview => {
+            return Err(OrchestratorError::Gate(
+                "the plan is at the review gate — use send notes there".into(),
+            ))
+        }
+        S::Created | S::Approved | S::Abandoned => {
+            return Err(OrchestratorError::Gate(
+                "no plan agent session to message".into(),
+            ))
+        }
+    };
+    if let Some(event) = event {
+        plan_transition(&active.plan.state, event)?;
+    }
+    Ok(event)
+}
+
 /// Whether a directory holds at least one file, at any depth. A scratch docs
 /// dir that holds nothing is one the canonical docs must be restored into.
 fn dir_holds_a_file(dir: &Path) -> bool {
@@ -1032,30 +1084,20 @@ impl Orchestrator {
         }
     }
 
-    /// Start the planning session for a plan that has none: prepare the
-    /// planning workspace (the primary checkout plus a scratch docs dir),
-    /// scaffold `.build/` there (the MCP config carries the plan id so `done`
-    /// reports route back to this plan), transition out of `Created`, and
-    /// render the turn that spawns it.
+    /// Start the planning session for a plan that has none, once its workspace
+    /// is real: the plan leaves
+    /// `Created`, reads everything the human has said to it so far, and the
+    /// turn that spawns its session is rendered.
     ///
     /// The docs dir is throwaway — the canonical docs land in the store at each
     /// plan/revise `done` — but the session stays warm through the
     /// notes/revision loop (the scope doc's warm-session property).
     ///
-    /// Workspace first, state second: a failed prepare leaves the plan inert
-    /// and re-startable rather than `Drafting` with nothing drafting.
-    pub fn start_plan_drafting(
-        &self,
-        active: &mut ActivePlan,
-    ) -> Result<AgentTurn, OrchestratorError> {
-        let workspace = self.prepare_plan_workspace(&active.plan.id.0)?;
-        self.open_plan_drafting(active, workspace)
-    }
-
-    /// The second half of that, once the workspace is real: the plan leaves
-    /// `Created`, reads everything the human has said to it so far, and the
-    /// turn that spawns its session is rendered. Pure bookkeeping — the disk
-    /// work was [`prepare_plan_workspace`](Self::prepare_plan_workspace).
+    /// Pure bookkeeping: the disk work was
+    /// [`prepare_plan_workspace`](Self::prepare_plan_workspace), and it ran
+    /// with the app mutex released. Workspace first, state second — a failed
+    /// prepare leaves the plan inert and re-startable rather than `Drafting`
+    /// with nothing drafting.
     pub fn open_plan_drafting(
         &self,
         active: &mut ActivePlan,
@@ -1082,18 +1124,37 @@ impl Orchestrator {
         }
     }
 
-    /// Make that workspace real: the scratch docs dir exists, and the primary
-    /// checkout carries this issue's MCP config so its `done` reports route
-    /// back here.
+    /// Make that workspace real, and hold every disk touch a planning workspace
+    /// needs: the scratch docs dir exists, it holds the docs as they stand, and
+    /// the primary checkout carries this issue's MCP config so its `done`
+    /// reports route back here.
+    ///
+    /// An empty docs dir — a restart, a workspace dropped at approve, a plan
+    /// being drafted for the first time — is filled from the canonical store;
+    /// a plan the store holds no docs for simply starts from the empty one. A
+    /// dir the agent is already working in is left exactly as it is:
+    /// re-materializing would overwrite the revision in flight.
+    ///
+    /// This is the only way a planning workspace is written, and it is a
+    /// [`WorktreeMutation`](crate::lifecycle::WorktreeMutation)'s work — every
+    /// door to an Issue's planning agent reaches it with the app mutex
+    /// released.
     pub fn prepare_plan_workspace(
         &self,
         plan_id: &str,
+        store: &Store,
     ) -> Result<PlanWorkspace, OrchestratorError> {
         let workspace = self.plan_workspace(plan_id);
         // The stage-doc directory is made up front so the agent only ever has
         // to write files into a directory that is already there.
         std::fs::create_dir_all(workspace.docs_dir.join(templates::STAGES_DIR))?;
         self.write_build_dir(&workspace.checkout, plan_id)?;
+        if !dir_holds_a_file(&workspace.docs_dir) {
+            match store.materialize_plan_docs(plan_id, &workspace.docs_dir) {
+                Ok(()) | Err(crate::store::StoreError::NoStoredDocs { .. }) => {}
+                Err(error) => return Err(OrchestratorError::Store(error)),
+            }
+        }
         Ok(workspace)
     }
 
@@ -1282,44 +1343,19 @@ impl Orchestrator {
     /// Submit a batch of plan notes: re-plan against them and hand the caller
     /// the turn to deliver. An issue hosts exactly one agent, so the notes
     /// reach the process the reviewer has been reading, never a replacement.
-    /// The workspace is kept through the notes loop; when its scratch docs dir
-    /// was dropped or vanished (interrupted plans), it is re-made with the
-    /// canonical docs materialized from the store first.
-    pub fn send_plan_notes(
+    /// The workspace is kept through the notes loop — this is handed the one
+    /// [`prepare_plan_workspace`](Self::prepare_plan_workspace) just made.
+    pub fn open_plan_notes(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
         notes: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
-        plan_transition(&active.plan.state, PlanEvent::SendNotes)?;
-        self.ensure_plan_workspace(active, store)?;
         active.plan.apply(PlanEvent::SendNotes)?;
+        active.workspace = Some(workspace);
         active.last_error = None;
         let prompt = self.render_plan(&self.templates.revise, active, notes);
         Ok(AgentTurn::posted(prompt, notes, "revise"))
-    }
-
-    /// Make sure the plan has a workspace its agent can work in: the primary
-    /// checkout scaffolded, and a scratch docs dir holding the docs as they
-    /// stand. An empty docs dir (a restart, or a workspace dropped at approve)
-    /// is refilled from the canonical store; a plan the store holds no docs
-    /// for yet simply starts from an empty one. A dir the agent is already
-    /// working in is left exactly as it is — re-materializing would overwrite
-    /// the revision in flight.
-    fn ensure_plan_workspace(
-        &self,
-        active: &mut ActivePlan,
-        store: &Store,
-    ) -> Result<(), OrchestratorError> {
-        let workspace = self.prepare_plan_workspace(&active.plan.id.0)?;
-        if !dir_holds_a_file(&workspace.docs_dir) {
-            match store.materialize_plan_docs(&active.plan.id.0, &workspace.docs_dir) {
-                Ok(()) | Err(crate::store::StoreError::NoStoredDocs { .. }) => {}
-                Err(error) => return Err(OrchestratorError::Store(error)),
-            }
-        }
-        active.workspace = Some(workspace);
-        Ok(())
     }
 
     /// Approve one stage's doc: `Planned` → `Approved`. Pure bookkeeping, no
@@ -1353,26 +1389,15 @@ impl Orchestrator {
     /// the canonical docs materialized when it was torn down/vanished — and
     /// `revising_stage_id` routes the resulting `done(revise)` through
     /// [`consume_plan_stage_revision`](Self::consume_plan_stage_revision).
-    pub fn send_plan_stage_notes(
+    pub fn open_plan_stage_notes(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
         stage_id: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
-        let index = active
-            .stage_doc_index(stage_id)
-            .map_err(OrchestratorError::Gate)?;
-        // Pure legality first — nothing is dispatched for an illegal revise.
-        plan_transition(&active.plan.state, PlanEvent::SendNotes)
-            .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
-        let open = active.open_comments_for(stage_id);
-        if open.is_empty() {
-            return Err(OrchestratorError::Gate(format!(
-                "no open comments on stage {stage_id}"
-            )));
-        }
-        self.ensure_plan_workspace(active, store)?;
+        let index = gate_plan_stage_notes(active, stage_id)?;
         active.plan.apply(PlanEvent::SendNotes)?;
+        active.workspace = Some(workspace);
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
         let prompt = self.render_plan_stage(
@@ -1391,37 +1416,16 @@ impl Orchestrator {
     /// verb, and a freeform channel that moved the plan back to drafting would
     /// bypass the batched-review contract (`thread.post` is how you reach a
     /// plan agent at its gate without moving anything).
-    pub fn message_plan(
+    pub fn open_plan_message(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
         message: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
-        if message.trim().is_empty() {
-            return Err(OrchestratorError::Gate("message must not be empty".into()));
-        }
-        use crate::plan::PlanState as S;
-        let event = match active.plan.state {
-            S::Drafting => None,
-            S::Blocked | S::Failed | S::IdleUnreported | S::Interrupted => Some(PlanEvent::Reply),
-            S::PlanReview => {
-                return Err(OrchestratorError::Gate(
-                    "the plan is at the review gate — use send notes there".into(),
-                ))
-            }
-            S::Created | S::Approved | S::Abandoned => {
-                return Err(OrchestratorError::Gate(
-                    "no plan agent session to message".into(),
-                ))
-            }
-        };
-        // Pure legality first — the caller persists the plan even on Err.
-        if let Some(event) = event {
-            plan_transition(&active.plan.state, event)?;
-        }
-        // An interrupted plan lost its worktree; re-create it (docs
-        // materialized) before the session can run.
-        self.ensure_plan_workspace(active, store)?;
+        let event = gate_plan_message(active, message)?;
+        // An interrupted plan lost its workspace; this is the one that was
+        // re-made for it, docs and all.
+        active.workspace = Some(workspace);
         let prompt = self.render_plan(&self.templates.message, active, message);
         if let Some(event) = event {
             active.plan.apply(event)?;
@@ -1437,13 +1441,13 @@ impl Orchestrator {
     /// a full (re-)plan. The prompt is routed BEFORE the `Reply` transition
     /// commits, so a routing failure never strands the plan out of its
     /// interrupted state (the caller persists it even on Err).
-    pub fn resume_plan(
+    pub fn open_plan_resume(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
     ) -> Result<AgentTurn, OrchestratorError> {
         plan_transition(&active.plan.state, PlanEvent::Reply)?;
-        self.ensure_plan_workspace(active, store)?;
+        active.workspace = Some(workspace);
         let prompt = match active.revising_stage_id.clone() {
             Some(stage_id) => {
                 let index = active
@@ -3332,8 +3336,8 @@ mod tests {
             .clone()
     }
 
-    fn drafting_plan(orch: &Orchestrator, id: &str, goal: &str) -> ActivePlan {
-        drafting_plan_and_turn(orch, id, goal).0
+    fn drafting_plan(orch: &Orchestrator, store: &Store, id: &str, goal: &str) -> ActivePlan {
+        drafting_plan_and_turn(orch, store, id, goal).0
     }
 
     /// Assert both halves of the cold/warm rule on a DISPATCHED turn (one whose
@@ -3392,15 +3396,72 @@ mod tests {
         turn.cold.clone()
     }
 
+    /// A door to an Issue's planning agent, driven the way the app drives it:
+    /// gate it, prepare the workspace (the app does that with its mutex
+    /// released), open the session. One helper per door, so a test says which
+    /// door it is knocking on and nothing else has to know the order.
+    fn start_plan_drafting(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_drafting(active, workspace)
+    }
+
+    fn send_plan_notes(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+        notes: &str,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        plan_transition(&active.plan.state, PlanEvent::SendNotes)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_notes(active, workspace, notes)
+    }
+
+    fn send_plan_stage_notes(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+        stage_id: &str,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        gate_plan_stage_notes(active, stage_id)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_stage_notes(active, workspace, stage_id)
+    }
+
+    fn message_plan(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+        message: &str,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        gate_plan_message(active, message)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_message(active, workspace, message)
+    }
+
+    fn resume_plan(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        plan_transition(&active.plan.state, PlanEvent::Reply)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_resume(active, workspace)
+    }
+
     /// A dispatched plan plus the turn the dispatch wants said to its agent —
     /// the orchestrator's whole output now that it owns no process.
     fn drafting_plan_and_turn(
         orch: &Orchestrator,
+        store: &Store,
         id: &str,
         goal: &str,
     ) -> (ActivePlan, AgentTurn) {
         let mut active = orch.create_plan(PlanId::new(id), goal, "main", Default::default());
-        let turn = orch.start_plan_drafting(&mut active).unwrap();
+        let turn = start_plan_drafting(orch, &mut active, store).unwrap();
         (active, turn)
     }
 
@@ -3416,7 +3477,7 @@ mod tests {
         id: &str,
         goal: &str,
     ) -> ActivePlan {
-        let mut plan = drafting_plan(orch, id, goal);
+        let mut plan = drafting_plan(orch, store, id, goal);
         let worktree_path = plan_docs_dir(&plan);
         std::fs::write(worktree_path.join(".build/plan.md"), "# Plan v1\n").unwrap();
         orch.on_plan_done(
@@ -3457,7 +3518,7 @@ mod tests {
         stage_count: usize,
     ) -> ActivePlan {
         let titles = ["First", "Second", "Third"];
-        let mut plan = drafting_plan(orch, id, "Add greetings");
+        let mut plan = drafting_plan(orch, store, id, "Add greetings");
         let plan_dir = plan_docs_dir(&plan).join(".build/plan");
         std::fs::create_dir_all(&plan_dir).unwrap();
         let mut entries = Vec::new();
@@ -3552,8 +3613,9 @@ mod tests {
     async fn a_drafting_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
 
-        let plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
         assert_eq!(plan.plan.state, PlanState::Drafting);
         let workspace = plan.workspace.as_ref().expect("a planning workspace");
         assert_eq!(
@@ -3592,8 +3654,9 @@ mod tests {
     async fn planning_leaves_the_primary_checkout_clean() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
 
-        let _first = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let _first = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         assert!(
             !repo.join(".build/.gitignore").exists(),
@@ -3615,7 +3678,7 @@ mod tests {
         );
 
         // A second issue writes its own config and repeats no rule.
-        let _second = drafting_plan(&orch, "plan-2", "Add a farewell");
+        let _second = drafting_plan(&orch, &store, "plan-2", "Add a farewell");
         let exclude = std::fs::read_to_string(&exclude_path).unwrap();
         assert_eq!(
             exclude
@@ -3649,7 +3712,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         // The agent reports done but wrote NO docs: the ingest is transactional,
         // so the done errors and the plan never advances with unpersisted docs.
@@ -3682,7 +3745,7 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        let mut blocked = drafting_plan(&orch, "plan-b", "goal b");
+        let mut blocked = drafting_plan(&orch, &store, "plan-b", "goal b");
         orch.on_plan_done(
             &mut blocked,
             &store,
@@ -3692,7 +3755,7 @@ mod tests {
         assert_eq!(blocked.plan.state, PlanState::Blocked);
         assert_eq!(blocked.last_summary.as_deref(), Some("summary"));
 
-        let mut failed = drafting_plan(&orch, "plan-f", "goal f");
+        let mut failed = drafting_plan(&orch, &store, "plan-f", "goal f");
         orch.on_plan_done(
             &mut failed,
             &store,
@@ -3707,7 +3770,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         orch.on_plan_idle(&mut plan).unwrap();
         assert_eq!(plan.plan.state, PlanState::IdleUnreported);
@@ -3736,7 +3799,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         for phase in [DonePhase::Build, DonePhase::Validate] {
             let err = orch
@@ -3773,8 +3836,7 @@ mod tests {
         // appends "third" — the plan side only carries doc review, so a
         // dropped id simply disappears (run progress is never deleted).
         plan.stages[1].state = StageDocState::Approved;
-        orch.send_plan_notes(&mut plan, &store, "restructure")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "restructure").unwrap();
         std::fs::write(
             plan_docs_dir(&plan).join(".build/plan/03-third.md"),
             "# Stage: Third\n",
@@ -3808,9 +3870,7 @@ mod tests {
         let mut plan = plan_in_review(&orch, &store, "plan-1");
         let worktree_path = plan_docs_dir(&plan);
 
-        let turn = orch
-            .send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        let turn = send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(
             plan_docs_dir(&plan),
@@ -3855,8 +3915,7 @@ mod tests {
         // are canonical in the store, so a revision just refills it.
         let docs_dir = plan_docs_dir(&plan);
         std::fs::remove_dir_all(&docs_dir).unwrap();
-        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(plan_docs_dir(&plan), docs_dir, "the same docs dir");
         assert_eq!(
@@ -3878,8 +3937,7 @@ mod tests {
         let docs_dir = plan_docs_dir(&plan);
         std::fs::remove_dir_all(&docs_dir).unwrap();
         plan.workspace = None;
-        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         let workspace = plan.workspace.as_ref().expect("a workspace was remade");
         assert_eq!(workspace.checkout, repo, "still the primary checkout");
@@ -3902,8 +3960,7 @@ mod tests {
 
         let docs_dir = plan_docs_dir(&plan);
         std::fs::write(docs_dir.join(".build/plan.md"), "# Plan being revised\n").unwrap();
-        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
 
         assert_eq!(
             std::fs::read_to_string(docs_dir.join(".build/plan.md")).unwrap(),
@@ -4953,9 +5010,7 @@ mod tests {
         let first_comment = comment_on(&mut plan, "first");
         comment_on(&mut plan, "second");
 
-        let turn = orch
-            .send_plan_stage_notes(&mut plan, &store, "first")
-            .unwrap();
+        let turn = send_plan_stage_notes(&orch, &mut plan, &store, "first").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
         let prompt = posted_turn_halves(&turn, "revise", THREAD_NOTIFICATION);
@@ -5017,17 +5072,15 @@ mod tests {
         let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
 
         // No open comments on the stage.
-        let err = orch
-            .send_plan_stage_notes(&mut plan, &store, "first")
-            .expect_err("no open comments");
+        let err =
+            send_plan_stage_notes(&orch, &mut plan, &store, "first").expect_err("no open comments");
         assert!(err.to_string().contains("no open comments"), "{err}");
         assert_eq!(plan.plan.state, PlanState::PlanReview);
 
         // Not at the review gate (approved) → the transition is rejected.
         orch.approve_plan(&mut plan).unwrap();
         comment_on(&mut plan, "first");
-        let err = orch
-            .send_plan_stage_notes(&mut plan, &store, "first")
+        let err = send_plan_stage_notes(&orch, &mut plan, &store, "first")
             .expect_err("an approved plan is past the review gate");
         assert!(err.to_string().contains("cannot send stage notes"), "{err}");
     }
@@ -5039,18 +5092,15 @@ mod tests {
         let store = split_store(&dir);
 
         // Empty message is refused before any state is touched.
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
-        assert!(orch
-            .message_plan(&mut plan, &store, "   ")
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
+        assert!(message_plan(&orch, &mut plan, &store, "   ")
             .unwrap_err()
             .to_string()
             .contains("empty"));
 
         // Drafting → a live redirect (no state change): the message is a turn
         // for the agent already drafting, never a replacement session.
-        let turn = orch
-            .message_plan(&mut plan, &store, "focus on error paths")
-            .unwrap();
+        let turn = message_plan(&orch, &mut plan, &store, "focus on error paths").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         posted_turn_halves(&turn, "message", "focus on error paths");
 
@@ -5062,16 +5112,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.plan.state, PlanState::Blocked);
-        let turn = orch
-            .message_plan(&mut plan, &store, "here is the missing detail")
-            .unwrap();
+        let turn = message_plan(&orch, &mut plan, &store, "here is the missing detail").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         posted_turn_halves(&turn, "message", "here is the missing detail");
 
         // The review gate refuses a side-channel message.
         let mut in_review = plan_in_review(&orch, &store, "plan-2");
-        let err = orch
-            .message_plan(&mut in_review, &store, "sneak past the gate")
+        let err = message_plan(&orch, &mut in_review, &store, "sneak past the gate")
             .expect_err("review gate has send-notes");
         assert!(err.to_string().contains("review gate"), "{err}");
     }
@@ -5086,12 +5133,12 @@ mod tests {
         // docs dir is gone (what a restart leaves behind).
         let mut plan = plan_in_review(&orch, &store, "plan-1");
         // Move it back to a working phase then interrupt it.
-        orch.send_plan_notes(&mut plan, &store, "revise").unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "revise").unwrap();
         plan.plan.apply(crate::plan::PlanEvent::Interrupt).unwrap();
         let stale = plan.workspace.take().unwrap();
         std::fs::remove_dir_all(&stale.docs_dir).unwrap();
 
-        let turn = orch.resume_plan(&mut plan, &store).unwrap();
+        let turn = resume_plan(&orch, &mut plan, &store).unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         let workspace = plan
             .workspace
@@ -5455,7 +5502,7 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        let (_, plan_turn) = drafting_plan_and_turn(&orch, "plan-1", "Add a greeting");
+        let (_, plan_turn) = drafting_plan_and_turn(&orch, &store, "plan-1", "Add a greeting");
         dispatch_turn_halves(&plan_turn, "plan");
         let plan_prompt = plan_turn.cold;
         let plan = approved_plan(&orch, &store, "plan-of-run-1");

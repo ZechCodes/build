@@ -1395,7 +1395,7 @@ settled differently, and why:
   | `run.create` / `issue.implement_*` | `OpenImplementation` | `ImplementationOpened` | open the run on the checkout that was cut, bind it to its issue |
   | `run.create` into an existing checkout | `AdoptImplementation` | `ImplementationAdopted` | reset the branch's run onto the baseline the checkpoint made (a checkout no run owns yet is adopted first, and that adoption is still `run_adopt`'s — see below) |
   | `issue.implement_*` with its checkout gone | `RestoreImplementationCheckout` | `RestoredCheckout` | write the recreated checkout onto the run, or hand the run to the recovery agent |
-  | `plan.create` | `OpenPlanWorkspace` | `PlanWorkspaceOpened` | file the Issue around the docs dir the workspace made |
+  | every door to a planning agent — `plan.create`, the first `thread.post` to an inert Issue, a route, `plan.send_notes`, `plan.stage_send_notes`, `plan.message` | `OpenPlanWorkspace` | `PlanWorkspaceOpened` / `PlanWorkspaceRefused`, over that door's `PlanSessionOpening` | apply the plan event the door was gated on, render its prompt, queue the turn |
   | `run.adopt` | `AdoptExternalCheckout` / `AdoptPrimaryCheckout` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
   | `run.abandon` | `DiscardCheckout` | `RunAbandoned` | `abandon_run_keeping_checkout`, `reconcile_missing_run_worktree` over the `StagePublications` `perform` decided — written onto the `ActiveRun` the epilogue takes back from `TakenRun` — close the lineage, mirror the affected stages to the issue |
   | `worktree.finish` | `FinishWorktree` | `WorktreeArchived` | the archive record |
@@ -1430,12 +1430,51 @@ settled differently, and why:
   checkout on the board as the unbound card it is. That is the same end state
   the `PendingRow` deviation argues for: nothing is left that git and the next
   scan cannot re-derive. `plan.create` is the one that leaves something no
-  board shows — `open_planned_issue` failing after `OpenPlanWorkspace` leaves
+  board shows — `IssueOpened` failing after `OpenPlanWorkspace` leaves
   the Issue's scratch docs dir and the `.build/` config in the primary
   checkout. Neither is a checkout or a branch: the config is overwritten by the
   next plan the project drafts, and the docs dir is `discard_plan_docs_dir`'s
   (orchestrator.rs:1268), which every approve and every abandon runs. A
   scratch dir for a plan that never existed outlives them, and is left.
+- **A planning workspace is written once, by one mutation, for every door.**
+  `Orchestrator::ensure_plan_workspace` is deleted, and with it the second
+  implementation of the same fact: `prepare_plan_workspace` now holds every
+  disk touch a workspace needs — the scratch docs dir, the `.build/` config in
+  the primary checkout, and the refill of an empty docs dir from the canonical
+  store — and `OpenPlanWorkspace` is its only caller. What the doors differ in
+  is the plan event they were gated on and what they say to the agent, which
+  is the apply half:
+
+  ```rust
+  pub trait PlanSessionOpening: Send {
+      fn open(self: Box<Self>, state: &mut AppState, workspace: PlanWorkspace)
+          -> Result<Value, String>;
+      /// The workspace could not be written. An error for every door that
+      /// asked for a session; a routed capture says "no agent is reading it"
+      /// instead and overrides this.
+      fn refused(self: Box<Self>, state: &mut AppState, error: String)
+          -> Result<Value, String> { Err(error) }
+  }
+  ```
+
+  Six impls: `IssueOpened` (`plan.create`), `PlanDraftingStarted` (the first
+  message to an inert Issue), `RoutedIssueDrafting` (a router or a reroute),
+  `PlanNotesSent`, `StageNotesSent`, `PlanMessaged`. The orchestrator's five
+  session verbs split the same way — `send_plan_notes` /
+  `send_plan_stage_notes` / `message_plan` / `resume_plan` /
+  `start_plan_drafting` become the pure gates `gate_plan_stage_notes` and
+  `gate_plan_message` (`plan_transition` is the gate for the other three)
+  beside `open_plan_notes` / `open_plan_stage_notes` / `open_plan_message` /
+  `open_plan_resume` / `open_plan_drafting`, each of which takes the
+  `PlanWorkspace` by value. The gate runs in the decide phase, so an illegal
+  revise still scaffolds nothing.
+
+  The row a door reserves stands on the Issue itself: what it holds is the one
+  workspace every door writes into, so a second door waits rather than racing
+  this one's `.build/` config. `run.release`'s neighbour rule applies —
+  `checkout_is_in_flight` holds that Issue's queued turns back for the length
+  of the write, and `apply_lifecycle` releases the row before the epilogue
+  queues its own.
 - **An implementation's epilogue answers to whoever asked, not to a verb.**
   `run.create` and `issue.implement_*` cut the same checkout by the same three
   mutations; what differs is who is waiting. That is one object, carried by the
@@ -1555,7 +1594,11 @@ settled differently, and why:
   removes. `bare_checkout_on_branch` (13663) folds into
   `DispatchCheckout::perform`. `worktree_create`, `cut_branch_for_dispatch`,
   `ensure_issue_implementation_worktree`, `open_implementation_run`,
-  `plan_create`'s planning worktree, `run_adopt`, `run_abandon`, `project_add`
+  `plan_create`'s planning worktree, every other door to a planning agent
+  (`plan_send_notes`, `plan_stage_send_notes`, `plan_message`, `route_to_issue`
+  and `thread.post` to an inert Issue — `start_inert_plan` and
+  `start_routed_issue_agent` are deleted for `reserve_plan_drafting` beside
+  `open_inert_plan_drafting`), `run_adopt`, `run_abandon`, `project_add`
   and `project_clone` each stop calling git and return a job.
   `Orchestrator::dispatch_run`, `adopt_implementation` and `dispatch_plan` are
   deleted: each was the two halves of one of those verbs composed under its
@@ -1591,6 +1634,10 @@ settled differently, and why:
   `issue_implement_all_opens_its_implementation_with_the_state_lock_free`,
   `implement_stage_restores_a_missing_checkout_with_the_state_lock_free`,
   `plan_create_prepares_its_workspace_with_the_state_lock_free`,
+  `a_stage_revision_writes_its_workspace_with_the_state_lock_free`,
+  `plan_notes_write_their_workspace_with_the_state_lock_free`,
+  `an_inert_issues_first_message_starts_its_session_off_the_lock`,
+  `run_create_into_an_existing_checkout_checkpoints_it_with_the_state_lock_free`,
   `a_stage_approval_that_implements_cuts_its_checkout_with_the_state_lock_free`,
   `a_recovery_report_advances_its_scheduler_with_the_state_lock_free`,
   `a_turn_queued_for_a_restoring_checkout_never_sends_its_run_to_recovery`,

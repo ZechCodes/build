@@ -759,6 +759,55 @@ noted below.
 
 ## 4. The diff cache — one read, one owner
 
+**Shipped** with step 3, as declared: the three reads, `refresh_now` /
+`refresh_if_stale`, `ScanRead`, `note_worktree_appeared` /
+`note_worktree_gone`, and every deletion listed below. Six deviations from the
+sketch, each argued where it appears:
+
+1. `board.list` gains a sibling `"scanning"` boolean rather than turning
+   `external_worktrees` into `{"worktrees": [], "scanning": true}` — the SPA
+   reads that key as an array (`taskFeed.js:45`) and step 5 owns the SPA. The
+   emptiness is still rendered rather than stored: `external_worktrees_json`
+   returns `ExternalWorktreeRows { rows, scanning }`, and `scanning` is
+   `ever_scanned` folded over the projects it read.
+2. A landed scan or summary calls `note_board_changed` when what it found
+   differs from what was there (`store_diff_entry`). Without it nothing tells
+   the browser to ask again, and a board that answered `scanning` would sit
+   empty until the next poll — the spec's "publishes through
+   `publish_diff_refresh` and `note_board_changed`" is this line.
+3. `force` is deleted, but only one of its three callers could go: the forced
+   retry inside `resolve_external_worktree`. The other two — `run_adopt`
+   (app.rs:12387) and `bare_checkout_on_branch` (13514) — call
+   `scan_external_worktrees_now`, which is the old forced arm under a name that
+   says what it does, with a doc comment naming §5 as what removes it. Nothing
+   else may call it; the tests that want a scan on the spot do.
+4. `note_checkout_created(project_id, path)` sits in front of
+   `note_worktree_appeared`: `worktree_create` and `cut_branch_for_dispatch`
+   hold a path, not an `ExternalWorktree`. It builds one through
+   `crate::worktree::describe_checkout` (new, beside `describe_primary_checkout`
+   — one `git worktree list` and one checkout's summary, sharing
+   `describe_checkouts` and the new `sort_checkouts` with the full scan), and
+   falls back to a rescan if the description fails. Both callers already run
+   `git worktree add` under the lock; §5 moves the pair off it together.
+5. `rescan_external_worktrees(project_id)` is what the five
+   `invalidate_external_scan` sites became that name neither an appearance nor a
+   removal: a git-scope mutation inside a checkout, a branch switch, a released
+   or deleted run handing its checkout back, and a run coming off the board for
+   its finish. Each starts the scan now and keeps serving the last list —
+   emptying it was the behaviour the step removes.
+6. `refresh_now` computes inline, `#[cfg(test)]` only, when there is no runtime
+   and no shared handle to publish through (`compute_without_a_runtime`).
+   Production releases the claim there, as before. The synchronous tests hold
+   `AppState` directly — no mutex, nobody waiting — and this is what lets ~1470
+   of them keep asserting on numbers; the concurrency tests all run through the
+   real `FrameHandler`, where the refresh spawns.
+
+`amend_external_scan` does not restamp `scanned_at`: an edit knows about one
+checkout and the rest of the list is exactly as old as it was, so the
+reconciling scan is not pushed back an interval. It does release any in-flight
+scan's claim, for the reason `invalidate_run_stat` does — that scan described
+the repository before the edit.
+
 - **Boundary** `bridge/src/app.rs`, beside `DiffCacheKey`: between a poll surface
   and the git work its numbers come from. Three typed reads are the only way a
   verb touches a diff cache; each serves what is there, claims the refresh it
@@ -839,11 +888,15 @@ noted below.
 - **Lock discipline** all three reads are pure bookkeeping: read the map, maybe
   insert a claim, hand back a value. The compute runs on `spawn_blocking`
   holding nothing; publishing takes the app mutex on its own.
-- **Tests** `board_list_answers_scanning_when_nothing_has_ever_been_computed`,
-  `a_first_scan_never_runs_under_the_app_mutex`,
-  `a_created_worktree_joins_the_scan_cache_instead_of_clearing_it`,
-  `run_finish_refuses_uncommitted_work_found_by_its_own_preflight`,
-  `an_out_of_band_worktree_id_is_refused_and_claims_one_scan`.
+- **Tests** all five shipped under their declared names, plus
+  `a_landed_first_scan_invalidates_the_browser` (deviation 2) and
+  `one_checkout_describes_itself_the_way_the_scan_describes_it` /
+  `a_checkout_outside_the_repository_cannot_be_described` in `worktree.rs`
+  (deviation 4). The four stale-while-revalidate tests are unchanged in what
+  they pin; each now seeds its cache by waiting for the refresh a first poll
+  claimed (`seeded_run_stat`) instead of by making that poll compute.
+  `a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock` is
+  deleted with `wait_for_first_diff_value`, the only thing it described.
 
 ## 5. `WorktreeLifecycleJob` — worktree work off the lock
 

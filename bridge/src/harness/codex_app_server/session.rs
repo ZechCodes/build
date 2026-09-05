@@ -779,7 +779,7 @@ mod tests {
         )
     }
 
-    fn wait_until(expectation: &str, condition: impl Fn() -> bool) {
+    fn wait_until(expectation: &str, mut condition: impl FnMut() -> bool) {
         for _ in 0..400 {
             if condition() {
                 return;
@@ -980,18 +980,14 @@ mod tests {
     fn stdout_eof_closes_activity_and_end_is_idempotent() {
         let root = tempfile::tempdir().unwrap();
         let (session, mut activity) = scripted_session(root.path(), "read line");
-        for _ in 0..100 {
-            if matches!(
+        wait_until("closed activity after stdout EOF", || {
+            matches!(
                 activity.try_recv(),
                 Err(broadcast::error::TryRecvError::Closed)
-            ) {
-                session.end();
-                session.end();
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("activity did not close after stdout EOF");
+            )
+        });
+        session.end();
+        session.end();
     }
 
     #[test]
@@ -1006,12 +1002,7 @@ mod tests {
             ),
         );
         let (session, mut activity) = scripted_session(root.path(), &script);
-        for _ in 0..100 {
-            if session.session_id().is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_until("opened its thread", || session.session_id().is_some());
         session
             .send_turn(&Turn {
                 text: "go".to_string(),
@@ -1104,9 +1095,10 @@ mod tests {
         let script = opened_thread_script(
             root.path(),
             &format!(
-                "read turn; printf '%s\\n' '{}'; read interrupt; printf '%s\\n' \"$interrupt\" > {}; read hold",
-                r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
-                interrupt_capture.display(),
+                "read turn; printf '%s\\n' '{turn_response}'; read interrupt; printf '%s\\n' \"$interrupt\" > {staged_capture}; mv {staged_capture} {interrupt_capture}; read hold",
+                turn_response = r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
+                staged_capture = interrupt_capture.with_extension("part").display(),
+                interrupt_capture = interrupt_capture.display(),
             ),
         );
         let (session, _activity) = scripted_session(root.path(), &script);
@@ -1139,14 +1131,9 @@ mod tests {
             root.path(),
             "read line; echo stderr-fallback >&2; echo '{bad}'",
         );
-        for _ in 0..100 {
-            if let Some(epitaph) = session.epitaph() {
-                assert!(epitaph.contains("invalid JSON"), "{epitaph}");
-                assert!(!epitaph.contains("stderr-fallback"), "{epitaph}");
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("protocol failure produced no epitaph");
+        wait_until("produced an epitaph", || session.epitaph().is_some());
+        let epitaph = session.epitaph().unwrap();
+        assert!(epitaph.contains("invalid JSON"), "{epitaph}");
+        assert!(!epitaph.contains("stderr-fallback"), "{epitaph}");
     }
 }

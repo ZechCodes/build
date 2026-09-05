@@ -38,10 +38,20 @@ either.
    `host/relay`: a device on a home box pairing its own host candidate with a
    browser that could only reach it through TURN. The bridge states the bill
    itself so the count needs no rule about which side to read. `unknown` means
-   the bridge found no nominated pair (or candidate) in its stats report —
-   never billed, but a rise in `unknown` is a bridge bug, not TURN usage. A
-   rise in billed lines without a rise in users means more clients are
-   failing to hole-punch, not that each client is moving more bytes.
+   the bridge found no nominated pair in its stats report — never billed, but
+   a rise in `unknown` is a bridge bug, not TURN usage. A rise in billed lines
+   without a rise in users means more clients are failing to hole-punch, not
+   that each client is moving more bytes.
+
+   One under-count to know about: a browser end that reads `prflx` is a
+   candidate the bridge's ICE agent discovered from the browser's connectivity
+   check before the browser's own trickled candidate arrived — the usual
+   order with Chrome. The bridge cannot tell whether that address is the
+   browser's host or a TURN allocation, so a browser relaying through TURN
+   can log as `host/prflx`, unbilled. Cloudflare's own egress figure (step 1)
+   is the authority; the bridge count is the lower bound. Closing the gap
+   needs the browser to report its own nominated candidate type over the
+   session (tracked in the transport spec's open questions).
 
    Before trusting the count after a bridge change, prove the billed path
    once from a machine with the TURN key: mint a list and run the relay-only

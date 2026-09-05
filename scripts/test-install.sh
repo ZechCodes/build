@@ -2,13 +2,15 @@
 # Behaviour tests for install.sh, run entirely offline. A mirror directory
 # holds what a release would serve and a `curl` shim in front of PATH copies
 # out of it, so the rules the installer exists for — a digest that must match,
-# a digest that must be published at all, an uname it cannot map — are
-# exercised without a network, a release, or a signing key.
+# a digest that must be published at all, a signature that must verify, an
+# uname it cannot map — are exercised without a network, a release, or a
+# signing key.
 #
 # `uname` is shimmed in every case so the mapping under test is the script's
-# table and not the machine the suite happens to run on, and `cosign` is
-# shimmed to succeed because no bundle can be minted offline; the signature
-# rule is the release workflow's own verify step, not this suite's.
+# table and not the machine the suite happens to run on, and `cosign` is a
+# shim whose exit status each case chooses: no real bundle can be minted
+# offline, and what is under test is what the installer does with a verdict,
+# not how the verdict is reached.
 #
 # Usage: scripts/test-install.sh   (0 every case passed, 1 otherwise)
 set -eu
@@ -33,6 +35,27 @@ pass() {
 fail() {
     printf 'FAIL %s: %s\n' "$1" "$2"
     FAILURES=$((FAILURES + 1))
+}
+
+# The two assertions every case is written from. Both report the failure
+# themselves and return 1, so a case reads as `assert_… && pass "$name"`.
+assert_exit() {
+    ae_name="$1"
+    ae_root="$2"
+    [ "$3" = "$4" ] && return 0
+    fail "$ae_name" "exit $3, wanted $4: $(cat "$ae_root/stderr")"
+    return 1
+}
+
+# A refusal is an exit status *and* an empty install directory: a script that
+# reports a failure after putting the binary on disk has refused nothing.
+assert_refused() {
+    ar_name="$1"
+    ar_root="$2"
+    assert_exit "$ar_name" "$ar_root" "$3" "$4" || return 1
+    [ ! -e "$ar_root/dest/build-bridge" ] && return 0
+    fail "$ar_name" "installed the binary anyway"
+    return 1
 }
 
 digest_of() {
@@ -79,7 +102,9 @@ UNAME
 
     cat > "$ws_dir/cosign" <<'COSIGN'
 #!/bin/sh
-exit 0
+# Accepts or rejects the bundle as the case under test asked it to.
+set -eu
+exit "$BUILD_TEST_COSIGN_STATUS"
 COSIGN
 
     chmod 0755 "$ws_dir/curl" "$ws_dir/uname" "$ws_dir/cosign"
@@ -103,7 +128,9 @@ new_sandbox() {
 }
 
 # Runs install.sh against a sandbox and prints its exit status; stdout and
-# stderr land beside the sandbox for the assertions to read.
+# stderr land beside the sandbox for the assertions to read. A case shapes the
+# run by setting CASE_COSIGN_STATUS — the verdict the cosign shim returns — in
+# front of the call, where the command substitution keeps it local.
 run_install() {
     ri_root="$1"
     ri_status=0
@@ -112,10 +139,11 @@ run_install() {
         BUILD_TEST_MIRROR="$ri_root/mirror"
         BUILD_TEST_UNAME_S="${2:-$PINNED_UNAME_S}"
         BUILD_TEST_UNAME_M="${3:-$PINNED_UNAME_M}"
+        BUILD_TEST_COSIGN_STATUS="${CASE_COSIGN_STATUS:-0}"
         BUILD_BRIDGE_INSTALL_DIR="$ri_root/dest"
         BUILD_BRIDGE_SKIP_SERVICE=1
         export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M
-        export BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE
+        export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE
         sh "$INSTALL_SH" > "$ri_root/stdout" 2> "$ri_root/stderr"
     ) || ri_status=$?
     printf '%s\n' "$ri_status"
@@ -125,17 +153,14 @@ installs_a_verified_tarball() {
     name="installs_a_verified_tarball"
     root="$(new_sandbox "$name")"
     status="$(run_install "$root")"
-    if [ "$status" != "0" ]; then
-        fail "$name" "exit $status, wanted 0: $(cat "$root/stderr")"
-        return 0
-    fi
+    assert_exit "$name" "$root" "$status" 0 || return 1
     if [ ! -x "$root/dest/build-bridge" ]; then
         fail "$name" "no executable build-bridge in the install directory"
-        return 0
+        return 1
     fi
     if ! grep -q "^installed build-bridge $root/dest/build-bridge\$" "$root/stdout"; then
         fail "$name" "stdout was '$(cat "$root/stdout")'"
-        return 0
+        return 1
     fi
     pass "$name"
 }
@@ -145,15 +170,7 @@ refuses_a_tampered_tarball() {
     root="$(new_sandbox "$name")"
     printf 'tampered' >> "$root/mirror/$PINNED_TARBALL"
     status="$(run_install "$root")"
-    if [ "$status" != "1" ]; then
-        fail "$name" "exit $status, wanted 1"
-        return 0
-    fi
-    if [ -e "$root/dest/build-bridge" ]; then
-        fail "$name" "installed the binary anyway"
-        return 0
-    fi
-    pass "$name"
+    assert_refused "$name" "$root" "$status" 1 && pass "$name"
 }
 
 refuses_an_asset_with_no_published_digest() {
@@ -162,36 +179,40 @@ refuses_an_asset_with_no_published_digest() {
     printf '%s  %s\n' "$(digest_of "$root/mirror/$PINNED_TARBALL")" install.sh \
         > "$root/mirror/SHA256SUMS"
     status="$(run_install "$root")"
-    if [ "$status" != "1" ]; then
-        fail "$name" "exit $status, wanted 1"
-        return 0
-    fi
-    if [ -e "$root/dest/build-bridge" ]; then
-        fail "$name" "installed the binary anyway"
-        return 0
-    fi
-    pass "$name"
+    assert_refused "$name" "$root" "$status" 1 && pass "$name"
+}
+
+# Signature verification is optional only in the sense that a machine without
+# cosign may go without it. A cosign that is present and says no is final.
+refuses_when_cosign_rejects_the_bundle() {
+    name="refuses_when_cosign_rejects_the_bundle"
+    root="$(new_sandbox "$name")"
+    status="$(CASE_COSIGN_STATUS=1 run_install "$root")"
+    assert_refused "$name" "$root" "$status" 1 && pass "$name"
 }
 
 unmapped_uname_exits_2() {
     name="unmapped_uname_exits_2"
     root="$(new_sandbox "$name")"
     status="$(run_install "$root" Plan9 mips)"
-    if [ "$status" != "2" ]; then
-        fail "$name" "exit $status, wanted 2"
-        return 0
-    fi
+    assert_refused "$name" "$root" "$status" 2 || return 1
     if ! grep -q 'unsupported platform Plan9/mips' "$root/stderr"; then
         fail "$name" "stderr was '$(cat "$root/stderr")'"
-        return 0
+        return 1
     fi
     pass "$name"
 }
 
-installs_a_verified_tarball
-refuses_a_tampered_tarball
-refuses_an_asset_with_no_published_digest
-unmapped_uname_exits_2
+# Every case reports its own failure through `fail`, so a non-zero return only
+# says the case is over; the suite's verdict is FAILURES, not $?.
+for case_name in \
+    installs_a_verified_tarball \
+    refuses_a_tampered_tarball \
+    refuses_an_asset_with_no_published_digest \
+    refuses_when_cosign_rejects_the_bundle \
+    unmapped_uname_exits_2; do
+    "$case_name" || true
+done
 
 if [ "$FAILURES" -ne 0 ]; then
     printf '%s case(s) failed\n' "$FAILURES" >&2

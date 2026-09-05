@@ -122,10 +122,11 @@ const issueRow = (over = {}) => ({
   ...over,
 });
 
-/** Repaint the rail from a fresh set of rows. */
-const feed = (items) => {
+/** Repaint the rail from a fresh set of rows, and whatever the daemon says it
+ *  is making or removing right now. */
+const feed = (items, pending = []) => {
   feedItems = items;
-  subscriber({ items, projects: feedProjects });
+  subscriber({ items, pending, projects: feedProjects });
 };
 
 beforeEach(async () => {
@@ -179,6 +180,59 @@ describe("the inbox rail", () => {
     expect(rowFor("iss-1")).toBeNull();
     feed([issueRow({ implementing_branch: "build/cache", implementation_active: false })]);
     expect(rowFor("iss-1")).toBeTruthy();
+  });
+
+  // The daemon puts a row on the board the moment a create reaches for git and
+  // replaces it with the record when the git lands. Both are the same row: the
+  // placeholder carries the id the checkout will settle under.
+  it("paints a checkout being cut, and lets its record settle into the same row", () => {
+    feed([branchRow()], [
+      {
+        entity_id: "wt-new",
+        project_id: "p1",
+        project: "relaydb",
+        title: "mascot spike",
+        branch: "build/mascot-spike",
+        state: "creating",
+        checkout_id: null,
+        implements: null,
+        pending_seconds: 0,
+      },
+    ]);
+    const cutting = rowFor("wt-new");
+    expect(cutting).toBeTruthy();
+    expect(cutting.querySelector(".inbox-facts").textContent).toBe("Creating…");
+    expect(cutting.querySelector(".sdot").className).toContain("sdot-working");
+    // Nothing is there to open yet, and nothing to act on either.
+    expect(cutting.classList.contains("inbox-unroutable")).toBe(true);
+    expect(cutting.querySelector("[data-menu]")).toBeNull();
+
+    feed([
+      branchRow(),
+      branchRow({ branch: "build/mascot-spike", run_id: null, worktree_id: "wt-new", state: "created", unread: false }),
+    ]);
+    const settled = rowFor("wt-new");
+    expect(settled).toBe(cutting);
+    expect(settled.querySelector("[data-menu]")).toBeTruthy();
+    expect(settled.querySelector(".inbox-facts").textContent).not.toBe("Creating…");
+  });
+
+  it("says on the card itself that its checkout is being removed", () => {
+    feed([branchRow()], [
+      {
+        entity_id: "run-1",
+        project_id: "p1",
+        project: "relaydb",
+        title: "build/login",
+        branch: "build/login",
+        state: "discarding",
+        checkout_id: "run-1",
+        implements: null,
+        pending_seconds: 0,
+      },
+    ]);
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("run-1").querySelector(".inbox-facts").textContent).toBe("Removing…");
   });
 
   it("never paints work that is over", () => {

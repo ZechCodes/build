@@ -14,6 +14,7 @@ import {
   inboxEntries,
   inboxRowHtml,
   issueDoneConfirm,
+  mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
   cacheableEntityIds,
@@ -225,6 +226,80 @@ describe("what the inbox lists", () => {
 
   it("has nowhere to send a detached checkout — it has no branch to name", () => {
     expect(entryRoute(branch({ branch: null, run_id: null }))).toBeNull();
+  });
+});
+
+// ---- lifecycle verbs in flight ---------------------------------------------------
+// The daemon puts a row on the board the moment a verb reaches for git and takes
+// it off when the record lands (`board.list`'s `pending`). A checkout being cut
+// is on the inbox from the moment it is asked for, under the id it will settle
+// as, so the list never goes quiet while the work is being made.
+
+describe("the rows a lifecycle verb in flight leaves", () => {
+  const creating = (over = {}) => ({
+    entity_id: "wt-new",
+    project_id: "p1",
+    project: "relaydb",
+    title: "mascot spike",
+    branch: "build/mascot-spike",
+    state: "creating",
+    checkout_id: null,
+    implements: null,
+    pending_seconds: 1,
+    ...over,
+  });
+
+  it("lists a checkout being cut, under the id it will settle as", () => {
+    const entries = listed(mergePendingRows([branch()], [creating()]));
+    const pending = entries.find((entry) => entry.key === "wt-new");
+    expect(pending.kind).toBe("branch");
+    expect(pending.project).toBe("relaydb");
+    expect(pending.name).toBe("build/mascot-spike");
+    expect(pending.state).toBe("working");
+    expect(pending.facts).toBe("Creating…");
+    // Nothing is there to open yet, so the row opens nowhere — it opens itself
+    // the moment the record lands under the same key.
+    expect(pending.route).toBeNull();
+    expect(pending.canFinish).toBe(false);
+  });
+
+  it("says what is happening to a card that is already there, rather than adding a second row", () => {
+    const items = mergePendingRows([branch()], [creating({ entity_id: "run-1", state: "discarding", checkout_id: "run-1" })]);
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entityId).toBe("run-1");
+    expect(entries[0].facts).toBe("Removing…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  it("leaves the record alone once it has landed under the placeholder's id", () => {
+    const landed = branch({ run_id: null, worktree_id: "wt-new", branch: "build/mascot-spike" });
+    const items = mergePendingRows([landed], [creating()]);
+    expect(items).toEqual([landed]);
+  });
+
+  it("reads a state it has never heard of as work in flight, not as nothing", () => {
+    const entries = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].state).toBe("working");
+    expect(entries[0].facts).toBe("");
+  });
+
+  // Every verb in that menu would race the one the daemon is already running,
+  // which it refuses anyway. The row says what is happening and offers nothing.
+  it("offers no verbs on a row a verb is already running on", () => {
+    const [pending] = listed(mergePendingRows([], [creating()]));
+    const html = inboxRowHtml(pending, {});
+    expect(html).not.toContain("data-menu");
+    expect(html).not.toContain("data-done=");
+    expect(html).not.toContain("data-dismiss=");
+    expect(html).toContain("Creating…");
+  });
+
+  it("takes no pending rows at all in its stride", () => {
+    expect(mergePendingRows([branch()], [])).toEqual([branch()]);
+    expect(mergePendingRows(undefined, undefined)).toEqual([]);
   });
 });
 

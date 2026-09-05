@@ -12,8 +12,8 @@ let watcher = null;
 let last = null;
 
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
- *  projects, primaryChanges}); the current snapshot (if any) is delivered
- *  immediately. Returns unsubscribe. */
+ *  pending, projects, primaryChanges}); the current snapshot (if any) is
+ *  delivered immediately. Returns unsubscribe. */
 export function subscribeFeed(fn) {
   subscribers.add(fn);
   if (last) fn(last);
@@ -43,6 +43,10 @@ async function tick() {
       plans: board.plans || [],
       runs: board.runs || [],
       externalWorktrees: board.external_worktrees || [],
+      // The lifecycle verbs whose git is running right now: a checkout being
+      // cut is a row from the moment it is asked for, under the id it will
+      // settle as. A bridge that predates them sends none.
+      pending: board.pending || [],
       primaryChanges: board.primary_changes || [],
       // The wire names a project by `project_id`; consumers of the snapshot
       // (the toolbar's scope and menu) read `id`. Bridge the key here, in the

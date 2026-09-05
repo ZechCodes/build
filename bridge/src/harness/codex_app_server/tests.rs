@@ -361,15 +361,16 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
 }
 
 #[test]
-fn outbound_limit_and_close_are_enforced_before_or_during_writes() {
-    let mut tiny = limits();
-    tiny.outbound_frame_bytes = 16;
-    let connection = AppServerConnection::memory(tiny.connection());
-    assert!(connection.request(PendingOperation::Initialize).is_err());
-    assert_eq!(connection.pending_count(), 0);
+fn close_is_idempotent_and_writes_after_close_fail() {
+    let connection = AppServerConnection::memory(limits().connection());
     assert!(connection.close().is_ok());
     assert!(connection.close().is_ok());
-    assert!(connection.notify(ClientNotification::Initialized).is_err());
+    assert!(matches!(
+        connection
+            .notify(ClientNotification::Initialized)
+            .unwrap_err(),
+        ConnectionError::Closed
+    ));
 }
 
 #[test]
@@ -379,6 +380,11 @@ fn every_write_path_enforces_the_outbound_frame_limit() {
     let capped = AppServerConnection::memory(tiny.connection());
     let oversized_response =
         || ServerResponse::error(json!("x".repeat(64)), -32601, "method not found");
+    assert!(matches!(
+        capped.request(PendingOperation::Initialize).unwrap_err(),
+        ConnectionError::FrameTooLarge(16)
+    ));
+    assert_eq!(capped.pending_count(), 0);
     assert!(matches!(
         capped.notify(ClientNotification::Initialized).unwrap_err(),
         ConnectionError::FrameTooLarge(16)

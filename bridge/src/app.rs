@@ -9880,22 +9880,23 @@ impl AppState {
             return;
         };
         let root = Self::canonical_root(&session.scratch_dir);
-        self.retire_tab(
-            &TabKey::agent(&root, &session.agent_id),
-            "agent_session_ended",
-        );
+        let writers = self
+            .retire_tab(
+                &TabKey::agent(&root, &session.agent_id),
+                "agent_session_ended",
+            )
+            .into_iter()
+            .collect();
         self.mcp_session_tokens.remove(&session.agent_id);
         self.entity_project.remove(capture_id);
         // Bridge-owned, per capture, and holding nothing but what the harness
         // wrote for itself — so it goes with the session that made it.
-        if let Err(error) = std::fs::remove_dir_all(&session.scratch_dir) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!(
-                    "router {capture_id}: could not wipe {}: {error}",
-                    session.scratch_dir.display()
-                );
-            }
-        }
+        crate::reaper::remove_dir_once_reaped(
+            writers,
+            session.scratch_dir,
+            crate::orchestrator::CHECKOUT_REAP_WAIT,
+            format!("router {capture_id}"),
+        );
     }
 
     /// Settle every router whose harness has stopped without reporting.
@@ -51444,6 +51445,71 @@ mod tests {
             json!({ "capture_id": capture_id, "text": "  " }),
         ));
         assert_eq!(blank["ok"], false, "{blank:?}");
+    }
+
+    /// The router's harness is killed on a thread of its own, so the wipe of
+    /// the directory it was writing into waits for that thread: a
+    /// `remove_dir_all` a child is still creating files under fails the walk,
+    /// and the walk itself has no business under the app mutex. The cancel
+    /// answers first, the place is free at once for the router a re-fire puts
+    /// there, and the files go once the process is reaped.
+    #[test]
+    fn cancelling_a_capture_wipes_its_scratch_once_the_router_is_reaped() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let (capture_id, agent_id) = captured(&mut app, "make the thing faster");
+        // The router's first turn already reached the harness below.
+        app.pending_agent_turns.clear();
+        let scratch = app.router_sessions[&capture_id].scratch_dir.clone();
+        let root = AppState::canonical_root(&scratch);
+        let (death, death_handle) = OffLockGate::new();
+        app.tabs.insert(
+            TabKey::agent(&root, &agent_id),
+            gated_tab(
+                &root,
+                gated_agent_role(&agent_id),
+                GatedHarness::new().refusing_to_die_until(death),
+            ),
+        );
+        let state = app.shared();
+
+        let cancelled = frame_on_a_thread(
+            &state,
+            "s-cancel",
+            "capture.cancel",
+            json!({ "capture_id": capture_id }),
+        )
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the cancel answers before the router is reaped");
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+        death_handle.wait_for_arrival();
+        let retiring_dirs = || {
+            let mark = format!("{capture_id}{}", crate::reaper::RETIRING_DIR_MARK);
+            std::fs::read_dir(scratch.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&mark))
+                .count()
+        };
+        assert!(
+            !scratch.exists(),
+            "the place is free the moment the cancel answers"
+        );
+        assert_eq!(
+            retiring_dirs(),
+            1,
+            "the files are not removed out from under a process still writing them"
+        );
+        assert!(
+            state.try_lock().is_ok(),
+            "the wait for the router is holding the app mutex"
+        );
+
+        death_handle.release();
+        assert!(
+            settles(|| retiring_dirs() == 0),
+            "the files go once the router is reaped"
+        );
     }
 
     /// A router that stops without deciding leaves the capture needing the

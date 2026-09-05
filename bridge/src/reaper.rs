@@ -9,6 +9,8 @@
 //! kill and never a queue — a child that parks its reaper parks nobody else's
 //! — and no lock of any kind is held while it runs.
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -54,4 +56,78 @@ impl Retirement {
             .expect("a retirement's thread never panics while holding this");
         *done
     }
+
+    /// Whether every one of `writers` is reaped, waiting up to `timeout` for
+    /// each in turn. The wait a directory removal makes before it walks: a
+    /// child still creating files under the walk fails it.
+    pub fn wait_all(writers: &[Retirement], timeout: Duration) -> bool {
+        writers.iter().fold(true, |every_writer_reaped, writer| {
+            let reaped = writer.wait(timeout);
+            every_writer_reaped && reaped
+        })
+    }
+}
+
+static RETIRING_DIRS: AtomicU64 = AtomicU64::new(0);
+
+/// The suffix a directory waits under between leaving its place and being
+/// removed. Tests read it to find the directory a retirement is still holding.
+pub const RETIRING_DIR_MARK: &str = ".retiring-";
+
+/// Take `dir` out of its place now and remove it once the sessions writing
+/// into it are reaped.
+///
+/// The rename is one bounded syscall, so it is made here, under whatever lock
+/// the caller holds: the place is free for a successor at once, and a writer
+/// still alive keeps its files under the new name. The removal is a filesystem
+/// walk — one a child still creating files under it fails — and the reap it
+/// waits for is unbounded, so both run on a thread that holds nothing. A
+/// writer still not reaped after `timeout` is logged under `subject` and the
+/// removal goes ahead anyway; a directory already gone is nothing to remove.
+pub fn remove_dir_once_reaped(
+    writers: Vec<Retirement>,
+    dir: PathBuf,
+    timeout: Duration,
+    subject: String,
+) {
+    let retiring = retiring_name(&dir);
+    let doomed = match std::fs::rename(&dir, &retiring) {
+        Ok(()) => retiring,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            eprintln!(
+                "{subject}: could not move {} aside: {error}; removing it in place",
+                dir.display()
+            );
+            dir
+        }
+    };
+    std::thread::spawn(move || {
+        if !Retirement::wait_all(&writers, timeout) {
+            eprintln!(
+                "{subject}: a session did not die within {timeout:?}; removing {} anyway",
+                doomed.display()
+            );
+        }
+        if let Err(error) = std::fs::remove_dir_all(&doomed) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("{subject}: could not remove {}: {error}", doomed.display());
+            }
+        }
+    });
+}
+
+/// A sibling name nothing else will claim: the process id keeps a leftover
+/// from an earlier daemon out of the way, the counter keeps this daemon's own
+/// retirements apart.
+fn retiring_name(dir: &std::path::Path) -> PathBuf {
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ordinal = RETIRING_DIRS.fetch_add(1, Ordering::Relaxed);
+    dir.with_file_name(format!(
+        "{name}{RETIRING_DIR_MARK}{}-{ordinal}",
+        std::process::id()
+    ))
 }

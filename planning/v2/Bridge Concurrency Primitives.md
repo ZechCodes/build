@@ -92,9 +92,21 @@ and the wait leave, onto a thread that holds nothing. A `std::thread` and not
 a spawned task, because the synchronous unit tests run with no runtime under
 them and a tab still has to end there.
 
-Every caller but one drops the receipt: the tab is out of the registry, which
+Every caller but two drops the receipt: the tab is out of the registry, which
 is what stops the agent being addressable. `DiscardCheckout` (§5) waits, for a
-reason argued there on its own merits — it is not today's order.
+reason argued there on its own merits — it is not today's order. The router's
+scratch directory is the other: `abandon_router_session` used to wipe it right
+after a synchronous `session.end()`, and once the kill moved onto a thread the
+`remove_dir_all` under the mutex was walking a directory a live harness was
+still writing into — the same failing walk §5 argues about, plus a filesystem
+walk under the lock. `reaper::remove_dir_once_reaped(writers, dir, timeout,
+subject)` is the one rule for both: rename the directory aside under the lock
+(one bounded syscall, so a re-fired router can `create_dir_all` the same path
+at once), then on a thread that holds nothing `Retirement::wait_all` the
+writers out — `CHECKOUT_REAP_WAIT`, logged on expiry — and remove what was
+renamed. `DiscardedCheckout::discard` shares `wait_all`; its removal is
+`Orchestrator::discard_checkout`, which a rename cannot stand in for.
+Test: `cancelling_a_capture_wipes_its_scratch_once_the_router_is_reaped`.
 
 With the kill asynchronous, a replaced session's EOF can arrive after the
 replacement tab is in the registry. `spawn_tab_pump` carries the `Arc` of the

@@ -993,13 +993,11 @@ impl DiscardedCheckout {
         let Some((project, worktree, keep_branch)) = self.removal() else {
             return WorktreeChange::nothing();
         };
-        for writer in writers {
-            if !writer.wait(crate::orchestrator::CHECKOUT_REAP_WAIT) {
-                eprintln!(
-                    "{run_id}: an agent did not die within {:?}; removing its checkout anyway",
-                    crate::orchestrator::CHECKOUT_REAP_WAIT
-                );
-            }
+        if !crate::reaper::Retirement::wait_all(writers, crate::orchestrator::CHECKOUT_REAP_WAIT) {
+            eprintln!(
+                "{run_id}: an agent did not die within {:?}; removing its checkout anyway",
+                crate::orchestrator::CHECKOUT_REAP_WAIT
+            );
         }
         project.discard_checkout(worktree, keep_branch);
         match worktree.path.exists() {

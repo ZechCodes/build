@@ -19,17 +19,18 @@ from litestar.status_codes import (
     HTTP_403_FORBIDDEN,
 )
 from litestar.testing import TestClient
-from sqlalchemy import select
 
 from buildapp import download_tokens
 from buildapp.alpha_membership import INVITE_ONLY_DETAIL
 from buildapp.clock import utc_now
 from buildapp.db_test_support import (
-    add_member,
     asgi_app,
     in_memory_session_maker,
+    revoke_every_invite,
     session_backend_config,
     sign_in,
+    sign_in_member,
+    sign_out,
 )
 from buildapp.desktop_auth import (
     BROWSER_IDENTIFIERS,
@@ -39,7 +40,6 @@ from buildapp.desktop_auth import (
     download_token_user,
     session_user,
 )
-from buildapp.models import Invite
 from buildapp.session_auth import require_user
 
 GUARDED_PATH = "/guarded"
@@ -65,18 +65,6 @@ def client() -> Iterator[TestClient]:
         yield test_client
 
 
-def _member(client: TestClient, email: str = MEMBER) -> UUID:
-    user_id = sign_in(client, email)
-
-    async def enrol() -> None:
-        async with client.app.state.make_session() as session:
-            await add_member(session, user_id, email)
-
-    with client.portal() as portal:
-        portal.call(enrol)
-    return user_id
-
-
 def _mint(client: TestClient, user_id: UUID, *, minted_at_offset=timedelta()) -> str:
     async def create() -> str:
         async with client.app.state.make_session() as session:
@@ -86,21 +74,6 @@ def _mint(client: TestClient, user_id: UUID, *, minted_at_offset=timedelta()) ->
 
     with client.portal() as portal:
         return portal.call(create)
-
-
-def _revoke_every_invite(client: TestClient) -> None:
-    async def revoke() -> None:
-        async with client.app.state.make_session() as session:
-            for invite in (await session.execute(select(Invite))).scalars().all():
-                invite.revoked_at = utc_now()
-            await session.commit()
-
-    with client.portal() as portal:
-        portal.call(revoke)
-
-
-def _anonymous(client: TestClient) -> None:
-    client.cookies.clear()
 
 
 def test_the_browser_identifiers_are_the_session_and_the_desktop_bearer():
@@ -114,16 +87,16 @@ def test_a_download_route_also_accepts_a_download_token():
 
 
 def test_a_member_session_is_admitted(client):
-    user_id = _member(client)
+    user_id = sign_in_member(client)
     response = client.get(GUARDED_PATH)
     assert response.status_code == HTTP_200_OK
     assert response.json() == {"user_id": str(user_id)}
 
 
 def test_a_live_download_token_is_admitted_and_names_its_holder(client):
-    user_id = _member(client)
+    user_id = sign_in_member(client)
     token = _mint(client, user_id)
-    _anonymous(client)
+    sign_out(client)
 
     response = client.get(GUARDED_PATH, params={"t": token})
 
@@ -141,8 +114,8 @@ def test_nobody_at_all_is_refused(client):
     ids=["empty", "malformed", "never minted", "wrong length"],
 )
 def test_a_token_that_names_nobody_is_refused(client, token):
-    _member(client)
-    _anonymous(client)
+    sign_in_member(client)
+    sign_out(client)
     assert (
         client.get(GUARDED_PATH, params={"t": token}).status_code
         == HTTP_401_UNAUTHORIZED
@@ -150,9 +123,9 @@ def test_a_token_that_names_nobody_is_refused(client, token):
 
 
 def test_an_expired_token_is_refused(client):
-    user_id = _member(client)
+    user_id = sign_in_member(client)
     token = _mint(client, user_id, minted_at_offset=-download_tokens.TTL)
-    _anonymous(client)
+    sign_out(client)
     assert (
         client.get(GUARDED_PATH, params={"t": token}).status_code
         == HTTP_401_UNAUTHORIZED
@@ -160,7 +133,7 @@ def test_an_expired_token_is_refused(client):
 
 
 def test_a_spent_token_is_refused(client):
-    user_id = _member(client)
+    user_id = sign_in_member(client)
     token = _mint(client, user_id)
 
     async def spend() -> None:
@@ -169,7 +142,7 @@ def test_a_spent_token_is_refused(client):
 
     with client.portal() as portal:
         portal.call(spend)
-    _anonymous(client)
+    sign_out(client)
 
     assert (
         client.get(GUARDED_PATH, params={"t": token}).status_code
@@ -180,10 +153,10 @@ def test_a_spent_token_is_refused(client):
 def test_a_live_token_whose_holder_lost_the_alpha_is_refused_as_a_non_member(client):
     """A token is an identity, never an authorisation: revoking the invite closes the
     download in the ten minutes the token still has to live."""
-    user_id = _member(client)
+    user_id = sign_in_member(client)
     token = _mint(client, user_id)
-    _revoke_every_invite(client)
-    _anonymous(client)
+    revoke_every_invite(client)
+    sign_out(client)
 
     response = client.get(GUARDED_PATH, params={"t": token})
 
@@ -201,9 +174,9 @@ def test_a_signed_in_non_member_is_refused_as_a_non_member(client):
 def test_the_session_wins_over_a_token_someone_else_holds(client):
     """Identifiers are walked in order, so a browsing member is themselves and the
     token they did not present is not theirs to spend."""
-    holder_id = _member(client, "holder@example.com")
+    holder_id = sign_in_member(client, "holder@example.com")
     token = _mint(client, holder_id)
-    browsing_id = _member(client, MEMBER)
+    browsing_id = sign_in_member(client, MEMBER)
     assert browsing_id != holder_id
 
     response = client.get(GUARDED_PATH, params={"t": token})

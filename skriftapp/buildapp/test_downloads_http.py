@@ -6,15 +6,14 @@ makes a request at all."""
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Iterator
 from datetime import timedelta
-from uuid import UUID
 
 import pytest
 from litestar.di import Provide
 from litestar.exceptions import HTTPException, NotFoundException
-from litestar.handlers import HTTPRouteHandler
 from litestar.response import Stream
 from litestar.status_codes import (
     HTTP_200_OK,
@@ -30,18 +29,18 @@ from sqlalchemy import select
 
 from buildapp import download_tokens, email_message, releases
 from buildapp.alpha_membership import INVITE_ONLY_DETAIL
-from buildapp.clock import utc_now
 from buildapp.controllers import BuildController
 from buildapp.db_test_support import (
-    add_member,
     asgi_app,
     in_memory_session_maker,
+    revoke_every_invite,
     session_backend_config,
     sign_in,
+    sign_in_member,
+    sign_out,
 )
-from buildapp.desktop_auth import build_auth_guard, download_auth_guard
 from buildapp.email_test_support import PUBLIC_BASE_URL, email_settings
-from buildapp.models import EphemeralToken, Invite
+from buildapp.models import EphemeralToken
 from buildapp.release_assets import NO_RELEASE_DETAIL, PublicAssets
 from buildapp.releases import CHECKSUMS_ASSET, SIGNATURE_ASSET, asset_name
 from buildapp.token_hash import token_hash
@@ -76,6 +75,7 @@ class StreamingAssets:
         )
 
 
+@contextlib.contextmanager
 def _client(monkeypatch, source) -> Iterator[TestClient]:
     monkeypatch.setattr(email_message, "get_settings", email_settings)
     monkeypatch.setitem(
@@ -101,29 +101,15 @@ def assets() -> StreamingAssets:
 @pytest.fixture()
 def client(monkeypatch, assets) -> Iterator[TestClient]:
     """A deployment whose repository is still private: the api streams the bytes."""
-    yield from _client(monkeypatch, assets)
+    with _client(monkeypatch, assets) as test_client:
+        yield test_client
 
 
 @pytest.fixture()
 def public_client(monkeypatch) -> Iterator[TestClient]:
     """A deployment whose repository has gone public: the api points at GitHub."""
-    yield from _client(monkeypatch, PublicAssets())
-
-
-def _member(client: TestClient, email: str = MEMBER) -> UUID:
-    user_id = sign_in(client, email)
-
-    async def enrol() -> None:
-        async with client.app.state.make_session() as session:
-            await add_member(session, user_id, email)
-
-    with client.portal() as portal:
-        portal.call(enrol)
-    return user_id
-
-
-def _anonymous(client: TestClient) -> None:
-    client.cookies.clear()
+    with _client(monkeypatch, PublicAssets()) as test_client:
+        yield test_client
 
 
 def _one_liner_token(client: TestClient) -> str:
@@ -152,32 +138,11 @@ def _age_every_token(client: TestClient, by: timedelta) -> None:
         portal.call(age)
 
 
-def _revoke_every_invite(client: TestClient) -> None:
-    async def revoke() -> None:
-        async with client.app.state.make_session() as session:
-            for invite in (await session.execute(select(Invite))).scalars().all():
-                invite.revoked_at = utc_now()
-            await session.commit()
-
-    with client.portal() as portal:
-        portal.call(revoke)
-
-
-def _handler(path: str, method: str = "GET") -> HTTPRouteHandler:
-    return next(
-        handler
-        for handler in vars(BuildController).values()
-        if isinstance(handler, HTTPRouteHandler)
-        and path in handler.paths
-        and method in handler.http_methods
-    )
-
-
 # ----- the page a member is handed ------------------------------------------
 
 
 def test_the_downloads_payload_keeps_its_shape_and_points_at_this_api(client):
-    _member(client)
+    sign_in_member(client)
     payload = client.get(DOWNLOADS).json()
     assert list(payload) == [
         "install_command",
@@ -196,8 +161,8 @@ def test_the_downloads_payload_keeps_its_shape_and_points_at_this_api(client):
 def test_a_private_deployment_offers_no_releases_page_and_a_public_one_does(
     client, public_client
 ):
-    _member(client)
-    _member(public_client)
+    sign_in_member(client)
+    sign_in_member(public_client)
     assert client.get(DOWNLOADS).json()["releases_url"] is None
     assert public_client.get(DOWNLOADS).json()["releases_url"] == (
         "https://github.com/ZechCodes/build-web/releases/latest"
@@ -205,7 +170,7 @@ def test_a_private_deployment_offers_no_releases_page_and_a_public_one_does(
 
 
 def test_rendering_the_page_mints_a_token_that_is_stored_only_as_a_hash(client):
-    _member(client)
+    sign_in_member(client)
     payload = client.get(DOWNLOADS).json()
     token = TOKEN_IN_TEXT.search(payload["install_command"]).group(0)
     assert payload["install_command"] == (
@@ -215,7 +180,7 @@ def test_rendering_the_page_mints_a_token_that_is_stored_only_as_a_hash(client):
 
 
 def test_every_render_hands_out_a_fresh_token(client):
-    _member(client)
+    sign_in_member(client)
     assert _one_liner_token(client) != _one_liner_token(client)
 
 
@@ -234,7 +199,7 @@ def test_a_signed_in_non_member_is_refused_the_downloads_page(client):
 
 
 def test_a_member_can_mint_a_fresh_install_line(client):
-    _member(client)
+    sign_in_member(client)
     response = client.post(TOKEN_ROUTE)
     assert response.status_code == HTTP_201_CREATED
     body = response.json()
@@ -259,7 +224,7 @@ def test_only_a_member_may_mint_an_install_line(client):
 
 
 def test_a_member_session_downloads_a_platform_without_any_token(client, assets):
-    _member(client)
+    sign_in_member(client)
     response = client.get(TARBALL_ROUTE)
     assert response.status_code == HTTP_200_OK
     assert response.content == STREAMED
@@ -270,14 +235,14 @@ def test_a_member_session_downloads_a_platform_without_any_token(client, assets)
 
 
 def test_a_member_session_downloads_the_checksums_and_the_signature(client, assets):
-    _member(client)
+    sign_in_member(client)
     for name in (CHECKSUMS_ASSET, SIGNATURE_ASSET):
         assert client.get(f"{DOWNLOADS}/{name}").status_code == HTTP_200_OK
     assert assets.delivered == [CHECKSUMS_ASSET, SIGNATURE_ASSET]
 
 
 def test_a_public_deployment_redirects_the_same_route_to_github(public_client):
-    _member(public_client)
+    sign_in_member(public_client)
     response = public_client.get(TARBALL_ROUTE, follow_redirects=False)
     assert response.status_code == HTTP_302_FOUND
     assert response.headers["location"] == (
@@ -287,9 +252,9 @@ def test_a_public_deployment_redirects_the_same_route_to_github(public_client):
 
 
 def test_the_install_lines_token_downloads_with_no_session_at_all(client, assets):
-    _member(client)
+    sign_in_member(client)
     token = _one_liner_token(client)
-    _anonymous(client)
+    sign_out(client)
 
     response = client.get(TARBALL_ROUTE, params={"t": token})
 
@@ -301,9 +266,9 @@ def test_the_install_lines_token_downloads_with_no_session_at_all(client, assets
 def test_the_tarball_spends_the_token_and_the_support_files_do_not(client):
     """install.sh fetches SHA256SUMS, then the signature, then the tarball — so the
     line survives the first two and dies on the third."""
-    _member(client)
+    sign_in_member(client)
     token = _one_liner_token(client)
-    _anonymous(client)
+    sign_out(client)
     fetch = {"params": {"t": token}}
 
     assert client.get(f"{DOWNLOADS}/{CHECKSUMS_ASSET}", **fetch).status_code == 200
@@ -315,10 +280,10 @@ def test_the_tarball_spends_the_token_and_the_support_files_do_not(client):
 
 
 def test_an_expired_token_downloads_nothing(client, assets):
-    _member(client)
+    sign_in_member(client)
     token = _one_liner_token(client)
     _age_every_token(client, download_tokens.TTL + timedelta(seconds=1))
-    _anonymous(client)
+    sign_out(client)
 
     response = client.get(TARBALL_ROUTE, params={"t": token})
 
@@ -327,18 +292,18 @@ def test_an_expired_token_downloads_nothing(client, assets):
 
 
 def test_a_malformed_token_downloads_nothing(client, assets):
-    _member(client)
-    _anonymous(client)
+    sign_in_member(client)
+    sign_out(client)
     response = client.get(TARBALL_ROUTE, params={"t": "../../etc/passwd"})
     assert response.status_code == HTTP_401_UNAUTHORIZED
     assert assets.delivered == []
 
 
 def test_a_revoked_members_live_token_downloads_nothing(client, assets):
-    _member(client)
+    sign_in_member(client)
     token = _one_liner_token(client)
-    _revoke_every_invite(client)
-    _anonymous(client)
+    revoke_every_invite(client)
+    sign_out(client)
 
     response = client.get(TARBALL_ROUTE, params={"t": token})
 
@@ -350,9 +315,9 @@ def test_a_revoked_members_live_token_downloads_nothing(client, assets):
 def test_an_unknown_segment_is_a_404_that_fetches_nothing_and_spends_nothing(
     client, assets
 ):
-    _member(client)
+    sign_in_member(client)
     token = _one_liner_token(client)
-    _anonymous(client)
+    sign_out(client)
 
     response = client.get(f"{DOWNLOADS}/install.sh", params={"t": token})
 
@@ -365,9 +330,9 @@ def test_an_unknown_segment_is_a_404_that_fetches_nothing_and_spends_nothing(
 def test_a_session_download_never_spends_a_token_it_does_not_hold(client):
     """The browsing member is identified by their session, so someone else's install
     line survives the click."""
-    _member(client, "holder@example.com")
+    sign_in_member(client, "holder@example.com")
     token = _one_liner_token(client)
-    _member(client, MEMBER)
+    sign_in_member(client, MEMBER)
 
     assert client.get(TARBALL_ROUTE, params={"t": token}).status_code == HTTP_200_OK
 
@@ -392,10 +357,10 @@ class RefusingAssets:
 def _refused_download(monkeypatch, refusal: Exception):
     """Drive one tarball request through a source that refuses, and answer with the
     response and the token hashes that survived it."""
-    for client in _client(monkeypatch, RefusingAssets(refusal)):
-        _member(client)
+    with _client(monkeypatch, RefusingAssets(refusal)) as client:
+        sign_in_member(client)
         token = _one_liner_token(client)
-        _anonymous(client)
+        sign_out(client)
         response = client.get(TARBALL_ROUTE, params={"t": token})
         return response, _stored_token_hashes(client), token_hash(token)
 
@@ -417,16 +382,3 @@ def test_an_unreachable_github_answers_502_and_spends_nothing(monkeypatch):
     )
     assert response.status_code == HTTP_502_BAD_GATEWAY
     assert stored == [spent_hash]
-
-
-# ----- wiring ----------------------------------------------------------------
-
-
-def test_the_member_routes_carry_the_membership_guard():
-    for path, method in (("/downloads", "GET"), ("/downloads/token", "POST")):
-        assert build_auth_guard in (_handler(path, method).guards or []), path
-
-
-def test_the_asset_route_also_admits_an_install_lines_token():
-    handler = _handler("/downloads/{asset:str}")
-    assert handler.guards == [download_auth_guard]

@@ -761,23 +761,29 @@ noted below.
 
 **Shipped** with step 3, as declared: the three reads, `refresh_now` /
 `refresh_if_stale`, `ScanRead`, `note_worktree_appeared` /
-`note_worktree_gone`, and every deletion listed below. Six deviations from the
-sketch, each argued where it appears:
+`note_worktree_gone`, and every deletion listed below. Eleven deviations from
+the sketch, each argued where it appears:
 
 1. `board.list` gains a sibling `"scanning"` boolean rather than turning
    `external_worktrees` into `{"worktrees": [], "scanning": true}` — the SPA
    reads that key as an array (`taskFeed.js:45`) and step 5 owns the SPA. The
    emptiness is still rendered rather than stored: `external_worktrees_json`
    returns `ExternalWorktreeRows { rows, scanning }`, and `scanning` is
-   `ever_scanned` folded over the projects it read.
+   `ScanRead.settled` folded over the projects it read.
 2. A landed scan or summary calls `note_board_changed` when what it found
-   differs from what was there (`store_diff_entry`). Without it nothing tells
-   the browser to ask again, and a board that answered `scanning` would sit
-   empty until the next poll — the spec's "publishes through
-   `publish_diff_refresh` and `note_board_changed`" is this line.
+   differs from what was there, and having found nothing there at all counts
+   as a difference (`store_diff_entry`). Without it nothing tells the browser
+   to ask again, and a board that answered `scanning` — or `stat: null` —
+   would sit empty until the next poll; the spec's "publishes through
+   `publish_diff_refresh` and `note_board_changed`" is this line. A run's
+   diffstat separates the two facts one `changed` flag was conflating: two
+   computes that disagree are files that landed in the checkout, which is a
+   filesystem event (`run_files_changed_at`, `note_entity_changed`), while a
+   first compute is no such event but IS the answer a board is still waiting
+   for, so only the board push fires.
 3. `force` is deleted, but only one of its three callers could go: the forced
    retry inside `resolve_external_worktree`. The other two — `run_adopt`
-   (app.rs:12387) and `bare_checkout_on_branch` (13514) — call
+   (app.rs:12489) and `bare_checkout_on_branch` (13609) — call
    `scan_external_worktrees_now`, which is the old forced arm under a name that
    says what it does, with a doc comment naming §5 as what removes it. Nothing
    else may call it; the tests that want a scan on the spot do.
@@ -788,7 +794,13 @@ sketch, each argued where it appears:
    — one `git worktree list` and one checkout's summary, sharing
    `describe_checkouts` and the new `sort_checkouts` with the full scan), and
    falls back to a rescan if the description fails. Both callers already run
-   `git worktree add` under the lock; §5 moves the pair off it together.
+   `git worktree add` under the lock; §5 moves the pair off it together. A
+   project whose scan has never landed is returned from before anything is
+   described: there is nowhere to put the answer, the first scan is what finds
+   this checkout anyway, and the amend that would have followed neither drops
+   that scan's claim nor pushes an invalidation for an edit it did not make.
+   `amend_external_scan` is where that is decided, so only an edit that
+   happened releases a claim and notes the board.
 5. `rescan_external_worktrees(project_id)` is what the five
    `invalidate_external_scan` sites became that name neither an appearance nor a
    removal: a git-scope mutation inside a checkout, a branch switch, a released
@@ -801,6 +813,50 @@ sketch, each argued where it appears:
    `AppState` directly — no mutex, nobody waiting — and this is what lets ~1470
    of them keep asserting on numbers; the concurrency tests all run through the
    real `FrameHandler`, where the refresh spawns.
+7. `ScanRead.ever_scanned` is `settled`, because a scan attempt can settle
+   without landing a list. `DiffCacheEntry::ExternalScanUnreadable` records a
+   repository this daemon could not read (`Project.external_scan_failed_at`),
+   the interval is measured from whichever attempt settled last
+   (`scan_settled_at`), and the list of checkouts stays whatever the last
+   readable scan left. Without it a project that can never be scanned is walked
+   again by every poll and answers `scanning: true` for the life of the daemon.
+8. "Nothing has looked yet" and "there is no such checkout" are one sentence in
+   one place: `scan_may_yet_show_it(settled)`, reached through `find_checkout`,
+   which is the whole miss — read the cache, look, claim the rescan the refusal
+   promises, and refuse in the caller's own words. `resolve_external_worktree`,
+   `branch.finish`'s bare-checkout arm and `entity.dismiss`'s branch row miss
+   through it; `branch.get`, which misses a work item rather than a checkout,
+   ends its own refusal with the same sentence and claims the same rescan.
+   Before this step `warm_diff_caches` computed the first scan ahead of all
+   four, so none of them could see a cold cache and `no checkout of this
+   project is on branch <b>` was never a lie.
+9. `primary_row` answers `Result`. A row built from a summary that has not
+   landed carries no head, and `entity.dismiss` on it writes a dismissal at an
+   empty head that the walk's own first result revokes — a click that silently
+   did nothing, and a base branch that `entity.dismiss` refuses by name in the
+   same window. It refuses instead, naming the walk it has just claimed.
+10. The attention map is pruned against the scan only for the keys the scan
+    mints. Sparing every key while any project was unscanned stopped run, plan
+    and branch-row pruning daemon-wide, and a repository that could never be
+    scanned grew the map for the life of the daemon.
+    `crate::worktree::is_checkout_id` is the test, and it lives beside the mint.
+11. `board.list`'s own sweep of runs whose checkout vanished moved off the lock
+    with the reads, which is what the open gate note asked this step to settle:
+    it is off the lock, not deliberately kept.
+    `archive_runs_with_deleted_worktrees` opened every board read, and deciding
+    whether one stage's commits had ever been published is `bounded_git_fetch`
+    — a `git fetch` with a thirty-second deadline — plus two graph walks, per
+    stage, under the mutex every other frame is waiting on. Split the way the
+    reads are: `StagePublicationQuery` is what one run's stages must be judged
+    against, taken under the lock; `VanishedRunSweep::decide` is the git, on the
+    blocking pool holding nothing; `archive_vanished_runs` writes the verdicts
+    back and archives, re-checking that the checkout is still gone and the run
+    still there. Single-flight, so a board polling faster than a fetch returns
+    claims one sweep rather than one per poll, and inline with no runtime under
+    it, as deviation 6 has it. `reconcile_missing_run_worktree` is now pure
+    bookkeeping over a decided `StagePublications`; its two remaining callers —
+    `run.abandon` and a failed recovery — ask git through `classify_stages_now`,
+    which names what it does so the two sites §5 moves stay visible.
 
 `amend_external_scan` does not restamp `scanned_at`: an edit knows about one
 checkout and the rest of the list is exactly as old as it was, so the
@@ -889,10 +945,18 @@ the repository before the edit.
   insert a claim, hand back a value. The compute runs on `spawn_blocking`
   holding nothing; publishing takes the app mutex on its own.
 - **Tests** all five shipped under their declared names, plus
-  `a_landed_first_scan_invalidates_the_browser` (deviation 2) and
+  `a_landed_first_scan_invalidates_the_browser` and
+  `a_landed_first_diffstat_invalidates_the_browser` (deviation 2),
   `one_checkout_describes_itself_the_way_the_scan_describes_it` /
-  `a_checkout_outside_the_repository_cannot_be_described` in `worktree.rs`
-  (deviation 4). The four stale-while-revalidate tests are unchanged in what
+  `a_checkout_outside_the_repository_cannot_be_described` in `worktree.rs` and
+  `a_create_before_the_first_scan_leaves_the_running_scan_alone` (deviation 4),
+  `a_scan_that_cannot_read_its_repository_settles_the_board` (deviation 7),
+  `a_missed_checkout_says_whether_a_scan_has_ever_landed` (deviation 8),
+  `dismissing_the_primary_row_before_its_walk_lands_is_refused` (deviation 9),
+  `attention_survives_a_stamp_taken_before_the_first_scan` /
+  `attention_for_a_dead_run_is_pruned_before_the_first_scan` (deviation 10),
+  and `a_vanished_runs_stages_are_judged_with_the_state_lock_free`
+  (deviation 11). The four stale-while-revalidate tests are unchanged in what
   they pin; each now seeds its cache by waiting for the refresh a first poll
   claimed (`seeded_run_stat`) instead of by making that poll compute.
   `a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock` is

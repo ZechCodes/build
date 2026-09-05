@@ -251,6 +251,13 @@ impl WorktreeManager {
             || self.worktrees_root.join(name).exists()
     }
 
+    /// Where the checkout for `name` goes. The name a caller asks for is the
+    /// name it gets unless [`create`](Self::create) has to suffix it, so this
+    /// is where a checkout is expected rather than where one is.
+    pub fn path_for(&self, name: &str) -> PathBuf {
+        self.worktrees_root.join(name)
+    }
+
     /// Build the branch name for a slug in Build's namespace.
     fn branch_name(&self, slug: &str) -> String {
         format!("{BRANCH_PREFIX}/{slug}")
@@ -540,6 +547,41 @@ pub fn rfc3339_from_unix(seconds: i64) -> Option<String> {
 
 const CHECKOUT_ID_PREFIX: &str = "wt-";
 const CHECKOUT_ID_DIGITS: usize = 12;
+
+/// The canonical form of a checkout root — the spelling every id, registry key
+/// and cache entry is minted from. Falls back to the path as given when the
+/// directory cannot answer (it is gone, or it does not exist yet), so a
+/// vanished checkout and one still to be cut both key consistently.
+pub fn canonical_root(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The canonical spelling a path WILL have once it exists: the deepest ancestor
+/// that does exist, canonicalized, with the missing segments joined back on.
+///
+/// A checkout's id is minted from its canonical path, so the row that stands
+/// for one before `git worktree add` has run has to carry the id the finished
+/// checkout will — and on macOS the directory a checkout is about to be made in
+/// has two literal spellings.
+pub fn canonical_planned_path(path: &Path) -> PathBuf {
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut ancestor = path;
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(ancestor) {
+            return missing
+                .iter()
+                .rev()
+                .fold(canonical, |resolved, segment| resolved.join(segment));
+        }
+        match (ancestor.parent(), ancestor.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name);
+                ancestor = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
 
 /// The stable external-worktree id for a canonical absolute path.
 pub fn external_worktree_id(path: &Path) -> String {

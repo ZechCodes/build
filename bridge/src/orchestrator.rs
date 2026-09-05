@@ -404,6 +404,74 @@ pub enum AdoptionScope {
     PrimaryCheckout,
 }
 
+/// A checkout that passed every refusal adoption makes. Construction IS the
+/// validation, so nothing downstream can refuse a checkout it has already
+/// written a checkpoint commit into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptableCheckout {
+    /// Git's internal worktree name, so teardown understands the checkout.
+    pub name: String,
+    /// Canonical absolute path of the working directory.
+    pub path: PathBuf,
+    /// The branch it has checked out. Never detached, never the base branch of
+    /// an external worktree, never option-shaped.
+    pub branch: String,
+    /// HEAD commit subject. UNTRUSTED display text, and what names the run when
+    /// the branch name says nothing.
+    pub head_subject: String,
+}
+
+impl AdoptableCheckout {
+    /// The three refusals, all of them pure. A checkout that fails one is
+    /// refused with nothing on disk touched and nothing persisted.
+    pub fn judge(
+        checkout: &ExternalWorktree,
+        base_branch: &str,
+        scope: AdoptionScope,
+    ) -> Result<AdoptableCheckout, OrchestratorError> {
+        let Some(branch) = checkout.branch.clone() else {
+            return Err(OrchestratorError::Gate(
+                "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
+            ));
+        };
+        // A worktree sitting on the base branch is a mistake to adopt; the
+        // primary checkout sitting on it is the normal case (it is the base
+        // checkout), which is why the scopes are told apart here at all.
+        if scope == AdoptionScope::ExternalWorktree && branch == base_branch {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree with the base branch {base_branch:?} checked out"
+            )));
+        }
+        // The branch name is an EXTERNAL, untrusted string handed to `git merge`
+        // / `git push` as a bare argv element later; a leading `-` would be read
+        // as an option (arbitrary code execution). Native branches are always
+        // `build/<slug>` and can never trip this.
+        if branch.starts_with('-') {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree whose branch name {branch:?} looks like a command-line \
+                 option — rename the branch first"
+            )));
+        }
+        Ok(AdoptableCheckout {
+            name: checkout.name.clone(),
+            path: checkout.path.clone(),
+            branch,
+            head_subject: checkout.head_subject.clone(),
+        })
+    }
+
+    /// The checkout as Build records it. One shape, read by the scaffold and by
+    /// the run alike, so the two can never disagree about what was adopted.
+    pub fn worktree(&self, base_branch: &str) -> Worktree {
+        Worktree {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            recorded_branch: self.branch.clone(),
+            base_branch: base_branch.to_string(),
+        }
+    }
+}
+
 /// One run in flight: one implementation attempt — a worktree on a
 /// `build/<slug>` branch, its lifecycle state, per-stage execution progress,
 /// and the warm session. An adopted run is one whose `run.plan_id` is `None`.
@@ -1432,6 +1500,43 @@ impl Orchestrator {
         Ok(self.worktrees.create_on_branch(branch, base_branch)?)
     }
 
+    /// Where the checkout for `slug` will go if nothing is in its way. The
+    /// decide phase of a create has no directory to hash an id out of yet, and
+    /// this is the path it expects one at.
+    pub fn planned_checkout_path(&self, slug: &str) -> PathBuf {
+        self.worktrees.path_for(slug)
+    }
+
+    /// One checkout of this repository, described the way the board's scan
+    /// describes it. A git walk of that one directory: off the app mutex.
+    pub fn describe_checkout(
+        &self,
+        path: &Path,
+        base_branch: &str,
+    ) -> Result<ExternalWorktree, OrchestratorError> {
+        Ok(crate::worktree::describe_checkout(
+            &self.repo_path,
+            base_branch,
+            path,
+        )?)
+    }
+
+    /// Every checkout of this repository no run owns, as they stand right now.
+    /// The whole-repository walk a dispatch or an adoption resolves against,
+    /// and seconds of git on a repository with many worktrees: off the app
+    /// mutex, always.
+    pub fn scan_checkouts(
+        &self,
+        base_branch: &str,
+        excluded: &std::collections::HashSet<PathBuf>,
+    ) -> Result<Vec<ExternalWorktree>, OrchestratorError> {
+        Ok(crate::worktree::discover_external_worktrees(
+            &self.repo_path,
+            base_branch,
+            excluded,
+        )?)
+    }
+
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
     /// (the MCP config carries the run id), and spawn the first build session.
     ///
@@ -2387,54 +2492,41 @@ impl Orchestrator {
         }
     }
 
-    /// Mint a plan-less run around an existing checkout (the run-side `adopt`;
-    /// `plan_id` is `None`). No agent session is spawned — the run lands in
-    /// `Review` (there is work to review). Order matches the fused path:
-    /// checkpoint FIRST (pre-Build work stays its own legible commit), then
-    /// scaffold `.build/mcp.json` (left uncommitted). Any error aborts with
-    /// nothing persisted — the caller only persists on `Ok`.
+    /// Write Build's ownership into a checkout it is about to adopt: the
+    /// checkpoint commit that keeps pre-Build work its own legible commit, then
+    /// the `.build/mcp.json` scaffold (left uncommitted). The disk half of an
+    /// adoption, and the half that must run with the app mutex released.
+    ///
+    /// Ordered as the fused dispatch path is, and separated from
+    /// [`adopt_run`](Self::adopt_run) so the verdict — which cannot fail once
+    /// the checkout is an [`AdoptableCheckout`] — is written down under the
+    /// same lock acquisition as everything else it settles.
+    pub fn prepare_adoption(
+        &self,
+        checkout: &AdoptableCheckout,
+        base_branch: &str,
+        owner_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        self.commit_all_with_message(&checkout.path, "Checkpoint: adopted by Build")?;
+        self.scaffold_build_dir(&checkout.worktree(base_branch), owner_id)
+    }
+
+    /// Mint a plan-less run around a checkout [`prepare_adoption`] has already
+    /// written to (the run-side `adopt`; `plan_id` is `None`). No agent session
+    /// is spawned — the run lands in `Review` (there is work to review). Pure
+    /// bookkeeping: every refusal was spent judging the checkout, and no disk
+    /// is touched here.
+    ///
+    /// [`prepare_adoption`]: Self::prepare_adoption
     pub fn adopt_run(
         &self,
         id: RunId,
-        checkout: &ExternalWorktree,
+        checkout: &AdoptableCheckout,
         base_branch: &str,
         model_choice: ModelChoice,
-        scope: AdoptionScope,
     ) -> Result<ActiveRun, OrchestratorError> {
-        let Some(branch) = checkout.branch.clone() else {
-            return Err(OrchestratorError::Gate(
-                "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
-            ));
-        };
-        // A worktree sitting on the base branch is a mistake to adopt; the
-        // primary checkout sitting on it is the normal case (it is the base
-        // checkout), which is why the scopes are told apart here at all.
-        if scope == AdoptionScope::ExternalWorktree && branch == base_branch {
-            return Err(OrchestratorError::Gate(format!(
-                "cannot adopt a worktree with the base branch {base_branch:?} checked out"
-            )));
-        }
-        // The branch name is an EXTERNAL, untrusted string handed to `git merge`
-        // / `git push` as a bare argv element later; a leading `-` would be read
-        // as an option (arbitrary code execution). Native branches are always
-        // `build/<slug>` and can never trip this.
-        if branch.starts_with('-') {
-            return Err(OrchestratorError::Gate(format!(
-                "cannot adopt a worktree whose branch name {branch:?} looks like a command-line \
-                 option — rename the branch first"
-            )));
-        }
-
-        self.commit_all_with_message(&checkout.path, "Checkpoint: adopted by Build")?;
-
-        let worktree = Worktree {
-            name: checkout.name.clone(),
-            path: checkout.path.clone(),
-            recorded_branch: branch.clone(),
-            base_branch: base_branch.to_string(),
-        };
-        self.scaffold_build_dir(&worktree, &id.0)?;
-
+        let branch = checkout.branch.clone();
+        let worktree = checkout.worktree(base_branch);
         let goal = derive_adoption_goal(&branch, &checkout.head_subject);
         let mut run = Run::new(id, None, goal);
         run.apply(RunEvent::Dispatch)?;
@@ -5403,14 +5495,11 @@ mod tests {
         let external = user_worktree(&dir, &repo, "wt-user", "user/thing");
         std::fs::write(external.path.join("notes.txt"), "pre-Build work\n").unwrap();
 
+        let adoptable =
+            AdoptableCheckout::judge(&external, "main", AdoptionScope::ExternalWorktree).unwrap();
+        orch.prepare_adoption(&adoptable, "main", "run-ad").unwrap();
         let run = orch
-            .adopt_run(
-                RunId::new("run-ad"),
-                &external,
-                "main",
-                Default::default(),
-                AdoptionScope::ExternalWorktree,
-            )
+            .adopt_run(RunId::new("run-ad"), &adoptable, "main", Default::default())
             .unwrap();
         assert_eq!(run.run.state, RunState::Review);
         assert_eq!(run.run.plan_id, None, "an adopted run has no plan");

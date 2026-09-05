@@ -55,6 +55,7 @@ pub mod diff;
 pub mod gitgui;
 pub mod harness;
 pub mod identity;
+pub mod lifecycle;
 pub mod mcp;
 pub mod models;
 pub mod notify;

@@ -141,7 +141,13 @@ async fn serve() {
     // getbuild.ing and keeps all state under ~/.build. Dev stacks override.
     let cfg = bridge_config();
     let relay_url = cfg.relay_url.clone();
-    let worktrees = cfg.worktrees.to_string_lossy().into_owned();
+    // Canonical from here on: every checkout id is minted from a canonical
+    // path, and the row that stands for a checkout before `git worktree add`
+    // has made it hashes the path it is about to have.
+    let _ = std::fs::create_dir_all(&cfg.worktrees);
+    let worktrees = build_bridge::worktree::canonical_root(&cfg.worktrees)
+        .to_string_lossy()
+        .into_owned();
     let base_branch = cfg.base_branch.clone();
     let qa_agent = matches!(
         std::env::var("BRIDGE_QA_AGENT").as_deref(),

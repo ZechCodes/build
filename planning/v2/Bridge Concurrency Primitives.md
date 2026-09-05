@@ -268,12 +268,16 @@ the sketch below in seven places, each because the code said so:
 - `TerminalHandle` owns the whole attach (`attach`, which sizes the child and
   then registers the client), which was the caller sequencing a pty write
   against a screen write. The carry is the one place those two halves are NOT
-  owned together: `ensure_agent_tab` publishes the tab under the lock, so the
-  bounded half (`ScreenHandle::carry_clients_from`, which also takes the
-  waiting screen's grid) runs there and the child is told
-  (`TerminalHandle::resize`) once the guard is down — an ioctl goes to a
-  process that may not answer, and `TerminalHandle`'s two writes both keep
-  their "with the app mutex released" promise.
+  owned together, because they are not on the same side of the lock:
+  `ensure_agent_tab` publishes the tab under the app mutex, and the clients
+  must move in that same acquisition, while the child's window-change ioctl
+  goes to a process that may not answer. `inherit_waiting_clients(&mut
+  AppState, key, root, tab)` is the under-lock half — it finds the waiting
+  screen (including the worktree-addressed one the first agent born here
+  inherits) and calls `ScreenHandle::carry_clients_from` — and it hands back an
+  `InheritedViewport`, whose `tell_child` is the ioctl, made once the guard is
+  down. `TerminalHandle`'s writes all keep their "with the app mutex released"
+  promise.
 - `close` and `session_ended` are different verbs. `close` is a screen whose
   TAB is gone: it pushes `term.closed`, and every client that arrives
   afterwards is pushed the same words instead of being registered — a client's
@@ -412,7 +416,8 @@ the spec's load test.
   `a_client_attaching_to_a_tab_that_just_closed_is_told_so`,
   `a_late_attach_lands_on_the_screen_its_clients_were_carried_to`,
   `a_screen_whose_session_ended_takes_the_session_that_replaces_it`,
-  `a_client_attaching_to_a_closed_screen_is_told_it_closed`. All thirteen
+  `a_client_attaching_to_a_closed_screen_is_told_it_closed`,
+  `telling_an_inherited_child_its_size_never_holds_the_app_mutex`. All fourteen
   were watched to fail first; two test-side waits followed
   (`process_reaped` and `SessionLog::ended` poll the retirement thread out
   rather than asking once, which is when the fact can first be observed, not a

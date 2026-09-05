@@ -17913,51 +17913,10 @@ fn ensure_agent_tab(
         }
         let wire_id = tab.wire_id();
         let pumps;
-        // The child that inherited a waiting screen's clients, and the viewport
-        // they are rendering at: told once the lock is down, because an ioctl
-        // goes to a process that may not answer.
-        let inherited_viewport;
+        let inherited;
         {
             let mut s = timer.lock(state);
-            // Clients that mounted the Agent tab before this worktree had one
-            // are attached to a screen with no PTY. Carry them — and the
-            // viewport they render at, the same rule an attach to a live tab
-            // follows — onto the real screen. The carry is what makes the
-            // waiting screen point at this one, so a client attaching during
-            // the spawn is on one screen or the other and never between them
-            // however the two acquisitions fall. The waiting screen's cursor is
-            // not carried: it painted nothing, while a retained screen's cursor
-            // is the one that must never rewind.
-            let first_here = !s
-                .tabs
-                .keys()
-                .any(|other| other.is_agent() && other.root == root);
-            let waiting = s.agent_screens_awaiting_spawn.remove(&key).or_else(|| {
-                // Clients that mounted the tab before this worktree had an
-                // agent addressed it by the WORKTREE; the first agent born here
-                // is the one they were waiting for.
-                first_here.then(|| {
-                    s.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-                        &root,
-                        &crate::worktree::external_worktree_id(&root),
-                    ))
-                })?
-            });
-            inherited_viewport = match waiting {
-                None => None,
-                Some(waiting) => match tab.terminal_handle() {
-                    Ok(terminal) => {
-                        terminal.screen().carry_clients_from(&waiting);
-                        Some((terminal, waiting.size()))
-                    }
-                    // There is no real screen to carry them onto — see
-                    // [`a_screen_with_no_terminal_left`].
-                    Err(_) => {
-                        waiting.close(NO_TERMINAL_LEFT);
-                        None
-                    }
-                },
-            };
+            inherited = inherit_waiting_clients(&mut s, &key, &root, &tab);
             let running = tab
                 .session
                 .active_model()
@@ -17967,13 +17926,85 @@ fn ensure_agent_tab(
             s.agent_spawns_in_flight.remove(&key);
             s.record_agent_active_model(owner, agent_id, running);
         }
-        // A child that refuses the ioctl is dying, and its clients still get
-        // the screen it dies on — the same judgement an attach makes.
-        if let Some((terminal, (cols, rows))) = inherited_viewport {
-            let _ = terminal.resize(cols, rows);
+        if let Some(inherited) = inherited {
+            inherited.tell_child();
         }
         spawn_tab_pumps(state, key, pumps);
         return Ok((wire_id, Spawned::Fresh));
+    }
+}
+
+/// Move the clients that were waiting for `tab`'s agent onto the screen it will
+/// paint, and hand back the child's half of the move.
+///
+/// Clients that mounted the Agent tab before this worktree had one are attached
+/// to a screen with no PTY. They are carried — with the viewport they render
+/// at, the same rule an attach to a live tab follows — onto the real screen.
+/// The carry is what makes the waiting screen point at this one, so a client
+/// attaching during the spawn is on one screen or the other and never between
+/// them however the two acquisitions fall. The waiting screen's cursor is not
+/// carried: it painted nothing, while a retained screen's cursor is the one
+/// that must never rewind.
+///
+/// The screen half is bounded and belongs under the app mutex, beside the
+/// insert that publishes the tab. The child half is an ioctl to a process that
+/// may not answer, so it leaves as an [`InheritedViewport`] for the caller to
+/// make with the lock down.
+fn inherit_waiting_clients(
+    s: &mut AppState,
+    key: &TabKey,
+    root: &std::path::Path,
+    tab: &Tab,
+) -> Option<InheritedViewport> {
+    let first_here = !s
+        .tabs
+        .keys()
+        .any(|other| other.is_agent() && other.root == *root);
+    let waiting = s.agent_screens_awaiting_spawn.remove(key).or_else(|| {
+        // Clients that mounted the tab before this worktree had an agent
+        // addressed it by the WORKTREE; the first agent born here is the one
+        // they were waiting for.
+        first_here.then(|| {
+            s.agent_screens_awaiting_spawn.remove(&TabKey::agent(
+                root,
+                &crate::worktree::external_worktree_id(root),
+            ))
+        })?
+    })?;
+    match tab.terminal_handle() {
+        Ok(terminal) => {
+            let (cols, rows) = waiting.size();
+            terminal.screen().carry_clients_from(&waiting);
+            Some(InheritedViewport {
+                terminal,
+                cols,
+                rows,
+            })
+        }
+        // There is no real screen to carry them onto — see
+        // [`a_screen_with_no_terminal_left`].
+        Err(_) => {
+            waiting.close(NO_TERMINAL_LEFT);
+            None
+        }
+    }
+}
+
+/// The child half of a carry: the terminal that inherited clients, and the
+/// viewport they are rendering at.
+struct InheritedViewport {
+    terminal: TerminalHandle,
+    cols: u16,
+    rows: u16,
+}
+
+impl InheritedViewport {
+    /// Size the child to the grid its inherited clients are watching, with the
+    /// app mutex released. A child that refuses the ioctl is dying, and its
+    /// clients still get the screen it dies on — the same judgement an attach
+    /// makes.
+    fn tell_child(self) {
+        let _ = self.terminal.resize(self.cols, self.rows);
     }
 }
 
@@ -20028,6 +20059,7 @@ mod tests {
     struct GatedHarness {
         output: broadcast::Sender<Vec<u8>>,
         on_write: Option<OffLockGate>,
+        on_resize: Option<OffLockGate>,
         on_end: Option<OffLockGate>,
         on_self_report: Option<OffLockGate>,
         named: Option<String>,
@@ -20039,6 +20071,7 @@ mod tests {
             GatedHarness {
                 output,
                 on_write: None,
+                on_resize: None,
                 on_end: None,
                 on_self_report: None,
                 named: None,
@@ -20048,6 +20081,12 @@ mod tests {
         /// A harness that has stopped draining its pty.
         fn refusing_input_until(mut self, gate: OffLockGate) -> GatedHarness {
             self.on_write = Some(gate);
+            self
+        }
+
+        /// A harness that has stopped answering the window-change ioctl.
+        fn refusing_resize_until(mut self, gate: OffLockGate) -> GatedHarness {
+            self.on_resize = Some(gate);
             self
         }
 
@@ -20112,6 +20151,9 @@ mod tests {
             Ok(())
         }
         fn resize(&self, _size: PtySize) -> Result<(), HarnessError> {
+            if let Some(gate) = &self.on_resize {
+                gate.arrive();
+            }
             Ok(())
         }
         fn pid(&self) -> Option<u32> {
@@ -20468,6 +20510,78 @@ mod tests {
             0,
             "a screen nothing will close again took a client anyway"
         );
+    }
+
+    /// A spawn that inherits waiting clients owes their child a window-change
+    /// ioctl, and an ioctl goes to a process that may not answer. The clients
+    /// move under the app mutex, beside the insert that publishes the tab,
+    /// because that half is bounded; the child is told with the lock down, so a
+    /// harness that will not take the resize wedges one worker rather than the
+    /// daemon.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn telling_an_inherited_child_its_size_never_holds_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-inheriting";
+        let key = TabKey::agent(&root, agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let born = gated_tab(
+            &root,
+            gated_agent_role(agent_id),
+            GatedHarness::new().refusing_resize_until(gate),
+        );
+
+        // A client mounted the Agent tab before this worktree had an agent.
+        let (sender, _pushes, _session_key) = SessionSender::observable("waiting-client");
+        let waiting = ScreenHandle::new(&agent_tab_id(agent_id), 90, 25);
+        waiting.attach(&sender, Some((90, 25)));
+        state
+            .lock()
+            .unwrap()
+            .agent_screens_awaiting_spawn
+            .insert(key.clone(), waiting);
+
+        let told = {
+            let state = Arc::clone(&state);
+            let key = key.clone();
+            let root = root.clone();
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let inherited = {
+                    let mut s = state.lock().unwrap();
+                    let inherited = inherit_waiting_clients(&mut s, &key, &root, &born);
+                    s.tabs.insert(key, born);
+                    inherited
+                };
+                inherited
+                    .expect("the waiting clients are carried onto the new screen")
+                    .tell_child();
+                let _ = done.send(());
+            });
+            finished
+        };
+        gate_handle.wait_for_arrival();
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the window-change ioctl is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        assert_eq!(
+            read.recv_timeout(Duration::from_secs(5))
+                .expect("an unrelated read is answered while a child will not resize")["ok"],
+            true
+        );
+        assert_eq!(
+            screen_of(&state.lock().unwrap().tabs[&key]).attached_sessions(),
+            vec!["waiting-client".to_string()],
+            "the client that was waiting is on the new screen the moment the tab is published"
+        );
+
+        gate_handle.release();
+        told.recv_timeout(Duration::from_secs(5))
+            .expect("the ioctl returns once the child takes it");
     }
 
     /// A terminal names its conversation by listing the harness's transcript

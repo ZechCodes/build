@@ -10666,15 +10666,18 @@ impl AppState {
             return Ok("verified Issue recovery is already running".to_string());
         }
         let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-        let requested_stage_id = match &issue.plan.implementation_intent {
-            ImplementationIntent::Stage(stage_id) => stage_id.clone(),
-            ImplementationIntent::All => next_unsettled_stage(&issue.stages, Some(&active))
-                .map(|doc| doc.id.clone())
-                .unwrap_or_default(),
-            ImplementationIntent::None => active.current_stage_id.clone().unwrap_or_default(),
-        };
+        let requested_stage_id = recovery_target_stage(issue, &active);
         let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
         let started_at = now_rfc3339();
+        let prompt = recovery_agent_prompt(
+            &recovery_id,
+            issue_id,
+            run_id,
+            &requested_stage_id,
+            &active.worktree,
+            error,
+            &issue.stages,
+        );
         active.recovery = Some(crate::run::RecoveryAttempt {
             id: recovery_id.clone(),
             requested_stage_id: requested_stage_id.clone(),
@@ -10687,27 +10690,56 @@ impl AppState {
         active.last_error = Some(format!(
             "automatic branch restoration failed: {error}; verified recovery agent started"
         ));
+        self.queue_recovery_turn(run_id, &active, &project_id, prompt)?;
+        self.finish_run_mutation(run_id.to_string(), active)?;
+        self.note_recovery_started(
+            issue_id,
+            run_id,
+            &recovery_id,
+            &requested_stage_id,
+            error,
+            started_at,
+        )?;
+        Ok(format!(
+            "automatic restore failed; verified recovery {recovery_id} started"
+        ))
+    }
+
+    /// Hand the recovery prompt to the agent that will prove the lineage. An
+    /// agentless run is logged rather than refused: the attempt is on the
+    /// record either way, and a human can start an agent against it.
+    fn queue_recovery_turn(
+        &mut self,
+        run_id: &str,
+        active: &ActiveRun,
+        project_id: &str,
+        prompt: String,
+    ) -> Result<(), String> {
         let project_root = self
             .projects
             .iter()
             .find(|project| project.id == project_id)
             .map(|project| project.repo_path.clone())
             .ok_or("unknown project_id")?;
-        let prompt = recovery_agent_prompt(
-            &recovery_id,
-            issue_id,
-            run_id,
-            &requested_stage_id,
-            &active.worktree,
-            error,
-            &issue.stages,
-        );
-        match PendingAgentTurn::for_recovery(run_id, &active, &project_root, prompt) {
+        match PendingAgentTurn::for_recovery(run_id, active, &project_root, prompt) {
             Some(turn) => self.pending_agent_turns.push(turn),
             None => eprintln!("recover {run_id}: no agent to hand the recovery to"),
         }
-        let persisted = self.finish_run_mutation(run_id.to_string(), active);
-        persisted?;
+        Ok(())
+    }
+
+    /// Tell the Issue's conversation that a verified recovery is running,
+    /// linked to the implementation it is for, the attempt itself, and the
+    /// stage the agent is being asked to prove.
+    fn note_recovery_started(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        recovery_id: &str,
+        requested_stage_id: &str,
+        error: &str,
+        started_at: String,
+    ) -> Result<(), String> {
         let mut issue = self.take_plan(issue_id)?;
         let mut links = vec![
             crate::thread::ThreadLink::Implementation {
@@ -10715,7 +10747,7 @@ impl AppState {
                 implementation_id: run_id.to_string(),
             },
             crate::thread::ThreadLink::Recovery {
-                recovery_id: recovery_id.clone(),
+                recovery_id: recovery_id.to_string(),
             },
         ];
         if let Some(stage) = issue
@@ -10739,11 +10771,7 @@ impl AppState {
             links,
             started_at,
         );
-        let issue_persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
-        issue_persisted?;
-        Ok(format!(
-            "automatic restore failed; verified recovery {recovery_id} started"
-        ))
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     fn refresh_issue_scheduler_activity(&mut self, issue_id: &str) -> Result<(), String> {
@@ -15676,6 +15704,20 @@ fn next_unsettled_stage<'a>(
                     || progress.invalidation_reason.is_some()
             })
     })
+}
+
+/// The stage a verified recovery is being asked to prove: the one the Issue's
+/// durable intent names, the first stage it still owes work on when the intent
+/// is the whole Issue, or — with nothing armed — whatever the run was last
+/// building.
+fn recovery_target_stage(issue: &ActivePlan, active: &ActiveRun) -> String {
+    match &issue.plan.implementation_intent {
+        ImplementationIntent::Stage(stage_id) => stage_id.clone(),
+        ImplementationIntent::All => next_unsettled_stage(&issue.stages, Some(active))
+            .map(|doc| doc.id.clone())
+            .unwrap_or_default(),
+        ImplementationIntent::None => active.current_stage_id.clone().unwrap_or_default(),
+    }
 }
 
 /// The first stage `run.stage_dispatch` would currently accept for a run: the

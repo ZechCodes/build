@@ -1885,6 +1885,90 @@ fn accept_isolation(named: &str, available: &IsolationAvailability) -> Result<Is
     }
 }
 
+/// One `settings.set`: every account setting a client named, parsed whole
+/// before any of it is applied, so a refusal leaves the account exactly as it
+/// was rather than half-moved.
+///
+/// A setting is one row of [`SettingsPatch::FIELDS`] — its wire key beside the
+/// parse that puts the value here — so what this bridge accepts, in what order,
+/// and what "nothing to set" means are all the table, never a condition
+/// somewhere else that someone must remember to extend.
+#[derive(Default)]
+struct SettingsPatch {
+    projects_dir: Option<std::path::PathBuf>,
+    default_harness: Option<AgentProvider>,
+    isolation: Option<Isolation>,
+}
+
+/// What a field does with the value a client sent for it: refuse it, or put it
+/// in the patch. Every parse is handed what this volume can make; only
+/// isolation has anything to ask it.
+type SettingsFieldParse =
+    fn(&mut SettingsPatch, &Value, &IsolationAvailability) -> Result<(), String>;
+
+impl SettingsPatch {
+    /// Read in this order, so a client that sends both `claude_mode` and
+    /// `default_harness` is read by the newer word: they name one setting, and
+    /// the later row lands on top of the earlier.
+    const FIELDS: [(&'static str, SettingsFieldParse); 5] = [
+        ("projects_dir", |patch, value, _| {
+            let named = value
+                .as_str()
+                .ok_or_else(|| "missing required param: projects_dir".to_string())?;
+            patch.projects_dir = Some(expand_tilde(named));
+            Ok(())
+        }),
+        ("claude_mode", |patch, value, _| {
+            let named = value.as_str().unwrap_or_default();
+            patch.default_harness =
+                Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
+                    format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
+                })?);
+            Ok(())
+        }),
+        ("default_harness", |patch, value, _| {
+            let named = value.as_str().unwrap_or_default();
+            patch.default_harness = Some(AgentProvider::from_wire(named).ok_or_else(|| {
+                format!(
+                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\" \
+                     or \"codex\")"
+                )
+            })?);
+            Ok(())
+        }),
+        ("codex_mode", |_, value, _| {
+            if value.as_str() == Some(models::CODEX_ONLY_MODE) {
+                return Ok(());
+            }
+            Err("codex_mode accepts only \"tui\" — Codex has no other mode yet".to_string())
+        }),
+        ("isolation", |patch, value, available| {
+            patch.isolation = Some(accept_isolation(
+                value.as_str().unwrap_or_default(),
+                available,
+            )?);
+            Ok(())
+        }),
+    ];
+
+    /// The patch `params` asks for, or the refusal a set that names no setting
+    /// this bridge knows has earned: a no-op dressed as a mutation says so.
+    fn parse(params: &Value, available: &IsolationAvailability) -> Result<Self, String> {
+        let mut patch = Self::default();
+        let mut named_a_setting = false;
+        for (key, parse_field) in Self::FIELDS {
+            if let Some(value) = params.get(key) {
+                parse_field(&mut patch, value, available)?;
+                named_a_setting = true;
+            }
+        }
+        if !named_a_setting {
+            return Err("settings.set: nothing to set".to_string());
+        }
+        Ok(patch)
+    }
+}
+
 /// Say that this volume could not make the clone the settings asked for.
 ///
 /// The daemon's log always hears it, and the sentence comes back for the
@@ -6742,75 +6826,33 @@ impl AppState {
     /// repos land (creating the folder), which harness a new agent opens on,
     /// and how a new checkout is isolated.
     ///
-    /// Every field is parsed before any is applied, so a refusal leaves the
-    /// settings exactly as they were rather than half-moved.
+    /// Which settings those are is [`SettingsPatch`]'s table; putting an
+    /// accepted one to the account is [`AppState::apply_settings`].
     fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
-        let projects_dir = match params.get("projects_dir") {
-            Some(_) => Some(expand_tilde(&require_str(params, "projects_dir")?)),
-            None => None,
-        };
-        // A step-13 client names the same setting in an older vocabulary, so
-        // `claude_mode` is parsed into the harness it means. Both are parsed;
-        // the new key wins when a client sends both, because that is the one
-        // this bridge writes back.
-        let harness_named_as_a_claude_mode = match params.get("claude_mode") {
-            Some(named) => {
-                let named = named.as_str().unwrap_or_default();
-                Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
-                    format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
-                })?)
-            }
-            None => None,
-        };
-        let default_harness = match params.get("default_harness") {
-            Some(named) => {
-                let named = named.as_str().unwrap_or_default();
-                Some(AgentProvider::from_wire(named).ok_or_else(|| {
-                    format!(
-                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\" \
-                         or \"codex\")"
-                    )
-                })?)
-            }
-            None => harness_named_as_a_claude_mode,
-        };
-        let isolation = match params.get("isolation") {
-            Some(named) => Some(accept_isolation(
-                named.as_str().unwrap_or_default(),
-                &self.account_availability(),
-            )?),
-            None => None,
-        };
-        // Wired like a real field so the Account page has one idiom, hard-locked
-        // because there is no other Codex to open.
-        let codex_mode = params.get("codex_mode");
-        if let Some(named) = codex_mode {
-            if named.as_str() != Some(models::CODEX_ONLY_MODE) {
-                return Err(
-                    "codex_mode accepts only \"tui\" — Codex has no other mode yet".to_string(),
-                );
-            }
-        }
-        if projects_dir.is_none()
-            && default_harness.is_none()
-            && codex_mode.is_none()
-            && isolation.is_none()
-        {
-            return Err("settings.set: nothing to set".to_string());
-        }
-        if let Some(dir) = projects_dir {
+        let patch = SettingsPatch::parse(params, &self.account_availability())?;
+        self.apply_settings(patch)?;
+        self.persist();
+        Ok(self.settings_get())
+    }
+
+    /// Put a parsed patch to the account, in the order its fields were read.
+    /// `projects_dir` is the one setting that touches the disk — the folder is
+    /// made here or the set is refused — and so the one that can fail this
+    /// late; `codex_mode` names no field because there is no other Codex to
+    /// open, so accepting it is the whole of it.
+    fn apply_settings(&mut self, patch: SettingsPatch) -> Result<(), String> {
+        if let Some(dir) = patch.projects_dir {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
             self.projects_dir = std::fs::canonicalize(&dir).unwrap_or(dir);
         }
-        if let Some(harness) = default_harness {
+        if let Some(harness) = patch.default_harness {
             self.default_harness = harness;
         }
-        if let Some(isolation) = isolation {
+        if let Some(isolation) = patch.isolation {
             self.isolation = isolation;
         }
-        self.persist();
-        Ok(self.settings_get())
+        Ok(())
     }
 
     /// Clone a remote into the projects folder and register it as a project. The

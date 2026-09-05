@@ -49,6 +49,8 @@ The row **carries** its origin rather than describing it twice, and nothing down
 
 **The app layer stamps ownership.** `ProjectCheckouts` (the on-lock half) carries the primary checkout's repo path, the external scan's branch → worktree-id map, and every live run's checkout; `ProjectCheckouts::holders` turns that into the `BranchOwnershipIndex` the rows are stamped from. `BranchHolder` picks the one holder that speaks for a branch, so a row names exactly one thing to press.
 
+**The holder is one field, named by the bridge.** `BranchSource`'s variant order is the precedence — a run over the primary checkout over a bare external worktree — and `BranchHolder::of` applies it with a `min_by_key`. The wire carries the answer, not the inputs: `"holder": { "kind": "run" | "primary_checkout" | "external_worktree", "id": … }`, or `null` for a branch nothing holds. Three parallel nullable ids would have made every client re-apply the precedence, which is the same rule written twice in two languages; one field means the SPA looks the verb up by `kind` and orders nothing of its own.
+
 Wire row:
 
 ```json
@@ -56,7 +58,7 @@ Wire row:
   "upstream":"origin/feature-x", "ahead":0, "behind":3,
   "head_subject":"…", "head_time":1756900000,
   "stat":{"files_changed":4,"insertions":80,"deletions":9},
-  "external_worktree_id":null, "run_id":null, "primary_worktree_id":null }
+  "holder": { "kind":"external_worktree", "id":"wt-3" } }
 ```
 
 ## (b) One polymorphic resolution, owned by the bridge
@@ -82,7 +84,7 @@ Exactly one of `branch` / `name` is accepted; both or neither is an error. The `
 
 `branch.dispatch` keeps its single free-text slot and adapts it at its own edge, with the rule `cut_branch_for_dispatch` uses today: a `branch` that passes `is_usable_branch_name` is a name to cut exactly, anything else is words to slugify.
 
-**The single match is exhaustive by construction.** The three ownership lookups come first for both targets; only then does the target decide. Both callers ask them the same way: `worktree.create {branch}` and `branch.dispatch {branch}` each build a `BranchHolder` from `ProjectCheckouts::holders()` over a forced rescan, so the two verbs never disagree about who has a branch. Two survivors of that resolution are named here so nobody looks for what does not exist: `branch.dispatch` opens the run and adopts the external worktree the holder names, but a branch the **primary** checkout holds is *refused* by dispatch (with the same structured message `worktree.create {branch}` gives) rather than adopted — adopting the primary from a dispatch is deferred to the `branch.start` item, which owns the `AdoptCheckout { primary: true }` strategy; and dispatch keeps `cut_branch_for_dispatch` as its own adapter for a slot that may be a name or words.
+**The single match is exhaustive by construction.** The three ownership lookups come first for both targets; only then does the target decide. Both callers ask them the same way: `worktree.create {branch}` and `branch.dispatch {branch}` each build a `BranchHolder` from `ProjectCheckouts::holders()` over a forced rescan, so the two verbs never disagree about who has a branch. Two survivors of that resolution are named here so nobody looks for what does not exist: `branch.dispatch` opens the run and adopts the external worktree the holder names, but a branch the **primary** checkout holds is *refused* by dispatch (with the same structured message `worktree.create {branch}` gives) rather than adopted — adopting the primary is the picker's verb, not dispatch's (see the split recorded below); and dispatch keeps `cut_branch_for_dispatch` as its own adapter for a slot that may be a name or words.
 
 | facts | strategy | intent |
 |---|---|---|
@@ -94,7 +96,9 @@ Exactly one of `branch` / `name` is accepted; both or neither is an error. The `
 | ~~`target: Ref { origin: Absent }`~~ | ~~cut it exactly as given~~ | ~~`Cut`~~ |
 | `target: Words` | cut `build/<slug>` | `Cut` |
 
-**The `Absent` row is superseded** by the two-verb split in §(c): a caller that spelled a `branch` is refused, and only `branch.dispatch`'s own verb cuts an absent name. The row is kept struck through here because the `branch.start` table it belongs to is the later item's, and that item inherits the refusal rather than the cut.
+**The `Absent` row is superseded** by the two-verb split in §(c): a caller that spelled a `branch` is refused, and only `branch.dispatch`'s own verb cuts an absent name.
+
+**As built, the resolution stayed split, and there is no `branch.start`.** This section planned one bridge RPC that took a branch, resolved it and executed the verb, with the SPA reading an `intent` off the listing and pressing it. That RPC was never added, and the plan is amended rather than left standing: the verbs the picker needs already existed as `worktree.create { branch }` (check out, fetching first when only a remote has it) and `run.adopt` (adopt an external worktree or the primary checkout), so a third RPC in front of them would have been a second front door to the same two. What the bridge owns is the fact and the refusal — `BranchHolder` names the one holder on the row, and `BranchHolder::refusal` is the structured message a checkout of a held branch is refused with. What the SPA owns is the verb: `branchPickerModel.js` looks `holder.kind` up in one table and builds the call that row makes. The rows carry no `intent` field from the bridge, because the bridge no longer names a verb.
 
 **What `Words` does when the ref exists.** Nothing different: once no run, external worktree or primary checkout claims the raw text, `Words` short-circuits to the cut regardless of whether a ref of that spelling exists. That is what makes the "typed-name behaviour stays byte-identical" claim true.
 
@@ -183,14 +187,18 @@ pub fn restore(&self, worktree: &Worktree, when_unregistered: UnregisteredRestor
 
 ## (d) SPA: pure model vs DOM
 
-`spa/src/core/branchPickerModel.js`:
+`spa/src/core/branchPickerModel.js` — two exports, and a row that is the whole pressable action:
 
 ```js
-export function branchPickerModel({ branches = [], query = "" })
-// -> { rows: [{ key, name, intent, verb, detail, ahead, behind, stat, remote }],
-//      cutNew: { preview } | null }
+export function branchPickerRows({ projectId, branches = [], query = "" })
+// -> [{ key, name, intent, verb, detail, remote, branch, focusComposer, call, land(answer) }]
+export function pressedRow({ rows, query, highlight })
 ```
 
-The model maps `intent` to a verb and nothing else. `fuzzyRank` and `branchNamePreview` are reused unchanged; `cutNew` is present only when the query is non-empty and matches no branch name exactly.
+A row carries its own verb, its own `call` and its own `land` — where the answer opens — so the DOM presses a row without asking what kind of row it is, and never re-staples a route out of pieces the model already fitted together. `HOLDER_START` maps `holder.kind` to the verb, the detail line and the call; a branch with no holder is a checkout (`materialise` when only a remote has it). `fuzzyRank` and `branchNamePreview` are reused unchanged; the cut-new row leads the list whenever the text could cut a branch and names none of the project's own, and it is the module's own row rather than something the caller rebuilds.
+
+`pressedRow` owns what an Enter press with nothing highlighted means: the row the list leads with, which is the branch the text would cut when it could cut one and the listed branch itself when the text spells one exactly. That rule has one home, so an arrow key that walks the highlight off the top of the list cannot make Enter cut a branch that is sitting right there.
 
 The two rows call the same RPC with different keys, which is what keeps the preview honest: a listed row sends `branch`, the cut-new row sends `name`.
+
+`createWork.js` holds the DOM and nothing else. Each tab is one entry in `CREATE_TABS` carrying its copy, its field, what sits under it, what it preloads, and what typing, the arrow keys and Create mean there — so the modal never compares its tab to a literal, and a third tab is a third entry.

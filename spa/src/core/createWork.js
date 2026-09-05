@@ -13,6 +13,11 @@
 // keeps what was typed on each; a refused create repaints with the words and
 // the caret where they were.
 //
+// Everything a tab does differently — its field, what sits under it, what it
+// preloads, what typing and the arrow keys mean there, and what pressing
+// Create asks for — is one entry in CREATE_TABS. Adding a tab is adding an
+// entry; nothing below ever asks which tab it is on.
+//
 // Nothing is dispatched by either create: the first message sent there is what
 // starts an agent.
 
@@ -22,7 +27,7 @@ import { refreshFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { branchNamePreview } from "./toolbarModel.js";
-import { branchPickerRows, branchStartRoute, cutNewRow } from "./branchPickerModel.js";
+import { branchPickerRows, pressedRow } from "./branchPickerModel.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 
 /** The two things a project can hold, in the order the tabs offer them. */
@@ -32,25 +37,7 @@ export const CREATE_KINDS = ["branch", "issue"];
  *  open at once without either answering for the other. */
 const CHOICE_PREFIX = "create-choice";
 
-/** What each tab asks for. One field, because one field is all it needs. */
-const CREATE_COPY = {
-  branch: {
-    tab: "Branch",
-    hint: "Start work on any branch of the project, or name a new one. Nothing is dispatched — the first message you send starts an agent there.",
-    placeholder: "Find a branch, or name a new one…",
-    label: "Branch",
-    empty: "Name it first.",
-    failed: "Couldn't create the branch",
-  },
-  issue: {
-    tab: "Issue",
-    hint: "Say what you want. No planning agent starts until you send the first message.",
-    placeholder: "e.g. Add a /health endpoint that returns build SHA and uptime…",
-    label: "Goal",
-    empty: "Describe the issue first.",
-    failed: "Couldn't file the issue",
-  },
-};
+const NOTHING_HIGHLIGHTED = -1;
 
 const catalog = () => App.modelCatalog || { providers: [] };
 
@@ -75,8 +62,9 @@ function branchRowHtml(row, index, highlight) {
 }
 
 /** The branch list under the field: the rows, or the one line saying why there
- *  are none. A listing that could not be read never stops a branch being cut
- *  by name, so it is a note beside the field and not the form's error. */
+ *  are none — which is only ever said once the listing is in. A listing that
+ *  could not be read never stops a branch being cut by name, so it is a note
+ *  beside the field and not the form's error. */
 function branchPickerHtml(state) {
   const rows = pickerRows(state);
   const note = state.branchesError
@@ -89,42 +77,21 @@ function branchPickerHtml(state) {
     .join("")}${note}</div>`;
 }
 
-/** The dialog's inside. `state`: { projectId, projectName, kind, values, busy,
- *  error, choice, choiceOpen, branches, branchesError, branchesLoaded,
- *  highlight }. Everything user-supplied is escaped. */
-export function createWorkBodyHtml(state) {
-  const copy = CREATE_COPY[state.kind];
-  const value = state.values[state.kind] || "";
-  const tabs = CREATE_KINDS.map(
-    (kind) =>
-      `<button class="btn seg${kind === state.kind ? " primary" : ""}" type="button" role="tab" aria-selected="${
-        kind === state.kind ? "true" : "false"
-      }" data-create-tab="${kind}">${CREATE_COPY[kind].tab}</button>`,
-  ).join("");
-  const field =
-    state.kind === "issue"
-      ? `<textarea id="create-work-input" rows="3" placeholder="${esc(copy.placeholder)}">${esc(value)}</textarea>`
-      : `<input id="create-work-input" type="text" class="path" placeholder="${esc(copy.placeholder)}" autocomplete="off" value="${esc(value)}" />`;
-  const under =
-    state.kind === "issue"
-      ? agentChoicePanelHtml(catalog(), state.choice, { prefix: CHOICE_PREFIX, open: state.choiceOpen })
-      : branchPickerHtml(state);
-  return `<h3>New in ${esc(state.projectName)}</h3>
-    <div class="segmented create-tabs" role="tablist">${tabs}</div>
-    <div class="sub create-hint">${esc(copy.hint)}</div>
-    <label class="create-label" for="create-work-input">${esc(copy.label)}</label>
-    ${field}
-    ${under}
-    <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
-    <div class="row create-row">
-      <span class="dim mono create-preview" id="create-work-preview">${state.kind === "branch" ? esc(branchNamePreview(value)) : ""}</span>
-      <button class="btn" data-create-cancel type="button">Cancel</button>
-      <button class="btn primary" data-create-go type="button"${state.busy ? " disabled" : ""}>${state.busy ? "creating…" : "Create"}</button>
-    </div>`;
-}
-
-export function createWorkHtml(state) {
-  return modalDialogHtml(createWorkBodyHtml(state), { className: "modal-create" });
+/** The project's branches, asked for once, when the tab that shows them is the
+ *  one being looked at. Requested and listed are two facts: until the answer
+ *  is in, the list has nothing to say about what matches. */
+async function loadBranches(state, repaint) {
+  if (state.branchesRequested || !state.projectId) return;
+  state.branchesRequested = true;
+  try {
+    const listing = await App.call("git.branches", { project_id: state.projectId });
+    state.branches = (listing && listing.branches) || [];
+  } catch (error) {
+    state.branchesError = error.message || String(error);
+  } finally {
+    state.branchesLoaded = true;
+  }
+  repaint();
 }
 
 /** Filing an issue: inert by contract — the record exists, and nothing runs
@@ -142,23 +109,97 @@ const issueAction = (projectId, goal, choice) => ({
   }),
 });
 
-/** Pressing a picker row: the one call it names — a checkout, an adoption, or
- *  nothing at all for a branch a run already owns — and where its answer
- *  lands. */
-const branchAction = (projectId, row) => ({
-  call: row.call,
-  land: (answer) => ({ route: branchStartRoute(projectId, row, answer), focusComposer: row.focusComposer }),
-});
+/**
+ * What each tab is: the words it asks in, the field it asks with, what sits
+ * under that field, what it preloads, what typing and the keys mean there, and
+ * what pressing Create asks for.
+ *
+ * `action` answers the whole pressable thing — a call and where its answer
+ * lands — or null while the tab is asking for nothing. `onTyped` answers
+ * whether what sits under the field changed and must be repainted. `handleKey`
+ * answers whether the key was the tab's, and `controls` is what a tab's keys
+ * can do: move its highlight, or submit.
+ */
+const CREATE_TABS = {
+  branch: {
+    tab: "Branch",
+    hint: "Start work on any branch of the project, or name a new one. Nothing is dispatched — the first message you send starts an agent there.",
+    label: "Branch",
+    empty: "Name it first.",
+    fieldHtml: (value) =>
+      `<input id="create-work-input" type="text" class="path" placeholder="Find a branch, or name a new one…" autocomplete="off" value="${esc(value)}" />`,
+    underHtml: branchPickerHtml,
+    previewHtml: (value) => esc(branchNamePreview(value)),
+    action: (state) =>
+      pressedRow({ rows: pickerRows(state), query: state.values.branch || "", highlight: state.highlight }),
+    onTyped: (state, value) => {
+      // The branch the text would cut leads the list, so highlighting the top
+      // row keeps Enter on what this field has always done.
+      state.highlight = value.trim() ? 0 : NOTHING_HIGHLIGHTED;
+      return true;
+    },
+    handleKey: (state, event, controls) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        controls.moveHighlight(event.key === "ArrowDown" ? 1 : -1);
+        return true;
+      }
+      if (event.key !== "Enter") return false;
+      controls.submit();
+      return true;
+    },
+    load: loadBranches,
+  },
+  issue: {
+    tab: "Issue",
+    hint: "Say what you want. No planning agent starts until you send the first message.",
+    label: "Goal",
+    empty: "Describe the issue first.",
+    fieldHtml: (value) =>
+      `<textarea id="create-work-input" rows="3" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…">${esc(value)}</textarea>`,
+    underHtml: (state) => agentChoicePanelHtml(catalog(), state.choice, { prefix: CHOICE_PREFIX, open: state.choiceOpen }),
+    previewHtml: () => "",
+    action: (state) => {
+      const goal = (state.values.issue || "").trim();
+      return goal ? issueAction(state.projectId, goal, state.choice) : null;
+    },
+    onTyped: () => false,
+    handleKey: (state, event, controls) => {
+      if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return false;
+      controls.submit();
+      return true;
+    },
+    load: () => {},
+  },
+};
 
-/** What the form is asking to make, or null while it is asking for nothing —
- *  the one place a tab decides which of the two this is. A branch tab with a
- *  row highlighted means that row; with none, the branch its text would cut,
- *  which is what this field meant before it had a list under it. */
-function createAction(state) {
-  const typed = (state.values[state.kind] || "").trim();
-  if (state.kind !== "branch") return typed ? issueAction(state.projectId, typed, state.choice) : null;
-  const row = pickerRows(state)[state.highlight] || (typed ? cutNewRow(state.projectId, typed) : null);
-  return row ? branchAction(state.projectId, row) : null;
+/** The dialog's inside. `state`: { projectId, projectName, kind, values, busy,
+ *  error, choice, choiceOpen, branches, branchesError, branchesRequested,
+ *  branchesLoaded, highlight }. Everything user-supplied is escaped. */
+export function createWorkBodyHtml(state) {
+  const tab = CREATE_TABS[state.kind];
+  const value = state.values[state.kind] || "";
+  const tabs = CREATE_KINDS.map(
+    (kind) =>
+      `<button class="btn seg${kind === state.kind ? " primary" : ""}" type="button" role="tab" aria-selected="${
+        kind === state.kind ? "true" : "false"
+      }" data-create-tab="${kind}">${CREATE_TABS[kind].tab}</button>`,
+  ).join("");
+  return `<h3>New in ${esc(state.projectName)}</h3>
+    <div class="segmented create-tabs" role="tablist">${tabs}</div>
+    <div class="sub create-hint">${esc(tab.hint)}</div>
+    <label class="create-label" for="create-work-input">${esc(tab.label)}</label>
+    ${tab.fieldHtml(value)}
+    ${tab.underHtml(state)}
+    <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
+    <div class="row create-row">
+      <span class="dim mono create-preview" id="create-work-preview">${tab.previewHtml(value)}</span>
+      <button class="btn" data-create-cancel type="button">Cancel</button>
+      <button class="btn primary" data-create-go type="button"${state.busy ? " disabled" : ""}>${state.busy ? "creating…" : "Create"}</button>
+    </div>`;
+}
+
+export function createWorkHtml(state) {
+  return modalDialogHtml(createWorkBodyHtml(state), { className: "modal-create" });
 }
 
 /**
@@ -178,13 +219,12 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     choiceOpen: false,
     branches: [],
     branchesError: "",
+    branchesRequested: false,
     branchesLoaded: false,
-    // Nothing is highlighted until there is text to highlight for, so Enter on
-    // an untouched field still asks to be told a name rather than opening
-    // whichever branch happens to sit at the top of the list.
-    highlight: -1,
+    highlight: NOTHING_HIGHLIGHTED,
   };
   const { body, close } = openModal({ dialogHtml: createWorkHtml(state), scrimId: "create-scrim" });
+  const controls = { moveHighlight, submit };
 
   function paint() {
     // The typed answer is state, not something the DOM happens to be holding:
@@ -197,12 +237,12 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
   }
 
   function wire(caret) {
-    body.querySelectorAll("[data-create-tab]").forEach((tab) => {
-      tab.onclick = () => {
-        state.kind = tab.dataset.createTab;
+    body.querySelectorAll("[data-create-tab]").forEach((button) => {
+      button.onclick = () => {
+        state.kind = button.dataset.createTab;
         state.error = "";
         paint();
-        loadBranches();
+        CREATE_TABS[state.kind].load(state, paint);
       };
     });
     const input = body.querySelector("#create-work-input");
@@ -210,27 +250,15 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     input.setSelectionRange(caret, caret);
     input.oninput = () => {
       state.values[state.kind] = input.value;
-      if (state.kind !== "branch") return;
-      // The branch the text would cut leads the list, so highlighting the top
-      // row keeps Enter on what this field has always done.
-      state.highlight = input.value.trim() ? 0 : -1;
-      paint();
+      if (CREATE_TABS[state.kind].onTyped(state, input.value)) paint();
     };
     input.onkeydown = (event) => {
-      if (state.kind === "branch" && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-        event.preventDefault();
-        moveHighlight(event.key === "ArrowDown" ? 1 : -1);
-        return;
-      }
-      if (event.key === "Enter" && (state.kind === "branch" || event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        submit();
-      }
+      if (CREATE_TABS[state.kind].handleKey(state, event, controls)) event.preventDefault();
     };
     body.querySelectorAll("[data-branch-pick]").forEach((row) => {
       row.onclick = () => {
         state.highlight = Number(row.dataset.branchPick);
-        submit();
+        return submit();
       };
     });
     body.querySelector("[data-create-cancel]").onclick = close;
@@ -240,8 +268,10 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
 
   function moveHighlight(step) {
     const last = pickerRows(state).length - 1;
-    state.highlight = Math.min(last, Math.max(-1, state.highlight + step));
+    state.highlight = Math.min(last, Math.max(NOTHING_HIGHLIGHTED, state.highlight + step));
     paint();
+    const row = state.highlight >= 0 ? body.querySelector(`[data-branch-pick="${state.highlight}"]`) : null;
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
   }
 
   function wireChoice() {
@@ -261,25 +291,12 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     control("effort").onchange = onChange({});
   }
 
-  /** The project's branches, asked for once, when the tab that shows them is
-   *  the one being looked at. */
-  async function loadBranches() {
-    if (state.kind !== "branch" || state.branchesLoaded || !projectId) return;
-    state.branchesLoaded = true;
-    try {
-      const listing = await App.call("git.branches", { project_id: projectId });
-      state.branches = (listing && listing.branches) || [];
-    } catch (error) {
-      state.branchesError = error.message || String(error);
-    }
-    paint();
-  }
-
   async function submit() {
     if (state.busy) return;
-    const action = createAction(state);
+    const tab = CREATE_TABS[state.kind];
+    const action = tab.action(state);
     if (!action) {
-      state.error = CREATE_COPY[state.kind].empty;
+      state.error = tab.empty;
       paint();
       return;
     }
@@ -291,23 +308,23 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     state.busy = true;
     state.error = "";
     paint();
+    let answer = null;
     try {
-      const answer = action.call ? await App.call(action.call.method, action.call.params) : null;
-      const { route, focusComposer } = action.land(answer);
-      close();
-      refreshFeed();
-      // A checkout with nobody in it opens on the ghost composer, and that is
-      // exactly where typing the first message belongs.
-      App.focusComposerOnMount = focusComposer;
-      navigate(route);
+      answer = action.call ? await App.call(action.call.method, action.call.params) : null;
     } catch (error) {
       state.busy = false;
       state.error = error.message || String(error);
       paint();
+      return;
     }
+    const { route, focusComposer } = action.land(answer);
+    close();
+    refreshFeed();
+    App.focusComposerOnMount = focusComposer;
+    navigate(route);
   }
 
   wire((state.values[state.kind] || "").length);
-  loadBranches();
+  CREATE_TABS[state.kind].load(state, paint);
   return { close };
 }

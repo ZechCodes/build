@@ -42,11 +42,12 @@ const listed = (name, stamps = {}) => ({
   behind: 0,
   head_subject: "",
   head_time: 0,
-  run_id: null,
-  external_worktree_id: null,
-  primary_worktree_id: null,
+  holder: null,
   ...stamps,
 });
+
+/** The one holder the bridge names for a branch, as the wire carries it. */
+const heldBy = (kind, id) => ({ holder: { kind, id } });
 
 let navigate;
 let branches;
@@ -199,11 +200,11 @@ describe("the create modal's branch picker", () => {
 
   it("lists the project's branches when the tab opens, saying what pressing each one does", async () => {
     await openOnBranches([
-      listed("main", { is_current: true, primary_worktree_id: "wt-root" }),
+      listed("main", { is_current: true, ...heldBy("primary_checkout", "wt-root") }),
       listed("feature-x"),
       listed("feature-remote", { remote: "origin" }),
-      listed("feature-run", { run_id: "r-1" }),
-      listed("feature-elsewhere", { external_worktree_id: "wt-3" }),
+      listed("feature-run", heldBy("run", "r-1")),
+      listed("feature-elsewhere", heldBy("external_worktree", "wt-3")),
     ]);
     expect(App.call).toHaveBeenCalledWith("git.branches", { project_id: "p1" });
     expect(rowNames()).toEqual(["main", "feature-x", "feature-remote", "feature-run", "feature-elsewhere"]);
@@ -251,7 +252,7 @@ describe("the create modal's branch picker", () => {
   });
 
   it("adopts the worktree a branch is already checked out in, then opens it", async () => {
-    await openOnBranches([listed("feature-elsewhere", { external_worktree_id: "wt-3" })]);
+    await openOnBranches([listed("feature-elsewhere", heldBy("external_worktree", "wt-3"))]);
     rows()[0].click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", worktree_id: "wt-3" });
@@ -261,7 +262,7 @@ describe("the create modal's branch picker", () => {
   });
 
   it("adopts the primary checkout by what it is", async () => {
-    await openOnBranches([listed("main", { is_current: true, primary_worktree_id: "wt-root" })]);
+    await openOnBranches([listed("main", { is_current: true, ...heldBy("primary_checkout", "wt-root") })]);
     rows()[0].click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", primary: true });
@@ -269,7 +270,7 @@ describe("the create modal's branch picker", () => {
   });
 
   it("just opens a branch a run already owns", async () => {
-    await openOnBranches([listed("feature-run", { run_id: "r-1" })]);
+    await openOnBranches([listed("feature-run", heldBy("run", "r-1"))]);
     App.call.mockClear();
     rows()[0].click();
     await flush();
@@ -324,6 +325,70 @@ describe("the create modal's branch picker", () => {
     expect(input().selectionStart).toBe(3);
     expect(rowNames()).toEqual(["feature-x"]);
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("means the branch itself when the arrows have left nothing highlighted", async () => {
+    await openOnBranches([listed("feature-x")]);
+    type("feature-x");
+    expect(highlighted()).toBe(0);
+    press("ArrowUp");
+    expect(highlighted()).toBe(-1);
+    press("Enter");
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
+    expect(App.call).not.toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "feature-x" });
+  });
+
+  it("says nothing about matches while the listing is still on the wire, and says it once the answer is in", async () => {
+    let answer;
+    App.call = vi.fn(
+      (method) => new Promise((resolve) => {
+        answer = () => resolve({ current: "main", branches: [] });
+        if (method !== "git.branches") resolve({});
+      }),
+    );
+    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    await flush();
+    type("!!!");
+    expect(modal().querySelector(".branch-picker-note")).toBeNull();
+    answer();
+    await flush();
+    expect(modal().querySelector(".branch-picker-note").textContent).toBe("No branch matches.");
+  });
+
+  it("scrolls the row the arrows land on into view, so Enter presses what can be seen", async () => {
+    const original = Element.prototype.scrollIntoView;
+    const scrolled = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(options) {
+      scrolled.push([this.dataset.branchPick, options]);
+    };
+    try {
+      await openOnBranches([listed("main"), listed("feature-x")]);
+      press("ArrowDown");
+      press("ArrowDown");
+      expect(scrolled).toEqual([
+        ["0", { block: "nearest" }],
+        ["1", { block: "nearest" }],
+      ]);
+      press("ArrowUp");
+      press("ArrowUp");
+      expect(scrolled).toHaveLength(3);
+      expect(highlighted()).toBe(-1);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("lets a failure after the create surface instead of painting it as a refused create", async () => {
+    navigate = vi.fn(() => {
+      throw new Error("no route for that branch");
+    });
+    await openOnBranches([listed("feature-x")]);
+    const pressed = rows()[0].onclick();
+    await expect(pressed).rejects.toThrow("no route for that branch");
+    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
+    expect(refreshFeed).toHaveBeenCalled();
+    expect(modal()).toBeNull();
   });
 
   it("still cuts a branch by name when the listing itself cannot be read", async () => {

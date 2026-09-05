@@ -2970,6 +2970,12 @@ impl Orchestrator {
     /// only ignore file that can hold a rule for the primary checkout without
     /// putting a file in the human's tree. Idempotent: a rule already there is
     /// left alone.
+    ///
+    /// The file is the human's, and every planning workspace of this project
+    /// appends to it with the app mutex released, so two Issues planned at once
+    /// are two writers of one file. The replacement is atomic for that reason:
+    /// a writer that read a stale file rewrites the same two rules, never a
+    /// shortened copy of the human's own.
     fn exclude_build_machinery_repo_locally(&self) -> Result<(), OrchestratorError> {
         const RULES: [&str; 2] = [".build/mcp*.json", ".build/attachments/"];
         let git_dir = self
@@ -2996,7 +3002,7 @@ impl Orchestrator {
             updated.push_str(rule);
             updated.push('\n');
         }
-        std::fs::write(&exclude_path, updated)?;
+        crate::store::write_file_atomically(&exclude_path, &updated)?;
         Ok(())
     }
 
@@ -3180,6 +3186,71 @@ mod tests {
             Agent::Warm(warm_harness()),
             Templates::default(),
         )
+    }
+
+    /// `.git/info/exclude` is the human's own file, and every planning
+    /// workspace of the same project appends Build's two rules to it with the
+    /// app mutex released — so two Issues planned at once are two writers.
+    /// A reader must see the file whole at every instant, and the human's own
+    /// rules must be there, once, when the writers are done.
+    #[test]
+    fn concurrent_planning_workspaces_never_shorten_the_humans_exclude_file() {
+        let (dir, repo) = init_repo();
+        let orch = std::sync::Arc::new(orchestrator(&dir, &repo));
+        let info = repo.join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        let exclude = info.join("exclude");
+        let human_rules: String = (0..4096)
+            .map(|i| format!("scratch/notes-{i:04}.md\n"))
+            .collect();
+        std::fs::write(&exclude, &human_rules).unwrap();
+        let expected = format!(
+            "{human_rules}# Build's machine-local agent plumbing\n.build/mcp*.json\n.build/attachments/\n"
+        );
+
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let orch = std::sync::Arc::clone(&orch);
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    orch.write_build_dir(&repo, &format!("plan-{i}")).unwrap();
+                })
+            })
+            .collect();
+        let torn = {
+            let exclude = exclude.clone();
+            let human_rules = human_rules.clone();
+            let expected = expected.clone();
+            std::thread::spawn(move || {
+                let mut torn = Vec::new();
+                for _ in 0..2000 {
+                    let seen = std::fs::read_to_string(&exclude).unwrap();
+                    if seen != human_rules && seen != expected {
+                        torn.push(seen.len());
+                    }
+                }
+                torn
+            })
+        };
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let torn = torn.join().unwrap();
+
+        assert!(
+            torn.is_empty(),
+            "a reader saw the exclude file part-written, at these lengths: {torn:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), expected);
+        let leftovers: Vec<_> = std::fs::read_dir(&info)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != "exclude")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left beside exclude: {leftovers:?}"
+        );
     }
 
     fn done(phase: DonePhase, status: DoneStatus, plan_path: Option<&str>) -> DoneReport {

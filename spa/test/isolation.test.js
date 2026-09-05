@@ -152,13 +152,14 @@ describe("the settings panel", () => {
 
 describe("where a chosen isolation is sent", () => {
   it("puts the account's choice to settings.set, with nothing to inherit", () => {
-    expect(ACCOUNT_ISOLATION).toEqual({ rpc: "settings.set", params: {}, inheritLabel: null });
+    expect(ACCOUNT_ISOLATION).toEqual({ rpc: "settings.set", params: {}, inherits: false, inheritLabel: null });
   });
 
   it("keys a project's choice on its own id and names the account default it replaces", () => {
     expect(projectIsolationTarget({ project_id: "p1", isolation_default: "cow" })).toEqual({
       rpc: "project.set_isolation",
       params: { project_id: "p1" },
+      inherits: true,
       inheritLabel: "Account default (Copy-on-write clone)",
     });
   });
@@ -207,6 +208,20 @@ describe("the mounted control", () => {
     await flush();
     await flush();
   };
+
+  // Whether "no choice" is a choice is the target's capability, not its copy:
+  // a target that can inherit reads a missing value as inheriting, one that
+  // cannot reads it as the isolation every checkout falls back to.
+  it("reads a missing choice by what the target can inherit, not by what it is called", async () => {
+    const callRpc = vi.fn(async (method, params) => params);
+    await mount({ rpc: "t", params: {}, inherits: false, inheritLabel: "Account default (Git worktree)" }, {}, callRpc);
+
+    expect(select().value).toBe("worktree");
+
+    await choose("worktree");
+
+    expect(callRpc).toHaveBeenCalledWith("t", { isolation: "worktree" });
+  });
 
   it("paints the choice it was handed, without asking the bridge again", async () => {
     const callRpc = vi.fn();

@@ -88,7 +88,7 @@ export function isolationPanelHtml() {
 }
 
 /** The account's own choice: settings.set, and nothing above it to inherit. */
-export const ACCOUNT_ISOLATION = { rpc: "settings.set", params: {}, inheritLabel: null };
+export const ACCOUNT_ISOLATION = { rpc: "settings.set", params: {}, inherits: false, inheritLabel: null };
 
 /** A project's override, keyed on its id, naming the account default it
  *  replaces so the inherit option reads as what choosing it does. */
@@ -96,14 +96,17 @@ export function projectIsolationTarget(project) {
   return {
     rpc: "project.set_isolation",
     params: { project_id: project.project_id },
+    inherits: true,
     inheritLabel: `Account default (${isolationLabel(project && project.isolation_default)})`,
   };
 }
 
-/** What the select shows: a project's own override, which may be nothing at
- *  all, and the account's answer defaulted because it has nothing above it. */
-const chosenIsolation = (settings, inheritLabel) =>
-  inheritLabel ? (settings && settings.isolation) || null : isolationOf(settings);
+/** What the select shows: where a target inherits, its own override, which may
+ *  be nothing at all; where it does not, its answer defaulted, because there is
+ *  nothing above it for nothing to mean. What inheriting is called is copy, and
+ *  copy decides nothing. */
+const chosenIsolation = (settings, target) =>
+  target.inherits ? (settings && settings.isolation) || null : isolationOf(settings);
 
 const lockLine = (available) => {
   const reason = isolationLockReason(available);
@@ -127,7 +130,7 @@ export async function mountIsolation(host, { callRpc, target, settings }) {
   const paint = (state) => {
     held = state;
     const available = state && state.isolation_available;
-    select.innerHTML = isolationOptionsHtml(chosenIsolation(state, target.inheritLabel), available, {
+    select.innerHTML = isolationOptionsHtml(chosenIsolation(state, target), available, {
       inheritLabel: target.inheritLabel,
     });
     lock.textContent = lockLine(available);

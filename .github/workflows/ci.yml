@@ -39,6 +39,7 @@ jobs:
       relay: ${{ steps.filter.outputs.relay }}
       e2e: ${{ steps.filter.outputs.e2e }}
       desktop: ${{ steps.filter.outputs.desktop }}
+      scripts: ${{ steps.filter.outputs.scripts }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -69,6 +70,7 @@ jobs:
           touched '^(spa|skriftapp)/|^deploy/k8s/app\.yaml$' && app=true || app=false
           touched '^bridge/|^deploy/k8s/relay\.yaml$' && relay=true || relay=false
           touched '^desktop/' && desktop=true || desktop=false
+          touched '^scripts/' && scripts=true || scripts=false
           # The end-to-end job also has to run when the harness itself moves —
           # the QA client under web/ or the compose stack it drives — or a
           # change to the test would skip the test.
@@ -78,7 +80,8 @@ jobs:
           echo "relay=$relay" >> "$GITHUB_OUTPUT"
           echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
           echo "desktop=$desktop" >> "$GITHUB_OUTPUT"
-          echo "app=$app relay=$relay e2e=$e2e desktop=$desktop"
+          echo "scripts=$scripts" >> "$GITHUB_OUTPUT"
+          echo "app=$app relay=$relay e2e=$e2e desktop=$desktop scripts=$scripts"
 
   bridge:
     name: Rust bridge
@@ -188,6 +191,20 @@ jobs:
       - name: vitest
         working-directory: spa
         run: npx vitest run
+
+  # scripts/install.sh is published verbatim as a release asset and piped into
+  # `sh` on a stranger's machine, so it is checked as POSIX sh — the shell it
+  # actually runs under — and not as the bash a developer happens to test with.
+  # The release workflow runs the same line before it packages the script.
+  scripts:
+    name: Shell scripts
+    needs: [changes]
+    if: ${{ needs.changes.outputs.scripts == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: shellcheck
+        run: shellcheck -s sh scripts/*.sh
 
   desktop:
     name: Desktop client

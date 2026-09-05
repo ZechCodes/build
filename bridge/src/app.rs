@@ -18018,6 +18018,14 @@ impl SpawnHolding {
 /// Every field of the plan is owned — the project's orchestrator is cloned, the
 /// probes are `Arc`s — so nothing it does afterwards can reach back into the
 /// registry this read it out of.
+///
+/// Every read that can fail runs FIRST, with the registry untouched. Retiring
+/// the dead tab and registering the MCP token are the reservation giving
+/// things up on the registry's behalf, and [`SpawnHolding::abandon`] is the one
+/// primitive that gives them back — a failure between the take and the holding
+/// would bypass it, leaving browsers on a grid no registry can reach and a
+/// token no child holds. So the only failure arm here fails before anything is
+/// taken.
 fn reserve_agent_spawn(
     s: &mut AppState,
     key: &TabKey,
@@ -18025,6 +18033,18 @@ fn reserve_agent_spawn(
     agent_id: &str,
     model_choice: &ModelChoice,
 ) -> Result<ReservedSpawn, String> {
+    // A router session belongs to no project — deciding which one
+    // the capture belongs to is its job. Any project's
+    // orchestrator builds the same harness spec for it, since the
+    // spec is made from the cwd and the owner id alone.
+    let project_id = match s.project_of(owner) {
+        Ok(project_id) => project_id,
+        Err(unknown) if crate::router::is_router_agent(agent_id) => {
+            s.default_project().map_err(|_| unknown)?
+        }
+        Err(unknown) => return Err(unknown),
+    };
+    let project = s.orch_for(&project_id)?.clone();
     let carried = s
         .retire_tab_keeping_screen(key)
         .and_then(|(_reaping, screen)| screen);
@@ -18047,17 +18067,6 @@ fn reserve_agent_spawn(
     for other in stale {
         s.retire_tab(&other, "closed");
     }
-    // A router session belongs to no project — deciding which one
-    // the capture belongs to is its job. Any project's
-    // orchestrator builds the same harness spec for it, since the
-    // spec is made from the cwd and the owner id alone.
-    let project_id = match s.project_of(owner) {
-        Ok(project_id) => project_id,
-        Err(unknown) if crate::router::is_router_agent(agent_id) => {
-            s.default_project().map_err(|_| unknown)?
-        }
-        Err(unknown) => return Err(unknown),
-    };
     let session_token = uuid::Uuid::new_v4().to_string();
     // Before the child exists, because the child dials the done socket as soon
     // as it is up and an unregistered token is an unauthorized report.
@@ -18065,7 +18074,7 @@ fn reserve_agent_spawn(
         .insert(agent_id.to_string(), session_token.clone());
     Ok(ReservedSpawn {
         plan: AgentSpawnPlan {
-            project: s.orch_for(&project_id)?.clone(),
+            project,
             root: key.root.clone(),
             agent_id: agent_id.to_string(),
             model_choice: model_choice.clone(),
@@ -35831,6 +35840,92 @@ mod tests {
         assert!(
             !state.lock().unwrap().tabs.contains_key(&key),
             "the failed spawn leaves no tab behind either"
+        );
+    }
+
+    /// A reservation that cannot be completed takes nothing out of the registry.
+    ///
+    /// Retiring the dead tab and registering the MCP token are the reservation
+    /// giving things up on the registry's behalf, and a failure after either
+    /// bypasses the one primitive that gives them back. So every read that can
+    /// fail runs first, with the registry untouched: the dead tab keeps its
+    /// retained grid and the clients on it, the token the last session held
+    /// stands, and a later spawn can still replace both.
+    #[tokio::test]
+    async fn a_reservation_that_cannot_resolve_its_project_takes_nothing_from_the_registry() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-unresolvable");
+        let agent_id = crate::agent::derived_agent_id("run-unresolvable");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-unresolvable");
+
+        deliver(
+            &state,
+            &root,
+            "run-unresolvable",
+            &agent_id,
+            &ModelChoice::default(),
+            "FIRST-SESSION",
+            "warm",
+        )
+        .expect("the first delivery spawns a PTY");
+        wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
+        state.lock().unwrap().tabs[&key].session.end();
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the dead session leaves a retained screen behind");
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        let token_before = {
+            let s = state.lock().unwrap();
+            screen_of(&s.tabs[&key]).attach(&sender, None);
+            s.mcp_session_tokens[&agent_id].clone()
+        };
+
+        // The owner's project binding is gone, so the reservation cannot say
+        // which orchestrator builds the harness.
+        state
+            .lock()
+            .unwrap()
+            .entity_project
+            .remove("run-unresolvable");
+        let refused = deliver(
+            &state,
+            &root,
+            "run-unresolvable",
+            &agent_id,
+            &ModelChoice::default(),
+            "SECOND-SESSION",
+            "warm",
+        )
+        .expect_err("an owner with no project cannot be spawned for");
+        assert!(refused.contains("unknown entity id"), "{refused}");
+
+        let s = state.lock().unwrap();
+        let dead = s
+            .tabs
+            .get(&key)
+            .expect("the dead tab is still in the registry");
+        assert!(
+            dead.screen.is_some(),
+            "and still holds the grid its clients are attached to"
+        );
+        assert_eq!(
+            s.mcp_session_tokens[&agent_id], token_before,
+            "no token was registered for a child that never existed"
+        );
+        assert!(
+            s.agent_spawns_in_flight.is_empty(),
+            "no claim was left behind"
+        );
+        drop(s);
+        let mut seen = Vec::new();
+        while let Ok(message) = pushes.try_recv() {
+            seen.push(SessionSender::decrypt_push(&session_key, &message));
+        }
+        assert!(
+            !seen.iter().any(|push| push["type"] == "term.closed"),
+            "the attached client was told nothing, because nothing changed: {seen:?}"
         );
     }
 

@@ -12,7 +12,7 @@ from buildapp.invite_pages import (
     INVITE_ONLY_HEADING,
     INVITE_ONLY_TITLE,
     OUTCOMES,
-    render_invite_only_page,
+    invite_only_outcome,
 )
 from buildapp.invites import EMAIL_MISMATCH, InviteState
 from buildapp.landing_page import PANEL_NAME, read_landing_file
@@ -34,7 +34,7 @@ MODULE_DOCSTRING_DELIMITER = '"""'
 
 def _every_page() -> tuple[str, ...]:
     return tuple(outcome.render() for outcome in OUTCOMES.values()) + (
-        render_invite_only_page(SIGNED_IN_ADDRESS),
+        invite_only_outcome(SIGNED_IN_ADDRESS).render(),
     )
 
 
@@ -54,6 +54,7 @@ def test_each_outcome_answers_with_the_status_code_its_state_deserves():
     assert OUTCOMES[InviteState.EXPIRED].status_code == 410
     assert OUTCOMES[InviteState.REDEEMED].status_code == 200
     assert OUTCOMES[EMAIL_MISMATCH].status_code == 403
+    assert invite_only_outcome(SIGNED_IN_ADDRESS).status_code == 403
 
 
 def test_each_outcome_renders_its_own_title_and_heading_through_the_shell():
@@ -76,7 +77,7 @@ def test_the_mismatch_page_offers_a_sign_out_because_the_fix_is_another_account(
 
 
 def test_the_invite_only_page_names_the_signed_in_address_and_offers_both_exits():
-    html = render_invite_only_page(SIGNED_IN_ADDRESS)
+    html = invite_only_outcome(SIGNED_IN_ADDRESS).render()
     assert f"<title>{INVITE_ONLY_TITLE}</title>" in html
     assert INVITE_ONLY_HEADING in html
     assert SIGNED_IN_ADDRESS in html
@@ -85,7 +86,7 @@ def test_the_invite_only_page_names_the_signed_in_address_and_offers_both_exits(
 
 
 def test_the_invite_only_page_escapes_the_address_it_was_handed():
-    html = render_invite_only_page(f"{MARKUP_INJECTION}{SIGNED_IN_ADDRESS}")
+    html = invite_only_outcome(f"{MARKUP_INJECTION}{SIGNED_IN_ADDRESS}").render()
     assert MARKUP_INJECTION not in html
     assert ESCAPED_INJECTION in html
 

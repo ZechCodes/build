@@ -11,10 +11,8 @@ from pathlib import Path
 
 from litestar import Controller, Request, get
 from litestar.di import Provide
-from litestar.enums import MediaType
 from litestar.exceptions import NotFoundException
 from litestar.response import Redirect, Response
-from litestar.status_codes import HTTP_403_FORBIDDEN
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import releases
@@ -22,7 +20,7 @@ from buildapp.accounts import account_email
 from buildapp.alpha_membership import is_alpha_member
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_message import provide_public_base_url
-from buildapp.invite_pages import render_invite_only_page
+from buildapp.invite_pages import invite_only_outcome
 from buildapp.session_auth import require_user, session_user_id
 
 HERE = Path(__file__).parent
@@ -44,17 +42,6 @@ MEDIA_TYPES = {
 }
 
 
-async def invite_only_response(user_id, db_session: AsyncSession) -> Response:
-    """What a signed-in account with no redeemed invite sees at /app/. Names the address
-    it is refusing, so the visitor can see they are signed in as the wrong one."""
-    email = await account_email(db_session, user_id)
-    return Response(
-        render_invite_only_page(email),
-        media_type=MediaType.HTML,
-        status_code=HTTP_403_FORBIDDEN,
-    )
-
-
 class BuildController(Controller):
     path = "/app"
     dependencies = {
@@ -71,7 +58,8 @@ class BuildController(Controller):
         if user_id is None:
             return Redirect("/auth/login?next=/app/")
         if not await is_alpha_member(db_session, user_id):
-            return await invite_only_response(user_id, db_session)
+            email = await account_email(db_session, user_id)
+            return invite_only_outcome(email).response()
 
         return await self._render_spa(user_id, db_session)
 

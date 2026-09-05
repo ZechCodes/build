@@ -140,13 +140,14 @@ OUTCOMES: dict[RedemptionRefusal, PageOutcome] = {
 }
 
 
-def render_invite_only_page(email: str) -> str:
-    """What /app/ shows an account with no invite. Names the address it is refusing so
-    the visitor can tell they are signed in as the wrong one."""
+def invite_only_outcome(email: str) -> PageOutcome:
+    """What /app/ shows an account with no invite. A row like every other — the 403 is
+    written here and nowhere else — built per call because it names the address it is
+    refusing, so the visitor can tell they are signed in as the wrong one."""
     return PageOutcome(
         status_code=HTTP_403_FORBIDDEN,
         title=INVITE_ONLY_TITLE,
         heading=INVITE_ONLY_HEADING,
         message=INVITE_ONLY_MESSAGE_TEMPLATE.format(address=escape(email)),
         links=(REQUEST_ACCESS_LINK, SIGN_OUT_LINK),
-    ).render()
+    )

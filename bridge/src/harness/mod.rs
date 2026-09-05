@@ -771,42 +771,132 @@ mod tests {
             .collect()
     }
 
-    /// Whether the text around a provider mention tests it for equality rather
-    /// than matching on it — the same second dispatch worn as an `if`.
-    fn compares_against_a_provider(preceding: &str, following: &str) -> bool {
-        let statement = preceding
-            .rsplit('\n')
-            .next()
-            .unwrap_or(preceding)
-            .trim_start();
-        preceding.trim_end().ends_with("==")
+    /// The session types the harness modules open, read out of every shipped
+    /// `impl AgentSession for` under `src/harness` so the guard's ban list is
+    /// checked against the modules that own those types rather than against a
+    /// second hand-kept copy. `PtySession` lives in `src/pty.rs`, outside the
+    /// walk, and stays out of the list.
+    fn sessions_opened_by_the_harness_modules() -> Vec<String> {
+        const SESSION_IMPL: &str = "impl AgentSession for ";
+
+        let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("harness");
+        rust_sources_under(&harness_modules)
+            .iter()
+            .flat_map(|path| {
+                let source = std::fs::read_to_string(path).expect("a readable harness module");
+                production_source(&source)
+                    .lines()
+                    .filter_map(|line| line.strip_prefix(SESSION_IMPL))
+                    .map(|implementor| {
+                        implementor
+                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .next()
+                            .expect("an impl names its type")
+                            .to_string()
+                    })
+                    .collect::<Vec<String>>()
+            })
+            .collect()
+    }
+
+    /// Every Rust source directly inside `directory`, without descending.
+    fn rust_sources_directly_in(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(directory)
+            .expect("a readable source directory")
+            .map(|entry| entry.expect("a readable source entry").path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .collect()
+    }
+
+    /// Every Rust source inside `directory` and the directories under it.
+    fn rust_sources_under(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let nested = std::fs::read_dir(directory)
+            .expect("a readable source directory")
+            .map(|entry| entry.expect("a readable source entry").path())
+            .filter(|path| path.is_dir())
+            .flat_map(|subdirectory| rust_sources_under(&subdirectory));
+        rust_sources_directly_in(directory)
+            .into_iter()
+            .chain(nested)
+            .collect()
+    }
+
+    const PROVIDER_PATH: &str = "AgentProvider::";
+
+    /// The variant a provider mention at `mention` names, and the code that
+    /// follows it once closing delimiters and whitespace are skipped.
+    fn variant_and_continuation(shipped: &str, mention: usize) -> (&str, &str) {
+        let variant_onward = &shipped[mention + PROVIDER_PATH.len()..];
+        let after_variant =
+            variant_onward.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
+        (
+            variant,
+            after_variant.trim_start_matches([')', ']', ' ', '\n']),
+        )
+    }
+
+    /// Whether the mention sits in the pattern of the nearest `let` — between
+    /// the keyword and its `=` — which is where `if let`, `while let` and
+    /// let-else all place the value they dispatch on.
+    fn sits_in_a_let_pattern(preceding: &str) -> bool {
+        const BINDING: &str = "let ";
+
+        preceding
+            .rfind(BINDING)
+            .is_some_and(|binding| !preceding[binding + BINDING.len()..].contains(['=', ';']))
+    }
+
+    /// Whether the mention sits in the pattern of a still-open `matches!` —
+    /// after its first comma — wherever rustfmt has broken the call's lines.
+    fn sits_in_a_matches_pattern(preceding: &str) -> bool {
+        const MACRO: &str = "matches!(";
+
+        preceding.rfind(MACRO).is_some_and(|call| {
+            let arguments = &preceding[call + MACRO.len()..];
+            let still_open = arguments
+                .chars()
+                .try_fold(1usize, |depth, character| match character {
+                    '(' => Some(depth + 1),
+                    ')' => (depth > 1).then_some(depth - 1),
+                    _ => Some(depth),
+                })
+                .is_some();
+            still_open && arguments.contains(',')
+        })
+    }
+
+    /// Whether the provider mention at `mention` tests it for equality or binds
+    /// it as a pattern rather than matching on it — the same second dispatch
+    /// worn as an `if`, a `while` or a `let`.
+    fn compares_against_a_provider(shipped: &str, mention: usize) -> bool {
+        let preceding = &shipped[..mention];
+        let (_, continuation) = variant_and_continuation(shipped, mention);
+        let compared_by_operator = preceding.trim_end().ends_with("==")
             || preceding.trim_end().ends_with("!=")
-            || following.starts_with("==")
-            || following.starts_with("!=")
-            || statement.contains("matches!(")
-            || statement.starts_with("if let ")
+            || continuation.starts_with("==")
+            || continuation.starts_with("!=");
+        compared_by_operator
+            || sits_in_a_let_pattern(preceding)
+            || sits_in_a_matches_pattern(preceding)
     }
 
     /// What in `source` claims a provider dispatch of its own, if anything.
     fn provider_dispatch_offence(source: &str) -> Option<String> {
-        const PROVIDER_PATH: &str = "AgentProvider::";
-
         let shipped = production_source(source);
         for (mention, _) in shipped.match_indices(PROVIDER_PATH) {
-            let variant_onward = &shipped[mention + PROVIDER_PATH.len()..];
-            let after_variant =
-                variant_onward.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
-            let arm_head = after_variant.trim_start_matches([')', ']', ' ', '\n']);
+            let (variant, arm_head) = variant_and_continuation(shipped, mention);
             let guard_reaches_an_arrow = arm_head.starts_with("if ")
                 && arm_head
                     .lines()
                     .next()
                     .is_some_and(|first| first.contains("=>"));
-            let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
             if arm_head.starts_with("=>") || guard_reaches_an_arrow {
                 return Some(format!("matches on {PROVIDER_PATH}{variant}"));
             }
-            if compares_against_a_provider(&shipped[..mention], arm_head) {
+            if compares_against_a_provider(shipped, mention) {
                 return Some(format!("compares against {PROVIDER_PATH}{variant}"));
             }
         }
@@ -825,10 +915,8 @@ mod tests {
         const SANCTIONED_PROVIDER_TABLE: &str = "models.rs";
 
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut modules: Vec<(String, String)> = std::fs::read_dir(&src)
-            .expect("the crate's src directory is readable")
-            .map(|entry| entry.expect("a readable src entry").path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        let mut modules: Vec<(String, String)> = rust_sources_directly_in(&src)
+            .into_iter()
             .filter(|path| {
                 path.file_name()
                     .is_some_and(|name| name != SANCTIONED_PROVIDER_TABLE)
@@ -875,7 +963,7 @@ mod tests {
     /// than a detector that quietly stopped matching.
     #[test]
     fn a_second_provider_dispatch_is_caught() {
-        const SECOND_DISPATCHES: [&str; 9] = [
+        const SECOND_DISPATCHES: [&str; 13] = [
             "match provider {\n    AgentProvider::Codex => launch(),\n}",
             "match named {\n    Some(AgentProvider::Codex) => launch(),\n}",
             "match provider {\n    AgentProvider::Codex if resume => launch(),\n}",
@@ -883,8 +971,13 @@ mod tests {
             "if provider == AgentProvider::Codex { launch() }",
             "if provider != AgentProvider::Claude { launch() }",
             "if matches!(provider, AgentProvider::Codex) { launch() }",
+            "if matches!(\n    agent.choice.provider,\n    AgentProvider::CodexAppServer | \
+             AgentProvider::Codex\n) {\n    launch()\n}",
             "if let AgentProvider::Codex = provider { launch() }",
+            "let AgentProvider::Codex = provider else { return };",
+            "while let AgentProvider::Codex = next() { launch() }",
             "let session: AdkSession = open(root);",
+            "let session: CodexAppServerSession = open(root);",
         ];
 
         for source in SECOND_DISPATCHES {
@@ -903,6 +996,20 @@ mod tests {
         let compared_only_by_value = "if choice.model == catalogued.model { keep() }";
         assert_eq!(provider_dispatch_offence(compared_only_by_value), None);
 
+        let constructed_inside_a_binding = "if let Some(found) = catalog(AgentProvider::Claude) \
+                                            { keep() }";
+        assert_eq!(
+            provider_dispatch_offence(constructed_inside_a_binding),
+            None
+        );
+
+        let checked_after_an_earlier_matches = "let quiet = matches!(status, Idle);\nlet \
+                                                opened = harness_for(AgentProvider::Codex);";
+        assert_eq!(
+            provider_dispatch_offence(checked_after_an_earlier_matches),
+            None
+        );
+
         let dispatch_only_in_tests = format!(
             "pub fn run() {{}}\n#[cfg(test)]\nmod tests {{\n    {}\n}}\n",
             "let harness = ClaudeHarness;"
@@ -910,18 +1017,31 @@ mod tests {
         assert_eq!(provider_dispatch_offence(&dispatch_only_in_tests), None);
     }
 
-    /// The ban list the guard reads and the registry that constructs harnesses
-    /// are one fact, so a provider added to `harness_for` cannot leave a harness
-    /// type the guard would let a caller above it name.
+    /// The ban list the guard reads, the registry that constructs harnesses and
+    /// the harness modules that open sessions are one fact, so a provider added
+    /// under `harness_for` cannot leave a harness or session type the guard
+    /// would let a caller above it name.
     #[test]
     fn the_ban_list_covers_every_harness_harness_for_constructs() {
         let constructed = harnesses_named_by_harness_for();
         assert_eq!(constructed.len(), AgentProvider::ALL.len());
+        let opened = sessions_opened_by_the_harness_modules();
+        assert!(
+            !opened.is_empty(),
+            "the walk over src/harness found the sessions its modules open"
+        );
 
         for harness_type in constructed {
             assert!(
                 CONCRETE_HARNESS_TYPES.contains(&harness_type.as_str()),
                 "harness_for constructs {harness_type} but the guard does not ban it above \
+                 harness_for"
+            );
+        }
+        for session_type in opened {
+            assert!(
+                CONCRETE_HARNESS_TYPES.contains(&session_type.as_str()),
+                "a harness module opens {session_type} but the guard does not ban it above \
                  harness_for"
             );
         }

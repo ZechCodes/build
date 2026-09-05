@@ -10464,30 +10464,38 @@ impl AppState {
         run_id: &str,
         caller: Box<dyn ImplementationCaller>,
     ) -> Result<Option<WorktreeLifecycleJob>, String> {
-        let worktree_existed = self
-            .runs
-            .get(run_id)
-            .is_some_and(|run| run.worktree.path.exists());
-        let adopted = self.runs.get(run_id).is_some_and(|run| run.adopted);
-        if adopted && worktree_existed {
-            return Ok(None);
-        }
-        let project = self.orch_for(&self.project_of(run_id)?)?.clone();
+        let (adopted, checkout_stood, worktree, title) = {
+            let active = self
+                .runs
+                .get(run_id)
+                .ok_or_else(|| format!("unknown run_id: {run_id}"))?;
+            (
+                active.adopted,
+                active.worktree.path.exists(),
+                active.worktree.clone(),
+                active.run.goal.clone(),
+            )
+        };
         // An adopted checkout is somebody else's directory: Build never cut it,
-        // so it cannot cut it again. There is no git to run — only the recovery
-        // agent to start and the Issue to tell.
-        if self.runs[run_id].adopted {
+        // so it cannot cut it again. Standing is all this can ask of one — and
+        // when it is gone there is no git to run, only the recovery agent to
+        // start and the Issue to tell.
+        if adopted {
+            if checkout_stood {
+                return Ok(None);
+            }
             return Err(self.start_checkout_recovery(
                 issue_id,
                 run_id,
                 "adopted worktree is missing; its original checkout cannot be recreated safely",
             )?);
         }
-        let worktree = self.runs[run_id].worktree.clone();
+        let project_id = self.project_of(run_id)?;
+        let project = self.orch_for(&project_id)?.clone();
         let row = PendingRow {
             entity_id: run_id.to_string(),
-            project_id: self.project_of(run_id)?,
-            title: self.runs[run_id].run.goal.clone(),
+            project_id,
+            title,
             branch: None,
             checkout_id: Some(crate::worktree::external_worktree_id(&worktree.path)),
             state: PendingState::Creating,
@@ -10500,7 +10508,7 @@ impl AppState {
                 issue_id: issue_id.to_string(),
                 run_id: run_id.to_string(),
                 worktree,
-                checkout_stood: worktree_existed,
+                checkout_stood,
                 caller,
             }),
         )

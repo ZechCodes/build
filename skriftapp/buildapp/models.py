@@ -13,8 +13,8 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from advanced_alchemy.types import DateTimeUTC
-from sqlalchemy import Boolean, ForeignKey, String
+from advanced_alchemy.types import GUID, DateTimeUTC
+from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from skrift.db.base import Base
@@ -99,3 +99,33 @@ class WaitlistSignup(Base):
     email: Mapped[str] = mapped_column(
         String(MAX_WAITLIST_ADDRESS_LENGTH), unique=True, nullable=False
     )
+
+
+class TransportSession(Base):
+    """One client session's transport life, as the bridge reported it
+    (``planning/v2/Transport Telemetry Spec.md`` §Storage). Content-free: ids,
+    timestamps, and three words for a path. The rules that fill these columns
+    are ``transport_report.apply_event``; the admin transport page reads them.
+    """
+
+    __tablename__ = "transport_sessions"
+    __table_args__ = (
+        UniqueConstraint("device_id", "session_id", name="uq_transport_sessions_device_session"),
+    )
+
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # Plain columns, not FKs: a device or user deleted later must not take the
+    # count with it — the row is history, and the owner is copied at mint.
+    device_id: Mapped[UUID] = mapped_column(GUID(length=16), nullable=False, index=True)
+    owner_user_id: Mapped[UUID | None] = mapped_column(GUID(length=16), nullable=True, index=True)
+
+    minted_at: Mapped[datetime | None] = mapped_column(DateTimeUTC(timezone=True), nullable=True, index=True)
+    first_carrying_at: Mapped[datetime | None] = mapped_column(DateTimeUTC(timezone=True), nullable=True)
+    # "direct" | "turn"; null until the first carrying.
+    first_path: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # "relay" | "direct" | "turn"
+    current_path: Mapped[str] = mapped_column(String(16), default="relay", nullable=False)
+    carrying_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    turn_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    fell_back_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTimeUTC(timezone=True), nullable=True)

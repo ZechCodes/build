@@ -6,7 +6,7 @@
 //! encrypted frames, dispatch and teardown — is the same on either, so nothing
 //! above it learns which wire is carrying.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionInit};
+use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
 #[cfg(any(test, feature = "testing"))]
@@ -194,24 +195,44 @@ pub(crate) fn drop_frame_error(err: &CarrierError) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CarrierId(u64);
 
+/// Which kind of wire a carrier is. Nothing above the wire is told — a session
+/// is a session on either — but the ledger is: "its last channel closed while
+/// the relay still carries" is a fallback, and only the kind says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CarrierKind {
+    Relay,
+    Channel,
+}
+
 /// One live wire — a relay socket generation, or a DataChannel — as everything
 /// above the wire sees it: somewhere to put envelopes for any session, since one
 /// wire carries every client session of the device.
 pub(crate) struct CarrierHandle {
     id: CarrierId,
+    kind: CarrierKind,
     out: mpsc::UnboundedSender<OutboundEnvelope>,
 }
 
 impl CarrierHandle {
-    /// Open one wire: the handle everything above the wire pushes into, and the
-    /// queue the wire's writer drains. Minting both here is what keeps the two
-    /// halves of one carrier from ever being crossed with another's.
+    /// Open one relay wire: the handle everything above the wire pushes into,
+    /// and the queue the wire's writer drains. Minting both here is what keeps
+    /// the two halves of one carrier from ever being crossed with another's.
     pub(crate) fn open() -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>) {
+        Self::open_as(CarrierKind::Relay)
+    }
+
+    /// Open one DataChannel wire.
+    pub(crate) fn open_channel() -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>) {
+        Self::open_as(CarrierKind::Channel)
+    }
+
+    fn open_as(kind: CarrierKind) -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>) {
         static NEXT_CARRIER_ID: AtomicU64 = AtomicU64::new(1);
         let (out, envelopes) = mpsc::unbounded_channel();
         (
             CarrierHandle {
                 id: CarrierId(NEXT_CARRIER_ID.fetch_add(1, Ordering::Relaxed)),
+                kind,
                 out,
             },
             envelopes,
@@ -224,7 +245,7 @@ impl CarrierHandle {
 struct OpenSession {
     key: String,
     generation: u64,
-    carriers: HashSet<CarrierId>,
+    carriers: HashMap<CarrierId, CarrierKind>,
     /// Cleared when this opening ends, under the registry lock, and read by
     /// every sender built for it: a frame admitted before the end and run
     /// after it is told apart from the same id's next opening, so its handler
@@ -233,6 +254,13 @@ struct OpenSession {
 }
 
 impl OpenSession {
+    /// Whether a DataChannel is among the wires carrying this session.
+    fn rides_a_channel(&self) -> bool {
+        self.carriers
+            .values()
+            .any(|kind| *kind == CarrierKind::Channel)
+    }
+
     /// End this opening: every sender built for it is told, so no handler runs
     /// for it from here on, and the end is stamped with this opening's
     /// generation.
@@ -262,13 +290,44 @@ struct SessionEnd {
 /// is written: **a session ends when its last carrier is gone, or when its
 /// client says so**. A caller gets a decrypted frame and a sender back; the key
 /// material never leaves this module.
-#[derive(Default)]
 struct SessionRegistry {
     sessions: Mutex<HashMap<String, OpenSession>>,
     minted: AtomicU64,
+    /// Where a session's life is written: minted, fell back, ended. The peer
+    /// transport writes `carrying` to the same ledger.
+    ledger: Arc<dyn TransportLedger>,
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self::with_ledger(Arc::new(StderrLedger))
+    }
 }
 
 impl SessionRegistry {
+    fn with_ledger(ledger: Arc<dyn TransportLedger>) -> Self {
+        SessionRegistry {
+            sessions: Mutex::new(HashMap::new()),
+            minted: AtomicU64::new(0),
+            ledger,
+        }
+    }
+
+    /// End one opening under the lock and say so, once, on the ledger.
+    fn ended(&self, session_id: &str, open: &OpenSession) -> SessionEnd {
+        let ended = open.end(session_id);
+        self.ledger.record(session_id, TransportEvent::Ended);
+        ended
+    }
+
+    /// A carrier left a session that still lives: if it was the session's last
+    /// channel, the session is back on the relay, and that is a fallback.
+    fn note_carrier_left(&self, session_id: &str, left: CarrierKind, open: &OpenSession) {
+        if left == CarrierKind::Channel && !open.rides_a_channel() {
+            self.ledger.record(session_id, TransportEvent::FellBack);
+        }
+    }
+
     /// Mint a session, or accept a re-open of one already open.
     ///
     /// Idempotent for a known session whose key matches — that is the re-attach
@@ -288,7 +347,7 @@ impl SessionRegistry {
                 Err(CarrierError::KeyMismatch(session_id.to_string()))
             }
             Some(open) => {
-                open.carriers.insert(carrier.id);
+                open.carriers.insert(carrier.id, carrier.kind);
                 Ok(())
             }
             None => {
@@ -297,10 +356,11 @@ impl SessionRegistry {
                     OpenSession {
                         key: session_key,
                         generation: self.minted.fetch_add(1, Ordering::Relaxed) + 1,
-                        carriers: HashSet::from([carrier.id]),
+                        carriers: HashMap::from([(carrier.id, carrier.kind)]),
                         still_open: Arc::new(AtomicBool::new(true)),
                     },
                 );
+                self.ledger.record(session_id, TransportEvent::Minted);
                 Ok(())
             }
         }
@@ -327,7 +387,7 @@ impl SessionRegistry {
             .get_mut(&envelope.session_id)
             .ok_or_else(|| CarrierError::UnknownSession(envelope.session_id.clone()))?;
         let frame = transport::decrypt_envelope(&open.key, envelope)?;
-        open.carriers.insert(carrier.id);
+        open.carriers.insert(carrier.id, carrier.kind);
         let sender = SessionSender::keyed(
             &envelope.session_id,
             open.key.clone(),
@@ -342,11 +402,14 @@ impl SessionRegistry {
         let Some(open) = sessions.get_mut(session_id) else {
             return Vec::new();
         };
-        let rode_it = open.carriers.remove(&carrier.id);
-        if !rode_it || !open.carriers.is_empty() {
+        let Some(left) = open.carriers.remove(&carrier.id) else {
+            return Vec::new();
+        };
+        if !open.carriers.is_empty() {
+            self.note_carrier_left(session_id, left, open);
             return Vec::new();
         }
-        let ended = open.end(session_id);
+        let ended = self.ended(session_id, open);
         sessions.remove(session_id);
         vec![ended]
     }
@@ -354,11 +417,14 @@ impl SessionRegistry {
     fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<SessionEnd> {
         let mut ended = Vec::new();
         self.sessions.lock().unwrap().retain(|session_id, open| {
-            open.carriers.remove(&carrier.id);
+            let Some(left) = open.carriers.remove(&carrier.id) else {
+                return true;
+            };
             if open.carriers.is_empty() {
-                ended.push(open.end(session_id));
+                ended.push(self.ended(session_id, open));
                 return false;
             }
+            self.note_carrier_left(session_id, left, open);
             true
         });
         ended
@@ -366,7 +432,7 @@ impl SessionRegistry {
 
     fn end(&self, session_id: &str) -> Vec<SessionEnd> {
         match self.sessions.lock().unwrap().remove(session_id) {
-            Some(open) => vec![open.end(session_id)],
+            Some(open) => vec![self.ended(session_id, &open)],
             None => Vec::new(),
         }
     }
@@ -403,12 +469,28 @@ pub struct FrameIntake {
 }
 
 impl FrameIntake {
+    /// An intake whose ledger is the daemon's stderr.
     pub fn new(handler: FrameHandler, transport: KeyPairB64) -> Arc<Self> {
+        Self::with_ledger(handler, transport, Arc::new(StderrLedger))
+    }
+
+    /// An intake writing every session's transport events to `ledger`.
+    pub fn with_ledger(
+        handler: FrameHandler,
+        transport: KeyPairB64,
+        ledger: Arc<dyn TransportLedger>,
+    ) -> Arc<Self> {
         Arc::new(FrameIntake {
-            registry: Arc::new(SessionRegistry::default()),
+            registry: Arc::new(SessionRegistry::with_ledger(ledger)),
             dispatcher: Dispatcher::new(handler),
             transport,
         })
+    }
+
+    /// The ledger this intake's sessions are written to — the peer transport
+    /// writes its `carrying` events to the same one.
+    pub fn ledger(&self) -> Arc<dyn TransportLedger> {
+        self.registry.ledger.clone()
     }
 
     /// The public half of the device's transport keypair: what a carrier
@@ -514,6 +596,7 @@ mod sender_tests {
 mod registry_tests {
     use super::testing::client_request;
     use super::*;
+    use crate::transport_ledger::RecordingLedger;
     use serde_json::json;
 
     pub(super) fn client_envelope(
@@ -531,6 +614,69 @@ mod registry_tests {
 
     pub(super) fn ended_ids(ended: Vec<SessionEnd>) -> Vec<String> {
         ended.into_iter().map(|end| end.session_id).collect()
+    }
+
+    #[test]
+    fn a_session_s_life_is_on_the_ledger_minted_to_ended() {
+        let ledger = RecordingLedger::new();
+        let key = transport::generate_session_key();
+        let registry = SessionRegistry::with_ledger(ledger.clone());
+        let (carrier, _out) = CarrierHandle::open();
+        registry.open("s-1", key.clone(), &carrier).unwrap();
+        // A re-attach is the same opening, not a second mint.
+        let (again, _again_out) = CarrierHandle::open();
+        registry.open("s-1", key.clone(), &again).unwrap();
+        registry.end("s-1");
+        assert_eq!(ledger.trail_of("s-1"), vec!["minted", "ended"]);
+    }
+
+    /// The relay carrier stays; the session's channels go: it is back on the
+    /// relay, and that is a fallback — once, when the LAST channel goes, not
+    /// once per channel. A relay carrier going while a channel carries is not.
+    #[test]
+    fn losing_the_last_channel_while_the_relay_carries_is_a_fallback() {
+        let ledger = RecordingLedger::new();
+        let key = transport::generate_session_key();
+        let registry = SessionRegistry::with_ledger(ledger.clone());
+        let (relay, _relay_out) = CarrierHandle::open();
+        let (app, _app_out) = CarrierHandle::open_channel();
+        let (term, _term_out) = CarrierHandle::open_channel();
+        registry.open("s-1", key.clone(), &relay).unwrap();
+        registry.open("s-1", key.clone(), &app).unwrap();
+        registry.open("s-1", key.clone(), &term).unwrap();
+        assert!(registry.release_session("s-1", &app).is_empty());
+        assert!(registry.release_session("s-1", &term).is_empty());
+        assert_eq!(ledger.trail_of("s-1"), vec!["minted", "fell_back"]);
+
+        // The mirror image: the relay drops under a live channel. Not a
+        // fallback — the channel is still the better wire.
+        let (peer, _peer_out) = CarrierHandle::open_channel();
+        registry.open("s-2", key.clone(), &relay).unwrap();
+        registry.open("s-2", key.clone(), &peer).unwrap();
+        assert!(registry
+            .release_carrier(&relay)
+            .iter()
+            .all(|end| end.session_id != "s-2"));
+        assert_eq!(ledger.trail_of("s-2"), vec!["minted"]);
+    }
+
+    /// A channel that was the session's last carrier ends the session: that is
+    /// an end, not a fallback, and the ledger says so once.
+    #[test]
+    fn a_channel_that_carried_last_ends_the_session_not_falls_it_back() {
+        let ledger = RecordingLedger::new();
+        let key = transport::generate_session_key();
+        let registry = SessionRegistry::with_ledger(ledger.clone());
+        let (relay, _relay_out) = CarrierHandle::open();
+        let (peer, _peer_out) = CarrierHandle::open_channel();
+        registry.open("s-1", key.clone(), &relay).unwrap();
+        registry.open("s-1", key.clone(), &peer).unwrap();
+        assert!(registry.release_carrier(&relay).is_empty());
+        assert_eq!(
+            ended_ids(registry.release_carrier(&peer)),
+            vec!["s-1".to_string()]
+        );
+        assert_eq!(ledger.trail_of("s-1"), vec!["minted", "ended"]);
     }
 
     #[test]

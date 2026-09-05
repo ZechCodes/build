@@ -328,6 +328,13 @@ for stage gates.
 
 ## Decisions taken during the build
 
+- **Transport telemetry** (2026-09-05, `Transport Telemetry Spec.md`): the bridge reports
+  each session's `minted` / `carrying` / `fell_back` / `ended` to the api, content-free and
+  device-signed, and `/admin/transport` buckets sessions as direct / TURN / relay-only /
+  unstable. The api thereby learns, per session, a device, an owner, timestamps and one of
+  three transport words — no addresses, no content — which the threat model absorbs the
+  way it absorbs device online/offline and notify kinds.
+
 - **The bridge logs the negotiated candidate pair type** (open question 2, closed in
   stage 4): one line per session, the moment its peer connection first carries, naming
   the winning pair's candidate types at both ends — `host` and `srflx` are direct and

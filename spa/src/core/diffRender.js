@@ -6,6 +6,7 @@
 import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
+import { fileKey, firstLineOf, untouchedFold } from "./diff.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 
@@ -100,11 +101,6 @@ function overrideButtonHtml(mark) {
  *  table sits inside a .dscroll box so the code scrolls horizontally while the
  *  .fhead header stays fixed.
  *
- *  Folding contract (wired by the mounting view): every file starts `capped`
- *  (max-height + fade); a click on the capped body expands it, a click on the
- *  .fhead toggles `collapsed` (header only). `commentable` adds the
- *  whole-file comment control to the header.
- *
  *  Re-review options (all opt-in; omitting them keeps the output byte-identical
  *  so the poll-repaint freeze contract holds): `changedSince` is a Set of paths
  *  that moved since the reviewer's last pass (an amber "changed since your
@@ -117,71 +113,96 @@ function overrideButtonHtml(mark) {
  *  is commit-all). It is `{ openPath, pendingConfirm }`: only the named file's
  *  menu is open, and a matching `discard:<path>` confirm renders armed, so the
  *  existing two-click confirm idiom is what fires it. */
-export function diffFilesHtml(
-  files,
-  {
-    commentable = false,
-    changedSince = null,
-    viewed = null,
-    withViewedToggle = false,
-    fileMenu = null,
-    overridable = false,
-  } = {},
-) {
+export function diffFilesHtml(files, options = {}) {
+  return files.map((file) => diffFileHtml(file, options)).join("");
+}
+
+const FOLD_CLASS = { open: "", shut: "collapsed", capped: "capped" };
+
+function foldClassOf(file, { folds, viewed }) {
+  const key = fileKey(file);
+  return FOLD_CLASS[folds ? folds.foldOf(key, { viewed }) : untouchedFold(key, viewed)];
+}
+
+export function diffFileHtml(file, options = {}) {
+  const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false, openable = false, sectionClass = "" } = options;
+  const lang = langForPath(file.path);
+  const key = fileKey(file);
+  const isViewed = viewed ? viewed.has(file.path) : false;
+  const classes = ["file", foldClassOf(file, options), sectionClass].filter(Boolean).join(" ");
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
-  return files
-    .map((f) => {
-      const lang = langForPath(f.path);
-      const isViewed = viewed ? viewed.has(f.path) : false;
-      const foldClass = isViewed ? "collapsed" : "capped";
-      const changedChip = changedSince && changedSince.has(f.path) ? `<span class="fchanged">changed since your review</span>` : "";
-      const viewedToggle = withViewedToggle
-        ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-file="${esc(f.path)}"${isViewed ? " checked" : ""}/> Viewed</label>`
-        : "";
-      return `
-      <div class="file ${foldClass}" data-file="${esc(f.path)}"><div class="fhead"><span class="fpath">${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
-        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${changedChip}${viewedToggle}${commentButton}${fileMenuHtml(f.path, fileMenu)}</div>
-        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, {
-          maskDotenv: isDotenvPath(f.path),
-          hunkMarks: f.triageHunks || null,
+  const changedChip = changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
+  const viewedToggle = withViewedToggle
+    ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-key="${esc(key)}"${isViewed ? " checked" : ""}/> Viewed</label>`
+    : "";
+  return `
+      <div class="${classes}" data-key="${esc(key)}"><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${openFileButtonHtml(file, openable)}${commentButton}${fileMenuHtml(file, fileMenu)}</div>
+        <div class="dscroll"><table>${diffRowsHtml(file.rows, lang, {
+          maskDotenv: isDotenvPath(file.path),
+          hunkMarks: file.triageHunks || null,
           overridable,
         })}</table></div>
         <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
-    })
+}
+
+function openFileButtonHtml(file, openable) {
+  if (!openable) return "";
+  return `<button class="fopen" data-open-file="${esc(file.path)}" data-new-line="${firstLineOf(file)}" title="Open this file in Files">↗</button>`;
+}
+
+export const FILE_ELEMENT = ".file[data-key]";
+
+export function pressedOpenFile(target, openFile) {
+  const control = target.closest("[data-open-file]");
+  if (!control || !openFile) return false;
+  openFile({ path: control.dataset.openFile, line: Number(control.dataset.newLine) || null });
+  return true;
+}
+
+export function pressedFold(target, folds, viewed = null) {
+  const file = folds ? target.closest(FILE_ELEMENT) : null;
+  if (!file) return false;
+  const key = file.dataset.key;
+  if (target.closest(".fhead") && !target.closest("button, input, label")) {
+    folds.press(key, { viewed });
+    return true;
+  }
+  if (folds.foldOf(key, { viewed }) !== "capped") return false;
+  folds.openBody(key);
+  return true;
+}
+
+function fileMenuHtml(file, fileMenu) {
+  if (!fileMenu) return "";
+  const key = fileKey(file);
+  const open = fileMenu.openPath === file.path;
+  const armed = fileMenu.pendingConfirm === `discard:${file.path}`;
+  const menu = open
+    ? `<div class="fmenu-pop"><button class="btn mini danger gitdiscard${armed ? " armed" : ""}" data-key="${esc(key)}">${armed ? "Discard changes?" : "Discard changes"}</button></div>`
+    : "";
+  return `<span class="fmenu-host"><button class="fmenu" data-key="${esc(key)}" title="File actions" aria-expanded="${open}">⋯</button>${menu}</span>`;
+}
+
+export function diffStackHtml(files, options = {}) {
+  return diffStackEntries(files, options)
+    .map((entry) => entry.html)
     .join("");
 }
 
-/** The file header's ⋯ and, when this file's menu is the open one, its verbs.
- *  Today that is one verb — discard — carrying the shared inline confirm. */
-function fileMenuHtml(path, fileMenu) {
-  if (!fileMenu) return "";
-  const open = fileMenu.openPath === path;
-  const armed = fileMenu.pendingConfirm === `discard:${path}`;
-  const menu = open
-    ? `<div class="fmenu-pop"><button class="btn mini danger gitdiscard${armed ? " armed" : ""}" data-path="${esc(path)}">${armed ? "Discard changes?" : "Discard changes"}</button></div>`
-    : "";
-  return `<span class="fmenu-host"><button class="fmenu" data-path="${esc(path)}" title="File actions" aria-expanded="${open}">⋯</button>${menu}</span>`;
+export function diffStackEntries(files, { noiseExpanded = false, review = null, empty = "No file changes.", ...fileOptions } = {}) {
+  const grouped = groupNoiseFiles(files);
+  if (!grouped.files.length && !grouped.noise.length)
+    return [{ key: "empty", html: `<div class="empty">${esc(empty)}</div>` }];
+  const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions) : [];
+  if (!grouped.noise.length) return entries;
+  return [...entries, { key: "noise", html: noiseGroupHtml(grouped.noise, noiseExpanded, fileOptions) }];
 }
 
-/** One changeset, stacked: every readable file as a full diff, then whatever is
- *  machine noise (lockfiles, caches, Build metadata) as ONE collapsed group at
- *  the bottom with a count line. Noise is never filtered away — the doc's rule
- *  is collapse, never hide — so a reviewer can always open it.
- *  `noiseExpanded` is the caller's persisted disclosure state; every other
- *  option passes straight through to diffFilesHtml.
- *
- *  `review` plugs the triage overlay in (see reviewStackHtml). Omitting it
- *  leaves the output byte-identical to what it always was, which is what a
- *  surface with no triage to render — and the poll-repaint freeze contract —
- *  depends on. */
-export function diffStackHtml(files, { noiseExpanded = false, review = null, ...fileOptions } = {}) {
-  const grouped = groupNoiseFiles(files);
-  if (!grouped.files.length && !grouped.noise.length) return '<div class="empty">No file changes.</div>';
-  const primary = grouped.files.length ? reviewStackHtml(grouped.files, review, fileOptions) : "";
-  if (!grouped.noise.length) return primary;
-  return `${primary}<div class="noisegroup${noiseExpanded ? " open" : ""}">
-    <button class="noisehead" aria-expanded="${noiseExpanded}">${noiseExpanded ? "▾" : "▸"} ${noiseGroupLabel(grouped.noise.length)}</button>
-    ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(grouped.noise, fileOptions)}</div>` : ""}</div>`;
+function noiseGroupHtml(noise, noiseExpanded, fileOptions) {
+  return `<div class="noisegroup${noiseExpanded ? " open" : ""}">
+    <button class="noisehead" aria-expanded="${noiseExpanded}">${noiseExpanded ? "▾" : "▸"} ${noiseGroupLabel(noise.length)}</button>
+    ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(noise, fileOptions)}</div>` : ""}</div>`;
 }
 
 // ---- the triage overlay ----------------------------------------------------
@@ -208,53 +229,69 @@ function triageBarHtml(plan, { dial, offerDial }) {
   return `<div class="triagebar">${claim}${dialButton}</div>`;
 }
 
-/** One collapsed group: its name, the one line that says why its hunks are not
- *  worth the reviewer's attention, and its counts. The diffs inside are ALWAYS
- *  rendered — collapsed, never dropped — so a group is one click from being
- *  read and nothing is missing from the page a reviewer searches. */
-function triageGroupHtml(section, { expanded, fileOptions }) {
+function triageGroupHeadHtml(section, expanded) {
   const counts = `${section.fileCount} file${section.fileCount === 1 ? "" : "s"} · ${section.hunkCount} hunk${
     section.hunkCount === 1 ? "" : "s"
   }`;
-  return `<div class="tgroup${expanded ? " open" : ""}" data-group="${esc(section.name)}">
-    <button class="tgrouphead" aria-expanded="${expanded}" data-group="${esc(section.name)}">${expanded ? "▾" : "▸"} <span class="tgname">${esc(section.name)}</span> <span class="tgcount">${counts}</span>${
-      section.rationale ? `<span class="tgrationale">${esc(section.rationale)}</span>` : ""
-    }</button>
+  return `<button class="tgrouphead${expanded ? " open" : ""}" aria-expanded="${expanded}" data-group="${esc(section.name)}">${expanded ? "▾" : "▸"} <span class="tgname">${esc(section.name)}</span> <span class="tgcount">${counts}</span>${
+    section.rationale ? `<span class="tgrationale">${esc(section.rationale)}</span>` : ""
+  }</button>`;
+}
+
+function triageGroupHtml(section, fileOptions) {
+  return `<div class="tgroup" data-group="${esc(section.name)}">${triageGroupHeadHtml(section, false)}
     <div class="tgfiles">${diffFilesHtml(section.files, fileOptions)}</div></div>`;
 }
 
-/** The readable files of one changeset, ordered by triage when a surface plugs
- *  the overlay in.
- *
- *  `review` is `{ triage, patch, dial, expandedGroups, overridable }`: the run's
- *  triage payload (or null), the patch those files came from (the hunk ids live
- *  there), whether the reviewer has turned the overlay off, the groups they
- *  have opened, and whether this surface can post their disagreements. Null
- *  `review` — a surface that has no triage to render — takes the plain stack,
- *  unchanged. */
-function reviewStackHtml(files, review, options) {
-  if (!review) return diffFilesHtml(files, options);
+function reviewStackEntries(files, review, options) {
+  const fileEntries = (list, fileOptions) =>
+    list.map((file) => ({ key: fileKey(file), html: diffFileHtml(file, fileOptions) }));
+  if (!review) return fileEntries(files, options);
   const { triage = null, patch = "", dial = false, expandedGroups = null, overridable = false } = review;
   const fileOptions = { ...options, overridable };
   // The dial renders the untriaged stack, and says so — the pass is still
   // there, and one click puts it back.
   if (dial)
-    return (
-      triageBarHtml({ status: "none", counts: {} }, { dial: true, offerDial: Boolean(triage) }) +
-      diffFilesHtml(files, fileOptions)
-    );
+    return [
+      { key: "triagebar", html: triageBarHtml({ status: "none", counts: {} }, { dial: true, offerDial: Boolean(triage) }) },
+      ...fileEntries(files, fileOptions),
+    ];
   const plan = planChangesetTriage({ files, patch, triage });
   const bar = triageBarHtml(plan, { dial: false, offerDial: Boolean(triage) && plan.status !== "none" });
-  const body = plan.sections
-    .map((section) => {
-      if (section.kind === "group")
-        return triageGroupHtml(section, {
-          expanded: Boolean(expandedGroups && expandedGroups.has(section.name)),
-          fileOptions,
-        });
-      const head = section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
-      return `<div class="tsection t${section.kind}">${head}${diffFilesHtml(section.files, fileOptions)}</div>`;
-    })
-    .join("");
-  return bar + body;
+  const opened = (name) => Boolean(expandedGroups && expandedGroups.has(name));
+  return [
+    { key: "triagebar", html: bar },
+    ...plan.sections.flatMap((section) => sectionEntries(section, { opened, fileEntries, fileOptions })),
+  ];
+}
+
+function sectionEntries(section, { opened, fileEntries, fileOptions }) {
+  if (section.kind === "group" && !opened(section.name))
+    return [{ key: `group:${section.name}`, html: triageGroupHtml(section, fileOptions) }];
+  const sectionClass = section.kind === "group" ? "tgrouped" : `t${section.kind}`;
+  const files = fileEntries(section.files, { ...fileOptions, sectionClass });
+  const head = sectionHeadHtml(section);
+  if (!head) return files;
+  const key = section.kind === "group" ? `grouphead:${section.name}` : `sectionhead:${section.kind}`;
+  return [{ key, html: head }, ...files];
+}
+
+function sectionHeadHtml(section) {
+  if (section.kind === "group") return triageGroupHeadHtml(section, true);
+  return section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
+}
+
+export function stackClaims({ comments, openFile, folds, viewed = () => null, repaint }) {
+  return [
+    (event) => {
+      const layer = comments();
+      return Boolean(layer && layer.handleClick(event));
+    },
+    (event) => pressedOpenFile(event.target, openFile()),
+    (event) => {
+      if (!pressedFold(event.target, folds(), viewed())) return false;
+      repaint();
+      return true;
+    },
+  ];
 }

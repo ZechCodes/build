@@ -17,6 +17,7 @@ import {
   selectAgentId,
   startupStatusLine,
   statText,
+  elapsedClock,
   workingClock,
   runningClock,
   workingSeconds,
@@ -39,11 +40,11 @@ const agent = (over = {}) => ({
 describe("who an agent is", () => {
   it("names the harness and which one of it this is", () => {
     expect(providerLabel("claude_adk")).toBe("Claude Code");
-    expect(providerLabel("codex")).toBe("Codex");
-    // An agent is locked to its harness, so the two claude harnesses are two
-    // agents and the bubble says which one it is.
+    expect(providerLabel("codex_app_server")).toBe("Codex");
+    expect(providerLabel("codex")).toBe("Codex TUI");
+    // An agent is locked to its harness, so the bubble says which one it is.
     expect(providerLabel("claude")).toBe("Claude Code TUI");
-    expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex 2");
+    expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex TUI 2");
   });
 
   it("says what an unnamed provider is, rather than nothing", () => {
@@ -179,10 +180,10 @@ describe("which agent can be taken back off", () => {
 
   it("outlines what removal actually does before it is confirmed", () => {
     const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex" }));
-    expect(plan.title).toBe("Remove Codex 2 from this branch?");
+    expect(plan.title).toBe("Remove Codex TUI 2 from this branch?");
     expect(plan.actions).toEqual([
       "End the agent's session, if one is running",
-      "Remove Codex 2 and its conversation from the branch",
+      "Remove Codex TUI 2 and its conversation from the branch",
       "Leave the branch and its files untouched",
     ]);
     expect(plan.confirmLabel).toBe("Remove agent");
@@ -268,6 +269,12 @@ describe("the pinned status line above the composer", () => {
     expect(runningClock(5399)).toBe("89:59");
     expect(runningClock(5400)).toBe("1:30");
     expect(runningClock(90000)).toBe("25:00");
+  });
+
+  it("clocks how long ago a stamp was, in the running clock's own form", () => {
+    expect(elapsedClock(NOW - 65_000, NOW)).toBe("1:05");
+    expect(elapsedClock(NOW, NOW)).toBe("0:00");
+    expect(elapsedClock(NOW + 5_000, NOW)).toBe("0:00");
   });
 
   it("says the additions and deletions, and nothing when there are none", () => {

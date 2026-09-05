@@ -17,15 +17,16 @@
 // opened again.
 //
 // A block with nothing live in it is flat: no box, just its head. If it has
-// quiet rows they stand straight under the head, with the chevron folding them
-// and no Recent disclosure of their own; if it has nothing at all, the chevron
-// has nothing to fold and is disabled.
+// quiet rows they stand straight under the head, folded shut to begin with —
+// quiet rows always start hidden — with the chevron unfolding them and no
+// Recent disclosure of their own; if it has nothing at all, the chevron has
+// nothing to fold and is disabled.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
-import { RECENT_AUTO_OPEN_BELOW, entryRoute, inboxEntries } from "./inbox.js";
+import { entryRoute, inboxEntries } from "./inbox.js";
 
 /** The blocks' identity and names: the device's projects in its order, plus
  *  one for any project a row names that the device has not listed — the row
@@ -63,9 +64,9 @@ function firstRank(entries) {
  * The projects face: `{ unsorted, blocks }`.
  *
  * `unsorted` is the rows that belong to no project yet, in inbox order. Each
- * block is `{ key, id, name, entries, recent, autoOpen, flat, route,
- * unreadCount }` — its rows partitioned into the list proper and Recent
- * exactly as the inbox partitions them, `flat` when nothing in it is live,
+ * block is `{ key, id, name, entries, recent, flat, route, unreadCount }` —
+ * its rows partitioned into the list proper and Recent exactly as the inbox
+ * partitions them, `flat` when nothing in it is live,
  * `route` where its head opens (the primary checkout, or nowhere), and the
  * blocks in the inbox's order.
  */
@@ -84,7 +85,6 @@ export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } 
       name,
       entries,
       recent,
-      autoOpen: entries.length < RECENT_AUTO_OPEN_BELOW,
       flat: entries.length === 0,
       route: primary ? entryRoute(primary) : null,
       unreadCount: [...entries, ...recent].reduce((total, entry) => total + entry.unreadCount, 0),
@@ -97,9 +97,18 @@ export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } 
   };
 }
 
+/** Whether a block stands folded: what the user said of it if they have said
+ *  anything (`folds`: project id → folded), else shut when all it holds is
+ *  quiet rows — those always start hidden — and open otherwise. */
+export function blockIsFolded(block, folds) {
+  if (folds && folds.has(block.id)) return !!folds.get(block.id);
+  return block.flat && block.recent.length > 0;
+}
+
 /** The block's head: the fold, the name that opens the project's checkout,
  *  how much inside is waiting, and the + that opens the create surface. The
- *  fold is disabled on a block with nothing to fold. `ui`: { folded }. */
+ *  fold is disabled on a block with nothing to fold. `ui`: { folded } — the
+ *  set of folded project ids, as blockIsFolded decides. */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.id));
   const foldable = block.entries.length > 0 || block.recent.length > 0;

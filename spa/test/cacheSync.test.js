@@ -242,6 +242,80 @@ describe("keeping warmed conversations fresh", () => {
     expect(record.value.deliveredSequence).toBe(3);
   });
 
+  it("writes a surfaces record for each agent in the detail payload that carries one", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
+    );
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.get")
+        return {
+          run: {
+            thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
+            agents: [
+              { id: "ag-1", surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running" }] } },
+              { id: "ag-2" },
+            ],
+          },
+        };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-1" });
+    expect(record.value.surfaces.shells).toHaveLength(1);
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-2" })).toBeUndefined();
+  });
+
+  it("writes the surfaces of an agent whose own conversation was never warmed", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
+    );
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.get")
+        return {
+          run: {
+            thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
+            agents: [
+              { id: "ag-1", surfaces: { shells: [{ id: "sh-1", state: "running" }] } },
+              { id: "ag-2", surfaces: { checklist: [{ id: "t-1", subject: "ship it", state: "pending" }] } },
+            ],
+          },
+        };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-2" });
+    expect(record.value.surfaces.checklist).toHaveLength(1);
+  });
+
+  it("rewrites nothing for a snapshot that stood still", async () => {
+    const surfaces = { shells: [{ id: "sh-1", description: "cargo test", state: "running" }] };
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-1" };
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
+    );
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    await cache.writeCached(address, { surfaces });
+    clock.mockRestore();
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.get")
+        return {
+          run: {
+            thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
+            agents: [{ id: "ag-1", surfaces }],
+          },
+        };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect((await cache.readCached(address)).at).toBe(1000);
+  });
+
   it("asks for no conversation that was never opened", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);

@@ -15,6 +15,7 @@
 // answers with message-<n> ids.
 
 import { commentTrayHtml } from "./changesRender.js";
+import { pathOf } from "./diff.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
@@ -56,7 +57,7 @@ export function createCommentLayer({
     if (!host) return;
     host.querySelectorAll("tr.dhl").forEach((row) => row.classList.remove("dhl"));
     for (const comment of comments) {
-      const fileEl = [...host.querySelectorAll(".file")].find((element) => element.dataset.file === comment.file);
+      const fileEl = [...host.querySelectorAll(".file")].find((element) => pathOf(element.dataset.key) === comment.file);
       if (!fileEl) continue;
       fileEl.querySelectorAll("tr[data-ln]").forEach((row) => {
         const line = +row.dataset.ln;
@@ -182,7 +183,7 @@ export function createCommentLayer({
         const text = selection.toString();
         const side = (startRow || endRow).dataset.side || "new";
         showCommentPop(selection.getRangeAt(0).getBoundingClientRect(), (comment) =>
-          addComment(fileEl.dataset.file, from, to, text, comment, side),
+          addComment(pathOf(fileEl.dataset.key), from, to, text, comment, side),
         );
       });
       const general = q(".csgeneral");
@@ -214,7 +215,7 @@ export function createCommentLayer({
         const fileEl = commentButton.closest(".file");
         if (fileEl)
           showCommentPop(commentButton.getBoundingClientRect(), (comment) =>
-            addComment(fileEl.dataset.file, 0, 0, "(entire file)", comment),
+            addComment(pathOf(fileEl.dataset.key), 0, 0, "(entire file)", comment),
           );
         return true;
       }
@@ -229,7 +230,7 @@ export function createCommentLayer({
       const line = +row.dataset.ln;
       const snippet = row.querySelector(".code").textContent;
       showCommentPop(row.getBoundingClientRect(), (comment) =>
-        addComment(fileEl.dataset.file, line, line, snippet, comment, row.dataset.side || "new"),
+        addComment(pathOf(fileEl.dataset.key), line, line, snippet, comment, row.dataset.side || "new"),
       );
       return true;
     },

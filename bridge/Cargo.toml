@@ -32,6 +32,7 @@ base64 = "0.22"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
+semver = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"
@@ -53,4 +54,7 @@ tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6.5"
 # wss integration test: self-signed cert + local TLS WebSocket server.
 rcgen = "0.13"
+# The enforcement guards in src/harness read the crate's own modules as syntax
+# trees (patterns, comparisons, impl blocks) rather than as text.
+syn = { version = "2", features = ["full", "visit"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }

@@ -178,6 +178,7 @@ pub struct HarnessSpec {
     /// written from a detached thread so no caller (some hold the app-wide
     /// state lock through a delivery) ever sleeps for it.
     pub submit_delay: Duration,
+    pub known_session_id: Option<String>,
 }
 
 impl HarnessSpec {
@@ -191,6 +192,7 @@ impl HarnessSpec {
             unset: Vec::new(),
             settle: DEFAULT_SETTLE,
             submit_delay: Duration::ZERO,
+            known_session_id: None,
         }
     }
 
@@ -227,6 +229,11 @@ impl HarnessSpec {
         self.env.push((key.into(), value.into()));
         self
     }
+
+    pub fn known_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.known_session_id = Some(session_id.into());
+        self
+    }
 }
 
 /// A live agent session bound to a PTY. Cloneable handles share one underlying PTY.
@@ -254,13 +261,9 @@ pub struct PtySession {
     /// crash-detection message ("exit code N") could never recover the code after
     /// the first poll.
     exit_code: Mutex<Option<i32>>,
-    /// How this session learns the name of the conversation it is having.
-    ///
-    /// A terminal is opaque — it announces nothing to Build — but the harness
-    /// behind it writes its conversation down, and the locator reads that
-    /// record. `None` for a session with no conversation to name: the human's
-    /// own shell, and any spawn the caller opened without one.
-    locator: Option<Box<dyn crate::harness::SessionLocator>>,
+    /// A launch-known or provider-located conversation identity. `None` is for
+    /// a terminal with no conversation to name, such as the human's shell.
+    identity: Option<crate::harness::SessionIdentitySource>,
 }
 
 impl PtySession {
@@ -359,22 +362,21 @@ impl PtySession {
             settle: spec.settle,
             submit_delay: spec.submit_delay,
             exit_code: Mutex::new(None),
-            locator: None,
+            identity: None,
         })
     }
 
-    /// Hand this session the locator that will name the conversation it is
-    /// having.
+    /// Hand this session its launch-known or transcript-located conversation
+    /// identity.
     ///
-    /// Taken after the spawn rather than during it because the locator is built
-    /// BEFORE the child exists — that snapshot of the harness's transcript tree
-    /// is what tells the child's own record from everybody else's, so it cannot
-    /// be made from in here.
-    pub fn named_by(
+    /// Taken after the spawn because a located identity snapshots the transcript
+    /// tree before the child exists. A launch-known identity uses the same
+    /// carrier without transcript discovery.
+    pub fn with_session_identity(
         mut self,
-        locator: Option<Box<dyn crate::harness::SessionLocator>>,
+        identity: Option<crate::harness::SessionIdentitySource>,
     ) -> PtySession {
-        self.locator = locator;
+        self.identity = identity;
         self
     }
 
@@ -532,13 +534,12 @@ impl AgentSession for PtySession {
         Some(self)
     }
 
-    /// Delegated to the locator, which is the one place a terminal's answer
-    /// comes from: a harness that tells Build nothing still writes down what it
-    /// is doing, and the locator reads that record. Lazy and cached there, so
-    /// the answer arrives when the harness's own file does and never changes
-    /// afterwards.
+    /// Return the launch-known identity immediately or ask the provider locator.
     fn session_id(&self) -> Option<String> {
-        self.locator.as_ref()?.session_id()
+        match self.identity.as_ref()? {
+            crate::harness::SessionIdentitySource::Known(id) => Some(id.clone()),
+            crate::harness::SessionIdentitySource::Located(locator) => locator.session_id(),
+        }
     }
 
     /// Test-only: age the paint clock — see
@@ -1245,7 +1246,9 @@ mod tests {
         let session: Box<dyn AgentSession> = Box::new(
             PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty())
                 .unwrap()
-                .named_by(Some(Box::new(WhenAsked(Arc::clone(&found))))),
+                .with_session_identity(Some(crate::harness::SessionIdentitySource::Located(
+                    Box::new(WhenAsked(Arc::clone(&found))),
+                ))),
         );
 
         assert_eq!(

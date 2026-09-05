@@ -55,7 +55,9 @@ def _configure_key(monkeypatch) -> None:
 
 
 def _mint(session: dict):
-    request = SimpleNamespace(session=session)
+    # The shape ``require_user`` reads: a session, and the request state the
+    # desktop-token path checks after it (see test_session_auth.py).
+    request = SimpleNamespace(session=session, scope={"state": {}})
     return asyncio.run(RtcController.mint_ice_servers.fn(None, request=request))
 
 

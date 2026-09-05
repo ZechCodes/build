@@ -36,6 +36,7 @@ auth:
     passkey:
       type: passkey
       label: Passkey
+oauth2_enabled: true
 rate_limit:
   enabled: true
   rules:
@@ -72,5 +73,6 @@ internal_api:
 #   img-src    data:              — inline-encoded icons
 #   connect-src data:             — ghostty-web instantiates its wasm from a data: URL
 security_headers:
+  # OAuth consent may hand navigation back to the registered desktop client.
   csp_nonce: true
-  content_security_policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' data: wss://relay.getbuild.ing; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'"
+  content_security_policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' data: wss://relay.getbuild.ing; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self' getbuilding:; base-uri 'self'; object-src 'none'"

@@ -18,13 +18,13 @@ const FILES = {
   "src/a.js": { mime: "text/plain", size: 20, truncated: false, content_b64: base64("const a = 1;\n") },
 };
 
-function mountFiles({ scope = { project_id: "p1", worktree_id: "w1" }, initialPath = null } = {}) {
+function mountFiles({ scope = { project_id: "p1", worktree_id: "w1" }, openAt = null } = {}) {
   const calls = [];
   const host = document.createElement("div");
   document.body.appendChild(host);
   const files = renderFilesTab(host, {
     scope,
-    initialPath,
+    openAt,
     callRpc: async (method, params) => {
       calls.push({ method, params });
       if (method === "fs.tree") return TREE[params.path || ""];
@@ -67,7 +67,7 @@ describe("the Files browser on its own", () => {
   });
 
   it("opens the file a deep link named, without anything else pointing it there", async () => {
-    const { host, files } = mountFiles({ initialPath: "src/a.js" });
+    const { host, files } = mountFiles({ openAt: { path: "src/a.js" } });
     await vi.waitFor(() => expect(host.querySelector(".fppath")).toBeTruthy());
     expect(host.querySelector(".fppath").textContent).toBe("src/a.js");
     expect(host.querySelector(".fcrumb").textContent).toBe("src");

@@ -656,10 +656,15 @@ describe("the tail of a reading column", () => {
     );
     expect(column).toBeTruthy();
     expect(declaration(column.body, "padding-bottom")).toBe("0");
+    // The issue viewer ends on whatever it was written with; the Changes column
+    // ends on the keyed stack, which is the one block always at its foot.
     const [tail] = surfaceRules().filter((rule) => rule.selector.includes(":last-child:not(.actionbar)"));
     expect(tail).toBeTruthy();
+    expect(tail.selector).toContain(".issueview .ivviewer");
     expect(declaration(tail.body, "margin-bottom")).toBe("var(--pane-bottom)");
-    for (const column of COLUMNS) expect(tail.selector).toContain(column);
+    const [stack] = surfaceRules().filter((rule) => rule.selector === ".gitpane .dstack");
+    expect(stack).toBeTruthy();
+    expect(declaration(stack.body, "padding-bottom")).toBe("var(--pane-bottom)");
   });
 
   it("makes the bar opaque over itself and fades above it", () => {
@@ -669,7 +674,10 @@ describe("the tail of a reading column", () => {
     expect(bar).toBeTruthy();
     expect(declaration(bar.body, "background")).toBe("var(--bg)");
     expect(declaration(bar.body, "box-shadow")).toMatch(/var\(--bg\)$/);
-    for (const column of COLUMNS) expect(bar.selector).toContain(column);
+    // The changeset's bar lives in the tray it is painted with, and the tray is
+    // no box of its own — so the rule names the tray, not the whole column.
+    expect(bar.selector).toContain(".gitpane .cstray > .actionbar");
+    expect(bar.selector).toContain(".issueview .ivviewer > .actionbar");
   });
 });
 

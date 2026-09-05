@@ -77,7 +77,15 @@ export function reviewHint(task) {
  * the branch's agents is being reviewed — the one whose bubble is open — so the
  * comments land in the conversation the reviewer was reading.
  */
-export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSelection = createAgentSelection(), onMerged }) {
+export function createTaskReview({
+  taskId,
+  callRpc,
+  getTask,
+  isOffline,
+  agentSelection = createAgentSelection(),
+  onMerged,
+  navigate = null,
+}) {
   // ONE single-flight latch for the git split button, owned by the plug — not
   // by each repaint. Without a shared latch, mid-merge the poll would replace
   // the disabled "merging…" button with an enabled Merge that can dispatch a
@@ -88,6 +96,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSel
 
   const plug = createReviewPlug({
     isOffline,
+    navigate,
     // The diff is this run's, so the run's own change events are what stale it.
     entity: taskId,
     fetchDiff: async () => {

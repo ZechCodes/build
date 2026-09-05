@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { parseDiff, patchHunks } from "../src/core/diff.js";
-import { diffStackHtml } from "../src/core/diffRender.js";
+import { diffStackEntries, diffStackHtml } from "../src/core/diffRender.js";
 
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n context\n`;
@@ -33,9 +33,10 @@ describe("diffStackHtml with a triage overlay", () => {
     expect(diffStackHtml(FILES)).not.toContain("triagebar");
   });
 
-  it("puts the critical file first, under a section that says why it is there", () => {
+  it("puts the critical file first, under a line that says why it is there", () => {
     const html = stack({ triage: triage() });
-    expect(html).toContain('class="tsection tcritical"');
+    expect(html).toContain('class="tsectionhead"');
+    expect(html).toContain('class="file capped tcritical"');
     expect(html).toContain("Needs review first");
     expect(html.indexOf("src/crypto.rs")).toBeLessThan(html.indexOf("Cargo.toml"));
   });
@@ -59,26 +60,27 @@ describe("diffStackHtml with a triage overlay", () => {
   it("keeps a collapsed group's diffs in the DOM — collapsed, never dropped", () => {
     const html = stack({ triage: triage() });
     const group = html.slice(html.indexOf('class="tgroup"'));
-    expect(group).toContain('data-file="Cargo.toml"');
+    expect(group).toContain('data-key="EDIT:Cargo.toml"');
   });
 
   it("opens the group the reviewer expanded", () => {
     const html = stack({ triage: triage(), expandedGroups: new Set(["Version bumps"]) });
-    expect(html).toContain('class="tgroup open"');
+    expect(html).toContain('class="tgrouphead open"');
     expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('class="file capped tgrouped"');
   });
 
   it("says the pass is stale when the diff moved under it, and still orders by it", () => {
     const html = stack({ triage: triage({ stale: true }) });
     expect(html).toContain("triage from an earlier revision — re-triaging");
-    expect(html).toContain('class="tsection tcritical"');
+    expect(html).toContain('class="file capped tcritical"');
   });
 
   it("labels an untriaged changeset instead of pretending it was ordered", () => {
     const html = stack({ triage: null });
     expect(html).toContain('class="tuntriaged"');
     expect(html).toContain("untriaged");
-    expect(html).not.toContain("tsection tcritical");
+    expect(html).not.toContain("tcritical");
     // Every file is still there, in patch order.
     expect(html.indexOf("src/crypto.rs")).toBeLessThan(html.indexOf("Cargo.toml"));
   });
@@ -96,7 +98,7 @@ describe("diffStackHtml with a triage overlay", () => {
 
   it("renders the untriaged full stack when the dial is turned off the overlay", () => {
     const html = stack({ triage: triage(), dial: true });
-    expect(html).not.toContain("tsection tcritical");
+    expect(html).not.toContain("tcritical");
     expect(html).not.toContain("tgroup");
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("Show ordered diff");
@@ -119,7 +121,56 @@ describe("diffStackHtml with a triage overlay", () => {
     const html = stack({ triage: triage() });
     expect(html).toContain("noisegroup");
     expect(html.lastIndexOf("noisegroup")).toBeGreaterThan(html.lastIndexOf("tgroup"));
-    expect(html).not.toContain('data-file="uv.lock"'); // collapsed, as before
+    expect(html).not.toContain('data-key="EDIT:uv.lock"'); // collapsed, as before
+  });
+});
+
+// The ordered stack is a keyed list like any other: one entry per block a
+// repaint can move. A section is a head and then its files, each under its own
+// name, so a file arriving above the one being read moves neither the reader
+// nor the element they are holding.
+describe("the ordered stack as keyed entries", () => {
+  const entries = (review) => diffStackEntries(FILES, { review: { patch: PATCH, ...review } });
+
+  it("names the bar, the section head, and every file under its own key", () => {
+    expect(entries({ triage: triage() }).map((entry) => entry.key)).toEqual([
+      "triagebar",
+      "sectionhead:critical",
+      "EDIT:src/crypto.rs",
+      "group:Version bumps",
+      "noise",
+    ]);
+  });
+
+  it("opens a group into a head and the files under it", () => {
+    expect(entries({ triage: triage(), expandedGroups: new Set(["Version bumps"]) }).map((entry) => entry.key)).toEqual([
+      "triagebar",
+      "sectionhead:critical",
+      "EDIT:src/crypto.rs",
+      "grouphead:Version bumps",
+      "EDIT:Cargo.toml",
+      "noise",
+    ]);
+  });
+
+  it("names every file of an untriaged stack, under the bar", () => {
+    expect(entries({ triage: null }).map((entry) => entry.key)).toEqual([
+      "triagebar",
+      "EDIT:src/crypto.rs",
+      "EDIT:Cargo.toml",
+      "noise",
+    ]);
+  });
+
+  it("says which section a file belongs to on the file itself", () => {
+    const critical = entries({ triage: triage() }).find((entry) => entry.key === "EDIT:src/crypto.rs");
+    expect(critical.html).toContain("tcritical");
+  });
+
+  it("is what diffStackHtml is made of, overlay and all", () => {
+    for (const review of [{ triage: triage() }, { triage: null }, { triage: triage(), dial: true }]) {
+      expect(entries(review).map((entry) => entry.html).join("")).toBe(diffStackHtml(FILES, { review: { patch: PATCH, ...review } }));
+    }
   });
 });
 
@@ -129,7 +180,7 @@ describe("the override controls on an ordered stack", () => {
   const overridable = (review) => stack({ overridable: true, ...review });
 
   const controlsIn = (html, path) => {
-    const file = html.slice(html.indexOf(`data-file="${path}"`));
+    const file = html.slice(html.indexOf(`data-key="EDIT:${path}"`));
     return file.slice(0, file.indexOf("</table>"));
   };
 

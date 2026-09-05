@@ -156,6 +156,7 @@ describe("commitVariantClearsDraft", () => {
 describe("isPermanentGitScopeError", () => {
   it.each([
     "unknown project_id",
+    "unknown project_id: p1",
     "unknown run_id",
     "unknown worktree_id: wt-abc",
     "provide exactly one of project_id, run_id, or project_id + worktree_id",

@@ -58,6 +58,10 @@ const viewerRows = (selector) => standing(`${selector} > .surface-row`);
 const runningRows = () => viewerRows(".surface-running");
 const completedRows = () => viewerRows(".surface-completed-rows");
 const completedFold = () => document.querySelector(".surface-completed");
+const phaseSections = () => standing(".surface-phase");
+const agentRowsIn = (section) => [...section.querySelectorAll(`.surface-row:not([${EXITING_ATTRIBUTE}])`)];
+const agentLabelsIn = (section) =>
+  agentRowsIn(section).map((row) => row.querySelector(".surface-row-label").textContent);
 
 beforeEach(() => globalThis.localStorage.clear());
 
@@ -139,6 +143,16 @@ describe("the pill that lingers after the work stops", () => {
     surfaces.dispose();
   });
 
+  it("lingers from when the snapshot was seen, not from when it was handed over", async () => {
+    const surfaces = mount();
+    surfaces.set(snapshot(), Date.now() - SURFACE_PILL_GRACE_MS - 1);
+    expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
+
+    surfaces.set(finishedShells());
+    expect(standing(`[data-surface-kind="${SHELL_ENTRY_KIND}"]`)).toEqual([]);
+    surfaces.dispose();
+  });
+
   it("keeps the pill and the viewer while it is open, and closes both a grace after it is shut", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
@@ -214,20 +228,31 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
+  it("stacks a section per phase, opening the running one and leaving the rest shut", async () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    await pressPill(WORKFLOW_ENTRY_KIND);
+
+    expect(phaseSections().map((section) => section.dataset.state)).toEqual(["running", "pending"]);
+    expect(phaseSections().map((section) => section.open)).toEqual([true, false]);
+    expect(phaseSections().map(agentLabelsIn)).toEqual([["reader"], ["judge"]]);
+    surfaces.dispose();
+  });
+
   it("keeps the agent rows and the scroll when a workflow phase gains an agent", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
     await pressPill(WORKFLOW_ENTRY_KIND);
     const viewerRegion = document.querySelector(".rail-surfaces-viewer");
     viewerRegion.scrollTop = 40;
-    const [firstAgentRow] = viewerRows(".surface-phase-agents");
+    const [firstAgentRow] = agentRowsIn(phaseSections()[0]);
     expect(firstAgentRow).not.toBe(undefined);
 
     const grown = snapshot();
     grown.workflows[0].phases[0].agents.push({ id: "a3", label: "second reader", state: "queued" });
     surfaces.set(grown);
 
-    const rowsAfter = viewerRows(".surface-phase-agents");
+    const rowsAfter = agentRowsIn(phaseSections()[0]);
     expect(rowsAfter).toHaveLength(2);
     expect(rowsAfter[0]).toBe(firstAgentRow);
     expect(viewerRegion.scrollTop).toBe(40);
@@ -240,33 +265,34 @@ describe("painting the viewer", () => {
     await pressPill(WORKFLOW_ENTRY_KIND);
     const viewerRegion = document.querySelector(".rail-surfaces-viewer");
     viewerRegion.scrollTop = 40;
-    const [firstAgentRow] = viewerRows(".surface-phase-agents");
-    const [firstPhase] = [...document.querySelectorAll(".surface-phase")];
+    const [firstAgentRow] = agentRowsIn(phaseSections()[0]);
+    const [firstPhase] = phaseSections();
 
     const finished = snapshot();
     finished.workflows[0].state = "done";
     finished.workflows[0].description = "Read every parser and judge it";
     surfaces.set(finished);
 
-    expect(viewerRows(".surface-phase-agents")[0]).toBe(firstAgentRow);
-    expect([...document.querySelectorAll(".surface-phase")][0]).toBe(firstPhase);
+    expect(agentRowsIn(phaseSections()[0])[0]).toBe(firstAgentRow);
+    expect(phaseSections()[0]).toBe(firstPhase);
     expect(viewerRegion.scrollTop).toBe(40);
     expect(document.querySelector(".surface-workflow-head").textContent).toContain("Read every parser");
     surfaces.dispose();
   });
 
-  it("paints a phase's agents without rebuilding them when another phase is chosen", async () => {
+  it("leaves a phase the reader folded shut across the paints that follow", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
     await pressPill(WORKFLOW_ENTRY_KIND);
-    const [firstPhase, secondPhase] = [...document.querySelectorAll(".surface-phase")];
+    const [running] = phaseSections();
+    running.open = false;
 
-    secondPhase.click();
+    const moved = snapshot();
+    moved.workflows[0].phases[1].agents.push({ id: "a4", label: "second judge", state: "queued" });
+    surfaces.set(moved);
 
-    expect(secondPhase.getAttribute("aria-pressed")).toBe("true");
-    expect(firstPhase.getAttribute("aria-pressed")).toBe("false");
-    expect(viewerRows(".surface-phase-agents").map((row) => row.textContent)).toHaveLength(1);
-    expect(document.querySelector(".surface-phase-agents").textContent).toContain("judge");
+    expect(phaseSections()[0]).toBe(running);
+    expect(running.open).toBe(false);
     surfaces.dispose();
   });
 
@@ -303,7 +329,7 @@ describe("painting the viewer", () => {
     expect(choices[1].getAttribute("aria-pressed")).toBe("true");
     expect(choices[0].getAttribute("aria-pressed")).toBe("false");
     expect(document.querySelector(".surface-workflow-head").textContent).toContain("Fixture sweep");
-    expect(document.querySelector(".surface-phase-agents").textContent).toContain("fixture writer");
+    expect(phaseSections().map(agentLabelsIn)).toEqual([["fixture writer"]]);
     surfaces.dispose();
   });
 
@@ -429,7 +455,7 @@ describe("a set that would change nothing", () => {
   });
 });
 
-describe("pressing a subagent row", () => {
+describe("the control a subagent row jumps from", () => {
   it("opens the thread item the row was spawned by, and only for a row that names one", async () => {
     const onOpenThreadItem = vi.fn();
     const surfaces = mount({ onOpenThreadItem });
@@ -438,9 +464,10 @@ describe("pressing a subagent row", () => {
     const [spawned] = completedRows();
     const [unspawned] = runningRows();
 
-    spawned.click();
+    spawned.querySelector("[data-call-sequence]").click();
     expect(onOpenThreadItem.mock.calls).toEqual([[SPAWNING_CALL_SEQUENCE]]);
 
+    expect(unspawned.querySelector("[data-call-sequence]")).toBe(null);
     unspawned.click();
     expect(onOpenThreadItem).toHaveBeenCalledTimes(1);
     surfaces.dispose();

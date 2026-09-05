@@ -14,6 +14,9 @@ const ELEMENT_NODE = 1;
 
 const MOVED_PROPERTIES = ["hidden", "style"];
 
+export const EXPANDED_ATTRIBUTE = "data-expanded";
+export const KEYED_LIST_ATTRIBUTE = "data-keyed-list";
+
 /** Whether two nodes can be made to say the same thing, or one has to replace
  *  the other outright. */
 const interchangeable = (live, next) =>
@@ -29,6 +32,15 @@ const sameAttachment = (live, next) =>
 
 const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === "DETAILS";
 
+const EXPANSION_MARKS = [EXPANDED_ATTRIBUTE, "aria-expanded"];
+
+const CLIPPED_LINE_ELEMENT = ".surface-clip";
+
+const expansionTheReaderOwns = (live, name) =>
+  EXPANSION_MARKS.includes(name) && live.hasAttribute(EXPANDED_ATTRIBUTE) && live.matches(CLIPPED_LINE_ELEMENT);
+
+const keyedByAnotherPainter = (live) => live.hasAttribute(KEYED_LIST_ATTRIBUTE);
+
 const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.contains("splitmenu");
 
 const shownByAMove = (live, name) => MOVED_PROPERTIES.includes(name) && live.hasAttribute("data-motion");
@@ -42,6 +54,7 @@ function patchAttributes(live, next) {
   const keepsItsSurface = live.tagName === "CANVAS";
   for (const { name, value } of [...next.attributes]) {
     if (menuTheReaderOpened(live, name)) continue;
+    if (expansionTheReaderOwns(live, name)) continue;
     if (shownByAMove(live, name)) continue;
     if (live.getAttribute(name) !== value) live.setAttribute(name, value);
   }
@@ -50,6 +63,7 @@ function patchAttributes(live, next) {
     if (name === "src" && keepsItsBytes) continue;
     if ((name === "width" || name === "height") && keepsItsSurface) continue;
     if (foldTheReaderOpened(live, name)) continue;
+    if (expansionTheReaderOwns(live, name)) continue;
     if (shownByAMove(live, name)) continue;
     live.removeAttribute(name);
   }
@@ -64,6 +78,7 @@ function patchAttributes(live, next) {
 /// resolved the same conversation a true no-op.
 export function patchElement(live, next) {
   patchAttributes(live, next);
+  if (keyedByAnotherPainter(live)) return;
   const liveChildren = [...live.childNodes];
   const nextChildren = [...next.childNodes];
   nextChildren.forEach((source, index) => {
@@ -83,4 +98,10 @@ export function patchElement(live, next) {
     if (target.nodeValue !== source.nodeValue) target.nodeValue = source.nodeValue;
   });
   for (const extra of liveChildren.slice(nextChildren.length)) live.removeChild(extra);
+}
+
+export function patchInnerHtml(host, html) {
+  const next = host.cloneNode(false);
+  next.innerHTML = html;
+  patchElement(host, next);
 }

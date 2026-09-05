@@ -8,8 +8,8 @@ import {
   FOLDED_PROJECTS_KEY,
   loadRailView,
   persistRailView,
-  loadFoldedProjects,
-  persistFoldedProjects,
+  loadProjectFolds,
+  persistProjectFolds,
   railViewSwitchHtml,
 } from "../src/core/railMode.js";
 import { memoryStorage, refusingStorage } from "./memoryStorage.js";
@@ -53,28 +53,33 @@ describe("which face the rail remembers", () => {
   });
 });
 
-describe("which projects the rail remembers folded", () => {
-  it("starts with every project open", () => {
-    expect(loadFoldedProjects(memoryStorage())).toEqual(new Set());
+describe("what the rail remembers of each project's fold", () => {
+  it("starts having been told nothing", () => {
+    expect(loadProjectFolds(memoryStorage())).toEqual(new Map());
   });
 
-  it("remembers the folded projects by id, and forgets one that is opened again", () => {
+  it("remembers folded and unfolded alike, by id", () => {
     const store = memoryStorage();
-    persistFoldedProjects(new Set(["p2", "p3"]), store);
-    expect(loadFoldedProjects(store)).toEqual(new Set(["p2", "p3"]));
-    persistFoldedProjects(new Set(["p3"]), store);
-    expect(loadFoldedProjects(store)).toEqual(new Set(["p3"]));
+    persistProjectFolds(new Map([["p2", true], ["p3", false]]), store);
+    expect(loadProjectFolds(store)).toEqual(new Map([["p2", true], ["p3", false]]));
+    persistProjectFolds(new Map([["p3", false]]), store);
+    expect(loadProjectFolds(store)).toEqual(new Map([["p3", false]]));
   });
 
-  it("treats a stored value that is not a list of ids as nothing folded", () => {
-    expect(loadFoldedProjects(memoryStorage({ [FOLDED_PROJECTS_KEY]: "p2" }))).toEqual(new Set());
-    expect(loadFoldedProjects(memoryStorage({ [FOLDED_PROJECTS_KEY]: '{"a":1}' }))).toEqual(new Set());
-    expect(loadFoldedProjects(memoryStorage({ [FOLDED_PROJECTS_KEY]: "[1, null]" }))).toEqual(new Set());
+  it("reads an older client's list of folded ids as those said folded", () => {
+    expect(loadProjectFolds(memoryStorage({ [FOLDED_PROJECTS_KEY]: '["p2","p3"]' }))).toEqual(new Map([["p2", true], ["p3", true]]));
+  });
+
+  it("treats a stored value of the wrong shape as nothing said", () => {
+    expect(loadProjectFolds(memoryStorage({ [FOLDED_PROJECTS_KEY]: "p2" }))).toEqual(new Map());
+    expect(loadProjectFolds(memoryStorage({ [FOLDED_PROJECTS_KEY]: '{"a":1}' }))).toEqual(new Map());
+    expect(loadProjectFolds(memoryStorage({ [FOLDED_PROJECTS_KEY]: "[1, null]" }))).toEqual(new Map());
+    expect(loadProjectFolds(memoryStorage({ [FOLDED_PROJECTS_KEY]: "null" }))).toEqual(new Map());
   });
 
   it("does not throw when the storage refuses either way", () => {
-    expect(loadFoldedProjects(refusingStorage())).toEqual(new Set());
-    expect(() => persistFoldedProjects(new Set(["p1"]), refusingStorage())).not.toThrow();
+    expect(loadProjectFolds(refusingStorage())).toEqual(new Map());
+    expect(() => persistProjectFolds(new Map([["p1", true]]), refusingStorage())).not.toThrow();
   });
 });
 

@@ -37,7 +37,7 @@ COPY spa/ /build/repo/spa/
 ARG VITE_RELAY_URL=wss://relay.getbuild.ing
 ARG VITE_BUILD_VERSION=dev
 RUN cd /build/repo/spa \
- && npm install --no-audit --no-fund \
+ && npm install --legacy-peer-deps --no-audit --no-fund \
  && VITE_RELAY_URL="$VITE_RELAY_URL" VITE_BUILD_VERSION="$VITE_BUILD_VERSION" npm run build
 # → emits /build/repo/skriftapp/buildapp/static/ (vite outDir).
 

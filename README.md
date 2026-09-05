@@ -39,6 +39,7 @@ See [`planning/v2/`](planning/v2/) for the full scope, UI design brief, and road
 | `bridge/src/bin/relay.rs` | relay.getbuild.ing | Rust ciphertext-only broker: `/ws/device` (Ed25519 auth) + `/ws/client` (gateway-token auth); once a session upgrades to its DataChannel the relay carries signaling, presence and fallback only |
 | `skriftapp/` | getbuild.ing | Python app server (Skrift): passkey auth, device registry/approval, gateway tokens, web push, serves the SPA |
 | `spa/` | built into skriftapp | Vite vanilla-ES-module web client — task board, plan/diff review, terminal drawer; all deps self-hosted, zero CDN |
+| `desktop/` | user desktops | Sandboxed Electron client for the hosted SPA; connects to a separately installed bridge through the E2EE relay |
 | `web/` | dev only | Node E2EE test/QA harnesses |
 | `deploy/` | — | podman compose stack + k8s manifests and the cutover runbook |
 
@@ -64,6 +65,7 @@ itself never leaves the api Secret.
 cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 cd skriftapp && uv run pytest
 cd spa && npm test && npm run build
+cd desktop && npm test && npm run pack
 ```
 
 Full local stack (app + relay + bridge + scripted QA) via podman compose:

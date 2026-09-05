@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { diffFilesHtml, diffRowsHtml, diffStackHtml } from "../src/core/diffRender.js";
+import { diffFilesHtml, diffRowsHtml, diffStackEntries, diffStackHtml } from "../src/core/diffRender.js";
+import { createFileFolds, fileKey } from "../src/core/diff.js";
 
 const files = [
   {
@@ -41,8 +42,10 @@ describe("diffFilesHtml", () => {
     expect(html).toContain("src/&lt;x&gt;.rs");
   });
 
-  it("uses data-file on the file block for comment anchoring", () => {
-    expect(diffFilesHtml(files)).toContain('data-file="src/&lt;x&gt;.rs"');
+  it("names the file block with its key, and nothing else, for the anchoring to read", () => {
+    const html = diffFilesHtml(files);
+    expect(html).toContain('data-key="EDIT:src/&lt;x&gt;.rs"');
+    expect(html).not.toContain("data-file=");
   });
 
   it("syntax-highlights code by the file's extension (never leaves raw markup)", () => {
@@ -126,9 +129,9 @@ describe("diffFilesHtml re-review options", () => {
 
   it("collapses (not caps) a viewed file and checks its box", () => {
     const html = diffFilesHtml(files, { withViewedToggle: true, viewed: new Set(["a.js"]) });
-    expect(html).toMatch(/<div class="file collapsed" data-file="a\.js"/);
-    expect(html).toMatch(/<div class="file capped" data-file="b\.js"/);
-    expect(html).toContain('data-file="a.js" checked');
+    expect(html).toMatch(/<div class="file collapsed" data-key="EDIT:a\.js"/);
+    expect(html).toMatch(/<div class="file capped" data-key="EDIT:b\.js"/);
+    expect(html).toContain('data-key="EDIT:a.js" checked');
   });
 });
 
@@ -196,7 +199,7 @@ describe("per-file ⋯ menu (staging is gone; discard moved here)", () => {
     const html = diffFilesHtml(files, { fileMenu: { openPath: "src/a.js" } });
     expect(html).toContain('class="fmenu"');
     expect(html).toContain("gitdiscard");
-    expect(html).toContain('data-path="src/a.js"');
+    expect(html).toContain('data-key="EDIT:src/a.js"');
   });
 
   it("keeps the menu shut until its own file's ⋯ is open", () => {
@@ -224,7 +227,7 @@ describe("diffStackHtml — collapse, never hide", () => {
 
   it("renders source files as full stacked diffs", () => {
     const html = diffStackHtml([source]);
-    expect(html).toContain('data-file="src/main.py"');
+    expect(html).toContain('data-key="EDIT:src/main.py"');
     expect(html).not.toContain("noisegroup");
   });
 
@@ -233,13 +236,13 @@ describe("diffStackHtml — collapse, never hide", () => {
     expect(html).toContain("noisegroup");
     expect(html).toContain("2 generated files");
     // the group sits below the source stack, and its diffs are not rendered yet
-    expect(html.indexOf("noisegroup")).toBeGreaterThan(html.indexOf('data-file="src/main.py"'));
-    expect(html).not.toContain('data-file="uv.lock"');
+    expect(html.indexOf("noisegroup")).toBeGreaterThan(html.indexOf('data-key="EDIT:src/main.py"'));
+    expect(html).not.toContain('data-key="EDIT:uv.lock"');
   });
 
   it("renders the noise diffs once the group is expanded", () => {
     const html = diffStackHtml([source, lock], { noiseExpanded: true });
-    expect(html).toContain('data-file="uv.lock"');
+    expect(html).toContain('data-key="EDIT:uv.lock"');
     expect(html).toContain("noisegroup open");
   });
 
@@ -255,5 +258,127 @@ describe("diffStackHtml — collapse, never hide", () => {
 
   it("says so when there is nothing at all", () => {
     expect(diffStackHtml([])).toContain("No file changes");
+  });
+});
+
+// The fold a file wears is a function of the reader's state, not of the class
+// list a press left behind: `expanded` and `collapsed` are sets of file keys,
+// and `viewed` still shuts a file the reader ticked off.
+describe("folds the reader owns", () => {
+  const files = [
+    { path: "a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] },
+    { path: "b.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "y" }] },
+  ];
+  const keyA = fileKey(files[0]);
+
+  it("names every file with its key, beside the path the comments anchor to", () => {
+    const html = diffFilesHtml(files);
+    expect(html).toContain(`data-key="${keyA}"`);
+  });
+
+  it("caps a file the reader has not opened", () => {
+    expect(diffFilesHtml(files)).toContain('class="file capped" data-key="EDIT:a.js"');
+  });
+
+  it("expands the file whose key the reader opened, and says so in its class alone", () => {
+    const folds = createFileFolds();
+    folds.openBody(keyA);
+    const html = diffFilesHtml(files, { folds });
+    expect(html).toContain('class="file" data-key="EDIT:a.js"');
+    expect(html).not.toContain("data-expanded");
+    expect(html).toContain('class="file capped" data-key="EDIT:b.js"');
+  });
+
+  it("collapses the file the reader shut", () => {
+    const folds = createFileFolds();
+    folds.press(keyA);
+    expect(diffFilesHtml(files, { folds })).toContain('class="file collapsed" data-key="EDIT:a.js"');
+  });
+
+  it("collapses a viewed file, with or without a reader's folds behind it", () => {
+    expect(diffFilesHtml(files, { viewed: new Set(["a.js"]) })).toContain('class="file collapsed" data-key="EDIT:a.js"');
+    const html = diffFilesHtml(files, { folds: createFileFolds(), viewed: new Set(["a.js"]) });
+    expect(html).toContain('class="file collapsed" data-key="EDIT:a.js"');
+  });
+
+  it("opens a viewed file the reader asked to see again", () => {
+    const viewed = new Set(["a.js"]);
+    const folds = createFileFolds();
+    folds.press(keyA, { viewed });
+    const html = diffFilesHtml(files, { folds, viewed, withViewedToggle: true });
+    expect(html).toContain('class="file" data-key="EDIT:a.js"');
+    expect(html).toContain('data-key="EDIT:a.js" checked');
+  });
+});
+
+// The stack is a keyed list: every block a repaint can move — a file, the
+// triage bar, a group — has a name of its own, so patching one leaves the rest
+// standing. diffStackHtml is those entries joined, and nothing else.
+describe("diffStackEntries", () => {
+  const source = { path: "src/main.py", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] };
+  const other = { path: "src/other.py", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "y" }] };
+  const lock = { path: "uv.lock", status: "EDIT", add: 9, del: 9, rows: [{ t: "add", n: 1, text: "z" }] };
+
+  it("names every file entry by its file key", () => {
+    const entries = diffStackEntries([source, other]);
+    expect(entries.map((entry) => entry.key)).toEqual([fileKey(source), fileKey(other)]);
+  });
+
+  it("gives the noise group a name of its own, after the files", () => {
+    const entries = diffStackEntries([source, lock]);
+    expect(entries.map((entry) => entry.key)).toEqual([fileKey(source), "noise"]);
+    expect(entries[1].html).toContain("noisegroup");
+  });
+
+  it("says so, under one name, when there is nothing at all", () => {
+    const entries = diffStackEntries([]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].html).toContain("No file changes");
+  });
+
+  it("keeps the keys unique so a list can be patched by them", () => {
+    const entries = diffStackEntries([source, other, lock], { noiseExpanded: true });
+    expect(new Set(entries.map((entry) => entry.key)).size).toBe(entries.length);
+  });
+
+  it("is what diffStackHtml is made of", () => {
+    for (const options of [{}, { noiseExpanded: true }, { commentable: true }]) {
+      expect(diffStackEntries([source, lock], options).map((entry) => entry.html).join("")).toBe(
+        diffStackHtml([source, lock], options),
+      );
+    }
+  });
+});
+
+// A diff says what changed; the file says what it is now. One control in each
+// file's head carries the reader from one to the other.
+describe("the way into the Files view", () => {
+  const files = [
+    {
+      path: "src/a.js",
+      status: "EDIT",
+      add: 1,
+      del: 0,
+      rows: [
+        { t: "hunk", text: "@@ -12,2 +12,3 @@" },
+        { t: "ctx", o: 12, n: 12, text: "keep" },
+        { t: "add", n: 13, text: "x" },
+      ],
+    },
+  ];
+
+  it("offers nothing where the surface cannot open a file", () => {
+    expect(diffFilesHtml(files)).not.toContain("data-open-file");
+  });
+
+  it("carries the path and the first line the diff touches", () => {
+    const html = diffFilesHtml(files, { openable: true });
+    expect(html).toContain('data-open-file="src/a.js"');
+    expect(html).toContain('data-new-line="12"');
+  });
+
+  it("escapes the path it carries", () => {
+    const evil = [{ path: '"><img src=x>', status: "EDIT", add: 0, del: 0, rows: [] }];
+    expect(diffFilesHtml(evil, { openable: true })).not.toContain("<img");
   });
 });

@@ -38,21 +38,26 @@ export function persistRailView(view, storage) {
   }
 }
 
-/** The ids of the projects folded shut. Anything that is not a list of ids is
- *  nothing folded. */
-export function loadFoldedProjects(storage) {
+/** What the user has said of each project's fold: project id → folded. A
+ *  project they have said nothing about is absent, and the face decides for
+ *  it. Anything stored that is not that shape is nothing said. (An older
+ *  client stored a list of the folded ids; that reads as those said folded.) */
+export function loadProjectFolds(storage) {
   try {
-    const parsed = JSON.parse(storage.getItem(FOLDED_PROJECTS_KEY) || "[]");
-    if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === "string")) return new Set();
-    return new Set(parsed);
+    const parsed = JSON.parse(storage.getItem(FOLDED_PROJECTS_KEY) || "{}");
+    if (Array.isArray(parsed)) {
+      return new Map(parsed.filter((id) => typeof id === "string").map((id) => [id, true]));
+    }
+    if (!parsed || typeof parsed !== "object") return new Map();
+    return new Map(Object.entries(parsed).filter(([, folded]) => typeof folded === "boolean"));
   } catch {
-    return new Set();
+    return new Map();
   }
 }
 
-export function persistFoldedProjects(folded, storage) {
+export function persistProjectFolds(folds, storage) {
   try {
-    storage.setItem(FOLDED_PROJECTS_KEY, JSON.stringify([...folded]));
+    storage.setItem(FOLDED_PROJECTS_KEY, JSON.stringify(Object.fromEntries(folds)));
   } catch {
     /* storage disabled — the folds last the session */
   }

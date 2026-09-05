@@ -22,8 +22,8 @@
 // nothing to weigh yet says so.
 //
 // Everything that has said nothing for a day is partitioned off into Recent at
-// the end of the list: still there, just not what today is about. With almost
-// nothing above it, it opens by itself.
+// the end of the list: still there, just not what today is about. It starts
+// shut, always — opening it is the user's, and holds until they shut it.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -36,10 +36,6 @@ const DAY_MS = 24 * 3600 * 1000;
 /** How long a row can say nothing before it belongs to Recent rather than to
  *  the list proper. */
 export const RECENT_AFTER_MS = DAY_MS;
-
-/** Under this many rows in the list proper, the inbox has nothing worth hiding
- *  behind a disclosure, so Recent opens itself. */
-export const RECENT_AUTO_OPEN_BELOW = 5;
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";
@@ -300,12 +296,11 @@ function byAnchor(left, right) {
 
 /**
  * The rows the inbox lists, split into the list proper and Recent:
- * `{ entries, recent, autoOpen }`.
+ * `{ entries, recent }`.
  *
  * Both lists are in anchor order, oldest first. `recent` is everything whose
  * last activity — a file changing, a message, an agent painting — is over a day
- * old, and `autoOpen` is whether the section should be open with nobody having
- * said either way.
+ * old.
  *
  * A row the user cleared (`dismissed`) is in neither list — that is what
  * clearing means, and it is the whole difference from Recent, where a row that
@@ -320,7 +315,7 @@ export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
   const quiet = (entry) => entry.lastActivityMs !== null && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
   const entries = rows.filter((entry) => !quiet(entry));
   const recent = rows.filter(quiet);
-  return { entries, recent, autoOpen: entries.length < RECENT_AUTO_OPEN_BELOW };
+  return { entries, recent };
 }
 
 /** The entities whose local caches stay warm: the inbox's own partition is the
@@ -401,8 +396,12 @@ function menuHtml(entry, open) {
       }</span></div>`,
     );
   }
+  // The menu is in the markup only while it is open: the DOM patcher leaves a
+  // split menu's `hidden` alone (a poll must not shut what the reader opened),
+  // so a menu that closes has to leave rather than hide.
+  const menu = open ? `<div class="splitmenu inbox-menu">${items.join("")}</div>` : "";
   return `<button class="iconbtn inbox-more" data-menu="${esc(entry.key)}" title="More" aria-label="More actions for ${esc(entry.name)}">⋯</button>
-    <div class="splitmenu inbox-menu"${open ? "" : " hidden"}>${items.join("")}</div>`;
+    ${menu}`;
 }
 
 /** Everything the two lines leave out, on the row itself: what the work is for,
@@ -482,10 +481,10 @@ export function inboxEmptyHtml() {
   return '<div class="inbox-clear dim">Nothing needs you. Work you start shows up here.</div>';
 }
 
-/** Whether Recent is open: what the user said if they have said anything, else
- *  what the partition decided for itself. */
-export function recentIsOpen({ autoOpen = false } = {}, recentOpen) {
-  return recentOpen === undefined || recentOpen === null ? !!autoOpen : !!recentOpen;
+/** Whether Recent is open: only if the user opened it. It never opens by
+ *  itself, however thin the list above it. */
+export function recentIsOpen(recentOpen) {
+  return recentOpen === true;
 }
 
 /** Recent's disclosure: the one control at the end of the list, counting what is

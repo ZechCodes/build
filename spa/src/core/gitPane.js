@@ -33,8 +33,9 @@ import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
-import { parseDiff } from "./diff.js";
-import { diffStackHtml } from "./diffRender.js";
+import { createFileFolds, parseDiff, pathOf } from "./diff.js";
+import { diffStackEntries, stackClaims } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -42,6 +43,7 @@ import { watchChanges } from "./changeEvents.js";
 import { cacheDeviceId } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { patchList } from "./patchList.js";
+import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
 
@@ -378,8 +380,10 @@ export function mountGitPane(
     // standalone Files/Changes hosts), the daemon answers with the entity's
     // first agent, which is what this surface always meant.
     agentSelection = createAgentSelection(),
+    navigate = null,
   } = {},
 ) {
+  const openFile = (navigate && navigate.openFile) || null;
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
   let lastStatus = null;
@@ -420,6 +424,7 @@ export function mountGitPane(
   // nothing about a commit's), and whether they have dialled the ordering off
   // for this project.
   const expandedGroups = new Map(); // changeset key → the group names opened in it
+  const fileFolds = new Map();
   const triageProject = projectId || (scope && scope.project_id) || null;
   let trustDial = loadTrustDial(triageProject);
   // Re-review memory, per changeset: what the reviewer saw when they last sent
@@ -430,6 +435,7 @@ export function mountGitPane(
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
+  let paintChangesetInto = null;
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -488,6 +494,7 @@ export function mountGitPane(
     // a set of changes, a commit — put something in the detail column behind
     // it, so both close it; the "show more" row, which only lengthens the rail,
     // does not.
+    paintChangesetInto = createChangesetPaint(container.querySelector(".cdetail-host"));
     const split = container.querySelector(".changes2");
     split.insertAdjacentHTML("beforeend", paneDrawerHtml("commits"));
     if (drawer) drawer.dispose();
@@ -502,6 +509,12 @@ export function mountGitPane(
   };
 
   const defaultSelection = () => defaultChangesSelection({ status: lastStatus, review });
+
+  const foldsOfOpenChangeset = () => {
+    const key = String(selected);
+    if (!fileFolds.has(key)) fileFolds.set(key, createFileFolds());
+    return fileFolds.get(key);
+  };
 
   // Disagreeing with the pass. Only a run has a pass to disagree with (and a
   // run_id to name in the RPC), so a bare worktree or the primary checkout
@@ -567,11 +580,14 @@ export function mountGitPane(
    *  diffs (noise collapsed into its group at the bottom), and — where the
    *  surface can talk to an agent — the pending-comment tray. */
   const renderChangeset = (detailHost) => {
+    const folds = foldsOfOpenChangeset();
     // Every stack carries the same re-review chip: a file that moved since the
     // reviewer last sent comments on THIS changeset says so.
     const stackFor = (files, patch) => ({
       commentable,
+      openable: Boolean(openFile),
       noiseExpanded: noiseExpanded.has(String(selected)),
+      folds,
       changedSince: changedSinceChangeset(reviewStamps, selected, files),
       // Review prioritization, on the changeset the reviewer has open — the
       // rail is never reordered, only the stack under it. A surface with no run
@@ -579,21 +595,16 @@ export function mountGitPane(
       review: triageOverlay(patch),
     });
     if (selected === "uncommitted") {
-      if (!hasUncommittedChanges(lastStatus)) {
-        renderedFiles = [];
-        detailHost.innerHTML = uncommittedHeaderHtml(lastStatus) + changesetPlaceholderHtml("No uncommitted changes.");
-        return;
-      }
       const files = parseDiff(lastStatus.patch);
-      renderedFiles = files;
+      renderedFiles = hasUncommittedChanges(lastStatus) ? files : [];
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
-      detailHost.innerHTML =
-        uncommittedHeaderHtml(lastStatus) +
-        diffStackHtml(files, { ...stackFor(files, lastStatus.patch), fileMenu }) +
-        (commentLayer ? commentLayer.trayHtml() : "");
-      if (commentLayer) commentLayer.attach(detailHost);
+      paintChangeset(detailHost, {
+        bar: uncommittedHeaderHtml(lastStatus),
+        files: renderedFiles,
+        stackOptions: { ...stackFor(renderedFiles, lastStatus.patch), fileMenu, empty: "No uncommitted changes." },
+      });
       return;
     }
     const detail = showCache.get(selected);
@@ -604,10 +615,19 @@ export function mountGitPane(
     }
     const commitFiles = parseDiff(detail.patch);
     renderedFiles = commitFiles;
-    detailHost.innerHTML =
-      commitHeaderHtml(detail) +
-      diffStackHtml(commitFiles, stackFor(commitFiles, detail.patch)) +
-      (commentLayer ? commentLayer.trayHtml() : "");
+    paintChangeset(detailHost, {
+      bar: commitHeaderHtml(detail),
+      files: commitFiles,
+      stackOptions: stackFor(commitFiles, detail.patch),
+    });
+  };
+
+  const paintChangeset = (detailHost, { bar, files, stackOptions = {} }) => {
+    paintChangesetInto({
+      bar,
+      entries: diffStackEntries(files, stackOptions),
+      tray: commentLayer ? commentLayer.trayHtml() : "",
+    });
     if (commentLayer) commentLayer.attach(detailHost);
   };
 
@@ -684,14 +704,19 @@ export function mountGitPane(
       if (reviewMounted) {
         review.unmount();
         reviewMounted = false;
+        detailHost.innerHTML = "";
       }
-      if (selected === null || selected === undefined) {
-        // A clean branch opens at the commit list: nothing selected, no commit
-        // box, and a line saying what to do rather than an empty pane.
-        detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
-      } else {
-        renderChangeset(detailHost);
-      }
+      paintKeepingPlace(
+        detailHost,
+        () => {
+          if (selected === null || selected === undefined) {
+            detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
+            return;
+          }
+          renderChangeset(detailHost);
+        },
+        DIFF_PLACE_KEEPING,
+      );
     }
     renderCommitBox();
     setHint(hint);
@@ -1039,116 +1064,104 @@ export function mountGitPane(
     else render();
   };
 
+  const claimSecret = (event) => toggleSecretSpoiler(event.target);
+
+  const claimFetch = (event) => {
+    if (!event.target.closest(".gtfetch")) return false;
+    runFetch();
+    return true;
+  };
+
+  const claimSyncButtonWiredElsewhere = (event) => Boolean(event.target.closest(".gtsync") || event.target.closest(".gtstash"));
+
+  const claimAbort = (event) => {
+    if (!event.target.closest(".gitabort")) return false;
+    confirmThen("abort", runAbort);
+    return true;
+  };
+
+  const claimDiscard = (event) => {
+    const button = event.target.closest(".gitdiscard");
+    if (!button) return false;
+    const path = pathOf(button.dataset.key);
+    confirmThen(`discard:${path}`, () => runDiscard(path));
+    return true;
+  };
+
+  const claimFileMenu = (event) => {
+    const button = event.target.closest(".fmenu");
+    if (!button) return false;
+    const path = pathOf(button.dataset.key);
+    fileMenuPath = fileMenuPath === path ? null : path;
+    clearConfirm();
+    render();
+    return true;
+  };
+
+  const claimOverride = (event) => Boolean(!reviewMounted && overrides && overrides.handleClick(event));
+
+  const claimTrustDial = (event) => {
+    if (!event.target.closest(".tdial")) return false;
+    trustDial = !trustDial;
+    saveTrustDial(triageProject, trustDial);
+    render();
+    return true;
+  };
+
+  const claimTriageGroup = (event) => {
+    const head = event.target.closest(".tgrouphead");
+    if (!head) return false;
+    const key = String(selected);
+    if (!expandedGroups.has(key)) expandedGroups.set(key, new Set());
+    const opened = expandedGroups.get(key);
+    const name = head.dataset.group;
+    if (opened.has(name)) opened.delete(name);
+    else opened.add(name);
+    render();
+    return true;
+  };
+
+  const claimNoiseGroup = (event) => {
+    if (!event.target.closest(".noisehead")) return false;
+    const key = String(selected);
+    if (noiseExpanded.has(key)) noiseExpanded.delete(key);
+    else noiseExpanded.add(key);
+    render();
+    return true;
+  };
+
+  const claimRailRow = (event) => {
+    const pinned = event.target.closest(".rrow[data-sel]");
+    const commit = event.target.closest(".crow[data-hash]");
+    if (!pinned && !commit) return false;
+    selectRail(pinned ? pinned.dataset.sel : commit.dataset.hash);
+    return true;
+  };
+
+  const claims = [
+    claimSecret,
+    claimFetch,
+    claimSyncButtonWiredElsewhere,
+    claimAbort,
+    claimDiscard,
+    claimFileMenu,
+    claimOverride,
+    claimTrustDial,
+    claimTriageGroup,
+    claimNoiseGroup,
+    claimRailRow,
+    ...stackClaims({
+      comments: () => (reviewMounted ? null : commentLayer),
+      openFile: () => openFile,
+      folds: () => (reviewMounted ? null : foldsOfOpenChangeset()),
+      repaint: render,
+    }),
+  ];
+
   const handleClick = (event) => {
-    const target = event.target;
-    if (toggleSecretSpoiler(target)) return; // reveal/hide a masked dotenv value in a diff
-    if (target.closest(".gtfetch")) {
-      runFetch();
-      return;
-    }
-    // The Pull/Push/Stash split buttons wire their own behavior (including the
-    // force-push inline confirm inside runSyncOption). Their menu-item clicks
-    // bubble here, so bail before the "disarm on any other click" fallthrough —
-    // otherwise a click would clear the very confirm it just armed.
-    if (target.closest(".gtsync") || target.closest(".gtstash")) return;
-    const abortButton = target.closest(".gitabort");
-    if (abortButton) {
-      confirmThen("abort", runAbort);
-      return;
-    }
-    const discardButton = target.closest(".gitdiscard");
-    if (discardButton) {
-      confirmThen(`discard:${discardButton.dataset.path}`, () => runDiscard(discardButton.dataset.path));
-      return;
-    }
-    // The file header's ⋯ — where the per-file verbs live now that the stage
-    // checkboxes are gone. One menu is open at a time; a second click shuts it.
-    const menuButton = target.closest(".fmenu");
-    if (menuButton) {
-      const path = menuButton.dataset.path;
-      fileMenuPath = fileMenuPath === path ? null : path;
-      clearConfirm();
-      render();
-      return;
-    }
-    // Disagreeing with where the pass put a hunk. This runs BEFORE the comment
-    // and fold handling: the offer sits on a hunk row inside a capped file, and
-    // either would otherwise eat the press as "expand me" or "comment here".
-    // While the review plug owns the detail pane it owns its overlay too — this
-    // layer must not also claim it, or one press would post two disagreements.
-    if (!reviewMounted && overrides && overrides.handleClick(event)) return;
-    // The trust dial: the reviewer says how much of the pass's reading they
-    // want. Remembered per project, so the answer is asked once.
-    if (target.closest(".tdial")) {
-      trustDial = !trustDial;
-      saveTrustDial(triageProject, trustDial);
-      render();
-      return;
-    }
-    // A collapsed triage group: a click opens it, per changeset, across
-    // repaints — the same discipline the noise group is opened with.
-    const groupHead = target.closest(".tgrouphead");
-    if (groupHead) {
-      const key = String(selected);
-      if (!expandedGroups.has(key)) expandedGroups.set(key, new Set());
-      const opened = expandedGroups.get(key);
-      const name = groupHead.dataset.group;
-      if (opened.has(name)) opened.delete(name);
-      else opened.add(name);
-      render();
-      return;
-    }
-    // The collapsed noise group at the bottom of a stack: a click opens it (and
-    // the choice sticks per changeset across repaints).
-    if (target.closest(".noisehead")) {
-      const key = String(selected);
-      if (noiseExpanded.has(key)) noiseExpanded.delete(key);
-      else noiseExpanded.add(key);
-      render();
-      return;
-    }
-    // Rail selection: the pinned entries and the commit rows. selectRail
-    // clears any armed confirm itself.
-    const railRow = target.closest(".rrow[data-sel]");
-    if (railRow) {
-      selectRail(railRow.dataset.sel);
-      return;
-    }
-    const commitRow = target.closest(".crow[data-hash]");
-    if (commitRow) {
-      selectRail(commitRow.dataset.hash);
-      return;
-    }
-    // The comment affordances every changeset carries: ✎ on a file header, the
-    // tray's remove control, and a tap on a line of an expanded file. This runs
-    // BEFORE the fold handling: ✎ sits inside a capped file's header, and the
-    // fold handler would otherwise eat the click as "expand me". While the
-    // review plug owns the detail pane it owns its comments too — this layer
-    // must not also claim them, or one tap would write two comments.
-    if (!reviewMounted && commentLayer && commentLayer.handleClick(event)) return;
-    // Diff folding, shared by every detail (uncommitted, commit, review plug):
-    // the filename bar toggles a full collapse; a click on a capped body
-    // expands it. Controls in the bar (⋯, ✎) keep their jobs.
-    const fhead = target.closest(".fhead");
-    if (fhead && !target.closest("button, input, label")) {
-      const file = fhead.closest(".file");
-      if (file) {
-        file.classList.toggle("collapsed");
-        file.classList.remove("capped");
-        return;
-      }
-    }
-    const cappedFile = target.closest(".file.capped");
-    if (cappedFile) {
-      cappedFile.classList.remove("capped");
-      return;
-    }
-    // Any other click disarms a stale confirm before doing its own job.
+    for (const claim of claims) if (claim(event)) return;
     if (disarmConfirm()) render();
-    if (target.closest(".gitmore")) {
-      showMore();
-      return;
-    }
+    if (event.target.closest(".gitmore")) showMore();
   };
 
   /** A permanent scope rejection replaces the pane body (there is nothing to

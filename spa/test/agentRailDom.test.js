@@ -84,6 +84,8 @@ const { readCached, writeCached, wipeCache } = await import("../src/core/localCa
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
+const { SURFACE_PILL_GRACE_MS, writeOpenSurface } = await import("../src/core/agentSurfacesModel.js");
+const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfacesCache.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
@@ -125,7 +127,8 @@ const CATALOG = {
       efforts: ["low", "high"],
     },
     { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
-    { id: "codex", label: "Codex", models: [], efforts: [] },
+    { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+    { id: "codex", label: "Codex TUI", models: [], efforts: [] },
   ],
 };
 
@@ -1317,7 +1320,7 @@ describe("the pinned status line above the composer", () => {
       },
     });
     await mount();
-    expect(railStatus().textContent).toContain("Codex session started");
+    expect(railStatus().textContent).toContain("Codex TUI session started");
   });
 
   it("ticks the elapsed time between feed reads", async () => {
@@ -1417,9 +1420,6 @@ describe("the chat tab of a branch with no agent", () => {
     await flush();
   };
 
-  // Two agents, never three. Whether Claude Code opens as the TUI is the
-  // account's question, answered once in Settings — putting it in front of
-  // every human creating an agent is what this view stopped doing.
   it("offers the two agents, with the account's default already chosen", async () => {
     payload = agentless();
     await mount();
@@ -1931,10 +1931,203 @@ describe("the agent's surfaces, carried by the status row", () => {
     await mount();
 
     railHost().querySelector('[data-surface-kind="subagents"]').click();
-    railHost().querySelector(".surface-subagents .surface-row").click();
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
 
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
+  });
+});
+
+describe("the agent's surfaces, seeded from the local cache", () => {
+  const feedItems = [{
+    kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3",
+    agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
+  }];
+  const railContext = { kind: "branch", projectId: "p1", branch: "build/login" };
+  const shellsRunning = (...descriptions) => ({
+    shells: descriptions.map((description, index) => ({ id: `sh-${index}`, description, state: "running", tail: [] })),
+  });
+  const aChecklist = { checklist: [{ id: "t-1", subject: "wire the seed", state: "in_progress" }] };
+  const surfacesAddress = (sub) => surfacesCacheAddress({ deviceId: "dev-1", entityId: "run-3", agentId: sub });
+  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), surfacesRecord(surfaces));
+  const saveSurfacesLongAgo = async (sub, surfaces) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - SURFACE_PILL_GRACE_MS - 1);
+    await saveSurfaces(sub, surfaces);
+    clock.mockRestore();
+  };
+  const savedSurfaces = (sub) => readCached(surfacesAddress(sub));
+  const savedDescription = async (sub) => (await savedSurfaces(sub)).value.surfaces.shells[0].description;
+  const menuKinds = () =>
+    [...railHost().querySelectorAll(".rail-surface-menu .mi")].map((item) => item.dataset.action);
+  const pillKinds = () =>
+    [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
+  const pillCount = (kind) =>
+    railStatusPills().querySelector(`[data-surface-kind="${kind}"] .surface-pill-count`).textContent.trim();
+  const answerNothing = () => {
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise(() => {});
+      return {};
+    });
+  };
+
+  beforeEach(() => {
+    feedSnapshot = { items: feedItems, projects: [] };
+  });
+
+  it("paints the saved pills before the first read answers", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual(["shells"]);
+  });
+
+  it("paints no pill for an agent the cache never saw", async () => {
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual([]);
+  });
+
+  it("seeds no kind a live tab answers for from a snapshot older than the grace", async () => {
+    await saveSurfacesLongAgo("ag-1", {
+      ...shellsRunning("cargo test"),
+      ...aChecklist,
+      subagents: [{ id: "s-1", label: "reviewer", state: "running" }],
+    });
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual(["checklist"]);
+  });
+
+  it("seeds the same snapshot whole while the grace still holds", async () => {
+    await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual(["shells", "checklist"]);
+  });
+
+  it("offers the seeded kinds in the header menu before the first read answers", async () => {
+    await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
+    answerNothing();
+    await mount();
+    expect(menuKinds()).toEqual(["shells", "checklist"]);
+  });
+
+  it("opens the remembered kind's viewer on the saved snapshot", async () => {
+    writeOpenSurface("run-3:ag-1", "shells");
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    await mount();
+    expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test");
+  });
+
+  const shapelessRecords = [{ surfaces: "boom" }, { surfaces: { shells: "boom" } }, {}];
+  for (const shapeless of shapelessRecords) {
+    it(`paints the conversation and no pill for a record holding ${JSON.stringify(shapeless)}`, async () => {
+      await writeCached(surfacesAddress("ag-1"), shapeless);
+      await writeCached(
+        { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+        {
+          items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "the history", created_at: "2026-08-30T12:00:00Z" } }],
+          olderItemsRemain: false,
+          deliveredSequence: 1,
+          knownTotalItems: 1,
+        },
+      );
+      answerNothing();
+      await mount();
+      expect(pillKinds()).toEqual([]);
+      expect(menuKinds()).toEqual([]);
+      expect(railHost().querySelector("#rail-body").textContent).toContain("the history");
+      expect(notifyError).not.toHaveBeenCalled();
+    });
+  }
+
+  it("seeds the agent switched to, not the one left behind", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    await saveSurfaces("ag-2", aChecklist);
+    answerNothing();
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(pillKinds()).toEqual(["checklist"]);
+  });
+
+  it("drops a seed whose agent was left while the read was in flight", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    rail = mountAgentRail(railHost(), railContext);
+    bubbles()[1].click(); // ag-1's seed is still in flight
+    await flush();
+    expect(pillKinds()).toEqual([]);
+  });
+
+  it("replaces the seeded pills with the first live payload", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test", "cargo clippy"));
+    let answer = null;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
+      return {};
+    });
+    await mount();
+    expect(pillCount("shells")).toBe("2");
+
+    answer(branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] }));
+    await flush();
+    expect(pillCount("shells")).toBe("1");
+  });
+
+  it("writes the snapshot a payload moved, and rewrites nothing while it holds still", async () => {
+    payload = branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] });
+    await mount();
+    expect(await savedDescription("ag-1")).toBe("cargo test");
+
+    await saveSurfaces("ag-1", shellsRunning("left by another hand"));
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(await savedDescription("ag-1")).toBe("left by another hand");
+
+    payload = branchRow({ agents: [agent({ surfaces: shellsRunning("cargo clippy") })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(await savedDescription("ag-1")).toBe("cargo clippy");
+  });
+
+  it("leaves the record alone for a payload carrying no surfaces at all", async () => {
+    await saveSurfaces("ag-1", shellsRunning("from the last visit"));
+    payload = branchRow({ agents: [agent()] });
+    await mount();
+    expect(await savedDescription("ag-1")).toBe("from the last visit");
+  });
+
+  it("addresses the conversation and its surfaces alike, the kind apart", async () => {
+    payload = branchRow({
+      agents: [agent({ surfaces: shellsRunning("cargo test") })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "hello", created_at: "2026-08-30T12:00:00Z" } }],
+          has_more: false, thread_total: 1, thread_last_sequence: 1, sessions: [],
+        },
+      },
+    });
+    await mount();
+    expect(await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).toBeTruthy();
+    expect(await savedSurfaces("ag-1")).toBeTruthy();
+  });
+
+  it("leaves no seed landing after the rail is gone", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    rail = mountAgentRail(railHost(), railContext);
+    rail.dispose();
+    rail = null;
+    await flush();
+    expect(railHost().querySelector(".surface-pill")).toBe(null);
+    expect(notifyError).not.toHaveBeenCalled();
   });
 });
 
@@ -2301,6 +2494,15 @@ describe("the one status row", () => {
     expect(railHost().querySelector(".sdot")).toBe(null);
   });
 
+  it("spans the whole width on a phone, so nothing shows beside the conversation", () => {
+    const phoneRule = shellCss.match(/@media \(max-width: 760px\) \{[\s\S]*?\.rail-panel \{([^}]*)\}/);
+    expect(phoneRule).not.toBe(null);
+    expect(phoneRule[1]).toContain("left:0");
+    expect(phoneRule[1]).toContain("right:var(--agent-strip)");
+    expect(phoneRule[1]).toContain("width:auto");
+    expect(phoneRule[1]).not.toContain("100vw");
+  });
+
   it("keeps the clock's digits fixed in width so a tick never nudges the pills", () => {
     const clockRule = shellCss.match(/\.rail-status-text \{[^}]*\}/);
     expect(clockRule).not.toBe(null);
@@ -2309,15 +2511,17 @@ describe("the one status row", () => {
     expect(clockRule[0]).toContain("display:inline-block");
   });
 
-  it("shimmers the status clock and every row clock through one rule, and holds still under reduced motion", () => {
+  it("shimmers the status clock and every ticking row clock through one rule, holding still under reduced motion", () => {
     expect(shellCss.match(/@keyframes clock-shimmer/g)).toHaveLength(1);
     expect(shellCss.match(/linear-gradient\(100deg/g)).toHaveLength(1);
-    const shimmerRule = shellCss.match(/\n\.rail-status-working, \.surface-row-clock \{ color:transparent;[^}]*\}/);
+    const shimmerRule = shellCss.match(
+      /\n\.rail-status-working, \.surface-row-clock\[data-running-since\] \{ color:transparent;[^}]*\}/,
+    );
     expect(shimmerRule[0]).toContain("animation:clock-shimmer");
     expect(shimmerRule[0]).toContain("background-clip:text");
     expect(shimmerRule[0]).toContain("var(--clock-ink)");
     const stillRule = shellCss.match(
-      /@media \(prefers-reduced-motion: reduce\) \{\n?\s*\.rail-status-working, \.surface-row-clock \{[^}]*\}/,
+      /@media \(prefers-reduced-motion: reduce\) \{\n?\s*\.rail-status-working, \.surface-row-clock\[data-running-since\] \{[^}]*\}/,
     );
     expect(stillRule).not.toBe(null);
     expect(stillRule[0]).toContain("animation:none");

@@ -16,6 +16,11 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
+# npm 10 (what node:22 ships) crashes resolving this manifest against the
+# current registry ("Cannot read properties of null (reading 'edgesOut')" in
+# arborist's peer-set walk); npm 12 resolves it. Pinned so the fix is a
+# deliberate bump, like everything else here.
+RUN npm install -g npm@12.0.2 --no-audit --no-fund
 # The audited E2EE binding, placed as the repo's sibling so the SPA's
 # file:../../build-secure-transport/js dependency resolves unchanged.
 # PINNED to the audited commit — never HEAD: this JS performs all session

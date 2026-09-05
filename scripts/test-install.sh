@@ -84,6 +84,17 @@ assert_says() {
     return 1
 }
 
+# The mirror image of assert_says: a value the user must never read, checked
+# against the whole of stderr. Named without repeating the value, so a failure
+# report cannot leak what the case exists to keep out of the output.
+assert_never_says() {
+    ans_name="$1"
+    ans_root="$2"
+    grep -qF -- "$3" "$ans_root/stderr" || return 0
+    fail "$ans_name" "stderr repeated a value it must never print: $(cat "$ans_root/stderr")"
+    return 1
+}
+
 digest_of() {
     if command -v sha256sum > /dev/null 2>&1; then
         sha256sum "$1" | cut -d ' ' -f 1
@@ -336,6 +347,21 @@ the_binary_is_fetched_last() {
     pass "$name"
 }
 
+# A download that fails for any reason but a refusal is a message the user
+# pastes into a support thread, so it names the download and the api it was
+# asked of — never the url, whose query string carries an install line that a
+# 404 or a 502 has left live and usable by whoever reads it.
+a_failed_download_names_the_asset_and_not_the_token() {
+    name="a_failed_download_names_the_asset_and_not_the_token"
+    root="$(new_sandbox "$name")"
+    rm "$root/mirror/SHA256SUMS.sigstore.json"
+    status="$(run_install "$root")"
+    assert_refused "$name" "$root" "$status" 1 || return 1
+    assert_says "$name" "$root" \
+        "could not download SHA256SUMS.sigstore.json from $PINNED_BASE_URL (HTTP 404)" || return 1
+    assert_never_says "$name" "$root" "$PINNED_TOKEN" && pass "$name"
+}
+
 # Having a token is decided as early as knowing the platform, and for the same
 # reason: a user whose install line is spent is told that, not sent to install
 # a download tool their next copied line will not need either.
@@ -362,6 +388,7 @@ for case_name in \
     a_refused_token_installs_nothing \
     every_download_carries_the_token \
     the_binary_is_fetched_last \
+    a_failed_download_names_the_asset_and_not_the_token \
     the_no_token_verdict_comes_before_any_tool_is_demanded; do
     "$case_name" || true
 done

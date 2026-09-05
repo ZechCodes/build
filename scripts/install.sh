@@ -89,17 +89,23 @@ need() {
     has "$1" || fail "$1 is required to install build-bridge and is not on PATH"
 }
 
+# Takes the url segment and expands it here, so the url — and the token in its
+# query string — is never a value a caller holds or a message can print. What a
+# failure names is the download and the api it was asked of: a 404 or a 502
+# does not spend the token, and the line a user pastes into a support thread
+# must not hand that still-live token to whoever reads it.
+#
 # No -f: the status code is the message here. A refused install line comes back
 # as a 401 and has to be reported as the spent line it is, which `curl -f`
 # would flatten into an exit status like any other. A request that got no
 # answer at all prints 000 and lands in the last branch. --retry never retries
 # a 401, so a refusal costs one request.
 fetch() {
-    f_code="$(curl -sSL --retry 3 -o "$2" -w '%{http_code}' "$1")" || f_code="000"
+    f_code="$(curl -sSL --retry 3 -o "$2" -w '%{http_code}' "$(download_url "$1")")" || f_code="000"
     case "$f_code" in
         200) ;;
         401) fail "$REFUSED_MESSAGE" 1 ;;
-        *) fail "could not download $1 (HTTP $f_code)" 1 ;;
+        *) fail "could not download $1 from $API_BASE_URL (HTTP $f_code)" 1 ;;
     esac
 }
 
@@ -183,9 +189,9 @@ main() {
     # The tarball goes last because it is the request that spends the token: a
     # token spent before its checksums and signature arrived has bought a file
     # this script would then refuse to verify.
-    fetch "$(download_url "$CHECKSUMS")" "$CHECKSUMS"
-    fetch "$(download_url "$BUNDLE")" "$BUNDLE"
-    fetch "$(download_url "$m_key")" "$m_tarball"
+    fetch "$CHECKSUMS" "$CHECKSUMS"
+    fetch "$BUNDLE" "$BUNDLE"
+    fetch "$m_key" "$m_tarball"
 
     verify_checksum "$m_tarball"
     verify_signature

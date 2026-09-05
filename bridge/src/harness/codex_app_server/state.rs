@@ -1049,15 +1049,20 @@ impl CodexSessionState {
         )
     }
 
-    pub fn status(&self) -> AgentStatus {
+    /// The status of a session that has not reached its terminal phase, and
+    /// `None` once it has. A terminal phase never reports
+    /// [`AgentStatus::Ended`]: only the coordinator's published terminal
+    /// outcome, which waits for the stdout, process, and stderr sources to
+    /// settle, carries an ending and its exit code.
+    pub fn live_status(&self) -> Option<AgentStatus> {
         match self.phase {
             Phase::Starting
             | Phase::Initializing
             | Phase::AwaitingVersion
-            | Phase::OpeningThread { .. } => AgentStatus::Starting,
-            Phase::Waiting => AgentStatus::Waiting,
-            Phase::StartingTurn { .. } | Phase::Working(_) => AgentStatus::Working,
-            Phase::Ending | Phase::Ended => AgentStatus::Ended { code: None },
+            | Phase::OpeningThread { .. } => Some(AgentStatus::Starting),
+            Phase::Waiting => Some(AgentStatus::Waiting),
+            Phase::StartingTurn { .. } | Phase::Working(_) => Some(AgentStatus::Working),
+            Phase::Ending | Phase::Ended => None,
         }
     }
 

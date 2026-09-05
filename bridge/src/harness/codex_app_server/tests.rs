@@ -427,7 +427,7 @@ fn app_server_eof_ends_the_session_with_a_close_effect() {
         .transition(SessionEvent::Eof, Duration::ZERO, limits().state())
         .unwrap();
     assert_eq!(transition.effects, vec![SessionEffect::Close]);
-    assert_eq!(transition.state.status(), AgentStatus::Ended { code: None });
+    assert_eq!(transition.state.live_status(), None);
 }
 
 #[test]
@@ -449,7 +449,7 @@ fn initialize_is_first_and_a_turn_waits_for_readiness() {
         )
         .unwrap();
     assert!(queued.effects.is_empty());
-    assert_eq!(queued.state.status(), AgentStatus::Starting);
+    assert_eq!(queued.state.live_status(), Some(AgentStatus::Starting));
 }
 
 #[test]
@@ -755,7 +755,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
             limits().state(),
         )
         .unwrap();
-    assert_eq!(matching.state.status(), AgentStatus::Waiting);
+    assert_eq!(matching.state.live_status(), Some(AgentStatus::Waiting));
 
     let mismatch = opening
         .transition(
@@ -776,7 +776,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
 #[test]
 fn thread_response_before_notification_is_ready_and_the_duplicate_is_inert() {
     let waiting = advance_to_waiting();
-    assert_eq!(waiting.status(), AgentStatus::Waiting);
+    assert_eq!(waiting.live_status(), Some(AgentStatus::Waiting));
     let duplicate = waiting
         .transition(
             SessionEvent::ThreadStarted(THREAD_ID.to_string()),
@@ -811,7 +811,7 @@ fn starting_turn_completion_before_response_never_resurrects_working() {
         )
         .unwrap()
         .state;
-    assert_eq!(completed.status(), AgentStatus::Working);
+    assert_eq!(completed.live_status(), Some(AgentStatus::Working));
     let settled = completed
         .transition(
             correlated(start_turn("go"), Ok(json!({"turn":{"id":TURN_ID}}))),
@@ -819,7 +819,7 @@ fn starting_turn_completion_before_response_never_resurrects_working() {
             limits().state(),
         )
         .unwrap();
-    assert_eq!(settled.state.status(), AgentStatus::Waiting);
+    assert_eq!(settled.state.live_status(), Some(AgentStatus::Waiting));
 }
 
 #[test]
@@ -1204,7 +1204,7 @@ fn successful_steer_after_completion_never_replays_input() {
             limits().state(),
         )
         .unwrap();
-    assert_eq!(settled.state.status(), AgentStatus::Waiting);
+    assert_eq!(settled.state.live_status(), Some(AgentStatus::Waiting));
     assert!(!settled.effects.iter().any(|effect| matches!(
         effect,
         SessionEffect::Request(PendingOperation::StartTurn { .. })
@@ -1271,7 +1271,10 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
             limits().state(),
         )
         .unwrap();
-    assert_eq!(steer_settled.state.status(), AgentStatus::Working);
+    assert_eq!(
+        steer_settled.state.live_status(),
+        Some(AgentStatus::Working)
+    );
     let interrupt_settled = steer_settled
         .state
         .transition(
@@ -1280,7 +1283,10 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
             limits().state(),
         )
         .unwrap();
-    assert_eq!(interrupt_settled.state.status(), AgentStatus::Waiting);
+    assert_eq!(
+        interrupt_settled.state.live_status(),
+        Some(AgentStatus::Waiting)
+    );
 }
 
 #[test]
@@ -1364,7 +1370,7 @@ fn interrupt_answered_with_no_active_turn_after_completion_settles_quietly() {
         .effects
         .iter()
         .any(|effect| matches!(effect, SessionEffect::Report(_))));
-    assert_eq!(settled.state.status(), AgentStatus::Waiting);
+    assert_eq!(settled.state.live_status(), Some(AgentStatus::Waiting));
     assert_eq!(settled.state.epitaph(), None);
 }
 
@@ -1394,7 +1400,7 @@ fn active_turn_not_steerable_waits_for_completion_then_replays_once() {
         )
         .unwrap();
     assert!(waiting.effects.is_empty());
-    assert_eq!(waiting.state.status(), AgentStatus::Working);
+    assert_eq!(waiting.state.live_status(), Some(AgentStatus::Working));
 
     let replayed = waiting
         .state
@@ -2731,7 +2737,7 @@ fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
         "{:?}",
         retried.effects
     );
-    assert_eq!(retried.state.status(), AgentStatus::Working);
+    assert_eq!(retried.state.live_status(), Some(AgentStatus::Working));
     assert_eq!(retried.state.epitaph(), None);
 
     let terminal = retried
@@ -2751,7 +2757,7 @@ fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
         "{:?}",
         terminal.effects
     );
-    assert_eq!(terminal.state.status(), AgentStatus::Ended { code: None });
+    assert_eq!(terminal.state.live_status(), None);
     assert_eq!(
         terminal.state.epitaph().as_deref(),
         Some("Terminal synthetic fixture failure.")

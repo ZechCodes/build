@@ -21,6 +21,7 @@ use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
 
 const ACTIVITY_BACKLOG: usize = 1024;
+const STATUS_WHILE_TERMINAL_SOURCES_SETTLE: AgentStatus = AgentStatus::Working;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoordinatorTerminalEvent {
@@ -460,7 +461,12 @@ impl AgentSession for CodexAppServerSession {
                 code: outcome.exit_code,
             };
         }
-        self.core.state.lock().unwrap().status()
+        self.core
+            .state
+            .lock()
+            .unwrap()
+            .live_status()
+            .unwrap_or(STATUS_WHILE_TERMINAL_SOURCES_SETTLE)
     }
 
     fn quiet_for(&self) -> Duration {
@@ -1124,6 +1130,49 @@ mod tests {
         assert!(!session.exited_within(Duration::ZERO));
         assert!(!matches!(session.status(), AgentStatus::Ended { .. }));
         session.end();
+    }
+
+    #[test]
+    fn ended_is_published_only_after_stdout_process_and_stderr_settle() {
+        let root = tempfile::tempdir().unwrap();
+        let (session, mut activity) = scripted_session(
+            root.path(),
+            "exec 1>&-; (sleep 1; echo late >&2) & exec cat >/dev/null",
+        );
+        wait_until("settled stdout and reaped its process", || {
+            let snapshot = session.core.terminal.lock().unwrap();
+            snapshot.stdout_settled && snapshot.process.is_some()
+        });
+        assert!(
+            !matches!(session.status(), AgentStatus::Ended { .. }),
+            "{:?}",
+            session.status()
+        );
+        assert_eq!(session.epitaph(), None);
+        assert!(!matches!(
+            activity.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
+
+        wait_until("published its terminal outcome", || {
+            matches!(session.status(), AgentStatus::Ended { .. })
+        });
+        let settled_code = session
+            .core
+            .terminal
+            .lock()
+            .unwrap()
+            .process
+            .as_ref()
+            .unwrap()
+            .exit_code;
+        assert!(settled_code.is_some());
+        assert_eq!(session.status(), AgentStatus::Ended { code: settled_code });
+        assert_eq!(session.epitaph().as_deref(), Some("late"));
+        assert!(matches!(
+            activity.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
     }
 
     #[test]

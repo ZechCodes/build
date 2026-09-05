@@ -14,9 +14,16 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub type TerminalEventSink = Arc<dyn Fn(TerminalSourceEvent) + Send + Sync>;
 
-/// One settlement of the stdout reader, the process monitor, or the stderr drainer.
+/// A child pipe that the settle grace may settle on behalf of its reader or drainer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSource {
+    Stdout,
+    Stderr,
+}
+
+/// One settlement of the stdout reader, the process monitor, or the stderr drainer,
+/// or the settle-grace expiry that settles a pipe still held open after the child was reaped.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::enum_variant_names)]
 pub enum TerminalSourceEvent {
     StdoutSettled {
         reader_error: Option<String>,
@@ -28,6 +35,10 @@ pub enum TerminalSourceEvent {
     StderrSettled {
         retained_tail: Option<String>,
         drainer_error: Option<String>,
+    },
+    SourceExpired {
+        source: TerminalSource,
+        reason: String,
     },
 }
 
@@ -241,16 +252,13 @@ fn poll_settlement(slot: &ProcessSlot) -> Option<TerminalSourceEvent> {
 
 fn grace_expiries(source_settle_grace: Duration) -> [TerminalSourceEvent; 2] {
     [
-        TerminalSourceEvent::StdoutSettled {
-            reader_error: Some(format!(
-                "Codex stdout did not settle within {source_settle_grace:?}"
-            )),
+        TerminalSourceEvent::SourceExpired {
+            source: TerminalSource::Stdout,
+            reason: format!("Codex stdout did not settle within {source_settle_grace:?}"),
         },
-        TerminalSourceEvent::StderrSettled {
-            retained_tail: None,
-            drainer_error: Some(format!(
-                "Codex stderr did not settle within {source_settle_grace:?}"
-            )),
+        TerminalSourceEvent::SourceExpired {
+            source: TerminalSource::Stderr,
+            reason: format!("Codex stderr did not settle within {source_settle_grace:?}"),
         },
     ]
 }

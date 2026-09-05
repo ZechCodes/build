@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use super::connection::{AppServerConnection, SharedConnection};
 use super::limits::{AppServerLimits, StateLimits};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
-use super::process::{AppServerProcess, TerminalEventSink, TerminalSourceEvent};
+use super::process::{AppServerProcess, TerminalEventSink, TerminalSource, TerminalSourceEvent};
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
     ParentThreadFilter, ParentThreadRoute, RoutedServerRequest, ServerNotification,
@@ -37,6 +37,9 @@ impl CoordinatorTerminalEvent {
                 ..
             })
             | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled {
+                ..
+            })
+            | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::SourceExpired {
                 ..
             }) => true,
             CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled {
@@ -71,6 +74,7 @@ pub struct TerminalSnapshot {
     process: Option<ProcessOutcome>,
     stderr: Option<StderrOutcome>,
     terminal_error: Option<String>,
+    expiry: Option<String>,
 }
 
 impl TerminalSnapshot {
@@ -106,8 +110,34 @@ impl TerminalSnapshot {
                     drainer_error,
                 });
             }
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::SourceExpired {
+                source,
+                reason,
+            }) => {
+                if next.settle_expired_source(source) {
+                    next.expiry.get_or_insert(reason);
+                }
+            }
         }
         next
+    }
+
+    fn settle_expired_source(&mut self, source: TerminalSource) -> bool {
+        match source {
+            TerminalSource::Stdout => {
+                let was_pending = !self.stdout_settled;
+                self.stdout_settled = true;
+                was_pending
+            }
+            TerminalSource::Stderr => {
+                let was_pending = self.stderr.is_none();
+                self.stderr.get_or_insert(StderrOutcome {
+                    retained_tail: None,
+                    drainer_error: None,
+                });
+                was_pending
+            }
+        }
     }
 
     pub fn outcome(&self) -> Option<TerminalOutcome> {
@@ -123,7 +153,8 @@ impl TerminalSnapshot {
                 .clone()
                 .or_else(|| process.monitor_error.clone())
                 .or_else(|| stderr.drainer_error.clone())
-                .or_else(|| stderr.retained_tail.clone()),
+                .or_else(|| stderr.retained_tail.clone())
+                .or_else(|| self.expiry.clone()),
         })
     }
 
@@ -928,6 +959,99 @@ mod tests {
     }
 
     #[test]
+    fn source_expiry_settles_the_source_but_ranks_below_every_real_epitaph() {
+        let stdout_expired = TerminalSourceEvent::SourceExpired {
+            source: TerminalSource::Stdout,
+            reason: "stdout expired".to_string(),
+        };
+        let stderr_expired = TerminalSourceEvent::SourceExpired {
+            source: TerminalSource::Stderr,
+            reason: "stderr expired".to_string(),
+        };
+        let process_ok = TerminalSourceEvent::ProcessSettled {
+            exit_code: Some(3),
+            monitor_error: None,
+        };
+
+        let stdout_expiry_alone = settled(
+            &settled(
+                &settled(&TerminalSnapshot::default(), stdout_expired.clone()),
+                process_ok.clone(),
+            ),
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: None,
+                drainer_error: None,
+            },
+        );
+        assert_eq!(
+            stdout_expiry_alone.outcome(),
+            Some(TerminalOutcome {
+                exit_code: Some(3),
+                epitaph: Some("stdout expired".to_string()),
+            })
+        );
+
+        let tail_outranks_expiry = settled(
+            &settled(
+                &settled(&TerminalSnapshot::default(), stdout_expired.clone()),
+                process_ok.clone(),
+            ),
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: Some("boom".to_string()),
+                drainer_error: None,
+            },
+        );
+        assert_eq!(
+            tail_outranks_expiry.outcome().unwrap().epitaph.as_deref(),
+            Some("boom")
+        );
+
+        let monitor_outranks_expiry = settled(
+            &settled(
+                &settled(&TerminalSnapshot::default(), stderr_expired.clone()),
+                TerminalSourceEvent::ProcessSettled {
+                    exit_code: None,
+                    monitor_error: Some("monitor".to_string()),
+                },
+            ),
+            TerminalSourceEvent::StdoutSettled { reader_error: None },
+        );
+        assert_eq!(
+            monitor_outranks_expiry
+                .outcome()
+                .unwrap()
+                .epitaph
+                .as_deref(),
+            Some("monitor")
+        );
+
+        let expiry_after_settlement_is_inert = settled(
+            &settled(
+                &settled(
+                    &settled(
+                        &TerminalSnapshot::default(),
+                        TerminalSourceEvent::StdoutSettled { reader_error: None },
+                    ),
+                    TerminalSourceEvent::StderrSettled {
+                        retained_tail: None,
+                        drainer_error: None,
+                    },
+                ),
+                stdout_expired,
+            ),
+            stderr_expired,
+        );
+        assert_eq!(expiry_after_settlement_is_inert.outcome(), None);
+        assert_eq!(
+            settled(&expiry_after_settlement_is_inert, process_ok)
+                .outcome()
+                .unwrap()
+                .epitaph,
+            None
+        );
+    }
+
+    #[test]
     fn first_protocol_error_wins_even_when_recorded_after_reader_settlement() {
         let mut snapshot = settled(
             &TerminalSnapshot::default(),
@@ -1235,6 +1359,24 @@ mod tests {
             activity.try_recv(),
             Err(broadcast::error::TryRecvError::Closed)
         ));
+    }
+
+    #[test]
+    fn stdout_expiry_does_not_mask_the_retained_stderr_tail() {
+        let root = tempfile::tempdir().unwrap();
+        let (session, _activity) = scripted_session_under(
+            root.path(),
+            "echo boom >&2; exec 2>&-; (sleep 30) & sleep 0.2",
+            AppServerLimits {
+                source_settle_grace: Duration::from_millis(100),
+                ..AppServerLimits::default()
+            },
+        );
+
+        wait_until("published its terminal outcome", || {
+            matches!(session.status(), AgentStatus::Ended { .. })
+        });
+        assert_eq!(session.epitaph().as_deref(), Some("boom"));
     }
 
     #[test]

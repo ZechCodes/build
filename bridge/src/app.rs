@@ -1692,6 +1692,10 @@ pub struct AppState {
     diff_refreshes_in_flight: std::collections::HashSet<DiffCacheKey>,
     /// Test seam: see [`DiffComputeObserver`]. `None` in production.
     diff_compute_observer: Option<DiffComputeObserver>,
+    /// Whether a [`sweep_vanished_runs`](AppState::sweep_vanished_runs) is
+    /// deciding right now. Single-flight, for the same reason a diff refresh
+    /// is: the board polls faster than a fetch per stage returns.
+    vanished_run_sweep_in_flight: bool,
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
@@ -1925,6 +1929,7 @@ impl AppState {
             run_stat_cache: HashMap::new(),
             run_files_changed_at: HashMap::new(),
             diff_refreshes_in_flight: std::collections::HashSet::new(),
+            vanished_run_sweep_in_flight: false,
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
@@ -2402,7 +2407,8 @@ impl AppState {
                     state_changed = true;
                 }
                 Err(error) => {
-                    let affected = self.reconcile_missing_run_worktree(&run_id, &mut active);
+                    let published = self.classify_stages_now(&run_id, &active);
+                    let affected = reconcile_missing_run_worktree(&mut active, &published);
                     active
                         .run
                         .apply(RunEvent::Abandon)
@@ -12263,7 +12269,8 @@ impl AppState {
         // Reconcile publication while the checkout and refs are still
         // inspectable. Every Build-owned removal path must decide completion
         // before deleting the evidence it needs to decide it.
-        let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
+        let published = self.classify_stages_now(&run_id, &active);
+        let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
         // Abandoning removes the run's worktree — which for a primary run is
         // the repository. That run ends by letting go of the checkout instead.
@@ -12712,7 +12719,7 @@ impl AppState {
     /// ride-along external-worktree and primary-changes summaries. Sweeps runs
     /// whose worktree was deleted out of band into `archived` first.
     fn board_list(&mut self) -> Value {
-        self.archive_runs_with_deleted_worktrees();
+        self.sweep_vanished_runs();
         let plans: Vec<Value> = {
             let ids: Vec<String> = self.plans.keys().cloned().collect();
             ids.into_iter()
@@ -13847,49 +13854,53 @@ impl AppState {
         })
     }
 
-    /// A run the user deletes must disappear from Build. Any live run whose
-    /// worktree vanished retires to Archived: session ended, git's stale
-    /// worktree record pruned — the record stays as quiet history. `Created` is
-    /// exempt (its worktree may legitimately not exist yet).
-    fn reconcile_missing_run_worktree(&self, run_id: &str, active: &mut ActiveRun) -> Vec<String> {
-        let repo_path = self
-            .entity_project
-            .get(run_id)
-            .and_then(|project_id| {
-                self.projects
-                    .iter()
-                    .find(|project| &project.id == project_id)
-            })
-            .map(|project| project.repo_path.clone());
-        let mut affected = Vec::new();
-        for progress in &mut active.stages {
-            let publication = match (&repo_path, progress.completion_sha.as_deref()) {
-                (Some(repo_path), Some(completion_sha)) => classify_stage_publication(
-                    repo_path,
-                    &active.worktree.branch(),
-                    &active.worktree.base_branch,
-                    completion_sha,
-                ),
-                _ => StagePublication::Local,
-            };
-            progress.publication = publication;
-            let in_flight = !matches!(
-                progress.state,
-                StageProgressState::Validated { passed: true }
-            );
-            if publication == StagePublication::Local || in_flight {
-                progress.invalidation_reason = Some(
-                    "Issue worktree disappeared before this stage's commits were verified pushed or merged"
-                        .to_string(),
-                );
-                affected.push(progress.stage_id.clone());
-            }
+    /// What one run's stages have to be judged against, taken under the lock so
+    /// [`StagePublicationQuery::classify`] can ask git without it.
+    fn stage_publication_query(&self, run_id: &str, active: &ActiveRun) -> StagePublicationQuery {
+        StagePublicationQuery {
+            run_id: run_id.to_string(),
+            repo_path: self
+                .entity_project
+                .get(run_id)
+                .and_then(|project_id| {
+                    self.projects
+                        .iter()
+                        .find(|project| &project.id == project_id)
+                })
+                .map(|project| project.repo_path.clone()),
+            branch: active.worktree.branch(),
+            base_branch: active.worktree.base_branch.clone(),
+            completions: active
+                .stages
+                .iter()
+                .filter_map(|progress| {
+                    Some((progress.stage_id.clone(), progress.completion_sha.clone()?))
+                })
+                .collect(),
         }
-        affected
     }
 
-    fn archive_runs_with_deleted_worktrees(&mut self) {
-        let doomed: Vec<String> = self
+    /// Ask git about this run's stages here and now, with the state lock in
+    /// hand. The two lifecycle verbs that still do it — `run.abandon` and a
+    /// failed recovery — decide against refs that are about to be deleted, and
+    /// move to a lock-free run phase with the rest of §5.
+    fn classify_stages_now(&self, run_id: &str, active: &ActiveRun) -> StagePublications {
+        self.stage_publication_query(run_id, active).classify()
+    }
+
+    /// Runs whose checkout vanished, on their way to Archived, decided off the
+    /// state lock.
+    ///
+    /// Whether a stage's commits ever left this machine is a fetch and two
+    /// graph walks per stage, and every board read used to pay for it inline.
+    /// Now the board answers with the runs it still has and the sweep archives
+    /// them behind it — the same bargain the scan and the diffstats make.
+    /// Single-flight: a sweep already running absorbs the next poll's.
+    fn sweep_vanished_runs(&mut self) {
+        if self.vanished_run_sweep_in_flight {
+            return;
+        }
+        let queries: Vec<StagePublicationQuery> = self
             .runs
             .iter()
             .filter(|(_, active)| {
@@ -13898,15 +13909,50 @@ impl AppState {
                     && active.recovery.is_none()
                     && !active.worktree.path.exists()
             })
-            .map(|(id, _)| id.clone())
+            .map(|(run_id, active)| self.stage_publication_query(run_id, active))
             .collect();
-        for run_id in doomed {
+        if queries.is_empty() {
+            return;
+        }
+        self.vanished_run_sweep_in_flight = true;
+        let sweep = VanishedRunSweep {
+            queries,
+            #[cfg(test)]
+            gate: self.off_lock_gate.clone(),
+        };
+        let spawned = match self.self_handle.as_ref().and_then(std::sync::Weak::upgrade) {
+            Some(shared) => spawn_vanished_run_sweep(shared, sweep),
+            // No shared handle: nothing could apply what a thread decided.
+            None => Err(sweep),
+        };
+        if let Err(unspawned) = spawned {
+            let decided = unspawned.decide();
+            self.archive_vanished_runs(decided);
+        }
+    }
+
+    /// A run the user deletes must disappear from Build. Any live run whose
+    /// worktree vanished retires to Archived: session ended, git's stale
+    /// worktree record pruned — the record stays as quiet history. `Created` is
+    /// exempt (its worktree may legitimately not exist yet).
+    fn archive_vanished_runs(&mut self, decided: Vec<DecidedVanishedRun>) {
+        self.vanished_run_sweep_in_flight = false;
+        for DecidedVanishedRun { run_id, published } in decided {
+            // The checkout may have come back, or the run may have been
+            // abandoned outright, while the sweep was asking git.
+            if self
+                .runs
+                .get(&run_id)
+                .is_none_or(|active| active.worktree.path.exists())
+            {
+                continue;
+            }
             let Ok(mut active) = self.take_run(&run_id) else {
                 continue;
             };
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let branch = active.worktree.branch();
-            let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
+            let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             match active.run.apply(RunEvent::Archive) {
                 Ok(_) => {
@@ -16322,6 +16368,146 @@ fn remove_registered_worktree(
     }
     args.extend(["--", path]);
     git_stdout(project_path, &args).map(|_| ())
+}
+
+/// Everything one run's stage publications have to be decided against, taken
+/// under the state lock so the deciding needs none.
+struct StagePublicationQuery {
+    run_id: String,
+    repo_path: Option<std::path::PathBuf>,
+    branch: String,
+    base_branch: String,
+    /// One entry per stage that reached a completion commit. A stage without
+    /// one published nothing by definition and costs no git at all.
+    completions: Vec<(String, String)>,
+}
+
+/// What git says about each of a run's completed stages.
+#[derive(Default)]
+struct StagePublications(HashMap<String, StagePublication>);
+
+/// One vanished run, with git's verdict on its stages already in hand.
+struct DecidedVanishedRun {
+    run_id: String,
+    published: StagePublications,
+}
+
+/// The vanished runs one board read found, on their way to a verdict.
+struct VanishedRunSweep {
+    queries: Vec<StagePublicationQuery>,
+    #[cfg(test)]
+    gate: Option<OffLockGate>,
+}
+
+impl VanishedRunSweep {
+    /// The git half — a bounded fetch and two graph walks per completed stage,
+    /// per run. MUST run with the state lock released.
+    fn decide(self) -> Vec<DecidedVanishedRun> {
+        #[cfg(test)]
+        if let Some(gate) = self.gate {
+            gate.arrive();
+        }
+        self.queries
+            .into_iter()
+            .map(DecidedVanishedRun::decide)
+            .collect()
+    }
+}
+
+impl StagePublicationQuery {
+    /// The git half: a bounded fetch and two graph walks per completed stage.
+    /// MUST run with the state lock released.
+    fn classify(&self) -> StagePublications {
+        let Some(repo_path) = self.repo_path.as_ref() else {
+            return StagePublications::default();
+        };
+        StagePublications(
+            self.completions
+                .iter()
+                .map(|(stage_id, completion_sha)| {
+                    (
+                        stage_id.clone(),
+                        classify_stage_publication(
+                            repo_path,
+                            &self.branch,
+                            &self.base_branch,
+                            completion_sha,
+                        ),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+impl DecidedVanishedRun {
+    fn decide(query: StagePublicationQuery) -> DecidedVanishedRun {
+        DecidedVanishedRun {
+            published: query.classify(),
+            run_id: query.run_id,
+        }
+    }
+}
+
+impl StagePublications {
+    /// A stage nobody asked git about published nothing: no completion commit,
+    /// or no repository left to open.
+    fn of(&self, stage_id: &str) -> StagePublication {
+        self.0
+            .get(stage_id)
+            .copied()
+            .unwrap_or(StagePublication::Local)
+    }
+}
+
+/// Write git's verdict onto a vanished run's stages: one whose commits never
+/// left this machine, or that was never validated, is marked incomplete.
+/// Returns the stages that were. Pure bookkeeping — the git it judges by is
+/// [`StagePublicationQuery::classify`].
+fn reconcile_missing_run_worktree(
+    active: &mut ActiveRun,
+    published: &StagePublications,
+) -> Vec<String> {
+    let mut affected = Vec::new();
+    for progress in &mut active.stages {
+        let publication = published.of(&progress.stage_id);
+        progress.publication = publication;
+        let in_flight = !matches!(
+            progress.state,
+            StageProgressState::Validated { passed: true }
+        );
+        if publication == StagePublication::Local || in_flight {
+            progress.invalidation_reason = Some(
+                "Issue worktree disappeared before this stage's commits were verified pushed or merged"
+                    .to_string(),
+            );
+            affected.push(progress.stage_id.clone());
+        }
+    }
+    affected
+}
+
+/// Decide the vanished runs on the runtime, off every lock, and archive them
+/// when the verdicts are in. Returns the sweep back when there is no runtime to
+/// spawn onto (the synchronous unit tests), so the caller decides it itself.
+fn spawn_vanished_run_sweep(
+    state: Arc<Mutex<AppState>>,
+    sweep: VanishedRunSweep,
+) -> Result<(), VanishedRunSweep> {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return Err(sweep);
+    };
+    runtime.spawn(async move {
+        let decided = tokio::task::spawn_blocking(move || sweep.decide()).await;
+        let mut app = state.lock().unwrap();
+        match decided {
+            Ok(decided) => app.archive_vanished_runs(decided),
+            // The sweep panicked. Give the claim back or no board read would
+            // ever sweep again.
+            Err(_) => app.vanished_run_sweep_in_flight = false,
+        }
+    });
+    Ok(())
 }
 
 fn classify_stage_publication(
@@ -45642,6 +45828,55 @@ mod tests {
             "the checkout's attention was pruned against a scan nobody had run: {:?}",
             reloaded.keys().collect::<Vec<_>>()
         );
+    }
+
+    /// The board sweeps runs whose checkout vanished, and deciding whether each
+    /// stage's commits were ever published is a fetch and two graph walks per
+    /// stage. The read answers with the run it still has and the sweep archives
+    /// it behind them, with the state lock free the whole time it asks git.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_vanished_runs_stages_are_judged_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review_delivered(&handler, "a run that vanishes");
+        let worktree = state.lock().unwrap().runs[&run_id].worktree.path.clone();
+        std::fs::remove_dir_all(&worktree).unwrap();
+
+        let (gate, held) = OffLockGate::new();
+        state.lock().unwrap().off_lock_gate = Some(gate);
+
+        let started = std::time::Instant::now();
+        let board = {
+            let handler = handler.clone();
+            tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                .await
+                .unwrap()
+        };
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_secs(2),
+            "the board waited for the sweep instead of answering from what it had: {waited:?}"
+        );
+        assert!(
+            row_with(&board["result"]["runs"], "run_id", &run_id)["run_id"] == json!(run_id),
+            "the run it still has is the run it answers with: {board:?}"
+        );
+
+        held.wait_for_arrival();
+        // The sweep is inside its git right now, and the daemon is not.
+        poll_board(&handler).await;
+        held.release();
+
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if state.lock().unwrap().runs[&run_id].run.state == RunState::Archived {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the sweep archives the run whose checkout is gone");
     }
 
     /// "Nothing has looked yet" is not the answer "there is no such checkout",

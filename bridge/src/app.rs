@@ -20451,6 +20451,105 @@ mod tests {
         assert!(s.agent_spawns_in_flight.is_empty(), "the claim went back");
     }
 
+    /// A spawn that unwinds gives its claim back too.
+    ///
+    /// `agent_spawns_in_flight` is removed from in exactly two places — the
+    /// settle a published tab makes and the settle an abandoned reservation
+    /// makes — so a claim a panic walked past would be held for the life of the
+    /// daemon: every later delivery to that tab waits out `AGENT_SPAWN_WAIT`
+    /// and then fails, the entity reads as permanently starting, and
+    /// `agent.remove` refuses the agent forever. `SpawnClaim`'s `Drop` is the
+    /// only thing between a panicking probe and that.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_spawn_that_panics_gives_its_claim_back() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-panicking-spawn");
+        let agent_id = crate::agent::derived_agent_id("run-panicking-spawn");
+        let asking = || {
+            let state = Arc::clone(&state);
+            let root = root.clone();
+            let agent_id = agent_id.clone();
+            tokio::task::spawn_blocking(move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    ensure_agent_tab(
+                        &state,
+                        &root,
+                        "run-panicking-spawn",
+                        &agent_id,
+                        &ModelChoice::default(),
+                    )
+                }))
+            })
+        };
+
+        // The first thing the lock-free phase touches, so the unwind happens
+        // with the claim taken and the app mutex NOT held.
+        state.lock().unwrap().session_locator_factory =
+            Arc::new(|_, _| panic!("the transcript tree the spawn was reading blew up"));
+        assert!(
+            asking().await.unwrap().is_err(),
+            "the probe's panic unwinds the spawn"
+        );
+        assert!(
+            state.lock().unwrap().agent_spawns_in_flight.is_empty(),
+            "the claim went back with the unwinding spawn"
+        );
+
+        // What a leak would actually cost: the next caller waits out
+        // `AGENT_SPAWN_WAIT` behind a claim nobody holds and then fails.
+        state.lock().unwrap().session_locator_factory = Arc::new(|_, _| None);
+        let asked_at = std::time::Instant::now();
+        let (_wire_id, spawned) = asking()
+            .await
+            .unwrap()
+            .expect("the next spawn does not panic")
+            .expect("it opens the tab the panicking one did not");
+        assert_eq!(spawned, Spawned::Fresh);
+        assert!(
+            asked_at.elapsed() < AGENT_SPAWN_WAIT,
+            "the spawn queued behind a leaked claim: {:?}",
+            asked_at.elapsed()
+        );
+    }
+
+    /// And it gives it back from inside the acquisition that publishes.
+    ///
+    /// `publish_agent_tab` holds the app mutex and the claim at once. The claim
+    /// is declared outside the block the guard lives in and locals drop in
+    /// reverse, so an unwind drops the guard first and `Drop` finds the mutex
+    /// free. Get that order wrong and the daemon does not leak, it deadlocks on
+    /// itself — which is why this is asserted against a deadline rather than by
+    /// joining.
+    #[test]
+    fn a_claim_dropped_by_a_panic_under_the_app_mutex_does_not_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
+        let (unwound, settled) = std::sync::mpsc::channel();
+        let publishing = Arc::clone(&state);
+        let published = derived_agent_key(dir.path(), "run-published");
+        std::thread::spawn(move || {
+            let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _claim = SpawnClaim::take(&mut publishing.lock().unwrap(), &published);
+                let _guard = publishing.lock().unwrap();
+                panic!("the frame publishing the tab died holding the app mutex");
+            }));
+            let _ = unwound.send(died.is_err());
+        });
+        assert_eq!(
+            settled.recv_timeout(Duration::from_secs(5)),
+            Ok(true),
+            "the claim's Drop re-entered the mutex it was unwinding out of"
+        );
+
+        let s = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            s.agent_spawns_in_flight.is_empty(),
+            "a panic under the publishing lock kept the claim"
+        );
+    }
+
     /// A frame that finds another frame already computing a cache entry nobody
     /// has ever computed waits for that value — and looks for it under the app
     /// mutex, every 20 ms, for as long as it waits. Those acquisitions are the

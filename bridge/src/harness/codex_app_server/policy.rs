@@ -101,7 +101,7 @@ fn report_decision(response: ServerResponse, summary: &str) -> ServerRequestDeci
 
 fn fail_turn(id: serde_json::Value, reason: impl Into<String>) -> ServerRequestDecision {
     ServerRequestDecision {
-        response: ServerResponse::error(id, -32601, "method not supported"),
+        response: ServerResponse::method_not_found(id, "method not supported"),
         after_response: AfterResponse::FailTurn(reason.into()),
         report: None,
     }
@@ -109,7 +109,7 @@ fn fail_turn(id: serde_json::Value, reason: impl Into<String>) -> ServerRequestD
 
 fn fail_session(id: serde_json::Value, reason: impl Into<String>) -> ServerRequestDecision {
     ServerRequestDecision {
-        response: ServerResponse::error(id, -32601, "method not found"),
+        response: ServerResponse::method_not_found(id, "method not found"),
         after_response: AfterResponse::FailSession(reason.into()),
         report: None,
     }

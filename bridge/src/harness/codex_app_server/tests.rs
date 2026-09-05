@@ -380,10 +380,20 @@ fn close_is_idempotent_and_writes_after_close_fail() {
     assert_eq!(connection.pending_count(), 0);
     assert!(matches!(
         connection
-            .respond(ServerResponse::error(json!(1), -32601, "unsupported"))
+            .respond(ServerResponse::method_not_found(json!(1), "unsupported"))
             .unwrap_err(),
         ConnectionError::Closed
     ));
+}
+
+#[test]
+fn method_not_found_response_carries_the_json_rpc_code_and_message() {
+    let response = ServerResponse::method_not_found(json!(3), "unsupported");
+    assert_eq!(response.error_code(), Some(-32601));
+    assert_eq!(
+        response.to_value(),
+        json!({"id":3,"error":{"code":-32601,"message":"unsupported"}})
+    );
 }
 
 #[test]
@@ -392,7 +402,7 @@ fn every_write_path_enforces_the_outbound_frame_limit() {
     tiny.outbound_frame_bytes = 16;
     let capped = AppServerConnection::memory(tiny.connection());
     let oversized_response =
-        || ServerResponse::error(json!("x".repeat(64)), -32601, "method not found");
+        || ServerResponse::method_not_found(json!("x".repeat(64)), "method not found");
     assert!(matches!(
         capped.request(PendingOperation::Initialize).unwrap_err(),
         ConnectionError::FrameTooLarge(16)

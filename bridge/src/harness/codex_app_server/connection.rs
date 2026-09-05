@@ -416,7 +416,7 @@ mod tests {
             .to_string()
             .contains("exact flush error"));
         assert!(connection
-            .respond(ServerResponse::error(json!(1), -32601, "unsupported"))
+            .respond(ServerResponse::method_not_found(json!(1), "unsupported"))
             .unwrap_err()
             .to_string()
             .contains("exact flush error"));

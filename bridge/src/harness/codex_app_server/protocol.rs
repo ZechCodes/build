@@ -699,6 +699,8 @@ struct CurrentTimeResult {
     current_time_at: i64,
 }
 
+const JSON_RPC_METHOD_NOT_FOUND: i64 = -32601;
+
 impl ServerResponse {
     pub fn approval_declined(id: Value) -> ServerResponse {
         ServerResponse::success(
@@ -757,7 +759,13 @@ impl ServerResponse {
         ServerResponse::success(id, ServerResult::Test(result))
     }
 
-    pub fn error(id: Value, code: i64, message: impl Into<String>) -> ServerResponse {
+    /// The JSON-RPC `-32601` reply Build sends for every server request it
+    /// refuses to serve, whether the method is known but unsupported or unknown.
+    pub fn method_not_found(id: Value, message: impl Into<String>) -> ServerResponse {
+        ServerResponse::error(id, JSON_RPC_METHOD_NOT_FOUND, message)
+    }
+
+    fn error(id: Value, code: i64, message: impl Into<String>) -> ServerResponse {
         ServerResponse {
             id,
             result: None,

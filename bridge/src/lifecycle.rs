@@ -1167,20 +1167,25 @@ impl WorktreeMutation for CloneRepo {
 /// initial commit so its base branch resolves and work can dispatch into it.
 pub struct CreateRepo {
     pub name: String,
-    pub parent: PathBuf,
+    /// Where the repository lands — the same path the decide phase reserved its
+    /// row under, so what is guarded and what is written are one fact.
+    pub dest: PathBuf,
     pub base_branch: String,
     pub remote: Option<String>,
 }
 
 impl CreateRepo {
     fn write(&self, dest: &std::path::Path) -> Result<(), String> {
-        std::fs::create_dir_all(&self.parent)
-            .map_err(|error| format!("cannot create {}: {error}", self.parent.display()))?;
+        let parent = dest
+            .parent()
+            .ok_or_else(|| format!("cannot create {}: it has no parent", dest.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
         if dest.exists() {
             return Err(format!(
                 "'{}' already exists in {}",
                 self.name,
-                self.parent.display()
+                parent.display()
             ));
         }
         std::fs::create_dir_all(dest)
@@ -1211,7 +1216,7 @@ impl CreateRepo {
 
 impl WorktreeMutation for CreateRepo {
     fn perform(self: Box<Self>) -> Result<Performed, String> {
-        let dest = self.parent.join(&self.name);
+        let dest = self.dest.clone();
         let existed = dest.exists();
         if let Err(error) = self.write(&dest) {
             // Half a repository is worse than none: the retry has to start

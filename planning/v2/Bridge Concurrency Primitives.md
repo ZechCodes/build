@@ -1256,6 +1256,15 @@ build settled differently, and why:
   cached stat, the agents retired — is one `AppState::discard_run`, and each
   verb is its own refusals plus the three things that differ (which
   `DiscardedCheckout`, which `DiscardSettlement`, what the row is called).
+- **`run.delete`'s durable record is deleted in the settlement, not the decide
+  phase.** The fused verb deleted the store row first because nothing after it
+  could fail; a decide phase that reserves can be refused — `run.adopt` and
+  `issue.implement_*` claim the same checkout id, and a terminal run is exactly
+  the owner an adoption walks past — so the delete now writes where the refusal
+  cannot reach it. `DiscardCheckout::perform` cannot fail, so reaching
+  `RunDeleted::settle` is what says the delete is happening; a crash in between
+  leaves the record for boot to reload and the vanished-run sweep to archive,
+  the story every other reservation already has.
 - **The `Orchestrator` rides in the arms that prune with it.**
   `DiscardedCheckout::Removed` and `Pruned` carry `{ project, worktree }`;
   `Kept` carries nothing, because there is a discard with no orchestrator to
@@ -1308,7 +1317,10 @@ build settled differently, and why:
   revparse, origin — and produce one `ProjectAdded`. Each removes what it made
   in its own error path (`CloneRepo` a directory the clone left half-written,
   `CreateRepo` a repository it did not finish), and `CreateRepo` removes
-  nothing when the directory was already there.
+  nothing when the directory was already there. All three take the destination
+  as a field — `CreateRepo` carries the `dest` the decide phase reserved its
+  row under rather than re-joining `parent` and `name` — so the directory a
+  project verb guards and the directory it writes are one fact, computed once.
 - **`project_json` takes the remote it was told.** It shelled out for
   `git remote get-url origin` on every call, which put a subprocess inside
   every project epilogue. The four mutating verbs pass what their own git read
@@ -1334,6 +1346,8 @@ build settled differently, and why:
   `run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout`,
   `run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die`,
   `run_delete_clears_an_adopted_card_and_leaves_the_checkout_standing`,
+  `a_delete_refused_by_a_running_adopt_keeps_the_runs_record`,
+  `a_second_create_of_one_directory_is_refused_by_the_row_guarding_it`,
   `project_add_reads_the_default_branch_with_the_state_lock_free`,
   `project_clone_registers_its_project_from_the_landed_path`,
   `project_create_writes_its_repository_with_the_state_lock_free`,

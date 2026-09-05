@@ -6835,12 +6835,12 @@ impl AppState {
         };
         let dest = parent.join(&name);
         self.defer_project(
-            dest,
+            dest.clone(),
             name.clone(),
             PendingState::Creating,
             Box::new(CreateRepo {
                 name,
-                parent,
+                dest,
                 base_branch,
                 remote: params
                     .get("remote")
@@ -13294,12 +13294,6 @@ impl AppState {
             .and_then(|id| self.orch_for(id).ok())
             .cloned();
 
-        if let Some(store) = &self.store {
-            store
-                .delete_run(&run_id)
-                .map_err(|e| format!("run store: {e}"))?;
-        }
-
         let settlement = Box::new(RunDeleted {
             run_id: run_id.clone(),
             project_id: project_id.clone(),
@@ -17487,8 +17481,15 @@ impl DiscardSettlement for RunAbandoned {
     }
 }
 
-/// `run.delete`'s apply half: the card is being cleared off the board, so every
-/// trace of the run in memory goes with the record the decide phase deleted.
+/// `run.delete`'s apply half: the durable record goes, and every trace of the
+/// run in memory goes with it.
+///
+/// The record is deleted here and not in the decide phase because the decide
+/// phase can still be refused — the checkout's row may already be claimed by
+/// another verb — and a refusal must leave the card whole. Getting here is what
+/// says the delete is happening: the removal cannot fail. A crash in between
+/// leaves the record for boot to reload and the vanished-run sweep to archive,
+/// the same story every other reservation has.
 pub struct RunDeleted {
     pub run_id: String,
     /// The project whose board loses the card, when the run still has one: a
@@ -17502,6 +17503,11 @@ pub struct RunDeleted {
 
 impl DiscardSettlement for RunDeleted {
     fn settle(self: Box<Self>, state: &mut AppState, _active: ActiveRun) -> Result<Value, String> {
+        if let Some(store) = &state.store {
+            store
+                .delete_run(&self.run_id)
+                .map_err(|error| format!("run store: {error}"))?;
+        }
         state.forget_run(&self.run_id);
         if let Some(project_id) = self.project_id.filter(|_| self.checkout.exists()) {
             // The checkout outlived its card — it was the user's — so it goes
@@ -21555,6 +21561,42 @@ mod tests {
             state.lock().unwrap().projects.len(),
             2,
             "the project is registered by the epilogue"
+        );
+    }
+
+    /// The row a create reserves stands for the directory the create writes:
+    /// one destination, settled in the decide phase and carried into the git.
+    /// A second asker for that directory is refused by the row guarding it, and
+    /// the repository lands exactly where the row said it would.
+    #[test]
+    fn a_second_create_of_one_directory_is_refused_by_the_row_guarding_it() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let parent = dir.path().join("made-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+        let asked = json!({ "name": "fresh", "parent": parent.to_str().unwrap() });
+
+        let created = frame_on_a_thread(&state, "s-create", "project.create", asked.clone());
+        gate_handle.wait_for_arrival();
+        let second = frame_on_a_thread(&state, "s-again", "project.create", asked)
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the second create is answered while the first one's git runs");
+        assert_eq!(
+            second["ok"], false,
+            "two creates wrote one directory: {second:?}"
+        );
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(
+            std::path::PathBuf::from(created["result"]["path"].as_str().unwrap()),
+            std::fs::canonicalize(parent.join("fresh")).expect("the repository is on disk"),
+            "the repository landed somewhere other than the reserved directory: {created:?}"
         );
     }
 
@@ -36463,6 +36505,73 @@ mod tests {
         assert!(!checkout.exists(), "the checkout is removed anyway");
 
         death_handle.release();
+    }
+
+    /// A delete that is refused must leave the card exactly as it found it.
+    /// `run.adopt` and `run.delete` both claim the same checkout, and a
+    /// terminal run is precisely the owner an adoption walks past — so an
+    /// adoption in its git phase refuses the delete, and the run it refused is
+    /// still there, record and all, to be deleted once the adoption lands.
+    #[test]
+    fn a_delete_refused_by_a_running_adopt_keeps_the_runs_record() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "contested");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        // Only a terminal run can be deleted, and a terminal run is the one
+        // owner an adoption of its checkout walks past.
+        app.runs.get_mut(&run_id).unwrap().run.state = RunState::Abandoned;
+        let worktree_id =
+            crate::worktree::external_worktree_id(&AppState::canonical_root(&checkout));
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let adopting = frame_on_a_thread(
+            &state,
+            "s-adopt",
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        );
+        gate_handle.wait_for_arrival();
+        let deleted = frame_on_a_thread(
+            &state,
+            "s-delete",
+            "run.delete",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the delete is answered while the adoption's git runs");
+        assert_eq!(
+            deleted["ok"], false,
+            "the checkout is claimed, so the delete waits its turn: {deleted:?}"
+        );
+
+        gate_handle.release();
+        let adopted = adopting
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the adoption answers once its git is done");
+        // And it finds nothing to take over: the card the delete failed to
+        // clear still binds that checkout, which is what a delete is for.
+        assert_eq!(adopted["ok"], false, "{adopted:?}");
+
+        let mut state = state.lock().unwrap();
+        let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            got["ok"], true,
+            "the refused delete left the card standing: {got:?}"
+        );
+        let persisted = state
+            .store
+            .as_ref()
+            .expect("the QA daemon keeps a store")
+            .load_all_runs()
+            .expect("the store answers");
+        assert!(
+            persisted.iter().any(|run| run.id == run_id),
+            "nor did it destroy the durable record it refused to delete"
+        );
     }
 
     /// Clearing the card of a run minted around a checkout the user already had

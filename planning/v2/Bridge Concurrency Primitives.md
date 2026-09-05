@@ -1037,11 +1037,30 @@ settled differently, and why:
 - **`ReservedName` and `ReservedCheckout` are one impl, `ReservedRow`.** Both
   claims ARE the row, and what a second verb collides with is a field of it, so
   two empty `roll_back`s would have been one type spelled twice.
-  `PendingRow` gained `branch: Option<String>` to carry the dispatch's claim: a
-  dispatch onto a named branch has no checkout id yet, and the branch is the
-  only identity two racing dispatches share. `reserve_row` refuses on any of
-  the three — same `entity_id`, same `branch`, same `checkout_id` — within one
-  project. `TakenRun` and `MintedProject` arrive with the verbs that need them.
+  `PendingRow` gained `branch: Option<String>` to carry the ref a verb is
+  claiming, and both verbs fill it: a create reserves the `build/<slug>` it is
+  cutting, a dispatch the ref its `DispatchTarget` settled. Neither has a
+  checkout id yet, and the branch is the only identity two of them share.
+  `reserve_row` refuses on any of the three — same `entity_id`, same `branch`,
+  same `checkout_id` — within one project. `TakenRun` and `MintedProject`
+  arrive with the verbs that need them.
+- **`DispatchTarget` settles the ref in the decide phase.** Deriving it inside
+  the git phase left `PendingRow.branch` empty for the common case (no branch
+  named), so two dispatches of one instruction reserved nothing in common and
+  raced into `git worktree add` with the same slug —
+  `WorktreeManager::name_taken` is a check-then-act, and the app mutex was what
+  used to serialize them. `is_usable_branch_name` and `slugify` are pure, so
+  the ref is read out of what the caller said before anything is reserved:
+  `Named(ref)` for a ref spelled out (its existing checkout is taken over),
+  `Minted { branch, slug }` for words (nothing on disk is taken over, and the
+  slug namespace suffixes). The type owns its own variation — which ref, which
+  git call, what a scan looks for — so no caller matches on it.
+- **The row is reserved last.** `release_row` is reachable only through
+  `apply_lifecycle`, so a `?` between the reservation and the deferral would
+  leave a row standing on the board forever, refusing every later verb that
+  matches it. Both verbs build the whole mutation first and reserve immediately
+  before `defer_lifecycle`, which makes "nothing fallible runs in between" true
+  by construction rather than by a coincidence between three functions.
 - **The row is shared, not copied.** `AppState.pending_rows` and the
   reservation both hold `Arc<PendingRow>`, so the board and the job cannot
   disagree about the row in flight.
@@ -1064,13 +1083,39 @@ settled differently, and why:
   it belongs to the step that moves them.
 - **`adopt_run` split exactly as declared** — `AdoptableCheckout::judge`,
   `Orchestrator::prepare_adoption` (checkpoint + scaffold),
-  `Orchestrator::adopt_run` (pure). `run.adopt` calls all three under the app
-  mutex still, which is the same git it ran before; the second half moves it.
-- **One caller still pays for a dispatch's git under the lock.**
-  `dispatch_branch_now` runs the job inline for `route_to_branch` — the router
-  reaches a branch over the MCP control socket, which has no drain behind it,
-  and a nested verb that deferred would have the drain answer the frame in its
-  place. It is the only such caller, and it is named for what it does.
+  `Orchestrator::adopt_run` (pure) — and the free `lifecycle::adopt` that owns
+  the order is built. It returns `RunAdopted`, not `Performed`: a dispatch owes
+  its instruction on top of the adoption, and a `Box<dyn LifecycleEpilogue>`
+  cannot be wrapped. `RunAdopted::open_run` is the other half — `adopt_run`,
+  `entity_project.insert`, `forget_row_dismissals`, `note_worktree_gone` — and
+  it hands the run back UNPERSISTED, so its caller adds what it owes and writes
+  once. `run.adopt` calls both under the app mutex still, which is the same git
+  it ran before; the second half moves it, and the sequence is already spelled
+  once for it to move.
+- **One store write per dispatch, after every decision.** The apply half opened
+  the run with `finish_run_mutation` and `dispatch_to_run` took it straight
+  back out, mutated it and persisted again — a window in which a failure
+  stranded a cut branch, a full checkout and a checkpoint commit under no run.
+  `dispatch_to_run` now mutates the `ActiveRun` its caller is holding and
+  returns the ids; `open_dispatched_run` (the cut arm) and `join_dispatched_run`
+  (the branch Build already runs) each own the take and the single write.
+- **An epilogue that fails re-amends the project's checkouts.**
+  `apply_lifecycle` rolls the reservation back on a failed `perform`, but a
+  failed `apply` is the harder half: the git already ran, so what it made is on
+  disk whatever the records say. The amendment is applied again over whatever
+  the epilogue got through, which leaves the checkout on the board as the
+  unowned card it is — invisible until the next full rescan is how a minted
+  checkout gets lost.
+- **Every dispatch goes through the drain, the router's included.**
+  `dispatch_branch_now` is deleted. `route_to_branch`'s two callers are an
+  ordinary frame (`capture.reroute`) and the MCP control socket, and both used
+  to hold the mutex through a whole checkout. The capture rides the dispatch
+  now — `DispatchCheckout.routed`, carried into `BranchDispatched` — so the
+  route is recorded in the apply phase, against the branch that is real by
+  then, and each caller names what it answers with (a `fn` field: the capture's
+  own row for the reroute, where the work went for the router's tool). The
+  socket takes the job out under the guard and runs it with the guard released,
+  as `dispatch_frame` does.
 - **`note_checkout_created` is deleted.** Both callers describe their checkout
   in the run phase now, off the lock, and hand it back as
   `WorktreeChange::appeared`.
@@ -1080,8 +1125,22 @@ settled differently, and why:
   `a_creating_worktree_is_on_the_board_before_its_git_returns`,
   `a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row`,
   `a_suffixed_slug_settles_the_placeholder_under_its_real_id`,
-  `a_second_create_of_a_name_being_cut_is_refused`, and the injected-failure
-  dispatch tests, which now also assert the reservation is gone.
+  `a_second_create_of_a_name_being_cut_is_refused`,
+  `two_dispatches_of_one_instruction_cut_one_branch`,
+  `a_dispatch_onto_a_branch_being_created_is_refused`,
+  `a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board`,
+  `rerouting_a_capture_to_a_branch_cuts_it_with_the_state_lock_free`,
+  `a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_free`,
+  and the injected-failure dispatch tests, which now also assert the
+  reservation is gone.
+- **One fault carrier, one seam per variant.** `BranchDispatchStep` and
+  `fail_dispatch_at` live in `lifecycle.rs` beside the mutation, and the second
+  `AppState` copy is deleted. `Adopt` and `Own` are the git phase's two seams,
+  `Open` the apply phase's, `Post` the branch Build already runs.
+- **The worktrees root is fatal at boot.** `canonical_root` falls back to the
+  path as given, so a root that could not be created leaves every placeholder
+  id minted from a path the checkouts never land on. `main.rs` panics with the
+  path named rather than swallowing the error.
 
 - **Boundary** `bridge/src/lifecycle.rs` (new; `WorktreeFinishJob` moves here as
   one mutation), between a lifecycle verb's decision and the git that carries it
@@ -1131,7 +1190,8 @@ settled differently, and why:
   struct AdoptPrimaryCheckout  { project: Orchestrator, base_branch: String, run_id: RunId,
                                  repo_path: PathBuf, model_choice: ModelChoice }
   struct DispatchCheckout      { project: Orchestrator, base_branch: String, run_id: RunId,
-                                 branch: Option<String>, instruction: String, excluded: Vec<PathBuf>, .. }
+                                 target: DispatchTarget, instruction: String, excluded: Vec<PathBuf>,
+                                 routed: Option<RoutedCapture>, .. }
   struct DiscardCheckout       { project: Orchestrator, worktree: Worktree,
                                  retirements: Vec<Retirement>,
                                  stages: StagePublicationQuery }
@@ -1182,10 +1242,12 @@ settled differently, and why:
   }
   /// judge, checkpoint (`commit_all_with_message`), `scaffold_build_dir`, and
   /// the `RunAdopted` epilogue. Shared by both adopt mutations and by
-  /// `DispatchCheckout`'s adopted arm.
-  fn adopt(project: &Orchestrator, checkout: ExternalWorktree, base_branch: &str,
-           scope: AdoptionScope, run_id: RunId, model_choice: ModelChoice)
-      -> Result<Performed, String>;
+  /// `DispatchCheckout`'s adopted arm. It hands back the epilogue itself, not a
+  /// `Performed`: a dispatch wraps it with the instruction it still owes, and a
+  /// boxed trait object cannot be wrapped.
+  pub fn adopt(project: &Orchestrator, project_id: &str, checkout: &ExternalWorktree,
+               base_branch: &str, scope: AdoptionScope, run_id: &str,
+               model_choice: ModelChoice) -> Result<RunAdopted, String>;
   impl Orchestrator {
       pub fn adopt_run(&self, id: RunId, checkout: &AdoptableCheckout,
                        base_branch: &str, model_choice: ModelChoice) -> ActiveRun;

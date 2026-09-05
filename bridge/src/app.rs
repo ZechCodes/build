@@ -655,7 +655,10 @@ enum AddressedSession {
 /// [`dispatch_frame`] — which holds the `Arc` and no guard — sends it the moment
 /// the verb returns.
 struct PendingAgentTurn {
-    /// The worktree the agent that hears this turn works in.
+    /// The worktree the agent that hears this turn works in. Canonical at
+    /// construction — every site that builds a turn passes it through
+    /// `AppState::canonical_root` — so [`Self::tab_key`] is a field read and
+    /// makes no filesystem call under the app mutex.
     root: std::path::PathBuf,
     /// The plan/run whose lifecycle this turn moves.
     owner: String,
@@ -733,7 +736,7 @@ impl PendingAgentTurn {
     /// [`ensure_agent_tab`] will reserve, so a turn in the queue, a turn
     /// mid-delivery and a spawn in flight are all one agent's under one name.
     fn tab_key(&self) -> TabKey {
-        TabKey::agent(&AppState::canonical_root(&self.root), &self.agent_id)
+        TabKey::agent(&self.root, &self.agent_id)
     }
 
     /// Address a run's turn to the run's worktree. Canonical, because the same
@@ -3555,19 +3558,17 @@ impl AppState {
         id
     }
 
-    /// Canonical paths of every Build-bound worktree — one per run: they are
-    /// Build's, never external. `fs::canonicalize` with the raw path as
-    /// fallback.
+    /// The path of every Build-bound worktree — one per run: they are Build's,
+    /// never external. As recorded, not canonicalized: this is read under the
+    /// app mutex by every decide phase that hands a scan its exclusions, and
+    /// `discover_external_worktrees` canonicalizes them off the lock.
     fn bound_worktree_paths(&self) -> std::collections::HashSet<std::path::PathBuf> {
-        let canonical = |path: &std::path::Path| {
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-        };
         // Run worktrees are Build's. Issues own no worktree at all — their
         // agents run in the primary checkout — so there is nothing to add here
         // for them.
         self.runs
             .values()
-            .map(|active| canonical(&active.worktree.path))
+            .map(|active| active.worktree.path.clone())
             .collect()
     }
 
@@ -9399,7 +9400,7 @@ impl AppState {
         self.entity_project
             .insert(capture_id.to_string(), project_id);
         self.pending_agent_turns.push(PendingAgentTurn {
-            root: session.scratch_dir.clone(),
+            root: Self::canonical_root(&session.scratch_dir),
             owner: capture_id.to_string(),
             agent_id: session.agent_id.clone(),
             model_choice: session.choice.clone(),
@@ -50978,7 +50979,11 @@ mod tests {
             .find(|turn| turn.owner == capture_id)
             .expect("the router is given a turn");
         assert_eq!(turn.agent_id, agent_id);
-        assert_eq!(turn.root, session.scratch_dir);
+        assert_eq!(
+            turn.root,
+            AppState::canonical_root(&session.scratch_dir),
+            "a queued turn's root is canonical at construction, so the key it is on its way to is a field read"
+        );
         assert_eq!(turn.phase, "route");
         assert!(turn.said().cold.contains("fix the login redirect"));
         assert!(turn.said().cold.contains("dispatch_branch"));

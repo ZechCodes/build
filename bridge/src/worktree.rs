@@ -737,8 +737,10 @@ fn strip_trailing_digit_run(segment: &str) -> String {
 }
 
 /// Enumerate every git worktree of `repo_path` that is neither the primary
-/// checkout nor in `excluded_paths` (canonical paths of Build-bound worktrees —
-/// runs, which must never surface as adoptable),
+/// checkout nor in `excluded_paths` (Build-bound worktrees — runs, which must
+/// never surface as adoptable — in whatever spelling the caller holds them:
+/// the scan canonicalizes them here, with no lock held, so the decide phase
+/// that collects them makes no filesystem call),
 /// with a review summary per worktree. Read-only. A worktree whose summary
 /// cannot be computed (corrupt checkout, no merge base with the base branch)
 /// is skipped with an eprintln! — one broken stray must not fail the scan.
@@ -748,9 +750,13 @@ pub fn discover_external_worktrees(
     excluded_paths: &HashSet<PathBuf>,
 ) -> Result<Vec<ExternalWorktree>, WorktreeError> {
     let primary_canonical = std::fs::canonicalize(repo_path)?;
+    let excluded_canonical: HashSet<PathBuf> = excluded_paths
+        .iter()
+        .map(|path| canonical_root(path))
+        .collect();
     let target = ScanTarget::External {
         primary: &primary_canonical,
-        excluded: excluded_paths,
+        excluded: &excluded_canonical,
     };
     let mut found = describe_checkouts(repo_path, base_branch, &target)?;
     sort_checkouts(&mut found);
@@ -1682,6 +1688,33 @@ mod tests {
         let found = discover_external_worktrees(&repo, "main", &excluded).unwrap();
 
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn a_bound_path_excludes_its_checkout_in_whatever_spelling_it_arrives() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-bound");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "bound/spelled-otherwise",
+            ],
+        );
+        let another_spelling = dir.path().join("wt-bound-link");
+        std::os::unix::fs::symlink(&wt_path, &another_spelling).unwrap();
+
+        let mut excluded = std::collections::HashSet::new();
+        excluded.insert(another_spelling);
+        let found = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+
+        assert!(
+            found.is_empty(),
+            "the scan canonicalizes what it is told to exclude, so no caller has to: {found:?}"
+        );
     }
 
     #[test]

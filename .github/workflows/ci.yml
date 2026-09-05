@@ -198,15 +198,15 @@ jobs:
   # and then run against a mirror on disk so the rules it exists for are
   # exercised and not merely parsed. The release workflow runs both of these
   # lines, verbatim, before it packages the script.
+  # shellcheck itself is the `shell` job's (every *.sh in the tree, one home);
+  # this job is install.sh's behaviour, which only its own harness can check.
   scripts:
-    name: Shell scripts
+    name: install.sh behaviour
     needs: [changes]
     if: ${{ needs.changes.outputs.scripts == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: shellcheck
-        run: shellcheck -s sh scripts/*.sh
       - name: install.sh behaviour
         run: scripts/test-install.sh
 

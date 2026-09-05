@@ -90,24 +90,10 @@ impl ServiceManager for Systemd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::fixtures::{context, sample_config};
 
-    fn sample_config() -> ServiceConfig {
-        ServiceConfig {
-            binary_path: PathBuf::from("/home/dev/.local/bin/build-bridge"),
-            log_dir: PathBuf::from("/home/dev/.build/log"),
-            env: vec![
-                ("BRIDGE_RELAY_URL".into(), "wss://relay.getbuild.ing".into()),
-                ("BRIDGE_API_URL".into(), "https://getbuild.ing".into()),
-            ],
-        }
-    }
-
-    fn context() -> ServiceContext {
-        ServiceContext {
-            home: PathBuf::from("/home/dev"),
-            uid: "1000".to_string(),
-        }
-    }
+    /// The Linux home every fixture in this module is built around.
+    const HOME: &str = "/home/dev";
 
     #[test]
     fn unit_path_is_the_users_systemd_dir() {
@@ -119,7 +105,7 @@ mod tests {
 
     #[test]
     fn unit_runs_serve_restarts_on_failure_and_logs_under_the_state_dir() {
-        let unit = Systemd.render_unit(&sample_config());
+        let unit = Systemd.render_unit(&sample_config(HOME));
         assert!(unit.contains("ExecStart=/home/dev/.local/bin/build-bridge serve\n"));
         assert!(unit.contains("Restart=on-failure\n"));
         assert!(unit.contains("RestartSec=5\n"));
@@ -130,7 +116,7 @@ mod tests {
 
     #[test]
     fn unit_carries_each_env_pair_as_its_own_environment_line() {
-        let unit = Systemd.render_unit(&sample_config());
+        let unit = Systemd.render_unit(&sample_config(HOME));
         assert!(unit.contains("Environment=\"BRIDGE_RELAY_URL=wss://relay.getbuild.ing\"\n"));
         assert!(unit.contains("Environment=\"BRIDGE_API_URL=https://getbuild.ing\"\n"));
     }
@@ -139,7 +125,7 @@ mod tests {
     fn unit_quotes_values_with_spaces_quotes_and_backslashes() {
         let unit = Systemd.render_unit(&ServiceConfig {
             env: vec![("BRIDGE_DEVICE_NAME".into(), r#"Zech's "Mac" \ desk"#.into())],
-            ..sample_config()
+            ..sample_config(HOME)
         });
         assert!(
             unit.contains(r#"Environment="BRIDGE_DEVICE_NAME=Zech's \"Mac\" \\ desk""#),
@@ -149,7 +135,7 @@ mod tests {
 
     #[test]
     fn activation_reloads_then_enables_now() {
-        let ctx = context();
+        let ctx = context(HOME, "1000");
         let unit = Systemd.unit_path(&ctx.home);
 
         assert_eq!(
@@ -166,7 +152,7 @@ mod tests {
 
     #[test]
     fn deactivation_disables_now_then_reloads_and_tolerates_failure() {
-        let ctx = context();
+        let ctx = context(HOME, "1000");
         let unit = Systemd.unit_path(&ctx.home);
 
         assert_eq!(

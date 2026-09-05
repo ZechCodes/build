@@ -280,6 +280,38 @@ pub fn with_install_path(
     env
 }
 
+/// Test fixtures shared by this module and both platform managers: the shape of
+/// a `ServiceConfig` and a `ServiceContext` has one home in the tests too, so
+/// changing either struct is a one-place edit.
+#[cfg(test)]
+pub(super) mod fixtures {
+    use super::{ServiceConfig, ServiceContext};
+    use std::path::PathBuf;
+
+    /// A config as `install-service` builds one: the binary where the installer
+    /// put it, logs under the bridge's state dir, and the two URLs the daemon is
+    /// pinned to.
+    pub fn sample_config(home: &str) -> ServiceConfig {
+        ServiceConfig {
+            binary_path: PathBuf::from(format!("{home}/.local/bin/build-bridge")),
+            log_dir: PathBuf::from(format!("{home}/.build/log")),
+            env: vec![
+                ("BRIDGE_RELAY_URL".into(), "wss://relay.getbuild.ing".into()),
+                ("BRIDGE_API_URL".into(), "https://getbuild.ing".into()),
+            ],
+        }
+    }
+
+    /// The installing user: their home, and the numeric uid launchd addresses
+    /// their gui domain by.
+    pub fn context(home: &str, uid: &str) -> ServiceContext {
+        ServiceContext {
+            home: PathBuf::from(home),
+            uid: uid.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,19 +426,10 @@ mod tests {
         }
     }
 
-    fn sample_config() -> ServiceConfig {
-        ServiceConfig {
-            binary_path: PathBuf::from("/usr/local/bin/build-bridge"),
-            log_dir: PathBuf::from("/home/dev/.build/log"),
-            env: vec![("BRIDGE_API_URL".into(), "https://getbuild.ing".into())],
-        }
-    }
-
+    /// The orchestration tests install under a temp home, so their context is
+    /// the shared fixture pointed at that directory.
     fn context(home: &Path) -> ServiceContext {
-        ServiceContext {
-            home: home.to_path_buf(),
-            uid: "501".to_string(),
-        }
+        fixtures::context(&home.to_string_lossy(), "501")
     }
 
     #[test]
@@ -421,9 +444,11 @@ mod tests {
             deactivate: vec![],
         };
         let unit = manager.unit_path(home.path());
+        let config = fixtures::sample_config("/home/dev");
+        let rendered = manager.render_unit(&config);
         let mut seen: Vec<(&'static str, String)> = vec![];
 
-        let written = install(&manager, &ctx, &sample_config(), &mut |command| {
+        let written = install(&manager, &ctx, &config, &mut |command| {
             seen.push((
                 command.program,
                 std::fs::read_to_string(&unit).unwrap_or_default(),
@@ -437,10 +462,7 @@ mod tests {
         // freshly created directory, before activation begins.
         assert_eq!(
             seen,
-            vec![
-                ("first", "unit for /usr/local/bin/build-bridge".to_string()),
-                ("second", "unit for /usr/local/bin/build-bridge".to_string()),
-            ]
+            vec![("first", rendered.clone()), ("second", rendered)],
         );
     }
 
@@ -453,8 +475,13 @@ mod tests {
             deactivate: vec![],
         };
 
-        let error = install(&manager, &ctx, &sample_config(), &mut |_| Ok(false))
-            .expect_err("a required command that fails fails the install");
+        let error = install(
+            &manager,
+            &ctx,
+            &fixtures::sample_config("/home/dev"),
+            &mut |_| Ok(false),
+        )
+        .expect_err("a required command that fails fails the install");
 
         match error {
             ServiceError::Activate { program, args } => {
@@ -481,9 +508,12 @@ mod tests {
             deactivate: vec![],
         };
 
-        let result = install(&manager, &ctx, &sample_config(), &mut |command| {
-            Ok(command.program != "bootout")
-        });
+        let result = install(
+            &manager,
+            &ctx,
+            &fixtures::sample_config("/home/dev"),
+            &mut |command| Ok(command.program != "bootout"),
+        );
 
         assert!(result.is_ok(), "a tolerated failure is not a failure");
     }
@@ -496,8 +526,13 @@ mod tests {
             activate: vec![],
             deactivate: vec![ShellCommand::tolerated("disable", &["--now"])],
         };
-        let unit =
-            install(&manager, &ctx, &sample_config(), &mut |_| Ok(true)).expect("install succeeds");
+        let unit = install(
+            &manager,
+            &ctx,
+            &fixtures::sample_config("/home/dev"),
+            &mut |_| Ok(true),
+        )
+        .expect("install succeeds");
         let mut seen: Vec<(&'static str, bool)> = vec![];
 
         let outcome = uninstall(&manager, &ctx, &mut |command| {

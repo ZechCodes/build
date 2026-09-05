@@ -111,31 +111,17 @@ fn gui_service(ctx: &ServiceContext) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::fixtures::{context, sample_config};
     use crate::service::with_install_path;
 
-    fn sample_config() -> ServiceConfig {
-        ServiceConfig {
-            binary_path: PathBuf::from("/usr/local/bin/build-bridge"),
-            log_dir: PathBuf::from("/Users/dev/.build/log"),
-            env: vec![
-                ("BRIDGE_RELAY_URL".into(), "wss://relay.getbuild.ing".into()),
-                ("BRIDGE_API_URL".into(), "https://getbuild.ing".into()),
-            ],
-        }
-    }
-
-    fn context() -> ServiceContext {
-        ServiceContext {
-            home: PathBuf::from("/Users/dev"),
-            uid: "501".to_string(),
-        }
-    }
+    /// The macOS home every fixture in this module is built around.
+    const HOME: &str = "/Users/dev";
 
     #[test]
     fn plist_runs_serve_keeps_alive_and_carries_env() {
-        let plist = Launchd.render_unit(&sample_config());
+        let plist = Launchd.render_unit(&sample_config(HOME));
         assert!(plist.contains("<string>ing.getbuild.bridge</string>"));
-        assert!(plist.contains("<string>/usr/local/bin/build-bridge</string>"));
+        assert!(plist.contains("<string>/Users/dev/.local/bin/build-bridge</string>"));
         assert!(plist.contains("<string>serve</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
         assert!(plist.contains("<key>KeepAlive</key>\n    <true/>"));
@@ -160,7 +146,7 @@ mod tests {
         assert!(Launchd
             .render_unit(&ServiceConfig {
                 env,
-                ..sample_config()
+                ..sample_config(HOME)
             })
             .contains("<key>PATH</key>"));
     }
@@ -175,7 +161,7 @@ mod tests {
 
     #[test]
     fn plist_escapes_xml_significant_characters() {
-        let mut config = sample_config();
+        let mut config = sample_config(HOME);
         config.env = vec![("BRIDGE_DEVICE_NAME".into(), "Zech's <Mac> & co".into())];
         let plist = Launchd.render_unit(&config);
         assert!(plist.contains("Zech's &lt;Mac&gt; &amp; co"));
@@ -192,7 +178,7 @@ mod tests {
 
     #[test]
     fn activation_boots_out_then_bootstraps_in_the_users_gui_domain() {
-        let ctx = context();
+        let ctx = context(HOME, "501");
         let unit = Launchd.unit_path(&ctx.home);
         let commands = Launchd.activate(&ctx, &unit);
 
@@ -214,7 +200,7 @@ mod tests {
 
     #[test]
     fn deactivation_only_boots_out() {
-        let ctx = context();
+        let ctx = context(HOME, "501");
         let unit = Launchd.unit_path(&ctx.home);
 
         assert_eq!(

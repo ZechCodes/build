@@ -2,16 +2,19 @@
 //
 // The create modal's Branch tab lists every branch the project has and lets the
 // human press one. What pressing it does depends on where that branch already
-// is: a branch a run owns is opened, a branch checked out somewhere Build does
+// is: a branch a run holds is opened, a branch checked out somewhere Build does
 // not own is adopted, a branch nothing holds is checked out into a new managed
 // worktree (the bridge fetches it first when only a remote has it), and typed
 // text that names no branch cuts build/<slug> the way this modal always has.
+// The bridge names the holder; this module maps that name to a verb, a call and
+// a landing place, and orders nothing of its own.
 //
 // Every one of those answers is built here, once, at the moment a row is made:
 // a row carries its own verb, its own call and its own landing place, so the
 // wiring presses a row without ever asking what kind of row it is.
 
 import { fuzzyRank } from "./fuzzy.js";
+import { primaryAdoptScope, worktreeAdoptScope } from "./adoption.js";
 import { branchNamePreview } from "./toolbarModel.js";
 
 /** What each row promises, in the words the human reads on it. */
@@ -28,32 +31,36 @@ const CUT_NEW_KEY = "create-new";
 
 const worktreeCreate = (projectId, params) => ({ method: "worktree.create", params: { project_id: projectId, ...params } });
 
-const runAdopt = (projectId, scope) => ({ method: "run.adopt", params: { project_id: projectId, ...scope } });
+const runAdopt = (scope) => ({ method: "run.adopt", params: scope });
 
 /**
- * What starting work on this listed branch means. The first holder that claims
- * it answers — a run knows the branch's whole life, the primary checkout knows
- * it is the repository, and a worktree Build never cut knows only that git has
- * the branch open there — and a branch nothing holds is one to check out.
+ * What starting work on a branch means to each kind of checkout that can be
+ * holding it. The bridge sends exactly one holder — it knows which of them
+ * speaks for a branch two of them describe — so this is a lookup and never an
+ * order of its own.
  */
+const HOLDER_START = {
+  run: () => ({ intent: "open", detail: "open in a run", call: null, emptyCheckout: false }),
+  primary_checkout: (projectId) => ({
+    intent: "adopt",
+    detail: "checked out in the primary checkout",
+    call: runAdopt(primaryAdoptScope(projectId)),
+    emptyCheckout: false,
+  }),
+  external_worktree: (projectId, holder) => ({
+    intent: "adopt",
+    detail: "checked out in another worktree",
+    call: runAdopt(worktreeAdoptScope(projectId, holder.id)),
+    emptyCheckout: false,
+  }),
+};
+
+/** What starting work on this listed branch means: what its holder offers, or
+ *  a checkout of the branch nothing holds. */
 function branchStart(projectId, listed) {
-  if (listed.run_id) return { intent: "open", detail: "open in a run", call: null, emptyCheckout: false };
-  if (listed.primary_worktree_id) {
-    return {
-      intent: "adopt",
-      detail: "checked out in the primary checkout",
-      call: runAdopt(projectId, { primary: true }),
-      emptyCheckout: false,
-    };
-  }
-  if (listed.external_worktree_id) {
-    return {
-      intent: "adopt",
-      detail: "checked out in another worktree",
-      call: runAdopt(projectId, { worktree_id: listed.external_worktree_id }),
-      emptyCheckout: false,
-    };
-  }
+  const holder = listed.holder;
+  const held = holder && HOLDER_START[holder.kind];
+  if (held) return held(projectId, holder);
   return {
     intent: listed.remote ? "materialise" : "checkout",
     detail: "",
@@ -62,6 +69,24 @@ function branchStart(projectId, listed) {
   };
 }
 
+/**
+ * Where a pressed row lands. Every checkout of this project — a run, an
+ * adopted worktree, the primary checkout, a branch just cut — is opened by the
+ * branch it is on, so one route serves them all. A row with no branch of its
+ * own learns it from the answer that made it.
+ */
+const landing = (projectId, branch, focusComposer) => (answer) => ({
+  route: { name: "branch", projectId, branch: branch || (answer && answer.branch) || "", tab: "changes" },
+  focusComposer,
+});
+
+/**
+ * One listed branch, as the whole action pressing it takes: the verb it
+ * promises, the call that keeps the promise, and where the answer lands.
+ * `focusComposer` is set for a checkout with nobody in it, which opens on the
+ * ghost composer where the first message belongs; a run already has a
+ * conversation of its own.
+ */
 function branchRow(projectId, listed) {
   const start = branchStart(projectId, listed);
   return {
@@ -72,10 +97,9 @@ function branchRow(projectId, listed) {
     detail: start.detail,
     remote: listed.remote || null,
     branch: listed.name,
-    // A checkout with nobody in it opens on the ghost composer, which is where
-    // the first message belongs; a run already has a conversation of its own.
     focusComposer: start.emptyCheckout,
     call: start.call,
+    land: landing(projectId, listed.name, start.emptyCheckout),
   };
 }
 
@@ -84,7 +108,7 @@ function branchRow(projectId, listed) {
  * only behaviour, kept whole. Its branch is not known until the bridge answers
  * with the name it slugified, so the row carries none.
  */
-export function cutNewRow(projectId, query) {
+function cutNewRow(projectId, query) {
   return {
     key: CUT_NEW_KEY,
     name: branchNamePreview(query),
@@ -95,6 +119,7 @@ export function cutNewRow(projectId, query) {
     branch: null,
     focusComposer: true,
     call: worktreeCreate(projectId, { name: query }),
+    land: landing(projectId, null, true),
   };
 }
 
@@ -115,16 +140,13 @@ export function branchPickerRows({ projectId, branches = [], query = "" }) {
 }
 
 /**
- * Where a pressed row lands. Every checkout of this project — a run, an
- * adopted worktree, the primary checkout, a branch just cut — is opened by the
- * branch it is on, so one route serves them all. The cut-new row learns its
- * branch from the answer that cut it.
+ * The row an Enter press means. A press with nothing highlighted presses the
+ * row the list leads with, which is the branch the text would cut whenever it
+ * could cut one and the branch itself when the text spells one exactly. Text
+ * that leaves no row standing, and an untouched field, press nothing — so
+ * Enter there asks to be told a name rather than starting something unnamed.
  */
-export function branchStartRoute(projectId, row, answer) {
-  return {
-    name: "branch",
-    projectId,
-    branch: row.branch || (answer && answer.branch) || "",
-    tab: "changes",
-  };
+export function pressedRow({ rows = [], query = "", highlight = -1 }) {
+  if (rows[highlight]) return rows[highlight];
+  return String(query || "").trim() ? rows[0] || null : null;
 }

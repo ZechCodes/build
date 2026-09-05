@@ -15497,7 +15497,7 @@ impl ProjectCheckouts {
     /// branch, and a one-shot user action is worth that wait.
     ///
     /// A primary checkout holding no branch (detached HEAD, bare repository)
-    /// costs the rows their `primary_worktree_id` stamp and nothing else.
+    /// costs the rows a primary-checkout holder and nothing else.
     /// Every other failure is returned, because a repository that cannot be
     /// read must say so rather than quietly answer "nothing holds this
     /// branch" — the answer that sends the user into a checkout git refuses.
@@ -15603,11 +15603,13 @@ impl BranchHolder {
         })
     }
 
+    /// The holder as one wire fact — `{ "kind", "id" }` or null — so the rule
+    /// that picks it lives here alone and no reader re-applies it.
     fn into_json(self) -> Value {
         json!({
-            "run_id": self.held_by(crate::branch::BranchSource::Run),
-            "external_worktree_id": self.held_by(crate::branch::BranchSource::ExternalWorktree),
-            "primary_worktree_id": self.held_by(crate::branch::BranchSource::PrimaryCheckout),
+            "holder": self
+                .holder
+                .map(|(source, id)| json!({ "kind": source.as_str(), "id": id })),
         })
     }
 }
@@ -23289,13 +23291,14 @@ mod tests {
             .find(|b| b["name"] == "feature-elsewhere")
             .unwrap();
         assert_eq!(
-            elsewhere["external_worktree_id"], worktree_id,
+            elsewhere["holder"],
+            json!({ "kind": "external_worktree", "id": worktree_id }),
             "{elsewhere:?}"
         );
         let main = branches.iter().find(|b| b["name"] == "main").unwrap();
-        assert!(
-            main["external_worktree_id"].is_null(),
-            "the checked-out-here branch is not flagged: {main:?}"
+        assert_eq!(
+            main["holder"]["kind"], "primary_checkout",
+            "the checked-out-here branch is the repository's own: {main:?}"
         );
     }
 
@@ -23317,7 +23320,7 @@ mod tests {
             .iter()
             .find(|b| b["name"] == "feature-adopted")
             .unwrap();
-        assert!(adopted["external_worktree_id"].is_null(), "{adopted:?}");
+        assert_eq!(adopted["holder"]["kind"], "run", "{adopted:?}");
     }
 
     /// A branch nobody here has ever checked out is still work the user can
@@ -23344,9 +23347,7 @@ mod tests {
         assert_eq!(feature["remote"], "origin", "{feature:?}");
         assert_eq!(feature["is_current"], false, "{feature:?}");
         assert!(feature["upstream"].is_null(), "{feature:?}");
-        assert!(feature["run_id"].is_null(), "{feature:?}");
-        assert!(feature["external_worktree_id"].is_null(), "{feature:?}");
-        assert!(feature["primary_worktree_id"].is_null(), "{feature:?}");
+        assert!(feature["holder"].is_null(), "{feature:?}");
         assert_eq!(feature["stat"]["insertions"], 1, "{feature:?}");
 
         assert!(
@@ -23430,9 +23431,13 @@ mod tests {
             .iter()
             .find(|b| b["name"] == "feature-adopted")
             .unwrap();
-        assert_eq!(adopted["run_id"], run_id, "{adopted:?}");
+        assert_eq!(
+            adopted["holder"],
+            json!({ "kind": "run", "id": run_id }),
+            "{adopted:?}"
+        );
         let main = branches.iter().find(|b| b["name"] == "main").unwrap();
-        assert!(main["run_id"].is_null(), "{main:?}");
+        assert_eq!(main["holder"]["kind"], "primary_checkout", "{main:?}");
     }
 
     /// The repository's own checkout is deliberately absent from the external
@@ -23454,14 +23459,16 @@ mod tests {
         assert_eq!(res["ok"], true, "{res:?}");
         let branches = res["result"]["branches"].as_array().unwrap();
         let main = branches.iter().find(|b| b["name"] == "main").unwrap();
-        assert_eq!(main["primary_worktree_id"], primary_id, "{main:?}");
+        assert_eq!(
+            main["holder"],
+            json!({ "kind": "primary_checkout", "id": primary_id }),
+            "{main:?}"
+        );
         let idle = branches
             .iter()
             .find(|b| b["name"] == "feature-idle")
             .unwrap();
-        assert!(idle["primary_worktree_id"].is_null(), "{idle:?}");
-        assert!(idle["external_worktree_id"].is_null(), "{idle:?}");
-        assert!(idle["run_id"].is_null(), "{idle:?}");
+        assert!(idle["holder"].is_null(), "{idle:?}");
     }
 
     /// A run adopted over the primary checkout is two holders of one branch,
@@ -23484,17 +23491,17 @@ mod tests {
         assert_eq!(res["ok"], true, "{res:?}");
         let branches = res["result"]["branches"].as_array().unwrap();
         let main = branches.iter().find(|b| b["name"] == "main").unwrap();
-        assert_eq!(main["run_id"], run_id, "{main:?}");
-        assert!(
-            main["primary_worktree_id"].is_null(),
+        assert_eq!(
+            main["holder"],
+            json!({ "kind": "run", "id": run_id }),
             "the run that adopted the primary speaks for its branch: {main:?}"
         );
     }
 
     /// A repository whose HEAD is detached has no branch in its primary
-    /// checkout to hold anything. That costs the rows their
-    /// `primary_worktree_id` stamp and nothing else — the branches are still
-    /// listed, and still offerable.
+    /// checkout to hold anything. That costs the rows a primary-checkout
+    /// holder and nothing else — the branches are still listed, and still
+    /// offerable.
     #[test]
     fn git_branches_lists_every_branch_when_the_primary_holds_none() {
         let (dir, repo) = init_repo();
@@ -23511,7 +23518,9 @@ mod tests {
             "{branches:?}"
         );
         assert!(
-            branches.iter().all(|b| b["primary_worktree_id"].is_null()),
+            branches
+                .iter()
+                .all(|b| b["holder"]["kind"] != json!("primary_checkout")),
             "a detached primary holds no branch: {branches:?}"
         );
     }

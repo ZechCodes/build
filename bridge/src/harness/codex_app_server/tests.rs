@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
     initialize_result, item_envelope, item_envelope_at, selected_choice, thread_opened,
-    EXACT_THREAD_ID, ITEM_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, SUPPORTED_USER_AGENT,
-    WORKTREE_ROOT,
+    EXACT_THREAD_ID, ITEM_THREAD_ID, ITEM_TURN_ID, SELECTED_EFFORT, SELECTED_MODEL,
+    SUPPORTED_USER_AGENT, WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
@@ -2100,7 +2100,7 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
     for id in ["a", "b"] {
         assert_eq!(
             translator
-                .translate("item/completed", &completed("turn-1", id))
+                .translate("item/completed", &completed(ITEM_TURN_ID, id))
                 .unwrap()
                 .len(),
             1
@@ -2108,7 +2108,7 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
     }
     assert_eq!(
         translator
-            .translate("item/completed", &completed("turn-1", "c"))
+            .translate("item/completed", &completed(ITEM_TURN_ID, "c"))
             .unwrap()
             .len(),
         1
@@ -2122,7 +2122,7 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
         1
     );
     assert_eq!(translator.completed_item_count(), 2);
-    translator.close_turn("turn-1").unwrap();
+    translator.close_turn(ITEM_TURN_ID).unwrap();
     assert_eq!(translator.completed_item_count(), 1);
 }
 
@@ -2181,7 +2181,7 @@ fn more_than_256_valid_completions_remain_live_and_turn_close_clears_keys() {
         assert_eq!(reports.len(), 1);
     }
     assert_eq!(translator.completed_item_count(), 256);
-    translator.close_turn("turn-1").unwrap();
+    translator.close_turn(ITEM_TURN_ID).unwrap();
     assert_eq!(translator.completed_item_count(), 0);
 }
 
@@ -2205,7 +2205,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
         json!({
             "thread":{
                 "id":"thread-child",
-                "parentThreadId":"thread-1"
+                "parentThreadId":ITEM_THREAD_ID
             }
         }),
     )
@@ -2215,7 +2215,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
         ServerNotification::ThreadStarted {
             parent_thread_id: Some(parent),
             ..
-        } if parent == "thread-1"
+        } if parent == ITEM_THREAD_ID
     ));
     let child = ServerNotification::decode(
         "item/started",
@@ -2350,7 +2350,7 @@ fn open_tools_close_unanswered_and_release_limits() {
             )
             .unwrap();
     }
-    let closed = translator.close_turn("turn-1").unwrap();
+    let closed = translator.close_turn(ITEM_TURN_ID).unwrap();
     assert_eq!(closed.len(), 2);
     assert!(closed.iter().all(|report| matches!(
         report.activity,

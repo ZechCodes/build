@@ -71,9 +71,6 @@ function branchRow(projectId, listed) {
     verb: INTENT_VERB[start.intent],
     detail: start.detail,
     remote: listed.remote || null,
-    isCurrent: !!listed.is_current,
-    ahead: Number(listed.ahead) || 0,
-    behind: Number(listed.behind) || 0,
     branch: listed.name,
     // A checkout with nobody in it opens on the ghost composer, which is where
     // the first message belongs; a run already has a conversation of its own.
@@ -95,9 +92,6 @@ export function cutNewRow(projectId, query) {
     verb: INTENT_VERB.cut,
     detail: "",
     remote: null,
-    isCurrent: false,
-    ahead: 0,
-    behind: 0,
     branch: null,
     focusComposer: true,
     call: worktreeCreate(projectId, { name: query }),

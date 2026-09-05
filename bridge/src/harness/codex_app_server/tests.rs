@@ -38,11 +38,13 @@ fn limits() -> AppServerLimits {
 }
 
 const EXACT_THREAD_ID: &str = "thread-exact";
+const WORKTREE_ROOT: &str = "/tmp/worktree";
+const SELECTED_MODEL: &str = "gpt-5.6-sol";
 
 fn session_state(resume_id: Option<&str>) -> CodexSessionState {
     CodexSessionState::new(
-        PathBuf::from("/tmp/worktree"),
-        Some("gpt-5.6-sol".to_string()),
+        PathBuf::from(WORKTREE_ROOT),
+        Some(SELECTED_MODEL.to_string()),
         Some("high".to_string()),
         resume_id.map(str::to_string),
     )
@@ -62,8 +64,8 @@ fn correlated(operation: PendingOperation, result: Result<Value, RpcError>) -> S
 
 fn start_thread() -> PendingOperation {
     PendingOperation::StartThread {
-        cwd: "/tmp/worktree".to_string(),
-        model: Some("gpt-5.6-sol".to_string()),
+        cwd: WORKTREE_ROOT.to_string(),
+        model: Some(SELECTED_MODEL.to_string()),
     }
 }
 
@@ -77,8 +79,8 @@ fn initialized_then_opens_thread() -> Vec<SessionEffect> {
 fn resume_thread() -> PendingOperation {
     PendingOperation::ResumeThread {
         thread_id: EXACT_THREAD_ID.to_string(),
-        cwd: "/tmp/worktree".to_string(),
-        model: Some("gpt-5.6-sol".to_string()),
+        cwd: WORKTREE_ROOT.to_string(),
+        model: Some(SELECTED_MODEL.to_string()),
     }
 }
 
@@ -86,7 +88,7 @@ fn start_turn(input: &str) -> PendingOperation {
     PendingOperation::StartTurn {
         thread_id: "thread-1".to_string(),
         input: input.to_string(),
-        model: Some("gpt-5.6-sol".to_string()),
+        model: Some(SELECTED_MODEL.to_string()),
         effort: Some("high".to_string()),
     }
 }
@@ -591,6 +593,58 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
             SessionEffect::NotifyInitialized,
             SessionEffect::Request(resume_thread()),
         ]
+    );
+}
+
+#[test]
+fn thread_open_response_operation_must_match_the_persisted_resume_id() {
+    let opened = json!({
+        "thread":{"id":"thread-1"},
+        "model":SELECTED_MODEL,
+        "reasoningEffort":null,
+        "cwd":WORKTREE_ROOT,
+        "approvalPolicy":"never",
+        "sandbox":{"type":"dangerFullAccess"}
+    });
+
+    let resumed = session_state(Some(EXACT_THREAD_ID))
+        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
+        .unwrap()
+        .state
+        .transition(
+            initialize_response(SUPPORTED_USER_AGENT),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    let start_answered_a_resume = resumed
+        .transition(
+            correlated(start_thread(), Ok(opened.clone())),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap_err();
+    assert!(
+        start_answered_a_resume
+            .to_string()
+            .contains("wrong thread-open response operation"),
+        "{start_answered_a_resume}"
+    );
+
+    let fresh = initialize_transition(SUPPORTED_USER_AGENT).unwrap().state;
+    let resume_answered_a_start = fresh
+        .transition(
+            correlated(resume_thread(), Ok(opened)),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap_err();
+    assert!(
+        resume_answered_a_start
+            .to_string()
+            .contains("wrong thread-open response operation"),
+        "{resume_answered_a_start}"
     );
 }
 

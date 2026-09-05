@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from buildapp.email_template import (
     EMAIL_ACCENT,
     EMAIL_BODY_FONT_SIZE_PX,
@@ -27,6 +29,7 @@ from buildapp.email_template import (
     OUTLOOK_LAYOUT_OPENER,
     UNSUBSCRIBE_LINK_LABEL,
     WORDMARK,
+    EmailAction,
     render_email_html,
     render_email_text,
 )
@@ -37,6 +40,7 @@ PARAGRAPHS = ("First paragraph of the message.", "Second paragraph of the messag
 SIZE_LITERAL_PATTERN = r"(\d+(?:\.\d+)?)px"
 ACTION_URL = "https://getbuild.ing/invite/inv_token"
 ACTION_LABEL = "ACCEPT INVITE"
+ACTION = EmailAction(url=ACTION_URL, label=ACTION_LABEL)
 
 
 def render_html_body(unsubscribe_url: str | None = UNSUBSCRIBE_URL) -> str:
@@ -153,15 +157,13 @@ def test_an_action_renders_as_a_button_in_html_and_a_labelled_line_in_text():
         heading=HEADING,
         paragraphs=PARAGRAPHS,
         unsubscribe_url=None,
-        action_url=ACTION_URL,
-        action_label=ACTION_LABEL,
+        action=ACTION,
     )
     text = render_email_text(
         heading=HEADING,
         paragraphs=PARAGRAPHS,
         unsubscribe_url=None,
-        action_url=ACTION_URL,
-        action_label=ACTION_LABEL,
+        action=ACTION,
     )
     assert f'href="{ACTION_URL}"' in html
     assert ACTION_LABEL in html
@@ -173,8 +175,7 @@ def test_the_action_row_sits_between_the_copy_and_any_footer():
         heading=HEADING,
         paragraphs=PARAGRAPHS,
         unsubscribe_url=UNSUBSCRIBE_URL,
-        action_url=ACTION_URL,
-        action_label=ACTION_LABEL,
+        action=ACTION,
     )
     assert html.index(PARAGRAPHS[-1]) < html.index(ACTION_URL) < html.index(FOOTER_PREFIX)
 
@@ -184,8 +185,10 @@ def test_the_action_row_escapes_both_its_url_and_its_label():
         heading=HEADING,
         paragraphs=PARAGRAPHS,
         unsubscribe_url=None,
-        action_url='https://getbuild.ing/invite/"onmouseover="alert(1)',
-        action_label="<script>alert(2)</script>",
+        action=EmailAction(
+            url='https://getbuild.ing/invite/"onmouseover="alert(1)',
+            label="<script>alert(2)</script>",
+        ),
     )
     assert "<script" not in html
     assert '"onmouseover="' not in html
@@ -196,25 +199,17 @@ def test_a_message_with_no_action_renders_exactly_as_it_did_before():
         heading=HEADING,
         paragraphs=PARAGRAPHS,
         unsubscribe_url=UNSUBSCRIBE_URL,
-        action_url=None,
-        action_label=None,
+        action=None,
     )
     assert render_text_body() == render_email_text(
         heading=HEADING,
         paragraphs=PARAGRAPHS,
         unsubscribe_url=UNSUBSCRIBE_URL,
-        action_url=None,
-        action_label=None,
+        action=None,
     )
     assert ACTION_URL not in render_html_body()
 
 
-def test_an_action_url_with_no_label_renders_nothing():
-    html = render_email_html(
-        heading=HEADING,
-        paragraphs=PARAGRAPHS,
-        unsubscribe_url=None,
-        action_url=ACTION_URL,
-        action_label=None,
-    )
-    assert ACTION_URL not in html
+def test_an_action_is_one_value_so_neither_half_can_go_missing():
+    with pytest.raises(TypeError):
+        EmailAction(url=ACTION_URL)

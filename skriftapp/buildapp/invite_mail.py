@@ -10,6 +10,7 @@ from litestar.background_tasks import BackgroundTask
 from skrift.lib.email_backends import EmailBackend
 
 from buildapp.email_message import OutboundEmail, compose_email, deliver_emails
+from buildapp.email_template import EmailAction
 
 INVITE_SUBJECT = "Your Build invite"
 INVITE_HEADING = "You’re in."
@@ -30,8 +31,7 @@ def build_invite_email(*, to: str, invite_url: str) -> OutboundEmail:
         ),
         unsubscribe_url=None,
         one_click=False,
-        action_url=invite_url,
-        action_label=INVITE_ACTION_LABEL,
+        action=EmailAction(url=invite_url, label=INVITE_ACTION_LABEL),
     )
 
 

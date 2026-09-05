@@ -20,13 +20,12 @@ from skrift.admin.helpers import get_admin_context
 from skrift.admin.navigation import ADMIN_NAV_TAG
 from skrift.auth.guards import Permission, auth_guard
 from skrift.config import get_settings
-from skrift.db.models.user import User
 from skrift.flash import flash_error, flash_success, get_flash_messages
 from skrift.forms.core import verify_csrf
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
+from buildapp.accounts import addresses_by_id
 from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, resolve_public_base_url
 from buildapp.invite_mail import invite_email_task
@@ -56,7 +55,6 @@ INVITE_MISSING_MESSAGE = "That invite no longer exists."
 CSRF_REFUSED_MESSAGE = "That form expired. Try again."
 
 
-
 def build_invites_dashboard(
     rows: Iterable[Invite], addresses: Mapping[UUID, str], now: datetime
 ) -> list[dict[str, Any]]:
@@ -82,11 +80,6 @@ def build_invites_dashboard(
     return dashboard
 
 
-async def _addresses_by_id(db_session: AsyncSession) -> dict[UUID, str]:
-    result = await db_session.execute(select(User.id, User.email))
-    return {user_id: email for user_id, email in result if email}
-
-
 class InvitesAdminController(Controller):
     """Send an invite, watch it land, take it back."""
 
@@ -109,7 +102,7 @@ class InvitesAdminController(Controller):
             context={
                 "flash_messages": get_flash_messages(request),
                 "invites": build_invites_dashboard(
-                    rows, await _addresses_by_id(db_session), utc_now()
+                    rows, await addresses_by_id(db_session), utc_now()
                 ),
                 **ctx,
             },

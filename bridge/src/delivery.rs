@@ -23,26 +23,18 @@ use crate::pty::HarnessSpec;
 
 /// What a spawn asks the provider's transcript tree, injectable so no test
 /// reads the developer's own.
+///
+/// Built as a literal at every call site: three same-shaped `Arc` closures in a
+/// positional constructor are three ways to build a spawn that probes the wrong
+/// thing and still compiles.
 #[derive(Clone)]
 pub struct SessionProbes {
-    transcript: TranscriptProbe,
-    resume_id: ResumeIdProbe,
-    locator: SessionLocatorFactory,
+    pub transcript: TranscriptProbe,
+    pub resume_id: ResumeIdProbe,
+    pub locator: SessionLocatorFactory,
 }
 
 impl SessionProbes {
-    pub fn new(
-        transcript: TranscriptProbe,
-        resume_id: ResumeIdProbe,
-        locator: SessionLocatorFactory,
-    ) -> SessionProbes {
-        SessionProbes {
-            transcript,
-            resume_id,
-            locator,
-        }
-    }
-
     /// What this spawn picks back up, decided in order, and the order is the
     /// rule.
     ///
@@ -107,41 +99,24 @@ pub struct SessionPickup {
 /// Every field is owned: the orchestrator is cloned out of the project, the
 /// probes are `Arc`s, and the checkout is a path. There is no borrow of the
 /// registry here to keep the app mutex alive, which is the whole point.
+///
+/// Built as a literal by the lock-held half of a spawn, which is the only place
+/// that can read these out of the registry — and the only place that could
+/// hand a harness its agent id as its MCP token, which a positional constructor
+/// of same-shaped strings would take without complaint. There is no invariant
+/// here for a constructor to enforce: this module cannot name `AppState`.
 pub struct AgentSpawnPlan {
-    project: Orchestrator,
-    root: PathBuf,
-    agent_id: String,
-    model_choice: ModelChoice,
-    recorded_resume_id: Option<String>,
-    may_pick_up_a_conversation: bool,
-    probes: SessionProbes,
-    session_token: String,
+    pub project: Orchestrator,
+    pub root: PathBuf,
+    pub agent_id: String,
+    pub model_choice: ModelChoice,
+    pub recorded_resume_id: Option<String>,
+    pub may_pick_up_a_conversation: bool,
+    pub probes: SessionProbes,
+    pub session_token: String,
 }
 
 impl AgentSpawnPlan {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        project: Orchestrator,
-        root: PathBuf,
-        agent_id: String,
-        model_choice: ModelChoice,
-        recorded_resume_id: Option<String>,
-        may_pick_up_a_conversation: bool,
-        probes: SessionProbes,
-        session_token: String,
-    ) -> AgentSpawnPlan {
-        AgentSpawnPlan {
-            project,
-            root,
-            agent_id,
-            model_choice,
-            recorded_resume_id,
-            may_pick_up_a_conversation,
-            probes,
-            session_token,
-        }
-    }
-
     /// Ask the transcript tree what this session continues, write `.build/`
     /// into the checkout, and build the argv.
     ///
@@ -196,11 +171,11 @@ mod tests {
         holds: impl Fn(&str) -> bool + Send + Sync + 'static,
         transcript: bool,
     ) -> SessionProbes {
-        SessionProbes::new(
-            Arc::new(move |_, _| transcript),
-            Arc::new(move |_, _, id: &str| holds(id)),
-            Arc::new(|_, _| None),
-        )
+        SessionProbes {
+            transcript: Arc::new(move |_, _| transcript),
+            resume_id: Arc::new(move |_, _, id: &str| holds(id)),
+            locator: Arc::new(|_, _| None),
+        }
     }
 
     #[test]

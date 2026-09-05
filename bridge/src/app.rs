@@ -25,7 +25,7 @@ use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
-use crate::delivery::{AgentSpawnPlan, SessionProbes};
+use crate::delivery::{AgentSpawnPlan, ReadyToSpawn, SessionProbes};
 use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
     Turn,
@@ -378,6 +378,19 @@ enum TabRole {
     },
 }
 
+impl TabRole {
+    /// The entity this tab's agent drives and the agent's own id — `None` for
+    /// the human's own shell, which drives nothing.
+    fn agent(&self) -> Option<(&str, &str)> {
+        match self {
+            TabRole::Agent {
+                owner, agent_id, ..
+            } => Some((owner, agent_id)),
+            TabRole::Shell => None,
+        }
+    }
+}
+
 /// A live tab: one agent session rooted in a worktree, plus the authoritative
 /// screen model that makes reconnect a snapshot (current screen + cursor)
 /// rather than a byte replay.
@@ -464,6 +477,24 @@ impl Tab {
     /// Everything a tab's pumps need, taken before the tab is handed to the
     /// registry: they run for the tab's whole life and must not have to ask
     /// the registry for the handles they hold.
+    /// Paint this session onto the grid its predecessor left behind.
+    ///
+    /// Reconnect is snapshot + cursor: a replacement process must never rewind
+    /// that cursor, and clients already attached stay attached. The new PTY
+    /// takes the retained grid so the two agree — and a replacement that paints
+    /// nothing has no grid to become, so the clients on it are told rather than
+    /// left there (see [`NO_TERMINAL_LEFT`]).
+    fn adopt_screen(&mut self, screen: ScreenHandle) {
+        self.screen = Some(screen);
+        let Ok(terminal) = self.terminal_handle() else {
+            if let Some(orphan) = self.screen.take() {
+                orphan.close(NO_TERMINAL_LEFT);
+            }
+            return;
+        };
+        terminal.fit_child_to_screen();
+    }
+
     fn pumps(&self, output: SessionOutput) -> TabPumps {
         TabPumps {
             session: Arc::clone(&self.session),
@@ -2980,11 +3011,11 @@ impl AppState {
     /// The three transcript-tree reads a spawn makes, taken together so the
     /// disk work can be handed over in one piece.
     fn session_probes(&self) -> SessionProbes {
-        SessionProbes::new(
-            Arc::clone(&self.transcript_probe),
-            Arc::clone(&self.resume_id_probe),
-            Arc::clone(&self.session_locator_factory),
-        )
+        SessionProbes {
+            transcript: Arc::clone(&self.transcript_probe),
+            resume_id: Arc::clone(&self.resume_id_probe),
+            locator: Arc::clone(&self.session_locator_factory),
+        }
     }
 
     /// The name the agent's record says its conversation has — `None` for one
@@ -3921,6 +3952,12 @@ impl AppState {
             None => true,
         };
         self.diff_cache_work(refresh, stale, computed_at.is_some(), false)
+    }
+
+    /// This daemon, held the way a background job has to hold it — see
+    /// [`SettlingHandle`].
+    fn settling_handle(&self) -> SettlingHandle {
+        SettlingHandle(self.self_handle.clone())
     }
 
     /// Whether a refresh of this entry is running right now.
@@ -9068,7 +9105,25 @@ impl AppState {
                 say.cold = self.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &say.cold);
             }
         }
-        PendingTurns(queued)
+        PendingTurns {
+            owed: queued.iter().map(|turn| turn.owner.clone()).collect(),
+            turns: queued.into(),
+            state: self.settling_handle(),
+        }
+    }
+
+    /// Give one turn's in-flight mark back. Counted per owner, because one
+    /// drain can carry several turns for the same one.
+    fn settle_agent_turn(&mut self, owner: &str) {
+        let std::collections::hash_map::Entry::Occupied(mut in_flight) =
+            self.agent_turns_in_flight.entry(owner.to_string())
+        else {
+            return;
+        };
+        *in_flight.get_mut() -= 1;
+        if *in_flight.get() == 0 {
+            in_flight.remove();
+        }
     }
 
     /// The default destination: an issue on the best-guess project, with its
@@ -17783,6 +17838,11 @@ fn attach_to_tab(attachment: TabAttachment, sender: &SessionSender, cols: u16, r
 
 /// Find-or-create the one agent tab rooted at `root`.
 ///
+/// Three phases, one call each. **Reserve** decides under the lock: hand back a
+/// live tab, wait out the spawn somebody else is already making, or take the
+/// reservation. **Open** does the disk work and starts the child with the lock
+/// released. **Publish** puts the tab in the registry.
+///
 /// Idempotent per root: the find half and the in-flight reservation are taken
 /// under the SAME lock acquisition, so two concurrent callers produce one
 /// harness — two agents in one worktree would both report `done` for the same
@@ -17802,162 +17862,115 @@ fn ensure_agent_tab(
     model_choice: &ModelChoice,
     timer: &FrameTimer,
 ) -> Result<Option<(String, Spawned)>, String> {
-    let root = AppState::canonical_root(root);
-    let key = TabKey::agent(&root, agent_id);
-    let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
-    // Under the lock: hand back a live tab, wait out the spawn somebody else is
-    // already making, or reserve this one. The wait gives the mutex back for
-    // its whole duration and wakes on the winner's claim being released, so a
-    // caller that lost the race costs the daemon nothing while it waits.
-    let reserved = {
-        let mut s = timer.lock(state);
-        loop {
-            if !s.owner_still_has_a_session(owner) {
-                return Ok(None);
-            }
-            if let Some(tab) = s.tabs.get(&key) {
-                let same_owner = matches!(
-                    &tab.role,
-                    TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
-                );
-                if same_owner && tab.session_is_live() {
-                    return Ok(Some((tab.wire_id(), Spawned::Warm)));
-                }
-            }
-            if !s.agent_spawns_in_flight.contains(&key) {
-                break;
-            }
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                return Err(format!(
-                    "timed out waiting for the agent starting in {}",
-                    root.display()
-                ));
-            }
-            let finished = Arc::clone(&s.agent_spawn_finished);
-            s = s.wait_until(&finished, left, |state| {
-                !state.agent_spawns_in_flight.contains(&key)
-            });
-        }
-        reserve_agent_spawn(state, &mut s, &key, &root, owner, agent_id, model_choice)?
+    let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
+    let reserved = match claim_agent_spawn(state, &key, owner, agent_id, model_choice, timer)? {
+        SpawnDecision::Live(wire_id) => return Ok(Some((wire_id, Spawned::Warm))),
+        SpawnDecision::NoSession => return Ok(None),
+        SpawnDecision::Reserved(reserved) => *reserved,
     };
-    let ReservedSpawn {
-        plan,
-        claim,
-        carried,
-        session_token,
-    } = reserved;
+    let opened = open_agent_session(state, reserved, &key, timer)?;
+    Ok(publish_agent_tab(state, &key, opened, model_choice, timer)
+        .map(|wire_id| (wire_id, Spawned::Fresh)))
+}
 
-    // With the mutex released: the three transcript reads, the scaffold, and
-    // the child itself. Between them they walk a tree the daemon does not own
-    // and wait on a harness's readiness, and every terminal pump needs this
-    // mutex while they do.
-    let ready = match plan.probe_and_scaffold() {
-        Ok(ready) => ready,
-        Err(error) => {
-            return Err(abandon_spawn(
-                state,
-                claim,
-                carried,
-                agent_id,
-                &session_token,
-                error,
-                timer,
-            ))
+/// What the lock-held half of a spawn decided.
+enum SpawnDecision {
+    /// A live tab of this owner's — found on arrival, or waited out.
+    Live(String),
+    /// The entity's session is over, so there is no agent to open.
+    NoSession,
+    /// Nobody else is opening this tab, so this caller is. Boxed because a
+    /// whole spawn plan dwarfs a wire id, and every decision would pay for it.
+    Reserved(Box<ReservedSpawn>),
+}
+
+/// Decide, under the lock, what this caller is to do about the tab.
+///
+/// The wait gives the mutex back for its whole duration and wakes on the
+/// winner's claim being released, so a caller that lost the race costs the
+/// daemon nothing while it waits.
+fn claim_agent_spawn(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+    timer: &FrameTimer,
+) -> Result<SpawnDecision, String> {
+    let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
+    let mut s = timer.lock(state);
+    loop {
+        if !s.owner_still_has_a_session(owner) {
+            return Ok(SpawnDecision::NoSession);
         }
-    };
-    let spawned = Tab::spawn(
-        TabRole::Agent {
-            owner: owner.to_string(),
-            agent_id: agent_id.to_string(),
-            provider: model_choice.provider,
-        },
-        &ready.spec,
-        key.tab_id.clone(),
-        root.clone(),
-        ready.size.cols,
-        ready.size.rows,
-        ready.locator,
-    );
-    let (mut tab, rx) = match spawned {
-        Ok(spawned) => spawned,
-        Err(error) => {
-            return Err(abandon_spawn(
-                state,
-                claim,
-                carried,
-                agent_id,
-                &session_token,
-                error,
-                timer,
-            ))
-        }
-    };
-    if let Some(screen) = carried {
-        // Reconnect is snapshot + cursor: a replacement process must
-        // never rewind that cursor, and clients already attached stay
-        // attached. The new PTY takes the retained screen's grid so the
-        // two agree.
-        tab.screen = Some(screen);
-        match tab.terminal_handle() {
-            Ok(terminal) => terminal.fit_child_to_screen(),
-            // The replacement paints nothing, so the retained grid has
-            // nothing to become — see [`NO_TERMINAL_LEFT`].
-            Err(_) => {
-                if let Some(screen) = tab.screen.take() {
-                    screen.close(NO_TERMINAL_LEFT);
-                }
+        if let Some(tab) = s.tabs.get(key) {
+            let same_owner = tab.role.agent().is_some_and(|(had, _)| had == owner);
+            if same_owner && tab.session_is_live() {
+                return Ok(SpawnDecision::Live(tab.wire_id()));
             }
         }
-    }
-    let wire_id = tab.wire_id();
-    let pumps;
-    let inherited;
-    let stranded;
-    {
-        let mut s = timer.lock(state);
-        // The probe read the recorded name and the provider no longer holds it.
-        // Forgetting it is a state write, so it happens here rather than in the
-        // probe that found out.
-        if ready.recorded_name_is_gone {
-            s.record_agent_resume_id(owner, agent_id, None);
+        if !s.agent_spawns_in_flight.contains(key) {
+            return reserve_agent_spawn(&mut s, key, owner, agent_id, model_choice)
+                .map(|reserved| SpawnDecision::Reserved(Box::new(reserved)));
         }
-        inherited = inherit_waiting_clients(&mut s, &key, &root, &tab);
-        let running = tab
-            .session
-            .active_model()
-            .or_else(|| model_choice.model.clone());
-        pumps = tab.pumps(rx);
-        s.tabs.insert(key.clone(), tab);
-        claim.settle(&mut s);
-        s.record_agent_active_model(owner, agent_id, running);
-        // The entity may have lost its session while this harness was starting
-        // — an issue approved under its own planning agent. The insert is the
-        // instant the agent becomes addressable, so it is the instant the gate
-        // that closed has to reach it, and no earlier check is atomic with it.
-        stranded = !s.owner_still_has_a_session(owner);
-        if stranded {
-            s.retire_tab(&key, "closed");
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(format!(
+                "timed out waiting for the agent starting in {}",
+                key.root.display()
+            ));
         }
+        let finished = Arc::clone(&s.agent_spawn_finished);
+        s = s.wait_until(&finished, left, |state| {
+            !state.agent_spawns_in_flight.contains(key)
+        });
     }
-    if stranded {
-        return Ok(None);
-    }
-    if let Some(inherited) = inherited {
-        inherited.fit_child_to_screen();
-    }
-    spawn_tab_pumps(state, key, pumps);
-    Ok(Some((wire_id, Spawned::Fresh)))
 }
 
 /// What the lock-held half of a spawn hands to the lock-free half.
 struct ReservedSpawn {
     plan: AgentSpawnPlan,
+    role: TabRole,
+    holding: SpawnHolding,
+}
+
+/// What a reservation is holding on the registry's behalf until the tab opens.
+///
+/// Three things the registry gave up when the reservation was taken, and all
+/// three go back together if the spawn never opens.
+struct SpawnHolding {
     claim: SpawnClaim,
     /// The grid of the dead session this spawn replaces, kept for the session
     /// about to paint it.
     carried: Option<ScreenHandle>,
+    /// The agent whose MCP token was registered before its child existed.
+    agent_id: String,
     session_token: String,
+}
+
+impl SpawnHolding {
+    /// Give everything back, and hand the caller the reason the spawn never
+    /// opened.
+    ///
+    /// The reservation took the dead session's tab out of the registry and kept
+    /// its grid, telling the clients on it NOTHING, because they were about to
+    /// be handed to the session replacing it. There is no such session now, and
+    /// the grid is in no registry for a reaper or a close to reach: they are
+    /// told here or they are told never.
+    fn abandon(self, state: &Arc<Mutex<AppState>>, error: String, timer: &FrameTimer) -> String {
+        if let Some(screen) = &self.carried {
+            screen.close(SPAWN_NEVER_OPENED);
+        }
+        let mut s = timer.lock(state);
+        if s.mcp_session_tokens
+            .get(&self.agent_id)
+            .is_some_and(|current| constant_time_token_eq(current, &self.session_token))
+        {
+            s.mcp_session_tokens.remove(&self.agent_id);
+        }
+        self.claim.settle(&mut s);
+        error
+    }
 }
 
 /// Take the spawn reservation and read everything the disk work will need.
@@ -17966,10 +17979,8 @@ struct ReservedSpawn {
 /// probes are `Arc`s — so nothing it does afterwards can reach back into the
 /// registry this read it out of.
 fn reserve_agent_spawn(
-    state: &Arc<Mutex<AppState>>,
     s: &mut AppState,
     key: &TabKey,
-    root: &std::path::Path,
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
@@ -17989,8 +18000,7 @@ fn reserve_agent_spawn(
         .tabs
         .iter()
         .filter(|(other, tab)| {
-            other.root == *root
-                && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
+            other.root == key.root && tab.role.agent().is_some_and(|(had, _)| had != owner)
         })
         .map(|(other, _)| other.clone())
         .collect();
@@ -18008,59 +18018,180 @@ fn reserve_agent_spawn(
         }
         Err(unknown) => return Err(unknown),
     };
-    let project = s.orch_for(&project_id)?.clone();
     let session_token = uuid::Uuid::new_v4().to_string();
     // Before the child exists, because the child dials the done socket as soon
     // as it is up and an unregistered token is an unauthorized report.
     s.mcp_session_tokens
         .insert(agent_id.to_string(), session_token.clone());
-    let plan = AgentSpawnPlan::new(
-        project,
-        root.to_path_buf(),
-        agent_id.to_string(),
-        model_choice.clone(),
-        s.recorded_resume_id(owner, agent_id),
-        s.may_pick_up_a_conversation(owner, agent_id),
-        s.session_probes(),
-        session_token.clone(),
-    );
     Ok(ReservedSpawn {
-        plan,
-        claim: SpawnClaim::take(s, state, key),
-        carried,
-        session_token,
+        plan: AgentSpawnPlan {
+            project: s.orch_for(&project_id)?.clone(),
+            root: key.root.clone(),
+            agent_id: agent_id.to_string(),
+            model_choice: model_choice.clone(),
+            recorded_resume_id: s.recorded_resume_id(owner, agent_id),
+            may_pick_up_a_conversation: s.may_pick_up_a_conversation(owner, agent_id),
+            probes: s.session_probes(),
+            session_token: session_token.clone(),
+        },
+        role: TabRole::Agent {
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            provider: model_choice.provider,
+        },
+        holding: SpawnHolding {
+            claim: SpawnClaim::take(s, key),
+            carried,
+            agent_id: agent_id.to_string(),
+            session_token,
+        },
     })
 }
 
-/// Give back everything a spawn that never opened was holding, and hand the
-/// caller the reason it never opened.
-///
-/// The reservation took the dead session's tab out of the registry and kept its
-/// grid, telling the clients on it NOTHING, because they were about to be
-/// handed to the session replacing it. There is no such session now, and the
-/// grid is in no registry for a reaper or a close to reach: they are told here
-/// or they are told never.
-fn abandon_spawn(
-    state: &Arc<Mutex<AppState>>,
+/// The child a spawn opened, and the one thing publishing it has to write down.
+struct OpenedSession {
+    tab: Tab,
+    output: SessionOutput,
+    /// The provider no longer holds the conversation name this agent's record
+    /// carries, so the record has to forget it.
+    recorded_name_is_gone: bool,
     claim: SpawnClaim,
-    carried: Option<ScreenHandle>,
-    agent_id: &str,
-    session_token: &str,
-    error: String,
+}
+
+/// Open the child, with the app mutex RELEASED.
+///
+/// The three transcript reads, the `.build/` scaffold and the harness spawn
+/// itself: between them they walk a tree the daemon does not own and wait on a
+/// harness's readiness, and every terminal pump needs the app mutex while they
+/// do. Either step failing gives the whole reservation back before it answers.
+fn open_agent_session(
+    state: &Arc<Mutex<AppState>>,
+    reserved: ReservedSpawn,
+    key: &TabKey,
     timer: &FrameTimer,
-) -> String {
-    if let Some(screen) = &carried {
-        screen.close(SPAWN_NEVER_OPENED);
+) -> Result<OpenedSession, String> {
+    let ReservedSpawn {
+        plan,
+        role,
+        holding,
+    } = reserved;
+    let opened = plan.probe_and_scaffold().and_then(|ready| {
+        let ReadyToSpawn {
+            spec,
+            size,
+            locator,
+            recorded_name_is_gone,
+        } = ready;
+        Tab::spawn(
+            role,
+            &spec,
+            key.tab_id.clone(),
+            key.root.clone(),
+            size.cols,
+            size.rows,
+            locator,
+        )
+        .map(|(tab, output)| (tab, output, recorded_name_is_gone))
+    });
+    match opened {
+        Ok((mut tab, output, recorded_name_is_gone)) => {
+            if let Some(screen) = holding.carried {
+                tab.adopt_screen(screen);
+            }
+            Ok(OpenedSession {
+                tab,
+                output,
+                recorded_name_is_gone,
+                claim: holding.claim,
+            })
+        }
+        Err(error) => Err(holding.abandon(state, error, timer)),
     }
-    let mut s = timer.lock(state);
-    if s.mcp_session_tokens
-        .get(agent_id)
-        .is_some_and(|current| constant_time_token_eq(current, session_token))
+}
+
+/// Put the opened tab in the registry and start its pumps.
+///
+/// `None` means the tab was stranded: the entity lost its session while this
+/// harness was starting — an issue approved under its own planning agent. The
+/// insert is the instant the agent becomes addressable, so it is the instant
+/// the gate that closed has to reach it, and no earlier check is atomic with
+/// it.
+fn publish_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    opened: OpenedSession,
+    model_choice: &ModelChoice,
+    timer: &FrameTimer,
+) -> Option<String> {
+    let OpenedSession {
+        tab,
+        output,
+        recorded_name_is_gone,
+        claim,
+    } = opened;
+    let (owner, agent_id) = tab
+        .role
+        .agent()
+        .map(|(owner, agent_id)| (owner.to_string(), agent_id.to_string()))
+        .expect("an agent spawn opens an agent tab");
+    let wire_id = tab.wire_id();
+    let pumps;
+    let inherited;
+    let stranded;
     {
-        s.mcp_session_tokens.remove(agent_id);
+        let mut s = timer.lock(state);
+        // The probe read the recorded name and the provider no longer holds it.
+        // Forgetting it is a state write, so it happens here rather than in the
+        // probe that found out.
+        if recorded_name_is_gone {
+            s.record_agent_resume_id(&owner, &agent_id, None);
+        }
+        inherited = inherit_waiting_clients(&mut s, key, &tab);
+        let running = tab
+            .session
+            .active_model()
+            .or_else(|| model_choice.model.clone());
+        pumps = tab.pumps(output);
+        s.tabs.insert(key.clone(), tab);
+        claim.settle(&mut s);
+        s.record_agent_active_model(&owner, &agent_id, running);
+        stranded = !s.owner_still_has_a_session(&owner);
+        if stranded {
+            s.retire_tab(key, "closed");
+        }
     }
-    claim.settle(&mut s);
-    error
+    if stranded {
+        return None;
+    }
+    if let Some(inherited) = inherited {
+        inherited.fit_child_to_screen();
+    }
+    spawn_tab_pumps(state, key.clone(), pumps);
+    Some(wire_id)
+}
+
+/// The daemon itself, held the way a background job has to hold it.
+///
+/// Weakly, because a job that outlives the daemon has nothing to give back to,
+/// and through a poisoned mutex deliberately, because a job that ended by
+/// panicking still has to settle and a destructor that panics during an unwind
+/// aborts the process. Every background job that took something out of the
+/// registry before it left gives it back through one of these.
+#[derive(Clone)]
+struct SettlingHandle(Option<std::sync::Weak<Mutex<AppState>>>);
+
+impl SettlingHandle {
+    /// Run `settle` under the app mutex, or not at all if the daemon is gone.
+    fn settle(&self, settle: impl FnOnce(&mut AppState)) {
+        let Some(state) = self.0.as_ref().and_then(std::sync::Weak::upgrade) else {
+            return;
+        };
+        settle(
+            &mut state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
 }
 
 /// One worktree's agent spawn, reserved.
@@ -18074,17 +18205,17 @@ fn abandon_spawn(
 /// there, a panic included.
 struct SpawnClaim {
     key: TabKey,
-    state: std::sync::Weak<Mutex<AppState>>,
+    state: SettlingHandle,
     finished: Arc<std::sync::Condvar>,
     settled: bool,
 }
 
 impl SpawnClaim {
-    fn take(s: &mut AppState, state: &Arc<Mutex<AppState>>, key: &TabKey) -> SpawnClaim {
+    fn take(s: &mut AppState, key: &TabKey) -> SpawnClaim {
         s.agent_spawns_in_flight.insert(key.clone());
         SpawnClaim {
             key: key.clone(),
-            state: Arc::downgrade(state),
+            state: s.settling_handle(),
             finished: Arc::clone(&s.agent_spawn_finished),
             settled: false,
         }
@@ -18104,15 +18235,10 @@ impl Drop for SpawnClaim {
         if self.settled {
             return;
         }
-        if let Some(state) = self.state.upgrade() {
-            // Through a poisoned mutex deliberately: a spawn that ended by
-            // panicking still has to give its claim back, and a destructor that
-            // panics during an unwind aborts the process.
-            let mut state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.agent_spawns_in_flight.remove(&self.key);
-        }
+        let key = &self.key;
+        self.state.settle(|s| {
+            s.agent_spawns_in_flight.remove(key);
+        });
         self.finished.notify_all();
     }
 }
@@ -18132,24 +18258,19 @@ impl Drop for SpawnClaim {
 /// insert that publishes the tab. The child half is an ioctl to a process that
 /// may not answer, so what comes back is the terminal that inherited them, for
 /// the caller to fit to its screen with the lock down.
-fn inherit_waiting_clients(
-    s: &mut AppState,
-    key: &TabKey,
-    root: &std::path::Path,
-    tab: &Tab,
-) -> Option<TerminalHandle> {
+fn inherit_waiting_clients(s: &mut AppState, key: &TabKey, tab: &Tab) -> Option<TerminalHandle> {
     let first_here = !s
         .tabs
         .keys()
-        .any(|other| other.is_agent() && other.root == *root);
+        .any(|other| other.is_agent() && other.root == key.root);
     let waiting = s.agent_screens_awaiting_spawn.remove(key).or_else(|| {
         // Clients that mounted the tab before this worktree had an agent
         // addressed it by the WORKTREE; the first agent born here is the one
         // they were waiting for.
         first_here.then(|| {
             s.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-                root,
-                &crate::worktree::external_worktree_id(root),
+                &key.root,
+                &crate::worktree::external_worktree_id(&key.root),
             ))
         })?
     })?;
@@ -18264,11 +18385,47 @@ fn deliver(
 /// under the SAME acquisition that empties the queue, so there is no instant in
 /// which a queued turn is invisible to the idle sweep and its entity looks
 /// agentless.
-struct PendingTurns(Vec<PendingAgentTurn>);
+/// The batch OWES those marks back. Each turn settles its own as it lands, and
+/// [`Drop`] settles whatever is left, because an owner still marked in flight is
+/// spared by the idle sweep forever — a run left Working with no agent and
+/// nothing in the daemon able to demote it.
+struct PendingTurns {
+    turns: std::collections::VecDeque<PendingAgentTurn>,
+    /// One entry per mark this batch has yet to give back.
+    owed: Vec<String>,
+    state: SettlingHandle,
+}
 
 impl PendingTurns {
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.turns.is_empty()
+    }
+
+    fn next_turn(&mut self) -> Option<PendingAgentTurn> {
+        self.turns.pop_front()
+    }
+
+    /// Give one delivered turn's mark back, under a lock the caller holds.
+    fn settle(&mut self, owner: &str, s: &mut AppState) {
+        let Some(at) = self.owed.iter().position(|owed| owed == owner) else {
+            return;
+        };
+        self.owed.swap_remove(at);
+        s.settle_agent_turn(owner);
+    }
+}
+
+impl Drop for PendingTurns {
+    fn drop(&mut self) {
+        let owed = std::mem::take(&mut self.owed);
+        if owed.is_empty() {
+            return;
+        }
+        self.state.settle(|s| {
+            for owner in owed {
+                s.settle_agent_turn(&owner);
+            }
+        });
     }
 }
 
@@ -18297,6 +18454,16 @@ impl DeliveryRunner {
     /// With no runtime under it — the synchronous unit tests — there is no
     /// thread to hand the work to and it runs here, which is the same
     /// delivery, made on the caller's time.
+    ///
+    /// The delivery is JOINED by a task of its own rather than detached, so a
+    /// delivery that panicked, or one a shutting-down runtime never ran, says
+    /// so on the log instead of vanishing. Either way the batch's in-flight
+    /// marks come back with it: [`PendingTurns`] settles what it owes on drop.
+    ///
+    /// The blocking half is submitted BEFORE the joiner, and not from inside
+    /// it: a single-threaded runtime runs a spawned task only when something
+    /// awaits, and a delivery that waited for its caller to await would be a
+    /// delivery that never left the frame.
     fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns) {
         if turns.is_empty() {
             return;
@@ -18306,7 +18473,12 @@ impl DeliveryRunner {
             return;
         };
         let state = Arc::clone(state);
-        runtime.spawn_blocking(move || DeliveryRunner::run(&state, turns));
+        let delivering = runtime.spawn_blocking(move || DeliveryRunner::run(&state, turns));
+        runtime.spawn(async move {
+            if let Err(joined) = delivering.await {
+                eprintln!("agent delivery failed: {joined}");
+            }
+        });
     }
 
     /// Send every turn, one at a time, and write down what each one did.
@@ -18315,9 +18487,9 @@ impl DeliveryRunner {
     /// conversation's session lineage — the record the thread reads back as
     /// "the revise agent started here". A warm delivery continues the session
     /// already open.
-    fn run(state: &Arc<Mutex<AppState>>, turns: PendingTurns) {
+    fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
         let timer = Arc::clone(&state.lock().unwrap().frame_clock).frame(AGENT_DELIVERY_METHOD);
-        for turn in turns.0 {
+        while let Some(turn) = turns.next_turn() {
             let delivered = deliver(
                 state,
                 &turn.root,
@@ -18352,14 +18524,7 @@ impl DeliveryRunner {
             }
             // Off the queue and out of flight: from here the entity's agent tab
             // is the whole truth about whether an agent is there.
-            if let std::collections::hash_map::Entry::Occupied(mut in_flight) =
-                s.agent_turns_in_flight.entry(turn.owner.clone())
-            {
-                *in_flight.get_mut() -= 1;
-                if *in_flight.get() == 0 {
-                    in_flight.remove();
-                }
-            }
+            turns.settle(&turn.owner, &mut s);
         }
     }
 }
@@ -21114,12 +21279,11 @@ mod tests {
         let told = {
             let state = Arc::clone(&state);
             let key = key.clone();
-            let root = root.clone();
             let (done, finished) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let inherited = {
                     let mut s = state.lock().unwrap();
-                    let inherited = inherit_waiting_clients(&mut s, &key, &root, &born);
+                    let inherited = inherit_waiting_clients(&mut s, &key, &born);
                     s.tabs.insert(key, born);
                     inherited
                 };
@@ -32586,6 +32750,68 @@ mod tests {
         assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
         // No harness exited here, so no exit-code claim is invented.
         assert!(got["result"]["last_error"].is_null(), "{got:?}");
+    }
+
+    /// A delivery that unwinds has to give back what it took.
+    ///
+    /// `take_pending_turns` marks every owner in flight, and an owner marked in
+    /// flight is spared by the idle sweep for as long as the mark stands. A
+    /// batch that panicked used to keep those marks forever: the run sat in
+    /// Working with no agent tab and nothing left in the daemon could ever
+    /// demote it.
+    #[test]
+    fn a_delivery_that_panics_gives_its_in_flight_marks_back() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-panicked",
+            RunState::Building,
+        );
+        let state = app.shared();
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-panicked"));
+        let turns = state.lock().unwrap().take_pending_turns();
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .agent_turn_is_undelivered("run-panicked"),
+            "the batch holds the mark while it delivers"
+        );
+
+        // The panic no delivery can catch: another frame died holding the app
+        // mutex, so the runner's very first acquisition unwraps a poisoned lock.
+        let poisoner = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("the frame holding the app mutex died");
+        })
+        .join()
+        .expect_err("the poisoning thread panics");
+
+        let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            DeliveryRunner::run(&state, turns)
+        }));
+        assert!(delivered.is_err(), "a poisoned lock unwinds the delivery");
+
+        let mut s = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            s.agent_turns_in_flight.is_empty(),
+            "an unwinding delivery gives its in-flight marks back"
+        );
+        assert_eq!(
+            s.mark_idle_tasks(Duration::from_secs(3600)),
+            vec!["run-panicked".to_string()],
+            "the entity it stranded is demotable again"
+        );
     }
 
     /// The tabless anomaly must not fire on the gap the queue opens: a verb

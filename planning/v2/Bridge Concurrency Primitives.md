@@ -475,7 +475,14 @@ noted below.
 - **Interface**
 
   ```rust
-  struct PendingTurns(Vec<PendingAgentTurn>);      // what one lock acquisition took
+  /// What one lock acquisition took, and the marks it OWES back.
+  struct PendingTurns { turns: VecDeque<PendingAgentTurn>, owed: Vec<String>,
+                        state: SettlingHandle }
+  impl PendingTurns {
+      fn next_turn(&mut self) -> Option<PendingAgentTurn>;
+      fn settle(&mut self, owner: &str, s: &mut AppState);   // one delivered turn
+  }
+  impl Drop for PendingTurns { .. }                          // whatever is left
   impl AppState { fn take_pending_turns(&mut self) -> PendingTurns; }
   struct DeliveryRunner;
   impl DeliveryRunner {
@@ -483,13 +490,22 @@ noted below.
       fn run(state: &Arc<Mutex<AppState>>, turns: PendingTurns);    // no runtime: sync tests
   }
 
-  /// Find-or-spawn one agent tab. Idempotent per tab however many callers ask
-  /// at once: it owns the single-flight claim, the wait, and the release.
-  /// `Ok(None)` — the entity lost its session; nothing was published.
+  /// Find-or-spawn one agent tab, in three phases and one call each. `Ok(None)`
+  /// — the entity lost its session; nothing was published.
   fn ensure_agent_tab(
       state: &Arc<Mutex<AppState>>, root: &Path, owner: &str,
       agent_id: &str, choice: &ModelChoice, timer: &FrameTimer,
   ) -> Result<Option<(String, Spawned)>, String>;
+
+  /// Decide under the lock: a live tab, a wait, or the reservation.
+  enum SpawnDecision { Live(String), NoSession, Reserved(Box<ReservedSpawn>) }
+  fn claim_agent_spawn(..) -> Result<SpawnDecision, String>;
+  /// Probe, scaffold and open the child, with the mutex RELEASED.
+  fn open_agent_session(state, reserved: ReservedSpawn, key: &TabKey, timer)
+      -> Result<OpenedSession, String>;
+  /// Publish it. `None` — the entity's session closed under the spawn.
+  fn publish_agent_tab(state, key: &TabKey, opened: OpenedSession,
+                       choice: &ModelChoice, timer) -> Option<String>;
   ```
 
 - **A turn's message is optional, so there is one delivery path.**
@@ -545,6 +561,36 @@ noted below.
   `claim: SpawnClaim` and no `owner`. The screen and the claim are `AppState`'s
   and travel beside the plan in `ReservedSpawn`; the harness spec is built from
   the cwd and the agent id alone, so `owner` was never one of its inputs.
+
+  Every field is `pub` and every one of these is built as a struct literal.
+  `AgentSpawnPlan` and `SessionProbes` have no constructor: three same-shaped
+  `Arc` closures and three adjacent `String`s in a positional argument list are
+  ways to hand a harness the wrong probe, or its own agent id as its MCP token,
+  and still compile. There is no invariant a constructor could enforce here —
+  the module cannot name `AppState`, which is where every one of these values
+  comes from.
+- **What the reservation is holding travels whole.**
+
+  ```rust
+  struct ReservedSpawn { plan: AgentSpawnPlan, role: TabRole, holding: SpawnHolding }
+  /// The three things the registry gave up, which go back together if the
+  /// spawn never opens: the claim, the dead session's retained grid, and the
+  /// MCP token registered before the child existed.
+  struct SpawnHolding { claim: SpawnClaim, carried: Option<ScreenHandle>,
+                        agent_id: String, session_token: String }
+  impl SpawnHolding {
+      /// Give it all back; answer with the reason the spawn never opened.
+      fn abandon(self, state, error: String, timer: &FrameTimer) -> String;
+  }
+  struct OpenedSession { tab: Tab, output: SessionOutput,
+                         recorded_name_is_gone: bool, claim: SpawnClaim }
+  ```
+
+  `open_agent_session` chains the two fallible steps —
+  `probe_and_scaffold().and_then(Tab::spawn)` — so there is ONE failure arm and
+  one `abandon`. The carried grid is adopted by `Tab::adopt_screen`, which owns
+  the whole rule: take the grid, fit the child to it, and close it with
+  `NO_TERMINAL_LEFT` if this session paints nothing.
 - **The single-flight claim has no public surface.** `ensure_agent_tab` owns
   both ends. Under one acquisition it returns the live tab, or takes the claim
   (`AppState.agent_spawns_in_flight`, read in the same acquisition as the tab
@@ -552,9 +598,30 @@ noted below.
   `AppState.agent_spawn_finished: Arc<Condvar>` and looks again when a spawn
   ends. `SpawnClaim` travels beside the plan and is consumed by the acquisition
   that inserts the tab; its `Drop` releases the claim and notifies every waiter
-  on any path that never got there, a panic included — through a poisoned mutex
-  deliberately, because a destructor that panics during an unwind aborts the
-  process. `AGENT_SPAWN_WAIT` is the condvar's deadline.
+  on any path that never got there, a panic included. `AGENT_SPAWN_WAIT` is the
+  condvar's deadline.
+- **What a background job took, it gives back while unwinding.** `SpawnClaim`
+  and `PendingTurns` are the two, and they hold the daemon the same way:
+
+  ```rust
+  /// Weakly — a job outliving the daemon has nothing to give back to — and
+  /// reacquired through a poisoned mutex deliberately, because a destructor
+  /// that panics during an unwind aborts the process.
+  struct SettlingHandle(Option<Weak<Mutex<AppState>>>);
+  impl SettlingHandle { fn settle(&self, settle: impl FnOnce(&mut AppState)); }
+  impl AppState { fn settling_handle(&self) -> SettlingHandle; }
+  ```
+
+  `take_pending_turns` marks every owner in flight, and an owner marked in
+  flight is spared by the idle sweep for as long as the mark stands — so a batch
+  that unwound without giving its marks back left its runs Working with no agent
+  and nothing in the daemon able to demote them. `PendingTurns::settle` returns
+  one turn's mark under the lock the runner already holds, and `Drop` returns
+  whatever the batch still owes. `DeliveryRunner::spawn` submits the blocking
+  half FIRST and joins it from a task of its own, so a delivery that panicked —
+  or one a shutting-down runtime never ran — reaches the log rather than
+  vanishing, and a single-threaded runtime still starts the delivery before its
+  caller awaits anything.
 - **The wait is a `FrameClock` primitive, not a bare condvar call.**
   `LockedFor::wait_until(condvar, timeout, ready)` (timing.rs) ends the frame's
   hold, clears the holder slot, waits with the mutex given back, and charges the
@@ -592,6 +659,7 @@ noted below.
   proves a board read answers while a cold spawn is parked),
   `agent_start_answers_with_the_reserved_tab_before_the_harness_is_up`,
   `a_delivery_that_fails_in_the_background_lands_on_its_entity`,
+  `a_delivery_that_panics_gives_its_in_flight_marks_back`,
   `two_callers_of_one_tab_spawn_one_harness_without_spinning`,
   `a_delivery_is_timed_under_its_own_method_and_never_the_frames`,
   `a_frame_waiting_on_a_condvar_holds_nothing_and_charges_the_wait_to_the_lock`

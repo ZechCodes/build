@@ -822,7 +822,8 @@ struct Project {
     base_branch: String,
     orch: Orchestrator,
     /// Cached external-worktree scan, refreshed at most every
-    /// `EXTERNAL_SCAN_INTERVAL` (or on demand via `force`).
+    /// `EXTERNAL_SCAN_INTERVAL`. `None` until the first scan lands: a read
+    /// answers `scanning` rather than taking one.
     external_scan: Option<ExternalScanCache>,
     /// Cached `task.list.primary_changes` entry for this project, refreshed at
     /// most every `PRIMARY_SUMMARY_TTL` (spec §5.3) — same discipline as
@@ -1144,6 +1145,25 @@ struct ExternalScanCache {
     worktrees: Vec<ExternalWorktree>,
 }
 
+/// The board's checkout rows, and whether every project behind them has been
+/// scanned at least once. A board that has not finished looking says so rather
+/// than shipping an empty rail as the answer.
+#[derive(Default)]
+struct ExternalWorktreeRows {
+    rows: Vec<Value>,
+    scanning: bool,
+}
+
+/// What a reader gets back from a project's checkout scan: the last list, and
+/// whether a scan has ever landed to fill it. An empty list with nothing behind
+/// it is a board still waiting, not a project with no worktrees, and the two
+/// render differently.
+#[derive(Default)]
+struct ScanRead {
+    worktrees: Vec<ExternalWorktree>,
+    ever_scanned: bool,
+}
+
 /// One entry of the diff caches the poll surfaces read: a run's diffstat, a
 /// project's external-worktree scan, a project's primary-checkout summary.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1255,66 +1275,6 @@ impl OffLockGateHandle {
         self.permits.send(()).expect("the gate is still open");
     }
 }
-
-/// Which diff-cache entries a verb is about to read.
-enum DiffCacheScope {
-    /// Everything the feed shows: every live run's diffstat, and every
-    /// project's worktree scan and primary-checkout summary.
-    Feed,
-    /// One run's diffstat, and nothing else.
-    Run(String),
-    /// The run behind a branch, if one owns it.
-    Branch { project_id: String, branch: String },
-}
-
-/// The diff caches a verb reads, if it reads any. Only these verbs warm them,
-/// so no other frame pays for a scan it will never look at.
-fn diff_caches_read_by(method: &str, params: &Value) -> Option<DiffCacheScope> {
-    match method {
-        "board.list" | "branch.get" => Some(DiffCacheScope::Feed),
-        "run.finish" => params
-            .get("run_id")
-            .and_then(Value::as_str)
-            .map(|run_id| DiffCacheScope::Run(run_id.to_string())),
-        "branch.finish" => {
-            let project_id = params.get("project_id").and_then(Value::as_str)?;
-            let branch = params.get("branch").and_then(Value::as_str)?;
-            Some(DiffCacheScope::Branch {
-                project_id: project_id.to_string(),
-                branch: branch.to_string(),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// A claimed refresh, and how its claimant means to run it.
-struct ClaimedRefresh {
-    refresh: DiffCacheRefresh,
-    /// True when the caller must wait for the answer: either nothing is cached
-    /// to serve in its place, or the verb decides something from the number
-    /// (Done refuses uncommitted work) and a stale one could decide it wrongly.
-    /// The wait happens with the app mutex released, never under it.
-    blocking: bool,
-}
-
-/// What one frame has to do about one aged-out cache entry.
-enum DiffCacheWork {
-    /// This frame holds the sole claim: it runs the compute (here or behind the
-    /// answer), and publishes for every reader that asked meanwhile.
-    Claimed(ClaimedRefresh),
-    /// Another frame is already computing an entry this one has nothing to
-    /// serve in place of. Wait for that value rather than start a second scan —
-    /// and rather than fall through to the compute of last resort further down,
-    /// which runs under the app mutex.
-    AwaitFirstValue(DiffCacheKey),
-}
-
-/// How long a frame waits for another frame's first-ever compute of an entry it
-/// needs. Generous: waiting is what keeps the mutex free, and the frame that
-/// waits is one worker of several, not the read loop. Past it the frame answers
-/// with what it can rather than hang.
-const FIRST_COMPUTE_WAIT: Duration = Duration::from_secs(5);
 
 impl DiffCacheRefresh {
     fn key(&self) -> DiffCacheKey {
@@ -1531,73 +1491,6 @@ fn spawn_diff_refresh(
         }
     });
     Ok(())
-}
-
-/// Refresh the diff caches a verb is about to read, with the app mutex free.
-///
-/// This is the dispatch path's half of stale-while-revalidate. A stale entry
-/// refreshes behind the answer — the verb serves the last value it has. An
-/// entry nobody has ever computed is computed here, on the worker this frame
-/// already owns, because there is no number to serve in its place; the frame
-/// waits, the daemon does not. Either way the git work runs with the lock
-/// released, so a slow worktree can no longer stop every other frame.
-fn warm_diff_caches(
-    state: &Arc<Mutex<AppState>>,
-    method: &str,
-    params: &Value,
-    timer: &FrameTimer,
-) {
-    let Some(scope) = diff_caches_read_by(method, params) else {
-        return;
-    };
-    let (work, observer) = {
-        let mut app = timer.lock(state);
-        let work = app.claim_stale_diff_refreshes(&scope);
-        (work, app.diff_compute_observer.clone())
-    };
-    for item in work {
-        let claim = match item {
-            DiffCacheWork::Claimed(claim) => claim,
-            DiffCacheWork::AwaitFirstValue(key) => {
-                wait_for_first_diff_value(state, &key, FIRST_COMPUTE_WAIT, timer);
-                continue;
-            }
-        };
-        let key = claim.refresh.key();
-        let waited_for = if claim.blocking {
-            claim.refresh
-        } else {
-            match spawn_diff_refresh(Arc::clone(state), claim.refresh, observer.clone()) {
-                Ok(()) => continue,
-                // No runtime to refresh on: compute it here instead — still off
-                // the lock.
-                Err(refresh) => refresh,
-            }
-        };
-        let entry = waited_for.compute(observer.as_ref());
-        timer.lock(state).publish_diff_refresh(&key, entry);
-    }
-}
-
-/// Wait for another frame's first-ever compute of `key` to publish. This frame
-/// waits; the app mutex does not — it is taken only to look, and dropped again
-/// between looks. Every look is one of the frame's own acquisitions and is
-/// timed as such: a frame that spends its budget contending here has to say so
-/// as `lock_wait`, not as time that went nowhere.
-fn wait_for_first_diff_value(
-    state: &Arc<Mutex<AppState>>,
-    key: &DiffCacheKey,
-    budget: Duration,
-    timer: &FrameTimer,
-) {
-    let deadline = std::time::Instant::now() + budget;
-    while std::time::Instant::now() < deadline {
-        let still_computing = timer.lock(state).diff_refresh_is_running(key);
-        if !still_computing {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// Build the warm agent adapter shared by every project's orchestrator. Build is
@@ -3932,163 +3825,73 @@ impl AppState {
         })
     }
 
-    /// Take the sole right to refresh this entry. `None` means another refresh
-    /// already holds it — single-flight, and whoever holds it publishes for
-    /// every reader that asked.
-    fn claim_diff_refresh(
-        &mut self,
-        refresh: DiffCacheRefresh,
-        blocking: bool,
-    ) -> Option<ClaimedRefresh> {
-        self.diff_refreshes_in_flight
-            .insert(refresh.key())
-            .then_some(ClaimedRefresh { refresh, blocking })
-    }
-
-    /// Claim every entry a verb is about to read and finds aged out. Fresh
-    /// entries are left alone; the verb reads them out of memory.
-    fn claim_stale_diff_refreshes(&mut self, scope: &DiffCacheScope) -> Vec<DiffCacheWork> {
-        match scope {
-            DiffCacheScope::Feed => {
-                let run_ids: Vec<String> = self
-                    .runs
-                    .iter()
-                    .filter(|(_, active)| active.run.state != RunState::Archived)
-                    .map(|(run_id, _)| run_id.clone())
-                    .collect();
-                let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
-                let mut work: Vec<DiffCacheWork> = run_ids
-                    .iter()
-                    .filter_map(|run_id| self.stale_run_stat_work(run_id, false))
-                    .collect();
-                for project_id in project_ids {
-                    work.extend(self.stale_external_scan_work(&project_id));
-                    work.extend(self.stale_primary_summary_work(&project_id));
-                }
-                work
-            }
-            // Done decides from the numbers, so it waits for the truth rather
-            // than reading one the last poll left behind.
-            DiffCacheScope::Run(run_id) => {
-                self.stale_run_stat_work(run_id, true).into_iter().collect()
-            }
-            // A branch verb reads whichever of the two stores the branch: the
-            // run's diffstat when a run has it, and the project's checkout scan
-            // — which is how a branch with no run behind it is found at all.
-            // Both are refreshed here so neither is paid for under the lock.
-            DiffCacheScope::Branch { project_id, branch } => {
-                let mut work: Vec<DiffCacheWork> = self
-                    .run_on_branch(project_id, branch)
-                    .and_then(|run_id| self.stale_run_stat_work(&run_id, true))
-                    .into_iter()
-                    .collect();
-                let project_id = project_id.clone();
-                work.extend(self.stale_external_scan_work(&project_id));
-                work
-            }
-        }
-    }
-
-    /// What a frame has to do about one aged-out entry: nothing if it is still
-    /// fresh, otherwise claim the refresh, or — when there is no value to serve
-    /// and someone else already holds the claim — wait for theirs.
-    fn diff_cache_work(
-        &mut self,
-        refresh: DiffCacheRefresh,
-        stale: bool,
-        has_value: bool,
-        blocking: bool,
-    ) -> Option<DiffCacheWork> {
-        if !stale {
-            return None;
-        }
-        let key = refresh.key();
-        match self.claim_diff_refresh(refresh, blocking || !has_value) {
-            Some(claim) => Some(DiffCacheWork::Claimed(claim)),
-            None if !has_value => Some(DiffCacheWork::AwaitFirstValue(key)),
-            // Someone else is recomputing it and there is a value to serve
-            // meanwhile: that is exactly what stale-while-revalidate is for.
-            None => None,
-        }
-    }
-
-    /// One run's diffstat. `blocking` makes the caller wait for the answer even
-    /// when there is a value to serve (Done decides from the numbers).
-    fn stale_run_stat_work(&mut self, run_id: &str, blocking: bool) -> Option<DiffCacheWork> {
-        let refresh = self.run_stat_refresh(run_id)?;
-        let cached = self
-            .run_stat_cache
-            .get(run_id)
-            .map(|(computed_at, _)| *computed_at);
-        let stale = match cached {
-            Some(computed_at) => self.diff_cache_is_stale(computed_at, TASK_STAT_TTL),
-            None => true,
-        };
-        self.diff_cache_work(refresh, stale, cached.is_some(), blocking)
-    }
-
-    /// One project's external-worktree scan.
-    fn stale_external_scan_work(&mut self, project_id: &str) -> Option<DiffCacheWork> {
-        let refresh = self.external_scan_refresh(project_id)?;
-        let scanned_at = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .and_then(|p| p.external_scan.as_ref())
-            .map(|cache| cache.scanned_at);
-        let stale = match scanned_at {
-            Some(scanned_at) => self.diff_cache_is_stale(scanned_at, EXTERNAL_SCAN_INTERVAL),
-            None => true,
-        };
-        self.diff_cache_work(refresh, stale, scanned_at.is_some(), false)
-    }
-
-    /// One project's primary-checkout summary.
-    fn stale_primary_summary_work(&mut self, project_id: &str) -> Option<DiffCacheWork> {
-        let refresh = self.primary_summary_refresh(project_id)?;
-        let computed_at = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .and_then(|p| p.primary_summary.as_ref())
-            .map(|(computed_at, _)| *computed_at);
-        let stale = match computed_at {
-            Some(computed_at) => self.diff_cache_is_stale(computed_at, PRIMARY_SUMMARY_TTL),
-            None => true,
-        };
-        self.diff_cache_work(refresh, stale, computed_at.is_some(), false)
-    }
-
     /// This daemon, held the way a background job has to hold it — see
     /// [`SettlingHandle`].
     fn settling_handle(&self) -> SettlingHandle {
         SettlingHandle(self.self_handle.clone())
     }
 
-    /// Whether a refresh of this entry is running right now.
+    /// Whether a refresh of this entry is running right now. Nothing in the
+    /// daemon asks — a claim is taken and released where it is made — but a
+    /// test that holds a compute open has no other way to see it.
+    #[cfg(test)]
     fn diff_refresh_is_running(&self, key: &DiffCacheKey) -> bool {
         self.diff_refreshes_in_flight.contains(key)
     }
 
-    /// Start a background refresh of an entry a reader just found stale, unless
-    /// one is already running. The reader keeps the value it has.
-    fn trigger_diff_refresh(&mut self, refresh: DiffCacheRefresh) {
-        let Some(claim) = self.claim_diff_refresh(refresh, false) else {
+    /// Recompute this entry behind whatever the caller is about to answer with.
+    ///
+    /// Single-flight and non-blocking: a refresh already running absorbs this
+    /// call, and one that starts here runs on a thread that holds nothing. No
+    /// age test — the caller has already decided it wants the git work done.
+    fn refresh_now(&mut self, refresh: DiffCacheRefresh) {
+        let key = refresh.key();
+        if !self.diff_refreshes_in_flight.insert(key.clone()) {
             return;
-        };
-        let key = claim.refresh.key();
-        let shared = self.self_handle.as_ref().and_then(std::sync::Weak::upgrade);
-        let Some(shared) = shared else {
-            // No shared handle (the synchronous test entry point): nothing can
-            // publish, so the claim goes straight back.
-            self.release_diff_refresh(&key);
-            return;
-        };
+        }
         let observer = self.diff_compute_observer.clone();
-        if spawn_diff_refresh(shared, claim.refresh, observer).is_err() {
-            // No runtime to refresh on: the entry keeps its value and the next
-            // reader tries again.
-            self.release_diff_refresh(&key);
+        let spawned = match self.self_handle.as_ref().and_then(std::sync::Weak::upgrade) {
+            Some(shared) => spawn_diff_refresh(shared, refresh, observer),
+            // No shared handle: nothing could publish what a thread computed.
+            None => Err(refresh),
+        };
+        if let Err(unspawned) = spawned {
+            self.compute_without_a_runtime(unspawned, &key);
+        }
+    }
+
+    /// [`AppState::refresh_now`] unless what it would replace is younger than
+    /// `ttl`. The stamp comes from the caller because the caller has just read
+    /// it: nothing here looks a timestamp up by which cache it belongs to.
+    fn refresh_if_stale(
+        &mut self,
+        computed_at: Option<std::time::Instant>,
+        ttl: Duration,
+        refresh: DiffCacheRefresh,
+    ) {
+        let stale = computed_at.is_none_or(|at| self.diff_cache_is_stale(at, ttl));
+        if stale {
+            self.refresh_now(refresh);
+        }
+    }
+
+    /// What a claimed refresh does when there is no runtime to carry it.
+    ///
+    /// In production that means the daemon is shutting down or was built
+    /// unrooted: the claim goes straight back and the next reader tries again.
+    /// The synchronous tests have no runtime and no mutex — nobody is waiting
+    /// on this thread — so there the refresh runs here, and the read that
+    /// claimed it is answered from what it found.
+    fn compute_without_a_runtime(&mut self, refresh: DiffCacheRefresh, key: &DiffCacheKey) {
+        #[cfg(test)]
+        {
+            let entry = refresh.compute(self.diff_compute_observer.as_ref());
+            self.publish_diff_refresh(key, entry);
+        }
+        #[cfg(not(test))]
+        {
+            let _ = refresh;
+            self.release_diff_refresh(key);
         }
     }
 
@@ -4137,19 +3940,39 @@ impl AppState {
                 project_id,
                 worktrees,
             } => {
-                if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
-                    project.external_scan = Some(ExternalScanCache {
-                        scanned_at: now,
-                        worktrees,
-                    });
+                let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
+                    return;
+                };
+                // A board answered "still scanning", or answered from a list
+                // this one disagrees with. Either way the rows the browser is
+                // holding are not the rows this daemon would send now, so it is
+                // told to ask again.
+                let changed = project
+                    .external_scan
+                    .as_ref()
+                    .is_none_or(|cache| cache.worktrees != worktrees);
+                project.external_scan = Some(ExternalScanCache {
+                    scanned_at: now,
+                    worktrees,
+                });
+                if changed {
+                    self.note_board_changed();
                 }
             }
             DiffCacheEntry::PrimarySummary {
                 project_id,
                 summary,
             } => {
-                if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
-                    project.primary_summary = Some((now, summary));
+                let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
+                    return;
+                };
+                let changed = project
+                    .primary_summary
+                    .as_ref()
+                    .is_none_or(|(_, previous)| previous != &summary);
+                project.primary_summary = Some((now, summary));
+                if changed {
+                    self.note_board_changed();
                 }
             }
         }
@@ -4182,42 +4005,48 @@ impl AppState {
             .map(|(run_id, _)| run_id.clone())
     }
 
-    /// The project's external worktrees. Serves the last scan whatever its age
-    /// and rescans behind the answer once it is older than
-    /// `EXTERNAL_SCAN_INTERVAL`; `force` scans here and now (adoption-time
-    /// resolution, which needs the truth rather than a summary). A scan error
-    /// logs and returns the last-known list (or empty) — `task.list` must stay
-    /// alive. Errors are only surfaced when `force` is set.
-    fn external_worktrees(
+    /// The project's external worktrees, as the last scan left them, plus
+    /// whether a scan has ever landed. A read never scans: it serves what it
+    /// has and claims the rescan it needs, which runs off every lock and
+    /// invalidates the browser when it lands.
+    fn external_worktrees(&mut self, project_id: &str) -> ScanRead {
+        if let Some(refresh) = self.external_scan_refresh(project_id) {
+            let scanned_at = self
+                .external_scan_of(project_id)
+                .map(|cache| cache.scanned_at);
+            self.refresh_if_stale(scanned_at, EXTERNAL_SCAN_INTERVAL, refresh);
+        }
+        match self.external_scan_of(project_id) {
+            Some(cache) => ScanRead {
+                worktrees: cache.worktrees.clone(),
+                ever_scanned: true,
+            },
+            None => ScanRead::default(),
+        }
+    }
+
+    fn external_scan_of(&self, project_id: &str) -> Option<&ExternalScanCache> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)?
+            .external_scan
+            .as_ref()
+    }
+
+    /// Scan one project's checkouts here and now, with the app mutex in hand.
+    ///
+    /// The rule this file is built around forbids exactly this, and the two
+    /// lifecycle verbs that still call it — adoption and dispatch, which must
+    /// decide against the checkouts that exist rather than a cached summary —
+    /// move to the lock-free run phase of `WorktreeLifecycleJob`. It is named
+    /// for what it does so that stays visible until they do.
+    fn scan_external_worktrees_now(
         &mut self,
         project_id: &str,
-        force: bool,
     ) -> Result<Vec<ExternalWorktree>, String> {
         let excluded = self.bound_worktree_paths();
         let base = self.base_for(project_id)?;
         let repo_path = self.repo_path_for(project_id)?;
-        let cached = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .and_then(|p| p.external_scan.as_ref())
-            .map(|cache| (cache.scanned_at, cache.worktrees.clone()));
-        if !force {
-            if let Some((scanned_at, worktrees)) = cached.clone() {
-                // Stale-while-revalidate: answer with the last scan and rescan
-                // behind the answer. A scan walks every checkout of the repo,
-                // and doing that under the app mutex is what wedged the daemon.
-                if self.diff_cache_is_stale(scanned_at, EXTERNAL_SCAN_INTERVAL) {
-                    if let Some(refresh) = self.external_scan_refresh(project_id) {
-                        self.trigger_diff_refresh(refresh);
-                    }
-                }
-                return Ok(worktrees);
-            }
-        }
-        // Never scanned, or the caller demands the truth now (adoption resolves
-        // an id against it). On the dispatch path `warm_diff_caches` has already
-        // filled this in with the lock free.
         match discover_external_worktrees(&repo_path, &base, &excluded) {
             Ok(worktrees) => {
                 self.store_diff_entry(DiffCacheEntry::ExternalScan {
@@ -4228,44 +4057,103 @@ impl AppState {
             }
             Err(e) => {
                 eprintln!("external_worktrees {project_id}: {e}");
-                if force {
-                    Err(e.to_string())
-                } else {
-                    Ok(cached.map(|(_, worktrees)| worktrees).unwrap_or_default())
-                }
+                Err(e.to_string())
             }
         }
     }
 
-    /// Drop one project's cache so the next poll rescans (adopt/release just
-    /// changed what is bound).
-    fn invalidate_external_scan(&mut self, project_id: &str) {
+    /// Rescan a project's checkouts behind whatever the board is serving: Build
+    /// just changed something about this repository that the cached list cannot
+    /// be amended for.
+    fn rescan_external_worktrees(&mut self, project_id: &str) {
+        if let Some(refresh) = self.external_scan_refresh(project_id) {
+            self.refresh_now(refresh);
+        }
+    }
+
+    /// A checkout Build has just cut. It is described here and added to the
+    /// last scan, so the board and the id resolver both see it immediately
+    /// without a rescan of the whole repository. A description that fails takes
+    /// the rescan instead — the checkout is on disk either way.
+    fn note_checkout_created(&mut self, project_id: &str, path: &std::path::Path) {
+        let described = self.repo_path_for(project_id).and_then(|repo_path| {
+            let base = self.base_for(project_id)?;
+            crate::worktree::describe_checkout(&repo_path, &base, path).map_err(|e| e.to_string())
+        });
+        match described {
+            Ok(worktree) => self.note_worktree_appeared(project_id, worktree),
+            Err(error) => {
+                eprintln!("describing the new checkout at {}: {error}", path.display());
+                self.rescan_external_worktrees(project_id);
+            }
+        }
+    }
+
+    /// A checkout Build just put on disk, or handed back: it joins the last
+    /// scan rather than emptying it, so the very next board poll shows it.
+    fn note_worktree_appeared(&mut self, project_id: &str, worktree: ExternalWorktree) {
+        self.amend_external_scan(project_id, |worktrees| {
+            worktrees.retain(|known| known.path != worktree.path);
+            worktrees.push(worktree);
+            crate::worktree::sort_checkouts(worktrees);
+        });
+    }
+
+    /// A checkout that is gone, or that a run has taken ownership of: it leaves
+    /// the last scan, which is what the rail lists as unbound.
+    fn note_worktree_gone(&mut self, project_id: &str, path: &std::path::Path) {
+        let canonical = Self::canonical_root(path);
+        self.amend_external_scan(project_id, |worktrees| {
+            worktrees.retain(|known| known.path != canonical);
+        });
+    }
+
+    /// Edit a project's last scan in place. A scan in flight described the
+    /// repository as it was before this change, so its claim goes with the
+    /// edit and whatever it finds is dropped — the amended list is the newer
+    /// truth. A project that has never been scanned is left alone: its first
+    /// scan will find this checkout on its own.
+    fn amend_external_scan(
+        &mut self,
+        project_id: &str,
+        amend: impl FnOnce(&mut Vec<ExternalWorktree>),
+    ) {
         if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
-            project.external_scan = None;
+            if let Some(cache) = project.external_scan.as_mut() {
+                // The stamp is not touched: this edit knows about one checkout,
+                // and the rest of the list is exactly as old as it was.
+                amend(&mut cache.worktrees);
+            }
         }
         self.release_diff_refresh(&DiffCacheKey::ExternalScan(project_id.to_string()));
+        self.note_board_changed();
     }
 
     /// Resolve a client-supplied `worktree_id` against the discovered list
-    /// only — a raw path is never accepted. Cache-first; a miss forces one
-    /// fresh scan before failing, so a just-appeared worktree resolves without
-    /// waiting out the cache.
+    /// only — a raw path is never accepted.
+    ///
+    /// Every checkout Build creates, removes or adopts is in that list the
+    /// moment it lands, so the only id that can miss is one for a worktree made
+    /// outside Build since the last scan. That claims a scan and says so,
+    /// rather than paying for one under the app mutex.
     fn resolve_external_worktree(
         &mut self,
         project_id: &str,
         worktree_id: &str,
     ) -> Result<ExternalWorktree, String> {
-        if let Some(w) = self
-            .external_worktrees(project_id, false)?
+        if let Some(worktree) = self
+            .external_worktrees(project_id)
+            .worktrees
             .into_iter()
-            .find(|w| w.id == worktree_id)
+            .find(|worktree| worktree.id == worktree_id)
         {
-            return Ok(w);
+            return Ok(worktree);
         }
-        self.external_worktrees(project_id, true)?
-            .into_iter()
-            .find(|w| w.id == worktree_id)
-            .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))
+        self.rescan_external_worktrees(project_id);
+        Err(format!(
+            "unknown worktree_id: {worktree_id} (a worktree created outside Build is resolvable \
+             once the scan now running lands)"
+        ))
     }
 
     /// Share this state so the relay handler and the done-socket listener both
@@ -6850,7 +6738,7 @@ impl AppState {
     /// (spec §5.3): scan order per project, projects concatenated in
     /// registration order. A per-project scan failure is already logged inside
     /// `external_worktrees`; it just contributes nothing here.
-    fn external_worktrees_json(&mut self) -> Vec<Value> {
+    fn external_worktrees_json(&mut self) -> ExternalWorktreeRows {
         // Resolved up front: the loop below holds a &mut borrow of the scan
         // cache, and attention_json needs &self.
         let attention_of: std::collections::HashMap<String, Value> = self
@@ -6878,16 +6766,15 @@ impl AppState {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone(), p.base_branch.clone()))
             .collect();
-        let mut entries = Vec::new();
+        let mut rows = ExternalWorktreeRows::default();
         for (project_id, project_name, base_branch) in projects {
-            let Ok(worktrees) = self.external_worktrees(&project_id, false) else {
-                continue;
-            };
-            for w in worktrees {
+            let scan = self.external_worktrees(&project_id);
+            rows.scanning |= !scan.ever_scanned;
+            for w in scan.worktrees {
                 let adoptable = w.branch.as_deref().is_some_and(|b| b != base_branch);
                 let (agent_working, can_finish) =
                     agent_signals.get(&w.id).copied().unwrap_or((false, false));
-                entries.push(json!({
+                rows.rows.push(json!({
                     "worktree_id": w.id,
                     "project_id": project_id,
                     "project": project_name,
@@ -6932,7 +6819,7 @@ impl AppState {
                 }));
             }
         }
-        entries
+        rows
     }
 
     /// Every project's primary-checkout changes summary, held per project for
@@ -6963,44 +6850,33 @@ impl AppState {
         };
 
         let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
-        let mut entries = Vec::new();
-        for project_id in project_ids {
-            let cached = self
-                .projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .and_then(|p| p.primary_summary.clone());
-            if let Some((computed_at, summary)) = cached {
-                // Stale-while-revalidate, as for a run's diffstat: the sidebar
-                // gets the last summary now, and the walk of the primary
-                // checkout that produces the next one runs behind it.
-                if self.diff_cache_is_stale(computed_at, PRIMARY_SUMMARY_TTL) {
-                    if let Some(refresh) = self.primary_summary_refresh(&project_id) {
-                        self.trigger_diff_refresh(refresh);
-                    }
-                }
-                entries.push(with_owner(summary, &project_id));
-                continue;
-            }
-            // Never computed. See `run_stat`: the dispatch path warms this off
-            // the mutex, so only a caller that does not warm gets here.
-            let Some(refresh) = self.primary_summary_refresh(&project_id) else {
-                continue;
-            };
-            if let Some(entry) = refresh.compute(self.diff_compute_observer.as_ref()) {
-                self.store_diff_entry(entry);
-            }
-            let summary = self
-                .projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .and_then(|p| p.primary_summary.as_ref())
-                .map(|(_, summary)| summary.clone());
-            if let Some(summary) = summary {
-                entries.push(with_owner(summary, &project_id));
-            }
+        project_ids
+            .into_iter()
+            .filter_map(|project_id| {
+                let summary = self.primary_summary(&project_id)?;
+                Some(with_owner(summary, &project_id))
+            })
+            .collect()
+    }
+
+    /// One project's primary-checkout summary as the last walk left it, or
+    /// `None` until the first one lands. Claims the walk it needs; never takes
+    /// one itself.
+    fn primary_summary(&mut self, project_id: &str) -> Option<Value> {
+        if let Some(refresh) = self.primary_summary_refresh(project_id) {
+            let computed_at = self.primary_summary_of(project_id).map(|(at, _)| *at);
+            self.refresh_if_stale(computed_at, PRIMARY_SUMMARY_TTL, refresh);
         }
-        entries
+        self.primary_summary_of(project_id)
+            .map(|(_, summary)| summary.clone())
+    }
+
+    fn primary_summary_of(&self, project_id: &str) -> Option<&(std::time::Instant, Value)> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)?
+            .primary_summary
+            .as_ref()
     }
 
     /// The primary checkout's uncommitted-changes review surface (spec §5.2):
@@ -7187,7 +7063,7 @@ impl AppState {
                     // A branch switch swaps the whole tree, so whichever
                     // summary described it is stale.
                     if scope.external_worktree {
-                        self.invalidate_external_scan(&scope.project_id);
+                        self.rescan_external_worktrees(&scope.project_id);
                     } else {
                         self.invalidate_primary_summary(&scope.project_id);
                     }
@@ -7295,7 +7171,7 @@ impl AppState {
         }
         if let Some(worktree) = &scope.worktree {
             let project_id = worktree.project_id.clone();
-            self.invalidate_external_scan(&project_id);
+            self.rescan_external_worktrees(&project_id);
         }
     }
 
@@ -7312,8 +7188,8 @@ impl AppState {
         // Best-effort: a scan failure here costs the switcher its "adopt from
         // here" affordance, not the branch list itself.
         let external_branches = self
-            .external_worktrees(&project_id, false)
-            .unwrap_or_default()
+            .external_worktrees(&project_id)
+            .worktrees
             .into_iter()
             .filter_map(|worktree| Some((worktree.branch?, worktree.id)))
             .collect();
@@ -7480,9 +7356,7 @@ impl AppState {
         // The scan keys worktrees by canonical path; mirror that here so the
         // caller can navigate to the surface without waiting for a rescan.
         let canonical = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
-        // The new worktree must be visible to the very next board poll, not up
-        // to EXTERNAL_SCAN_INTERVAL later.
-        self.invalidate_external_scan(&project_id);
+        self.note_checkout_created(&project_id, &canonical);
         Ok(json!({
             "project_id": project_id,
             "worktree_id": crate::worktree::external_worktree_id(&canonical),
@@ -7594,13 +7468,21 @@ impl AppState {
         }
         // Memory mirrors the store: Archived after a completed finish, Pending
         // after a failed destructive step (which is the resume point).
+        let finished_path = outcome
+            .record
+            .as_ref()
+            .map(|record| std::path::PathBuf::from(&record.worktree_path));
         if let Some(record) = outcome.record {
             self.archived_worktrees
                 .insert(record.worktree_id.clone(), record);
         }
         let archived = outcome.result.inspect(|_| {
             self.reap_orphaned_terminals();
-            self.invalidate_external_scan(&epilogue.project_id);
+            // The checkout is archived, so it leaves the scan the preflight
+            // above just stored — which was taken while it still stood.
+            if let Some(path) = &finished_path {
+                self.note_worktree_gone(&epilogue.project_id, path);
+            }
             self.persist_attention();
         });
         match epilogue.kind {
@@ -7794,7 +7676,8 @@ impl AppState {
             ));
         }
         let checkout = self
-            .external_worktrees(&project_id, false)?
+            .external_worktrees(&project_id)
+            .worktrees
             .into_iter()
             .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()));
         if let Some(checkout) = checkout {
@@ -7821,8 +7704,8 @@ impl AppState {
     /// A project's primary-checkout row, read off the same summary the feed
     /// builds that row from — the row and its dismissal have to agree about
     /// which commit the checkout is on.
-    fn primary_row(&self, project_id: &str) -> EntitylessRow {
-        let summary = self.primary_row_summary(project_id);
+    fn primary_row(&mut self, project_id: &str) -> EntitylessRow {
+        let summary = self.primary_summary(project_id);
         EntitylessRow {
             key: crate::attention::primary_row_key(project_id),
             head: summary
@@ -7838,28 +7721,15 @@ impl AppState {
         }
     }
 
-    /// The primary-changes summary the feed last served for a project, computed
-    /// on the spot when the poll has never run.
-    fn primary_row_summary(&self, project_id: &str) -> Option<Value> {
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
-        match &project.primary_summary {
-            Some((_, summary)) => Some(summary.clone()),
-            None => primary_changes_summary(project_id, &project.repo_path, &project.base_branch),
-        }
-    }
-
     /// The entity-less row an external worktree's id names, or `None` when the
     /// id is a run's or an issue's. A checkout on a branch IS that branch's
     /// row; one with no branch is only ever itself.
     fn checkout_row(&mut self, worktree_id: &str) -> Option<EntitylessRow> {
         let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
         for project_id in project_ids {
-            // A project whose scan failed contributes nothing and stops
-            // nothing: the id may still belong to the next one.
-            let Ok(worktrees) = self.external_worktrees(&project_id, false) else {
-                continue;
-            };
-            let Some(checkout) = worktrees
+            let Some(checkout) = self
+                .external_worktrees(&project_id)
+                .worktrees
                 .into_iter()
                 .find(|worktree| worktree.id == worktree_id)
             else {
@@ -12245,7 +12115,7 @@ impl AppState {
                 self.entity_last_state.remove(run_id);
                 self.run_files_changed_at.remove(run_id);
                 self.invalidate_run_stat(run_id);
-                self.invalidate_external_scan(project_id);
+                self.rescan_external_worktrees(project_id);
             }
         }
     }
@@ -12459,7 +12329,9 @@ impl AppState {
 
         if worktree.path.exists() {
             if let Some(pid) = project_id {
-                self.invalidate_external_scan(&pid);
+                // The checkout outlived the card, so it is unbound again and
+                // belongs back on the rail.
+                self.rescan_external_worktrees(&pid);
             }
         }
         self.reap_orphaned_terminals();
@@ -12512,7 +12384,7 @@ impl AppState {
             }
             // Force a fresh scan: adoption must never act on a stale card.
             (
-                self.external_worktrees(&project_id, true)?
+                self.scan_external_worktrees_now(&project_id)?
                     .into_iter()
                     .find(|w| w.id == worktree_id)
                     .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?,
@@ -12531,7 +12403,9 @@ impl AppState {
         // against the entity-less row is spent, and must not come back with the
         // bare row if the run is ever released.
         self.forget_row_dismissals(&project_id, checkout.branch.as_deref(), adopting_primary);
-        self.invalidate_external_scan(&project_id);
+        // A run owns this checkout from here on, so it leaves the list of
+        // checkouts no run owns.
+        self.note_worktree_gone(&project_id, &checkout.path);
         let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         persisted?;
         Ok(view)
@@ -12608,7 +12482,9 @@ impl AppState {
         let active = self.runs.remove(&run_id).expect("checked above");
         self.invalidate_run_stat(&run_id);
         self.retire_agent_tabs(&root);
-        self.invalidate_external_scan(&project_id);
+        // The run is off the board, so its checkout is unbound: the scan the
+        // finish resolves against has to be able to see it.
+        self.rescan_external_worktrees(&project_id);
         let epilogue = RunFinishEpilogue {
             run_id,
             project_id: project_id.clone(),
@@ -12658,7 +12534,9 @@ impl AppState {
             Err(error) => {
                 if root.exists() {
                     self.runs.insert(run_id.clone(), active);
-                    self.invalidate_external_scan(&project_id);
+                    // The run owns its checkout again, so the checkout leaves
+                    // the rail's unbound list.
+                    self.note_worktree_gone(&project_id, &root);
                 } else {
                     eprintln!("run.finish {run_id}: worktree vanished after failure: {error}");
                 }
@@ -12733,7 +12611,9 @@ impl AppState {
         self.run_files_changed_at.remove(&run_id);
         self.invalidate_run_stat(&run_id);
         if let Some(pid) = project_id {
-            self.invalidate_external_scan(&pid);
+            // Un-adopted: the checkout is the human's again, and the rail lists
+            // it as soon as the rescan lands.
+            self.rescan_external_worktrees(&pid);
         }
         self.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
@@ -12765,7 +12645,7 @@ impl AppState {
                 .collect();
             ids.into_iter()
                 .map(|id| {
-                    let stat = self.run_stat(&id);
+                    let stat = self.run_stat(&id).unwrap_or(Value::Null);
                     let active = self.runs.get(&id).expect("listed above");
                     let mut view =
                         self.run_view(&id, active, ThreadDetail::Digest, DigestScope::List);
@@ -12776,7 +12656,7 @@ impl AppState {
                 })
                 .collect()
         };
-        let external_worktrees = self.external_worktrees_json();
+        let checkouts = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
         // The inbox is in-flight work the user started in Build, nothing else:
         // a branch Build never cut or adopted (no run behind it, and it is not
@@ -12788,7 +12668,7 @@ impl AppState {
         // `branch.get` still resolves it directly (deep-linking); this filter
         // is the feed list's alone.
         let items: Vec<Value> = self
-            .work_items(&external_worktrees, &primary_changes)
+            .work_items(&checkouts.rows, &primary_changes)
             .into_iter()
             .filter(|row| {
                 row["kind"] != crate::branch::WorkItemKind::Branch.as_str()
@@ -12804,7 +12684,12 @@ impl AppState {
             "issues": plans,
             "plans": plans,
             "runs": runs,
-            "external_worktrees": external_worktrees,
+            "external_worktrees": checkouts.rows,
+            // The rail has not finished looking. An empty list under this flag
+            // is a board still working, not a project with no checkouts, and
+            // the scan that lands invalidates the board so the client asks
+            // again.
+            "scanning": checkouts.scanning,
             "primary_changes": primary_changes,
         })
     }
@@ -12842,7 +12727,7 @@ impl AppState {
         // Diffstats first: they are the one part of a row that needs `&mut`.
         let stats: HashMap<String, Value> = run_ids
             .iter()
-            .map(|run_id| (run_id.clone(), self.run_stat(run_id)))
+            .filter_map(|run_id| Some((run_id.clone(), self.run_stat(run_id)?)))
             .collect();
         let mut candidates: Vec<crate::branch::WorkItemCandidate> = run_ids
             .iter()
@@ -13265,10 +13150,10 @@ impl AppState {
         if !self.projects.iter().any(|p| p.id == project_id) {
             return Err(format!("unknown project_id: {project_id}"));
         }
-        let external_worktrees = self.external_worktrees_json();
+        let checkouts = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
         let mut row = self
-            .work_items(&external_worktrees, &primary_changes)
+            .work_items(&checkouts.rows, &primary_changes)
             .into_iter()
             .find(|row| {
                 row["kind"] == crate::branch::WorkItemKind::Branch.as_str()
@@ -13341,13 +13226,13 @@ impl AppState {
             // No run behind the branch: it is a bare checkout, and the durable
             // archive path is the same one `run.finish` delegates to.
             //
-            // The scan `warm_diff_caches` refreshed for this frame with the
-            // mutex free is what maps the branch to a checkout id. Resolving it
-            // is not the authority for what gets deleted — the job rescans and
-            // re-resolves the id itself — so a stale hit fails closed there
+            // The last scan is what maps the branch to a checkout id. Resolving
+            // it is not the authority for what gets deleted — the job rescans
+            // and re-resolves the id itself — so a stale hit fails closed there
             // rather than costing every other frame a scan under this lock.
             let worktree = self
-                .external_worktrees(&project_id, false)?
+                .external_worktrees(&project_id)
+                .worktrees
                 .into_iter()
                 .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()))
                 .ok_or_else(|| {
@@ -13626,7 +13511,7 @@ impl AppState {
         // Forced, for the same reason adoption forces it: a dispatch must
         // decide against the checkouts that exist now, not a cached summary.
         Ok(self
-            .external_worktrees(project_id, true)?
+            .scan_external_worktrees_now(project_id)?
             .into_iter()
             .find(|worktree| worktree.branch.as_deref() == Some(branch))
             .map(|worktree| worktree.id))
@@ -13669,7 +13554,7 @@ impl AppState {
         };
         // The checkout must be visible to the adoption that follows it, and to
         // the very next board poll, rather than up to a scan interval later.
-        self.invalidate_external_scan(project_id);
+        self.note_checkout_created(project_id, &checkout.worktree.path.clone());
         Ok(checkout)
     }
 
@@ -13692,7 +13577,7 @@ impl AppState {
                 Ok(orch) => orch.discard_checkout_keeping_branch(&worktree),
                 Err(error) => eprintln!("branch.dispatch cleanup: {error}"),
             }
-            self.invalidate_external_scan(project_id);
+            self.note_worktree_gone(project_id, &worktree.path);
         }
     }
 
@@ -14480,34 +14365,17 @@ impl AppState {
     }
 
     /// A run's diffstat for the `board.list` poll surface, held for
-    /// [`TASK_STAT_TTL`] and then served stale while it refreshes. Terminal runs
-    /// (worktree pruned or about to be) report null.
-    fn run_stat(&mut self, run_id: &str) -> Value {
-        let Some(refresh) = self.run_stat_refresh(run_id) else {
-            return Value::Null;
-        };
-        if let Some((computed_at, stat)) = self.run_stat_cache.get(run_id) {
-            let (computed_at, stat) = (*computed_at, stat.clone());
-            // Stale-while-revalidate: the poll is answered with the numbers we
-            // have, and the diff that produces the next ones runs behind it.
-            if self.diff_cache_is_stale(computed_at, TASK_STAT_TTL) {
-                self.trigger_diff_refresh(refresh);
-            }
-            return stat;
-        }
-        // Nothing has ever been computed for this run. The dispatch path warms
-        // the cache off the mutex before the verb runs, so reaching here means a
-        // caller that does not warm — the synchronous test entry point, or a
-        // read that follows the mutation which invalidated the entry. Compute it
-        // rather than answer with a number nobody has.
-        let entry = refresh.compute(self.diff_compute_observer.as_ref());
-        if let Some(entry) = entry {
-            self.store_diff_entry(entry);
+    /// [`TASK_STAT_TTL`] and then served stale while it refreshes. `None` until
+    /// the first refresh lands, and for a terminal run (worktree pruned or
+    /// about to be) forever.
+    fn run_stat(&mut self, run_id: &str) -> Option<Value> {
+        if let Some(refresh) = self.run_stat_refresh(run_id) {
+            let computed_at = self.run_stat_cache.get(run_id).map(|(at, _)| *at);
+            self.refresh_if_stale(computed_at, TASK_STAT_TTL, refresh);
         }
         self.run_stat_cache
             .get(run_id)
             .map(|(_, stat)| stat.clone())
-            .unwrap_or(Value::Null)
     }
 
     // ---- the scripted QA agent ------------------------------------------------
@@ -17395,10 +17263,6 @@ fn dispatch_frame(
         // have.
         "agent.start" => agent_start(state, &params, &timer),
         _ => {
-            // Whatever this verb reads out of the diff caches is brought up to
-            // date here, with the lock free. After it, the verb only reads
-            // memory: no frame ever holds the app mutex through a worktree diff.
-            warm_diff_caches(state, &method, &params, &timer);
             // A verb whose git work must not run under the lock hands that
             // work back rather than doing it here; the drain below runs it with
             // the mutex released. See `AppState::deferred_work`.
@@ -20625,51 +20489,6 @@ mod tests {
         );
     }
 
-    /// A frame that finds another frame already computing a cache entry nobody
-    /// has ever computed waits for that value — and looks for it under the app
-    /// mutex, every 20 ms, for as long as it waits. Those acquisitions are the
-    /// frame's own: untimed, a frame that spent five seconds contending for the
-    /// mutex 50 times a second reports the seconds as `total` and nothing as
-    /// `lock_wait`, which is the misreading the four durations exist to prevent.
-    #[test]
-    fn a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock() {
-        let dir = tempfile::tempdir().unwrap();
-        let (clock, lines) = recording_clock();
-        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
-        let key = DiffCacheKey::RunStat("run-awaited".into());
-        state
-            .lock()
-            .unwrap()
-            .diff_refreshes_in_flight
-            .insert(key.clone());
-
-        // The frame holding the claim publishes under the app mutex, so the
-        // waiter can only learn the value landed by taking the mutex after it.
-        let computing = Arc::clone(&state);
-        let computed = key.clone();
-        let publisher = std::thread::spawn(move || {
-            let mut app = computing.lock().unwrap();
-            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
-            app.diff_refreshes_in_flight.remove(&computed);
-        });
-
-        {
-            let timer = clock.frame("board.list");
-            wait_for_first_diff_value(&state, &key, FIRST_COMPUTE_WAIT, &timer);
-        }
-        publisher.join().expect("the first compute publishes");
-
-        let lines = lines.lock().unwrap();
-        let line = lines
-            .iter()
-            .find(|line| line.starts_with("slow frame board.list "))
-            .unwrap_or_else(|| panic!("the wait logged no slow frame: {lines:?}"));
-        assert!(
-            slow_frame_millis(line, "lock_wait=") > 0.0,
-            "the waiting frame's own acquisitions went unrecorded: {line}"
-        );
-    }
-
     /// A frame that inserts a tab starts its pumps one statement after its own
     /// lock block releases, on the frame's thread. An acquisition there is the
     /// frame's — charged to nothing and named as nobody's if it is bare — so
@@ -21892,7 +21711,7 @@ mod tests {
         let worktree_id = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
@@ -24873,7 +24692,7 @@ mod tests {
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-elsewhere"))
@@ -25295,7 +25114,7 @@ mod tests {
         add_external_worktree(repo, dir, branch, branch);
         let project_id = state.projects[0].id.clone();
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some(branch))
@@ -26197,7 +26016,7 @@ mod tests {
         add_external_worktree(&repo, dir.path(), "feature-unadopted", "feature-unadopted");
         let project_id = state.projects[0].id.clone();
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-unadopted"))
@@ -33495,7 +33314,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         add_external_worktree(&repo, dir.path(), "feature-agentless", "feature-agentless");
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-agentless"))
@@ -33775,7 +33594,7 @@ mod tests {
         // Resolve the scanner-minted worktree id (match by branch; the scanner
         // canonicalizes paths, which differ from the raw join on macOS).
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
@@ -33834,7 +33653,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let _ext_path = add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
@@ -34267,6 +34086,48 @@ mod tests {
         let archived = archive["result"]["worktrees"].as_array().unwrap();
         assert_eq!(archived.len(), 1, "{archive:?}");
         assert_eq!(archived[0]["action"], "cleanup", "{archive:?}");
+    }
+
+    /// Done decides from what its own preflight found, not from the numbers the
+    /// last poll left on the board. The blocking claim that used to make a
+    /// finish wait for a fresh diffstat under the frame's worker is gone; the
+    /// rescan inside the finish job is what it always really decided on.
+    #[test]
+    fn run_finish_refuses_uncommitted_work_found_by_its_own_preflight() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "preflight-run");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        git_in_dir(&worktree, &["add", "-A"]);
+        git_in_dir(&worktree, &["commit", "-m", "Finish adopted work"]);
+
+        // The board reads the checkout while it is clean, and caches that.
+        let board = state.handle(req("board.list", json!({})));
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        // Then work lands in it that no poll has seen.
+        std::fs::write(worktree.join("unsaved.txt"), "not committed\n").unwrap();
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "cleanup" }),
+        ));
+        assert_eq!(finished["ok"], false, "{finished:?}");
+        assert!(
+            finished["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("uncommitted"),
+            "{finished:?}"
+        );
+        assert!(
+            worktree.join("unsaved.txt").exists(),
+            "a refused finish leaves the work where it is"
+        );
+        assert!(
+            state.runs.contains_key(&run_id),
+            "a refused finish puts the run back on the board"
+        );
     }
 
     #[test]
@@ -35305,7 +35166,7 @@ mod tests {
         let external = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
@@ -36252,7 +36113,7 @@ mod tests {
         assert_eq!(commits[1]["ahead_of_base"], json!(false));
 
         // And the rail sees the commit without waiting out the scan cache.
-        let listed = state.external_worktrees(&project_id, false).unwrap();
+        let listed = state.external_worktrees(&project_id).worktrees;
         let entry = listed.iter().find(|w| w.id == worktree_id).unwrap();
         assert_eq!(entry.unpushed, Some(1));
         assert_eq!(entry.uncommitted.files_changed, 0, "committed, so clean");
@@ -36314,7 +36175,7 @@ mod tests {
 
         // The scan sees it under the id the create returned, so the client can
         // navigate straight to its surface.
-        let listed = state.external_worktrees(&project_id, true).unwrap();
+        let listed = state.scan_external_worktrees_now(&project_id).unwrap();
         assert!(
             listed.iter().any(|w| w.id == worktree_id),
             "{worktree_id} missing from {listed:?}"
@@ -37033,9 +36894,9 @@ mod tests {
             .to_string();
 
         add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
-        state.external_worktrees(&project_id, true).unwrap();
+        state.scan_external_worktrees_now(&project_id).unwrap();
         let hand_made = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("by-hand"))
@@ -38207,7 +38068,7 @@ mod tests {
         let repo_path = state.projects[0].repo_path.clone();
         add_external_worktree(&repo_path, dir.path(), "bare-checkout", "feature-bare");
         state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .expect("the new checkout is discoverable");
 
         let bare = state.handle(req(
@@ -40845,7 +40706,7 @@ mod tests {
         let worktree_id = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("hand-made"))
@@ -40939,7 +40800,7 @@ mod tests {
         let worktree_id = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("hand-made"))
@@ -41539,7 +41400,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         add_external_worktree(&repo, dir.path(), "loose", "loose");
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("loose"))
@@ -41894,7 +41755,7 @@ mod tests {
 
     fn external_id(state: &mut AppState, project_id: &str, branch: Option<&str>) -> String {
         state
-            .external_worktrees(project_id, true)
+            .scan_external_worktrees_now(project_id)
             .unwrap()
             .into_iter()
             .find(|worktree| worktree.branch.as_deref() == branch)
@@ -43854,7 +43715,7 @@ mod tests {
         // work.
         assert!(
             state
-                .external_worktrees(&project_id, true)
+                .scan_external_worktrees_now(&project_id)
                 .unwrap()
                 .into_iter()
                 .any(|w| w.branch.as_deref() == Some("feature-stray")),
@@ -44578,6 +44439,9 @@ mod tests {
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-routed");
         add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
         let project_id = state.projects[0].id.clone();
+        // Made behind Build's back, so it reaches the board the way anything
+        // made outside Build does: on the next scan, not on the next read.
+        state.scan_external_worktrees_now(&project_id).unwrap();
 
         let routed = state.handle(req(
             "branch.get",
@@ -44973,7 +44837,7 @@ mod tests {
             state.dispatch_fault = None;
             assert!(
                 state
-                    .external_worktrees(&project_id, true)
+                    .scan_external_worktrees_now(&project_id)
                     .unwrap()
                     .is_empty(),
                 "{step:?} left a checkout the scan can still see"
@@ -45114,7 +44978,7 @@ mod tests {
 
         assert!(state.runs.is_empty(), "nothing was created");
         assert!(state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .is_empty());
     }
@@ -45149,6 +45013,26 @@ mod tests {
         tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
             .await
             .expect("the poll does not panic");
+    }
+
+    /// Poll until the refresh a first poll claimed has published its diffstat.
+    /// No read computes any more, so this is what "the cache is seeded" means.
+    async fn seeded_run_stat(handler: &FrameHandler, run_id: &str) -> Value {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let handler = handler.clone();
+                let run_id = run_id.to_string();
+                let stat = tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
+                    .await
+                    .unwrap();
+                if !stat.is_null() {
+                    return stat;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the refresh the first poll claimed publishes a diffstat")
     }
 
     /// A shared QA daemon with one adopted run whose worktree holds one
@@ -45191,14 +45075,9 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler, run_id, worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
 
-        // The first poll has nothing to serve, so it computes.
-        let first = {
-            let handler = handler.clone();
-            let run_id = run_id.clone();
-            tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
-                .await
-                .unwrap()
-        };
+        // The first poll has nothing to serve and answers null; the refresh it
+        // claimed is what fills the cache.
+        let first = seeded_run_stat(&handler, &run_id).await;
         let before = first["uncommitted"]["files_changed"]
             .as_u64()
             .unwrap_or_else(|| panic!("the first poll counted the tree: {first:?}"));
@@ -45266,13 +45145,7 @@ mod tests {
         let (state, handler, run_id, _worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
 
         // Seed the cache: after this every poll is a stale read.
-        {
-            let handler = handler.clone();
-            let run_id = run_id.clone();
-            tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
-                .await
-                .unwrap();
-        }
+        seeded_run_stat(&handler, &run_id).await;
         let computes = watch_run_stat_computes(&state, Duration::from_millis(800));
         state.lock().unwrap().force_stale_diff_caches = true;
 
@@ -45307,7 +45180,7 @@ mod tests {
         let (state, handler, run_id, _worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
 
         // Seed the cache, then start a refresh and hold it open.
-        poll_board(&handler).await;
+        seeded_run_stat(&handler, &run_id).await;
         watch_run_stat_computes(&state, Duration::from_millis(600));
         state.lock().unwrap().force_stale_diff_caches = true;
         poll_board(&handler).await;
@@ -45351,7 +45224,7 @@ mod tests {
             recorded.lock().unwrap().push((key.clone(), free));
         }));
 
-        // First-ever computes (the caller waits for these) …
+        // The refreshes a first poll claims …
         poll_board(&handler).await;
         // … then background refreshes of what is now stale.
         state.lock().unwrap().force_stale_diff_caches = true;
@@ -45370,6 +45243,285 @@ mod tests {
         assert!(
             seen.iter().all(|(_, free)| *free),
             "a diff ran while the app mutex was held: {seen:?}"
+        );
+    }
+
+    // ==== a board read never computes ========================================
+    //
+    // The rule step 3 of the concurrency spec adds to stale-while-revalidate: a
+    // read with NOTHING to serve answers anyway. It says what it does not know
+    // yet, claims the scan, and the scan invalidates the browser when it lands.
+    // Nothing waits under the app mutex for a first value ever again.
+
+    /// Hold every checkout scan open at the point its git work starts, so a
+    /// test can look at the daemon while one is running.
+    fn gate_scan_computes(state: &Arc<Mutex<AppState>>) -> OffLockGateHandle {
+        let (gate, handle) = OffLockGate::new();
+        state.lock().unwrap().diff_compute_observer = Some(Arc::new(move |key| {
+            if matches!(key, DiffCacheKey::ExternalScan(_)) {
+                gate.arrive();
+            }
+        }));
+        handle
+    }
+
+    /// Poll until the board has stopped saying it is scanning.
+    async fn settled_board(handler: &FrameHandler) -> Value {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let handler = handler.clone();
+                let board =
+                    tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                        .await
+                        .unwrap();
+                if board["result"]["scanning"] == json!(false) {
+                    return board;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the scan the board claimed lands")
+    }
+
+    /// A board with nothing cached answers at once and says so. The old
+    /// behaviour — fall through to `discover_external_worktrees` under the app
+    /// mutex because there is no number to serve — is what made the first poll
+    /// after a restart the slowest frame of the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn board_list_answers_scanning_when_nothing_has_ever_been_computed() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let gate = gate_scan_computes(&state);
+
+        let started = std::time::Instant::now();
+        let board = {
+            let handler = handler.clone();
+            tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                .await
+                .unwrap()
+        };
+        let waited = started.elapsed();
+
+        assert!(
+            waited < Duration::from_millis(100),
+            "the board waited for a scan it had claimed: {waited:?}"
+        );
+        assert_eq!(
+            board["result"]["external_worktrees"],
+            json!([]),
+            "{board:?}"
+        );
+        assert_eq!(
+            board["result"]["scanning"],
+            json!(true),
+            "an empty rail with no scan behind it is a board still looking: {board:?}"
+        );
+
+        gate.wait_for_arrival();
+        gate.release();
+        let settled = settled_board(&handler).await;
+        let listed = settled["result"]["external_worktrees"]
+            .as_array()
+            .expect("the rail ships checkouts");
+        assert!(
+            listed.iter().any(|w| w["branch"] == json!("feature-loose")),
+            "the scan that landed put the checkout on the board: {settled:?}"
+        );
+    }
+
+    /// And the scan it claimed runs with the mutex free: every other frame is
+    /// served while the very first scan of a repository is still walking it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_first_scan_never_runs_under_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let gate = gate_scan_computes(&state);
+
+        poll_board(&handler).await;
+        gate.wait_for_arrival();
+
+        // The scan is inside its git work. Every frame behind it still answers.
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            let board = {
+                let handler = handler.clone();
+                tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                    .await
+                    .unwrap()
+            };
+            assert_eq!(board["ok"], true, "{board:?}");
+            assert_eq!(
+                board["result"]["scanning"],
+                json!(true),
+                "the scan is still running, and no second one was started: {board:?}"
+            );
+        }
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_millis(300),
+            "the frames behind the scan queued on the app mutex: {waited:?}"
+        );
+
+        gate.release();
+        settled_board(&handler).await;
+    }
+
+    /// The board said "scanning" and answered. What tells the browser to ask
+    /// again is the scan landing — the same push invalidation every other
+    /// change travels on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_landed_first_scan_invalidates_the_browser() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let gate = gate_scan_computes(&state);
+
+        poll_board(&handler).await;
+        gate.wait_for_arrival();
+        // Everything the board read itself may have queued, out of the way.
+        settled_pushes(&mut rx, &key).await;
+
+        gate.release();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let events = change_events(&settled_pushes(&mut rx, &key).await);
+                if events.iter().any(|event| event["type"] == "board.changed") {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the scan that landed told the browser to ask again");
+    }
+
+    /// An id for a checkout made outside Build since the last scan is refused,
+    /// and the refusal starts the one scan that will resolve it — rather than
+    /// paying for that scan under the app mutex the way the old forced retry
+    /// did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_out_of_band_worktree_id_is_refused_and_claims_one_scan() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        state
+            .lock()
+            .unwrap()
+            .scan_external_worktrees_now(&project_id)
+            .unwrap();
+
+        let path = add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        let worktree_id = crate::worktree::external_worktree_id(&canonical);
+        let gate = gate_scan_computes(&state);
+
+        let refused = state
+            .lock()
+            .unwrap()
+            .resolve_external_worktree(&project_id, &worktree_id)
+            .expect_err("the cache cannot know about a worktree made behind Build's back");
+        assert!(
+            refused.contains(&worktree_id) && refused.contains("scan now running"),
+            "the refusal names the id and what will resolve it: {refused}"
+        );
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .diff_refresh_is_running(&DiffCacheKey::ExternalScan(project_id.clone())),
+            "the refusal claimed no scan, so the id would never resolve"
+        );
+
+        gate.wait_for_arrival();
+        gate.release();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let resolved = state
+                    .lock()
+                    .unwrap()
+                    .resolve_external_worktree(&project_id, &worktree_id);
+                if resolved.is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the scan the refusal claimed resolves the id");
+    }
+
+    /// A create is not a reason to forget every other checkout. The new one
+    /// joins the last scan, so the very next board poll ships it without any
+    /// repository walk at all.
+    #[test]
+    fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let scanned_at = state.projects[0]
+            .external_scan
+            .as_ref()
+            .expect("seeded above")
+            .scanned_at;
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let worktree_id = created["result"]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let cache = state.projects[0]
+            .external_scan
+            .as_ref()
+            .expect("the create emptied the whole project's scan");
+        assert!(
+            cache.worktrees.iter().any(|w| w.id == worktree_id),
+            "the new checkout is in the cache the board reads: {:?}",
+            cache.worktrees
+        );
+        assert!(
+            cache
+                .worktrees
+                .iter()
+                .any(|w| w.branch.as_deref() == Some("feature-here")),
+            "the checkouts that were already there are still there: {:?}",
+            cache.worktrees
+        );
+        assert_eq!(
+            cache.scanned_at, scanned_at,
+            "an amended list is exactly as old as the scan that filled it"
+        );
+
+        // And the board ships it with no scan of its own.
+        let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&scans);
+        state.diff_compute_observer = Some(Arc::new(move |key| {
+            if matches!(key, DiffCacheKey::ExternalScan(_)) {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+        let board = state.handle(req("board.list", json!({})));
+        assert_eq!(board["result"]["scanning"], json!(false), "{board:?}");
+        assert!(
+            board["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["worktree_id"] == json!(worktree_id)),
+            "{board:?}"
+        );
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the board rescanned the repository for a checkout it had been handed"
         );
     }
 

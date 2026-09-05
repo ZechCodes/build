@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from litestar import Litestar
 from litestar.handlers import HTTPRouteHandler
 from litestar.response import Redirect
 
@@ -111,3 +112,16 @@ def test_the_downloads_route_answers_the_shared_payload():
         key for key, _ in PLATFORMS
     ]
     assert payload["install_command"].startswith("curl -fsSL ")
+
+
+def test_the_downloads_route_is_handed_its_origin_by_the_shared_provider():
+    """C3 gives /app/downloads no parameters. An origin the handler declares but the
+    app does not provide would silently become a query parameter, so this asserts the
+    registered route resolves it as a dependency — from the one shared provider."""
+    app = Litestar(route_handlers=[BuildController], openapi_config=None)
+    handler = next(iter(app.route_handler_method_map["/app/downloads"].values()))
+    assert sorted(handler.resolve_dependencies()) == ["public_base_url"]
+    assert (
+        BuildController.dependencies["public_base_url"].dependency
+        is provide_public_base_url
+    )

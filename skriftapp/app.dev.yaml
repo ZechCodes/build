@@ -5,6 +5,7 @@ controllers:
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
   - buildapp.rtc_controller:RtcController
+  - buildapp.transport_controller:TransportController
   - buildapp.waitlist_controller:WaitlistController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController

@@ -3570,13 +3570,18 @@ impl AppState {
     }
 
     /// Whether a queued turn still has a session to reach. An issue that holds
-    /// no workspace has none: its agent ended with the gate that closed it.
-    /// Everything else — runs, routers, recoveries — is deliverable.
+    /// no workspace has none: its agent ended with the gate that closed it. A
+    /// capture has one only while a router session stands for it: the cancel
+    /// or the reroute that took the session away took the turn's destination
+    /// with it. Everything else — runs, recoveries — is deliverable.
     fn owner_still_has_a_session(&self, owner: &str) -> bool {
-        match self.plans.get(owner) {
-            Some(issue) => issue.workspace.is_some(),
-            None => true,
+        if let Some(issue) = self.plans.get(owner) {
+            return issue.workspace.is_some();
         }
+        if crate::capture::is_capture_id(owner) {
+            return self.router_sessions.contains_key(owner);
+        }
+        true
     }
 
     /// An entity's agents, whichever kind of entity it is.
@@ -51515,6 +51520,31 @@ mod tests {
             settles(|| retiring_dirs() == 0),
             "the files go once the router is reaped"
         );
+    }
+
+    /// A capture cancelled while its router's first turn is still on its way
+    /// has no session for that turn to reach: the delivery spawns nothing, and
+    /// the scratch a spawn would scaffold into is not brought back.
+    #[test]
+    fn a_capture_cancelled_before_its_router_spawns_gets_no_router() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let (capture_id, agent_id) = captured(&mut app, "make the thing faster");
+        let scratch = app.router_sessions[&capture_id].scratch_dir.clone();
+        let cancelled = app.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+        let state = app.shared();
+
+        deliver_pending_agent_turns(&state);
+
+        let s = state.lock().unwrap();
+        assert!(
+            !s.tabs
+                .values()
+                .any(|tab| tab.role.agent().is_some_and(|(_, id)| id == agent_id)),
+            "a router was spawned for a capture nobody wants routed"
+        );
+        assert!(!scratch.exists(), "the spawn scaffolded the scratch back");
     }
 
     /// A router that stops without deciding leaves the capture needing the

@@ -714,7 +714,17 @@ noted below.
   nothing and skips the spawn, and again in the acquisition that publishes the
   tab, which is the only check atomic with the insert; a tab published into a
   closed session is retired in that same acquisition. Both answer `Ok(None)`,
-  which the runner logs and never records as a delivery failure.
+  which the runner logs and never records as a delivery failure. The gate
+  covers a router's owner too: a capture has a session only while
+  `router_sessions` holds one for it, so a `capture.cancel` landing between
+  the frame that queued the router's first turn and the delivery that would
+  spawn it leaves nothing spawned and no scratch scaffolded back
+  (`a_capture_cancelled_before_its_router_spawns_gets_no_router`). As first
+  shipped the gate answered `true` for every non-Issue owner, routers named
+  among them, and the cancelled capture's harness came up anyway. A reroute
+  re-fires under the same capture id, so a turn queued for the session it
+  replaced still passes; that turn spawns the retired agent id and is the
+  same leak as before this step.
 - **"The agent is already coming" has one owner and one lifetime.** A turn
   passes through three states — queued, off the queue and mid-delivery, claimed
   by the spawn that delivery makes — and the delivery gives its in-flight mark

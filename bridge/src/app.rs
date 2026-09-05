@@ -7369,10 +7369,16 @@ impl AppState {
     }
 
     /// The checkouts of a project the mutex can name without touching the
-    /// disk: the external scan the board already holds (`force` rescans it
-    /// here and now, for a verb about to act on the answer), every live run's
+    /// disk: the external scan the board already holds, every live run's
     /// checkout, and the primary. Which branch each one holds is git's to
-    /// answer, and [`ProjectCheckouts::holders`] asks it with the lock free.
+    /// answer, and [`ProjectCheckouts::holders`] asks it.
+    ///
+    /// Two callers pay disk cost on the lock knowingly. `force` rescans the
+    /// external worktrees here and now, for a verb about to act on the answer
+    /// rather than describe it; and `worktree.create {branch}` follows this
+    /// call with `holders` on the lock too, because a one-shot user action
+    /// that git would otherwise refuse is worth the wait. Every other caller
+    /// takes the cached scan and asks `holders` in the deferred half.
     fn project_checkouts(
         &mut self,
         project_id: &str,
@@ -7536,9 +7542,6 @@ impl AppState {
     /// survive it. A name that would slugify away to nothing is refused rather
     /// than silently replaced — being handed a worktree you did not name is
     /// worse than being told the name will not do.
-    ///
-    /// The checkout is made visible to the very next board poll, and to any
-    /// adoption that follows it, rather than up to a scan interval later.
     fn create_bare_worktree_for(
         &mut self,
         project_id: &str,
@@ -7548,12 +7551,9 @@ impl AppState {
             return Err("a worktree name needs at least one letter or number".to_string());
         }
         let base = self.base_for(project_id)?;
-        let checkout = self
-            .orch_for(project_id)?
+        self.orch_for(project_id)?
             .create_bare_worktree(&crate::worktree::slugify(name), &base)
-            .map_err(err)?;
-        self.invalidate_external_scan(project_id);
-        Ok(checkout)
+            .map_err(err)
     }
 
     /// Add a worktree for a branch that already exists, so the human can work
@@ -7581,22 +7581,22 @@ impl AppState {
         }
         let base = self.base_for(project_id)?;
         self.orch_for(project_id)?
-            .create_worktree_on_named_branch(branch, &base, crate::worktree::AbsentBranch::Refuse)
+            .create_worktree_on_existing_branch(branch, &base)
             .map_err(err)
     }
 
     /// Make a checkout that was just created visible to the very next board
     /// poll rather than up to a scan interval later, and answer with the path
     /// the scan keys it by: its canonical one.
+    ///
+    /// Every creator ends here, so post-creation invalidation is spelled once.
     fn register_created_checkout(
         &mut self,
         project_id: &str,
         worktree: &crate::worktree::Worktree,
     ) -> std::path::PathBuf {
-        let canonical =
-            std::fs::canonicalize(&worktree.path).unwrap_or_else(|_| worktree.path.clone());
         self.invalidate_external_scan(project_id);
-        canonical
+        Self::canonical_root(&worktree.path)
     }
 
     /// Finish an external worktree selected only by server-resolved ids.
@@ -13628,7 +13628,7 @@ impl AppState {
                                 instruction,
                             )?;
                             let worktree_id = crate::worktree::external_worktree_id(
-                                &Self::canonical_root(&minted.worktree.path),
+                                &self.register_created_checkout(project_id, &minted.worktree),
                             );
                             created.minted_worktree = Some(minted.worktree);
                             worktree_id
@@ -13734,16 +13734,9 @@ impl AppState {
         match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
             Some(name) => {
                 let base = self.base_for(project_id)?;
-                let checkout = self
-                    .orch_for(project_id)?
-                    .create_worktree_on_named_branch(
-                        name,
-                        &base,
-                        crate::worktree::AbsentBranch::Cut,
-                    )
-                    .map_err(err)?;
-                self.invalidate_external_scan(project_id);
-                Ok(checkout)
+                self.orch_for(project_id)?
+                    .create_worktree_cutting_named_branch(name, &base)
+                    .map_err(err)
             }
             None => self.create_bare_worktree_for(project_id, branch.unwrap_or(instruction)),
         }
@@ -15494,7 +15487,12 @@ struct ProjectCheckouts {
 }
 
 impl ProjectCheckouts {
-    /// Ask git which branch each checkout holds, with the lock free.
+    /// Ask git which branch each checkout holds.
+    ///
+    /// A branch listing asks this in its deferred half, with the lock free.
+    /// `worktree.create {branch}` asks it on the lock, knowingly: it is about
+    /// to add a checkout git would refuse if another one already held the
+    /// branch, and a one-shot user action is worth that wait.
     ///
     /// A primary checkout holding no branch (detached HEAD, bare repository)
     /// costs the rows their `primary_worktree_id` stamp and nothing else.
@@ -15606,13 +15604,6 @@ impl BranchHolder {
     }
 }
 
-/// What a run can prove about its own checkout when git's registration for it
-/// is gone. A run Build dispatched works in a checkout
-/// [`crate::worktree::WorktreeManager::create`] made and nothing else, so the
-/// value the pruned registration carried is known. An adopted run's checkout
-/// may be one Build only checked out over somebody's branch, and with the
-/// registration gone nothing on disk says which — so it is not restored at
-/// all, rather than restored under a guess that could delete the branch.
 /// The answer every `worktree.create` gives, over the checkout it made and the
 /// canonical path the scan will find it at.
 fn created_worktree_json(
@@ -15630,6 +15621,13 @@ fn created_worktree_json(
     })
 }
 
+/// What a run can prove about its own checkout when git's registration for it
+/// is gone. A run Build dispatched works in a checkout
+/// [`crate::worktree::WorktreeManager::create`] made and nothing else, so the
+/// value the pruned registration carried is known. An adopted run's checkout
+/// may be one Build only checked out over somebody's branch, and with the
+/// registration gone nothing on disk says which — so it is not restored at
+/// all, rather than restored under a guess that could delete the branch.
 fn unregistered_restore_for(active: &ActiveRun) -> crate::worktree::UnregisteredRestore {
     if active.adopted {
         crate::worktree::UnregisteredRestore::Refuse
@@ -16380,13 +16378,30 @@ fn run_finish_git_steps(
     record: &PersistedArchivedWorktree,
 ) -> Result<(), String> {
     let worktree_path = validate_finish_record_path(record, project_path)?;
-    (record.action.git_steps())(project_path, base_branch, record, &worktree_path)
+    (record.action.git_steps())(&FinishContext {
+        project_path,
+        base_branch,
+        record,
+        worktree_path: &worktree_path,
+    })
+}
+
+/// Everything a finish action's steps may act on, resolved once. Each step
+/// reads the fields its own work needs and nothing else.
+struct FinishContext<'a> {
+    project_path: &'a std::path::Path,
+    base_branch: &'a str,
+    record: &'a PersistedArchivedWorktree,
+    worktree_path: &'a std::path::Path,
 }
 
 /// What one finish action does to the repository, once its checkout has been
 /// resolved.
-type FinishGitSteps =
-    fn(&std::path::Path, &str, &PersistedArchivedWorktree, &std::path::Path) -> Result<(), String>;
+type FinishGitSteps = fn(&FinishContext<'_>) -> Result<(), String>;
+
+/// How a finish action lands the work it promised to keep before the checkout
+/// goes away. An action that promises nothing lands nothing.
+type FinishLanding = fn(&std::path::Path, &str, &str) -> Result<(), String>;
 
 impl WorktreeFinishAction {
     /// The steps this action owns — the one place a finish action decides
@@ -16399,49 +16414,40 @@ impl WorktreeFinishAction {
             WorktreeFinishAction::Delete => delete_finished_checkout,
         }
     }
+
+    /// What the human called for, as the wire spells it — the word a failure
+    /// names this finish by.
+    fn verb(self) -> &'static str {
+        match self {
+            WorktreeFinishAction::Cleanup => "cleanup",
+            WorktreeFinishAction::Push => "push",
+            WorktreeFinishAction::Merge => "merge",
+            WorktreeFinishAction::Delete => "delete",
+        }
+    }
 }
 
-fn remove_finished_checkout(
-    project_path: &std::path::Path,
-    _base_branch: &str,
-    _record: &PersistedArchivedWorktree,
-    worktree_path: &std::path::Path,
-) -> Result<(), String> {
-    if worktree_path.exists() {
-        remove_registered_worktree(project_path, worktree_path, false)?;
+fn remove_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    if context.worktree_path.exists() {
+        remove_registered_worktree(context.project_path, context.worktree_path, false)?;
     }
     Ok(())
 }
 
-fn push_then_remove_finished_checkout(
-    project_path: &std::path::Path,
-    _base_branch: &str,
-    _record: &PersistedArchivedWorktree,
-    worktree_path: &std::path::Path,
-) -> Result<(), String> {
-    if worktree_path.exists() {
-        crate::gitgui::push(worktree_path, false)?;
-        remove_registered_worktree(project_path, worktree_path, false)?;
+fn push_then_remove_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    if context.worktree_path.exists() {
+        crate::gitgui::push(context.worktree_path, false)?;
+        remove_registered_worktree(context.project_path, context.worktree_path, false)?;
     }
     Ok(())
 }
 
-fn merge_finished_checkout(
-    project_path: &std::path::Path,
-    base_branch: &str,
-    record: &PersistedArchivedWorktree,
-    worktree_path: &std::path::Path,
-) -> Result<(), String> {
-    finish_by_merging_or_deleting(project_path, base_branch, record, worktree_path, true)
+fn merge_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    finish_by_landing_then_removing(context, Some(merge_external_branch))
 }
 
-fn delete_finished_checkout(
-    project_path: &std::path::Path,
-    base_branch: &str,
-    record: &PersistedArchivedWorktree,
-    worktree_path: &std::path::Path,
-) -> Result<(), String> {
-    finish_by_merging_or_deleting(project_path, base_branch, record, worktree_path, false)
+fn delete_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
+    finish_by_landing_then_removing(context, None)
 }
 
 /// Land what the action promised to keep, then take the checkout away — and
@@ -16449,19 +16455,17 @@ fn delete_finished_checkout(
 ///
 /// The teardown is read before `remove_registered_worktree` prunes the admin
 /// directory the answer lives in.
-fn finish_by_merging_or_deleting(
-    project_path: &std::path::Path,
-    base_branch: &str,
-    record: &PersistedArchivedWorktree,
-    worktree_path: &std::path::Path,
-    merging: bool,
+fn finish_by_landing_then_removing(
+    context: &FinishContext<'_>,
+    land: Option<FinishLanding>,
 ) -> Result<(), String> {
+    let record = context.record;
     let branch = match record.branch.as_deref() {
-        Some(branch) => local_branch_exists(project_path, branch)?.then_some(branch),
+        Some(branch) => local_branch_exists(context.project_path, branch)?.then_some(branch),
         None => None,
     };
-    if !worktree_path.exists() {
-        let verb = if merging { "merge" } else { "delete" };
+    if !context.worktree_path.exists() {
+        let verb = record.action.verb();
         return match branch {
             Some(_) => Err(format!(
                 "worktree.finish {verb} lost its worktree before branch deletion"
@@ -16469,24 +16473,26 @@ fn finish_by_merging_or_deleting(
             None => Ok(()),
         };
     }
-    let deletes_branch = crate::worktree::branch_teardown(worktree_path)
+    let deletes_branch = crate::worktree::branch_teardown(context.worktree_path)
         .map_err(|error| error.to_string())?
         .deletes_branch();
     let deleted_branch = match branch {
         Some(branch) => {
-            if merging {
-                merge_external_branch(project_path, branch, base_branch)?;
+            if let Some(land) = land {
+                land(context.project_path, branch, context.base_branch)?;
             }
             if deletes_branch {
-                delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
+                delete_local_branch_for_finish(context.project_path, branch, &record.head_sha)?;
             }
             deletes_branch
         }
         None => false,
     };
-    if let Err(remove_error) = remove_registered_worktree(project_path, worktree_path, true) {
+    if let Err(remove_error) =
+        remove_registered_worktree(context.project_path, context.worktree_path, true)
+    {
         restore_finish_branch_after_removal_failure(
-            project_path,
+            context.project_path,
             record,
             deleted_branch,
             &remove_error,

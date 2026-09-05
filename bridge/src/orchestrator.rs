@@ -1415,19 +1415,28 @@ impl Orchestrator {
         Ok(self.worktrees.create(slug, base_branch)?)
     }
 
-    /// The same bare checkout, on a branch the caller named in full. A branch
-    /// that already exists — here or on a remote — is checked out rather than
-    /// cut a second time over the work it holds, and `when_absent` says what a
-    /// name no ref anywhere backs means to this caller.
-    pub fn create_worktree_on_named_branch(
+    /// The same bare checkout, on a branch that already exists — here or on a
+    /// remote. A name no ref anywhere backs is refused, never cut.
+    pub fn create_worktree_on_existing_branch(
         &self,
         branch: &str,
         base_branch: &str,
-        when_absent: crate::worktree::AbsentBranch,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
         Ok(self
             .worktrees
-            .create_on_branch(branch, base_branch, when_absent)?)
+            .create_on_existing_branch(branch, base_branch)?)
+    }
+
+    /// The same bare checkout, on a branch the caller named in full and means
+    /// to start: an existing branch is checked out rather than cut a second
+    /// time over the work it holds, and a name nothing backs is cut from the
+    /// base exactly as it was given.
+    pub fn create_worktree_cutting_named_branch(
+        &self,
+        branch: &str,
+        base_branch: &str,
+    ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
+        Ok(self.worktrees.create_cutting_branch(branch, base_branch)?)
     }
 
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
@@ -2668,7 +2677,10 @@ impl Orchestrator {
     /// work, and a stray directory is only clutter.
     pub fn discard_checkout(&self, worktree: &Worktree) {
         if let Err(e) = self.worktrees.remove(worktree) {
-            eprintln!("discard_checkout {}: {e}", worktree.name);
+            eprintln!(
+                "discard_checkout {}: {e}; branch {} is left standing",
+                worktree.name, worktree.recorded_branch
+            );
         }
     }
 

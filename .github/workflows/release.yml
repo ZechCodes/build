@@ -1,0 +1,381 @@
+name: Release the bridge
+
+# Pushing a `bridge-vX.Y.Z` tag publishes the device daemon: four native
+# builds, one SHA256SUMS, a keyless Sigstore signature over it, and the
+# install script — as a GitHub release on a SEPARATE public repo (the
+# `RELEASES_REPO` variable, default ZechCodes/build-releases), so that
+# downloading a binary never means handing anyone this repository.
+#
+# The pipeline neither creates that repo nor pushes a tag; see
+# deploy/README.md for the procedure and its prerequisites.
+
+on:
+  push:
+    tags: ["bridge-v*.*.*"]
+
+# `id-token: write` is the whole reason cosign needs no key: the OIDC token
+# GitHub mints for this workflow IS the identity in the certificate, which is
+# what install.sh pins with --certificate-identity-regexp.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # macOS tar writes an `._name` AppleDouble entry beside any file carrying
+  # extended attributes. A release tarball holds exactly one entry, so turn
+  # that off everywhere rather than on the two runners where it bites.
+  COPYFILE_DISABLE: "1"
+  # The identity a downloader demands of the signature. install.sh is the
+  # contract's home for it; these two are this workflow's single copy, used by
+  # the self-verification, quoted in the release notes, and checked against
+  # install.sh in the `version` job so the two homes cannot drift apart.
+  COSIGN_IDENTITY_REGEXP: '^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v'
+  COSIGN_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  # Nothing is built until the tag and the crate agree on a version, because a
+  # release whose binary prints a different number than its name is worse than
+  # no release. install.sh's own gates are here for the same reason — it ships
+  # as an asset, so a broken one is a broken release, not a lint failure after
+  # the fact: it is linted, run against a mirror on disk, and checked for the
+  # signing identity this workflow will sign with.
+  version:
+    name: The tag names a version this tree can build
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      releases_repo: ${{ steps.derive.outputs.releases_repo }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - id: derive
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASES_REPO: ${{ vars.RELEASES_REPO || 'ZechCodes/build-releases' }}
+        run: |
+          set -euo pipefail
+          version="${TAG#bridge-v}"
+          if ! grep -q "^version = \"${version}\"\$" bridge/Cargo.toml; then
+            echo "::error::tag ${TAG} wants ${version}, which bridge/Cargo.toml does not declare"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "releases_repo=${RELEASES_REPO}" >> "$GITHUB_OUTPUT"
+          echo "releasing build-bridge ${version} to ${RELEASES_REPO}"
+
+      - name: The install script is published verbatim, so it is linted first
+        run: shellcheck -s sh scripts/*.sh
+
+      - name: The install script does what it promises
+        run: scripts/test-install.sh
+
+      - name: install.sh and this workflow demand the same signing identity
+        run: |
+          set -euo pipefail
+          # An identity is a certificate subject AND the issuer that vouched
+          # for it, so both halves are checked; pinning one lets the pair
+          # drift by half, which is the bug this step exists to prevent.
+          for pin in "COSIGN_IDENTITY_REGEXP=${COSIGN_IDENTITY_REGEXP}" \
+            "COSIGN_ISSUER=${COSIGN_ISSUER}"; do
+            name="${pin%%=*}"
+            value="${pin#*=}"
+            grep -qF "${name}='${value}'" scripts/install.sh || {
+              echo "::error::install.sh pins a different ${name} than release.yml"
+              exit 1
+            }
+          done
+
+  # One entry per platform key, and every entry runs the same steps: the
+  # matrix is the only place a platform is named. Native runners throughout —
+  # no cross toolchains, no sysroots — which is also what fixes the Linux
+  # glibc floor at 2.35 (ubuntu-22.04) and macOS at 13.
+  build:
+    name: build-bridge ${{ matrix.key }}
+    needs: [version]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: macos-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+          - key: macos-x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - key: linux-x86_64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - key: linux-aarch64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            bridge/target
+          key: ${{ matrix.key }}-cargo-release-${{ hashFiles('bridge/Cargo.lock') }}
+
+      # `release-portable` vendors libgit2 and OpenSSL into the binary (see
+      # bridge/Cargo.toml): without it the Linux builds link whatever the
+      # runner happens to have, and refuse to start on a machine that does not.
+      - name: Build
+        run: cargo build --release --locked --bin build-bridge --target ${{ matrix.target }} --features release-portable
+
+      - name: The binary states the version this tag names
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          printed="$(./target/${{ matrix.target }}/release/build-bridge --version)"
+          if [ "$printed" != "build-bridge ${VERSION}" ]; then
+            echo "::error::built binary says '${printed}', expected 'build-bridge ${VERSION}'"
+            exit 1
+          fi
+
+      # One entry, `build-bridge`, at the archive root — install.sh unpacks
+      # into a scratch directory and expects to find it there and nowhere else.
+      - name: Pack
+        run: tar -czf "build-bridge-${{ matrix.key }}.tar.gz" -C "target/${{ matrix.target }}/release" build-bridge
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-bridge-${{ matrix.key }}
+          path: bridge/build-bridge-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+
+  # Whether Developer ID signing can happen at all is one question with one
+  # answer, and it is asked once, here: a job-level `if` cannot read secrets,
+  # so a step answers it and publishes the answer as an output that the
+  # signing legs, the checksums job and the release notes all read. The
+  # credentials do not exist yet and that must not stop a release — the
+  # unsigned builds publish, loudly labelled, and macOS users answer one
+  # Gatekeeper prompt.
+  apple-creds:
+    name: Are the Apple credentials configured?
+    needs: [version]
+    runs-on: ubuntu-22.04
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    outputs:
+      configured: ${{ steps.creds.outputs.configured }}
+    steps:
+      - id: creds
+        run: |
+          set -euo pipefail
+          configured=true
+          for value in "$APPLE_CERTIFICATE_P12" "$APPLE_CERTIFICATE_PASSWORD" \
+            "$APPLE_TEAM_ID" "$APPLE_ID" "$APPLE_APP_PASSWORD"; do
+            if [ -z "$value" ]; then configured=false; fi
+          done
+          echo "configured=${configured}" >> "$GITHUB_OUTPUT"
+
+      - name: Say plainly that the macOS builds are unsigned
+        if: steps.creds.outputs.configured != 'true'
+        run: |
+          echo "::warning::macOS binaries are UNSIGNED and NOT notarized — APPLE_* secrets are absent"
+
+  # Developer ID signing and notarization, one leg per macOS platform key, so
+  # the matrix stays the only place a platform is named here too. Each leg
+  # takes its own tarball, signs the one binary inside it and republishes the
+  # artifact under the same name, which is what `checksums` then digests.
+  sign-macos:
+    name: Sign and notarize ${{ matrix.key }}
+    needs: [version, build, apple-creds]
+    if: ${{ needs.apple-creds.outputs.configured == 'true' }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        key: [macos-arm64, macos-x86_64]
+    # A job-level `env:` is the widest scope that can read secrets — the
+    # workflow-level one cannot — so the credentials are named once per job
+    # that handles them, and in no step.
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - name: Collect the build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: build-bridge-${{ matrix.key }}
+          path: macos
+
+      - name: Sign and notarize it
+        env:
+          TARBALL: build-bridge-${{ matrix.key }}.tar.gz
+        run: |
+          set -euo pipefail
+          keychain="${RUNNER_TEMP}/build-release.keychain-db"
+          keychain_password="$(openssl rand -base64 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "${RUNNER_TEMP}/developer-id.p12"
+          security import "${RUNNER_TEMP}/developer-id.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          rm -f "${RUNNER_TEMP}/developer-id.p12"
+
+          cd macos
+          work="$(mktemp -d)"
+          tar -xzf "$TARBALL" -C "$work"
+          codesign --force --options runtime --timestamp \
+            --sign "Developer ID Application" "$work/build-bridge"
+          codesign --verify --strict --verbose=2 "$work/build-bridge"
+          # Notarization takes a container, and a bare Mach-O binary cannot be
+          # stapled — the ticket lives on Apple's side and Gatekeeper fetches
+          # it. So: zip, submit, wait, and re-tar the signed binary.
+          ditto -c -k --keepParent "$work/build-bridge" "$work/build-bridge.zip"
+          xcrun notarytool submit "$work/build-bridge.zip" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          tar -czf "$TARBALL" -C "$work" build-bridge
+          rm -rf "$work"
+          security delete-keychain "$keychain"
+
+      - name: Republish the signed build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-bridge-${{ matrix.key }}
+          path: macos/build-bridge-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+          overwrite: true
+
+  # The digests and the signature over them, taken once, on one machine, after
+  # every binary is final. install.sh verifies the tarball against SHA256SUMS
+  # and SHA256SUMS against this signature, so this job is the root of the whole
+  # download's trust.
+  checksums:
+    name: Digest and sign the assets
+    needs: [version, build, apple-creds, sign-macos]
+    # Signing is skipped whenever the Apple credentials are absent, and a
+    # skipped dependency skips everything under it unless the gate says
+    # otherwise, so this one is explicit: everything that had to produce an
+    # artifact did, and signing either succeeded or never ran.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.apple-creds.result == 'success' && needs.sign-macos.result != 'failure' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: build-bridge-*
+          path: assets
+          merge-multiple: true
+
+      - name: install.sh ships as an asset and is signed with the rest
+        run: cp scripts/install.sh assets/install.sh
+
+      - name: SHA256SUMS
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          sha256sum build-bridge-*.tar.gz install.sh > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign SHA256SUMS with this workflow's own identity
+        working-directory: assets
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+
+      # The same command install.sh runs on a user's machine, with the identity
+      # the `version` job proved install.sh pins — so a signature that would
+      # fail there fails here.
+      - name: Verify it the way install.sh will
+        working-directory: assets
+        run: |
+          cosign verify-blob \
+            --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer "$COSIGN_ISSUER" \
+            SHA256SUMS
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: assets
+          if-no-files-found: error
+
+  # The only job that writes anything outside this repo, and the only one that
+  # holds a token. Re-running it is safe: the release is created if missing and
+  # every asset is uploaded with --clobber.
+  publish:
+    name: Publish to the releases repo
+    needs: [version, apple-creds, checksums]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          path: assets
+
+      - name: Release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGNED: ${{ needs.apple-creds.outputs.configured }}
+          COMMIT: ${{ github.sha }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$SIGNED" = "true" ]; then
+            macos_line="macOS binaries are signed with a Developer ID certificate and notarized by Apple."
+          else
+            macos_line="macOS binaries are **unsigned and not notarized**. macOS will warn on first run; open System Settings → Privacy & Security and allow it."
+          fi
+          cat > notes.md <<NOTES
+          build-bridge ${VERSION}, built from ${SOURCE_REPO}@${COMMIT}.
+
+          Install:
+
+              curl -fsSL https://getbuild.ing/install.sh | sh
+
+          ${macos_line}
+          Linux builds target glibc 2.35 or newer; macOS builds target macOS 13 or newer.
+
+          Verify a download by hand:
+
+              sha256sum --check --ignore-missing SHA256SUMS
+              cosign verify-blob \\
+                --bundle SHA256SUMS.sigstore.json \\
+                --certificate-identity-regexp '${COSIGN_IDENTITY_REGEXP}' \\
+                --certificate-oidc-issuer ${COSIGN_ISSUER} \\
+                SHA256SUMS
+          NOTES
+          cat notes.md
+
+      - name: Create the release if this tag has none, then upload every asset
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+          REPO: ${{ needs.version.outputs.releases_repo }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" \
+              --title "build-bridge ${VERSION}" --notes-file notes.md
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber assets/*
+          echo "published https://github.com/${REPO}/releases/tag/${TAG}"

@@ -124,6 +124,7 @@ function captureUnreadReason(capture) {
  * still holding — as an inbox row, in the shape `board.list` gives the captures
  * it carries. One row vocabulary, whichever side the copy came from.
  */
+// eslint-disable-next-line complexity -- ratchet: captureRow is at 11, cap 10 — reduce it, then drop this line
 export function captureRow(capture, { projectName = "" } = {}) {
   const routing = capture.routing || null;
   const reason = captureUnreadReason(capture);
@@ -192,6 +193,7 @@ export function composePromptHtml() {
  * going (queued while the device is away); `advanced` is the manual panel's
  * markup, rendered only while its disclosure is open.
  */
+// eslint-disable-next-line complexity -- ratchet: composeBoxHtml is at 13, cap 10 — reduce it, then drop this line
 export function composeBoxHtml({ value = "", note = "", error = "", busy = false, advanced = "" } = {}) {
   return `<div class="compose-box">
     <textarea id="compose-text" rows="3" placeholder="What do you want to get done?"

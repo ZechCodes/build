@@ -39,6 +39,7 @@ export function optionDestinationText(option, projects = []) {
  * no name for: a question nobody has answered is not the router working, it is
  * the router waiting on this page.
  */
+// eslint-disable-next-line complexity -- ratchet: captureDecisionModel is at 21, cap 10 — reduce it, then drop this line
 export function captureDecisionModel(capture, { projects = [] } = {}) {
   const record = capture || {};
   const question = record.question || null;
@@ -148,6 +149,7 @@ function askHtml(model, ui) {
  *  for a branch, the one destination with something left to say — which branch.
  *  The same three fields the compose box's manual panel offers, because it is
  *  the same decision. */
+// eslint-disable-next-line complexity -- ratchet: manualHtml is at 11, cap 10 — reduce it, then drop this line
 function manualHtml(model, ui) {
   const busy = ui.busy ? " disabled" : "";
   const projectOptions = (ui.projects || [])

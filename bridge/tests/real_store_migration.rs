@@ -149,6 +149,7 @@ fn json_records(root: &Path) -> (usize, usize, usize, usize) {
 
 #[test]
 #[ignore = "needs BUILD_MIGRATION_FIXTURE pointing at a copy of a real JSON store"]
+#[allow(clippy::cognitive_complexity)] // ratchet: the_real_store_imports_with_every_record_and_conversation_intact is at 21, threshold 15 — bring it under, then remove
 fn the_real_store_imports_with_every_record_and_conversation_intact() {
     let Some(source) = fixture() else {
         panic!("set BUILD_MIGRATION_FIXTURE to a COPY of a real ~/.build/tasks");

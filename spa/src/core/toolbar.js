@@ -132,6 +132,7 @@ function identity() {
  *  tick two seconds later would otherwise re-derive the scope from the route you
  *  are still standing on and hand the menu back to that project — the pick would
  *  never survive long enough to be acted on. Your pick stands until you move. */
+// eslint-disable-next-line complexity -- ratchet: paint is at 13, cap 10 — reduce it, then drop this line
 function paint({ entering = false } = {}) {
   const host = $("#toolbar");
   if (!host) return;

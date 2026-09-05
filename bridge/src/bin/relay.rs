@@ -318,6 +318,7 @@ fn websocket_limits() -> WebSocketConfig {
     }
 }
 
+#[allow(clippy::cognitive_complexity)] // ratchet: serve_device is at 32, threshold 15 — bring it under, then remove
 async fn serve_device(
     shared: &Arc<Shared>,
     upgrade: &Upgrade,
@@ -504,6 +505,7 @@ async fn serve_device(
     report_status(shared, &device_id, false).await;
 }
 
+#[allow(clippy::cognitive_complexity)] // ratchet: serve_client is at 26, threshold 15 — bring it under, then remove
 async fn serve_client(
     shared: &Arc<Shared>,
     out_tx: Outbound,

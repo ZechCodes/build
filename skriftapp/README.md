@@ -152,4 +152,6 @@ and this is the text to read instead:
   rather than a separate `action_url=` and `action_label=`, so a link cannot go
   out with half of it missing (`EmailAction` lives in `buildapp/email_template.py`).
 
-Tests: `uv run pytest buildapp/` (from this directory).
+Tests: `uv run --frozen pytest buildapp` (from this directory).
+Lint: `uv run --frozen ruff check buildapp` — correctness plus the C901
+complexity cap (CLAUDE.md “Complexity gates”).

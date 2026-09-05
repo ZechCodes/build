@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from buildapp import pairing_crypto, transport_report
 from buildapp.clock import utc_now
 from buildapp.models import Device, TransportSession
-from buildapp.request_body import require_json_object
+from buildapp.request_body import read_json_object
 
 REPORT_ROUTE_PATH = "/api/transport/report"
 
@@ -89,7 +89,7 @@ class TransportController(Controller):
     # bridge treats any 2xx as delivered.
     @post(REPORT_ROUTE_PATH, status_code=HTTP_200_OK)
     async def report(self, request: Request, db_session: AsyncSession) -> Response:
-        reported = read_reported_event(require_json_object(await request.json()))
+        reported = read_reported_event(await read_json_object(request))
         device_id = reported.device_id
         session_id = reported.session_id
         timestamp = reported.timestamp

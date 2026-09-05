@@ -293,6 +293,7 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
     ctx.closePath();
   }
 
+  // eslint-disable-next-line complexity -- ratchet: paint is at 12, cap 10 — reduce it, then drop this line
   function paint() {
     if (destroyed || !canvas) return;
     const box = cssBoxOf(canvas);

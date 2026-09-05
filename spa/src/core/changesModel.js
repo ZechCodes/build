@@ -113,6 +113,7 @@ export function commentsSupported(scope) {
  *  not finished stating: the drag is still under way, and the popover that would
  *  make it a comment opens only once it settles. A rebuild in that window
  *  cancels the selection with nothing to show for it. */
+// eslint-disable-next-line complexity -- ratchet: commentLayerBusy is at 11, cap 10 — reduce it, then drop this line
 export function commentLayerBusy({ pending = 0, popOpen = false, generalText = "", menuOpen = false, selecting = false } = {}) {
   return Boolean(pending > 0 || popOpen || String(generalText).trim() || menuOpen || selecting);
 }

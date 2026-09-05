@@ -149,6 +149,7 @@ export function dismissParamsOf(entry) {
  * The branch's whole weight is what the Changes surface opens on. Ahead/behind
  * stay as they are — they are the row's sync facts, not its change facts.
  */
+// eslint-disable-next-line complexity -- ratchet: entryFactsText is at 14, cap 10 — reduce it, then drop this line
 export function entryFactsText(item) {
   const stat = item && item.stat;
   if (!stat) return "";
@@ -195,6 +196,7 @@ export function captureStatusText(entry) {
 /** One capture row, as the inbox reads it. A capture holds no conversation and
  *  no agents, so what it needs is read off the record: the router's unanswered
  *  question is the reason, and a route that gave up is a retry. */
+// eslint-disable-next-line complexity -- ratchet: toCaptureEntry is at 20, cap 10 — reduce it, then drop this line
 function toCaptureEntry(item) {
   const question = item.question && !item.question.answer ? item.question.text : "";
   const routing = item.routing || null;
@@ -235,6 +237,7 @@ function toCaptureEntry(item) {
 }
 
 /** One board.list row, as the inbox reads it. */
+// eslint-disable-next-line complexity -- ratchet: toEntry is at 15, cap 10 — reduce it, then drop this line
 function toEntry(item) {
   if (item.kind === "capture") return toCaptureEntry(item);
   const state = entryState(item);
@@ -414,6 +417,7 @@ function rowTooltip(entry) {
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
  *  line instead (quietRowHtml). */
+// eslint-disable-next-line complexity -- ratchet: inboxRowHtml is at 12, cap 10 — reduce it, then drop this line
 export function inboxRowHtml(entry, ui = {}) {
   if (entry.kind === "capture") return captureRowHtml(entry, ui);
   if (ui.quiet) return quietRowHtml(entry, ui);
@@ -546,6 +550,7 @@ function rerouteMenuHtml(entry, ui = {}) {
 
 /** One capture row. `ui`: { activeKey, rerouteKey, projects, rerouteBranchProject,
  *  rerouteBranches }. */
+// eslint-disable-next-line complexity -- ratchet: captureRowHtml is at 14, cap 10 — reduce it, then drop this line
 export function captureRowHtml(entry, ui = {}) {
   const working = entry.captureState === "queued" || entry.captureState === "unrouted" || entry.captureState === "routing";
   // A question is the router at rest, waiting on the user: a spinner there

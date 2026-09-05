@@ -115,6 +115,7 @@ fn empty_discovered_tool_set_aborts_pi_and_closes_and_reaps_the_mcp_child() {
 }
 
 #[test]
+#[allow(clippy::cognitive_complexity)] // ratchet: extension_discovers_tools_forwards_calls_and_converts_only_text is at 30, threshold 15 — bring it under, then remove
 fn extension_discovers_tools_forwards_calls_and_converts_only_text() {
     let (output, _temp, log, _pid) = run_driver("normal", "happy");
     assert!(output.status.success(), "{output:?}");

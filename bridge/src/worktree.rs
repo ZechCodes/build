@@ -1200,6 +1200,7 @@ fn describe_checkouts(
 /// or `None` if it should be skipped (bare/prunable, outside `target`, gone from
 /// disk, or a summary that could not be computed — each case logs its own
 /// `eprintln!` except the deliberately silent structural skips).
+#[allow(clippy::cognitive_complexity)] // ratchet: parse_worktree_block is at 16, threshold 15 — bring it under, then remove
 fn parse_worktree_block(
     block: &str,
     repo: &git2::Repository,

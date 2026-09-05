@@ -116,6 +116,7 @@ export function createCommentLayer({
    *  says whether it drew) — a changeset has ONE actionbar, and finishing the
    *  work lives in it too. Re-rendered in place so a repaint is never needed to
    *  keep the buttons honest. */
+  // eslint-disable-next-line complexity -- ratchet: renderActions is at 12, cap 10 — reduce it, then drop this line
   function renderActions() {
     const actions = q(".csactions");
     const hintHost = q(".cshint");
@@ -170,6 +171,7 @@ export function createCommentLayer({
     attach(element) {
       host = element;
       if (selectionWatcher) selectionWatcher();
+      // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
       selectionWatcher = watchSelection(host, (selection) => {
         const fileEl = rowOf(selection.anchorNode, host)?.closest(".file");
         if (!fileEl || fileEl.classList.contains("capped")) return;
@@ -203,6 +205,7 @@ export function createCommentLayer({
 
     /** A click inside the changeset. Returns true when the layer owned it, so
      *  the controller's own handler can stop. */
+    // eslint-disable-next-line complexity -- ratchet: handleClick is at 12, cap 10 — reduce it, then drop this line
     handleClick(event) {
       const target = event.target;
       const remove = target.closest(".pcx");

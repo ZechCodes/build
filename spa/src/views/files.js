@@ -21,6 +21,7 @@ const FS_READ_MAX_BYTES = 1_048_576;
 /** Pure: the preview mode for a server `mime` hint + `truncated` flag. A
  *  truncated image/html/svg is garbage as a partial, so it demotes to a
  *  size placeholder ("toolarge"); markdown/source render what arrived. */
+// eslint-disable-next-line complexity -- ratchet: previewModeFor is at 18, cap 10 — reduce it, then drop this line
 export function previewModeFor(mime, truncated) {
   const base =
     mime === "text/markdown"
@@ -107,6 +108,7 @@ export function shouldMaskDotenv(path, mode, showSource) {
 
 /** Render the preview body HTML for a fs.read response + a source-override flag.
  *  `path` selects the syntax-highlighting grammar for the source branch. */
+// eslint-disable-next-line complexity -- ratchet: previewBodyHtml is at 12, cap 10 — reduce it, then drop this line
 function previewBodyHtml(path, file, showSource) {
   const mode = previewModeFor(file.mime, file.truncated);
   const truncNotice = file.truncated ? `<div class="ftrunc">truncated at 1 MiB</div>` : "";
@@ -190,6 +192,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
   let liveRenderedRequest = 0; // a live answer outranks the cache for its request
   let cachePaintedRequest = 0; // whether the cache already painted this request
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
   const loadTree = async (nextDir) => {
     const request = ++treeRequest;
     const address = treeAddress(nextDir);
@@ -257,6 +260,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
     }
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
   const renderPreview = (path, file) => {
     previewEl.classList.remove("idle");
     const mode = previewModeFor(file.mime, file.truncated);

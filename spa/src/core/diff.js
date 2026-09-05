@@ -1,6 +1,7 @@
 // Unified-diff parsing for the review surface. Pure: patch text in, rows out.
 
 /** Parse a `git diff` patch into per-file row lists the diff tab can render. */
+// eslint-disable-next-line complexity -- ratchet: parseDiff is at 16, cap 10 — reduce it, then drop this line
 export function parseDiff(patch) {
   const files = [];
   let current = null;

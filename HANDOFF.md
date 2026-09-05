@@ -74,8 +74,8 @@ Dev loops without containers:
 
 ```bash
 cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
-cd skriftapp && uv run pytest
-cd spa && npm test && npm run build     # emits skriftapp/buildapp/static/
+cd skriftapp && uv run --frozen ruff check buildapp && uv run --frozen pytest buildapp
+cd spa && npm run lint && npm test && npm run build     # emits skriftapp/buildapp/static/
 ```
 
 `spa/` expects a sibling checkout of `build-secure-transport` next to this repo
@@ -242,10 +242,11 @@ where the `pem` crate compiles its own doc-example RSA key into an rmeta.
 
 ```bash
 cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
-cd spa && npm test
+cd spa && npm run lint && npm test
 ```
 
-`spa/` has no lint script — `npm test` (vitest) is its only gate.
+`spa/` lints for one thing only — function complexity over 10 (CLAUDE.md
+“Complexity gates”). `npm test` (vitest) is the rest of its gate.
 
 To see it in a browser, run the stack from **Run it locally** above, open an
 agent on a worktree, and ask it for work that uses the harness's own machinery

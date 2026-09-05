@@ -1971,6 +1971,13 @@ and a listed card may carry either — the record it will settle as (`entity_id`
 or the checkout it holds (`checkout_id`, an `external_worktree_id` hash, while
 the card is keyed by its run id) — so a card matching either is the card the verb
 is running on and wears the state; only a row matching no card stands on its own.
+One listed card carries no id at all: a project's primary checkout is the
+repository, with a null `worktree_id`, `run_id` and `issue_id`. Adopting it is a
+verb that acts on that card, so `AdoptionTarget::reserve` marks its row
+`primary` beside the checkout id and the merge matches it by project — the
+alternative was a second row for the repo root standing beside the card for the
+whole of `describe_primary_checkout` plus the checkpoint and the scaffold, while
+that card went on offering verbs the row refuses.
 An adopt that leaves its run on the board and a `plan.create` that names only its
 issue both settle onto the card that is already there, which is what keeps two
 entries from patching one key. So `createBranch` needs no provisional row of its

@@ -7754,6 +7754,9 @@ impl AppState {
                     "branch": row.branch,
                     "state": row.state.as_str(),
                     "checkout_id": row.checkout_id,
+                    // The project's own checkout is listed under no id of its
+                    // own, so a row standing on it is matched by this instead.
+                    "primary": row.primary,
                     "implements": row.implements,
                     // How long this row has stood. A row older than a scan
                     // interval reads as stuck rather than as work in flight.
@@ -13382,12 +13385,11 @@ impl AppState {
         // at all. The refusal is what makes the retry converge — by then the
         // owner is real, and `run_owning_worktree_id` above answers with it.
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        let row = PendingRow::creating(
+        let row = target.reserve(
             run_id.clone(),
-            Some(project_id.clone()),
+            &project_id,
             self.checkout_title(&project_id, &checkout_id),
-        )
-        .on_checkout(checkout_id);
+        );
         let project = self.orch_for(&project_id)?.clone();
         self.defer_lifecycle(
             row,
@@ -35967,6 +35969,43 @@ mod tests {
         assert_eq!(adopted["ok"], true, "{adopted:?}");
         assert_eq!(adopted["result"]["primary"], true, "{adopted:?}");
         assert_eq!(adopted["result"]["state"], "review", "{adopted:?}");
+    }
+
+    /// The project's primary card is the one card the board lists under no id
+    /// of its own — `worktree_id`, `run_id` and `issue_id` are all null on it.
+    /// A row that stood only on those ids would be painted as a SECOND row
+    /// beside the card it is running on, for the whole of the adoption, while
+    /// that card kept offering verbs the row refuses.
+    #[test]
+    fn a_primary_adoption_names_the_primary_card_it_is_running_on() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let adopted = frame_on_a_thread(
+            &state,
+            "s-adopt",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the primary is being adopted");
+        let rows = pending_on_the_board(&board);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["primary"], true, "{rows:?}");
+        assert_eq!(rows[0]["project_id"], json!(project_id), "{rows:?}");
+
+        gate_handle.release();
+        let adopted = adopted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the adoption answers once its git is done");
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
     }
 
     /// The reply is built after the git, by the epilogue, so it carries what

@@ -330,6 +330,30 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(entry.route).toBeNull();
   });
 
+  // The project's own checkout is the one listed card with no id of its own:
+  // adopting it publishes a row naming the primary of the project, and the card
+  // it is running on is right there on the board.
+  it("says on a project's primary card that its checkout is being adopted", () => {
+    const primary = branch({
+      branch: "main",
+      run_id: null,
+      worktree_id: null,
+      primary: true,
+      can_finish: false,
+      anchor: ago(1),
+    });
+    const items = mergePendingRows(
+      [primary],
+      [creating({ entity_id: "run-new", checkout_id: "wt-repo-root", primary: true, title: "relaydb" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("branch:p1:main");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].placeholder).toBe(false);
+  });
+
   it("reads a state it has never heard of as work in flight, not as nothing", () => {
     const entries = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
     expect(entries).toHaveLength(1);

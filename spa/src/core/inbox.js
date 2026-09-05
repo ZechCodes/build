@@ -138,14 +138,21 @@ const pendingItem = (row) => ({
  * one piece of work, one row. A verb making a card that is not there yet stands
  * on its own until its record lands under the same id, at which point the record
  * is the row and the placeholder is gone.
+ *
+ * One card is listed under no id at all: a project's primary checkout is the
+ * repository, and it carries a null `worktree_id`, `run_id` and `issue_id`.
+ * Adopting it is the verb that acts on that card, so its row names the primary
+ * of a project instead, and that is the third way a row finds its card.
  */
 export function mergePendingRows(items = [], pending = []) {
   const rows = [...(items || [])];
+  const cardOf = (row) => (item) => {
+    if (row.primary) return !!item.primary && item.project_id === row.project_id;
+    const id = entityIdOf(item);
+    return id !== null && (id === row.entity_id || id === row.checkout_id);
+  };
   for (const row of pending || []) {
-    const standing = rows.findIndex((item) => {
-      const id = entityIdOf(item);
-      return id !== null && (id === row.entity_id || id === row.checkout_id);
-    });
+    const standing = rows.findIndex(cardOf(row));
     if (standing < 0) rows.push(pendingItem(row));
     else rows[standing] = { ...rows[standing], pending: row.state, working: true };
   }

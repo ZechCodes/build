@@ -146,6 +146,10 @@ pub struct PendingRow {
     pub branch: Option<String>,
     pub state: PendingState,
     pub checkout_id: Option<String>,
+    /// Whether the card this row stands on is the project's own checkout. That
+    /// card is the one the board lists under no id of its own, so `checkout_id`
+    /// alone names nothing a browser can match it to.
+    pub primary: bool,
     pub implements: Option<String>,
     pub since: Instant,
 }
@@ -183,6 +187,7 @@ impl PendingRow {
             branch: None,
             state,
             checkout_id: None,
+            primary: false,
             implements: None,
             since: Instant::now(),
         }
@@ -205,6 +210,17 @@ impl PendingRow {
         PendingRow {
             checkout_id: Some(checkout_id),
             ..self
+        }
+    }
+
+    /// The card this verb acts on is the project's OWN checkout. The board
+    /// lists that card with a null `worktree_id`, `run_id` and `issue_id`, so
+    /// the checkout id this row also carries matches nothing on it: what names
+    /// it is the project, plus being the primary.
+    pub fn on_primary_checkout(self, checkout_id: String) -> PendingRow {
+        PendingRow {
+            primary: true,
+            ..self.on_checkout(checkout_id)
         }
     }
 
@@ -881,6 +897,18 @@ impl AdoptionTarget {
             AdoptionTarget::Primary { repo_path } => {
                 crate::worktree::external_worktree_id(&crate::worktree::canonical_root(repo_path))
             }
+        }
+    }
+
+    /// The board's row for this adoption: the run it settles as, standing on
+    /// the card the browser already lists this checkout under. A card has an id
+    /// of its own; the project's primary checkout has none, and is named by
+    /// being the primary of its project instead.
+    pub fn reserve(&self, run_id: String, project_id: &str, title: String) -> PendingRow {
+        let row = PendingRow::creating(run_id, Some(project_id.to_string()), title);
+        match self {
+            AdoptionTarget::Card { .. } => row.on_checkout(self.checkout_id()),
+            AdoptionTarget::Primary { .. } => row.on_primary_checkout(self.checkout_id()),
         }
     }
 

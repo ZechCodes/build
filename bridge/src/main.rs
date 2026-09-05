@@ -29,6 +29,10 @@
 //! - `BRIDGE_PAIRING_CODE` dev/compose only: pair with this fixed code instead of
 //!   a random one, so a scripted approver can complete the flow
 //!
+//! `build-bridge pair` runs the pairing flow on its own — register, print the
+//! pairing code, wait for the human to approve it in the web app, persist — and
+//! exits. It is what an installer runs before it installs the service.
+//!
 //! `build-bridge install-service` installs the platform's own "keep this
 //! running" unit: on macOS a launchd LaunchAgent, on Linux a systemd `--user`
 //! unit. Either way it keeps `serve` running across crashes and logins, and it
@@ -57,6 +61,7 @@ async fn main() {
         Some("serve") | None => serve().await,
         Some("mcp") => mcp_stdio(),
         Some("provision") => provision(),
+        Some("pair") => pair().await,
         Some("backup") => backup(),
         Some("install-service") => install_service().await,
         Some("uninstall-service") => uninstall_service(),
@@ -65,7 +70,7 @@ async fn main() {
         }
         Some(other) => {
             eprintln!(
-                "unknown command: {other}\nusage: build-bridge [serve|backup <path>|provision|install-service|uninstall-service|--version]"
+                "unknown command: {other}\nusage: build-bridge [serve|pair|backup <path>|provision|install-service|uninstall-service|--version]"
             );
             std::process::exit(2);
         }
@@ -405,6 +410,31 @@ async fn run_daemon(
 fn exit_startup(error: String) -> ! {
     eprintln!("bridge: {error}");
     std::process::exit(1)
+}
+
+/// Pair this device to an account and stop. Registers the identity, prints the
+/// pairing code + fingerprint + approve link, and waits for a human to approve
+/// it in the web app; an already-approved identity returns at once with no
+/// network call. This is the pairing half of a first install, on its own, so an
+/// installer can run it and then `install-service`.
+async fn pair() {
+    // Pairing talks https before anything else does; the provider must be in
+    // place first.
+    relay::install_crypto_provider();
+    let cfg = bridge_config();
+    let already_paired =
+        matches!(identity::load(&cfg.identity_file), Ok(Some(stored)) if stored.approved);
+    match load_device_identity(&cfg).await {
+        Ok((identity, _)) => {
+            let outcome = if already_paired {
+                "already paired"
+            } else {
+                "paired to account"
+            };
+            println!("{outcome} — device {}", identity.device_id);
+        }
+        Err(error) => exit_startup(error),
+    }
 }
 
 /// Install the platform's service unit — a launchd LaunchAgent on macOS, a

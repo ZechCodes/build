@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { asset, downloadsPayload } from "./downloadsFixture.js";
+import { asset, downloadsPayload, mintedCommand } from "./downloadsFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -22,6 +22,7 @@ const CATALOG = {
 let devices = [];
 let downloads = async () => DOWNLOADS;
 const fetchDownloads = vi.fn(() => downloads());
+const mintInstallCommand = vi.fn(async () => ({ install_command: mintedCommand(), expires_in_s: 600 }));
 
 const call = vi.fn(async (method) => {
   if (method === "project.list") return { projects: [] };
@@ -37,6 +38,7 @@ vi.mock("../src/app.js", () => ({
 vi.mock("../src/api.js", () => ({
   revokeDevice: async () => {},
   fetchDownloads: (...args) => fetchDownloads(...args),
+  mintInstallCommand: (...args) => mintInstallCommand(...args),
 }));
 vi.mock("../src/devices.js", () => ({ refreshDevices: async () => devices }));
 vi.mock("../src/push.js", () => ({

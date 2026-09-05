@@ -8,7 +8,7 @@ import { onlineStickyDeviceId } from "../core/devicePolicy.js";
 import { App, render } from "../app.js";
 import { openAppSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
-import { approveDevice, fetchDownloads, lookupDevice } from "../api.js";
+import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openAddDevice } from "../sheets/addDevice.js";
@@ -163,6 +163,7 @@ async function renderOnboarding() {
   bindPairing();
   await mountDownloads($("#root"), {
     fetchDownloads,
+    mintInstallCommand,
     platformKey: currentPlatformKey(),
     clipboard: navigator.clipboard,
   });

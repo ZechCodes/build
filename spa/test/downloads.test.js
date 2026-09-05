@@ -37,9 +37,15 @@ describe("downloadsHtml", () => {
     expect(offered.map((a) => a.getAttribute("href"))).toEqual(DOWNLOADS.platforms.map((p) => p.url));
   });
 
-  it("renders the install command verbatim, next to a Copy button", () => {
+  it("puts no download token in any link — a member session is what opens the route", () => {
     const host = parse(downloadsHtml(DOWNLOADS, "macos-arm64"));
-    expect(host.querySelector("#installcmd").textContent).toBe("curl -fsSL https://getbuild.ing/install.sh | sh");
+    expect(linkUrls(host).filter((url) => url.includes("t="))).toEqual([]);
+  });
+
+  it("renders the install command verbatim, token and all, next to a Copy button", () => {
+    const host = parse(downloadsHtml(DOWNLOADS, "macos-arm64"));
+    expect(host.querySelector("#installcmd").textContent).toBe(DOWNLOADS.install_command);
+    expect(host.querySelector("#installcmd").textContent).toContain("?t=dl_");
     expect(host.querySelector("#copycmd").textContent).toBe("Copy");
   });
 
@@ -51,6 +57,12 @@ describe("downloadsHtml", () => {
     expect(urls).toContain(asset("linux-aarch64"));
     expect(urls).toContain(DOWNLOADS.checksums_url);
     expect(urls).toContain(DOWNLOADS.releases_url);
+  });
+
+  it("offers no 'all releases' link while the api says the release page is private", () => {
+    const host = parse(downloadsHtml(downloadsPayload({ releases_url: null }), "macos-arm64"));
+    expect(host.textContent).not.toContain("all releases");
+    expect(linkUrls(host)).toContain(DOWNLOADS.checksums_url);
   });
 
   it("says where the bridge runs and what the servers carry", () => {

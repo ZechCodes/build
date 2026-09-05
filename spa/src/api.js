@@ -43,6 +43,15 @@ export async function fetchDownloads() {
   return response.json();
 }
 
+/** A fresh install one-liner. The token inside the line lives ten minutes and
+ *  is spent by the download it authorizes, so the page that shows the line asks
+ *  for a new one rather than handing over a stale one. */
+export async function mintInstallCommand() {
+  const response = await fetch("/app/downloads/token", { method: "POST" });
+  if (!response.ok) throw new Error(await refusalDetail(response, "could not refresh the install line"));
+  return response.json();
+}
+
 /** The sentence the api refused with, when it gave one — the device cap says
  *  what to do about itself — else `fallback`. */
 async function refusalDetail(response, fallback) {

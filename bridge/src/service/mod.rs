@@ -20,6 +20,8 @@ pub mod launchd;
 pub mod systemd;
 
 use std::io;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub use launchd::Launchd;
@@ -205,6 +207,11 @@ pub fn manager_for(os: &str) -> Option<Box<dyn ServiceManager>> {
     }
 }
 
+/// The unit file's mode. It carries the daemon's whole environment, so it is
+/// written like a secret: readable and writable by the installing user only,
+/// never by the umask's default 0644.
+const UNIT_MODE: u32 = 0o600;
+
 /// Write the unit, then activate it. The file is written first so a failing
 /// activation leaves something to look at, and is never removed on failure.
 pub fn install(
@@ -217,11 +224,44 @@ pub fn install(
     if let Some(parent) = unit_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&unit_path, manager.render_unit(config))?;
+    write_unit(&unit_path, &manager.render_unit(config))?;
     for command in manager.activate(ctx, &unit_path) {
         run_command(&command, run)?;
     }
     Ok(unit_path)
+}
+
+/// Write the unit owner-only. `mode` covers the file this call creates; the
+/// `set_permissions` covers one an earlier install left world-readable, and
+/// runs before a single byte of the new text is on disk.
+fn write_unit(unit_path: &Path, unit: &str) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(UNIT_MODE)
+        .open(unit_path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(UNIT_MODE))?;
+    file.write_all(unit.as_bytes())
+}
+
+/// The environment variables that carry the device's own key material. A
+/// provisioned or seeded shell has them set, and `install` runs in that shell.
+pub const DEVICE_KEY_VARS: [&str; 3] = [
+    "BRIDGE_IDENTITY_PRIV",
+    "BRIDGE_TRANSPORT_PRIV",
+    "BRIDGE_TRANSPORT_PUB",
+];
+
+/// Drop the device's key material from a daemon environment. The unit file
+/// outlives the shell that wrote it and is readable by anything that can read
+/// the user's config dir or ask systemd (`systemctl --user show -p Environment`),
+/// and an installed daemon has no need for them: it runs from the identity file
+/// the install gate just verified.
+pub fn without_device_keys(env: Vec<(String, String)>) -> Vec<(String, String)> {
+    env.into_iter()
+        .filter(|(key, _)| !DEVICE_KEY_VARS.contains(&key.as_str()))
+        .collect()
 }
 
 /// Deactivate, then remove the unit. A unit that was never installed is not an
@@ -315,6 +355,7 @@ pub(super) mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn status(approved: bool, owner: Option<&str>) -> StatusResponse {
         StatusResponse {
@@ -516,6 +557,83 @@ mod tests {
         );
 
         assert!(result.is_ok(), "a tolerated failure is not a failure");
+    }
+
+    /// The unit is a copy of the daemon's whole environment, so it is written
+    /// like a secret file, not like a config file the umask decides on.
+    #[test]
+    fn install_writes_a_unit_only_its_owner_can_read() {
+        let home = tempfile::tempdir().expect("temp home");
+        let ctx = context(home.path());
+        let manager = FakeManager {
+            activate: vec![],
+            deactivate: vec![],
+        };
+
+        let unit = install(
+            &manager,
+            &ctx,
+            &fixtures::sample_config("/home/dev"),
+            &mut |_| Ok(true),
+        )
+        .expect("install succeeds");
+
+        assert_eq!(mode_of(&unit), 0o600);
+    }
+
+    /// Re-installing over a unit an earlier version left world-readable has to
+    /// close it, or the fix only reaches machines that never installed before.
+    #[test]
+    fn install_tightens_a_unit_an_earlier_install_left_world_readable() {
+        let home = tempfile::tempdir().expect("temp home");
+        let ctx = context(home.path());
+        let manager = FakeManager {
+            activate: vec![],
+            deactivate: vec![],
+        };
+        let unit = manager.unit_path(home.path());
+        std::fs::create_dir_all(unit.parent().expect("unit has a parent")).expect("unit dir");
+        std::fs::write(&unit, "an older, readable unit").expect("pre-existing unit");
+        std::fs::set_permissions(&unit, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+        install(
+            &manager,
+            &ctx,
+            &fixtures::sample_config("/home/dev"),
+            &mut |_| Ok(true),
+        )
+        .expect("install succeeds");
+
+        assert_eq!(mode_of(&unit), 0o600);
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path)
+            .expect("the unit is on disk")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// The unit outlives the shell that installed it, so the device's key
+    /// material must never be copied into it: an installed daemon runs from the
+    /// identity file the gate just verified.
+    #[test]
+    fn the_daemon_environment_drops_the_devices_key_material() {
+        let env = without_device_keys(vec![
+            ("BRIDGE_API_URL".into(), "https://getbuild.ing".into()),
+            ("BRIDGE_IDENTITY_PRIV".into(), "ed25519-private".into()),
+            ("BRIDGE_TRANSPORT_PRIV".into(), "x25519-private".into()),
+            ("BRIDGE_TRANSPORT_PUB".into(), "x25519-public".into()),
+        ]);
+
+        assert_eq!(
+            env,
+            vec![(
+                "BRIDGE_API_URL".to_string(),
+                "https://getbuild.ing".to_string()
+            )]
+        );
     }
 
     #[test]

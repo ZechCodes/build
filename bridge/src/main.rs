@@ -578,14 +578,24 @@ fn manager_or_exit() -> Box<dyn ServiceManager> {
     }
 }
 
-/// What the daemon starts with: every BRIDGE_* var set right now, plus the two
-/// URLs and the identity file pinned to their resolved values so the daemon
-/// can't drift from what the gate just verified, plus the installing shell's
-/// PATH. Sorted, so re-installing the same setup writes the same unit.
+/// What the daemon starts with: every BRIDGE_* var set right now, minus the
+/// device's key material, plus the two URLs and the identity file pinned to
+/// their resolved values so the daemon can't drift from what the gate just
+/// verified, plus the installing shell's PATH.
 fn daemon_environment(cfg: &BridgeConfig) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = std::env::vars()
-        .filter(|(key, _)| key.starts_with("BRIDGE_"))
-        .collect();
+    let inherited = std::env::vars().filter(|(key, _)| key.starts_with("BRIDGE_"));
+    service_environment(inherited.collect(), cfg, || std::env::var("PATH").ok())
+}
+
+/// The rule `daemon_environment` applies to the variables it collected, apart
+/// from the process that supplies them. Sorted, so re-installing the same setup
+/// writes the same unit.
+fn service_environment(
+    env: Vec<(String, String)>,
+    cfg: &BridgeConfig,
+    path: impl FnOnce() -> Option<String>,
+) -> Vec<(String, String)> {
+    let mut env = service::without_device_keys(env);
     for (key, value) in [
         ("BRIDGE_API_URL", cfg.api_url.clone()),
         ("BRIDGE_RELAY_URL", cfg.relay_url.clone()),
@@ -598,7 +608,7 @@ fn daemon_environment(cfg: &BridgeConfig) -> Vec<(String, String)> {
             env.push((key.to_string(), value));
         }
     }
-    let mut env = service::with_install_path(env, || std::env::var("PATH").ok());
+    let mut env = service::with_install_path(env, path);
     env.sort();
     env
 }
@@ -747,7 +757,58 @@ fn mcp_stdio() {
 
 #[cfg(test)]
 mod tests {
-    use super::PairingOutcome;
+    use super::{service_environment, PairingOutcome};
+
+    /// A config as `install-service` resolves one, from no environment at all.
+    fn config() -> build_bridge::config::BridgeConfig {
+        build_bridge::config::resolve(|_| None, std::path::Path::new("/home/dev"))
+    }
+
+    /// The unit file is a copy of this environment that outlives the installing
+    /// shell, so a seeded shell's key material must not travel into it.
+    #[test]
+    fn the_installed_daemon_inherits_no_device_key_material() {
+        let env = service_environment(
+            vec![
+                ("BRIDGE_DEVICE_ID".into(), "device-7".into()),
+                ("BRIDGE_IDENTITY_PRIV".into(), "ed25519-private".into()),
+                ("BRIDGE_TRANSPORT_PRIV".into(), "x25519-private".into()),
+                ("BRIDGE_TRANSPORT_PUB".into(), "x25519-public".into()),
+            ],
+            &config(),
+            || None,
+        );
+
+        assert_eq!(
+            env.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            vec![
+                "BRIDGE_API_URL",
+                "BRIDGE_DEVICE_ID",
+                "BRIDGE_IDENTITY_FILE",
+                "BRIDGE_RELAY_URL",
+            ]
+        );
+    }
+
+    /// The daemon is pinned to what the gate just verified, so it cannot drift
+    /// to another api, relay or identity file after the install.
+    #[test]
+    fn the_installed_daemon_is_pinned_to_the_resolved_config() {
+        let cfg = config();
+        let env = service_environment(vec![], &cfg, || None);
+
+        assert_eq!(
+            env,
+            vec![
+                ("BRIDGE_API_URL".to_string(), cfg.api_url.clone()),
+                (
+                    "BRIDGE_IDENTITY_FILE".to_string(),
+                    cfg.identity_file.to_string_lossy().into_owned()
+                ),
+                ("BRIDGE_RELAY_URL".to_string(), cfg.relay_url.clone()),
+            ]
+        );
+    }
 
     /// `service::manager_for` is the crate's one platform branch: it turns
     /// `std::env::consts::OS` into a `ServiceManager`, and everything above it

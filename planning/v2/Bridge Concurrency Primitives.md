@@ -332,19 +332,24 @@ the spec's load test.
       pub fn snapshot(&self) -> AttachSnapshot;   // a dead tab's last screen
       pub fn ack(&self, session_id: &str, cursor: u64);
       pub fn detach(&self, session_id: &str);
-      pub fn feed(&self, chunk: &[u8]);      // the pump: parse + coalesce
-      pub fn flush(&self);
+      pub fn feed(&self, chunk: &[u8]) -> bool;   // the pump: parse + coalesce; false once closed
+      pub fn flush(&self) -> bool;                // the pump's tick; false once closed
       pub fn restart(&self);                 // new session: fresh parser, same cursor
       pub fn resize(&self, cols: u16, rows: u16);
-      pub fn carry_clients_from(&self, waiting: &ScreenHandle);
-      pub fn close(&self, reason: &str);     // bounded: leaf lock + one push per client
+      pub fn carry_clients_from(&self, waiting: &ScreenHandle) -> bool;  // false: nobody waited, no viewport adopted
+      pub fn close(&self, reason: &str);     // bounded: leaf lock + one push per client; lets the clients go
       pub fn session_ended(&self, reason: &str);   // told, and the clients stay
   }
   pub struct AttachSnapshot { snapshot: String, cursor: u64, cols: u16, rows: u16 }
   pub struct TerminalHandle { session: Arc<dyn AgentSession>, screen: ScreenHandle }
-  impl TerminalHandle {      // both write with the app mutex released
+  impl TerminalHandle {      // all write with the app mutex released
       pub fn write_input(&self, bytes: &[u8]) -> Result<(), String>;
       pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String>;
+      /// The child takes the grid the screen already stands at — a carried
+      /// retained screen, or the viewport inherited clients render at. The one
+      /// place `PtySize` is built and the one place a refused ioctl is judged
+      /// a dying child's business.
+      pub fn fit_child_to_screen(&self);
   }
   impl Tab { fn terminal_handle(&self) -> Result<TerminalHandle, String>; }
   ```
@@ -415,8 +420,23 @@ the spec's load test.
   (`record_agent_session_end` → `close_turn_of_dead_agent`) and overwrite the
   conversation to resume. The activity pump carries its session for the same
   reason and takes it from `TabPumps` at the one place both pumps start.
+- **A closed screen ends its pump; an emptied waiting screen stays.** The
+  pump never consults the registry, so the registry cannot stop it: `close`
+  lets every client go and `feed`/`flush` answer `false` from then on, which
+  returns the pump the moment `retire_tab` runs — not when the wedged child
+  it was painting finally dies. `drop_session` detaches from a screen in
+  `agent_screens_awaiting_spawn` without removing it: an attach clones that
+  handle under the app mutex and registers with it released, and the client
+  arriving as the last one leaves must still be where the spawn looks. Empty,
+  the screen is bounded at one per agent key, carries no viewport
+  (`carry_clients_from` answers `false` and the spawn keeps Build's size),
+  and leaves with the spawn that inherits it, `retire_agent`, or the reaper.
 - **Tests** `a_streaming_pty_never_takes_the_app_mutex`,
   `a_frame_answers_while_a_screen_lock_is_held`,
+  `a_closed_tab_stops_painting_before_its_harness_dies`,
+  `closing_a_screen_lets_its_clients_go_and_stops_its_pump`,
+  `a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_the_agent`,
+  `carrying_from_a_screen_everyone_left_adopts_no_viewport`,
   `term_input_to_a_pty_that_is_not_draining_leaves_the_app_mutex_free`,
   `carrying_clients_between_two_screens_holds_one_lock_at_a_time`,
   `an_agent_tabs_last_reading_leaves_the_app_mutex_free`,

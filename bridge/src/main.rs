@@ -33,7 +33,9 @@
 //! pairing code, wait for the human to approve it in the web app, persist — then
 //! asks the api which account owns the device and prints it. It is what an
 //! installer runs before it installs the service, and it ends on the same gate
-//! `install-service` starts with, so the two cannot disagree.
+//! `install-service` starts with, so the two cannot disagree. A device seeded
+//! with keys in the environment has no account to name: `pair` says so and
+//! stops.
 //!
 //! `build-bridge install-service` installs the platform's own "keep this
 //! running" unit: on macOS a launchd LaunchAgent, on Linux a systemd `--user`
@@ -237,6 +239,14 @@ impl PairingOutcome {
         } else {
             Self::JustApproved
         }
+    }
+
+    /// Whether there is an account for `pair` to name. A provisioned identity
+    /// was seeded into the environment and is approved by construction: no user
+    /// account owns it, the api has never heard of it, and the install gate —
+    /// which asks the api who owns this device — has nothing to say about it.
+    fn belongs_to_an_account(self) -> bool {
+        !matches!(self, Self::Provisioned)
     }
 
     /// What `pair` says about the pairing itself, before it names the account.
@@ -468,20 +478,35 @@ fn exit_startup(error: String) -> ! {
 /// It ends on the same gate `install-service` runs — one status GET, even for an
 /// identity that was already approved — so the account it names is the account
 /// the api will name, and an installer that gets past `pair` cannot then be
-/// refused by `install-service`.
+/// refused by `install-service`. A device whose keys came from the environment
+/// is the exception: it is approved by construction and owned by no account, so
+/// there is nothing to pair and nothing to ask.
 async fn pair() {
     // Pairing talks https before anything else does; the provider must be in
     // place first.
     relay::install_crypto_provider();
     let cfg = bridge_config();
-    let outcome = match load_device_identity(&cfg).await {
-        Ok((_, _, outcome)) => outcome,
+    let (identity, _, outcome) = match load_device_identity(&cfg).await {
+        Ok(loaded) => loaded,
         Err(error) => exit_startup(error),
     };
+    if !outcome.belongs_to_an_account() {
+        println!(
+            "provisioned device {} — nothing to pair",
+            identity.device_id
+        );
+        return;
+    }
     if let Some(note) = outcome.note() {
         println!("{note}");
     }
-    println!("paired to account {}", approved_owner_or_exit(&cfg).await);
+    match approved_owner(&cfg).await {
+        Ok(owner) => println!("paired to account {owner}"),
+        Err(reason) => {
+            eprintln!("not paired: {reason}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Install the platform's service unit — a launchd LaunchAgent on macOS, a
@@ -490,7 +515,13 @@ async fn pair() {
 /// anything is written.
 async fn install_service() {
     let cfg = bridge_config();
-    let owner = approved_owner_or_exit(&cfg).await;
+    let owner = match approved_owner(&cfg).await {
+        Ok(owner) => owner,
+        Err(reason) => {
+            eprintln!("not installing: {reason}");
+            std::process::exit(1);
+        }
+    };
     let manager = manager_or_exit();
 
     let home = home_dir();
@@ -538,16 +569,13 @@ fn uninstall_service() {
 
 /// The install gate: a local identity AND a live api confirmation that this
 /// device is approved and owned by an account, never the local flag alone.
-/// Returns the owner, or exits — there is nothing to install without one.
-async fn approved_owner_or_exit(cfg: &BridgeConfig) -> String {
+/// `Err` is the reason, in the operator's words and with no prefix — the caller
+/// says what it is refusing to do, because `pair` and `install-service` refuse
+/// different things on the same answer.
+async fn approved_owner(cfg: &BridgeConfig) -> Result<String, String> {
     let identity_path = &cfg.identity_file;
-    let stored = match identity::load(identity_path) {
-        Ok(stored) => stored,
-        Err(error) => {
-            eprintln!("could not load identity from {identity_path:?}: {error}");
-            std::process::exit(1);
-        }
-    };
+    let stored = identity::load(identity_path)
+        .map_err(|error| format!("could not load identity from {identity_path:?}: {error}"))?;
     let api_status = match &stored {
         None => Err("no identity".to_string()),
         Some(stored) => {
@@ -557,16 +585,11 @@ async fn approved_owner_or_exit(cfg: &BridgeConfig) -> String {
                 .map_err(|error| error.to_string())
         }
     };
-    match service::check_install_gate(
+    service::check_install_gate(
         stored.is_some(),
         api_status.as_ref().map_err(String::as_str),
-    ) {
-        Ok(owner) => owner,
-        Err(gate) => {
-            eprintln!("not installing: {gate}");
-            std::process::exit(1);
-        }
-    }
+    )
+    .map_err(|gate| gate.to_string())
 }
 
 /// The one platform decision in the crate, and the one place it is refused.
@@ -868,6 +891,23 @@ mod tests {
             PairingOutcome::for_stored(false),
             PairingOutcome::JustApproved
         );
+    }
+
+    /// A seeded device has no account, so `pair` reports the device it found
+    /// and stops rather than asking the api who owns it — the gate would refuse
+    /// a device the api never registered, in install-flavoured words, from a
+    /// command that installs nothing.
+    #[test]
+    fn a_provisioned_identity_has_no_account_to_pair_to() {
+        assert!(!PairingOutcome::Provisioned.belongs_to_an_account());
+    }
+
+    /// A stored identity is the file-backed kind the api knows by device id, so
+    /// both of its outcomes end on the gate that names the owning account.
+    #[test]
+    fn a_stored_identity_belongs_to_the_account_that_approved_it() {
+        assert!(PairingOutcome::AlreadyApproved.belongs_to_an_account());
+        assert!(PairingOutcome::JustApproved.belongs_to_an_account());
     }
 
     /// Only the device that was already approved is told "already paired" —

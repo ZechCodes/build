@@ -51,25 +51,24 @@ impl std::fmt::Display for InstallGateError {
         match self {
             Self::NotPaired => write!(
                 f,
-                "this device is not paired to an account — run `build-bridge serve` once, \
-                 approve the pairing code in the web app (Settings → Devices), then re-run \
-                 `build-bridge install-service`"
+                "this device is not paired to an account — run `build-bridge pair` and \
+                 approve the pairing code in the web app (Settings → Devices)"
             ),
             Self::PendingApproval => write!(
                 f,
                 "pairing is registered but not approved yet — approve this device in the \
-                 web app (Settings → Devices), then re-run `build-bridge install-service`"
+                 web app (Settings → Devices), then try again"
             ),
             Self::UnknownToApi { detail } => write!(
                 f,
                 "the api does not recognize this device ({detail}) — its registry may have \
-                 been reset; re-pair by running `build-bridge serve` and approving the new \
+                 been reset; re-pair by running `build-bridge pair` and approving the new \
                  pairing code in the web app"
             ),
             Self::ApprovedWithoutOwner => write!(
                 f,
-                "the api reports this device approved but owned by no account — refusing to \
-                 install; re-pair with `build-bridge serve`"
+                "the api reports this device approved but owned by no account — re-pair \
+                 with `build-bridge pair`"
             ),
         }
     }
@@ -403,17 +402,29 @@ mod tests {
         assert_eq!(result, Ok("user-42".to_string()));
     }
 
+    /// Every refusal names a command the operator can actually run. `serve` is
+    /// not one of them: it pairs only as a side effect of starting a daemon
+    /// that never returns, which is why `pair` exists.
     #[test]
     fn gate_error_messages_tell_the_operator_what_to_do() {
-        assert!(InstallGateError::NotPaired.to_string().contains("serve"));
-        assert!(InstallGateError::PendingApproval
-            .to_string()
-            .contains("approve"));
-        assert!(InstallGateError::UnknownToApi {
-            detail: "404".into()
+        for error in [
+            InstallGateError::NotPaired,
+            InstallGateError::PendingApproval,
+            InstallGateError::UnknownToApi {
+                detail: "404".into(),
+            },
+            InstallGateError::ApprovedWithoutOwner,
+        ] {
+            let message = error.to_string();
+            assert!(
+                message.contains("`build-bridge pair`") || message.contains("approve this device"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("build-bridge serve"),
+                "pairing is `build-bridge pair`, not a daemon that never returns: {message}"
+            );
         }
-        .to_string()
-        .contains("re-pair"));
     }
 
     #[test]

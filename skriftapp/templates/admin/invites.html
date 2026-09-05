@@ -1,0 +1,74 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Invites - Admin - {{ site_name() }}{% endblock %}
+
+{% block admin_content %}
+<div class="sk-admin-header">
+    <hgroup>
+        <h1>Invites</h1>
+        <p>Who has been let into the alpha, and what became of each invite</p>
+    </hgroup>
+</div>
+
+<section class="sk-panel">
+    <div class="sk-panel-head"><h2>Send an invite</h2></div>
+    <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+    <form method="post" action="/admin/invites">
+        {{ csrf_field() }}
+        <label for="invite-email">Email address</label>
+        <input id="invite-email" type="email" name="email" required autocomplete="off"
+               placeholder="someone@example.com">
+        <button class="sk-btn" type="submit">Send invite</button>
+    </form>
+    <p class="sk-muted">
+        The invite works once, for 14 days, and only for the address it was sent to.
+        Revoking a redeemed invite removes that account from the alpha.
+    </p>
+</section>
+
+<section class="sk-panel">
+    <div class="sk-panel-head"><h2>All invites</h2></div>
+    <div class="sk-table-scroll">
+        <table class="sk-admin-table">
+            <thead>
+                <tr>
+                    <th>Address</th>
+                    <th>State</th>
+                    <th>Invited by</th>
+                    <th>Sent</th>
+                    <th>Expires</th>
+                    <th>Redeemed</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for invite in invites %}
+                <tr>
+                    <td>{{ invite.email }}</td>
+                    <td>{{ invite.state }}</td>
+                    <td>{{ invite.invited_by }}</td>
+                    <td>{{ invite.created_at.strftime('%Y-%m-%d %H:%M') if invite.created_at else '' }}</td>
+                    <td>{{ invite.expires_at.strftime('%Y-%m-%d %H:%M') if invite.expires_at else '' }}</td>
+                    <td>
+                        {% if invite.redeemed_at %}
+                        {{ invite.redeemed_by }} · {{ invite.redeemed_at.strftime('%Y-%m-%d %H:%M') }}
+                        {% else %}—{% endif %}
+                    </td>
+                    <td>
+                        {% if invite.revocable %}
+                        <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+                        <form method="post" action="{{ invite.revoke_path }}">
+                            {{ csrf_field() }}
+                            <button class="sk-btn-outline" type="submit">Revoke</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7">No invites yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

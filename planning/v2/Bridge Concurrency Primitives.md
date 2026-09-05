@@ -1527,7 +1527,14 @@ settled differently, and why:
   drain to hand git to. The pass resumes from the job's own epilogue
   (`dispatch_ready_stage`), so no caller decides anything but where the git
   runs, and no epilogue ever defers a second job into a drain that has already
-  run.
+  run. That resume is not lock-free: its `ImplementationIntent::Stage` arm is
+  `dispatch_ready_stage` → `run_stage_dispatch` →
+  `Orchestrator::dispatch_run_stage`, whose `git rev-parse HEAD`
+  (orchestrator.rs:2276) runs under the app mutex. It is `run.stage_dispatch`'s
+  own git, bounded in practice and not in spec finding 2, and moving it is
+  `run.stage_dispatch`'s migration to make, not this step's — so an
+  `issue.implement_stage` still ends in one git subprocess under the lock,
+  after its checkout was cut with the lock free.
 
   The `done` socket gets `dispatch_frame`'s shape for it: `done_deferring`
   routes the report and hands back `deferred_work`, `spawn_blocking` runs it

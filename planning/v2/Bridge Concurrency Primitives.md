@@ -475,29 +475,33 @@ noted below.
 - **Interface**
 
   ```rust
-  /// What one lock acquisition took, and the marks it OWES back.
-  struct PendingTurns { turns: VecDeque<PendingAgentTurn>, owed: Vec<TurnMark>,
+  /// What one lock acquisition took, each turn paired with the mark it OWES
+  /// back — so the turn that landed is the only one whose mark can be settled.
+  struct PendingTurns { turns: VecDeque<(PendingAgentTurn, TurnMark)>,
                         state: SettlingHandle }
   impl PendingTurns {
-      fn next_turn(&mut self) -> Option<PendingAgentTurn>;
-      fn settle(&mut self, owner: &str, s: &mut AppState);   // one delivered turn
+      fn next_turn(&mut self) -> Option<(PendingAgentTurn, TurnMark)>;
   }
   impl Drop for PendingTurns { .. }                          // whatever is left
 
   /// The turns that have left the queue and not yet reached an agent, counted
   /// under an OWNER (the idle sweep's question) and under an AGENT TAB (the
-  /// question every verb that would queue a second turn asks).
+  /// question every verb that would queue a second turn asks). Every turn
+  /// counts under its owner; only a turn that says something counts under its
+  /// agent, because only that turn tells the agent to read its thread.
   struct TurnsInFlight { owners: HashMap<String, usize>, agents: HashMap<TabKey, usize> }
-  struct TurnMark { owner: String, agent: TabKey }
+  struct TurnMark { owner: String, told_agent: Option<TabKey> }
+  impl TurnMark { fn settle(self, s: &mut AppState); }       // one delivered turn
   impl TurnsInFlight {
       fn take(&mut self, turn: &PendingAgentTurn) -> TurnMark;
       fn give_back(&mut self, mark: &TurnMark);
       fn holds_owner(&self, owner: &str) -> bool;
       fn holds_agent(&self, key: &TabKey) -> bool;
   }
+  impl PendingAgentTurn { fn says_something(&self) -> bool; }
   impl AppState {
       fn take_pending_turns(&mut self) -> PendingTurns;
-      /// Queued, mid-delivery, or claimed by the spawn that delivery makes.
+      /// A turn WITH WORDS for this agent is queued or mid-delivery.
       fn agent_is_on_its_way(&self, root: &Path, agent_id: &str) -> bool;
       /// The whole reading a verb needs of the agent its parameters address.
       fn addressed_agent(&mut self, params: &Value) -> Result<AddressedAgent, String>;
@@ -669,21 +673,49 @@ noted below.
 - **"The agent is already coming" has one owner and one lifetime.** A turn
   passes through three states — queued, off the queue and mid-delivery, claimed
   by the spawn that delivery makes — and the delivery gives its in-flight mark
-  back only after settling the claim it became, so the three overlap and leave
-  no window. `agent_is_on_its_way` asks all three and is the only way to ask;
-  the revive/nudge guard and `start_routed_issue_agent` used to compute it by
-  hand from the queue and the claim alone, which since this step's split reads
-  false for the whole of a delivery. A second message landing there queued a
-  duplicate turn: the claim still stops a second harness, nothing stopped the
-  duplicate `read_unread_messages` nudge. The key is per (root, agent_id), so a
-  branch's second agent is never suppressed by its first agent's turn.
+  back only after settling the claim it became, so the mark covers the claim's
+  whole lifetime and the states leave no window. `agent_is_on_its_way` is the
+  only way to ask; the revive/nudge guard and `start_routed_issue_agent` used
+  to compute it by hand from the queue and the claim alone, which since this
+  step's split reads false for the whole of a delivery. A second message
+  landing there queued a duplicate turn: the claim still stops a second
+  harness, nothing stopped the duplicate `read_unread_messages` nudge. The key
+  is per (root, agent_id), so a branch's second agent is never suppressed by
+  its first agent's turn.
+- **Only a turn with words is "already coming".** The guard's premise is that
+  the harness on its way opens on a cold prompt telling it to call
+  `read_unread_messages`, so the message just posted is read. A textless turn
+  (`agent.start` with nothing unread) opens a harness and sends it nothing, and
+  a message posted between the button and the harness would sit on the thread
+  with nobody told. So `TurnsInFlight` counts a turn under its agent key only
+  when it `says_something()` (`TurnMark.told_agent: Option<TabKey>`),
+  `agent_is_on_its_way` ignores textless queued turns, and the bare
+  `agent_spawns_in_flight` disjunct is gone: a claim with no textful mark
+  behind it is a textless spawn. A post during one queues its own revive turn,
+  which waits out the claim in `ensure_agent_tab` and lands Warm on the tab the
+  start opened. Two states, then: queued, and mid-delivery.
+- **A mark travels with its turn.** `take_pending_turns` pairs each turn with
+  the mark `TurnsInFlight::take` produced for it, `next_turn` hands both back,
+  and `TurnMark::settle` consumes the one for the turn that landed. Looked up
+  by owner alone, a batch carrying two turns for one owner on two agents could
+  settle the OTHER agent's mark and leave its undelivered turn reading as
+  absent — the window the per-agent count exists to close.
+- **A reservation fails before it takes.** `reserve_agent_spawn` resolves the
+  owner's project (`project_of`, or `default_project` for a router) and clones
+  the orchestrator FIRST; only then does it retire the dead tab keeping its
+  screen, sweep the stale owners' tabs, register the MCP token and take the
+  claim. `SpawnHolding::abandon` is the one primitive that gives those back,
+  and a `?` between the take and the holding would bypass it: the carried grid
+  dropped without a close, the token registered for no child. The function's
+  only failure arm now runs with the registry untouched.
 - **Lock discipline** Three acquisitions. **Take**: the queue, the in-flight
   marks, the reserved tab id (`agent_tab_id(agent_id)` — the agent's own
   identity mints it, so no registry entry is needed to name it), one
-  acquisition, so the idle sweep never sees a gap. **Reserve**:
-  `retire_tab_keeping_screen` for the dead tab this spawn replaces and
-  `retire_tab` for the stale-owner sweep (receipts dropped), the orchestrator
-  clone, the probe inputs, the session token, the claim. **Run**: probe,
+  acquisition, so the idle sweep never sees a gap. **Reserve**: the project
+  lookup and the orchestrator clone (the only reads that can fail, so they go
+  first), then `retire_tab_keeping_screen` for the dead tab this spawn replaces
+  and `retire_tab` for the stale-owner sweep (receipts dropped), the probe
+  inputs, the session token, the claim. **Run**: probe,
   scaffold, build the spec, spawn, `send_turn` — none. **Apply**: insert the
   tab, consume the claim, `record_agent_resume_id(.., None)` when
   `recorded_name_is_gone`, `record_agent_session_start` /
@@ -696,6 +728,9 @@ noted below.
   `a_delivery_that_fails_in_the_background_lands_on_its_entity`,
   `a_delivery_that_panics_gives_its_in_flight_marks_back`,
   `a_second_message_queues_nothing_while_the_first_is_mid_delivery`,
+  `a_message_posted_during_a_textless_start_queues_its_own_turn`,
+  `settling_one_agents_turn_leaves_the_other_agents_mark_in_flight`,
+  `a_reservation_that_cannot_resolve_its_project_takes_nothing_from_the_registry`,
   `a_spawn_that_panics_gives_its_claim_back`,
   `a_claim_dropped_by_a_panic_under_the_app_mutex_does_not_deadlock`,
   `two_callers_of_one_tab_spawn_one_harness_without_spinning`,

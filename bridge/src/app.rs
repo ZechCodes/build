@@ -10605,7 +10605,7 @@ impl AppState {
                 let recovering = self
                     .start_checkout_recovery(&issue_id, &run_id, &error)
                     .unwrap_or_else(|persist_failure| persist_failure);
-                return Err(caller.refused(self, recovering));
+                return caller.settle(self, Err(recovering));
             }
         };
         let settled = (|| -> Result<(), String> {
@@ -10639,10 +10639,7 @@ impl AppState {
             );
             self.finish_plan_mutation(issue_id.clone(), issue)
         })();
-        match settled {
-            Ok(()) => caller.opened(self, &run_id),
-            Err(error) => Err(caller.refused(self, error)),
-        }
+        caller.settle(self, settled.map(|()| run_id.as_str()))
     }
 
     /// Hand a run whose checkout could not be put back to the verified recovery
@@ -11617,10 +11614,7 @@ impl AppState {
             })
         })()
         .and_then(|opened| self.open_implementation_run(opened));
-        match opened {
-            Ok(()) => caller.opened(self, &run_id),
-            Err(error) => Err(caller.refused(self, error)),
-        }
+        caller.settle(self, opened.map(|()| run_id.as_str()))
     }
 
     /// The same, on a checkout an existing run already owns: the run is taken
@@ -11637,39 +11631,35 @@ impl AppState {
             model_choice,
             caller,
         } = opened;
-        let mut active = match self.take_run(&run_id) {
-            Ok(active) => active,
-            Err(error) => return Err(caller.refused(self, error)),
-        };
-        let adopted = (|| -> Result<(AgentTurn, String), String> {
-            let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
-            self.orch_for(&project_id)?
-                .open_adopted_implementation(&mut active, plan, base_sha, model_choice)
-                .map_err(err)
+        let opened = (|| -> Result<(), String> {
+            let mut active = self.take_run(&run_id)?;
+            let adopted = (|| -> Result<(AgentTurn, String), String> {
+                let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
+                self.orch_for(&project_id)?
+                    .open_adopted_implementation(&mut active, plan, base_sha, model_choice)
+                    .map_err(err)
+            })();
+            let (turn, agent_id) = match adopted {
+                Ok(opened) => opened,
+                Err(error) => {
+                    // Nothing was handed over: the branch keeps the run it had.
+                    self.runs.insert(run_id.clone(), active);
+                    return Err(error);
+                }
+            };
+            let branch = active.worktree.branch();
+            self.open_implementation_run(OpenedImplementation {
+                checkout_summary: format!("Implementing into the existing checkout on {branch}"),
+                run_id: run_id.clone(),
+                project_id,
+                issue_id,
+                active,
+                turn,
+                agent_id,
+                checkout_event: crate::thread::ThreadEventKind::WorktreeReused,
+            })
         })();
-        let (turn, agent_id) = match adopted {
-            Ok(opened) => opened,
-            Err(error) => {
-                // Nothing was handed over: the branch keeps the run it had.
-                self.runs.insert(run_id, active);
-                return Err(caller.refused(self, error));
-            }
-        };
-        let branch = active.worktree.branch();
-        let opened = self.open_implementation_run(OpenedImplementation {
-            checkout_summary: format!("Implementing into the existing checkout on {branch}"),
-            run_id: run_id.clone(),
-            project_id,
-            issue_id,
-            active,
-            turn,
-            agent_id,
-            checkout_event: crate::thread::ThreadEventKind::WorktreeReused,
-        });
-        match opened {
-            Ok(()) => caller.opened(self, &run_id),
-            Err(error) => Err(caller.refused(self, error)),
-        }
+        caller.settle(self, opened.map(|()| run_id.as_str()))
     }
 
     /// The tail every implementation dispatch shares: address the first turn to
@@ -16762,6 +16752,20 @@ pub trait ImplementationCaller: Send {
     /// The message the frame gets, after whatever the decide phase armed on the
     /// strength of this implementation has been settled.
     fn refused(self: Box<Self>, state: &mut AppState, error: String) -> String;
+
+    /// Hand the implementation back: the run it opened, or the error that
+    /// stopped it. This is how the two halves above are used — every one of
+    /// them, so a fourth implementation mutation cannot pair them a fifth way.
+    fn settle(
+        self: Box<Self>,
+        state: &mut AppState,
+        opened: Result<&str, String>,
+    ) -> Result<Value, String> {
+        match opened {
+            Ok(run_id) => self.opened(state, run_id),
+            Err(error) => Err(self.refused(state, error)),
+        }
+    }
 }
 
 /// `run.create` asked: it hears the run it opened, and a failure is its own
@@ -16873,7 +16877,7 @@ pub struct ImplementationRefused {
 
 impl LifecycleEpilogue for ImplementationRefused {
     fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        Err(self.caller.refused(state, self.error))
+        self.caller.settle(state, Err(self.error))
     }
 }
 

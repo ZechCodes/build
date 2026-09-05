@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 
 use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
-    checked_in_fixture, harness_context, initialize_result, item_envelope, item_envelope_at,
-    selected_choice, spawn_options, supported_user_agent, thread_opened, thread_opened_with,
-    CHECKED_IN_FIXTURES, CHECKED_IN_FIXTURE_DIRECTORY, CHILD_THREAD_ID, CHILD_TURN_ID,
-    EXACT_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID, WORKTREE_ROOT,
+    checked_in_fixture, corpus_file_names, harness_context, initialize_result, item_envelope,
+    item_envelope_at, selected_choice, spawn_options, supported_user_agent, thread_opened,
+    thread_opened_with, CHECKED_IN_FIXTURES, CHILD_THREAD_ID, CHILD_TURN_ID, EXACT_THREAD_ID,
+    SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID, WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
@@ -2663,7 +2663,8 @@ fn fixture_operation(message: &Value) -> PendingOperation {
 
 #[test]
 fn observed_start_fixture_replays_as_one_correlated_stream() {
-    let replay = replay_observed_fixture(checked_in_fixture("observed-session-start.jsonl"));
+    let replay =
+        replay_observed_fixture(checked_in_fixture("0.153.0/observed-session-start.jsonl"));
     assert_eq!(
         replay.correlated_methods,
         [
@@ -2694,7 +2695,8 @@ fn observed_start_fixture_replays_as_one_correlated_stream() {
 
 #[test]
 fn observed_resume_fixture_replays_as_one_correlated_stream() {
-    let replay = replay_observed_fixture(checked_in_fixture("observed-session-resume.jsonl"));
+    let replay =
+        replay_observed_fixture(checked_in_fixture("0.153.0/observed-session-resume.jsonl"));
     assert_eq!(
         replay.correlated_methods,
         ["initialize", "thread/resume", "turn/start"]
@@ -2716,7 +2718,7 @@ fn observed_resume_fixture_replays_as_one_correlated_stream() {
 
 #[test]
 fn observed_mcp_fixture_suppresses_build_and_pairs_non_build_activity() {
-    let replay = replay_observed_fixture(checked_in_fixture("observed-session-mcp.jsonl"));
+    let replay = replay_observed_fixture(checked_in_fixture("0.153.0/observed-session-mcp.jsonl"));
     assert_eq!(
         replay.correlated_methods,
         ["initialize", "thread/start", "turn/start"]
@@ -2740,7 +2742,7 @@ fn observed_mcp_fixture_suppresses_build_and_pairs_non_build_activity() {
 
 #[test]
 fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
-    let fixture = checked_in_fixture("synthetic-model-events.jsonl");
+    let fixture = checked_in_fixture("0.153.0/synthetic-model-events.jsonl");
     let mut errors = fixture.lines().filter_map(|line| {
         let envelope: Value = serde_json::from_str(line).unwrap();
         (envelope["method"] == "error").then(|| {
@@ -2991,26 +2993,15 @@ fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
 #[test]
 fn checked_in_fixtures_retain_no_account_or_machine_material() {
     let home = std::env::var("HOME").expect("a home directory names this machine");
-    let mut corpus_files: Vec<String> = std::fs::read_dir(CHECKED_IN_FIXTURE_DIRECTORY)
-        .expect("the pinned fixture corpus is checked in")
-        .map(|entry| {
-            entry
-                .expect("a fixture entry is readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|file_name| file_name != "PROVENANCE.md")
-        .collect();
-    corpus_files.sort();
     let mut scanned_files: Vec<String> = CHECKED_IN_FIXTURES
         .iter()
         .map(|(name, _)| (*name).to_string())
         .collect();
     scanned_files.sort();
     assert_eq!(
-        corpus_files, scanned_files,
-        "every checked-in fixture is scanned for account or machine material"
+        corpus_file_names(),
+        scanned_files,
+        "every checked-in fixture under every version directory is scanned for account or machine material"
     );
 
     for (name, body) in CHECKED_IN_FIXTURES {

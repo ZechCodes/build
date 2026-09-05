@@ -1,3 +1,4 @@
+use std::fs::{self, DirEntry};
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
@@ -93,38 +94,71 @@ pub(super) fn harness_context() -> HarnessContext {
     }
 }
 
-macro_rules! checked_in_fixture_corpus {
-    ($version:literal, $($name:literal),+ $(,)?) => {
-        pub(super) const CHECKED_IN_FIXTURE_DIRECTORY: &str = concat!(
+macro_rules! corpus_path {
+    ($($segment:expr),*) => {
+        concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/codex-app-server/",
-            $version
-        );
+            "/tests/fixtures/codex-app-server/"
+            $(, $segment)*
+        )
+    };
+}
 
-        pub(super) const CHECKED_IN_FIXTURES: &[(&str, &str)] = &[$((
-            $name,
-            include_str!(concat!(
-                "../../../tests/fixtures/codex-app-server/",
-                $version,
-                "/",
-                $name
-            )),
-        )),+];
+const CHECKED_IN_FIXTURE_CORPUS_ROOT: &str = corpus_path!();
+const CORPUS_PROVENANCE_FILE_NAME: &str = "PROVENANCE.md";
+
+macro_rules! checked_in_fixture_corpus {
+    ($($version:literal => [$($name:literal),+ $(,)?]),+ $(,)?) => {
+        pub(super) const CHECKED_IN_FIXTURES: &[(&str, &str)] = &[$($((
+            concat!($version, "/", $name),
+            include_str!(corpus_path!($version, "/", $name)),
+        ),)+)+];
     };
 }
 
 checked_in_fixture_corpus!(
-    "0.153.0",
-    "observed-session-start.jsonl",
-    "observed-session-resume.jsonl",
-    "observed-session-mcp.jsonl",
-    "synthetic-model-events.jsonl",
+    "0.153.0" => [
+        "observed-session-start.jsonl",
+        "observed-session-resume.jsonl",
+        "observed-session-mcp.jsonl",
+        "synthetic-model-events.jsonl",
+    ],
 );
 
-pub(super) fn checked_in_fixture(name: &str) -> &'static str {
+pub(super) fn checked_in_fixture(version_qualified_name: &str) -> &'static str {
     CHECKED_IN_FIXTURES
         .iter()
-        .find(|(fixture_name, _)| *fixture_name == name)
-        .unwrap_or_else(|| panic!("{name} is not a checked-in fixture"))
+        .find(|(fixture_name, _)| *fixture_name == version_qualified_name)
+        .unwrap_or_else(|| panic!("{version_qualified_name} is not a checked-in fixture"))
         .1
+}
+
+pub(super) fn corpus_file_names() -> Vec<String> {
+    let mut version_qualified_names: Vec<String> = fs::read_dir(CHECKED_IN_FIXTURE_CORPUS_ROOT)
+        .expect("the fixture corpus root is checked in")
+        .flat_map(|version_entry| {
+            version_directory_fixture_names(
+                &version_entry.expect("a corpus version entry is readable"),
+            )
+        })
+        .collect();
+    version_qualified_names.sort();
+    version_qualified_names
+}
+
+fn version_directory_fixture_names(version_entry: &DirEntry) -> Vec<String> {
+    let version = entry_file_name(version_entry);
+    fs::read_dir(version_entry.path())
+        .unwrap_or_else(|error| panic!("{version} is not a fixture version directory: {error}"))
+        .map(|fixture_entry| entry_file_name(&fixture_entry.expect("a fixture entry is readable")))
+        .filter(|file_name| file_name != CORPUS_PROVENANCE_FILE_NAME)
+        .map(|file_name| format!("{version}/{file_name}"))
+        .collect()
+}
+
+fn entry_file_name(entry: &DirEntry) -> String {
+    entry
+        .file_name()
+        .into_string()
+        .unwrap_or_else(|name| panic!("{name:?} is not a UTF-8 corpus file name"))
 }

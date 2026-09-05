@@ -1782,9 +1782,9 @@ pub struct AppState {
     /// and waits seconds on its readiness, and every terminal pump needs the
     /// same lock to make progress, so delivering inline deadlocks the daemon
     /// for as long as the spawn takes. The split is the contract: under the
-    /// lock a verb RECORDS what to say (a `PendingAgentTurn`), and the drain
-    /// sites — [`dispatch_frame`] and the done-socket — SAY it with the lock
-    /// free. Everything that has to look agentless-versus-in-flight
+    /// lock a verb RECORDS what to say (a `PendingAgentTurn`), and
+    /// [`DeliveryRunner`] SAYS it on a thread of its own, after the frame that
+    /// queued it has answered. Everything that has to look agentless-versus-in-flight
     /// ([`AppState::agent_turns_in_flight`], the idle sweep) exists to cover
     /// the gap this split opens; none of it is optional.
     pending_agent_turns: Vec<PendingAgentTurn>,
@@ -11284,9 +11284,9 @@ impl AppState {
     /// A live tab is nudged where it stands ([`nudge_live_agent_tab`]). A tab
     /// whose process has ended — or one that was never opened — is not a reason
     /// for the message to go unheard: the SAME agent starts again, in the SAME
-    /// checkout, through the queue [`deliver_pending_agent_turns`] drains once
-    /// the state lock is free (a spawn blocks for seconds on the harness's
-    /// readiness wait, and every terminal pump needs that lock). Continuation
+    /// checkout, through the queue [`DeliveryRunner`] drains on a thread of its
+    /// own (a spawn blocks for seconds on the harness's readiness wait, and
+    /// every terminal pump — and this reply — needs that lock). Continuation
     /// comes with it for free: [`ensure_agent_tab`] probes the provider's own
     /// transcript for the checkout, so a revived claude/codex agent picks the
     /// session it was in back up rather than opening a blank one.
@@ -13450,8 +13450,8 @@ impl AppState {
         // it: the instruction is already durable on the thread, so a warm
         // harness gets the read-your-messages nudge `thread.post` writes, and a
         // cold one gets that nudge wrapped in the packet it has no other way to
-        // reconstruct. The spawn itself happens in `deliver_pending_agent_turns`,
-        // with the state lock free.
+        // reconstruct. The spawn itself happens in `DeliveryRunner`, with the
+        // state lock free and this frame already answered.
         self.pending_agent_turns.push(PendingAgentTurn {
             root,
             owner: run_id.clone(),
@@ -17253,9 +17253,9 @@ fn dispatch_frame(
         // receive queue, not for the screen.
         "term.ack" => term_ack(state, &sender, &params, &timer),
         "agent.attach" => agent_attach(state, &sender, &params, &timer),
-        // Bypasses `dispatch` for the same reason `deliver` does: opening a
-        // harness blocks for seconds on its readiness wait, and every terminal
-        // pump needs the state lock free while it does.
+        // Bypasses `dispatch` because it hands its queued turn to
+        // `DeliveryRunner`, which needs the shared handle `dispatch` does not
+        // have.
         "agent.start" => agent_start(state, &params, &timer),
         _ => {
             // Whatever this verb reads out of the diff caches is brought up to

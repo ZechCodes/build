@@ -2873,3 +2873,219 @@ fn context_compaction_and_review_mode_transitions_stay_visible() {
         assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT);
     }
 }
+
+const HOSTILE_PARAM_TEXT: &str = "sk-fixture-secret; rm -rf /";
+
+fn hostile_request_params(routing_id: &str) -> Value {
+    json!({
+        "threadId": routing_id,
+        "conversationId": routing_id,
+        "command": [HOSTILE_PARAM_TEXT],
+        "reason": HOSTILE_PARAM_TEXT,
+        "decision": "approve",
+        "action": "accept",
+        "currentTimeAt": 9_999_999_999i64,
+        "nested": {"deeper": HOSTILE_PARAM_TEXT}
+    })
+}
+
+#[test]
+fn untrusted_request_params_never_reach_the_response_or_the_report() {
+    let methods = [
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "execCommandApproval",
+        "applyPatchApproval",
+        "mcpServer/elicitation/request",
+        "item/tool/requestUserInput",
+        "item/permissions/requestApproval",
+        "item/tool/call",
+        "account/chatgptAuthTokens/refresh",
+        "attestation/generate",
+        "currentTime/read",
+        "future/request",
+    ];
+    for method in methods {
+        for routing_id in ["thread-parent", CHILD_THREAD_ID] {
+            let routed = RoutedServerRequest::decode(
+                &InboundServerRequest {
+                    id: json!(5),
+                    method: method.to_string(),
+                    params: hostile_request_params(routing_id),
+                },
+                Some("thread-parent"),
+            )
+            .expect("a routed request carries its routing id");
+            let decision = ServerRequestPolicy::decide(routed.request, routed.route, 4242);
+            let written = serde_json::to_string(&decision.response).unwrap();
+            for granted in [
+                HOSTILE_PARAM_TEXT,
+                "\"decision\":\"approve\"",
+                "\"action\":\"accept\"",
+                "approved",
+                "allowed",
+                "9999999999",
+            ] {
+                assert!(
+                    !written.contains(granted),
+                    "{method} {routing_id}: {written}"
+                );
+            }
+            if method == "currentTime/read" {
+                assert_eq!(
+                    decision.response.to_value(),
+                    json!({"id":5,"result":{"currentTimeAt":4242}}),
+                    "{routing_id}"
+                );
+            }
+            if let Some(report) = decision.report {
+                assert!(
+                    !report.activity.summary().contains(HOSTILE_PARAM_TEXT),
+                    "{method} {routing_id}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_hostile_error_message_reports_within_the_activity_bound() {
+    let hostile = format!("secret\n{}", "A".repeat(8192));
+    for will_retry in [true, false] {
+        let notification = match ServerNotification::decode(
+            "error",
+            json!({
+                "threadId": THREAD_ID,
+                "turnId": TURN_ID,
+                "error": {"message": hostile},
+                "willRetry": will_retry
+            }),
+        )
+        .unwrap()
+        {
+            ServerNotification::Error(error) => error,
+            other => panic!("expected an error notification, got {other:?}"),
+        };
+        let transition = working_state()
+            .transition(
+                SessionEvent::ObservedError(notification),
+                Duration::ZERO,
+                limits().state(),
+            )
+            .unwrap();
+        let summary = match transition.effects.first() {
+            Some(SessionEffect::Report(report)) => report.activity.summary().to_string(),
+            other => panic!("expected a report first, got {other:?}"),
+        };
+        assert_eq!(
+            summary.chars().count(),
+            crate::harness::adk::TOOL_SUMMARY_LIMIT + 1,
+            "{summary}"
+        );
+        assert!(summary.ends_with('…'), "{summary}");
+        assert!(!summary.contains('\n'), "{summary}");
+    }
+}
+
+#[test]
+fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
+    let options = SpawnOptions {
+        owner_id: "run-1".to_string(),
+        cwd: PathBuf::from(WORKTREE_ROOT),
+        mcp_session_token: "fixture-token".to_string(),
+        ..SpawnOptions::default()
+    };
+    let context = HarnessContext {
+        bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+        mcp_socket: "/tmp/build.sock".to_string(),
+    };
+    let spec = super::CodexAppServerHarness.spec(&selected_choice(), &options, &context);
+
+    for marker in crate::harness::INHERITED_AGENT_MARKERS {
+        assert!(spec.unset.iter().any(|key| key == marker), "{marker}");
+    }
+    assert!(spec.env.is_empty(), "{:?}", spec.env);
+    assert_eq!(
+        spec.args
+            .iter()
+            .filter(|argument| argument.contains(&options.mcp_session_token))
+            .collect::<Vec<_>>(),
+        vec!["mcp_servers.build.env.BRIDGE_MCP_TOKEN=\"fixture-token\""]
+    );
+    assert!(spec
+        .args
+        .iter()
+        .any(|argument| argument == "mcp_servers.build.required=true"));
+    let enabled_tools = spec
+        .args
+        .iter()
+        .find(|argument| argument.starts_with("mcp_servers.build.enabled_tools="))
+        .expect("the Build MCP server enables only named tools");
+    assert!(enabled_tools.contains("done"), "{enabled_tools}");
+    assert!(
+        !enabled_tools.contains("create_issue"),
+        "{enabled_tools}: a coding owner gets no router tools"
+    );
+}
+
+#[test]
+fn checked_in_fixtures_retain_no_account_or_machine_material() {
+    let fixtures = [
+        (
+            "observed-session-start.jsonl",
+            include_str!(
+                "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-start.jsonl"
+            ),
+        ),
+        (
+            "observed-session-resume.jsonl",
+            include_str!(
+                "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-resume.jsonl"
+            ),
+        ),
+        (
+            "observed-session-mcp.jsonl",
+            include_str!(
+                "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-mcp.jsonl"
+            ),
+        ),
+        (
+            "synthetic-model-events.jsonl",
+            include_str!(
+                "../../../tests/fixtures/codex-app-server/0.153.0/synthetic-model-events.jsonl"
+            ),
+        ),
+    ];
+    let home = std::env::var("HOME").expect("a home directory names this machine");
+    for (name, body) in fixtures {
+        let lowercased = body.to_lowercase();
+        for secret_shape in [
+            "/users/",
+            "sk-",
+            "bearer ",
+            "eyj",
+            "authorization",
+            "access_token",
+            "api_key",
+            "accountid",
+            "@openai.com",
+        ] {
+            assert!(!lowercased.contains(secret_shape), "{name}: {secret_shape}");
+        }
+        assert!(!body.contains(&home), "{name} names this machine's home");
+        for home_path in body.match_indices("/home/") {
+            assert!(
+                body[home_path.0..].starts_with("/home/fixture"),
+                "{name} retains a real home path"
+            );
+        }
+        for line in body.lines() {
+            let envelope: Value =
+                serde_json::from_str(line).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(
+                envelope.get("direction").is_some() || envelope.get("method").is_some(),
+                "{name}: every fixture line is a labelled protocol record"
+            );
+        }
+    }
+}

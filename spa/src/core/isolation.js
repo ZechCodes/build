@@ -90,3 +90,56 @@ export function projectIsolationTarget(project) {
     inheritLabel: `Account default (${inherited.label})`,
   };
 }
+
+/** What the select shows: a project's own override, which may be nothing at
+ *  all, and the account's answer defaulted because it has nothing above it. */
+const chosenIsolation = (settings, inheritLabel) =>
+  inheritLabel ? (settings && settings.isolation) || null : isolationOf(settings);
+
+const lockLine = (available) => {
+  const reason = isolationLockReason(available);
+  return reason ? `Locked to git worktrees on this device: ${reason}.` : "";
+};
+
+/** Wire a select to one place a chosen isolation is sent — `ACCOUNT_ISOLATION`
+ *  or `projectIsolationTarget(project)` — and to the payload that place answers
+ *  with. The control paints from what the caller already read, saves the choice
+ *  through the target, and repaints from the bridge's answer, so it shows what
+ *  the bridge holds rather than what was merely asked for. A refusal is the
+ *  bridge's own sentence, and the control goes back to the answer it last had. */
+export async function mountIsolation(host, { callRpc, target, settings }) {
+  const select = host.querySelector("[data-isolation=select]");
+  if (!select) return;
+  const lock = host.querySelector("[data-isolation=lock]");
+  const saved = host.querySelector("[data-isolation=saved]");
+  const error = host.querySelector("[data-isolation=error]");
+
+  let held = settings;
+  const paint = (state) => {
+    held = state;
+    const available = state && state.isolation_available;
+    select.innerHTML = isolationOptionsHtml(chosenIsolation(state, target.inheritLabel), available, {
+      inheritLabel: target.inheritLabel,
+    });
+    lock.textContent = lockLine(available);
+  };
+
+  paint(settings);
+  select.disabled = false;
+
+  select.onchange = async () => {
+    const chosen = select.value || null;
+    select.disabled = true;
+    error.textContent = "";
+    saved.textContent = "Saving…";
+    try {
+      paint(await callRpc(target.rpc, { ...target.params, isolation: chosen }));
+      saved.textContent = "Saved. New worktrees are isolated this way; the ones already here keep what they were made with.";
+    } catch (refusal) {
+      error.textContent = refusal.message;
+      saved.textContent = "";
+      paint(held);
+    }
+    select.disabled = false;
+  };
+}

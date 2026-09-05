@@ -5,14 +5,11 @@ the dependency wiring are all under test."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-from litestar import Litestar
-from litestar.di import Provide
-from litestar.middleware.session.client_side import CookieBackendConfig
 from litestar.status_codes import (
     HTTP_200_OK,
     HTTP_401_UNAUTHORIZED,
@@ -26,16 +23,16 @@ from litestar.status_codes import (
 from litestar.handlers import HTTPRouteHandler
 from litestar.testing import TestClient
 from skrift.auth.guards import auth_guard
-from skrift.auth.services import invalidate_user_permissions_cache
 from skrift.auth.session_keys import SESSION_USER_ID
-from skrift.db.base import Base
-from skrift.db.models.role import Role, RolePermission
-from skrift.db.models.user import User
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from buildapp import invites, invites_controller
-from buildapp.email_test_support import RecordingEmailBackend, email_settings
+from buildapp.db_test_support import (
+    add_account,
+    in_memory_session_maker,
+    session_app,
+    session_backend_config,
+)
+from buildapp.email_test_support import email_settings
 from buildapp.invite_mail import INVITE_SUBJECT
 from buildapp.invite_pages import OUTCOMES
 from buildapp.invites import EMAIL_MISMATCH, InviteState, invite_path
@@ -48,66 +45,22 @@ from buildapp.models import Invite
 
 INVITED = "invitee@example.com"
 OTHER_ADDRESS = "someone.else@example.com"
-IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-SESSION_SECRET = b"0123456789abcdef0123456789abcdef"
-ADMINISTRATOR = "administrator"
 
 
 def now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-async def create_skrift_tables(engine) -> None:
-    """Every framework table plus buildapp's, so the real auth guard can resolve a
-    user's roles the way it does in production."""
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-
-
-async def add_account(session, email: str, *, administrator: bool = False) -> UUID:
-    user = User(id=uuid4(), email=email, name="Someone")
-    if administrator:
-        role = Role(id=uuid4(), name=ADMINISTRATOR)
-        role.permissions.append(RolePermission(id=uuid4(), permission=ADMINISTRATOR))
-        user.roles.append(role)
-    session.add(user)
-    await session.commit()
-    invalidate_user_permissions_cache(user.id)
-    return user.id
-
-
-@pytest.fixture()
-def email_backend() -> RecordingEmailBackend:
-    return RecordingEmailBackend()
-
-
 @pytest.fixture()
 def client(monkeypatch, email_backend) -> Iterator[TestClient]:
     monkeypatch.setattr(invites_controller, "get_settings", email_settings)
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    make_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def provide_db_session() -> AsyncIterator[AsyncSession]:
-        async with make_session() as session:
-            yield session
-
-    async def create_tables(app: Litestar) -> None:
-        await create_skrift_tables(engine)
-
-    async def dispose_engine(app: Litestar) -> None:
-        await engine.dispose()
-
-    session_config = CookieBackendConfig(secret=SESSION_SECRET)
-    app = Litestar(
-        route_handlers=[InvitesController],
-        dependencies={"db_session": Provide(provide_db_session)},
-        middleware=[session_config.middleware],
-        on_startup=[create_tables],
-        on_shutdown=[dispose_engine],
+    session_config = session_backend_config()
+    app = session_app(
+        [InvitesController],
+        session_maker=in_memory_session_maker(),
+        session_config=session_config,
     )
     app.state.email_backend = email_backend
-    app.state.make_session = make_session
-    app.state.session_maker_class = make_session
     with TestClient(app=app, session_config=session_config) as test_client:
         yield test_client
 

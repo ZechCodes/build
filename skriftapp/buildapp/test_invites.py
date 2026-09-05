@@ -8,9 +8,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from buildapp import invites
 from buildapp.invites import (
@@ -27,7 +24,6 @@ from buildapp.token_hash import token_hash
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 INVITED = "invitee@example.com"
-IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 def invite(**fields) -> Invite:
@@ -42,16 +38,6 @@ def invite(**fields) -> Invite:
     )
     defaults.update(fields)
     return Invite(**defaults)
-
-
-@pytest_asyncio.fixture()
-async def db():
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    async with engine.begin() as connection:
-        await connection.run_sync(Invite.__table__.create)
-    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-        yield session
-    await engine.dispose()
 
 
 def test_a_minted_token_is_prefixed_and_stored_only_as_its_hash():

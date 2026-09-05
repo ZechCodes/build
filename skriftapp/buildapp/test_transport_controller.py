@@ -24,11 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from buildapp import transport_controller
+from buildapp.db_test_support import IN_MEMORY_DATABASE_URL
 from buildapp.models import Device, TransportSession
 from buildapp.transport_controller import REPORT_ROUTE_PATH, TransportController
 from buildapp.transport_report import NO_PATH, report_challenge
 
-IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 def _ed25519_pair() -> tuple[Ed25519PrivateKey, str]:

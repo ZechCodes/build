@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from buildapp import waitlist_controller
+from buildapp.db_test_support import IN_MEMORY_DATABASE_URL
 from buildapp.email_test_support import (
     OWNER_ADDRESS,
     SECRET_KEY,
@@ -36,7 +37,6 @@ from buildapp.waitlist_unsubscribe_token import mint_unsubscribe_token, unsubscr
 SIGNER_ADDRESS = "signer@example.com"
 MIXED_CASE_ADDRESS = "  Signer@Example.COM "
 ONE_CLICK_FORM_BODY = {"List-Unsubscribe": "One-Click"}
-IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture()

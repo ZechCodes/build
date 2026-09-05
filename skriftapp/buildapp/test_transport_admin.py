@@ -5,14 +5,13 @@ and that it is an admin page (``planning/v2/Transport Telemetry Spec.md``
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from uuid import uuid4
 
-from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
 from litestar.handlers import HTTPRouteHandler
 from skrift.admin.navigation import ADMIN_NAV_TAG
 from skrift.auth.guards import auth_guard
 
+from buildapp.db_test_support import admin_template_environment
 from buildapp.models import Device, TransportSession
 from buildapp.transport_admin import (
     DIRECT,
@@ -121,14 +120,7 @@ def test_the_page_is_an_admin_nav_page_behind_the_administrator_permission():
 
 
 def test_the_template_renders_the_four_figures_and_the_caveat():
-    templates = Path(__file__).resolve().parent.parent / "templates"
-    env = Environment(
-        loader=ChoiceLoader([
-            DictLoader({"admin/base.html": "{% block admin_content %}{% endblock %}"}),
-            FileSystemLoader(str(templates)),
-        ]),
-        autoescape=True,
-    )
+    env = admin_template_environment()
     dashboard = build_transport_dashboard(
         [session(first_path="turn", carrying_count=1, turn_count=1)], [], window="7d", now=NOW
     )

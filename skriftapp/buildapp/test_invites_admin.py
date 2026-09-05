@@ -4,48 +4,42 @@ form posts that call the same service functions the JSON route does."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
-from litestar import Litestar
-from litestar.di import Provide
 from litestar.handlers import HTTPRouteHandler
-from litestar.middleware.session.client_side import CookieBackendConfig
 from litestar.testing import TestClient
 from skrift.admin.navigation import ADMIN_NAV_TAG
 from skrift.auth.guards import auth_guard
 from skrift.auth.session_keys import SESSION_USER_ID
 from skrift.forms.core import CSRF_FIELD_NAME, CSRF_SESSION_KEY
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from buildapp import invites, invites_admin
-from buildapp.email_test_support import RecordingEmailBackend, email_settings
+from buildapp.db_test_support import (
+    add_account,
+    admin_template_environment,
+    in_memory_session_maker,
+    session_app,
+    session_backend_config,
+)
+from buildapp.email_test_support import email_settings
 from buildapp.invites import INVITE_TTL, InviteState
 from buildapp.invites_admin import (
     INVITES_ADMIN_PATH,
     INVITES_PAGE_ROUTE_PATH,
     REVOKE_PATH,
     SEND_INVITE_LABEL,
+    TEMPLATE_NAME,
     InvitesAdminController,
     build_invites_dashboard,
 )
 from buildapp.models import Invite
-from buildapp.test_invites_http import (
-    IN_MEMORY_DATABASE_URL,
-    SESSION_SECRET,
-    add_account,
-    create_skrift_tables,
-)
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 INVITER_ADDRESS = "operator@example.com"
 INVITED = "invitee@example.com"
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 CSRF_TOKEN = "a-session-csrf-token"
 CSRF_BODY = {CSRF_FIELD_NAME: CSRF_TOKEN}
 
@@ -68,19 +62,8 @@ def invite(**fields) -> Invite:
 
 def render_page(rows) -> str:
     """The real template, with admin/base.html stubbed and csrf_field() a fake — the
-    same shape the transport admin template test uses."""
-    environment = Environment(  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
-        loader=ChoiceLoader(
-            [
-                DictLoader(
-                    {"admin/base.html": "{% block admin_content %}{% endblock %}"}
-                ),
-                FileSystemLoader(str(TEMPLATES_DIR)),
-            ]
-        ),
-        autoescape=True,
-    )
-    return environment.get_template("admin/invites.html").render(
+    same environment every admin template test renders through."""
+    return admin_template_environment().get_template(TEMPLATE_NAME).render(
         invites=rows,
         site_name=lambda: "Build",
         csrf_field=lambda: f'<input type="hidden" name="{CSRF_FIELD_NAME}" value="t">',
@@ -192,39 +175,18 @@ def test_the_template_names_every_row_it_was_given():
 
 
 @pytest.fixture()
-def email_backend() -> RecordingEmailBackend:
-    return RecordingEmailBackend()
-
-
-@pytest.fixture()
 def admin_client(monkeypatch, email_backend) -> Iterator[TestClient]:
     """The two form POSTs over a real stack. They redirect rather than render, so the
     app needs no template engine — only the session the CSRF token lives in."""
     monkeypatch.setattr(invites_admin, "get_settings", email_settings)
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    make_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def provide_db_session() -> AsyncIterator[AsyncSession]:
-        async with make_session() as session:
-            yield session
-
-    async def create_tables(app: Litestar) -> None:
-        await create_skrift_tables(engine)
-
-    async def dispose_engine(app: Litestar) -> None:
-        await engine.dispose()
-
-    session_config = CookieBackendConfig(secret=SESSION_SECRET)
-    app = Litestar(
-        route_handlers=[InvitesAdminController],
-        dependencies={"db_session": Provide(provide_db_session)},
-        middleware=[session_config.middleware],
-        on_startup=[create_tables],
-        on_shutdown=[dispose_engine],
+    session_config = session_backend_config()
+    make_session = in_memory_session_maker()
+    app = session_app(
+        [InvitesAdminController],
+        session_maker=make_session,
+        session_config=session_config,
     )
     app.state.email_backend = email_backend
-    app.state.make_session = make_session
-    app.state.session_maker_class = make_session
     with TestClient(app=app, session_config=session_config) as test_client:
 
         async def create_operator() -> UUID:

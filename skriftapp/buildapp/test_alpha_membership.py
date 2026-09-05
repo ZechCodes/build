@@ -8,10 +8,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
 from litestar.exceptions import PermissionDeniedException
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from buildapp import invites
 from buildapp.alpha_membership import (
@@ -23,17 +20,6 @@ from buildapp.models import Invite
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 MEMBER_ADDRESS = "member@example.com"
-IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-
-@pytest_asyncio.fixture()
-async def db():
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    async with engine.begin() as connection:
-        await connection.run_sync(Invite.__table__.create)
-    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-        yield session
-    await engine.dispose()
 
 
 async def redeemed_invite(db, user_id) -> Invite:

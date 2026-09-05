@@ -21,11 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from buildapp import desktop_auth, devices_controller, pairing_crypto
+from buildapp.db_test_support import IN_MEMORY_DATABASE_URL
 from buildapp.devices_controller import MAX_DEVICES_PER_USER, DevicesController
 from buildapp.models import Device, Invite
 from buildapp.token_hash import token_hash
 
-IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 USER = uuid4()
 
 

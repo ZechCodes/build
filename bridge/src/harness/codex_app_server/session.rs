@@ -685,10 +685,12 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::harness::codex_app_server::fixtures::{
+        initialize_result, selected_choice, thread_opened_at, SELECTED_EFFORT, SUPPORTED_USER_AGENT,
+    };
     use crate::harness::codex_app_server::policy::AfterResponse;
     use crate::harness::codex_app_server::protocol::ServerResponse;
     use crate::harness::AgentSession;
-    use crate::models::{AgentProvider, ModelChoice};
     use crate::pty::HarnessSpec;
 
     #[test]
@@ -757,11 +759,7 @@ mod tests {
         CodexAppServerSession::spawn(
             &spec,
             root.to_path_buf(),
-            ModelChoice {
-                provider: AgentProvider::CodexAppServer,
-                model: Some("gpt-5.6-sol".to_string()),
-                effort: Some("high".to_string()),
-            },
+            selected_choice(),
             None,
             AppServerLimits::default(),
         )
@@ -769,11 +767,19 @@ mod tests {
     }
 
     fn opened_thread_script(root: &Path, thread_traffic: &str) -> String {
-        let initialize_response = r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#;
-        let thread_response = format!(
-            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
-            root.display()
-        );
+        let initialize_response = serde_json::to_string(
+            &json!({"id":1,"result":initialize_result(SUPPORTED_USER_AGENT)}),
+        )
+        .unwrap();
+        let thread_response = serde_json::to_string(&json!({
+            "id": 2,
+            "result": thread_opened_at(
+                &root.display().to_string(),
+                "thread-1",
+                Some(SELECTED_EFFORT),
+            )
+        }))
+        .unwrap();
         format!(
             "read initialize; printf '%s\\n' '{initialize_response}'; read initialized; read thread; printf '%s\\n' '{thread_response}'; {thread_traffic}"
         )

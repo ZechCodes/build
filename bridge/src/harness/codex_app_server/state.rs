@@ -32,11 +32,6 @@ pub enum SessionEvent {
     Connection(ConnectionEvent),
     ThreadStarted(String),
     TurnStarted(String),
-    #[cfg(test)]
-    TurnCompleted {
-        turn_id: String,
-        error: Option<String>,
-    },
     ObservedCompletion(TurnCompletion),
     VersionEvidence(Result<String, String>),
     CheckTimeouts,
@@ -164,10 +159,6 @@ impl CodexSessionState {
             | SessionEvent::TurnStarted(_)
             | SessionEvent::ObservedCompletion(_)
             | SessionEvent::Eof) => self.apply_lifecycle(lifecycle, now, limits),
-            #[cfg(test)]
-            lifecycle @ SessionEvent::TurnCompleted { .. } => {
-                self.apply_lifecycle(lifecycle, now, limits)
-            }
             reconciliation @ (SessionEvent::VersionEvidence(_) | SessionEvent::CheckTimeouts) => {
                 self.apply_reconciliation(reconciliation, now, limits)
             }
@@ -199,10 +190,6 @@ impl CodexSessionState {
         match event {
             SessionEvent::ThreadStarted(id) => self.thread_started(id, now),
             SessionEvent::TurnStarted(id) => self.turn_started(id, now),
-            #[cfg(test)]
-            SessionEvent::TurnCompleted { turn_id, error } => {
-                self.complete_turn(TurnCompletion::new(turn_id, error), now, limits)
-            }
             SessionEvent::ObservedCompletion(completion) => {
                 self.complete_turn(completion, now, limits)
             }

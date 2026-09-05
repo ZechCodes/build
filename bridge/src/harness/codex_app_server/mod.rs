@@ -125,4 +125,6 @@ impl Harness for CodexAppServerHarness {
 }
 
 #[cfg(test)]
+mod fixtures;
+#[cfg(test)]
 mod tests;

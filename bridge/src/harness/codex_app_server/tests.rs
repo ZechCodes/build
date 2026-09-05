@@ -7,6 +7,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::connection::{AppServerConnection, ConnectionError};
+use super::fixtures::{
+    initialize_result, selected_choice, thread_opened, EXACT_THREAD_ID, SELECTED_EFFORT,
+    SELECTED_MODEL, SUPPORTED_USER_AGENT, WORKTREE_ROOT,
+};
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
@@ -37,21 +41,13 @@ fn limits() -> AppServerLimits {
     }
 }
 
-const EXACT_THREAD_ID: &str = "thread-exact";
-const WORKTREE_ROOT: &str = "/tmp/worktree";
-const SELECTED_MODEL: &str = "gpt-5.6-sol";
-
 fn session_state(resume_id: Option<&str>) -> CodexSessionState {
     CodexSessionState::new(
         PathBuf::from(WORKTREE_ROOT),
         Some(SELECTED_MODEL.to_string()),
-        Some("high".to_string()),
+        Some(SELECTED_EFFORT.to_string()),
         resume_id.map(str::to_string),
     )
-}
-
-fn initialized_state() -> CodexSessionState {
-    session_state(None)
 }
 
 fn correlated(operation: PendingOperation, result: Result<Value, RpcError>) -> SessionEvent {
@@ -67,17 +63,6 @@ fn start_thread() -> PendingOperation {
         cwd: WORKTREE_ROOT.to_string(),
         model: Some(SELECTED_MODEL.to_string()),
     }
-}
-
-fn thread_opened(thread_id: &str, reasoning_effort: Value) -> Value {
-    json!({
-        "thread":{"id":thread_id},
-        "model":SELECTED_MODEL,
-        "reasoningEffort":reasoning_effort,
-        "cwd":WORKTREE_ROOT,
-        "approvalPolicy":"never",
-        "sandbox":{"type":"dangerFullAccess"}
-    })
 }
 
 fn initialized_then_opens_thread() -> Vec<SessionEffect> {
@@ -100,7 +85,7 @@ fn start_turn(input: &str) -> PendingOperation {
         thread_id: "thread-1".to_string(),
         input: input.to_string(),
         model: Some(SELECTED_MODEL.to_string()),
-        effort: Some("high".to_string()),
+        effort: Some(SELECTED_EFFORT.to_string()),
     }
 }
 
@@ -120,39 +105,43 @@ fn interrupt_turn() -> PendingOperation {
 }
 
 fn state_awaiting_initialize_response() -> CodexSessionState {
-    initialized_state()
+    session_state(None)
         .transition(SessionEvent::Start, Duration::ZERO, limits().state())
         .unwrap()
         .state
 }
-
-const SUPPORTED_USER_AGENT: &str = "build_bridge/0.153.0 (fixture)";
 
 fn initialize_response(user_agent: &str) -> SessionEvent {
     correlated(
         PendingOperation::Initialize,
-        Ok(json!({ "userAgent": user_agent })),
+        Ok(initialize_result(user_agent)),
     )
 }
 
-fn initialize_transition(user_agent: &str) -> Result<StateTransition, StateError> {
-    state_awaiting_initialize_response().transition(
-        initialize_response(user_agent),
-        Duration::ZERO,
-        limits().state(),
-    )
-}
-
-fn resumed_initialize_transition() -> Result<StateTransition, StateError> {
-    session_state(Some(EXACT_THREAD_ID))
+fn initialize_transition_for(
+    resume_id: Option<&str>,
+    user_agent: &str,
+) -> Result<StateTransition, StateError> {
+    session_state(resume_id)
         .transition(SessionEvent::Start, Duration::ZERO, limits().state())
         .unwrap()
         .state
         .transition(
-            initialize_response(SUPPORTED_USER_AGENT),
+            initialize_response(user_agent),
             Duration::ZERO,
             limits().state(),
         )
+}
+
+fn initialize_transition(user_agent: &str) -> Result<StateTransition, StateError> {
+    initialize_transition_for(None, user_agent)
+}
+
+fn turn_completed(turn_id: &str, error: Option<&str>) -> SessionEvent {
+    SessionEvent::ObservedCompletion(TurnCompletion::new(
+        turn_id.to_string(),
+        error.map(str::to_string),
+    ))
 }
 
 fn advance_to_waiting() -> CodexSessionState {
@@ -160,7 +149,10 @@ fn advance_to_waiting() -> CodexSessionState {
         .unwrap()
         .state
         .transition(
-            correlated(start_thread(), Ok(thread_opened("thread-1", json!("high")))),
+            correlated(
+                start_thread(),
+                Ok(thread_opened("thread-1", Some(SELECTED_EFFORT))),
+            ),
             Duration::ZERO,
             limits().state(),
         )
@@ -196,11 +188,14 @@ fn correlation_resolves_out_of_order_to_typed_operations() {
         panic!("two correlated requests are pending");
     };
 
-    let second_event = decode(&connection, json!({"id":second,"result":{"thread":{"id":"t"},"model":"m","reasoningEffort":null,"cwd":"/tmp","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}}))
-        .unwrap();
+    let second_event = decode(
+        &connection,
+        json!({"id":second,"result":thread_opened("t", None)}),
+    )
+    .unwrap();
     let first_event = decode(
         &connection,
-        json!({"id":first,"result":{"userAgent":"build_bridge/0.153.0"}}),
+        json!({"id":first,"result":initialize_result(SUPPORTED_USER_AGENT)}),
     )
     .unwrap();
 
@@ -264,7 +259,7 @@ fn a_response_body_that_does_not_match_its_operation_fails_the_connection() {
 fn a_second_response_on_a_resolved_id_is_unknown() {
     let connection = AppServerConnection::memory(limits().connection());
     let request_id = request_one(&connection, PendingOperation::Initialize);
-    let response = json!({"id":request_id,"result":{"userAgent":"build_bridge/0.153.0"}});
+    let response = json!({"id":request_id,"result":initialize_result(SUPPORTED_USER_AGENT)});
 
     decode(&connection, response.clone()).unwrap();
     let error = decode(&connection, response)
@@ -288,7 +283,7 @@ fn pending_overflow_and_failed_write_leave_correlation_unchanged() {
     assert_eq!(failed.pending_count(), 0);
     assert!(decode(
         &failed,
-        json!({"id":1,"result":{"userAgent":"build_bridge/0.153.0"}})
+        json!({"id":1,"result":initialize_result(SUPPORTED_USER_AGENT)})
     )
     .unwrap_err()
     .to_string()
@@ -387,7 +382,7 @@ fn app_server_eof_ends_the_session_with_a_close_effect() {
 
 #[test]
 fn initialize_is_first_and_a_turn_waits_for_readiness() {
-    let state = initialized_state();
+    let state = session_state(None);
     let started = state
         .transition(SessionEvent::Start, Duration::ZERO, limits().state())
         .unwrap();
@@ -583,14 +578,15 @@ fn concurrent_version_probes_share_one_cached_result() {
 
 #[test]
 fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
-    let fresh = initialized_state();
+    let fresh = session_state(None);
     assert!(fresh.resume_id().is_none());
     let fresh_open = initialize_transition(SUPPORTED_USER_AGENT).unwrap();
     assert_eq!(fresh_open.effects, initialized_then_opens_thread());
 
     let resumed = session_state(Some(EXACT_THREAD_ID));
     assert_eq!(resumed.resume_id(), Some(EXACT_THREAD_ID));
-    let resumed_open = resumed_initialize_transition().unwrap();
+    let resumed_open =
+        initialize_transition_for(Some(EXACT_THREAD_ID), SUPPORTED_USER_AGENT).unwrap();
     assert_eq!(
         resumed_open.effects,
         vec![
@@ -602,9 +598,11 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
 
 #[test]
 fn thread_open_response_operation_must_match_the_persisted_resume_id() {
-    let opened = thread_opened("thread-1", Value::Null);
+    let opened = thread_opened("thread-1", None);
 
-    let resumed = resumed_initialize_transition().unwrap().state;
+    let resumed = initialize_transition_for(Some(EXACT_THREAD_ID), SUPPORTED_USER_AGENT)
+        .unwrap()
+        .state;
     let start_answered_a_resume = resumed
         .transition(
             correlated(start_thread(), Ok(opened.clone())),
@@ -693,7 +691,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
         .state;
     let matching = notified
         .transition(
-            correlated(start_thread(), Ok(thread_opened("thread-1", Value::Null))),
+            correlated(start_thread(), Ok(thread_opened("thread-1", None))),
             Duration::ZERO,
             limits().state(),
         )
@@ -709,7 +707,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
         .unwrap()
         .state
         .transition(
-            correlated(start_thread(), Ok(thread_opened("thread-1", Value::Null))),
+            correlated(start_thread(), Ok(thread_opened("thread-1", None))),
             Duration::ZERO,
             limits().state(),
         );
@@ -748,10 +746,7 @@ fn starting_turn_completion_before_response_never_resurrects_working() {
         .state;
     let completed = starting
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -780,10 +775,7 @@ fn conflicting_duplicate_completion_is_rejected() {
         .state;
     let completed = starting
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: Some("first failure".to_string()),
-            },
+            turn_completed("turn-1", Some("first failure")),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -792,10 +784,7 @@ fn conflicting_duplicate_completion_is_rejected() {
 
     let normalized_duplicate = completed
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: Some("  first   failure\n".to_string()),
-            },
+            turn_completed("turn-1", Some("  first   failure\n")),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -818,10 +807,7 @@ fn conflicting_duplicate_completion_is_rejected() {
     assert!(normalized_duplicate
         .state
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: Some("different failure".to_string()),
-            },
+            turn_completed("turn-1", Some("different failure")),
             Duration::from_secs(4),
             limits().state(),
         )
@@ -834,7 +820,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
         .unwrap()
         .state
         .transition(
-            correlated(start_thread(), Ok(thread_opened("thread-1", json!("low")))),
+            correlated(start_thread(), Ok(thread_opened("thread-1", Some("low")))),
             Duration::ZERO,
             limits().state(),
         )
@@ -851,10 +837,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
         .state;
     let completed = starting
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1087,10 +1070,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
         .state;
     let completed = pending
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1132,10 +1112,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
     let replayed = provisional
         .state
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -1155,10 +1132,7 @@ fn successful_steer_after_completion_never_replays_input() {
         .state;
     let completed = pending
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1190,10 +1164,7 @@ fn completed_turn_cannot_be_interrupted_while_a_steer_response_is_pending() {
         .state;
     let completed = pending
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1228,10 +1199,7 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
         .state;
     let completed = interrupted
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1272,10 +1240,7 @@ fn completion_before_interrupt_error_preserves_the_error_during_steer_reconcilia
         .state;
     let completed = interrupted
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1319,10 +1284,7 @@ fn interrupt_answered_with_no_active_turn_after_completion_settles_quietly() {
         .state;
     let completed = interrupted
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1378,10 +1340,7 @@ fn active_turn_not_steerable_waits_for_completion_then_replays_once() {
     let replayed = waiting
         .state
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -1404,10 +1363,7 @@ fn active_turn_not_steerable_after_completion_replays_immediately() {
         .unwrap()
         .state
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1493,10 +1449,7 @@ fn interrupt_is_idempotent_and_holds_replacement_until_completion() {
     let completed = acked
         .state
         .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
+            turn_completed("turn-1", None),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -2442,7 +2395,7 @@ fn completing_an_item_releases_its_aggregate_byte_charge() {
 fn app_server_spec_reuses_codex_mcp_config_without_experimental_flags() {
     let options = SpawnOptions {
         owner_id: "run-1".to_string(),
-        cwd: PathBuf::from("/tmp/worktree"),
+        cwd: PathBuf::from(WORKTREE_ROOT),
         mcp_session_token: "fixture-token".to_string(),
         ..SpawnOptions::default()
     };
@@ -2450,11 +2403,7 @@ fn app_server_spec_reuses_codex_mcp_config_without_experimental_flags() {
         bridge_exe: "/usr/local/bin/build-bridge".to_string(),
         mcp_socket: "/tmp/build.sock".to_string(),
     };
-    let choice = crate::models::ModelChoice {
-        provider: crate::models::AgentProvider::CodexAppServer,
-        model: Some("gpt-5.6-sol".to_string()),
-        effort: Some("high".to_string()),
-    };
+    let choice = selected_choice();
     let app = super::CodexAppServerHarness.spec(&choice, &options, &context);
     let tui = crate::harness::codex::CodexHarness.spec(&choice, &options, &context);
     let configs = |args: &[String]| {

@@ -170,7 +170,7 @@ impl BranchTeardown {
 }
 
 /// Record what teardown of the checkout at `worktree_path` owns.
-pub fn record_branch_teardown(
+fn record_branch_teardown(
     worktree_path: &Path,
     teardown: BranchTeardown,
 ) -> Result<(), WorktreeError> {
@@ -248,6 +248,45 @@ fn admin_dir_of(worktree_path: &Path) -> Result<PathBuf, WorktreeError> {
     })
 }
 
+/// A branch with a local ref ready to be checked out: what teardown of the
+/// checkout will own, and the ref this call made for it, if it made one.
+struct PreparedBranch {
+    teardown: BranchTeardown,
+    created_ref: Option<CreatedLocalRef>,
+}
+
+impl PreparedBranch {
+    fn discard_created_ref(&self, repo: &git2::Repository) {
+        if let Some(created) = &self.created_ref {
+            created.discard(repo);
+        }
+    }
+}
+
+/// A local branch a checkout-in-progress cut or materialised for itself. It
+/// exists only to be checked out, so a checkout that fails takes it back —
+/// left behind, a retry would find it as a plain local branch, borrow it,
+/// and never let teardown delete it again.
+struct CreatedLocalRef(String);
+
+impl CreatedLocalRef {
+    /// Best-effort, like the rest of a failed checkout's unwind: the error
+    /// worth reporting is the one that stopped the checkout, and a ref that
+    /// could not be taken back is logged rather than raised over it.
+    fn discard(&self, repo: &git2::Repository) {
+        let branch = &self.0;
+        let deleted = repo
+            .find_branch(branch, git2::BranchType::Local)
+            .and_then(|mut local| local.delete());
+        if let Err(error) = deleted {
+            eprintln!(
+                "branch {branch}: made for a checkout that failed and could not be taken back \
+                 ({error}); it now reads as a branch Build must keep"
+            );
+        }
+    }
+}
+
 /// A checkout added for a branch named in full, and what tearing it down owns.
 /// A branch that was already there — here or on a remote — holds work nobody
 /// asked Build to remove, so only a branch this call cut goes with it.
@@ -300,7 +339,6 @@ impl WorktreeManager {
     ) -> Result<NamedBranchCheckout, WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
         let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
-        std::fs::create_dir_all(&self.worktrees_root)?;
 
         let name =
             self.unique_checkout_name(&repo, slug, |candidate| self.branch_taken(&repo, candidate));
@@ -308,9 +346,7 @@ impl WorktreeManager {
 
         repo.branch(&branch, &base_commit, false)?;
         let path = self.worktrees_root.join(&name);
-
-        let branch_ref = repo.find_reference(&format!("refs/heads/{branch}"))?;
-        self.add_checkout_on_ref(&repo, &name, &path, &branch_ref)?;
+        self.add_checkout_on_ref(&repo, &name, &path, &branch)?;
         let teardown = BranchTeardown::DeletesBranch;
         record_branch_teardown(&path, teardown)?;
 
@@ -339,19 +375,14 @@ impl WorktreeManager {
         base_branch: &str,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
-        match crate::gitgui::branch_origin(&repo, branch)? {
-            crate::gitgui::BranchOrigin::Local => {}
-            crate::gitgui::BranchOrigin::Remote {
-                remote,
-                tracking_ref,
-            } => self.materialise_remote_branch(&repo, branch, &remote, &tracking_ref)?,
-            crate::gitgui::BranchOrigin::Absent => {
-                return Err(WorktreeError::Command(format!(
+        let prepared = self
+            .prepare_existing_branch(&repo, branch)?
+            .ok_or_else(|| {
+                WorktreeError::Command(format!(
                     "branch {branch:?} does not exist locally or on any remote"
-                )))
-            }
-        }
-        self.checkout_branch(&repo, branch, base_branch, BranchTeardown::KeepsBranch)
+                ))
+            })?;
+        self.checkout_branch(&repo, branch, base_branch, prepared)
     }
 
     /// Add a worktree for the branch `branch`, cutting it from `base_branch`
@@ -370,38 +401,66 @@ impl WorktreeManager {
         base_branch: &str,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
-        let teardown = match crate::gitgui::branch_origin(&repo, branch)? {
-            crate::gitgui::BranchOrigin::Local => BranchTeardown::KeepsBranch,
+        let prepared = match self.prepare_existing_branch(&repo, branch)? {
+            Some(prepared) => prepared,
+            None => PreparedBranch {
+                teardown: BranchTeardown::DeletesBranch,
+                created_ref: Some(self.cut_branch(&repo, branch, base_branch)?),
+            },
+        };
+        self.checkout_branch(&repo, branch, base_branch, prepared)
+    }
+
+    /// Give a branch that already exists a local ref to check out, wherever it
+    /// lives: one this repository holds is ready as it stands, and one only a
+    /// remote carries is fetched and made local first. Either way teardown
+    /// keeps it — the branch holds work nobody asked Build to remove. `None`
+    /// is a name no ref anywhere backs, which each verb answers for itself.
+    fn prepare_existing_branch(
+        &self,
+        repo: &git2::Repository,
+        branch: &str,
+    ) -> Result<Option<PreparedBranch>, WorktreeError> {
+        let prepared = match crate::gitgui::branch_origin(repo, branch)? {
+            crate::gitgui::BranchOrigin::Local => PreparedBranch {
+                teardown: BranchTeardown::KeepsBranch,
+                created_ref: None,
+            },
             crate::gitgui::BranchOrigin::Remote {
                 remote,
                 tracking_ref,
-            } => {
-                self.materialise_remote_branch(&repo, branch, &remote, &tracking_ref)?;
-                BranchTeardown::KeepsBranch
-            }
-            crate::gitgui::BranchOrigin::Absent => {
-                self.cut_branch(&repo, branch, base_branch)?;
-                BranchTeardown::DeletesBranch
-            }
+            } => PreparedBranch {
+                teardown: BranchTeardown::KeepsBranch,
+                created_ref: Some(self.materialise_remote_branch(
+                    repo,
+                    branch,
+                    &remote,
+                    &tracking_ref,
+                )?),
+            },
+            crate::gitgui::BranchOrigin::Absent => return Ok(None),
         };
-        self.checkout_branch(&repo, branch, base_branch, teardown)
+        Ok(Some(prepared))
     }
 
     /// Give a branch that is ready to be checked out a directory of its own,
-    /// and stamp what teardown of it owns beside it.
+    /// and stamp what teardown of it owns beside it. A ref this call made for
+    /// the branch goes away again with any checkout that fails, so a retry
+    /// finds the repository as it was.
     fn checkout_branch(
         &self,
         repo: &git2::Repository,
         branch: &str,
         base_branch: &str,
-        teardown: BranchTeardown,
+        prepared: PreparedBranch,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
-        std::fs::create_dir_all(&self.worktrees_root)?;
         let name = self.unique_checkout_name(repo, &self.directory_name_for(branch), |_| false);
-        let reference = repo.find_reference(&format!("refs/heads/{branch}"))?;
         let path = self.worktrees_root.join(&name);
-        self.add_checkout_on_ref(repo, &name, &path, &reference)?;
-        self.stamp_teardown_or_unwind(repo, &name, &path, teardown)?;
+        if let Err(error) = self.add_checkout_on_ref(repo, &name, &path, branch) {
+            prepared.discard_created_ref(repo);
+            return Err(error);
+        }
+        self.stamp_teardown_or_unwind(repo, branch, &name, &path, &prepared)?;
 
         Ok(NamedBranchCheckout {
             worktree: Worktree {
@@ -410,20 +469,21 @@ impl WorktreeManager {
                 recorded_branch: branch.to_string(),
                 base_branch: base_branch.to_string(),
             },
-            teardown,
+            teardown: prepared.teardown,
         })
     }
 
-    /// Register a worktree at `path` with its HEAD on `reference`.
     fn add_checkout_on_ref(
         &self,
         repo: &git2::Repository,
         name: &str,
         path: &Path,
-        reference: &git2::Reference<'_>,
+        branch: &str,
     ) -> Result<(), WorktreeError> {
+        std::fs::create_dir_all(&self.worktrees_root)?;
+        let reference = repo.find_reference(&format!("refs/heads/{branch}"))?;
         let mut opts = git2::WorktreeAddOptions::new();
-        opts.reference(Some(reference));
+        opts.reference(Some(&reference));
         repo.worktree(name, path, Some(&opts))?;
         Ok(())
     }
@@ -435,24 +495,48 @@ impl WorktreeManager {
     /// — the branch goes with it — so leaving one behind after failing to say
     /// otherwise hands somebody else's branch to the next teardown. Unwinding
     /// is best-effort because the error being returned is the one worth
-    /// reporting.
+    /// reporting; an unwind that fell short is reported too, since a checkout
+    /// left standing unmarked is exactly what this exists to prevent.
     fn stamp_teardown_or_unwind(
         &self,
         repo: &git2::Repository,
+        branch: &str,
         name: &str,
         path: &Path,
-        teardown: BranchTeardown,
+        prepared: &PreparedBranch,
     ) -> Result<(), WorktreeError> {
-        let Err(error) = record_branch_teardown(path, teardown) else {
+        let Err(error) = record_branch_teardown(path, prepared.teardown) else {
             return Ok(());
         };
+        let mut taken_back = true;
         if let Ok(registered) = repo.find_worktree(name) {
             let mut prune = git2::WorktreePruneOptions::new();
             prune.valid(true).working_tree(true);
-            let _ = registered.prune(Some(&mut prune));
+            if let Err(prune_error) = registered.prune(Some(&mut prune)) {
+                eprintln!(
+                    "worktree {name}: teardown marker unwritten and registration not pruned \
+                     ({prune_error}); branch {branch} may be deleted by the next teardown"
+                );
+                taken_back = false;
+            }
         }
-        let _ = std::fs::remove_dir_all(path);
-        Err(error)
+        if path.exists() {
+            if let Err(remove_error) = std::fs::remove_dir_all(path) {
+                eprintln!(
+                    "worktree {name}: teardown marker unwritten and directory not removed \
+                     ({remove_error}); branch {branch} may be deleted by the next teardown"
+                );
+                taken_back = false;
+            }
+        }
+        prepared.discard_created_ref(repo);
+        if taken_back {
+            return Err(error);
+        }
+        Err(WorktreeError::Command(format!(
+            "could not record teardown for {name}, and its registration could not be taken \
+             back: {error}"
+        )))
     }
 
     /// Bring a branch that exists only on `remote` here: fetch exactly it,
@@ -465,7 +549,7 @@ impl WorktreeManager {
         branch: &str,
         remote: &str,
         tracking_ref: &str,
-    ) -> Result<(), WorktreeError> {
+    ) -> Result<CreatedLocalRef, WorktreeError> {
         let output = bounded_git_fetch(
             &self.repo_path,
             remote,
@@ -478,12 +562,16 @@ impl WorktreeManager {
             )));
         }
         let fetched = repo.find_reference(tracking_ref)?.peel_to_commit()?;
-        let mut local = repo.branch(branch, &fetched, false)?;
         let upstream = tracking_ref
             .strip_prefix("refs/remotes/")
             .ok_or_else(|| WorktreeError::Command(format!("{tracking_ref} is not a remote ref")))?;
-        local.set_upstream(Some(upstream))?;
-        Ok(())
+        let mut local = repo.branch(branch, &fetched, false)?;
+        let created = CreatedLocalRef(branch.to_string());
+        if let Err(error) = local.set_upstream(Some(upstream)) {
+            created.discard(repo);
+            return Err(error.into());
+        }
+        Ok(created)
     }
 
     /// Cut `branch` from the base, for a caller that meant a name rather than
@@ -494,7 +582,7 @@ impl WorktreeManager {
         repo: &git2::Repository,
         branch: &str,
         base_branch: &str,
-    ) -> Result<(), WorktreeError> {
+    ) -> Result<CreatedLocalRef, WorktreeError> {
         if !is_usable_branch_name(branch) {
             return Err(WorktreeError::Command(format!(
                 "{branch:?} is not a name Build can cut a branch from"
@@ -502,7 +590,7 @@ impl WorktreeManager {
         }
         let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
         repo.branch(branch, &base_commit, false)?;
-        Ok(())
+        Ok(CreatedLocalRef(branch.to_string()))
     }
 
     /// The directory a named branch lands in: its segments joined by hyphens,
@@ -797,7 +885,6 @@ impl WorktreeManager {
     }
 }
 
-/// The full ref a worktree's recorded branch is spelled under.
 fn recorded_ref(worktree: &Worktree) -> String {
     format!("refs/heads/{}", worktree.recorded_branch)
 }
@@ -1537,20 +1624,7 @@ mod tests {
     #[test]
     fn create_on_existing_branch_materialises_a_branch_only_a_remote_carries() {
         let (dir, repo) = init_repo();
-        let origin = bare_origin_of(&dir, &repo);
-        let other = dir.path().join("other");
-        git_in(
-            dir.path(),
-            &["clone", origin.to_str().unwrap(), other.to_str().unwrap()],
-        );
-        git_in(&other, &["config", "user.email", "o@build.ing"]);
-        git_in(&other, &["config", "user.name", "O"]);
-        git_in(&other, &["checkout", "-b", "feature-x"]);
-        std::fs::write(other.join("theirs.txt"), "their work\n").unwrap();
-        git_in(&other, &["add", "."]);
-        git_in(&other, &["commit", "-m", "their work"]);
-        git_in(&other, &["push", "origin", "feature-x"]);
-        git_in(&repo, &["fetch", "origin"]);
+        push_feature_x_from_another_clone(&dir, &repo);
         let mgr = manager(&dir, &repo);
 
         let added = mgr.create_on_existing_branch("feature-x", "main").unwrap();
@@ -1604,20 +1678,7 @@ mod tests {
     #[test]
     fn create_on_existing_branch_surfaces_a_fetch_that_no_longer_carries_the_branch() {
         let (dir, repo) = init_repo();
-        let origin = bare_origin_of(&dir, &repo);
-        let other = dir.path().join("other");
-        git_in(
-            dir.path(),
-            &["clone", origin.to_str().unwrap(), other.to_str().unwrap()],
-        );
-        git_in(&other, &["config", "user.email", "o@build.ing"]);
-        git_in(&other, &["config", "user.name", "O"]);
-        git_in(&other, &["checkout", "-b", "feature-x"]);
-        std::fs::write(other.join("theirs.txt"), "their work\n").unwrap();
-        git_in(&other, &["add", "."]);
-        git_in(&other, &["commit", "-m", "their work"]);
-        git_in(&other, &["push", "origin", "feature-x"]);
-        git_in(&repo, &["fetch", "origin"]);
+        let origin = push_feature_x_from_another_clone(&dir, &repo);
         git_in(&origin, &["branch", "-D", "feature-x"]);
         let mgr = manager(&dir, &repo);
 
@@ -1636,6 +1697,64 @@ mod tests {
         assert!(
             !dir.path().join("worktrees/feature-x").exists(),
             "no half-made checkout"
+        );
+    }
+
+    /// A branch this call cut for itself must not outlive a checkout that
+    /// never happened: left behind as a local ref, a retry would find it,
+    /// borrow it, and never let teardown delete it again.
+    #[test]
+    fn create_cutting_branch_takes_back_the_branch_it_cut_when_the_checkout_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let worktrees = dir.path().join("worktrees");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let error = mgr.create_cutting_branch("fresh-cut", "main").unwrap_err();
+
+        std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_branch("fresh-cut", git2::BranchType::Local).is_err(),
+            "the branch it cut was left behind after {error}"
+        );
+        assert!(!worktrees.join("fresh-cut").exists());
+    }
+
+    /// The same for a branch it made local from a remote: neither the ref nor
+    /// the tracking config it wrote for it survive a checkout that failed.
+    #[test]
+    fn create_on_existing_branch_takes_back_a_branch_it_materialised_when_the_checkout_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, repo) = init_repo();
+        push_feature_x_from_another_clone(&dir, &repo);
+        let mgr = manager(&dir, &repo);
+        let worktrees = dir.path().join("worktrees");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let error = mgr
+            .create_on_existing_branch("feature-x", "main")
+            .unwrap_err();
+
+        std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_branch("feature-x", git2::BranchType::Local).is_err(),
+            "the branch it materialised was left behind after {error}"
+        );
+        let config = r.config().unwrap();
+        assert!(
+            config.get_string("branch.feature-x.remote").is_err(),
+            "its tracking config was left behind"
+        );
+        assert!(
+            r.find_reference("refs/remotes/origin/feature-x").is_ok(),
+            "the remote-tracking ref was never this call's to take"
         );
     }
 
@@ -1662,8 +1781,12 @@ mod tests {
             .join(BRANCH_TEARDOWN_MARKER);
         std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o400)).unwrap();
 
+        let borrowed = PreparedBranch {
+            teardown: BranchTeardown::KeepsBranch,
+            created_ref: None,
+        };
         let error = mgr
-            .stamp_teardown_or_unwind(&r, &added.name, &added.path, BranchTeardown::KeepsBranch)
+            .stamp_teardown_or_unwind(&r, "theirs", &added.name, &added.path, &borrowed)
             .unwrap_err();
 
         assert!(matches!(error, WorktreeError::Io(_)), "{error:?}");
@@ -1678,7 +1801,65 @@ mod tests {
         assert!(!added.path.exists(), "no half-made checkout");
     }
 
+    /// The same unwind, for a checkout whose branch this call cut: the branch
+    /// goes with the registration, so nothing of the failed checkout is left
+    /// for a retry to mistake for somebody else's work.
+    #[test]
+    fn a_checkout_whose_teardown_cannot_be_stamped_takes_the_branch_it_cut_with_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let r = git2::Repository::open(&repo).unwrap();
+        let added = mgr
+            .create_cutting_branch("fresh-cut", "main")
+            .unwrap()
+            .worktree;
+        let marker = repo
+            .join(".git/worktrees")
+            .join(&added.name)
+            .join(BRANCH_TEARDOWN_MARKER);
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        let cut = PreparedBranch {
+            teardown: BranchTeardown::DeletesBranch,
+            created_ref: Some(CreatedLocalRef("fresh-cut".to_string())),
+        };
+        let error = mgr
+            .stamp_teardown_or_unwind(&r, "fresh-cut", &added.name, &added.path, &cut)
+            .unwrap_err();
+
+        assert!(matches!(error, WorktreeError::Io(_)), "{error:?}");
+        assert!(
+            r.find_branch("fresh-cut", git2::BranchType::Local).is_err(),
+            "the branch it cut was left behind"
+        );
+        assert!(r.find_worktree(&added.name).is_err());
+        assert!(!added.path.exists());
+    }
+
     /// A bare clone of `repo` wired up as its `origin`.
+    /// A `feature-x` that exists only on the remote: pushed from a second
+    /// clone and fetched here, so `origin/feature-x` is known but no local
+    /// `feature-x` is. Answers the bare origin it was pushed to.
+    fn push_feature_x_from_another_clone(dir: &tempfile::TempDir, repo: &Path) -> PathBuf {
+        let origin = bare_origin_of(dir, repo);
+        let other = dir.path().join("other");
+        git_in(
+            dir.path(),
+            &["clone", origin.to_str().unwrap(), other.to_str().unwrap()],
+        );
+        git_in(&other, &["config", "user.email", "o@build.ing"]);
+        git_in(&other, &["config", "user.name", "O"]);
+        git_in(&other, &["checkout", "-b", "feature-x"]);
+        std::fs::write(other.join("theirs.txt"), "their work\n").unwrap();
+        git_in(&other, &["add", "."]);
+        git_in(&other, &["commit", "-m", "their work"]);
+        git_in(&other, &["push", "origin", "feature-x"]);
+        git_in(repo, &["fetch", "origin"]);
+        origin
+    }
+
     fn bare_origin_of(dir: &tempfile::TempDir, repo: &Path) -> PathBuf {
         let origin = dir.path().join("origin.git");
         git_in(

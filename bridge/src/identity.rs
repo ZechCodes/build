@@ -115,7 +115,6 @@ pub fn to_device_identity(stored: &StoredIdentity) -> DeviceIdentity {
     DeviceIdentity {
         device_id: stored.device_id.clone(),
         identity_private_key_b64: stored.identity_private_key_b64.clone(),
-        transport: stored.transport.clone(),
     }
 }
 
@@ -197,12 +196,14 @@ mod tests {
         assert!(!path.with_extension("tmp").exists());
     }
 
+    /// The relay identity is who the device is and the seed that signs its
+    /// challenge; the transport keypair stays with the stored identity, whose
+    /// one runtime holder is the `FrameIntake` that opens session keys.
     #[test]
-    fn to_device_identity_carries_keys() {
+    fn to_device_identity_carries_the_keys_the_relay_auth_needs() {
         let id = generate("my-box");
         let dev = to_device_identity(&id);
         assert_eq!(dev.device_id, id.device_id);
         assert_eq!(dev.identity_private_key_b64, id.identity_private_key_b64);
-        assert_eq!(dev.transport.public_key_b64, id.transport.public_key_b64);
     }
 }

@@ -17,6 +17,7 @@ path = "src/lib.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+async-trait = "0.1"
 git2 = "0.20"
 portable-pty = "0.9"
 vt100 = "0.15"
@@ -36,8 +37,15 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+webrtc = "0.20"
+
+[features]
+# `carrier::testing`: the browser-side frame fixtures the crate's tests and the
+# integration tests both build from. Never compiled into the daemon.
+testing = []
 
 [dev-dependencies]
+build-bridge = { path = ".", features = ["testing"] }
 tempfile = "3"
 # `test-util` only here: it brings tokio's controllable clock, which lets the
 # timing tests assert which side of a window something falls on instead of

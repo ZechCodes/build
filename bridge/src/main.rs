@@ -38,10 +38,12 @@ use std::time::Duration;
 
 use build_bridge::app::AppState;
 use build_bridge::backoff::Backoff;
+use build_bridge::carrier::FrameIntake;
 use build_bridge::config::BridgeConfig;
 use build_bridge::harness::HarnessContext;
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
+use build_bridge::rtc::WebrtcPeerFactory;
 use build_bridge::{identity, pairing, service, transport};
 
 #[tokio::main]
@@ -126,15 +128,15 @@ async fn serve() {
         Ok(runtime) => runtime,
         Err(error) => exit_startup(error),
     };
-    let identity = match load_device_identity(&runtime.config).await {
-        Ok(identity) => identity,
+    let (identity, transport_keypair) = match load_device_identity(&runtime.config).await {
+        Ok(loaded) => loaded,
         Err(error) => exit_startup(error),
     };
     let app = match construct_app(&runtime, &identity) {
         Ok(app) => app,
         Err(error) => exit_startup(error),
     };
-    run_daemon(runtime, identity, app).await;
+    run_daemon(runtime, identity, transport_keypair, app).await;
 }
 
 fn adopt_login_path() {
@@ -192,20 +194,33 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
     })
 }
 
-async fn load_device_identity(config: &BridgeConfig) -> Result<DeviceIdentity, String> {
+/// The device's identity and its transport keypair. A provisioned identity in
+/// the environment (matches the relay DB seed) is a prod/seed override that is
+/// treated as already approved and skips pairing. Otherwise the bridge
+/// loads-or-generates a durable identity and pairs it to a user account:
+/// register as pending, print the pairing code + fingerprint, wait for the
+/// human to approve in the web app, then connect.
+///
+/// The transport keypair travels beside the identity, not inside it: its one
+/// owner is the intake that opens session keys with it (`carrier.rs`).
+async fn load_device_identity(
+    config: &BridgeConfig,
+) -> Result<(DeviceIdentity, transport::KeyPairB64), String> {
     match (
         std::env::var("BRIDGE_IDENTITY_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PUB"),
     ) {
-        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => Ok(DeviceIdentity {
-            device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
-            identity_private_key_b64: id_priv,
-            transport: transport::KeyPairB64 {
+        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => Ok((
+            DeviceIdentity {
+                device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
+                identity_private_key_b64: id_priv,
+            },
+            transport::KeyPairB64 {
                 public_key_b64: tp_pub,
                 private_key_b64: tp_priv,
             },
-        }),
+        )),
         _ => {
             let identity_path = config.identity_file.clone();
             let stored = match identity::load(&identity_path) {
@@ -236,7 +251,10 @@ async fn load_device_identity(config: &BridgeConfig) -> Result<DeviceIdentity, S
             )
             .await
             .map_err(|error| format!("pairing failed: {error}"))?;
-            Ok(identity::to_device_identity(&approved))
+            Ok((
+                identity::to_device_identity(&approved),
+                approved.transport.clone(),
+            ))
         }
     }
 }
@@ -297,7 +315,12 @@ fn task_store_startup_error(tasks_dir: &std::path::Path, error: &str) -> String 
     )
 }
 
-async fn run_daemon(runtime: RuntimePaths, identity: DeviceIdentity, app: AppState) {
+async fn run_daemon(
+    runtime: RuntimePaths,
+    identity: DeviceIdentity,
+    transport_keypair: transport::KeyPairB64,
+    app: AppState,
+) {
     let repo_display = runtime
         .config
         .repo
@@ -324,11 +347,26 @@ async fn run_daemon(runtime: RuntimePaths, identity: DeviceIdentity, app: AppSta
         Duration::from_secs(5),
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
-    let handler = AppState::handler(app);
+    let handler = AppState::handler(app.clone());
+    // One intake for the life of the daemon: a session is minted once and
+    // reachable from every carrier, so it outlives the relay socket it arrived
+    // on. The peer's channels deliver through this same intake, so a session
+    // reached over either wire is the one session.
+    let intake = FrameIntake::new(handler, transport_keypair);
+    // The peer transport a browser upgrades to. It is built last because it is
+    // built from the intake, which runs the app's own handler.
+    app.lock()
+        .unwrap()
+        .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
+
+    // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
+    // become a tight reconnect loop hammering the server. A connection that lasted
+    // long enough to be "clean" resets the delay, so a brief blip still recovers
+    // fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run(&runtime.device_url, &identity, handler.clone()).await {
+        match relay::run(&runtime.device_url, &identity, intake.clone()).await {
             Ok(()) => eprintln!(
                 "relay disconnected; reconnecting in {}s",
                 backoff.current().as_secs()

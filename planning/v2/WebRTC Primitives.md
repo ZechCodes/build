@@ -1,0 +1,280 @@
+# WebRTC Primitives
+
+Status: design, 2026-09-02. The component list for `WebRTC Transport Spec.md`, which is binding.
+
+Two rules govern every component below. Each is stated once, in the component that owns it; everything else defers to it
+by name.
+
+- **A carrier is a wire, not a protocol.** A session's key, frames, dispatch and teardown live above the wire; the relay
+  socket and a DataChannel are two implementations of one narrow interface below it, and nothing above that line learns
+  which is carrying. Signaling is the exception and is pinned to the relay: `rtc.offer` / `rtc.ice` / `rtc.close` never
+  ride the channel they negotiate.
+- **A session ends when its last carrier is gone, or when its client says so** (spec §Shared session registry). Owner:
+  `SessionRegistry`. A relay `session_closed`, a DataChannel close and a bridge relay-socket drop are each *one carrier
+  released*; only a client `close` frame ends a session outright. `SessionSwitch` is the same rule in the browser.
+
+## Bridge (Rust)
+### `OutboundEnvelope` and `CarrierHandle` — `bridge/src/carrier.rs` (new, stage 1)
+`OutboundEnvelope` is one encrypted frame bound for one session, before any wire wrapper exists: a newtype over one
+`Envelope`, whose `session_id` `encrypt_frame` already stamped and which `session_id()` reads back. It is what the
+envelope-only outbound queue carries; the relay writer
+merges that queue with its own control-message channel (`session_accept`, `heartbeat`, `Ping`, the auth reply), so
+no `tungstenite::Message` reaches a `SessionSender`. A carrier reads `session_id()` off it and needs nothing else,
+because one wire already carries every client session of the device, as the relay socket does today. `CarrierHandle` is one live wire: a process-unique `CarrierId` plus the
+`UnboundedSender<OutboundEnvelope>` draining to it, built once per relay socket generation and once per DataChannel.
+It **hides** that ids exist from every caller but the registry, and is what makes "which carriers does this session
+ride" answerable — the question the teardown rule asks.
+
+### `SessionSender` — moves `bridge/src/relay.rs` → `bridge/src/carrier.rs` (stage 1)
+**Boundary** the app's handle for pushing to one session: owns the key and the frame encryption, no socket and no wire
+wrapper. **Hides** the key, `encrypt_frame`, `route_to`, the carrier. **Interface** unchanged for every caller —
+`session_id()`, `push(payload) -> bool`, `detached(session_id)`, and the test pair `observable` / `decrypt_push` (now
+over `OutboundEnvelope`). The keyed constructor is `pub(crate)` and the only builder is `SessionRegistry::admit`, so no
+call site outside the registry holds key material. **Replaces** today's WebSocket-typed sender: `TermScreen.attached`,
+`AttachedClient`, `ChangeBus.subscribers` and every `app.rs` call site stop being typed on tungstenite, signatures
+unchanged.
+
+### `SessionRegistry` — `bridge/src/carrier.rs` (new, stage 1)
+**Boundary** the one home of `session_id → (session_key, carriers riding it)`: own leaf lock, owned by the
+`FrameIntake`, outliving every socket. **Owns the teardown rule**, the only place it is written, and **hides** every
+session key — a caller gets a decrypted frame and a sender, never the material. Every verb below is private to
+`carrier.rs` and reached through the intake, which is the module's only public entry, so no caller outside can name a
+session key or a `CarrierId`.
+```rust
+fn open(&self, session_id: &str, session_key: String, carrier: &CarrierHandle) -> Result<(), CarrierError>;
+fn admit(&self, envelope: &Envelope, carrier: &CarrierHandle) -> Result<(Frame, SessionSender), CarrierError>;
+fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<SessionEnd>;
+fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<SessionEnd>;
+fn end(&self, session_id: &str) -> Vec<SessionEnd>;
+```
+The last three return the openings that actually ended, from one private rule: *no carriers left, or `end`*. A
+`SessionEnd` is a session id stamped with the generation of the opening that ended, because an end's effects run behind
+the frames queued ahead of them and the same id may be minted again before they do: a late close reaches the opening it
+belongs to or nothing (`reopened_since`). `admit`
+records the ride, so a session rides a carrier the moment a frame for it arrives there. `open` is idempotent for a
+known session whose unwrapped key matches — that is the carrier re-attach a browser's relay reconnect performs, and it
+records the ride, so the carrier the session rode before may drop without ending it — and errors on a known session with
+a different key, which is the frame the spec drops. **Replaces** the
+`HashMap<String, String>` local to `relay::run`'s read loop, which died with the socket, and the key-removal half of
+`relay::end_session`.
+
+### `FrameIntake` — `bridge/src/carrier.rs` (new, stage 1)
+**Boundary** "one envelope arrived on some carrier", whole job: admit it through the registry, honour a `close` frame,
+else dispatch. Builds and owns the `SessionRegistry`, and owns the `Dispatcher` — workers, ordered terminal lanes,
+read folding — as one `Arc` shared by the relay loop and every DataChannel reader, and is the *effect* side of the teardown rule: for every session id the registry
+reports ended it emits that session's synthetic `close` frame. **Hides** the dispatcher, the fold, the lanes.
+```rust
+pub fn new(handler: FrameHandler, transport: KeyPairB64) -> Arc<Self>;
+pub fn transport_public_key(&self) -> &str;
+pub(crate) fn open(&self, session_id: &str, init: &SessionInit, carrier: &CarrierHandle) -> Result<Envelope, CarrierError>;
+pub(crate) async fn accept(&self, envelope: Envelope, carrier: &CarrierHandle) -> Result<(), CarrierError>;
+pub(crate) fn close_session(&self, session_id: &str, carrier: &CarrierHandle);
+pub(crate) fn close_carrier(&self, carrier: &CarrierHandle);
+```
+It is the **one owner of the device's transport keypair**: it opens every `session_init` — the one moment a session key
+exists outside the registry — and a carrier that has to publish the public half reads it back with
+`transport_public_key`, so the key a client wraps to is the key the device unwraps with by construction. Only `new` and
+that getter are public: `main.rs` builds one and hands it to `relay::run`, and the verbs a carrier drives it with are
+the crate's own.
+
+`&self`, not `&mut self`, so the sharing is real: the lane map moves behind its own `Mutex` inside the `Dispatcher`,
+held only long enough to clone a lane sender — **no lock crosses an await**. A lane is never born for a session that has
+ended: the sender the registry builds knows whether its opening is still open, and the dispatcher reads that under the
+lane lock, so a frame admitted on one carrier before an end reported on another cannot run behind the close. What still makes a flooding carrier wait is
+the bounded job queue, the existing designed backpressure, shared on purpose. **Replaces** `relay::handle_envelope` and
+`relay::end_session`, which stage 4 would otherwise copy into `rtc.rs`. It reads the session id off the envelope, so **a
+carrier binds to no session**.
+
+### `relay::run` — `bridge/src/relay.rs` (extended, stage 1)
+Takes `Arc<FrameIntake>` where it took a `FrameHandler`, mints one `CarrierHandle` per socket generation, and calls
+`close_carrier` when that socket ends. `session_init` → `intake.open`; `e2ee_envelope` → `intake.accept`;
+`session_closed` → `intake.close_session`, one carrier released. Its writer task keeps the one job the wrapper move
+leaves it: wrap each `OutboundEnvelope` as `{"type":"e2ee_envelope",…}`. `main.rs` builds the intake once and passes
+it into every reconnect.
+
+**Stage 1 notes.** The spec calls the stage "zero behaviour change"; the teardown rule above is right where the two
+disagree, and two observable behaviours changed with it. (1) A bridge relay-socket loss now releases that carrier, so
+every session that rode only it ends and the app hears each one's synthetic `close` frame — `AppState::drop_session`
+detaches the session's terminal viewers and change subscription (it kills no PTY). Before, the read loop's local key map
+died with the socket and nothing was released. (2) That synthetic `close` frame's `sender` is `"device"`
+(`SENDER_DEVICE`), the value every device-built frame carries; it was the literal `"relay"`. Neither crosses the wire:
+the relay protocol and the envelope are unchanged. `relay::run` and `run_with_connector` take `Arc<FrameIntake>` where
+they took a `FrameHandler`, so the integration tests were edited mechanically to build one; every test still passes.
+
+### `SessionPeer` — the peer-connection trait, `bridge/src/rtc.rs` (new, stage 2)
+One implementor per live `RTCPeerConnection`, one per E2EE session, always the answerer. New; the bridge has no peer
+concept today, so this replaces nothing.
+```rust
+#[async_trait]
+pub trait SessionPeer: Send + Sync {
+    async fn answer(&self, offer_sdp: &str, ice_servers: &[Value], signaling: SessionSender) -> Result<String, RtcError>;
+    async fn add_remote_candidate(&self, candidate: Value) -> Result<(), RtcError>;
+    async fn close(&self);
+}
+```
+- **`answer` carries the ICE servers and is the only thing that does.** The first call configures the peer, a later one
+  reconfigures it and restarts ICE — how fresh TURN credentials arrive. No second verb, no copy of the list elsewhere.
+- **`signaling` is the caller's own sender, passed with every offer, never owned from construction.** It carries the
+  `out` of the carrier the offer arrived on; a peer that captured one at construction would push `rtc.ice` candidates
+  into a dead relay socket generation after the bridge reconnects. The peer keeps only the latest. Candidates trickled
+  between a bridge relay reconnect and the next offer still go to the old generation; that is accepted because trickle
+  finishes shortly after `answer` and an ICE restart re-answers with a fresh sender.
+- **Hides** webrtc-rs, DTLS, ICE state, the negotiated channels, chunking, backpressure and the winning candidate-pair
+  type; `app.rs` sees three async methods and an SDP string, so stage 2 ships against a recording stub.
+- **`report_negotiated_path` (stage 4)** is the one thing the peer says about itself: when its connection first
+  carries, one stderr line naming the winning local candidate's type (`host` / `srflx` / `relay`). It closes the spec's
+  open question 2 and stays inside the peer — nothing above it learns which path won, only the log does.
+
+### `SessionPeerFactory` — the single construction point, `bridge/src/rtc.rs` (stage 2)
+```rust
+pub trait SessionPeerFactory: Send + Sync {
+    fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError>;
+}
+```
+The only place a peer implementation is chosen and built: `WebrtcPeerFactory::new(intake)` once in `main.rs`, handed to
+`AppState`; tests build `RecordingPeerFactory`. The intake goes in because every DataChannel reader delivers through it.
+**Hides** the crate, the ring provider, channel labels and ids.
+
+### `SessionPeers` — which peer a session has, `bridge/src/rtc.rs` (stage 2)
+**Boundary** the peer lifecycle whole: `session_id → peer`, the factory that builds them, and when a peer stops being a
+session's.
+```rust
+pub fn with_factory(factory: Arc<dyn SessionPeerFactory>) -> Arc<Self>;
+pub fn offer(&self, session_id: &str, offer_sdp: &str, ice_servers: &[Value], signaling: SessionSender) -> Result<String, RtcError>;
+pub fn candidate(&self, session_id: &str, candidate: Value) -> Result<(), RtcError>;
+pub fn close(&self, session_id: &str) -> Result<(), RtcError>;
+pub fn end_session(&self, session_id: &str);
+```
+**Hides** the map and its own leaf lock, the factory, the open-once race, and that a peer's work is async at all —
+`awaited` lives here, the one place a peer future is finished from a blocking handler. `offer` owns two rules the
+component list did not name: a session's first offer opens its peer and every later one reconfigures that same peer (the
+ICE restart), and **an offer that fails leaves the session with no peer if it was the one that opened it** — the
+browser's retry then builds a fresh peer instead of reaching the half-open one, while a failed ICE restart keeps the
+peer that is already carrying. Building a peer runs with no lock held, so **two offers racing on one session still leave
+one peer**: the one that reached the map first, the loser closed rather than left negotiating.
+
+### `rtc.offer` / `rtc.ice` / `rtc.close` — `bridge/src/app.rs::dispatch_frame` (stage 2)
+Three arms beside `session.hello` (they need the caller's own `SessionSender`), each a parse and one call on
+`SessionPeers`, taken out of the app mutex before it is called. `AppState` gains one field, `peers: Arc<SessionPeers>`,
+and no WebRTC knowledge. **Extends** `AppState::drop_session`, which already releases terminals and subscriptions: it
+calls `end_session` — safe because `drop_session` now runs only on a real session end, never on a bare relay-socket
+loss.
+
+**Stage 2 notes.** Three things the stage needed that the component list did not name, each the smallest thing that
+would do. (1) `rtc::trickle_candidate(&signaling, candidate)` — the one home of the bridge→client push
+`{"type":"rtc.ice","candidate":…}`, so no implementor of `SessionPeer` writes that shape again. (2) `NoPeerFactory`, the
+factory an `AppState` carries until `main.rs` hands it a real one at stage 4: every `open` is refused, so a bridge with
+no peer transport answers `rtc.offer` with an error and its clients stay on the relay — the spec's own failure case,
+and no `Option<peer_factory>` for the call sites to branch on. (3) `rtc.ice` and `rtc.close` for a session that never
+offered are refused (`RtcError::NoPeer`), never answered by opening a peer nobody negotiated. `answer` is awaited from
+the handler's blocking thread (`rtc::awaited`), which is what keeps `dispatch_frame` synchronous.
+
+### `chunk` — `bridge/src/rtc/chunk.rs` (new, stage 4)
+Pure, no I/O, one exported pair: `chunk::split(envelope_json: &str) -> Vec<String>` (the input unchanged under
+`CHUNK_BYTES`) and `chunk::Reassembler::accept(&mut self, text: &str) -> Result<Option<String>, ChunkError>`, erroring
+on a gap or past `MAX_REASSEMBLED_BYTES`. **Hides** the `{"part":{id,index,count},"data":…}` shape — the one fact stated
+twice, in two languages (`spa/src/core/chunk.js`), with the spec's table as its source.
+
+### `DataChannelCarrier` — `bridge/src/rtc.rs` (stage 4)
+**Boundary** one channel's two tasks over one `CarrierHandle`: a writer draining its
+`UnboundedReceiver<OutboundEnvelope>` through `chunk::split`, and a reader reassembling into `FrameIntake::accept`.
+The pacing is the peer connection's, not the writer's: it holds each channel's send at `DC_BUFFERED_HIGH` of that
+channel's own buffered bytes and fails it once the channel is closing, so the two channels cannot head-of-line block
+each other and no buffered-amount-low callback is written here. The envelope queue behind the writer is unbounded, so a
+client that will not drain trades the channel's send buffer for device heap while it stays attached. A `ChunkError`
+closes the channel, as the spec requires — a reassembly that lost a part cannot be resumed — and any close (that, ICE
+failure, DTLS close, `rtc.close`) calls `FrameIntake::close_carrier`, where the teardown rule decides whether a session
+ended with it.
+**Hides** chunking and backpressure; **extends** the relay writer task's job to a second wire. It registers no senders
+itself: a migrating browser re-sends `session.hello` and re-attaches its terminals over the channel, and
+`TermScreen::register` (`app.rs:394`) replaces the prior sender for that session id exactly as on a reconnect — the
+spec's §Bridge peer bullet, reached at policy 3's re-attach, so a carrier still binds to no session.
+
+## SPA (JavaScript)
+### `Carrier` and `openCarrier` — the interface and its single construction point, `spa/src/core/carrier.js` (new, stage 5)
+`Carrier` is `{ send(envelope), onEnvelope(fn), onClose(fn), close() }` — the spec's contract and nothing else; no
+holder may ask which implementation it has. `openCarrier({ socket, sessionId })` wraps an authenticated relay socket and
+`openCarrier({ channel })` wraps a DataChannel and its chunking. **Every `Carrier` in the SPA is built here** — by
+`RelayLink` and `openPeerLink` — and the test picking the variant lives in this function and nowhere else. **Replaces**
+the inline `e2ee_envelope` send and its arm of the message listener in `core/session.js` and `terminal/session.js`.
+
+### `SessionRpc` — `spa/src/core/sessionRpc.js` (new, stage 5)
+One E2EE session's crypto and correlation, over one carrier at a time. **Hides** the pending map, the request ids,
+encrypt/decrypt, per-call timeouts, and the rule that tells a reply from a push. **Interface**
+`call(method, params, { timeoutMs, carrier })`, `onPush(fn) -> unsubscribe`, `rideOn(carrier)`, `readFrom(carrier)`,
+`lastFrameAt()`, `fail(error)`, `close(reason)`, `sessionId`, `deviceId`. `rideOn` swaps the wire and keeps the key —
+"one session, two carriers" as one operation; `readFrom` is every wire it *holds*, sending or not, because signaling's
+answers arrive on a relay carrier a channel is carrying over. `carrier` pins one call to a wire, and may be the
+*promise* of one on its way back, in which case the wait is inside that call's own deadline. What a call fails with
+when nothing is carrying is the owner's word (`noCarrier`): the app goes offline, a terminal surface waits its socket
+out. **Replaces** `pending` + `request` in `openRelaySession` and `TerminalSocket._call` / `_onEnvelope`.
+
+### `RelayLink` — `spa/src/core/relayLink.js` (new, stage 5)
+**Boundary** one relay socket end to end: gateway token, `authenticate`, the device-key wait and pin check,
+`session_init` / `session_accept`, presence pushes, and **its own backoff reconnect, run whether or not a DataChannel is
+carrying**. **Hides** the handshake, the backoff, which socket generation is current; **uses** `relayInbox` for the
+"next message this handshake needs" wait. **Interface** `start()`, `deviceId()`, `dropSocket()`, `close()`, and the
+hooks one wire's life is reported through — `carrying()`, `onConnecting()`, `onSession({ sessionId, sessionKeyB64,
+deviceId })`, `onRelay(carrier | null)` (awaited), `onDeviceKey`, `onDeviceOffline`. It keeps this session's id and key
+across socket generations and re-presents the *same* `session_init` while `carrying()` says something still is, which
+`SessionRegistry::open` takes as a carrier re-attach; a re-attach the device does not answer is not presented again —
+that session is the device's to refuse, and the next socket mints a new one through `onSession`. `start()` reports the
+first failure to its caller and has a retry already scheduled, so a caller that wants none (the app's boot, whose
+failure the gate shows) closes the link it could not start. **Replaces** the handshake body of `openRelaySession` and
+`TerminalSocket._connect` / `_handshake` / `_sessionInitFor` / `_watchRelayControl`, and the whole of
+`TerminalSocket._onLost`. `connection.js::resume()` keeps the path it owns — a session that *ended* is re-opened
+against a re-picked device, with the offline banner up — because that is the case policy 6 is not about.
+
+### `SessionSwitch` — `spa/src/core/sessionSwitch.js` (new, stage 5)
+Which carrier one session rides, and what runs on every change: the browser end of the teardown rule, written to match
+`SessionRegistry`. **Hides** migration from both session modules — upgrade, fallback, relay reconnect and relay loss are
+one code path in either direction. `createSessionSwitch({ session, onActive, onIdle })` →
+`{ relay(carrier), peer(carrier), active(), wireFor(method), close() }`, either slot taking `null` to clear; the rule is
+one line, **active = peer ?? relay**. On every change to a live carrier it calls `session.rideOn(carrier)` then
+`onActive()`, where `session.hello` and `_reattachAll()` live; every carrier it is handed, riding or not, goes to
+`session.readFrom(carrier)`; with both slots empty, `onIdle()`. It also owns **the one routing rule** — `wireFor(method)`
+is the relay for `rtc.*` (`isSignaling`, exported here and read nowhere else) and the active carrier otherwise, and a
+signaling call made while the relay slot is empty is answered by the *next* relay carrier rather than refused.
+**Replaces** `goOffline()`'s trigger and `_onLost`'s status and pending-rejection duties: `App.offline` becomes exactly
+"the app session's switch is idle", so a relay loss under a live peer reaches neither it nor the bridge as a session
+end.
+
+### `openPeerLink` — `spa/src/core/peerLink.js` (new, stage 5)
+**Boundary** the upgrade, whole job in one call: `openPeerLink({ signal, onPush, fetchIceServers,
+RTCPeerConnectionImpl, openTimeoutMs })` builds the peer connection, creates the two negotiated channels (`app` id 0,
+`term` id 1), offers and trickles both ways over `signal`, and settles once both open or `OPEN_TIMEOUT_MS` passes.
+Resolves `{ app, term, close() }` — two `Carrier`s — and rejects on any failure, leaving the caller on the relay with no
+retry loop; `signal` is the session's own `call`, which routes `rtc.*` to the relay for the peer's life, and `onPush` is
+the session's push subscription, off which this link takes the bridge's trickled candidates and nothing else. **The ICE
+restart is event-driven and reads no TTL**: on the connection going `failed` it fetches fresh ICE servers once and
+re-offers over `signal` on the same channels, one restart at a time, and a failed one closes the link so `SessionSwitch`
+falls back to the relay. How long a credential lives has one home, `TTL_SECONDS` in `ice_servers.py`; the spec's open
+question 1 stays open because nothing here depends on the answer. **Hides** SDP, candidates, the `rtc.*` shapes,
+chunking, `bufferedAmountLow`. **Uses** `spa/src/core/chunk.js` (new) — `splitEnvelope(text)`, `createReassembler()`,
+the mirror of `bridge/src/rtc/chunk.rs` with the same constants.
+
+### The upgrade policy — `spa/src/connection.js`, `spa/src/terminal/manager.js` (extended, stage 5)
+The one place the spec's ordered policy is written: a `RelayLink` per stream (app, terminal), as today's two sockets;
+once the app session is live, fetch ICE servers, `openPeerLink`, then `appSwitch.peer(app)` and
+`terminalSwitch.peer(term)`. A failure logs and stays on the relay until the next relay reconnect. It is also the one
+owner of "the two channels are one connection and fall back together": `adoptPeerLink` hears both halves close and
+`dropPeerLink` hands both streams back, so `terminalsRideOn` is a plain setter that watches nothing. **Extends** `api.js`
+with `fetchIceServers()` and `terminal/manager.js` with the terminal's switch; `openRelaySession` keeps
+`{ call, deviceId, close }` (plus `peer`, `onCarrier` and `onPush`, which the upgrade uses) and `TerminalSocket` every
+method, so no `App.call` site changes.
+
+## api (Python)
+### `ice_servers` — `skriftapp/buildapp/ice_servers.py` (new, stage 3)
+Pure logic plus one injectable sender, mirroring `web_push.py`:
+```python
+def ice_servers(key_id: str, api_token: str, ttl_seconds: int = TTL_SECONDS, send=requests.post) -> list[dict]
+```
+Cloudflare's array verbatim, or `STUN_ONLY` when no key is configured; an error is raised with context, never swallowed.
+`TTL_SECONDS` lives here and nowhere else. **Hides** the Cloudflare URL, the request body, the no-key fallback; tested
+against a fake `send`, so no test reaches the network.
+
+### `RtcController` — `skriftapp/buildapp/rtc_controller.py` (new, stage 3)
+One route: `@post("/api/rtc/ice-servers", guards=[auth_guard])` with `require_user(request)`, answering the array under
+`iceServers`. Registered in `app.yaml`, `app.dev.yaml` and `app.mail.yaml` beside `DevicesController`; the existing
+guard is the only auth. **Hides** `CF_TURN_KEY_ID` / `CF_TURN_KEY_API_TOKEN`, read from the environment (the `build-app`
+Secret) and never returned. Sibling of `PushController`, replacing nothing.

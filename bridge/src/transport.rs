@@ -94,6 +94,18 @@ pub struct OuterFields {
     pub route_to: String,
 }
 
+/// The inner frame type that means "this session is over" — sent by a client
+/// to end its session, and minted by the device for a session that ended under
+/// it, so the app releases what the session held.
+pub const CLOSE_FRAME_TYPE: &str = "close";
+
+/// The inner frame type of every request and reply.
+pub const DATA_FRAME_TYPE: &str = "data";
+
+/// The two parties an inner frame's `sender` may name.
+pub const SENDER_CLIENT: &str = "client";
+pub const SENDER_DEVICE: &str = "device";
+
 /// The inner-frame fields a sender supplies; `message_id`/`created_at` default.
 #[derive(Debug, Clone)]
 pub struct FrameFields {
@@ -302,8 +314,12 @@ pub fn encrypt_frame(
 ) -> Result<Envelope> {
     let session_id = nonempty(&outer.session_id, "session_id")?;
     let route_to = nonempty(&outer.route_to, "route_to")?;
-    validate_enum(&frame.frame_type, &["data", "close"], "frame_type")?;
-    validate_enum(&frame.sender, &["client", "device"], "sender")?;
+    validate_enum(
+        &frame.frame_type,
+        &[DATA_FRAME_TYPE, CLOSE_FRAME_TYPE],
+        "frame_type",
+    )?;
+    validate_enum(&frame.sender, &[SENDER_CLIENT, SENDER_DEVICE], "sender")?;
 
     let inner = json!({
         "session_id": session_id,
@@ -342,8 +358,12 @@ pub fn decrypt_envelope(session_key_b64: &str, envelope: &Envelope) -> Result<Fr
             "inner and outer session_id did not match".into(),
         ));
     }
-    validate_enum(&frame.frame_type, &["data", "close"], "frame_type")?;
-    validate_enum(&frame.sender, &["client", "device"], "sender")?;
+    validate_enum(
+        &frame.frame_type,
+        &[DATA_FRAME_TYPE, CLOSE_FRAME_TYPE],
+        "frame_type",
+    )?;
+    validate_enum(&frame.sender, &[SENDER_CLIENT, SENDER_DEVICE], "sender")?;
     Ok(frame)
 }
 
@@ -362,7 +382,7 @@ pub fn build_close_frame(
             route_to: route_to.to_string(),
         },
         &FrameFields {
-            frame_type: "close".to_string(),
+            frame_type: CLOSE_FRAME_TYPE.to_string(),
             sender: sender.to_string(),
             payload,
             message_id: None,

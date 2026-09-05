@@ -213,7 +213,7 @@ pub trait Harness: Send + Sync {
     /// `~/.codex`. Built BEFORE the child exists, so what is already in the
     /// tree can be told from what the child writes.
     ///
-    /// `None` by default, which is the answer for a carrier that announces its
+    /// `None` by default, which is the answer for a session protocol that announces its
     /// own id: a locator standing beside that announcement would be two records
     /// of one answer, free to disagree.
     fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {
@@ -342,7 +342,7 @@ pub(crate) fn open_terminal_session(
 
 /// Refuse a session that offers neither a terminal nor an activity stream.
 ///
-/// The two capabilities are alternatives, not extras, and a carrier with
+/// The two capabilities are alternatives, not extras, and a session with
 /// neither is worse than one Build cannot see working: the death rites hang off
 /// a stream CLOSING — the tab going not live, the conversation's session
 /// lineage ending — so a session with no stream would leave a dead agent's tab
@@ -530,7 +530,7 @@ mod tests {
             "app-server conversation ids are verified by exact resume, not a transcript guess"
         );
 
-        // Both claude carriers write and read the ONE tree, so an id captured
+        // Both claude providers write and read the ONE tree, so an id captured
         // under either verifies under both.
         let project = home
             .path()
@@ -577,7 +577,7 @@ mod tests {
     /// — long before its line editor will take a turn, so a prompt written on
     /// first byte lands in whatever owns the keyboard and the submit key
     /// answers it. Waiting that out is how a terminal opens, so it happens
-    /// where the carrier is chosen rather than at the caller.
+    /// where the terminal is chosen rather than at the caller.
     #[test]
     fn a_session_that_will_be_handed_a_turn_opens_ready() {
         let root = tempfile::tempdir().expect("temp worktree");
@@ -628,9 +628,9 @@ mod tests {
         );
     }
 
-    /// The locator travels with the carrier that has a use for it: a terminal
+    /// The locator travels with the terminal that has a use for it: a terminal
     /// hands its answers back as its own, and a session Build opens with none
-    /// — the human's shell, and every carrier that names its conversation
+    /// — the human's shell, and every session protocol that names its conversation
     /// itself — names nothing.
     #[tokio::test]
     async fn only_a_terminal_opened_with_a_locator_names_its_conversation() {

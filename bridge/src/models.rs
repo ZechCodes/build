@@ -26,8 +26,8 @@ pub enum AgentProvider {
     Codex,
     /// The same CLI as [`Claude`](AgentProvider::Claude), run headless over its
     /// session protocol instead of as a TUI. A different provider rather than a
-    /// flag on that one: the carrier it opens has no terminal, and which
-    /// carrier a spawn opens is what a provider answers.
+    /// flag on that one: the session it opens has no terminal, and whether a
+    /// spawn opens a terminal or a session protocol is what a provider answers.
     #[serde(rename = "claude_adk")]
     ClaudeAdk,
     #[serde(rename = "codex_app_server")]
@@ -85,7 +85,7 @@ pub fn carrier_of_claude_mode(mode: &str) -> Option<AgentProvider> {
 }
 
 /// The same mapping backwards, for the old key `settings.get` keeps serving.
-/// Only the terminal carrier is "tui"; every other default is the honest "not
+/// Only the terminal provider is "tui"; every other default is the honest "not
 /// tui", which is also what the old key defaulted to.
 pub fn claude_mode_of_harness(harness: AgentProvider) -> &'static str {
     mode_of_harness(harness, AgentProvider::Claude)
@@ -404,7 +404,7 @@ mod tests {
         for label in &labels {
             assert!(
                 !label.to_lowercase().contains("headless"),
-                "{label:?} names the carrier the way the code does"
+                "{label:?} names the provider the way the code does"
             );
         }
         let distinct: std::collections::BTreeSet<&&str> = labels.iter().collect();
@@ -429,41 +429,41 @@ mod tests {
         );
     }
 
-    const CLAUDE_CARRIERS: [AgentProvider; 2] = [AgentProvider::Claude, AgentProvider::ClaudeAdk];
+    const CLAUDE_PROVIDERS: [AgentProvider; 2] = [AgentProvider::Claude, AgentProvider::ClaudeAdk];
 
-    fn catalog_of(carrier: AgentProvider) -> ProviderCatalog {
+    fn catalog_of(provider: AgentProvider) -> ProviderCatalog {
         provider_catalogs()
             .into_iter()
-            .find(|catalog| catalog.id == carrier)
+            .find(|catalog| catalog.id == provider)
             .expect("every provider has a catalog")
     }
 
-    fn claude_carriers_offer(model_id: &str, label: &str) {
-        for carrier in CLAUDE_CARRIERS {
-            let catalog = catalog_of(carrier);
+    fn claude_providers_offer(model_id: &str, label: &str) {
+        for provider in CLAUDE_PROVIDERS {
+            let catalog = catalog_of(provider);
             let offered = catalog
                 .models
                 .iter()
                 .find(|model| model.id == model_id)
-                .unwrap_or_else(|| panic!("{carrier:?} does not offer {label}"));
+                .unwrap_or_else(|| panic!("{provider:?} does not offer {label}"));
             assert_eq!(offered.label, label);
             assert!(offered.supports_effort);
             assert_eq!(offered.efforts, catalog.efforts);
         }
     }
 
-    /// Both claude carriers run the same CLI, so a model released for one is
+    /// Both claude providers run the same CLI, so a model released for one is
     /// available on the other by construction.
     #[test]
-    fn opus_5_is_in_both_claude_carriers_catalogs_with_effort() {
-        claude_carriers_offer("claude-opus-5", "Claude Opus 5");
+    fn opus_5_is_in_both_claude_providers_catalogs_with_effort() {
+        claude_providers_offer("claude-opus-5", "Claude Opus 5");
     }
 
     #[test]
-    fn fable_5_1_leads_both_claude_carriers_catalogs_and_retires_fable_5() {
-        claude_carriers_offer("claude-fable-5-1", "Claude Fable 5.1");
-        for carrier in CLAUDE_CARRIERS {
-            assert_eq!(catalog_of(carrier).models[0].id, "claude-fable-5-1");
+    fn fable_5_1_leads_both_claude_providers_catalogs_and_retires_fable_5() {
+        claude_providers_offer("claude-fable-5-1", "Claude Fable 5.1");
+        for provider in CLAUDE_PROVIDERS {
+            assert_eq!(catalog_of(provider).models[0].id, "claude-fable-5-1");
         }
         for catalog in provider_catalogs() {
             assert!(
@@ -477,20 +477,20 @@ mod tests {
         }
     }
 
-    /// The compat alias round trips both ways for the two carriers it can
+    /// The compat alias round trips both ways for the two providers it can
     /// name, and answers the old default for everything else.
     #[test]
-    fn the_old_claude_mode_words_map_to_carriers_and_back() {
+    fn the_old_claude_mode_words_map_to_providers_and_back() {
         assert_eq!(carrier_of_claude_mode("tui"), Some(AgentProvider::Claude));
         assert_eq!(
             carrier_of_claude_mode("headless"),
             Some(AgentProvider::ClaudeAdk)
         );
         assert_eq!(carrier_of_claude_mode("codex"), None);
-        for carrier in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+        for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
             assert_eq!(
-                carrier_of_claude_mode(claude_mode_of_harness(carrier)),
-                Some(carrier)
+                carrier_of_claude_mode(claude_mode_of_harness(provider)),
+                Some(provider)
             );
         }
         assert_eq!(claude_mode_of_harness(AgentProvider::Codex), "headless");

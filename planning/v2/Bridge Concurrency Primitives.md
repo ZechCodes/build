@@ -1382,8 +1382,10 @@ settled differently, and why:
   | --- | --- | --- | --- |
   | `worktree.create` | `CreateWorktree` | `WorktreeCreated` | record the row, reply with the worktree |
   | `branch.dispatch` | `DispatchCheckout` | `BranchDispatched` | `RunAdopted`'s work on the `AdoptableCheckout` it was handed, then mint the agent and queue its first turn |
-  | `run.create` / `issue.implement_*` | `CreateWorktree` | `ImplementationOpened` | bind the run to its issue |
-  | `plan.create` | `CreateWorktree` | `PlanWorkspaceOpened` | attach the docs dir to the plan |
+  | `run.create` / `issue.implement_*` | `OpenImplementation` | `ImplementationOpened` | open the run on the checkout that was cut, bind it to its issue |
+  | `run.create` into an existing checkout | `AdoptImplementation` | `ImplementationAdopted` | reset the branch's run onto the baseline the checkpoint made |
+  | `issue.implement_*` with its checkout gone | `RestoreImplementationCheckout` | `RestoredCheckout` | write the recreated checkout onto the run, or hand the run to the recovery agent |
+  | `plan.create` | `OpenPlanWorkspace` | `PlanWorkspaceOpened` | file the Issue around the docs dir the workspace made |
   | `run.adopt` | `AdoptExternalCheckout` / `AdoptPrimaryCheckout` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
   | `run.abandon` | `DiscardCheckout` | `RunAbandoned` | `abandon_run_keeping_checkout`, `reconcile_missing_run_worktree` over the `StagePublications` `perform` decided — written onto the `ActiveRun` the epilogue takes back from `TakenRun` — close the lineage, mirror the affected stages to the issue |
   | `worktree.finish` | `FinishWorktree` | `WorktreeArchived` | the archive record |
@@ -1395,6 +1397,42 @@ settled differently, and why:
   A reply that needs `AppState` — `run.adopt`'s `run_view`, every
   `answer_run_mutation` — is built in the epilogue, which is why
   `WorktreeChange` carries no `reply`.
+- **An implementation's epilogue answers to whoever asked, not to a verb.**
+  `run.create` and `issue.implement_*` cut the same checkout by the same three
+  mutations; what differs is who is waiting. That is one object, carried by the
+  mutation into the epilogue:
+
+  ```rust
+  pub trait ImplementationCaller: Send {
+      fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String>;
+      /// The message the frame gets, after whatever the decide phase armed on
+      /// the strength of this implementation has been settled.
+      fn refused(self: Box<Self>, state: &mut AppState, error: String) -> String;
+  }
+  ```
+
+  `RunOpenedView` answers with the run and refuses with the error unchanged;
+  `IssueSchedulerWaiting` carries on to the stage the checkout was cut for
+  (`dispatch_ready_stage`), answers with the Issue, and on a refusal blocks the
+  Issue's scheduler — an Issue left saying `Preparing` with nothing preparing
+  it is a spinner nothing will ever clear.
+
+  These three mutations therefore hand a **failure to the apply phase as an
+  epilogue** (`ImplementationRefused`, and `RestoredCheckout`'s `Err`) rather
+  than returning it from `perform`: what a refusal leaves behind is state — a
+  blocked Issue, a verified recovery agent started on a run whose branch is
+  gone — and state is written under the mutex. `Reservation::roll_back` is for
+  registry writes, and it cannot see the error that caused them to be undone.
+- **The Issue scheduler hands its git back rather than running it.**
+  `advance_issue_scheduler` returns `Result<Option<WorktreeLifecycleJob>>`: a
+  frame (`issue.implement_*`) defers it, and the callers with no frame to hand
+  it to — boot (app.rs:2173), an agent's own recovery report (5293), and the
+  stage approval that unblocks a waiting scheduler (11011) — run it where they
+  stand through `advance_issue_scheduler_here`, which is where that git ran
+  before this split anyway. The pass resumes from the job's own epilogue
+  (`dispatch_ready_stage`), so no caller decides anything but where the git
+  runs, and no epilogue ever defers a second job into a drain that has already
+  run.
 - **`run.release` builds no job.** Spec finding 2 lists it, but `run_release`
   (app.rs:12741) runs no git: a store delete, a map remove, `close_agent_tab`,
   `invalidate_external_scan`. Its one unbounded step was the kill, which
@@ -1465,6 +1503,13 @@ settled differently, and why:
   `ensure_issue_implementation_worktree`, `open_implementation_run`,
   `plan_create`'s planning worktree, `run_adopt`, `run_abandon`, `project_add`
   and `project_clone` each stop calling git and return a job.
+  `Orchestrator::dispatch_run`, `adopt_implementation` and `dispatch_plan` are
+  deleted: each was the two halves of one of those verbs composed under its
+  caller's lock, and each is now a `prepare_*` (the git) beside an `open_*`
+  (the record) — with the refusals they opened with lifted into
+  `ImplementableIssue::judge`, whose construction is the gate.
+  `open_implementation_run` keeps the tail every implementation shares and
+  stops building the answer, which is the caller's.
 - **Lock discipline** decide (validate without disk, mint the id, reserve the
   row, take the run out, clone the orchestrator, retire the agent tabs, build
   the job) under the app mutex; run (the scan, the git, the checkpoint, the
@@ -1487,7 +1532,11 @@ settled differently, and why:
   `two_adopts_of_one_checkout_converge_on_one_run`,
   `project_add_reads_the_default_branch_with_the_state_lock_free`,
   `project_clone_registers_its_project_from_the_landed_path`,
-  `run_adopt_answers_from_its_epilogue_with_the_runs_own_view`.
+  `run_adopt_answers_from_its_epilogue_with_the_runs_own_view`,
+  `run_create_opens_its_implementation_with_the_state_lock_free`,
+  `issue_implement_all_opens_its_implementation_with_the_state_lock_free`,
+  `implement_stage_restores_a_missing_checkout_with_the_state_lock_free`,
+  `plan_create_prepares_its_workspace_with_the_state_lock_free`.
 
 ## What builds no primitive
 

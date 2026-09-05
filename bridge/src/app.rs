@@ -10419,7 +10419,12 @@ impl AppState {
         let run_id = run_id.to_string();
         match intent {
             ImplementationIntent::Stage(stage_id) => {
-                let already_started = self.runs[&run_id].stage_progress(&stage_id).is_some();
+                let already_started = self
+                    .runs
+                    .get(&run_id)
+                    .ok_or("unknown run_id")?
+                    .stage_progress(&stage_id)
+                    .is_some();
                 if !already_started {
                     let mut params = request.clone();
                     let object = params

@@ -36,12 +36,12 @@ def test_the_token_is_a_prefixed_thirty_two_character_url_safe_string():
     [
         "",
         "dl_",
-        "gw_0123456789abcdefghijklmnopqrstuv",
-        "dl_0123456789abcdefghijklmnopqrstu",
-        "dl_0123456789abcdefghijklmnopqrstuvw",
-        "dl_0123456789abcdefghijklmnopqrst v",
-        "dl_0123456789abcdefghijklmnopqrs$uv",
-        "dl_0123456789abcdefghijklmnopqrstuv\n",
+        "gw_" + "x" * 32,
+        "dl_" + "x" * 31,
+        "dl_" + "x" * 33,
+        "dl_" + "x" * 30 + " y",
+        "dl_" + "x" * 30 + "$yz",
+        "dl_" + "x" * 32 + "\n",
     ],
 )
 def test_only_the_exact_shape_is_well_formed(raw):
@@ -88,7 +88,7 @@ async def test_nobody_holds_an_expired_token(db):
 @pytest.mark.asyncio
 async def test_nobody_holds_a_token_that_was_never_minted(db):
     await add_account(db, "member@example.com")
-    unminted = "dl_0123456789abcdefghijklmnopqrstuv"
+    unminted = "dl_" + "x" * 32
     assert await download_tokens.holder(db, unminted, utc_now()) is None
 
 
@@ -143,7 +143,7 @@ async def test_spending_nothing_is_a_no_op(db):
 
     await download_tokens.spend(db, None, user_id)
     await download_tokens.spend(db, "not-a-token", user_id)
-    await download_tokens.spend(db, "dl_0123456789abcdefghijklmnopqrstuv", user_id)
+    await download_tokens.spend(db, "dl_" + "x" * 32, user_id)
 
     assert await download_tokens.holder(db, raw, now) == user_id
 

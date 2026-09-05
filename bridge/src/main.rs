@@ -34,6 +34,7 @@
 //! the api must confirm this device is approved and owned by an account before
 //! anything is written. `uninstall-service` removes it.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
@@ -44,6 +45,8 @@ use build_bridge::harness::HarnessContext;
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::rtc::WebrtcPeerFactory;
+use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
+use build_bridge::transport_report::TransportReporter;
 use build_bridge::{identity, pairing, service, transport};
 
 #[tokio::main]
@@ -351,11 +354,23 @@ async fn run_daemon(
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     let handler = AppState::handler(app.clone());
+    // Every session's transport events go two places: this daemon's stderr —
+    // the record of truth on the device — and, best effort, the api, which
+    // keeps one row per session for the admin's transport page. Both are
+    // content-free: a session id, a word, a candidate type.
+    let ledger = FanOutLedger::new(vec![
+        Arc::new(StderrLedger),
+        TransportReporter::start(
+            &runtime.config.api_url,
+            &identity.device_id,
+            &identity.identity_private_key_b64,
+        ),
+    ]);
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
     // on. The peer's channels deliver through this same intake, so a session
     // reached over either wire is the one session.
-    let intake = FrameIntake::new(handler, transport_keypair);
+    let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     // The peer transport a browser upgrades to. It is built last because it is
     // built from the intake, which runs the app's own handler.
     app.lock()

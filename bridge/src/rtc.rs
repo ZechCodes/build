@@ -22,6 +22,7 @@ use webrtc::peer_connection::{
 };
 
 use crate::carrier::{self, CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
+use crate::transport_ledger::{TransportEvent, TransportLedger, TransportPath};
 
 pub(crate) mod chunk;
 
@@ -387,6 +388,7 @@ impl WebrtcPeer {
             self.session_id.clone(),
             connection.clone(),
             first_connect,
+            self.intake.ledger(),
         ));
         let mut carriers = Vec::new();
         for (label, id) in NEGOTIATED_CHANNELS {
@@ -450,30 +452,39 @@ impl PeerConnectionEventHandler for PeerEvents {
     }
 }
 
-/// Say once, when a session's peer starts carrying, which kind of path won at
+/// Say, each time a session's peer starts carrying, which kind of path won at
 /// each end: `host` and `srflx` are direct and free, `relay` at either end is
-/// TURN egress somebody pays for, and the line says so. One line per session is
-/// what makes "how often is TURN actually used" answerable from the logs (spec
-/// §Open questions, closed).
+/// TURN egress somebody pays for, and the line says so. Each time, because an
+/// ICE restart — a phone leaving Wi-Fi — re-negotiates the pair under the same
+/// session, and the path it lands on is as billable as the first. That is
+/// what makes "how often is TURN actually used" answerable (spec §Open
+/// questions, closed; telemetry spec §Events).
 ///
-/// It goes to stderr because everything this module says does: the daemon's
-/// log is one stream, and a measurement split off from the errors around it
-/// would be read out of order.
+/// The event goes to the transport ledger, whose stderr sink is the daemon's
+/// one log stream, so a measurement is not split off from the errors around it.
 async fn report_negotiated_path(
     session_id: String,
     connection: Arc<dyn PeerConnection>,
-    mut first_connect: mpsc::UnboundedReceiver<()>,
+    mut connected: mpsc::UnboundedReceiver<()>,
+    ledger: Arc<dyn TransportLedger>,
 ) {
-    if first_connect.recv().await.is_none() {
-        return;
+    while connected.recv().await.is_some() {
+        let report = connection
+            .get_stats(std::time::Instant::now(), StatsSelector::None)
+            .await;
+        let path = negotiated_path(&report);
+        ledger.record(
+            &session_id,
+            TransportEvent::Carrying {
+                path: if path.billed() {
+                    TransportPath::Turn
+                } else {
+                    TransportPath::Direct
+                },
+                detail: path.to_string(),
+            },
+        );
     }
-    let report = connection
-        .get_stats(std::time::Instant::now(), StatsSelector::None)
-        .await;
-    eprintln!(
-        "rtc: session {session_id} carrying over {}",
-        negotiated_path(&report)
-    );
 }
 
 /// The path a nominated pair won on, both ends named: the device's own
@@ -619,7 +630,7 @@ struct DataChannelCarrier {
 
 impl DataChannelCarrier {
     fn ride(channel: Arc<dyn DataChannel>, intake: Arc<FrameIntake>) -> Self {
-        let (carrier, envelopes) = CarrierHandle::open();
+        let (carrier, envelopes) = CarrierHandle::open_channel();
         DataChannelCarrier {
             writer: tokio::spawn(write_envelopes(channel.clone(), envelopes)),
             reader: tokio::spawn(pump_channel_events(channel, intake, carrier)),

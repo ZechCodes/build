@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
-use build_bridge::carrier::testing::{reporting, within_patience};
+use build_bridge::carrier::testing::{client_request, reporting, within_patience};
 use build_bridge::carrier::FrameIntake;
 use build_bridge::rtc::testing::{
     browser_peer, browser_peer_with, orphan_part, past_one_message, BrowserIce, BrowserPeer,
@@ -19,6 +19,7 @@ use build_bridge::rtc::testing::{
 };
 use build_bridge::rtc::WebrtcPeerFactory;
 use build_bridge::transport::{self, Envelope};
+use build_bridge::transport_ledger::RecordingLedger;
 use common::{connected_device, device_identity, recv, request_message, session_init_message};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
@@ -161,6 +162,19 @@ async fn browser_session(
 /// is given is reported as `<frame_type>:<session_id>`, the synthetic `close`
 /// of a session that ended among them.
 fn peer_bridge(state_dir: &std::path::Path) -> (Arc<FrameIntake>, mpsc::UnboundedReceiver<String>) {
+    let (intake, reports, _ledger) = ledgered_peer_bridge(state_dir);
+    (intake, reports)
+}
+
+/// [`peer_bridge`], with the transport ledger the bridge writes handed back,
+/// so a test can read the session's trail as the admin page would.
+fn ledgered_peer_bridge(
+    state_dir: &std::path::Path,
+) -> (
+    Arc<FrameIntake>,
+    mpsc::UnboundedReceiver<String>,
+    Arc<RecordingLedger>,
+) {
     let app = AppState::new_unrooted(
         state_dir.join("worktrees"),
         "main",
@@ -169,11 +183,16 @@ fn peer_bridge(state_dir: &std::path::Path) -> (Arc<FrameIntake>, mpsc::Unbounde
     )
     .shared();
     let (handler, reports) = reporting(AppState::handler(app.clone()));
-    let intake = FrameIntake::new(handler, transport::generate_transport_keypair());
+    let ledger = RecordingLedger::new();
+    let intake = FrameIntake::with_ledger(
+        handler,
+        transport::generate_transport_keypair(),
+        ledger.clone(),
+    );
     app.lock()
         .unwrap()
         .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
-    (intake, reports)
+    (intake, reports, ledger)
 }
 
 /// The upgrade the spec's policy performs, over the session that just went
@@ -371,4 +390,69 @@ async fn a_browser_that_can_only_relay_rides_cloudflare_turn() {
     );
     let over_turn = peer.app.call("project.list", json!({})).await;
     assert_eq!(over_turn["ok"], true, "{over_turn}");
+}
+
+/// The trail the telemetry spec promises for one ordinary session: minted over
+/// the relay, carrying direct once the peer connects, back on the relay when
+/// its channels close under a live relay carrier, ended when the client says
+/// so. Read off the same ledger the daemon writes to stderr and reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_s_transport_trail_reads_minted_carrying_fell_back_ended() {
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports, ledger) = ledgered_peer_bridge(state_dir.path());
+    let (session, _demux) = browser_session("sess-trail", intake).await;
+    assert_eq!(ledger.trail_of("sess-trail"), vec!["minted"]);
+
+    let mut peer = upgraded(&session).await;
+    let greeted = peer.app.call("session.hello", json!({})).await;
+    assert_eq!(greeted["ok"], true, "{greeted}");
+    assert_eq!(
+        ledger.trail_of("sess-trail"),
+        vec!["minted", "carrying:direct"],
+        "a loopback pair is direct, and it is written once the channels carry"
+    );
+
+    // Both channels go while the relay socket still carries the session.
+    peer.app.close().await;
+    peer.term.close().await;
+    within_patience(async {
+        loop {
+            if ledger.trail_of("sess-trail").len() >= 3 {
+                return Some(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        ledger.trail_of("sess-trail"),
+        vec!["minted", "carrying:direct", "fell_back"],
+        "the last channel closing under a live relay carrier is one fallback"
+    );
+
+    // The client closes the session outright over the relay.
+    let closing = client_request(
+        &session.session_key,
+        &session.session_id,
+        transport::CLOSE_FRAME_TYPE,
+        json!({}),
+    );
+    session
+        .to_device
+        .send(json!({ "type": "e2ee_envelope", "session_id": session.session_id, "envelope": closing }))
+        .await
+        .expect("the relay carries the close");
+    within_patience(async {
+        loop {
+            if ledger.trail_of("sess-trail").last().map(String::as_str) == Some("ended") {
+                return Some(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        ledger.trail_of("sess-trail"),
+        vec!["minted", "carrying:direct", "fell_back", "ended"]
+    );
 }

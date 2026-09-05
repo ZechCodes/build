@@ -10133,10 +10133,6 @@ impl AppState {
     /// Start the planning session an inert Issue has never had, now that its
     /// workspace is on disk: the dispatch reads everything said to it so far,
     /// and the turn that spawns the session is queued.
-    ///
-    /// The record is persisted either way — a dispatch that could not start
-    /// leaves the Issue inert and re-startable, with what was said still on its
-    /// thread.
     fn open_inert_plan_drafting(
         &mut self,
         issue_id: &str,
@@ -10144,20 +10140,36 @@ impl AppState {
         detail: ThreadDetail,
     ) -> Result<Value, String> {
         let project_id = self.project_of(issue_id)?;
-        let mut active = self.take_plan(issue_id)?;
-        let started = (|| -> Result<(), String> {
-            let turn = self
+        self.settle_plan_session(issue_id, detail, |state, active| {
+            let turn = state
                 .orch_for(&project_id)?
-                .open_plan_drafting(&mut active, workspace)
+                .open_plan_drafting(active, workspace)
                 .map_err(err)?;
-            self.queue_plan_turn(issue_id, &active, turn);
-            if self.qa_agent {
-                self.qa_simulate_plan(&project_id, &mut active)?;
+            state.queue_plan_turn(issue_id, active, turn);
+            if state.qa_agent {
+                state.qa_simulate_plan(&project_id, active)?;
             }
             Ok(())
-        })();
-        let (view, persisted) = self.answer_plan_mutation(issue_id.to_string(), active, detail);
-        started?;
+        })
+    }
+
+    /// The tail every door to a planning agent shares: take the Issue's record
+    /// out, open the session its workspace was written for, put the record back
+    /// and answer with it. What differs is the middle, which is the door's own.
+    ///
+    /// The record is persisted either way — a session that could not open
+    /// leaves the Issue as it was, with what was said still on its thread, and
+    /// the error is what the caller hears.
+    fn settle_plan_session(
+        &mut self,
+        plan_id: &str,
+        detail: ThreadDetail,
+        open: impl FnOnce(&mut AppState, &mut ActivePlan) -> Result<(), String>,
+    ) -> Result<Value, String> {
+        let mut active = self.take_plan(plan_id)?;
+        let opened = open(self, &mut active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id.to_string(), active, detail);
+        opened?;
         persisted?;
         Ok(view)
     }
@@ -17126,27 +17138,17 @@ impl PlanSessionOpening for PlanNotesSent {
         state: &mut AppState,
         workspace: crate::orchestrator::PlanWorkspace,
     ) -> Result<Value, String> {
-        let PlanNotesSent {
-            plan_id,
-            project_id,
-            detail,
-        } = *self;
-        let mut active = state.take_plan(&plan_id)?;
-        let outcome = (|| -> Result<(), String> {
+        state.settle_plan_session(&self.plan_id, self.detail, |state, active| {
             let turn = state
-                .orch_for(&project_id)?
-                .open_plan_notes(&mut active, workspace, NEW_THREAD_MESSAGES_PROMPT)
+                .orch_for(&self.project_id)?
+                .open_plan_notes(active, workspace, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
-            state.queue_plan_turn(&plan_id, &active, turn);
+            state.queue_plan_turn(&self.plan_id, active, turn);
             if state.qa_agent {
-                state.qa_simulate_plan(&project_id, &mut active)?;
+                state.qa_simulate_plan(&self.project_id, active)?;
             }
             Ok(())
-        })();
-        let (view, persisted) = state.answer_plan_mutation(plan_id, active, detail);
-        outcome?;
-        persisted?;
-        Ok(view)
+        })
     }
 }
 
@@ -17165,28 +17167,17 @@ impl PlanSessionOpening for StageNotesSent {
         state: &mut AppState,
         workspace: crate::orchestrator::PlanWorkspace,
     ) -> Result<Value, String> {
-        let StageNotesSent {
-            plan_id,
-            project_id,
-            stage_id,
-            detail,
-        } = *self;
-        let mut active = state.take_plan(&plan_id)?;
-        let outcome = (|| -> Result<(), String> {
+        state.settle_plan_session(&self.plan_id, self.detail, |state, active| {
             let turn = state
-                .orch_for(&project_id)?
-                .open_plan_stage_notes(&mut active, workspace, &stage_id)
+                .orch_for(&self.project_id)?
+                .open_plan_stage_notes(active, workspace, &self.stage_id)
                 .map_err(err)?;
-            state.queue_plan_turn(&plan_id, &active, turn);
+            state.queue_plan_turn(&self.plan_id, active, turn);
             if state.qa_agent {
-                state.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
+                state.qa_simulate_plan_stage_revise(&self.project_id, active)?;
             }
             Ok(())
-        })();
-        let (view, persisted) = state.answer_plan_mutation(plan_id, active, detail);
-        outcome?;
-        persisted?;
-        Ok(view)
+        })
     }
 }
 
@@ -17203,31 +17194,21 @@ impl PlanSessionOpening for PlanMessaged {
         state: &mut AppState,
         workspace: crate::orchestrator::PlanWorkspace,
     ) -> Result<Value, String> {
-        let PlanMessaged {
-            plan_id,
-            project_id,
-            detail,
-        } = *self;
-        let mut active = state.take_plan(&plan_id)?;
-        let outcome = (|| -> Result<(), String> {
+        state.settle_plan_session(&self.plan_id, self.detail, |state, active| {
             let turn = state
-                .orch_for(&project_id)?
-                .open_plan_message(&mut active, workspace, NEW_THREAD_MESSAGES_PROMPT)
+                .orch_for(&self.project_id)?
+                .open_plan_message(active, workspace, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
-            state.queue_plan_turn(&plan_id, &active, turn);
+            state.queue_plan_turn(&self.plan_id, active, turn);
             if state.qa_agent && active.plan.state == PlanState::Drafting {
                 if active.revising_stage_id.is_some() {
-                    state.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
+                    state.qa_simulate_plan_stage_revise(&self.project_id, active)?;
                 } else {
-                    state.qa_simulate_plan(&project_id, &mut active)?;
+                    state.qa_simulate_plan(&self.project_id, active)?;
                 }
             }
             Ok(())
-        })();
-        let (view, persisted) = state.answer_plan_mutation(plan_id, active, detail);
-        outcome?;
-        persisted?;
-        Ok(view)
+        })
     }
 }
 

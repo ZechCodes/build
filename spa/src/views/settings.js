@@ -295,9 +295,13 @@ export async function renderSettings() {
 
   // The same block the first-run gate mounts — one renderer, two hosts. It is
   // the only thing here that asks the api rather than the bridge, and nothing
-  // on the page depends on its answer, so it goes last: a slow round trip
-  // leaves a "loading…" line, not a page of dead buttons.
-  await mountDownloads($("#root"), {
+  // on the page depends on its answer, so it goes last and is not awaited: the
+  // page is done when the bridge-side mounts are. It paints itself into the
+  // placeholder when the api answers, and names its own refusal in
+  // #downloadserr, so a slow round trip leaves a "loading…" line — not a page
+  // of dead buttons, and not a caller (renderAccount, which mounts the account
+  // nav next) waiting on the api's clock.
+  void mountDownloads($("#root"), {
     fetchDownloads,
     platformKey: currentPlatformKey(),
     clipboard: navigator.clipboard,

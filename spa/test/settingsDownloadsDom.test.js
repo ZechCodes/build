@@ -80,10 +80,14 @@ describe("Settings → Downloads", () => {
     expect(document.getElementById("adddev")).toBeTruthy();
   });
 
-  it("wires the rest of Settings without waiting on the downloads round trip", async () => {
+  it("finishes without waiting on the downloads round trip", async () => {
+    // The rule at the boundary the caller sees: renderAccount does work after
+    // `await renderSettings()`, so the promise itself must not carry the api's
+    // clock. Race it against a never-settling /app/downloads.
     downloads = () => new Promise(() => {});
-    renderSettings();
-    await flush();
+    await expect(
+      Promise.race([renderSettings().then(() => "settled"), flush().then(() => "stalled")]),
+    ).resolves.toBe("settled");
     expect(typeof document.getElementById("adddev").onclick).toBe("function");
     expect(typeof document.getElementById("newrepo").onclick).toBe("function");
     expect(document.getElementById("downloads").textContent).toContain("loading…");

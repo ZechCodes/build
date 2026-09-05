@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
     initialize_result, item_envelope, item_envelope_at, selected_choice, thread_opened,
-    EXACT_THREAD_ID, ITEM_THREAD_ID, ITEM_TURN_ID, SELECTED_EFFORT, SELECTED_MODEL,
-    SUPPORTED_USER_AGENT, WORKTREE_ROOT,
+    EXACT_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, SUPPORTED_USER_AGENT, THREAD_ID, TURN_ID,
+    WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
@@ -83,7 +83,7 @@ fn resume_thread() -> PendingOperation {
 
 fn start_turn(input: &str) -> PendingOperation {
     PendingOperation::StartTurn {
-        thread_id: "thread-1".to_string(),
+        thread_id: THREAD_ID.to_string(),
         input: input.to_string(),
         model: Some(SELECTED_MODEL.to_string()),
         effort: Some(SELECTED_EFFORT.to_string()),
@@ -92,16 +92,16 @@ fn start_turn(input: &str) -> PendingOperation {
 
 fn steer_turn(input: &str) -> PendingOperation {
     PendingOperation::SteerTurn {
-        thread_id: "thread-1".to_string(),
-        turn_id: "turn-1".to_string(),
+        thread_id: THREAD_ID.to_string(),
+        turn_id: TURN_ID.to_string(),
         input: input.to_string(),
     }
 }
 
 fn interrupt_turn() -> PendingOperation {
     PendingOperation::InterruptTurn {
-        thread_id: "thread-1".to_string(),
-        turn_id: "turn-1".to_string(),
+        thread_id: THREAD_ID.to_string(),
+        turn_id: TURN_ID.to_string(),
     }
 }
 
@@ -152,7 +152,7 @@ fn advance_to_waiting() -> CodexSessionState {
         .transition(
             correlated(
                 start_thread(),
-                Ok(thread_opened("thread-1", Some(SELECTED_EFFORT))),
+                Ok(thread_opened(THREAD_ID, Some(SELECTED_EFFORT))),
             ),
             Duration::ZERO,
             limits().state(),
@@ -353,10 +353,10 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
     assert_eq!(frames[2]["params"]["effort"], "high");
     assert!(frames[3]["params"].get("model").is_none());
     assert!(frames[3]["params"].get("effort").is_none());
-    assert_eq!(frames[3]["params"]["expectedTurnId"], "turn-1");
+    assert_eq!(frames[3]["params"]["expectedTurnId"], TURN_ID);
     assert_eq!(frames[4]["method"], "turn/interrupt");
-    assert_eq!(frames[4]["params"]["threadId"], "thread-1");
-    assert_eq!(frames[4]["params"]["turnId"], "turn-1");
+    assert_eq!(frames[4]["params"]["threadId"], THREAD_ID);
+    assert_eq!(frames[4]["params"]["turnId"], TURN_ID);
     assert_eq!(frames[5], json!({"method":"initialized"}));
 }
 
@@ -599,7 +599,7 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
 
 #[test]
 fn thread_open_response_operation_must_match_the_persisted_resume_id() {
-    let opened = thread_opened("thread-1", None);
+    let opened = thread_opened(THREAD_ID, None);
 
     let resumed = initialize_transition_for(Some(EXACT_THREAD_ID), SUPPORTED_USER_AGENT)
         .unwrap()
@@ -640,7 +640,7 @@ fn thread_open_error_after_started_notification_fails() {
         .unwrap()
         .state
         .transition(
-            SessionEvent::ThreadStarted("thread-1".to_string()),
+            SessionEvent::ThreadStarted(THREAD_ID.to_string()),
             Duration::ZERO,
             limits().state(),
         )
@@ -684,7 +684,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
     let opening = initialize_transition(SUPPORTED_USER_AGENT).unwrap().state;
     let notified = opening
         .transition(
-            SessionEvent::ThreadStarted("thread-1".to_string()),
+            SessionEvent::ThreadStarted(THREAD_ID.to_string()),
             Duration::ZERO,
             limits().state(),
         )
@@ -692,7 +692,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
         .state;
     let matching = notified
         .transition(
-            correlated(start_thread(), Ok(thread_opened("thread-1", None))),
+            correlated(start_thread(), Ok(thread_opened(THREAD_ID, None))),
             Duration::ZERO,
             limits().state(),
         )
@@ -708,7 +708,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
         .unwrap()
         .state
         .transition(
-            correlated(start_thread(), Ok(thread_opened("thread-1", None))),
+            correlated(start_thread(), Ok(thread_opened(THREAD_ID, None))),
             Duration::ZERO,
             limits().state(),
         );
@@ -721,13 +721,13 @@ fn thread_response_before_notification_is_ready_and_the_duplicate_is_inert() {
     assert_eq!(waiting.status(), AgentStatus::Waiting);
     let duplicate = waiting
         .transition(
-            SessionEvent::ThreadStarted("thread-1".to_string()),
+            SessionEvent::ThreadStarted(THREAD_ID.to_string()),
             Duration::from_secs(1),
             limits().state(),
         )
         .unwrap();
     assert!(duplicate.effects.is_empty());
-    assert_eq!(duplicate.state.session_id().as_deref(), Some("thread-1"));
+    assert_eq!(duplicate.state.session_id().as_deref(), Some(THREAD_ID));
     assert_eq!(
         duplicate.state.active_model().as_deref(),
         Some("gpt-5.6-sol")
@@ -747,7 +747,7 @@ fn starting_turn_completion_before_response_never_resurrects_working() {
         .state;
     let completed = starting
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -756,7 +756,7 @@ fn starting_turn_completion_before_response_never_resurrects_working() {
     assert_eq!(completed.status(), AgentStatus::Working);
     let settled = completed
         .transition(
-            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":TURN_ID}}))),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -776,7 +776,7 @@ fn conflicting_duplicate_completion_is_rejected() {
         .state;
     let completed = starting
         .transition(
-            turn_completed("turn-1", Some("first failure")),
+            turn_completed(TURN_ID, Some("first failure")),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -785,7 +785,7 @@ fn conflicting_duplicate_completion_is_rejected() {
 
     let normalized_duplicate = completed
         .transition(
-            turn_completed("turn-1", Some("  first   failure\n")),
+            turn_completed(TURN_ID, Some("  first   failure\n")),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -796,7 +796,7 @@ fn conflicting_duplicate_completion_is_rejected() {
         .state
         .transition(
             SessionEvent::ObservedCompletion(TurnCompletion::observed(
-                "turn-1".to_string(),
+                TURN_ID.to_string(),
                 "interrupted".to_string(),
                 Some("first failure".to_string()),
             )),
@@ -808,7 +808,7 @@ fn conflicting_duplicate_completion_is_rejected() {
     assert!(normalized_duplicate
         .state
         .transition(
-            turn_completed("turn-1", Some("different failure")),
+            turn_completed(TURN_ID, Some("different failure")),
             Duration::from_secs(4),
             limits().state(),
         )
@@ -821,7 +821,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
         .unwrap()
         .state
         .transition(
-            correlated(start_thread(), Ok(thread_opened("thread-1", Some("low")))),
+            correlated(start_thread(), Ok(thread_opened(THREAD_ID, Some("low")))),
             Duration::ZERO,
             limits().state(),
         )
@@ -838,7 +838,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
         .state;
     let completed = starting
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -846,7 +846,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
         .state;
     let settled = completed
         .transition(
-            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":TURN_ID}}))),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -867,7 +867,7 @@ fn observed_turn_then_start_error_and_wrong_ids_fail() {
         .unwrap()
         .state
         .transition(
-            SessionEvent::TurnStarted("turn-1".to_string()),
+            SessionEvent::TurnStarted(TURN_ID.to_string()),
             Duration::ZERO,
             limits().state(),
         )
@@ -898,7 +898,7 @@ fn observed_turn_then_start_error_and_wrong_ids_fail() {
         .unwrap()
         .state
         .transition(
-            SessionEvent::TurnStarted("turn-1".to_string()),
+            SessionEvent::TurnStarted(TURN_ID.to_string()),
             Duration::ZERO,
             limits().state()
         )
@@ -952,7 +952,7 @@ fn failed_starting_turn_is_interrupted_after_its_id_is_confirmed() {
     let confirmed = failed
         .state
         .transition(
-            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":TURN_ID}}))),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -960,7 +960,7 @@ fn failed_starting_turn_is_interrupted_after_its_id_is_confirmed() {
     assert!(confirmed.effects.iter().any(|effect| matches!(
         effect,
         SessionEffect::Request(PendingOperation::InterruptTurn { turn_id, .. })
-            if turn_id == "turn-1"
+            if turn_id == TURN_ID
     )));
     assert!(!confirmed.state.can_interrupt());
 }
@@ -976,7 +976,7 @@ fn working_state() -> CodexSessionState {
         .state;
     starting
         .transition(
-            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":TURN_ID}}))),
             Duration::ZERO,
             limits().state(),
         )
@@ -1008,7 +1008,7 @@ fn steers_are_serialized_and_success_releases_input_in_order() {
     let released = queued
         .state
         .transition(
-            correlated(steer_turn("one"), Ok(json!({"turnId":"turn-1"}))),
+            correlated(steer_turn("one"), Ok(json!({"turnId":TURN_ID}))),
             Duration::ZERO,
             limits().state(),
         )
@@ -1037,7 +1037,7 @@ fn a_steer_success_naming_another_turn_fails_the_session() {
         message.contains("turn/steer response id mismatch"),
         "{message}"
     );
-    assert!(message.contains("turn-1"), "{message}");
+    assert!(message.contains(TURN_ID), "{message}");
     assert!(message.contains("turn-9"), "{message}");
 
     let queued = steered
@@ -1071,7 +1071,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
         .state;
     let completed = pending
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1113,7 +1113,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
     let replayed = provisional
         .state
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -1133,7 +1133,7 @@ fn successful_steer_after_completion_never_replays_input() {
         .state;
     let completed = pending
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1141,7 +1141,7 @@ fn successful_steer_after_completion_never_replays_input() {
         .state;
     let settled = completed
         .transition(
-            correlated(steer_turn("accepted"), Ok(json!({"turnId":"turn-1"}))),
+            correlated(steer_turn("accepted"), Ok(json!({"turnId":TURN_ID}))),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -1165,7 +1165,7 @@ fn completed_turn_cannot_be_interrupted_while_a_steer_response_is_pending() {
         .state;
     let completed = pending
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1200,7 +1200,7 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
         .state;
     let completed = interrupted
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1208,7 +1208,7 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
         .state;
     let steer_settled = completed
         .transition(
-            correlated(steer_turn("steer"), Ok(json!({"turnId":"turn-1"}))),
+            correlated(steer_turn("steer"), Ok(json!({"turnId":TURN_ID}))),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -1241,7 +1241,7 @@ fn completion_before_interrupt_error_preserves_the_error_during_steer_reconcilia
         .state;
     let completed = interrupted
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1265,7 +1265,7 @@ fn completion_before_interrupt_error_preserves_the_error_during_steer_reconcilia
     let settled = interrupt_failed
         .state
         .transition(
-            correlated(steer_turn("steer"), Ok(json!({"turnId":"turn-1"}))),
+            correlated(steer_turn("steer"), Ok(json!({"turnId":TURN_ID}))),
             Duration::from_secs(3),
             limits().state(),
         )
@@ -1285,7 +1285,7 @@ fn interrupt_answered_with_no_active_turn_after_completion_settles_quietly() {
         .state;
     let completed = interrupted
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1341,7 +1341,7 @@ fn active_turn_not_steerable_waits_for_completion_then_replays_once() {
     let replayed = waiting
         .state
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -1349,7 +1349,7 @@ fn active_turn_not_steerable_waits_for_completion_then_replays_once() {
     assert!(matches!(
         replayed.effects.as_slice(),
         [SessionEffect::CloseTurn(turn_id), SessionEffect::Request(PendingOperation::StartTurn { input, .. })]
-            if turn_id == "turn-1" && input == "next"
+            if turn_id == TURN_ID && input == "next"
     ));
 }
 
@@ -1364,7 +1364,7 @@ fn active_turn_not_steerable_after_completion_replays_immediately() {
         .unwrap()
         .state
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(1),
             limits().state(),
         )
@@ -1450,7 +1450,7 @@ fn interrupt_is_idempotent_and_holds_replacement_until_completion() {
     let completed = acked
         .state
         .transition(
-            turn_completed("turn-1", None),
+            turn_completed(TURN_ID, None),
             Duration::from_secs(2),
             limits().state(),
         )
@@ -1638,16 +1638,16 @@ fn error_notifications_require_the_typed_liveness_shape() {
         ServerNotification::decode(
             "error",
             json!({
-                "threadId":"thread-1",
-                "turnId":"turn-1",
+                "threadId":THREAD_ID,
+                "turnId":TURN_ID,
                 "error":{"message":"retry failed"},
                 "willRetry":false
             })
         )
         .unwrap(),
         ServerNotification::Error(error)
-            if error.thread_id == "thread-1"
-                && error.turn_id == "turn-1"
+            if error.thread_id == THREAD_ID
+                && error.turn_id == TURN_ID
                 && error.error.message == "retry failed"
                 && !error.will_retry
     ));
@@ -2091,7 +2091,7 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
     let mut translator = CodexActivityTranslator::new(bounded.translator());
     let completed = |turn: &str, id: &str| {
         item_envelope_at(
-            ITEM_THREAD_ID,
+            THREAD_ID,
             turn,
             json!({"id":id,"type":"agentMessage","text":id}),
         )
@@ -2100,7 +2100,7 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
     for id in ["a", "b"] {
         assert_eq!(
             translator
-                .translate("item/completed", &completed(ITEM_TURN_ID, id))
+                .translate("item/completed", &completed(TURN_ID, id))
                 .unwrap()
                 .len(),
             1
@@ -2108,7 +2108,7 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
     }
     assert_eq!(
         translator
-            .translate("item/completed", &completed(ITEM_TURN_ID, "c"))
+            .translate("item/completed", &completed(TURN_ID, "c"))
             .unwrap()
             .len(),
         1
@@ -2122,7 +2122,7 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
         1
     );
     assert_eq!(translator.completed_item_count(), 2);
-    translator.close_turn(ITEM_TURN_ID).unwrap();
+    translator.close_turn(TURN_ID).unwrap();
     assert_eq!(translator.completed_item_count(), 1);
 }
 
@@ -2181,7 +2181,7 @@ fn more_than_256_valid_completions_remain_live_and_turn_close_clears_keys() {
         assert_eq!(reports.len(), 1);
     }
     assert_eq!(translator.completed_item_count(), 256);
-    translator.close_turn(ITEM_TURN_ID).unwrap();
+    translator.close_turn(TURN_ID).unwrap();
     assert_eq!(translator.completed_item_count(), 0);
 }
 
@@ -2205,7 +2205,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
         json!({
             "thread":{
                 "id":"thread-child",
-                "parentThreadId":ITEM_THREAD_ID
+                "parentThreadId":THREAD_ID
             }
         }),
     )
@@ -2215,7 +2215,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
         ServerNotification::ThreadStarted {
             parent_thread_id: Some(parent),
             ..
-        } if parent == ITEM_THREAD_ID
+        } if parent == THREAD_ID
     ));
     let child = ServerNotification::decode(
         "item/started",
@@ -2350,7 +2350,7 @@ fn open_tools_close_unanswered_and_release_limits() {
             )
             .unwrap();
     }
-    let closed = translator.close_turn(ITEM_TURN_ID).unwrap();
+    let closed = translator.close_turn(TURN_ID).unwrap();
     assert_eq!(closed.len(), 2);
     assert!(closed.iter().all(|report| matches!(
         report.activity,

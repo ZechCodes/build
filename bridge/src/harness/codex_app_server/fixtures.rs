@@ -6,6 +6,8 @@ pub(super) const SUPPORTED_USER_AGENT: &str = "build_bridge/0.153.0 (fixture)";
 pub(super) const SELECTED_MODEL: &str = "gpt-5.6-sol";
 pub(super) const SELECTED_EFFORT: &str = "high";
 pub(super) const WORKTREE_ROOT: &str = "/tmp/worktree";
+pub(super) const THREAD_ID: &str = "thread-1";
+pub(super) const TURN_ID: &str = "turn-1";
 pub(super) const EXACT_THREAD_ID: &str = "thread-exact";
 
 pub(super) fn selected_choice() -> ModelChoice {
@@ -39,13 +41,10 @@ pub(super) fn thread_opened(thread_id: &str, reasoning_effort: Option<&str>) -> 
     thread_opened_at(WORKTREE_ROOT, thread_id, reasoning_effort)
 }
 
-pub(super) const ITEM_THREAD_ID: &str = "thread-1";
-pub(super) const ITEM_TURN_ID: &str = "turn-1";
-
 pub(super) fn item_envelope_at(thread_id: &str, turn_id: &str, item: Value) -> Value {
     json!({ "threadId": thread_id, "turnId": turn_id, "item": item })
 }
 
 pub(super) fn item_envelope(item: Value) -> Value {
-    item_envelope_at(ITEM_THREAD_ID, ITEM_TURN_ID, item)
+    item_envelope_at(THREAD_ID, TURN_ID, item)
 }

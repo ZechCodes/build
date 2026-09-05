@@ -686,7 +686,8 @@ mod tests {
 
     use super::*;
     use crate::harness::codex_app_server::fixtures::{
-        initialize_result, selected_choice, thread_opened_at, SELECTED_EFFORT, SUPPORTED_USER_AGENT,
+        initialize_result, selected_choice, thread_opened_at, SELECTED_EFFORT,
+        SUPPORTED_USER_AGENT, THREAD_ID, TURN_ID,
     };
     use crate::harness::codex_app_server::policy::AfterResponse;
     use crate::harness::codex_app_server::protocol::ServerResponse;
@@ -775,7 +776,7 @@ mod tests {
             "id": 2,
             "result": thread_opened_at(
                 &root.display().to_string(),
-                "thread-1",
+                THREAD_ID,
                 Some(SELECTED_EFFORT),
             )
         }))
@@ -1002,8 +1003,8 @@ mod tests {
             root.path(),
             &format!(
                 "read turn; printf '%s\\n' '{}'; printf '%s\\n' '{}'",
-                r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
-                r#"{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"tool-1","type":"webSearch"}}}"#,
+                json!({"id":3,"result":{"turn":{"id":TURN_ID}}}),
+                json!({"method":"item/started","params":{"threadId":THREAD_ID,"turnId":TURN_ID,"item":{"id":"tool-1","type":"webSearch"}}}),
             ),
         );
         let (session, mut activity) = scripted_session(root.path(), &script);
@@ -1031,13 +1032,13 @@ mod tests {
             root.path(),
             &format!(
                 "printf '%s\n' '{}' '{}' '{}' '{}' '{}' '{}' '{}'; read child_response; read hold",
-                r#"{"method":"thread/started","params":{"thread":{"id":"thread-child","parentThreadId":"thread-1"}}}"#,
+                json!({"method":"thread/started","params":{"thread":{"id":"thread-child","parentThreadId":THREAD_ID}}}),
                 r#"{"method":"error","params":{"threadId":"thread-child","malformed":true}}"#,
                 r#"{"method":"item/started","params":{"threadId":"thread-child","item":{}}}"#,
                 r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-child"}}"#,
                 r#"{"method":"future/notification","params":{"threadId":"thread-child"}}"#,
                 r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
-                r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
+                json!({"method":"error","params":{"threadId":THREAD_ID,"turnId":TURN_ID,"error":{"message":"parent stays alive"},"willRetry":true}}),
             ),
         );
         let (session, mut activity) = scripted_session(root.path(), &script);
@@ -1052,7 +1053,7 @@ mod tests {
         ));
         assert_eq!(session.epitaph(), None);
         assert_eq!(session.status(), AgentStatus::Waiting);
-        assert_eq!(session.session_id().as_deref(), Some("thread-1"));
+        assert_eq!(session.session_id().as_deref(), Some(THREAD_ID));
         session.end();
     }
 
@@ -1063,7 +1064,7 @@ mod tests {
             root.path(),
             &format!(
                 "printf '%s\n' '{}'; read turn; printf '%s\n' '{}' '{}' '{}'; read child_response",
-                r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
+                json!({"method":"error","params":{"threadId":THREAD_ID,"turnId":TURN_ID,"error":{"message":"parent stays alive"},"willRetry":true}}),
                 r#"{"method":"item/started","params":{"threadId":"thread-child","turnId":"turn-child","item":{"id":"tool-child","type":"webSearch"}}}"#,
                 r#"{"method":"turn/completed","params":{"threadId":"thread-child","turn":{"id":"turn-child","status":"completed"}}}"#,
                 r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
@@ -1101,7 +1102,7 @@ mod tests {
             root.path(),
             &format!(
                 "read turn; printf '%s\\n' '{turn_response}'; read interrupt; printf '%s\\n' \"$interrupt\" > {staged_capture}; mv {staged_capture} {interrupt_capture}; read hold",
-                turn_response = r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
+                turn_response = json!({"id":3,"result":{"turn":{"id":TURN_ID}}}),
                 staged_capture = interrupt_capture.with_extension("part").display(),
                 interrupt_capture = interrupt_capture.display(),
             ),
@@ -1122,8 +1123,8 @@ mod tests {
         let frame: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&interrupt_capture).unwrap()).unwrap();
         assert_eq!(frame["method"], "turn/interrupt");
-        assert_eq!(frame["params"]["threadId"], "thread-1");
-        assert_eq!(frame["params"]["turnId"], "turn-1");
+        assert_eq!(frame["params"]["threadId"], THREAD_ID);
+        assert_eq!(frame["params"]["turnId"], TURN_ID);
         assert!(!session.exited_within(Duration::ZERO));
         assert!(!matches!(session.status(), AgentStatus::Ended { .. }));
         session.end();

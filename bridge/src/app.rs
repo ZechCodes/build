@@ -7575,14 +7575,27 @@ impl AppState {
         if !crate::worktree::is_ref_name(branch) {
             return Err(format!("{branch:?} is not a branch name"));
         }
-        let ownership = self.project_checkouts(project_id, true)?.holders()?;
-        if let Some(refusal) = BranchHolder::of(&ownership, branch).refusal(branch) {
+        if let Some(refusal) = self.branch_holder_now(project_id, branch)?.refusal(branch) {
             return Err(refusal);
         }
         let base = self.base_for(project_id)?;
         self.orch_for(project_id)?
             .create_worktree_on_existing_branch(branch, &base)
             .map_err(err)
+    }
+
+    /// Which of the project's checkouts holds `branch` right now — decided
+    /// against a forced rescan, because the caller is about to act on the
+    /// answer rather than describe it. `worktree.create {branch}` and
+    /// `branch.dispatch` both ask here, so the two verbs never disagree about
+    /// who has a branch.
+    fn branch_holder_now(
+        &mut self,
+        project_id: &str,
+        branch: &str,
+    ) -> Result<BranchHolder, String> {
+        let ownership = self.project_checkouts(project_id, true)?.holders()?;
+        Ok(BranchHolder::of(&ownership, branch))
     }
 
     /// Make a checkout that was just created visible to the very next board
@@ -13610,7 +13623,12 @@ impl AppState {
         params: &Value,
         created: &mut BranchDispatchCreations,
     ) -> Result<Value, String> {
-        let holder = self.dispatch_branch_holder(project_id, branch.as_deref())?;
+        // A dispatch that named no branch has nothing to look for: it always
+        // cuts a new branch rather than adopting whatever is lying around.
+        let holder = match branch.as_deref() {
+            Some(branch) => self.branch_holder_now(project_id, branch)?,
+            None => BranchHolder::nobody(),
+        };
         let run_id = match holder.held_by(crate::branch::BranchSource::Run) {
             // Build already runs this branch: the dispatch joins the checkout
             // that is there, and creates no checkout of its own.
@@ -13699,23 +13717,6 @@ impl AppState {
             "run_id": run_id,
             "agent_id": agent_id,
         }))
-    }
-
-    /// Which of the project's checkouts holds the branch a dispatch named —
-    /// the same answer `worktree.create {branch}` gets, from the same forced
-    /// rescan, so the two verbs never disagree about who has a branch. A
-    /// dispatch that named no branch has nothing to look for: it always cuts
-    /// a new branch rather than adopting whatever happens to be lying around.
-    fn dispatch_branch_holder(
-        &mut self,
-        project_id: &str,
-        branch: Option<&str>,
-    ) -> Result<BranchHolder, String> {
-        let Some(branch) = branch else {
-            return Ok(BranchHolder::nobody());
-        };
-        let ownership = self.project_checkouts(project_id, true)?.holders()?;
-        Ok(BranchHolder::of(&ownership, branch))
     }
 
     /// Cut the branch a dispatch has nowhere else to put its work.
@@ -15606,11 +15607,9 @@ impl BranchHolder {
     /// The holder as one wire fact — `{ "kind", "id" }` or null — so the rule
     /// that picks it lives here alone and no reader re-applies it.
     fn into_json(self) -> Value {
-        json!({
-            "holder": self
-                .holder
-                .map(|(source, id)| json!({ "kind": source.as_str(), "id": id })),
-        })
+        json!(self
+            .holder
+            .map(|(source, id)| json!({ "kind": source.as_str(), "id": id })))
     }
 }
 
@@ -15646,16 +15645,6 @@ fn unregistered_restore_for(active: &ActiveRun) -> crate::worktree::Unregistered
     }
 }
 
-/// The fields of a JSON object, for a caller merging two objects into one wire
-/// row. Every caller passes an object literal, so a non-object is a bug here
-/// rather than input.
-fn object_fields(value: Value) -> serde_json::Map<String, Value> {
-    match value {
-        Value::Object(fields) => fields,
-        other => unreachable!("expected a json object, got {other}"),
-    }
-}
-
 /// The answer `git.branches` and `git.branch_delete` share: gitgui's git facts
 /// about every offerable branch, each row stamped with the checkout holding it.
 fn stamped_branch_list(scope: &BranchListingScope) -> Result<Value, String> {
@@ -15667,9 +15656,9 @@ fn stamped_branch_list(scope: &BranchListingScope) -> Result<Value, String> {
         .into_iter()
         .map(|row| {
             let holder = BranchHolder::of(&ownership, &row.name);
-            let mut fields = object_fields(row.into_json());
-            fields.extend(object_fields(holder.into_json()));
-            Value::Object(fields)
+            let mut fields = row.into_json();
+            fields["holder"] = holder.into_json();
+            fields
         })
         .collect();
     Ok(json!({ "current": listing.current, "branches": branches }))

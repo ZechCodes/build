@@ -32,7 +32,7 @@ pub struct BranchRow {
     pub head_time: i64,
     pub stat: crate::diff::Stat,
 }
-pub struct BranchListing { pub current: Option<String>, pub rows: Vec<BranchRow> }
+pub struct BranchListing { pub current: String, pub rows: Vec<BranchRow> }
 pub fn branch_list(repo_path: &Path, base_branch: &str) -> Result<BranchListing, String>
 ```
 
@@ -88,9 +88,9 @@ Exactly one of `branch` / `name` is accepted; both or neither is an error. The `
 
 | facts | strategy | intent |
 |---|---|---|
-| `run_id: Some` (either target) | open the run | `Open` |
-| `external_worktree_id: Some` (either target) | adopt that checkout | `Adopt` |
-| `primary_worktree_id: Some` (either target) | adopt the primary | `Adopt` |
+| `holder.kind == run` (either target) | open the run | `Open` |
+| `holder.kind == external_worktree` (either target) | adopt that checkout | `Adopt` |
+| `holder.kind == primary_checkout` (either target) | adopt the primary | `Adopt` |
 | `target: Ref { origin: Local }` | check the branch out | `Checkout` |
 | `target: Ref { origin: Remote }` | fetch, then check out | `Materialise` |
 | ~~`target: Ref { origin: Absent }`~~ | ~~cut it exactly as given~~ | ~~`Cut`~~ |

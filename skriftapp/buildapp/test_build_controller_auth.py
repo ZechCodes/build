@@ -19,14 +19,14 @@ from litestar.response import Redirect
 
 from skrift.auth.session_keys import SESSION_USER_ID
 
-SIGNED_IN_ADDRESS = "someone@example.com"
-
 from buildapp import controllers
 from buildapp.controllers import BuildController
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_test_support import email_settings
 from buildapp.invite_pages import INVITE_ONLY_HEADING
 from buildapp.releases import PLATFORMS
+
+SIGNED_IN_ADDRESS = "someone@example.com"
 
 
 def _route_handlers() -> list[HTTPRouteHandler]:

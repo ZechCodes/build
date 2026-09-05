@@ -363,6 +363,30 @@ describe("the create modal's branch picker", () => {
     expect(modal().querySelector(".branch-picker-note").textContent).toBe("No branch matches.");
   });
 
+  it("lets a listing that lands after the modal was dismissed fall on the floor, painting nothing and taking no focus", async () => {
+    let answer;
+    App.call = vi.fn(
+      (method) => new Promise((resolve) => {
+        answer = () => resolve({ current: "main", branches: [listed("feature-x")] });
+        if (method !== "git.branches") resolve({});
+      }),
+    );
+    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    await flush();
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    try {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await motionBeat();
+      expect(document.querySelector("#create-scrim")).toBeNull();
+      answer();
+      await flush();
+      expect(document.querySelector("#create-scrim")).toBeNull();
+      expect(focus).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
   it("scrolls the row the arrows land on into view, so Enter presses what can be seen", async () => {
     const original = Element.prototype.scrollIntoView;
     const scrolled = [];

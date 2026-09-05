@@ -4,7 +4,7 @@
 // Enter press means.
 
 import { describe, it, expect } from "vitest";
-import { branchPickerRows, pressedRow, INTENT_VERB } from "../src/core/branchPickerModel.js";
+import { branchPickerRows, nextHighlight, pressedRow, INTENT_VERB, NOTHING_HIGHLIGHTED } from "../src/core/branchPickerModel.js";
 
 const branch = (name, stamps = {}) => ({
   name,
@@ -158,5 +158,36 @@ describe("which row an Enter press means", () => {
     expect(pressedRow({ rows: rowsFor([branch("feature-x")]), query: "", highlight: -1 })).toBeNull();
     expect(pressedRow({ rows: rowsFor([], "!!!"), query: "!!!", highlight: -1 })).toBeNull();
     expect(pressedRow({ rows: [], query: "", highlight: -1 })).toBeNull();
+  });
+
+  it("names the unhighlighted state once, and presses by it", () => {
+    expect(NOTHING_HIGHLIGHTED).toBe(-1);
+    expect(pressedRow({ rows, query: "feature-x" })).toBe(pressedRow({ rows, query: "feature-x", highlight: NOTHING_HIGHLIGHTED }));
+  });
+});
+
+describe("where the arrows can take the highlight", () => {
+  const rows = rowsFor([branch("main"), branch("feature-x")]);
+
+  it("steps down the list and up it", () => {
+    expect(nextHighlight({ rows, highlight: NOTHING_HIGHLIGHTED, step: 1 })).toBe(0);
+    expect(nextHighlight({ rows, highlight: 0, step: 1 })).toBe(1);
+    expect(nextHighlight({ rows, highlight: 1, step: -1 })).toBe(0);
+  });
+
+  it("goes no further off the top than nothing highlighted", () => {
+    expect(nextHighlight({ rows, highlight: 0, step: -1 })).toBe(NOTHING_HIGHLIGHTED);
+    expect(nextHighlight({ rows, highlight: NOTHING_HIGHLIGHTED, step: -1 })).toBe(NOTHING_HIGHLIGHTED);
+  });
+
+  it("stops at the last row", () => {
+    expect(nextHighlight({ rows, highlight: 1, step: 1 })).toBe(1);
+    expect(nextHighlight({ rows, highlight: 0, step: 5 })).toBe(1);
+  });
+
+  it("highlights nothing in an empty list, whichever way it is stepped", () => {
+    expect(nextHighlight({ rows: [], highlight: NOTHING_HIGHLIGHTED, step: 1 })).toBe(NOTHING_HIGHLIGHTED);
+    expect(nextHighlight({ rows: [], highlight: NOTHING_HIGHLIGHTED, step: -1 })).toBe(NOTHING_HIGHLIGHTED);
+    expect(nextHighlight({ step: 1 })).toBe(NOTHING_HIGHLIGHTED);
   });
 });

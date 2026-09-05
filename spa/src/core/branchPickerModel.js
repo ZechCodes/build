@@ -144,6 +144,20 @@ export function branchPickerRows({ projectId, branches = [], query = "" }) {
   return cuts ? [cutNewRow(projectId, query), ...rows] : rows;
 }
 
+/** The highlight when no row is highlighted: above the first row, where an
+ *  arrow up from the leading row leaves it. */
+export const NOTHING_HIGHLIGHTED = -1;
+
+/**
+ * Where an arrow press takes the highlight: `step` rows along the list,
+ * stopping at the last row on the way down and at nothing highlighted on the
+ * way up. An empty list has nowhere to land, so it highlights nothing.
+ */
+export function nextHighlight({ rows = [], highlight = NOTHING_HIGHLIGHTED, step }) {
+  const last = rows.length - 1;
+  return Math.min(last, Math.max(NOTHING_HIGHLIGHTED, highlight + step));
+}
+
 /**
  * The row an Enter press means. A press with nothing highlighted presses the
  * row the list leads with, which is the branch the text would cut whenever it
@@ -151,7 +165,7 @@ export function branchPickerRows({ projectId, branches = [], query = "" }) {
  * that leaves no row standing, and an untouched field, press nothing — so
  * Enter there asks to be told a name rather than starting something unnamed.
  */
-export function pressedRow({ rows = [], query = "", highlight = -1 }) {
+export function pressedRow({ rows = [], query = "", highlight = NOTHING_HIGHLIGHTED }) {
   if (rows[highlight]) return rows[highlight];
   return String(query || "").trim() ? rows[0] || null : null;
 }

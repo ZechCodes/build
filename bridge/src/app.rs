@@ -34,7 +34,7 @@ use crate::harness::{
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
 use crate::lifecycle::{
     CreateWorktree, DispatchCheckout, DispatchTarget, LifecycleEpilogue, LifecycleOutcome,
-    PendingRow, PendingState, Performed, ReservedRow, WorktreeChange, WorktreeLifecycleJob,
+    PendingRow, PendingState, Performed, WorktreeChange, WorktreeLifecycleJob, WorktreeMutation,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -678,6 +678,14 @@ struct PendingAgentTurn {
     /// the router's: a router is one decision long, works no conversation, and
     /// its prompt deliberately carries none.
     wants_catch_up: bool,
+    /// Whether this turn outlives a refusal of the request that queued it.
+    ///
+    /// False for almost everything: a turn speaks for a mutation, and a request
+    /// that failed wrote no mutation to speak for. A recovery is the exception
+    /// — it is written down and started, and the verb then refuses its caller
+    /// to say exactly that, so the agent handed the recovery must still hear
+    /// it.
+    survives_refusal: bool,
 }
 
 /// The two halves of one turn's text: which one travels is decided by whether
@@ -758,6 +766,7 @@ impl PendingAgentTurn {
             }),
             phase: turn.phase,
             wants_catch_up: true,
+            survives_refusal: false,
         }
     }
 
@@ -779,6 +788,7 @@ impl PendingAgentTurn {
             }),
             phase: turn.phase,
             wants_catch_up: true,
+            survives_refusal: false,
         })
     }
 
@@ -814,6 +824,7 @@ impl PendingAgentTurn {
             }),
             phase: "recover",
             wants_catch_up: true,
+            survives_refusal: true,
         })
     }
 }
@@ -4472,7 +4483,15 @@ impl AppState {
                                 };
                                 let answered = match deferred {
                                     Some(deferred) => {
-                                        let done = deferred.run();
+                                        // Minutes of git belong on a blocking
+                                        // thread, never on a runtime worker:
+                                        // several routers dispatching at once
+                                        // would otherwise park the relay's read
+                                        // loop and every other harness's socket.
+                                        let done =
+                                            tokio::task::spawn_blocking(move || deferred.run())
+                                                .await
+                                                .expect("the lifecycle job panicked");
                                         timer.lock(&state).apply_deferred(
                                             MCP_CONTROL_METHOD,
                                             &Value::Null,
@@ -5818,7 +5837,11 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> (Result<Value, String>, Option<DeferredWork>) {
+        let queued_before = self.pending_agent_turns.len();
         let outcome = self.route(method, params);
+        if outcome.is_err() {
+            self.drop_turns_queued_since(queued_before);
+        }
         match self.deferred_work.take() {
             // Nothing is settled until the git work returns, so the stamp waits
             // for `apply_deferred` too.
@@ -5851,6 +5874,7 @@ impl AppState {
             DeferredOutcome::Git { git, .. } => git.invalidates,
             DeferredOutcome::Read(_) => false,
         };
+        let queued_before = self.pending_agent_turns.len();
         let applied = match done {
             DeferredOutcome::Lifecycle(outcome) => self.apply_lifecycle(*outcome),
             DeferredOutcome::Finish { epilogue, finished } => {
@@ -5860,19 +5884,42 @@ impl AppState {
             // A read writes nothing back: its answer is the whole result.
             DeferredOutcome::Read(result) => result,
         };
-        if let Ok(result) = &applied {
-            self.stamp_interaction_for(method, params, result);
-            // HERE, not before the drain: the decide half only claimed the
-            // checkout, and a browser told to refetch then would have read the
-            // state this write-back is about to replace.
-            if mutating {
-                for entity_id in entity_ids_of(params, result) {
-                    self.note_entity_changed(&entity_id);
+        match &applied {
+            Ok(result) => {
+                self.stamp_interaction_for(method, params, result);
+                // HERE, not before the drain: the decide half only claimed the
+                // checkout, and a browser told to refetch then would have read
+                // the state this write-back is about to replace.
+                if mutating {
+                    for entity_id in entity_ids_of(params, result) {
+                        self.note_entity_changed(&entity_id);
+                    }
+                    self.note_board_changed();
                 }
-                self.note_board_changed();
             }
+            Err(_) => self.drop_turns_queued_since(queued_before),
         }
         applied
+    }
+
+    /// Forget what a failed request queued for an agent. A turn is not
+    /// deliverable until the mutation that queued it is durable, and only this
+    /// request's turns are dropped: a later harmless verb's drain would
+    /// otherwise deliver work that nothing was ever written down for. What was
+    /// written down before the refusal stays — see
+    /// [`PendingAgentTurn::survives_refusal`].
+    ///
+    /// The two halves of a request both end here — [`dispatch_deferring`] for
+    /// what refused before the git ran, [`apply_deferred`] for what failed
+    /// writing the git down — so every drain in the daemon, frame, MCP control
+    /// socket and test twin alike, inherits the rule.
+    ///
+    /// [`dispatch_deferring`]: AppState::dispatch_deferring
+    /// [`apply_deferred`]: AppState::apply_deferred
+    fn drop_turns_queued_since(&mut self, queued_before: usize) {
+        let mut queued_by_this_request = self.pending_agent_turns.split_off(queued_before);
+        queued_by_this_request.retain(|turn| turn.survives_refusal);
+        self.pending_agent_turns.append(&mut queued_by_this_request);
     }
 
     fn route(&mut self, method: &str, params: &Value) -> Result<Value, String> {
@@ -7545,20 +7592,20 @@ impl AppState {
         let base_branch = self.base_for(&project_id)?;
         let project = self.orch_for(&project_id)?.clone();
         let placeholder_id = self.planned_checkout_id(&project_id, &slug)?;
-        let row = self.reserve_row(PendingRow {
+        let row = PendingRow {
             entity_id: placeholder_id.clone(),
             project_id: project_id.clone(),
             title: name,
             // The ref this create is cutting, so a dispatch onto the same one
             // collides with it: creates and dispatches claim branches out of a
             // single namespace, and neither can see the other's git.
-            branch: Some(format!("{}/{slug}", crate::worktree::BRANCH_PREFIX)),
+            branch: Some(crate::worktree::branch_name_for(&slug)),
             state: PendingState::Creating,
             checkout_id: None,
             since: std::time::Instant::now(),
-        })?;
-        Ok(self.defer_lifecycle(WorktreeLifecycleJob::new(
-            Box::new(ReservedRow::new(row)),
+        };
+        self.defer_lifecycle(
+            row,
             Box::new(CreateWorktree {
                 project,
                 project_id,
@@ -7566,7 +7613,7 @@ impl AppState {
                 slug,
                 placeholder_id,
             }),
-        )))
+        )
     }
 
     /// Finish an external worktree selected only by server-resolved ids.
@@ -7656,6 +7703,10 @@ impl AppState {
     /// refuse a second verb claiming the same thing while it stands. The row is
     /// visible to every reader from this acquisition until the epilogue
     /// replaces it with the real record.
+    ///
+    /// Reached only through [`AppState::defer_lifecycle`], which is what makes
+    /// the row's release certain: only a job can release one, so a row is never
+    /// reserved without one.
     fn reserve_row(&mut self, row: PendingRow) -> Result<Arc<PendingRow>, String> {
         let claimed = |held: &&Arc<PendingRow>| {
             held.project_id == row.project_id
@@ -7719,10 +7770,20 @@ impl AppState {
         ))
     }
 
-    /// Hand a reserved lifecycle job to the drain. The `Ok` returned here is the
-    /// placeholder [`AppState::deferred_work`] documents: whichever drain runs
-    /// the job replaces it with what [`AppState::apply_lifecycle`] answers.
-    fn defer_lifecycle(&mut self, job: WorktreeLifecycleJob) -> Value {
+    /// Reserve one lifecycle verb's row and hand its git to the drain, in one
+    /// call. Reserving and deferring are the same step so that nothing fallible
+    /// can run between them: a row put on the board with no job behind it would
+    /// stand there forever, refusing every later verb that claims its name.
+    ///
+    /// The `Ok` returned here is the placeholder [`AppState::deferred_work`]
+    /// documents: whichever drain runs the job replaces it with what
+    /// [`AppState::apply_lifecycle`] answers.
+    fn defer_lifecycle(
+        &mut self,
+        row: PendingRow,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> Result<Value, String> {
+        let job = WorktreeLifecycleJob::reserving(self.reserve_row(row)?, mutation);
         // Every lifecycle job is held open here, in one place, so no verb has
         // to remember to offer the tests a seam.
         #[cfg(test)]
@@ -7732,7 +7793,7 @@ impl AppState {
             job
         };
         self.deferred_work = Some(DeferredWork::Lifecycle(Box::new(job)));
-        Value::Null
+        Ok(Value::Null)
     }
 
     /// Write back what one lifecycle verb's git did: retire the placeholder,
@@ -9219,6 +9280,7 @@ impl AppState {
             }),
             phase: "route",
             wants_catch_up: false,
+            survives_refusal: false,
         });
         self.router_sessions.insert(capture_id.to_string(), session);
         Ok(())
@@ -11691,6 +11753,7 @@ impl AppState {
             }),
             phase: "revive",
             wants_catch_up: true,
+            survives_refusal: false,
         });
     }
 
@@ -13762,9 +13825,6 @@ impl AppState {
             return self.answer_dispatch(routed, &project_id, &branch, dispatched);
         }
 
-        // Nothing fallible runs between the reservation and the deferral: a `?`
-        // in between would leave the row standing on the board with no job
-        // behind it to release it.
         let mutation = DispatchCheckout {
             project: self.orch_for(&project_id)?.clone(),
             base_branch: self.base_for(&project_id)?,
@@ -13778,7 +13838,7 @@ impl AppState {
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
-        let row = self.reserve_row(PendingRow {
+        let row = PendingRow {
             entity_id: mutation.run_id.clone(),
             project_id,
             title: branch.unwrap_or(instruction),
@@ -13786,11 +13846,8 @@ impl AppState {
             state: PendingState::Creating,
             checkout_id: None,
             since: std::time::Instant::now(),
-        })?;
-        Ok(self.defer_lifecycle(WorktreeLifecycleJob::new(
-            Box::new(ReservedRow::new(row)),
-            Box::new(mutation),
-        )))
+        };
+        self.defer_lifecycle(row, Box::new(mutation))
     }
 
     /// Open the run `branch.dispatch` just checkpointed a checkout for, and put
@@ -13815,6 +13872,8 @@ impl AppState {
         let choice = adopted.model_choice.clone();
         let mut active = adopted.open_run(self)?;
         let agent = self.dispatch_to_run(&run_id, &mut active, &instruction, choice);
+        #[cfg(test)]
+        fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.clone(), active)?;
         self.touch_attention(&run_id);
         self.answer_dispatch(
@@ -13863,6 +13922,8 @@ impl AppState {
     ) -> Result<Value, String> {
         let mut active = self.take_run(run_id)?;
         let agent = self.dispatch_to_run(run_id, &mut active, instruction, choice);
+        #[cfg(test)]
+        fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.to_string(), active)?;
         self.touch_attention(run_id);
         Ok(agent.json(project_id, run_id))
@@ -13912,6 +13973,7 @@ impl AppState {
             }),
             phase: "dispatch",
             wants_catch_up: true,
+            survives_refusal: false,
         });
         DispatchedAgent { branch, agent_id }
     }
@@ -17882,19 +17944,7 @@ fn dispatch_frame(
             // A verb whose git work must not run under the lock hands that
             // work back rather than doing it here; the drain below runs it with
             // the mutex released. See `AppState::deferred_work`.
-            let (dispatched, deferred) = {
-                let mut app = timer.lock(state);
-                let queued_before = app.pending_agent_turns.len();
-                let (result, deferred) = app.dispatch_deferring(&method, &params);
-                if result.is_err() {
-                    // A turn is not deliverable until the mutation that queued
-                    // it is durable. Drop only this request's turns on failure;
-                    // otherwise a later harmless RPC would deliver work the
-                    // failed request never committed.
-                    app.pending_agent_turns.truncate(queued_before);
-                }
-                (result, deferred)
-            };
+            let (dispatched, deferred) = timer.lock(state).dispatch_deferring(&method, &params);
             let dispatched = match deferred {
                 Some(deferred) => {
                     // THE POINT OF ALL THIS: seconds to minutes of git — a
@@ -17903,13 +17953,7 @@ fn dispatch_frame(
                     // terminal pump and the relay's own read loop free to make
                     // progress meanwhile.
                     let done = deferred.run();
-                    let mut app = timer.lock(state);
-                    let queued_before = app.pending_agent_turns.len();
-                    let applied = app.apply_deferred(&method, &params, done);
-                    if applied.is_err() {
-                        app.pending_agent_turns.truncate(queued_before);
-                    }
-                    applied
+                    timer.lock(state).apply_deferred(&method, &params, done)
                 }
                 None => dispatched,
             };
@@ -18292,6 +18336,7 @@ fn agent_start(
             }),
             phase: "start",
             wants_catch_up: true,
+            survives_refusal: false,
         });
         s.touch_attention(&agent.entity_id);
         agent
@@ -23015,6 +23060,7 @@ mod tests {
                     }),
                     phase: "build",
                     wants_catch_up: false,
+                    survives_refusal: false,
                 });
         };
 
@@ -23083,6 +23129,7 @@ mod tests {
                 say: None,
                 phase: "build",
                 wants_catch_up: false,
+                survives_refusal: false,
             });
         assert_eq!(open_session_count(&state, "run-eof"), 1);
 
@@ -33372,6 +33419,7 @@ mod tests {
             }),
             phase: "build",
             wants_catch_up: false,
+            survives_refusal: false,
         }
     }
 
@@ -33675,6 +33723,7 @@ mod tests {
             say: None,
             phase: "start",
             wants_catch_up: true,
+            survives_refusal: false,
         });
         let state = app.shared();
 
@@ -46002,6 +46051,72 @@ mod tests {
             json!({ "project_id": project_id, "worktree_id": worktree_id }),
         ));
         assert_eq!(adopted["ok"], true, "{adopted:?}");
+    }
+
+    /// A turn is not deliverable until the mutation that queued it is durable.
+    /// A dispatch that fails after handing its agent the instruction hands that
+    /// instruction to nobody — on the arm that opens a run, on the arm that
+    /// joins one, and through the drain the MCP control socket runs.
+    #[test]
+    fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
+        fn queued_owners(state: &AppState) -> Vec<String> {
+            state
+                .pending_agent_turns
+                .iter()
+                .map(|turn| turn.owner.clone())
+                .collect()
+        }
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "finish the toast");
+        state.pending_agent_turns.clear();
+        state.dispatch_fault = Some(BranchDispatchStep::Settle);
+
+        let opened = state
+            .router_action(
+                &capture_id,
+                BridgeAction::DispatchBranch {
+                    project_id: project_id.clone(),
+                    branch: None,
+                    instruction: "finish the toast".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap_err();
+        assert!(opened.contains("Settle"), "{opened}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the router's dispatch left a turn queued for a run the store never got: {:?}",
+            queued_owners(&state)
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the failed apply left its row on the board"
+        );
+
+        // The other arm: a branch Build already runs, which touches no git at
+        // all and so answers without a deferral.
+        state.dispatch_fault = None;
+        adopted_run(&mut state, &repo, dir.path(), "feature-running");
+        state.pending_agent_turns.clear();
+        state.dispatch_fault = Some(BranchDispatchStep::Settle);
+
+        let joined = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-running",
+                "instruction": "one more thing",
+            }),
+        ));
+
+        assert_eq!(joined["ok"], false, "{joined:?}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "joining a run left a turn queued for a dispatch that failed: {:?}",
+            queued_owners(&state)
+        );
     }
 
     /// A named branch that existed before the call is checked out, not cut. So

@@ -11,8 +11,9 @@
 //! - **apply**, under the mutex again: release the row, write the result down.
 //!
 //! This module owns the first two thirds of that. A [`WorktreeMutation`] holds
-//! every input it needs by value and cannot name `AppState`, so the rule that
-//! the git runs with the lock free is structural rather than remembered. What
+//! every input it needs by value and its `perform` takes no argument, so while
+//! the git runs there is no `&mut AppState` in reach to touch — the rule that
+//! the lock is free is enforced by the signature rather than remembered. What
 //! the git produced travels back as a [`LifecycleEpilogue`], which is the only
 //! half that touches state — and lives beside the state it writes.
 
@@ -35,9 +36,12 @@ pub struct WorktreeLifecycleJob {
 }
 
 impl WorktreeLifecycleJob {
-    pub fn new(reservation: Box<dyn Reservation>, mutation: Box<dyn WorktreeMutation>) -> Self {
+    /// Build the job that will settle `row`. The only way to make one, and it
+    /// takes the reserved row itself rather than a reservation the caller had
+    /// to assemble: a row on the board with no job behind it is never released.
+    pub fn reserving(row: std::sync::Arc<PendingRow>, mutation: Box<dyn WorktreeMutation>) -> Self {
         WorktreeLifecycleJob {
-            reservation,
+            reservation: Box::new(ReservedRow { row }),
             mutation,
             #[cfg(test)]
             gate: None,
@@ -67,7 +71,9 @@ impl WorktreeLifecycleJob {
 /// The run half of one verb. One impl per verb, chosen where that verb decides.
 pub trait WorktreeMutation: Send {
     /// Lock-free and self-contained: whatever this verb needs — a cloned
-    /// [`Orchestrator`], a base branch, a slug — is this impl's own field.
+    /// [`Orchestrator`], a base branch, a slug — is this impl's own field, and
+    /// the empty argument list is what makes that a rule: there is no
+    /// `&mut AppState` here to reach state through while the git runs.
     /// Consumes itself into the apply half, typed.
     fn perform(self: Box<Self>) -> Result<Performed, String>;
 }
@@ -172,16 +178,10 @@ pub trait Reservation: Send {
 /// A verb whose whole claim is its row: the name a create took, or the checkout
 /// a dispatch is acting on. Nothing was taken out of the registry, so there is
 /// nothing to put back.
-pub struct ReservedRow {
+struct ReservedRow {
     /// The board's own row, shared rather than copied: there is one row, and
     /// what the board renders and what the job settles cannot drift.
     row: std::sync::Arc<PendingRow>,
-}
-
-impl ReservedRow {
-    pub fn new(row: std::sync::Arc<PendingRow>) -> Self {
-        ReservedRow { row }
-    }
 }
 
 impl Reservation for ReservedRow {
@@ -261,6 +261,10 @@ pub enum BranchDispatchStep {
     /// The apply phase, under the mutex again, before the run this dispatch's
     /// checkout is opened around.
     Open,
+    /// The apply phase, after the agent has been handed the instruction, before
+    /// the write that makes its run real — the window where a turn is queued
+    /// for a run the store never got.
+    Settle,
     /// A branch Build already runs: before its new agent and first message land.
     Post,
 }
@@ -313,7 +317,7 @@ impl DispatchTarget {
         }
         let slug = crate::worktree::slugify(words);
         Ok(DispatchTarget::Minted {
-            branch: format!("{}/{slug}", crate::worktree::BRANCH_PREFIX),
+            branch: crate::worktree::branch_name_for(&slug),
             slug,
         })
     }

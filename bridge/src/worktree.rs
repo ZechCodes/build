@@ -12,6 +12,14 @@ use std::path::{Path, PathBuf};
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
 
+/// The ref a slug becomes in Build's namespace. The one place the formula is
+/// written: what a caller reserves a branch under has to be the ref
+/// [`WorktreeManager::create`] then cuts, and two spellings of one rule drift
+/// apart silently.
+pub fn branch_name_for(slug: &str) -> String {
+    format!("{BRANCH_PREFIX}/{slug}")
+}
+
 /// Things that can go wrong managing a worktree.
 #[derive(Debug, thiserror::Error)]
 pub enum WorktreeError {
@@ -260,7 +268,7 @@ impl WorktreeManager {
 
     /// Build the branch name for a slug in Build's namespace.
     fn branch_name(&self, slug: &str) -> String {
-        format!("{BRANCH_PREFIX}/{slug}")
+        branch_name_for(slug)
     }
 
     /// Recreate a Build-owned checkout at its original path and branch. The

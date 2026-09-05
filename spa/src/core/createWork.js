@@ -1,10 +1,14 @@
-// The one create surface: a modal that files an issue or cuts a branch in a
-// project, with a tab for each. The toolbar's work menu and the rail's project
-// blocks both open it, so creating reads the same wherever it starts.
+// The one create surface: a modal that files an issue or starts work on a
+// branch in a project, with a tab for each. The toolbar's work menu and the
+// rail's project blocks both open it, so creating reads the same wherever it
+// starts.
 //
-// A branch asks for one thing, a name, and shows the branch the daemon will cut
-// for it. An issue asks for what you want, and carries the harness question —
-// an issue's agent is chosen from the moment it is filed, while a new branch
+// The Branch tab is a picker over every branch the project has. The text field
+// does both jobs at once: it filters the list, and it names the branch to cut
+// when it matches none. What a row does depends on where its branch already is
+// — branchPickerModel decides that, and this file only presses what it decides.
+// An issue asks for what you want, and carries the harness question — an
+// issue's agent is chosen from the moment it is filed, while a new branch
 // carries no agent at all until something starts one there. Switching tabs
 // keeps what was typed on each; a refused create repaints with the words and
 // the caret where they were.
@@ -18,6 +22,7 @@ import { refreshFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { branchNamePreview } from "./toolbarModel.js";
+import { branchPickerRows, branchStartRoute, cutNewRow } from "./branchPickerModel.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 
 /** The two things a project can hold, in the order the tabs offer them. */
@@ -31,9 +36,9 @@ const CHOICE_PREFIX = "create-choice";
 const CREATE_COPY = {
   branch: {
     tab: "Branch",
-    hint: "A checkout and a branch of its own. Nothing is dispatched — the first message you send starts an agent there.",
-    placeholder: "e.g. mascot model spike",
-    label: "Name",
+    hint: "Start work on any branch of the project, or name a new one. Nothing is dispatched — the first message you send starts an agent there.",
+    placeholder: "Find a branch, or name a new one…",
+    label: "Branch",
     empty: "Name it first.",
     failed: "Couldn't create the branch",
   },
@@ -49,8 +54,44 @@ const CREATE_COPY = {
 
 const catalog = () => App.modelCatalog || { providers: [] };
 
-/** The dialog's inside. `state`: { projectName, kind, values, busy, error,
- *  choice, choiceOpen }. Everything user-supplied is escaped. */
+/** The rows the Branch tab is showing for what has been typed. Read off state
+ *  wherever they are needed, so the painted list and the pressed row can never
+ *  be two different answers. */
+const pickerRows = (state) =>
+  branchPickerRows({ projectId: state.projectId, branches: state.branches, query: state.values.branch || "" });
+
+function branchRowHtml(row, index, highlight) {
+  const marks = [
+    row.remote ? `<span class="branch-row-mark">${esc(row.remote)} only</span>` : "",
+    row.detail ? `<span class="branch-row-detail">${esc(row.detail)}</span>` : "",
+  ].join("");
+  return `<button class="branch-row${index === highlight ? " on" : ""}" type="button" role="option" aria-selected="${
+    index === highlight ? "true" : "false"
+  }" data-branch-pick="${index}">
+      <span class="branch-row-verb">${esc(row.verb)}</span>
+      <span class="branch-row-name">${esc(row.name)}</span>
+      ${marks}
+    </button>`;
+}
+
+/** The branch list under the field: the rows, or the one line saying why there
+ *  are none. A listing that could not be read never stops a branch being cut
+ *  by name, so it is a note beside the field and not the form's error. */
+function branchPickerHtml(state) {
+  const rows = pickerRows(state);
+  const note = state.branchesError
+    ? `<div class="sub branch-picker-note">Couldn't list branches: ${esc(state.branchesError)}</div>`
+    : rows.length || !state.branchesLoaded
+      ? ""
+      : `<div class="sub branch-picker-note">No branch matches.</div>`;
+  return `<div class="branch-picker" role="listbox" aria-label="Branches">${rows
+    .map((row, index) => branchRowHtml(row, index, state.highlight))
+    .join("")}${note}</div>`;
+}
+
+/** The dialog's inside. `state`: { projectId, projectName, kind, values, busy,
+ *  error, choice, choiceOpen, branches, branchesError, branchesLoaded,
+ *  highlight }. Everything user-supplied is escaped. */
 export function createWorkBodyHtml(state) {
   const copy = CREATE_COPY[state.kind];
   const value = state.values[state.kind] || "";
@@ -64,14 +105,16 @@ export function createWorkBodyHtml(state) {
     state.kind === "issue"
       ? `<textarea id="create-work-input" rows="3" placeholder="${esc(copy.placeholder)}">${esc(value)}</textarea>`
       : `<input id="create-work-input" type="text" class="path" placeholder="${esc(copy.placeholder)}" autocomplete="off" value="${esc(value)}" />`;
-  const choice =
-    state.kind === "issue" ? agentChoicePanelHtml(catalog(), state.choice, { prefix: CHOICE_PREFIX, open: state.choiceOpen }) : "";
+  const under =
+    state.kind === "issue"
+      ? agentChoicePanelHtml(catalog(), state.choice, { prefix: CHOICE_PREFIX, open: state.choiceOpen })
+      : branchPickerHtml(state);
   return `<h3>New in ${esc(state.projectName)}</h3>
     <div class="segmented create-tabs" role="tablist">${tabs}</div>
     <div class="sub create-hint">${esc(copy.hint)}</div>
     <label class="create-label" for="create-work-input">${esc(copy.label)}</label>
     ${field}
-    ${choice}
+    ${under}
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
     <div class="row create-row">
       <span class="dim mono create-preview" id="create-work-preview">${state.kind === "branch" ? esc(branchNamePreview(value)) : ""}</span>
@@ -84,11 +127,6 @@ export function createWorkHtml(state) {
   return modalDialogHtml(createWorkBodyHtml(state), { className: "modal-create" });
 }
 
-async function createBranch(projectId, name) {
-  const created = await App.call("worktree.create", { project_id: projectId, name });
-  return { name: "branch", projectId: created.project_id || projectId, branch: created.branch, tab: "changes" };
-}
-
 /** Inert by contract: the record exists, and nothing runs behind it until the
  *  first message (the bridge dispatches planning on that post). An empty
  *  harness choice sends nothing, and the daemon's own default stands. */
@@ -99,7 +137,17 @@ async function createIssue(projectId, goal, choice) {
     dispatch: false,
     ...agentChoiceParams(catalog(), choice),
   });
-  return { name: "issue", projectId: created.project_id || projectId, id: created.issue_id || created.plan_id };
+  return {
+    route: { name: "issue", projectId: created.project_id || projectId, id: created.issue_id || created.plan_id },
+    focusComposer: false,
+  };
+}
+
+/** Press a picker row: make the one call it names — a checkout, an adoption, or
+ *  nothing at all for a branch a run already owns — and say where it lands. */
+async function startBranch(projectId, row) {
+  const answer = row.call ? await App.call(row.call.method, row.call.params) : null;
+  return { route: branchStartRoute(projectId, row, answer), focusComposer: row.focusComposer };
 }
 
 /**
@@ -109,6 +157,7 @@ async function createIssue(projectId, goal, choice) {
  */
 export function openCreateWork({ projectId, projectName, kind = "branch", navigate = go }) {
   const state = {
+    projectId,
     projectName: projectName || projectId,
     kind: CREATE_KINDS.includes(kind) ? kind : "branch",
     values: { branch: "", issue: "" },
@@ -116,6 +165,13 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     error: "",
     choice: loadAgentDefaults(),
     choiceOpen: false,
+    branches: [],
+    branchesError: "",
+    branchesLoaded: false,
+    // Nothing is highlighted until there is text to highlight for, so Enter on
+    // an untouched field still asks to be told a name rather than opening
+    // whichever branch happens to sit at the top of the list.
+    highlight: -1,
   };
   const { body, close } = openModal({ dialogHtml: createWorkHtml(state), scrimId: "create-scrim" });
 
@@ -135,25 +191,46 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
         state.kind = tab.dataset.createTab;
         state.error = "";
         paint();
+        loadBranches();
       };
     });
     const input = body.querySelector("#create-work-input");
-    const preview = body.querySelector("#create-work-preview");
     input.focus();
     input.setSelectionRange(caret, caret);
     input.oninput = () => {
       state.values[state.kind] = input.value;
-      if (state.kind === "branch") preview.textContent = branchNamePreview(input.value);
+      if (state.kind !== "branch") return;
+      // The branch the text would cut leads the list, so highlighting the top
+      // row keeps Enter on what this field has always done.
+      state.highlight = input.value.trim() ? 0 : -1;
+      paint();
     };
     input.onkeydown = (event) => {
+      if (state.kind === "branch" && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+        event.preventDefault();
+        moveHighlight(event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
       if (event.key === "Enter" && (state.kind === "branch" || event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         submit();
       }
     };
+    body.querySelectorAll("[data-branch-pick]").forEach((row) => {
+      row.onclick = () => {
+        state.highlight = Number(row.dataset.branchPick);
+        submit();
+      };
+    });
     body.querySelector("[data-create-cancel]").onclick = close;
     body.querySelector("[data-create-go]").onclick = submit;
     wireChoice();
+  }
+
+  function moveHighlight(step) {
+    const last = pickerRows(state).length - 1;
+    state.highlight = Math.min(last, Math.max(-1, state.highlight + step));
+    paint();
   }
 
   function wireChoice() {
@@ -173,11 +250,34 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     control("effort").onchange = onChange({});
   }
 
+  /** The project's branches, asked for once, when the tab that shows them is
+   *  the one being looked at. */
+  async function loadBranches() {
+    if (state.kind !== "branch" || state.branchesLoaded || !projectId) return;
+    state.branchesLoaded = true;
+    try {
+      const listing = await App.call("git.branches", { project_id: projectId });
+      state.branches = (listing && listing.branches) || [];
+    } catch (error) {
+      state.branchesError = error.message || String(error);
+    }
+    paint();
+  }
+
+  /** What the human is asking for: the row they highlighted, or — with none —
+   *  the branch the typed text would cut, which is what this field meant
+   *  before it had a list under it. */
+  function pickedRow(value) {
+    const rows = pickerRows(state);
+    return rows[state.highlight] || (value ? cutNewRow(projectId, value) : null);
+  }
+
   async function submit() {
     if (state.busy) return;
     const { kind } = state;
     const value = (state.values[kind] || "").trim();
-    if (!value) {
+    const row = kind === "branch" ? pickedRow(value) : null;
+    if (kind === "branch" ? !row : !value) {
       state.error = CREATE_COPY[kind].empty;
       paint();
       return;
@@ -191,13 +291,13 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     state.error = "";
     paint();
     try {
-      const route = kind === "branch" ? await createBranch(projectId, value) : await createIssue(projectId, value, state.choice);
+      const started = kind === "branch" ? await startBranch(projectId, row) : await createIssue(projectId, value, state.choice);
       close();
       refreshFeed();
-      // A freshly cut branch has nobody in it yet — the rail opens on the ghost
-      // composer, and that is exactly where typing the first message belongs.
-      if (kind === "branch") App.focusComposerOnMount = true;
-      navigate(route);
+      // A checkout with nobody in it opens on the ghost composer, and that is
+      // exactly where typing the first message belongs.
+      App.focusComposerOnMount = started.focusComposer;
+      navigate(started.route);
     } catch (error) {
       state.busy = false;
       state.error = error.message || String(error);
@@ -206,5 +306,6 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
   }
 
   wire((state.values[state.kind] || "").length);
+  loadBranches();
   return { close };
 }

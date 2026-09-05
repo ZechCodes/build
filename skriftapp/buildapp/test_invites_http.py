@@ -25,7 +25,7 @@ from litestar.testing import TestClient
 from skrift.auth.guards import auth_guard
 from skrift.auth.session_keys import SESSION_USER_ID
 
-from buildapp import invites, invites_controller
+from buildapp import email_message, invites
 from buildapp.db_test_support import (
     add_account,
     in_memory_session_maker,
@@ -53,7 +53,7 @@ def now() -> datetime:
 
 @pytest.fixture()
 def client(monkeypatch, email_backend) -> Iterator[TestClient]:
-    monkeypatch.setattr(invites_controller, "get_settings", email_settings)
+    monkeypatch.setattr(email_message, "get_settings", email_settings)
     session_config = session_backend_config()
     app = session_app(
         [InvitesController],

@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass
 
 from litestar import Request
-from skrift.config import Settings
+from skrift.config import Settings, get_settings
 from skrift.lib.email_backends import EmailBackend
 
 from buildapp.email_template import EmailAction, render_email_html, render_email_text
@@ -106,3 +106,10 @@ def resolve_public_base_url(settings: Settings) -> str:
 
 def provide_email_backend(request: Request) -> EmailBackend:
     return request.app.state.email_backend
+
+
+def provide_public_base_url() -> str:
+    """This deployment's origin, as a dependency — so a handler that puts a link in a
+    page, a payload or an email declares it and is handed it, rather than reaching for
+    the settings itself."""
+    return resolve_public_base_url(get_settings())

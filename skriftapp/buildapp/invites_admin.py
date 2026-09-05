@@ -14,21 +14,22 @@ from typing import Any, Iterable, Mapping
 from uuid import UUID
 
 from litestar import Controller, Request, get, post
+from litestar.di import Provide
 from litestar.response import Redirect
 from litestar.response import Template as TemplateResponse
 from skrift.admin.helpers import get_admin_context
 from skrift.admin.navigation import ADMIN_NAV_TAG
 from skrift.auth.guards import Permission, auth_guard
-from skrift.config import get_settings
 from skrift.flash import flash_error, flash_success, get_flash_messages
 from skrift.forms.core import verify_csrf
+from skrift.lib.email_backends import EmailBackend
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
 from buildapp.accounts import addresses_by_id
 from buildapp.clock import utc_now
-from buildapp.email_message import provide_email_backend, resolve_public_base_url
-from buildapp.invite_mail import invite_email_task
+from buildapp.email_message import provide_email_backend, provide_public_base_url
+from buildapp.invite_mail import send_invite_email
 from buildapp.invites import InviteState, invite_state
 from buildapp.models import Invite
 from buildapp.session_auth import session_user_id
@@ -85,6 +86,10 @@ class InvitesAdminController(Controller):
 
     path = "/admin"
     guards = [auth_guard]
+    dependencies = {
+        "email_backend": Provide(provide_email_backend, sync_to_thread=False),
+        "public_base_url": Provide(provide_public_base_url, sync_to_thread=False),
+    }
 
     @get(
         INVITES_PAGE_ROUTE_PATH,
@@ -110,8 +115,15 @@ class InvitesAdminController(Controller):
 
     @post(INVITES_PAGE_ROUTE_PATH, guards=[auth_guard, Permission("administrator")])
     async def send_invite(
-        self, request: Request, db_session: AsyncSession
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        email_backend: EmailBackend,
+        public_base_url: str,
     ) -> Redirect:
+        """Sends inline rather than as a background task: the operator is watching the
+        page, so the flash should follow a send that actually happened. Still fail-soft
+        — a delivery failure is logged and the row stays."""
         if not await verify_csrf(request):
             return _flashed(request, CSRF_REFUSED_MESSAGE, ok=False)
         form = await request.form()
@@ -124,7 +136,9 @@ class InvitesAdminController(Controller):
             )
         except ValueError:
             return _flashed(request, INVITE_REFUSED_MESSAGE, ok=False)
-        await _mail_invite(request, invite.email, raw)
+        await send_invite_email(
+            email_backend, invite.email, invites.invite_url(public_base_url, raw)
+        )
         return _flashed(request, INVITE_SENT_MESSAGE.format(email=invite.email), ok=True)
 
     @post(REVOKE_ROUTE_PATH, guards=[auth_guard, Permission("administrator")])
@@ -136,14 +150,6 @@ class InvitesAdminController(Controller):
         revoked = await invites.revoke_invite(db_session, invite_id, utc_now())
         message = INVITE_REVOKED_MESSAGE if revoked else INVITE_MISSING_MESSAGE
         return _flashed(request, message, ok=revoked is not None)
-
-
-async def _mail_invite(request: Request, email: str, raw: str) -> None:
-    """Send inline rather than as a background task: the operator is watching the page,
-    so the flash should follow a send that actually happened. Still fail-soft — the
-    task swallows and logs a delivery failure, and the row stays."""
-    url = invites.invite_url(resolve_public_base_url(get_settings()), raw)
-    await invite_email_task(provide_email_backend(request), email, url)()
 
 
 def _flashed(request: Request, message: str, *, ok: bool) -> Redirect:

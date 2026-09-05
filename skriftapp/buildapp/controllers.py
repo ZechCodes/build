@@ -10,18 +10,18 @@ import os
 from pathlib import Path
 
 from litestar import Controller, Request, get
+from litestar.di import Provide
 from litestar.enums import MediaType
 from litestar.exceptions import NotFoundException
 from litestar.response import Redirect, Response
 from litestar.status_codes import HTTP_403_FORBIDDEN
-from skrift.config import get_settings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import releases
 from buildapp.accounts import account_email
 from buildapp.alpha_membership import is_alpha_member
 from buildapp.desktop_auth import build_auth_guard
-from buildapp.email_message import resolve_public_base_url
+from buildapp.email_message import provide_public_base_url
 from buildapp.invite_pages import render_invite_only_page
 from buildapp.session_auth import require_user, session_user_id
 
@@ -57,6 +57,9 @@ async def invite_only_response(user_id, db_session: AsyncSession) -> Response:
 
 class BuildController(Controller):
     path = "/app"
+    dependencies = {
+        "public_base_url": Provide(provide_public_base_url, sync_to_thread=False),
+    }
 
     @get("/")
     async def index(self, request: Request, db_session: AsyncSession) -> Response | Redirect:
@@ -77,12 +80,11 @@ class BuildController(Controller):
         return await self._render_spa(require_user(request), db_session)
 
     @get("/downloads", guards=[build_auth_guard])
-    async def downloads(self) -> dict:
+    async def downloads(self, public_base_url: str) -> dict:
         """Where an alpha member gets the bridge. Every URL and label comes from
-        ``releases``; this handler only resolves the repo and this deployment's host."""
+        ``releases``; this handler only resolves the repo."""
         return releases.downloads_payload(
-            releases.releases_repo(os.environ),
-            resolve_public_base_url(get_settings()),
+            releases.releases_repo(os.environ), public_base_url
         )
 
     @staticmethod

@@ -1,6 +1,7 @@
 """The one email an invite produces: verbatim copy, the link carried as the message's
 action rather than buried in a paragraph, no unsubscribe anything (this is not a
-mailing — it is a door key), and a background task that delivers it after the response."""
+mailing — it is a door key), and one sender both routes reach — inline for the operator
+watching the admin page, deferred for the JSON route's script."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from buildapp.email_message import (
     LIST_UNSUBSCRIBE_HEADER,
     LIST_UNSUBSCRIBE_POST_HEADER,
 )
-from buildapp.email_test_support import RecordingEmailBackend
+from buildapp.email_test_support import FailingEmailBackend, RecordingEmailBackend
 from buildapp.invite_mail import (
     INVITE_ACTION_LABEL,
     INVITE_HEADING,
@@ -20,6 +21,7 @@ from buildapp.invite_mail import (
     INVITE_SUBJECT,
     build_invite_email,
     invite_email_task,
+    send_invite_email,
 )
 
 INVITED = "invitee@example.com"
@@ -61,12 +63,23 @@ def test_an_invite_carries_no_unsubscribe_because_it_is_not_a_mailing():
         assert "unsubscribe" not in body.lower()
 
 
-def test_the_task_is_a_background_task_that_delivers_when_awaited():
+def test_sending_delivers_the_invite_through_the_backend_it_was_handed():
     email_backend = RecordingEmailBackend()
-    task = invite_email_task(email_backend, INVITED, INVITE_URL)
-    assert isinstance(task, BackgroundTask)
-    assert email_backend.sent == []
-    asyncio.run(task())
+    asyncio.run(send_invite_email(email_backend, INVITED, INVITE_URL))
     assert [sent.to for sent in email_backend.sent] == [INVITED]
     assert email_backend.sent[0].subject == INVITE_SUBJECT
     assert INVITE_URL in email_backend.sent[0].text_body
+
+
+def test_a_send_that_fails_is_swallowed_so_the_invite_row_still_stands():
+    asyncio.run(send_invite_email(FailingEmailBackend(), INVITED, INVITE_URL))
+
+
+def test_the_task_is_the_same_send_deferred_until_after_the_response():
+    email_backend = RecordingEmailBackend()
+    task = invite_email_task(email_backend, INVITED, INVITE_URL)
+    assert isinstance(task, BackgroundTask)
+    assert task.fn is send_invite_email
+    assert email_backend.sent == []
+    asyncio.run(task())
+    assert [sent.to for sent in email_backend.sent] == [INVITED]

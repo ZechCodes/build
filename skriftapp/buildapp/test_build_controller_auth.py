@@ -19,9 +19,10 @@ from litestar.response import Redirect
 
 from skrift.auth.session_keys import SESSION_USER_ID
 
-from buildapp import controllers
+from buildapp import controllers, email_message
 from buildapp.controllers import BuildController
 from buildapp.desktop_auth import build_auth_guard
+from buildapp.email_message import provide_public_base_url
 from buildapp.email_test_support import email_settings
 from buildapp.invite_pages import INVITE_ONLY_HEADING
 from buildapp.releases import PLATFORMS
@@ -102,8 +103,10 @@ def test_the_downloads_route_carries_the_membership_guard():
 
 
 def test_the_downloads_route_answers_the_shared_payload():
-    with patch.object(controllers, "get_settings", email_settings):
-        payload = asyncio.run(BuildController.downloads.fn(None))
+    with patch.object(email_message, "get_settings", email_settings):
+        payload = asyncio.run(
+            BuildController.downloads.fn(None, provide_public_base_url())
+        )
     assert [platform["key"] for platform in payload["platforms"]] == [
         key for key, _ in PLATFORMS
     ]

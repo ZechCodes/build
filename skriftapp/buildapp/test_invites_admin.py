@@ -16,7 +16,7 @@ from skrift.auth.guards import auth_guard
 from skrift.auth.session_keys import SESSION_USER_ID
 from skrift.forms.core import CSRF_FIELD_NAME, CSRF_SESSION_KEY
 
-from buildapp import invites, invites_admin
+from buildapp import email_message, invites
 from buildapp.db_test_support import (
     add_account,
     admin_template_environment,
@@ -26,6 +26,7 @@ from buildapp.db_test_support import (
 )
 from buildapp.email_test_support import email_settings
 from buildapp.invites import INVITE_TTL, InviteState
+from buildapp.invites_controller import InvitesController
 from buildapp.invites_admin import (
     INVITES_ADMIN_PATH,
     INVITES_PAGE_ROUTE_PATH,
@@ -153,6 +154,18 @@ def test_only_an_open_or_redeemed_invite_can_still_be_revoked():
     assert [row["revocable"] for row in rows] == [True, True, False, False]
 
 
+def test_the_page_gets_its_backend_and_origin_the_way_the_json_route_does():
+    """One way to reach the email backend and this deployment's origin: both invite
+    controllers declare them, neither reaches for the settings itself."""
+    assert set(InvitesAdminController.dependencies) == set(
+        InvitesController.dependencies
+    )
+    assert set(InvitesAdminController.dependencies) == {
+        "email_backend",
+        "public_base_url",
+    }
+
+
 def test_the_template_carries_a_send_form_with_a_csrf_field():
     html = render_page(build_invites_dashboard([], {}, NOW))
     assert f'action="{INVITES_ADMIN_PATH}"' in html
@@ -178,7 +191,7 @@ def test_the_template_names_every_row_it_was_given():
 def admin_client(monkeypatch, email_backend) -> Iterator[TestClient]:
     """The two form POSTs over a real stack. They redirect rather than render, so the
     app needs no template engine — only the session the CSRF token lives in."""
-    monkeypatch.setattr(invites_admin, "get_settings", email_settings)
+    monkeypatch.setattr(email_message, "get_settings", email_settings)
     session_config = session_backend_config()
     make_session = in_memory_session_maker()
     app = session_app(

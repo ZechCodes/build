@@ -35,14 +35,19 @@ def build_invite_email(*, to: str, invite_url: str) -> OutboundEmail:
     )
 
 
+async def send_invite_email(
+    email_backend: EmailBackend, to: str, invite_url: str
+) -> None:
+    """Send the invite. Fail-soft, like every other send: the row is committed and the
+    operator holds the URL, so a dead SMTP server costs a log line, not the invite."""
+    await deliver_emails(
+        email_backend, (build_invite_email(to=to, invite_url=invite_url),)
+    )
+
+
 def invite_email_task(
     email_backend: EmailBackend, to: str, invite_url: str
 ) -> BackgroundTask:
-    """Deliver the invite after the response has gone out. Fail-soft, like every other
-    send: the row is committed and the operator holds the URL, so a dead SMTP server
-    costs a log line, not the invite."""
-    return BackgroundTask(
-        deliver_emails,
-        email_backend,
-        (build_invite_email(to=to, invite_url=invite_url),),
-    )
+    """The same send, deferred until after the response has gone out — for the JSON
+    route, whose caller is a script that should not wait on SMTP."""
+    return BackgroundTask(send_invite_email, email_backend, to, invite_url)

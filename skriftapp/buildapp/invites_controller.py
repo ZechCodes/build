@@ -16,14 +16,13 @@ from litestar.exceptions import ClientException
 from litestar.response import Redirect, Response
 from litestar.status_codes import HTTP_201_CREATED
 from skrift.auth.guards import Permission, auth_guard
-from skrift.config import get_settings
 from skrift.lib.email_backends import EmailBackend
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
 from buildapp.accounts import account_email
 from buildapp.clock import utc_now
-from buildapp.email_message import provide_email_backend, resolve_public_base_url
+from buildapp.email_message import provide_email_backend, provide_public_base_url
 from buildapp.invite_mail import invite_email_task
 from buildapp.invite_pages import APP_PATH, OUTCOMES
 from buildapp.invites import INVITE_PATH_PREFIX, InviteState, invite_path
@@ -36,10 +35,6 @@ INVITES_API_PATH = "/api/invites"
 LOGIN_PATH_TEMPLATE = "/auth/login?next={next_path}"
 EMAIL_FIELD = "email"
 
-
-
-def provide_public_base_url() -> str:
-    return resolve_public_base_url(get_settings())
 
 
 def login_redirect_path(token: str) -> str:

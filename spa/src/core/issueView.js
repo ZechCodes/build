@@ -186,13 +186,19 @@ export function mountIssueView(
           anchor: docCommentAnchor(comment),
         });
       }
+      // The general note is a turn like any other: durable on the daemon's side
+      // the moment it answers, and answered before the agent it wakes exists.
+      // A reply that outlives the browser's timer leaves the comment posted, so
+      // raising here would only have the human write it again.
       if (general)
-        await callRpc("thread.post", {
-          entity_id: issueId,
-          ...agentSelection.scope(),
-          body: general,
-          ...MUTATION_THREAD_PAGE,
-        });
+        await replyOrNothing(
+          callRpc("thread.post", {
+            entity_id: issueId,
+            ...agentSelection.scope(),
+            body: general,
+            ...MUTATION_THREAD_PAGE,
+          }),
+        );
       renderedKey = null;
       await refresh();
     },

@@ -383,6 +383,25 @@ describe("the issue view", () => {
     view.dispose();
   });
 
+  // A note to the agent is a turn: durable the moment the daemon takes it, and
+  // answered before the agent it wakes exists. A reply that outlives the
+  // browser's timer must not have the reviewer write the note again.
+  it("clears the note and raises nothing when the post outlives the timer", async () => {
+    const { host, view, calls } = await mount({ timeout: { "thread.post": true } });
+    const general = host.querySelector(".csgeneral");
+    general.value = "have another look at the wire stage";
+    general.dispatchEvent(new Event("input"));
+    await flush();
+
+    host.querySelector(".cssend").click();
+    await flush();
+
+    expect(calls.some(([method]) => method === "thread.post")).toBe(true);
+    expect(document.querySelector("#notices .notice.error")).toBe(null);
+    expect(host.querySelector(".csgeneral").value).toBe("");
+    view.dispose();
+  });
+
   it("sends a doc comment as an anchored message on the issue's conversation", async () => {
     const { host, view, calls } = await mount();
     const docEl = host.querySelector("#stagedoc");

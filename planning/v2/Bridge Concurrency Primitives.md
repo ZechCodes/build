@@ -1946,19 +1946,23 @@ row it just asked for a session for, and `agentIsUp` is what keeps a message
 sent behind that press from starting a second harness. The vocabulary stays in
 the agent's own module; the overlay stays general.
 
-A reply the browser stopped waiting for is not a refusal. The rejection says
-which it is (`rpcTimedOut`) and `replyOrNothing(pending)` is the behaviour, both
-in core/session.js beside the 12 s timer, which is unchanged: the reply, or null
-when the timer ended the call, and a refusal still raises. One rule, one place —
-every caller was writing it out again. Four verbs read it: `worktree.create` and
-`branch.dispatch` shut their form and let the board carry the work,
-`issue.implement_*` refreshes the issue rather than reporting a refusal the
-daemon never made, and `agent.start` — on the post's wake and on Resume — leaves
+A reply the browser stopped waiting for is not a refusal. `replyOrNothing(pending)`
+in core/session.js is the whole rule — the reply, or null when the timer ended the
+call, and a refusal still raises — beside the 12 s timer, which is unchanged. The
+predicate that reads the rejection is the module's own and is not exported: one
+rule, one answer, so no call site can re-derive it and reach a different verdict.
+Five verbs read it: `worktree.create` and `branch.dispatch` shut their form and
+let the board carry the work, `issue.implement_*` refreshes the issue rather than
+reporting a refusal the daemon never made, `thread.post` leaves the message on
+the thread and the draft box empty — the turn is durable the moment the daemon
+answers, and handing the draft back would have the human send it again and the
+agent hear it twice — and `agent.start`, on the post's wake and on Resume, leaves
 the row wearing `AGENT_STARTING` rather than reverting it, so nothing paints a
 failure over a harness the daemon is spawning. A reply that lands but names
 nothing is the same story told by the payload instead of by the timer, and reads
-the same way: `agent.start` takes the agent off the entity's next answer, and
-`worktree.create` opens nothing and leaves the row where it stands.
+the same way: `agent.start` takes the agent off the entity's next answer,
+`thread.post` leaves the provisional message for the next thread read to replace,
+and `worktree.create` opens nothing and leaves the row where it stands.
 
 The `Creating` row is the daemon's, not the client's: `board.list`'s `pending`
 carries one row per lifecycle verb in flight, published before the git runs, and

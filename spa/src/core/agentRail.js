@@ -1180,14 +1180,24 @@ export function mountAgentRail(host, context) {
     else handle.rekey(messageKey, String(sequence), { ...provisional, data: { ...provisional.data, sequence } });
   };
 
+  /** Put the message on the conversation, and settle the provisional row under
+   *  the sequence the daemon gave it.
+   *
+   *  A post the browser stopped waiting for is not a refusal: the turn is
+   *  durable on the daemon's side, and reverting it here would hand the draft
+   *  back and have the human send the same turn twice. The provisional row
+   *  stands instead, and the next thread read replaces it with the real
+   *  message. */
   const postMessage = async (handle, { entityId, addressed, message, messageKey, provisionalMessage }) => {
-    const posted = await App.call("thread.post", {
-      entity_id: entityId,
-      ...addressed,
-      ...message,
-      ...MUTATION_THREAD_PAGE,
-    });
-    rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+    const posted = await replyOrNothing(
+      App.call("thread.post", {
+        entity_id: entityId,
+        ...addressed,
+        ...message,
+        ...MUTATION_THREAD_PAGE,
+      }),
+    );
+    if (posted) rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
   };
 
   /** Put an agent on this entity's message, and say which agent got it.

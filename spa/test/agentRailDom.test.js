@@ -2545,6 +2545,28 @@ describe("sending to an agent that is already there", () => {
     expect(notifyError).not.toHaveBeenCalled();
   });
 
+  // The turn is durable the moment the daemon takes it; the answer can outlive
+  // the browser's timer behind a cold spawn. Handing the draft back would have
+  // the human send the same turn twice and the agent hear it twice.
+  it("keeps the message on the thread when the post itself outlives the timer", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      const timedOut = new Error("thread.post timed out");
+      timedOut.timedOut = true;
+      throw timedOut;
+    });
+
+    await press("look at the login flow");
+
+    expect(copiesOf("look at the login flow")).toBe(1);
+    expect(composer().value).toBe("");
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
   it("puts the words back in the box and says why when thread.post is refused", async () => {
     payload = branchRow({ agents: [agent({ state: "live" })] });
     await mount();

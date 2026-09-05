@@ -76,7 +76,9 @@ async function seedFromCache() {
   if (!deviceId) return;
   const record = await readCached({ deviceId, entityId: "", kind: "feed" });
   if (!record || last) return;
-  last = { ...record.value, cached: true };
+  // Nothing in flight survives a reload: the verbs the last session watched
+  // settled long ago, and the live answer names whatever is running now.
+  last = { ...record.value, pending: [], cached: true };
   subscribers.forEach((fn) => fn(last));
 }
 

@@ -658,6 +658,21 @@ impl TerminalHandle {
             .map_err(|e| e.to_string())
     }
 
+    /// Match the child to the grid its clients are watching. A child that
+    /// refuses the ioctl is not the caller's business: it is dying, and its
+    /// clients still get the screen it dies on.
+    fn fit_child(&self, cols: u16, rows: u16) {
+        let _ = self.tell_child(cols, rows);
+    }
+
+    /// Match the child to the grid this screen already stands at — the one
+    /// clients were carried onto it watching, or the one a retained screen was
+    /// painted at before the session that replaces it started.
+    pub fn fit_child_to_screen(&self) {
+        let (cols, rows) = self.screen.size();
+        self.fit_child(cols, rows);
+    }
+
     /// Forward a human's keystrokes to the child, untouched.
     pub fn write_input(&self, bytes: &[u8]) -> Result<(), String> {
         self.terminal()
@@ -677,13 +692,10 @@ impl TerminalHandle {
     /// looking at, register it for live output, and hand back what it should
     /// render. `viewport` is `None` for a dead tab, whose retained screen is
     /// the last thing its agent painted.
-    ///
-    /// A child that refuses the ioctl is not the attach's business: it is
-    /// dying, and the client still gets the screen it died on.
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
         if let Some((cols, rows)) = viewport {
             if self.screen.size() != (cols, rows) {
-                let _ = self.tell_child(cols, rows);
+                self.fit_child(cols, rows);
             }
         }
         self.screen.attach(sender, viewport)

@@ -17903,24 +17903,20 @@ fn ensure_agent_tab(
             }
         };
         if let Some(screen) = carried {
-            match tab.session.terminal() {
-                // Reconnect is snapshot + cursor: a replacement process must
-                // never rewind that cursor, and clients already attached stay
-                // attached. The new PTY takes the retained screen's grid so the
-                // two agree.
-                Some(terminal) => {
-                    let (cols, rows) = screen.size();
-                    let _ = terminal.resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
-                    tab.screen = Some(screen);
-                }
+            // Reconnect is snapshot + cursor: a replacement process must
+            // never rewind that cursor, and clients already attached stay
+            // attached. The new PTY takes the retained screen's grid so the
+            // two agree.
+            tab.screen = Some(screen);
+            match tab.terminal_handle() {
+                Ok(terminal) => terminal.fit_child_to_screen(),
                 // The replacement paints nothing, so the retained grid has
                 // nothing to become — see [`NO_TERMINAL_LEFT`].
-                None => screen.close(NO_TERMINAL_LEFT),
+                Err(_) => {
+                    if let Some(screen) = tab.screen.take() {
+                        screen.close(NO_TERMINAL_LEFT);
+                    }
+                }
             }
         }
         let wire_id = tab.wire_id();
@@ -17939,7 +17935,7 @@ fn ensure_agent_tab(
             s.record_agent_active_model(owner, agent_id, running);
         }
         if let Some(inherited) = inherited {
-            inherited.tell_child();
+            inherited.fit_child_to_screen();
         }
         spawn_tab_pumps(state, key, pumps);
         return Ok((wire_id, Spawned::Fresh));
@@ -17960,14 +17956,14 @@ fn ensure_agent_tab(
 ///
 /// The screen half is bounded and belongs under the app mutex, beside the
 /// insert that publishes the tab. The child half is an ioctl to a process that
-/// may not answer, so it leaves as an [`InheritedViewport`] for the caller to
-/// make with the lock down.
+/// may not answer, so what comes back is the terminal that inherited them, for
+/// the caller to fit to its screen with the lock down.
 fn inherit_waiting_clients(
     s: &mut AppState,
     key: &TabKey,
     root: &std::path::Path,
     tab: &Tab,
-) -> Option<InheritedViewport> {
+) -> Option<TerminalHandle> {
     let first_here = !s
         .tabs
         .keys()
@@ -17984,41 +17980,16 @@ fn inherit_waiting_clients(
         })?
     })?;
     match tab.terminal_handle() {
-        Ok(terminal) => {
-            let (cols, rows) = waiting.size();
-            terminal
-                .screen()
-                .carry_clients_from(&waiting)
-                .then_some(InheritedViewport {
-                    terminal,
-                    cols,
-                    rows,
-                })
-        }
+        Ok(terminal) => terminal
+            .screen()
+            .carry_clients_from(&waiting)
+            .then_some(terminal),
         // There is no real screen to carry them onto — see
         // [`NO_TERMINAL_LEFT`].
         Err(_) => {
             waiting.close(NO_TERMINAL_LEFT);
             None
         }
-    }
-}
-
-/// The child half of a carry: the terminal that inherited clients, and the
-/// viewport they are rendering at.
-struct InheritedViewport {
-    terminal: TerminalHandle,
-    cols: u16,
-    rows: u16,
-}
-
-impl InheritedViewport {
-    /// Size the child to the grid its inherited clients are watching, with the
-    /// app mutex released. A child that refuses the ioctl is dying, and its
-    /// clients still get the screen it dies on — the same judgement an attach
-    /// makes.
-    fn tell_child(self) {
-        let _ = self.terminal.resize(self.cols, self.rows);
     }
 }
 
@@ -20751,7 +20722,7 @@ mod tests {
                 };
                 inherited
                     .expect("the waiting clients are carried onto the new screen")
-                    .tell_child();
+                    .fit_child_to_screen();
                 let _ = done.send(());
             });
             finished

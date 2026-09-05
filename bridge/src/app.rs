@@ -7742,14 +7742,7 @@ impl AppState {
     /// the row's release certain: only a job can release one, so a row is never
     /// reserved without one.
     fn reserve_row(&mut self, row: PendingRow) -> Result<Arc<PendingRow>, String> {
-        let claimed = |held: &&Arc<PendingRow>| {
-            held.project_id == row.project_id
-                && (held.entity_id == row.entity_id
-                    || (held.branch.is_some() && held.branch == row.branch)
-                    || (held.checkout_id.is_some() && held.checkout_id == row.checkout_id)
-                    || (held.implements.is_some() && held.implements == row.implements))
-        };
-        if let Some(held) = self.pending_rows.iter().find(claimed) {
+        if let Some(held) = self.row_claiming(&row) {
             return Err(format!(
                 "{:?} is already {} — wait for that to finish",
                 held.title,
@@ -7760,6 +7753,19 @@ impl AppState {
         self.pending_rows.push(Arc::clone(&row));
         self.note_board_changed();
         Ok(row)
+    }
+
+    /// The standing row that already claims what `row` would: the same record,
+    /// branch, checkout or issue in the same project. One rule for what two
+    /// lifecycle verbs collide on.
+    fn row_claiming(&self, row: &PendingRow) -> Option<&Arc<PendingRow>> {
+        self.pending_rows.iter().find(|held| {
+            held.project_id == row.project_id
+                && (held.entity_id == row.entity_id
+                    || (held.branch.is_some() && held.branch == row.branch)
+                    || (held.checkout_id.is_some() && held.checkout_id == row.checkout_id)
+                    || (held.implements.is_some() && held.implements == row.implements))
+        })
     }
 
     /// Retire a placeholder, whichever way its verb went. The real record — or
@@ -13427,18 +13433,21 @@ impl AppState {
         let checkout_id = target.checkout_id();
         // The repo root is reachable from every reload and every second
         // browser, and a card is adoptable from more than one surface. An asker
-        // who arrives while the checkout is being taken over is refused by the
-        // row that adoption reserved, rather than handed a run id no verb would
-        // accept yet: the run that will carry it is not in the map until the
-        // adoption's epilogue lands, and an adoption that fails never mints it
-        // at all. The refusal is what makes the retry converge — by then the
-        // owner is real, and `run_owning_worktree_id` above answers with it.
+        // who arrives while the checkout is being taken over is told so, and
+        // is handed no run id: the run that will carry it is not in the map
+        // until the adoption's epilogue lands, and an adoption that fails never
+        // mints it at all. The asker asks again — the same thing it does when
+        // its own adopt outlived its timer — and by then the owner is real and
+        // `primary_run_of` / `run_owning_worktree_id` above answer with it.
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         let row = target.reserve(
             run_id.clone(),
             &project_id,
             self.checkout_title(&project_id, &checkout_id),
         );
+        if self.row_claiming(&row).is_some() {
+            return Ok(json!({ "adopting": true }));
+        }
         let project = self.orch_for(&project_id)?.clone();
         self.defer_lifecycle(
             row,
@@ -36218,8 +36227,9 @@ mod tests {
 
     /// The repo root is reachable from every reload and every second browser.
     /// While one adoption's git runs the checkout has no run yet, so the second
-    /// asker is refused rather than handed the id of a run no verb would
-    /// accept — and its retry converges on the one owner the first minted.
+    /// asker is told the adoption is running and handed no id — not the id of
+    /// a run no verb would accept, and not a refusal, since it has nothing to
+    /// correct. Its next ask converges on the one owner the first minted.
     #[test]
     fn two_adopts_of_one_checkout_converge_on_one_run() {
         let (dir, repo) = init_repo();
@@ -36244,8 +36254,13 @@ mod tests {
         )
         .recv_timeout(Duration::from_secs(10))
         .expect("a second browser is answered while the first adoption runs");
+        assert_eq!(second["ok"], true, "{second:?}");
         assert_eq!(
-            second["ok"], false,
+            second["result"]["adopting"], true,
+            "the second asker is told the adoption is running: {second:?}"
+        );
+        assert!(
+            second["result"]["run_id"].is_null(),
             "the second asker was handed a run that does not exist yet: {second:?}"
         );
 

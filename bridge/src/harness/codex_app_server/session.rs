@@ -779,14 +779,18 @@ mod tests {
         )
     }
 
-    fn wait_until(expectation: &str, mut condition: impl FnMut() -> bool) {
+    fn poll(mut condition: impl FnMut() -> bool) -> bool {
         for _ in 0..400 {
             if condition() {
-                return;
+                return true;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        panic!("the session never {expectation}");
+        false
+    }
+
+    fn wait_until(expectation: &str, condition: impl FnMut() -> bool) {
+        assert!(poll(condition), "the session never {expectation}");
     }
 
     fn drain_reports(
@@ -794,19 +798,14 @@ mod tests {
         until: impl Fn(&[ActivityReport]) -> bool,
     ) -> Vec<ActivityReport> {
         let mut reports = Vec::new();
-        for _ in 0..200 {
+        poll(|| loop {
             match activity.try_recv() {
                 Ok(report) => reports.push(report),
-                Err(broadcast::error::TryRecvError::Closed) => break,
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(5))
-                }
+                Err(broadcast::error::TryRecvError::Empty) => return until(&reports),
+                Err(broadcast::error::TryRecvError::Closed) => return true,
                 Err(error) => panic!("activity receive failed: {error}"),
             }
-            if until(&reports) {
-                break;
-            }
-        }
+        });
         reports
     }
 

@@ -61,6 +61,7 @@ pub mod orchestrator;
 pub mod pairing;
 pub mod plan;
 pub mod pty;
+pub mod reaper;
 pub mod relay;
 pub mod relay_server;
 pub mod review_rules;

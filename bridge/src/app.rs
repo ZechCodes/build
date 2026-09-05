@@ -43,6 +43,7 @@ use crate::plan::{
     StageDocState,
 };
 use crate::pty::HarnessSpec;
+use crate::reaper::Retirement;
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
 use crate::run::{
@@ -3643,7 +3644,7 @@ impl AppState {
     /// (un-adopt) and delete — close them here, all of them, because a branch
     /// may carry several. A worktree that vanishes takes its agents with it
     /// through the reaper instead.
-    fn close_agent_tab(&mut self, root: &std::path::Path) {
+    fn retire_agent_tabs(&mut self, root: &std::path::Path) -> Vec<Retirement> {
         let root = Self::canonical_root(root);
         let keys: Vec<TabKey> = self
             .tabs
@@ -3651,15 +3652,37 @@ impl AppState {
             .filter(|key| key.is_agent() && key.root == root)
             .cloned()
             .collect();
-        for key in keys {
-            let Some(tab) = self.tabs.remove(&key) else {
-                continue;
-            };
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.close("closed");
-            }
+        keys.iter()
+            .filter_map(|key| self.retire_tab(key, "closed"))
+            .collect()
+    }
+
+    /// Remove one tab, tell its clients `reason`, and retire its process.
+    ///
+    /// The kill and the reap leave for a thread of their own
+    /// ([`Retirement`]); the close push stays here, under the app mutex,
+    /// because it is bounded — the screen's own lock and one channel send per
+    /// client, exactly what it has always been.
+    fn retire_tab(&mut self, key: &TabKey, reason: &str) -> Option<Retirement> {
+        let tab = self.tabs.remove(key)?;
+        if let Some(screen) = &tab.screen {
+            screen.close(reason);
         }
+        Some(Retirement::begin(tab.session))
+    }
+
+    /// Remove one tab and retire its process, keeping its screen for the
+    /// session that replaces it.
+    ///
+    /// The clients are told nothing and stay attached, which is what keeps a
+    /// browser's terminal where the human left it across an agent restart.
+    /// [`ensure_agent_tab`]'s dead-tab replacement, and nothing else.
+    fn retire_tab_keeping_screen(
+        &mut self,
+        key: &TabKey,
+    ) -> Option<(Retirement, Option<ScreenHandle>)> {
+        let tab = self.tabs.remove(key)?;
+        Some((Retirement::begin(tab.session), tab.screen))
     }
 
     /// The registry key a wire id addresses — `term-<n>` for a shell,
@@ -5777,11 +5800,7 @@ impl AppState {
             // always reachable, and its life is bound to the worktree.
             return Err("cannot close an agent terminal".to_string());
         }
-        let tab = self.tabs.remove(&key).ok_or("unknown term_id")?;
-        tab.session.end();
-        if let Some(screen) = &tab.screen {
-            screen.close("closed");
-        }
+        self.retire_tab(&key, "closed").ok_or("unknown term_id")?;
         Ok(json!({ "ok": true }))
     }
 
@@ -5836,7 +5855,7 @@ impl AppState {
     /// `cleanup=keep` keeps its directory and everything open in it, and
     /// releasing or deleting an adopted run leaves the human's worktree exactly
     /// where it was. The two verbs that remove a run while keeping its worktree
-    /// close Build's agent themselves ([`AppState::close_agent_tab`]), because
+    /// close Build's agent themselves ([`AppState::retire_agent_tabs`]), because
     /// an agent whose owner is gone reports `done` into the unknown-entity log
     /// forever.
     fn reap_orphaned_terminals(&mut self) -> Vec<String> {
@@ -5849,7 +5868,7 @@ impl AppState {
         let mut reaped = Vec::new();
         let mut killed_agents: Vec<(String, String)> = Vec::new();
         for key in vanished {
-            let Some(tab) = self.tabs.remove(&key) else {
+            let Some(tab) = self.tabs.get(&key) else {
                 continue;
             };
             let wire_id = tab.wire_id();
@@ -5859,10 +5878,7 @@ impl AppState {
             {
                 killed_agents.push((owner.clone(), agent_id.clone()));
             }
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.close("reaped");
-            }
+            self.retire_tab(&key, "reaped");
             reaped.push(wire_id);
         }
         // The kill above is one the pump can never report: the tab left the
@@ -7993,7 +8009,7 @@ impl AppState {
     /// A removed agent's harness must not outlive it. An agent with no roster
     /// entry keeps working in the checkout and reports `done` for an identity
     /// nothing can route to — the same hazard
-    /// [`close_agent_tab`](Self::close_agent_tab) exists for — so its session is
+    /// [`retire_agent_tabs`](Self::retire_agent_tabs) exists for — so its session is
     /// killed and reaped and everything that could reach it goes too.
     fn agent_remove(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
@@ -8051,16 +8067,11 @@ impl AppState {
     /// frames with, the screen a client is waiting on a first spawn for, and
     /// any turn still queued to be said to it.
     ///
-    /// The per-agent twin of [`close_agent_tab`](Self::close_agent_tab), which
+    /// The per-agent twin of [`retire_agent_tabs`](Self::retire_agent_tabs), which
     /// takes every agent in a worktree because its owner is going away.
     fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
-        if let Some(tab) = self.tabs.remove(&key) {
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.close("closed");
-            }
-        }
+        self.retire_tab(&key, "closed");
         if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
             screen.close("closed");
         }
@@ -9293,12 +9304,10 @@ impl AppState {
             return;
         };
         let root = Self::canonical_root(&session.scratch_dir);
-        if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.close("agent_session_ended");
-            }
-        }
+        self.retire_tab(
+            &TabKey::agent(&root, &session.agent_id),
+            "agent_session_ended",
+        );
         self.mcp_session_tokens.remove(&session.agent_id);
         self.entity_project.remove(capture_id);
         // Bridge-owned, per capture, and holding nothing but what the harness
@@ -12081,7 +12090,7 @@ impl AppState {
             // abandoned a run must not keep paying for the agent that was
             // working on it, so the kill is explicit, the way release and
             // delete kill theirs.
-            self.close_agent_tab(&active.worktree.path);
+            self.retire_agent_tabs(&active.worktree.path);
             // The run is out of the map, so its lineage closes on the thread
             // this call holds rather than through the owner lookup.
             let now = now_rfc3339();
@@ -12200,7 +12209,7 @@ impl AppState {
         // route to. Close the worktree's agent — the worktree itself survives
         // (deleting an adopted run's card must never touch the user's files),
         // and reopening the Agent tab there re-adopts.
-        self.close_agent_tab(&active.worktree.path);
+        self.retire_agent_tabs(&active.worktree.path);
 
         // A failed run still holds its worktree; deleting an adopted run's card
         // must never delete the user's files (delete removes the card, not the
@@ -12373,7 +12382,7 @@ impl AppState {
         let worktree_id = crate::worktree::external_worktree_id(&root);
         let active = self.runs.remove(&run_id).expect("checked above");
         self.invalidate_run_stat(&run_id);
-        self.close_agent_tab(&root);
+        self.retire_agent_tabs(&root);
         self.invalidate_external_scan(&project_id);
         let epilogue = RunFinishEpilogue {
             run_id,
@@ -12489,7 +12498,7 @@ impl AppState {
         // Un-adopting hands the worktree back to the human; Build's agent in it
         // reported `done` to a run that no longer exists, so it goes with the
         // run. Reopening the Agent tab there adopts again.
-        self.close_agent_tab(&active.worktree.path);
+        self.retire_agent_tabs(&active.worktree.path);
         let project_id = self.entity_project.remove(&run_id);
         self.entity_project_path.remove(&run_id);
         self.entity_created_at.remove(&run_id);
@@ -17745,10 +17754,9 @@ fn ensure_agent_tab(
             if s.agent_spawns_in_flight.contains(&key) {
                 None
             } else {
-                let carried = s.tabs.remove(&key).and_then(|dead| {
-                    dead.session.end();
-                    dead.screen
-                });
+                let carried = s
+                    .retire_tab_keeping_screen(&key)
+                    .and_then(|(_reaping, screen)| screen);
                 // A checkout outlives the entity that owned it — a planning
                 // worktree is torn down and a run cuts a new one at the same
                 // path, an adopted worktree is released and re-adopted. Agents
@@ -17767,12 +17775,7 @@ fn ensure_agent_tab(
                     .map(|(other, _)| other.clone())
                     .collect();
                 for other in stale {
-                    if let Some(tab) = s.tabs.remove(&other) {
-                        tab.session.end();
-                        if let Some(screen) = &tab.screen {
-                            screen.close("closed");
-                        }
-                    }
+                    s.retire_tab(&other, "closed");
                 }
                 // A router session belongs to no project — deciding which one
                 // the capture belongs to is its job. Any project's
@@ -18213,14 +18216,12 @@ fn end_of_session(
                 Some((owner.clone(), agent_id.clone()))
             }
             TabRole::Shell => {
-                s.tabs.remove(key);
+                s.retire_tab(key, "exited");
                 None
             }
         }
     };
     let Some((owner, agent_id)) = ended_agent else {
-        screen.close("exited");
-        session.end();
         return;
     };
     screen.flush();
@@ -19864,11 +19865,14 @@ mod tests {
         let agent_id = "agent-wedged";
         let key = TabKey::agent(&root, agent_id);
         let (gate, gate_handle) = OffLockGate::new();
-        state
-            .lock()
-            .unwrap()
-            .tabs
-            .insert(key.clone(), wedged_agent_tab(&root, agent_id, gate));
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                gated_agent_role(agent_id),
+                GatedHarness::new().refusing_input_until(gate),
+            ),
+        );
 
         let typed = frame_on_a_thread(
             &state,
@@ -19895,36 +19899,68 @@ mod tests {
         assert_eq!(typed["ok"], true, "{typed:?}");
     }
 
-    /// An agent tab whose terminal never takes a byte: every `write_input`
-    /// parks in `gate` until the test lets it go, which is what a harness that
-    /// has stopped reading its pty does to the frame writing to it.
-    fn wedged_agent_tab(root: &std::path::Path, agent_id: &str, gate: OffLockGate) -> Tab {
-        let (output, _) = broadcast::channel(4);
-        let session = Arc::new(WedgedTerminal { gate, output });
+    /// A tab in `root` carrying `harness`, with a grid of its own — the shape
+    /// a test needs to hold one step of a tab's life open and watch the rest of
+    /// the daemon carry on.
+    fn gated_tab(root: &std::path::Path, role: TabRole, harness: GatedHarness) -> Tab {
+        let tab_id = match &role {
+            TabRole::Agent { agent_id, .. } => agent_tab_id(agent_id),
+            TabRole::Shell => "term-1".to_string(),
+        };
         Tab {
-            tab_id: agent_tab_id(agent_id),
+            screen: Some(ScreenHandle::new(&tab_id, 80, 24)),
+            tab_id,
             root: root.to_path_buf(),
-            role: TabRole::Agent {
-                owner: "run-wedged".to_string(),
-                agent_id: agent_id.to_string(),
-                provider: AgentProvider::default(),
-            },
+            role,
             created_at: now_rfc3339(),
-            screen: Some(ScreenHandle::new(&agent_tab_id(agent_id), 80, 24)),
-            session,
+            session: Arc::new(harness),
             live: true,
             call_sequences: HashMap::new(),
             last_delivered_at: None,
         }
     }
 
-    /// A session whose terminal accepts nothing.
-    struct WedgedTerminal {
-        gate: OffLockGate,
-        output: broadcast::Sender<Vec<u8>>,
+    fn gated_agent_role(agent_id: &str) -> TabRole {
+        TabRole::Agent {
+            owner: "run-wedged".to_string(),
+            agent_id: agent_id.to_string(),
+            provider: AgentProvider::default(),
+        }
     }
 
-    impl AgentSession for WedgedTerminal {
+    /// A session with a terminal whose every blocking step the test decides
+    /// when to release: the write to its pty, and its own death.
+    struct GatedHarness {
+        output: broadcast::Sender<Vec<u8>>,
+        on_write: Option<OffLockGate>,
+        on_end: Option<OffLockGate>,
+    }
+
+    impl GatedHarness {
+        fn new() -> GatedHarness {
+            let (output, _) = broadcast::channel(4);
+            GatedHarness {
+                output,
+                on_write: None,
+                on_end: None,
+            }
+        }
+
+        /// A harness that has stopped draining its pty.
+        fn refusing_input_until(mut self, gate: OffLockGate) -> GatedHarness {
+            self.on_write = Some(gate);
+            self
+        }
+
+        /// A harness wedged in uninterruptible I/O: SIGKILL lands, the reap
+        /// does not return.
+        fn refusing_to_die_until(mut self, gate: OffLockGate) -> GatedHarness {
+            self.on_end = Some(gate);
+            self
+        }
+    }
+
+    impl AgentSession for GatedHarness {
         fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
             Ok(())
         }
@@ -19937,19 +19973,25 @@ mod tests {
         fn exited_within(&self, _timeout: Duration) -> bool {
             false
         }
-        fn end(&self) {}
+        fn end(&self) {
+            if let Some(gate) = &self.on_end {
+                gate.arrive();
+            }
+        }
         fn backdate_last_output(&self, _ago: Duration) {}
         fn terminal(&self) -> Option<&dyn crate::harness::TerminalView> {
             Some(self)
         }
     }
 
-    impl crate::harness::TerminalView for WedgedTerminal {
+    impl crate::harness::TerminalView for GatedHarness {
         fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
             self.output.subscribe()
         }
         fn write_input(&self, _bytes: &[u8]) -> Result<(), HarnessError> {
-            self.gate.arrive();
+            if let Some(gate) = &self.on_write {
+                gate.arrive();
+            }
             Ok(())
         }
         fn resize(&self, _size: PtySize) -> Result<(), HarnessError> {
@@ -19958,6 +20000,162 @@ mod tests {
         fn pid(&self) -> Option<u32> {
             None
         }
+    }
+
+    /// `AgentSession::end` is kill THEN reap, and SIGKILL does not land on a
+    /// child wedged in uninterruptible I/O until that I/O returns. Every verb
+    /// that closes a tab used to wait for that under the app mutex, so one
+    /// stuck harness stopped the daemon. The wait goes to a thread of its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn killing_a_wedged_harness_never_holds_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                TabRole::Shell,
+                GatedHarness::new().refusing_to_die_until(gate),
+            ),
+        );
+
+        let closed = frame_on_a_thread(
+            &state,
+            "s-close",
+            "term.close",
+            json!({ "term_id": "term-1" }),
+        );
+        gate_handle.wait_for_arrival();
+        let closed = closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the close answers without waiting for the reap");
+        assert_eq!(closed["ok"], true, "{closed:?}");
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the reap is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        let answered = read
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an unrelated read is answered while a harness will not die");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "the tab is out of the registry the moment the verb answers"
+        );
+
+        gate_handle.release();
+    }
+
+    /// The tab's clients are told it is gone whatever the process does about
+    /// it: the close push is bounded work on the screen's own lock and stays
+    /// where it always was, while only the kill leaves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_close_after_a_wedged_kill_still_reaches_its_clients() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                TabRole::Shell,
+                GatedHarness::new().refusing_to_die_until(gate),
+            ),
+        );
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+
+        let closed = frame_on_a_thread(
+            &state,
+            "s-close",
+            "term.close",
+            json!({ "term_id": "term-1" }),
+        );
+        gate_handle.wait_for_arrival();
+        let closed = closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the close answers without waiting for the reap");
+        assert_eq!(closed["ok"], true, "{closed:?}");
+
+        let seen = wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed" && push["term_id"] == "term-1"
+        })
+        .await;
+        assert!(!seen.is_empty(), "{seen:?}");
+
+        gate_handle.release();
+    }
+
+    /// With the kill asynchronous, a replaced session's EOF can arrive after
+    /// its replacement is already in the registry. The pump ends the tab it was
+    /// started for and no other: it carries the session it pumps, and a tab
+    /// holding a different one is somebody else's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let key = derived_agent_key(&root, "run-replaced");
+        let agent_id = crate::agent::derived_agent_id("run-replaced");
+
+        let spawn_one = || {
+            Tab::spawn(
+                TabRole::Agent {
+                    owner: "run-replaced".to_string(),
+                    agent_id: agent_id.clone(),
+                    provider: AgentProvider::default(),
+                },
+                &HarnessSpec::new("cat"),
+                key.tab_id.clone(),
+                root.clone(),
+                80,
+                24,
+                None,
+            )
+            .expect("the agent tab spawns")
+        };
+
+        let (replaced, output) = spawn_one();
+        let dying = Arc::clone(&replaced.session);
+        let pumps = replaced.pumps(output);
+        state.lock().unwrap().tabs.insert(key.clone(), replaced);
+        super::spawn_tab_pumps(&state, key.clone(), pumps);
+
+        // The replacement takes the tab over while the first session is still
+        // being reaped, which is what an asynchronous kill allows.
+        let (replacement, output) = spawn_one();
+        let living = Arc::clone(&replacement.session);
+        let pumps = replacement.pumps(output);
+        state.lock().unwrap().tabs.insert(key.clone(), replacement);
+        super::spawn_tab_pumps(&state, key.clone(), pumps);
+
+        dying.end();
+        wait_for(Duration::from_secs(10), || {
+            matches!(dying.status(), AgentStatus::Ended { .. }).then_some(())
+        })
+        .await
+        .expect("the replaced session dies");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(
+            state.lock().unwrap().tabs[&key].live,
+            "a dead session's EOF closed the tab that replaced it"
+        );
+        living.end();
     }
 
     /// Poll an observable sender's captured pushes until the decrypted history
@@ -20013,12 +20211,32 @@ mod tests {
 
     /// True once `pid` is fully gone from the process table (killed AND reaped —
     /// a zombie still shows up in `ps` with state Z).
+    ///
+    /// Waited out rather than asked once: the kill and the reap run on a
+    /// [`Retirement`]'s own thread, so a verb answers before its harness is
+    /// gone. What the assertion means is unchanged — the process IS reaped —
+    /// only when it can first be observed.
     fn process_reaped(pid: u32) -> bool {
-        let out = Command::new("ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .unwrap();
-        !out.status.success() || String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        settles(|| {
+            let out = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            !out.status.success() || String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        })
+    }
+
+    /// Poll `settled` until it answers true, or give up after 10 s. For the
+    /// facts a background thread makes true shortly after the frame answers.
+    fn settles(settled: impl Fn() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if settled() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
     }
 
     #[tokio::test]
@@ -34928,9 +35146,10 @@ mod tests {
             self.turns.lock().unwrap().clone()
         }
 
-        /// Whether the daemon has ended this session.
+        /// Whether the daemon has ended this session, waiting out the
+        /// retirement thread that carries the kill.
         fn ended(&self) -> bool {
-            self.ended.load(std::sync::atomic::Ordering::Relaxed)
+            settles(|| self.ended.load(std::sync::atomic::Ordering::Relaxed))
         }
     }
 
@@ -38553,7 +38772,7 @@ mod tests {
             DictatedSession::reporting(AgentStatus::Working).recording_into(&log),
         );
 
-        state.close_agent_tab(&root);
+        state.retire_agent_tabs(&root);
 
         assert!(
             log.ended(),

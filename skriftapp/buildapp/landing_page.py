@@ -10,6 +10,11 @@ from pathlib import Path
 
 LANDING_DIR = Path(__file__).parent / "landing"
 SHELL_NAME = "shell.html"
+#: The one-panel body every short public page uses — unsubscribe, and every invite
+#: outcome. Heading, one line of copy, and one action slot.
+PANEL_NAME = "panel.html"
+NO_DESCRIPTION = ""
+NO_SCRIPTS = ""
 
 
 def read_landing_file(name: str) -> str:
@@ -38,4 +43,19 @@ def render_shell(*, title: str, description: str, body: str, scripts: str) -> st
             "body": body,
             "scripts": scripts,
         },
+    )
+
+
+def render_panel_page(*, title: str, heading: str, message: str, action: str) -> str:
+    """One panel of copy in the landing shell — no description, no scripts. Every
+    runtime value in ``heading``, ``message`` and ``action`` is already escaped by its
+    caller, which owns the copy."""
+    return render_shell(
+        title=title,
+        description=NO_DESCRIPTION,
+        body=fill_slots(
+            read_landing_file(PANEL_NAME),
+            {"heading": heading, "message": message, "action": action},
+        ),
+        scripts=NO_SCRIPTS,
     )

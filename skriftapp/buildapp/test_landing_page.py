@@ -5,9 +5,11 @@ head, a stylesheet and a footer instead of each declaring their own."""
 from __future__ import annotations
 
 from buildapp.landing_page import (
+    PANEL_NAME,
     SHELL_NAME,
     fill_slots,
     read_landing_file,
+    render_panel_page,
     render_shell,
 )
 from buildapp.test_root_landing import (
@@ -21,6 +23,9 @@ PAGE_TITLE = "Unsubscribe — Build"
 PAGE_DESCRIPTION = "A short description of the page."
 PAGE_BODY = '<main class="panel">Body content</main>'
 PAGE_SCRIPTS = '<script type="module" src="/landing/main.js"></script>'
+PANEL_HEADING = "A heading."
+PANEL_MESSAGE = "One line of copy."
+PANEL_ACTION = '<a href="/">home</a>'
 
 
 def _rendered_shell(**overrides) -> str:
@@ -80,3 +85,29 @@ def test_read_landing_file_reads_the_shell_document():
     shell = read_landing_file(SHELL_NAME)
     assert shell.startswith("<!doctype html>")
     assert shell.rstrip().endswith("</html>")
+
+
+def test_render_panel_page_puts_one_panel_of_copy_in_the_shell():
+    html = render_panel_page(
+        title=PAGE_TITLE,
+        heading=PANEL_HEADING,
+        message=PANEL_MESSAGE,
+        action=PANEL_ACTION,
+    )
+    assert f"<title>{PAGE_TITLE}</title>" in html
+    for part in (PANEL_HEADING, PANEL_MESSAGE, PANEL_ACTION):
+        assert part in html
+    assert "{{" not in html
+
+
+def test_the_panel_is_one_fragment_shared_by_every_short_public_page():
+    assert PANEL_NAME == "panel.html"
+    assert "{{heading}}" in read_landing_file(PANEL_NAME)
+
+
+def test_a_panel_page_carries_no_description_and_no_script():
+    html = render_panel_page(
+        title=PAGE_TITLE, heading=PANEL_HEADING, message=PANEL_MESSAGE, action=""
+    )
+    assert '<meta name="description" content="">' in html
+    assert "<script" not in html

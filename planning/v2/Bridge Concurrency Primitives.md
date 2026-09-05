@@ -857,9 +857,13 @@ the sketch, each argued where it appears:
     still there. Single-flight, so a board polling faster than a fetch returns
     claims one sweep rather than one per poll, and inline with no runtime under
     it, as deviation 6 has it. `reconcile_missing_run_worktree` is now pure
-    bookkeeping over a decided `StagePublications`; its two remaining callers —
-    `run.abandon` and a failed recovery — ask git through `classify_stages_now`,
-    which names what it does so the two sites §5 moves stay visible.
+    bookkeeping over a decided `StagePublications`. Its two remaining callers
+    still ask git under the lock through `classify_stages_now` (app.rs:13992),
+    which names the violation it preserves. Where each lands is §5's
+    "`DiscardCheckout` judges the stages before it removes the checkout":
+    `run_abandon`'s call moves into `DiscardCheckout::perform`, ahead of the
+    removal, and `recover_run`'s failed-recovery arm stays, because it runs at
+    boot before any frame exists.
 
 12. A mutation **supersedes** the refresh it overtakes rather than releasing
     its claim (`diff_refreshes_superseded`, `supersede_diff_refresh`), and
@@ -1066,7 +1070,8 @@ scan is about to land (`a_removal_of_a_checkout_the_scan_never_had_leaves_the_ru
   struct DispatchCheckout      { project: Orchestrator, base_branch: String, run_id: RunId,
                                  branch: Option<String>, instruction: String, excluded: Vec<PathBuf>, .. }
   struct DiscardCheckout       { project: Orchestrator, worktree: Worktree,
-                                 retirements: Vec<Retirement> }
+                                 retirements: Vec<Retirement>,
+                                 stages: StagePublicationQuery }
   struct OpenRepo              { path: PathBuf, requested_base: Option<String>, minted: String }
   struct CloneRepo             { url: String, dest: PathBuf, requested_base: Option<String>,
                                  minted: String }
@@ -1207,7 +1212,7 @@ scan is about to land (`a_removal_of_a_checkout_the_scan_never_had_leaves_the_ru
   | `run.create` / `issue.implement_*` | `CreateWorktree` | `ImplementationOpened` | bind the run to its issue |
   | `plan.create` | `CreateWorktree` | `PlanWorkspaceOpened` | attach the docs dir to the plan |
   | `run.adopt` | `AdoptExternalCheckout` / `AdoptPrimaryCheckout` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
-  | `run.abandon` | `DiscardCheckout` | `RunAbandoned` | `abandon_run_keeping_checkout`, close the lineage, mirror to the issue |
+  | `run.abandon` | `DiscardCheckout` | `RunAbandoned` | `abandon_run_keeping_checkout`, `reconcile_missing_run_worktree` over the `StagePublications` `perform` decided — written onto the `ActiveRun` the epilogue takes back from `TakenRun` — close the lineage, mirror the affected stages to the issue |
   | `worktree.finish` | `FinishWorktree` | `WorktreeArchived` | the archive record |
   | `run.finish` | `FinishWorktree` | `RunFinished` | retire the run (`active: Box<ActiveRun>`) |
   | `branch.finish` | `FinishWorktree` | `BranchFinished` | retire the run and settle the issue |
@@ -1237,6 +1242,30 @@ scan is about to land (`a_removal_of_a_checkout_the_scan_never_had_leaves_the_ru
   cost is nothing on the normal path (a SIGKILLed harness reaps in
   milliseconds) and at most 5 s off the lock on a wedged one, which today is
   served under the app mutex.
+- **`DiscardCheckout` judges the stages before it removes the checkout.**
+  `run_abandon` (app.rs:12364) runs `classify_stages_now` (13992) between
+  `take_run` and the removal, under the app mutex: `classify_stage_publication`
+  (16599) per completed stage is a `bounded_git_fetch` (worktree.rs:436, a
+  `git fetch` with a thirty-second deadline) plus two graph walks, and the
+  comment above the call says it must run while the refs are still
+  inspectable. That ordering belongs to the run phase, not the decide phase.
+  The decide phase takes the `StagePublicationQuery` (§4 deviation 11: run id,
+  `repo_path`, branch, base, each completed stage's `completion_sha`) through
+  `stage_publication_query` (13964) — the same query the vanished-run sweep
+  takes — and puts it in `DiscardCheckout`. `perform` calls
+  `stages.classify()` first, then waits the retirements out, then removes, and
+  returns the `StagePublications` inside `Performed`, carried by the
+  `RunAbandoned` epilogue it builds. The epilogue takes the `ActiveRun` back
+  from `TakenRun`, runs `reconcile_missing_run_worktree` over the decided
+  publications (pure bookkeeping: `publication` and `invalidation_reason` on
+  each stage), and mirrors the affected stages to the issue (12425-12461). So
+  `perform` never reaches the run, and the verdict is written by the same
+  acquisition that writes everything else. A refusal or a failed removal
+  rolls `TakenRun` back with the stages as they were — the publications were
+  read, not written, until the epilogue. `classify_stages_now` keeps one
+  caller, `recover_run`'s failed-recovery arm (2451), which runs at boot
+  before the first frame is served and is kept under the lock on purpose:
+  nothing waits on the mutex then.
 - **`worktree.create`'s placeholder id.** `external_worktree_id`
   (worktree.rs:541) hashes the canonical path, and `worktree_create` (7538)
   canonicalizes after the directory exists. The decide phase has no directory,
@@ -1276,6 +1305,7 @@ scan is about to land (`a_removal_of_a_checkout_the_scan_never_had_leaves_the_ru
   `run_abandon_removes_its_checkout_with_the_state_lock_free`,
   `run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout`,
   `run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die`,
+  `run_abandon_judges_its_stages_with_the_state_lock_free`,
   `a_creating_worktree_is_on_the_board_before_its_git_returns`,
   `a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row`,
   `a_suffixed_slug_settles_the_placeholder_under_its_real_id`,

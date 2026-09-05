@@ -1885,6 +1885,18 @@ fn accept_isolation(named: &str, available: &IsolationAvailability) -> Result<Is
     }
 }
 
+/// Say that this volume could not make the clone the settings asked for.
+///
+/// The daemon's log always hears it, and the sentence comes back for the
+/// conversation the create belongs to, so an operator reading the log and a
+/// human reading the thread are told the same thing in the same words.
+fn announce_isolation_downgrade(reason: &str) -> String {
+    let note =
+        format!("Created a git worktree: copy-on-write isolation is unavailable here — {reason}");
+    eprintln!("{note}");
+    note
+}
+
 /// Shared application state behind the relay handler.
 pub struct AppState {
     /// Registered projects (repos) plans and runs can be dispatched to.
@@ -2586,13 +2598,18 @@ impl AppState {
                 .filter(|_| !active.adopted)
                 .ok_or_else(|| "the original project/branch is unavailable".to_string())
                 .and_then(|project_id| {
+                    let (isolation, downgrade) = self.resolved_isolation(project_id);
                     self.orch_for(project_id)?
-                        .restore_run_worktree(&active.worktree, Isolation::Worktree)
+                        .restore_run_worktree(&active.worktree, isolation)
+                        .map(|worktree| (worktree, downgrade))
                         .map_err(err)
                 });
             match restored {
-                Ok(worktree) => {
+                Ok((worktree, downgrade)) => {
                     active.worktree = worktree;
+                    if let Some(reason) = downgrade {
+                        self.note_isolation_downgrade(&mut active, &reason)?;
+                    }
                     recovery_event = Some((
                         crate::thread::ThreadEventKind::WorktreeRecreated,
                         format!(
@@ -5196,6 +5213,7 @@ impl AppState {
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let now = now_rfc3339();
         let reported = report.outputs.recovery.clone();
+        let mut restored_isolation_downgrade = None;
         let verification = (|| -> Result<crate::mcp::RecoveryReport, String> {
             if report.status != DoneStatus::Completed {
                 return Err(format!(
@@ -5222,10 +5240,12 @@ impl AppState {
                 return Err("recovery report names a different branch".to_string());
             }
             let project_id = self.project_of(run_id)?;
+            let (isolation, downgrade) = self.resolved_isolation(&project_id);
             let worktree = self
                 .orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree, Isolation::Worktree)
+                .restore_run_worktree(&active.worktree, isolation)
                 .map_err(err)?;
+            restored_isolation_downgrade = downgrade;
             let checkout =
                 git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
             let verified_head = checkout
@@ -5243,6 +5263,11 @@ impl AppState {
             active.worktree = worktree;
             Ok(reported)
         })();
+        if let Some(reason) = restored_isolation_downgrade {
+            if let Err(error) = self.note_isolation_downgrade(&mut active, &reason) {
+                eprintln!("recovery {run_id}: {error}");
+            }
+        }
 
         let (event, summary, recovery_id, requested_stage_id) = match verification {
             Ok(verified) => {
@@ -7690,10 +7715,16 @@ impl AppState {
         }
         let slug = crate::worktree::slugify(&name);
         let base = self.base_for(&project_id)?;
+        let (isolation, downgrade) = self.resolved_isolation(&project_id);
         let worktree = self
             .orch_for(&project_id)?
-            .create_bare_worktree(&slug, &base, Isolation::Worktree)
+            .create_bare_worktree(&slug, &base, isolation)
             .map_err(err)?;
+        // A worktree nobody has started an agent in has no conversation to
+        // carry the note yet, so the log is where this one is said.
+        if let Some(reason) = downgrade {
+            announce_isolation_downgrade(&reason);
+        }
         // The scan keys worktrees by canonical path; mirror that here so the
         // caller can navigate to the surface without waiting for a rescan.
         let canonical = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
@@ -8698,6 +8729,26 @@ impl AppState {
         let mut issue = self.take_plan(&issue_id)?;
         write(issue.agents.sole_thread_mut());
         self.finish_plan_mutation(issue_id, issue)
+    }
+
+    /// Announce on `active`'s conversation, and on the log, that the checkout
+    /// it was just given is not the isolation the settings asked for. A volume
+    /// that cannot clone is a fact to say out loud, never a create to fail.
+    fn note_isolation_downgrade(
+        &mut self,
+        active: &mut ActiveRun,
+        reason: &str,
+    ) -> Result<(), String> {
+        let note = announce_isolation_downgrade(reason);
+        self.record_on_run_conversation(active, |thread| {
+            thread.push_event(
+                crate::thread::ThreadEventKind::WorktreeCreated,
+                Some(note),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        })
     }
 
     /// Tell the Issue where its implementation got to.
@@ -10201,14 +10252,19 @@ impl AppState {
                     .to_string(),
             )
         } else {
+            let (isolation, downgrade) = self.resolved_isolation(&project_id);
             self.orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree, Isolation::Worktree)
+                .restore_run_worktree(&active.worktree, isolation)
+                .map(|worktree| (worktree, downgrade))
                 .map_err(err)
         };
         match restored {
-            Ok(worktree) => {
+            Ok((worktree, downgrade)) => {
                 active.worktree = worktree;
                 active.last_error = None;
+                if let Some(reason) = downgrade {
+                    self.note_isolation_downgrade(&mut active, &reason)?;
+                }
                 let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
                 let persisted = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
@@ -10941,7 +10997,7 @@ impl AppState {
             .map(str::to_string);
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
 
-        let (project_id, active, turn) = {
+        let (project_id, mut active, turn, downgrade) = {
             if !self.plans.contains_key(&plan_id) {
                 return Err("unknown plan_id".to_string());
             }
@@ -10950,6 +11006,7 @@ impl AppState {
             let has_active_run = self.runs.values().any(|r| {
                 r.run.plan_id.as_ref().map(|p| &p.0) == Some(&plan_id) && !r.run.state.is_terminal()
             });
+            let (isolation, downgrade) = self.resolved_isolation(&project_id);
             let store = self.require_store()?;
             let plan = &self.plans[&plan_id];
             let model_choice = if has_agent_choice(params) {
@@ -10967,11 +11024,11 @@ impl AppState {
                     },
                     &base,
                     model_choice,
-                    Isolation::Worktree,
+                    isolation,
                     store,
                 )
                 .map_err(err)?;
-            (project_id, active, turn)
+            (project_id, active, turn, downgrade)
         };
 
         let agent_id = active
@@ -10980,6 +11037,9 @@ impl AppState {
             .expect("a dispatched run opens with its agent")
             .id
             .clone();
+        if let Some(reason) = downgrade {
+            self.note_isolation_downgrade(&mut active, &reason)?;
+        }
         self.open_implementation_run(
             run_id,
             project_id,
@@ -13720,6 +13780,7 @@ impl AppState {
         params: &Value,
         created: &mut BranchDispatchCreations,
     ) -> Result<Value, String> {
+        let mut downgrade = None;
         let run_id = match branch
             .as_deref()
             .and_then(|branch| self.run_on_branch(project_id, branch))
@@ -13732,11 +13793,12 @@ impl AppState {
                     match self.bare_checkout_on_branch(project_id, branch.as_deref())? {
                         Some(worktree_id) => worktree_id,
                         None => {
-                            let minted = self.cut_branch_for_dispatch(
+                            let (minted, fallback) = self.cut_branch_for_dispatch(
                                 project_id,
                                 branch.as_deref(),
                                 instruction,
                             )?;
+                            downgrade = fallback;
                             let worktree_id = crate::worktree::external_worktree_id(
                                 &Self::canonical_root(&minted.worktree.path),
                             );
@@ -13772,6 +13834,9 @@ impl AppState {
         // adoption mints none, and a branch Build already runs keeps the agents
         // it has.
         let agent_id = active.agents.add(&run_id, choice, &now).id.clone();
+        if let Some(reason) = downgrade {
+            self.note_isolation_downgrade(&mut active, &reason)?;
+        }
         let branch = active.worktree.branch();
         let root = Self::canonical_root(&active.worktree.path);
         let agent = active
@@ -13841,12 +13906,13 @@ impl AppState {
         project_id: &str,
         branch: Option<&str>,
         instruction: &str,
-    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
+    ) -> Result<(crate::worktree::NamedBranchCheckout, Option<String>), String> {
         let base = self.base_for(project_id)?;
+        let (isolation, downgrade) = self.resolved_isolation(project_id);
         let checkout = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
             Some(name) => self
                 .orch_for(project_id)?
-                .create_worktree_on_named_branch(name, &base, Isolation::Worktree)
+                .create_worktree_on_named_branch(name, &base, isolation)
                 .map_err(err)?,
             None => {
                 let name = branch.unwrap_or(instruction);
@@ -13858,11 +13924,7 @@ impl AppState {
                 crate::worktree::NamedBranchCheckout {
                     worktree: self
                         .orch_for(project_id)?
-                        .create_bare_worktree(
-                            &crate::worktree::slugify(name),
-                            &base,
-                            Isolation::Worktree,
-                        )
+                        .create_bare_worktree(&crate::worktree::slugify(name), &base, isolation)
                         .map_err(err)?,
                     branch_was_cut: true,
                 }
@@ -13871,7 +13933,7 @@ impl AppState {
         // The checkout must be visible to the adoption that follows it, and to
         // the very next board poll, rather than up to a scan interval later.
         self.invalidate_external_scan(project_id);
-        Ok(checkout)
+        Ok((checkout, downgrade))
     }
 
     /// Put back what a failed `branch.dispatch` created, newest first.
@@ -20003,6 +20065,150 @@ mod tests {
             unnamed["error"].as_str().unwrap(),
             "missing required param: isolation"
         );
+    }
+
+    /// Every summary the conversation of `run_id` carries, whoever wrote it:
+    /// an Issue's implementation talks on the Issue's thread and a branch's
+    /// agent talks on its own, and a fallback note is legible on either.
+    fn conversation_summaries(state: &AppState, run_id: &str) -> Vec<String> {
+        let thread = match state.runs[run_id]
+            .run
+            .plan_id
+            .as_ref()
+            .and_then(|issue_id| state.plans.get(&issue_id.0))
+        {
+            Some(issue) => issue.agents.sole_thread(),
+            None => {
+                &state.runs[run_id]
+                    .agents
+                    .primary()
+                    .expect("the run has an agent to talk to")
+                    .thread
+            }
+        };
+        thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event) => event.summary.clone(),
+                crate::thread::ThreadItem::Message(_) => None,
+            })
+            .collect()
+    }
+
+    /// The environment can change under a setting that was accepted when it was
+    /// true. A create never fails for it: the checkout is made the way every
+    /// volume can, and the conversation says so in the volume's own words, so
+    /// nobody is left wondering why the clone they chose is a worktree.
+    #[test]
+    fn a_create_that_cannot_clone_falls_back_and_says_so_on_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+        let project_id = state.projects[0].id.clone();
+
+        let dispatched = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "instruction": "Add a health endpoint",
+            }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        let run_id = dispatched["result"]["run_id"].as_str().unwrap().to_string();
+
+        let checkout = state.runs[&run_id].worktree.path.clone();
+        assert_eq!(
+            Isolation::of(&checkout),
+            Some(Isolation::Worktree),
+            "the create fell back to the isolation this volume can make"
+        );
+        let note = conversation_summaries(&state, &run_id)
+            .into_iter()
+            .find(|summary| summary.starts_with("Created a git worktree: "))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fallback is on the conversation: {:?}",
+                    conversation_summaries(&state, &run_id)
+                )
+            });
+        assert!(
+            note.starts_with(
+                "Created a git worktree: copy-on-write isolation is unavailable here — "
+            ) && note.contains("linked worktree"),
+            "the note carries the volume's own sentence: {note}"
+        );
+    }
+
+    /// The whole feature, end to end, on a volume that clones: the account
+    /// chooses cloning, the run that follows lives in a clone of the project
+    /// rather than a linked worktree, every surface that reads its work still
+    /// reads it, and Done lands the clone's branch on the base and takes the
+    /// directory away.
+    #[test]
+    fn a_run_dispatched_under_cloning_lives_in_a_clone_and_lands_from_it() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+        let chosen = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+
+        let (_, run_id) = planned_run_in_review(&mut state, "clone the project to work in it");
+        let checkout = state.runs[&run_id].worktree.path.clone();
+        assert_eq!(
+            Isolation::of(&checkout),
+            Some(Isolation::Cow),
+            "the chosen isolation is what the run got: {checkout:?}"
+        );
+        assert!(
+            conversation_summaries(&state, &run_id)
+                .iter()
+                .all(|summary| !summary.starts_with("Created a git worktree: ")),
+            "a clone that was made announces no fallback"
+        );
+
+        let diff = state.handle(req("run.diff", json!({ "run_id": run_id })));
+        let files: Vec<String> = diff["result"]["files"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the clone's work is reviewable: {diff:?}"))
+            .iter()
+            .map(|file| file["path"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            files.contains(&"result-first-half.txt".to_string())
+                && files.contains(&"result-second-half.txt".to_string()),
+            "{files:?}"
+        );
+
+        let board = state.handle(req("board.list", json!({})));
+        let row = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["run_id"] == json!(run_id.clone()))
+            .unwrap_or_else(|| panic!("the run is on the feed: {board:?}"));
+        assert_eq!(
+            row["stat"]["branch"], row["branch"],
+            "the feed reads the clone's own branch: {row:?}"
+        );
+        assert!(
+            row["stat"]["files_changed"].as_u64().unwrap() >= 2,
+            "the feed counts the clone's work: {row:?}"
+        );
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "merge" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(
+            repo.join("result-first-half.txt").exists()
+                && repo.join("result-second-half.txt").exists(),
+            "the clone's branch landed on the base"
+        );
+        assert!(!checkout.exists(), "Done took the clone away");
     }
 
     /// Naming no provider means "the account's default harness"; naming one

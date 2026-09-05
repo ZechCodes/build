@@ -34,6 +34,15 @@ export async function approveDevice(code) {
   if (!response.ok) throw new Error(await refusalDetail(response, "approve failed"));
 }
 
+/** Where to get the bridge: the install one-liner and one link per platform.
+ *  Every URL in it is the api's, so a dev stack answers with its own origin and
+ *  the client never carries a hardcoded release address. */
+export async function fetchDownloads() {
+  const response = await fetch("/app/downloads");
+  if (!response.ok) throw new Error(await refusalDetail(response, "downloads are not available"));
+  return response.json();
+}
+
 /** The sentence the api refused with, when it gave one — the device cap says
  *  what to do about itself — else `fallback`. */
 async function refusalDetail(response, fallback) {

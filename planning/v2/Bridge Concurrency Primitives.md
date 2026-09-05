@@ -103,9 +103,11 @@ walk under the lock. `reaper::remove_dir_once_reaped(writers, dir, timeout,
 subject)` is the one rule for both: rename the directory aside under the lock
 (one bounded syscall, so a re-fired router can `create_dir_all` the same path
 at once), then on a thread that holds nothing `Retirement::wait_all` the
-writers out — `CHECKOUT_REAP_WAIT`, logged on expiry — and remove what was
-renamed. `DiscardedCheckout::discard` shares `wait_all`; its removal is
-`Orchestrator::discard_checkout`, which a rename cannot stand in for.
+writers out — `CHECKOUT_REAP_WAIT` — and remove what was renamed.
+`DiscardedCheckout::discard` shares `wait_all`, which owns the expiry log
+(the writer that would not die, named under the caller's subject) so neither
+caller spells it; its removal is `Orchestrator::discard_checkout`, which a
+rename cannot stand in for.
 Test: `cancelling_a_capture_wipes_its_scratch_once_the_router_is_reaped`.
 
 With the kill asynchronous, a replaced session's EOF can arrive after the
@@ -224,10 +226,11 @@ from the design above.
   `ensure_agent_tab` reach through `spawn_tab_pumps` one statement after their
   own lock block releases, took the mutex bare to read the new tab's
   `surfaces_changed()` back off the registry. `SessionOutput` now carries that
-  receiver (`surfaces`, subscribed in `open_session` beside the bytes and the
-  activity stream, harness/session.rs:329), so the pumps start touching no
-  lock and a `term.create` or a fresh `agent.start` makes no acquisition its
-  timer cannot see.
+  receiver (`surfaces`, harness/session.rs:337), subscribed in `open_session`
+  beside the activity stream it is spawned with (harness/mod.rs:293, the
+  `Carrier::Protocol` arm), so the pumps start touching no lock and a
+  `term.create` or a fresh `agent.start` makes no acquisition its timer cannot
+  see.
 - **The MCP control socket is a frame too.** It reaches the same delivery path
   with no relay frame behind it, so it mints its own timer per socket line off
   the state's clock and records under `mcp.control` (app.rs:4462) — a name of
@@ -291,12 +294,16 @@ the sketch below in eight places, each because the code said so:
   `ensure_agent_tab` publishes the tab under the app mutex, and the clients
   must move in that same acquisition, while the child's window-change ioctl
   goes to a process that may not answer. `inherit_waiting_clients(&mut
-  AppState, key, root, tab)` is the under-lock half — it finds the waiting
-  screen (including the worktree-addressed one the first agent born here
-  inherits) and calls `ScreenHandle::carry_clients_from` — and it hands back an
-  `InheritedViewport`, whose `tell_child` is the ioctl, made once the guard is
-  down. `TerminalHandle`'s writes all keep their "with the app mutex released"
-  promise.
+  AppState, key, tab)` is the under-lock half — it finds the waiting screen
+  (including the worktree-addressed one the first agent born here inherits)
+  and calls `ScreenHandle::carry_clients_from` — and it hands back the
+  `TerminalHandle` that inherited the clients (`None` when nobody was carried).
+  The caller makes the window-change ioctl through
+  `TerminalHandle::fit_child_to_screen` once the guard is down: the one place
+  `PtySize` is built and the one place a refused ioctl is judged a dying
+  child's business, shared with `Tab::adopt_screen`, which fits a replacement
+  session to the retained grid it takes over. `TerminalHandle`'s writes all
+  keep their "with the app mutex released" promise.
 - `close` and `session_ended` are different verbs. `close` is a screen whose
   TAB is gone: it pushes `term.closed`, and every client that arrives
   afterwards is pushed the same words instead of being registered — a client's
@@ -470,8 +477,8 @@ the spec's load test.
   `a_client_attaching_to_a_closed_screen_is_told_it_closed`,
   `telling_an_inherited_child_its_size_never_holds_the_app_mutex`,
   `a_replacement_cannot_slip_between_a_session_ending_and_its_close`,
-  `a_spawn_that_fails_closes_the_grid_it_took_from_the_dead_session`. All
-  sixteen were watched to fail first; two test-side waits followed
+  `a_spawn_that_fails_closes_the_grid_it_took_from_the_dead_session`. Every
+  one of them was watched to fail first; two test-side waits followed
   (`process_reaped` and `SessionLog::ended` poll the retirement thread out
   rather than asking once, which is when the fact can first be observed, not a
   weaker assertion).
@@ -1394,6 +1401,21 @@ build settled differently, and why:
   is left: every verb that must decide against the checkouts that exist asks
   in a run phase. `run_on_worktree` is deleted as a duplicate of
   `run_owning_worktree_id`.
+- **The scan canonicalizes its own exclusions.** The sketch below has each
+  adopt mutation canonicalizing `excluded` itself; what shipped first was
+  `bound_worktree_paths` doing it under the app mutex, one `fs::canonicalize`
+  per run, at every decide phase that hands a scan its exclusions (the
+  external-scan refresh builder, the finish planner, `run.adopt`,
+  `issue.implement_*`, `branch.dispatch`). Every one of those sets reaches
+  `discover_external_worktrees` and nothing else, so that function
+  canonicalizes the set it is given — off the lock, where it already
+  canonicalizes the repository path — and `bound_worktree_paths` reads the
+  recorded paths and touches no disk
+  (`a_bound_path_excludes_its_checkout_in_whatever_spelling_it_arrives`).
+  `PendingAgentTurn.root` is canonical at construction for the same reason:
+  `tab_key` had been canonicalizing on every read under the mutex, once per
+  turn taken and once per turn queued, for the sake of the one construction
+  site (the router's) that passed a raw path.
 - **Tests** `run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free`,
   `run_adopt_answers_from_its_epilogue_with_the_runs_own_view`,
   `two_adopts_of_one_checkout_converge_on_one_run`,
@@ -1684,11 +1706,12 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   | `worktree.create` | `CreateWorktree` | `WorktreeCreated` | record the row, reply with the worktree |
   | `branch.dispatch` | `DispatchCheckout` | `BranchDispatched` | `RunAdopted`'s work on the `AdoptableCheckout` it was handed, then mint the agent and queue its first turn |
   | `run.create` / `issue.implement_*` | `OpenImplementation` | `ImplementationOpened` | open the run on the checkout that was cut, bind it to its issue |
-  | `run.create` into an existing checkout | `AdoptImplementation` | `ImplementationAdopted` | reset the branch's run onto the baseline the checkpoint made (a checkout no run owns yet is adopted first, and that adoption is still `run_adopt`'s — see below) |
+  | `run.create` into an existing checkout | `AdoptImplementation` | `ImplementationAdopted` | reset the branch's run onto the baseline the checkpoint made (a checkout no run owns yet is adopted first, in the same run phase — `ImplementationCheckout::Unowned`, second half) |
   | `issue.implement_*` with its checkout gone | `RestoreImplementationCheckout` | `RestoredCheckout` | write the recreated checkout onto the run, or hand the run to the recovery agent |
   | every door to a planning agent — `plan.create`, the first `thread.post` to an inert Issue, a route, `plan.send_notes`, `plan.stage_send_notes`, `plan.message` | `OpenPlanWorkspace` | `PlanWorkspaceOpened` / `PlanWorkspaceRefused`, over that door's `PlanSessionOpening` | apply the plan event the door was gated on, render its prompt, queue the turn |
-  | `run.adopt` | `AdoptExternalCheckout` / `AdoptPrimaryCheckout` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
-  | `run.abandon` | `DiscardCheckout` | `RunAbandoned` | `abandon_run_keeping_checkout`, `reconcile_missing_run_worktree` over the `StagePublications` `perform` decided — written onto the `ActiveRun` the epilogue takes back from `TakenRun` — close the lineage, mirror the affected stages to the issue |
+  | `run.adopt` | `AdoptCheckout` over `AdoptionTarget::Card` / `::Primary` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
+  | `run.abandon` | `DiscardCheckout` | `RunAbandoned` (a `DiscardSettlement`) | `abandon_run_keeping_checkout`, `reconcile_missing_run_worktree` over the `StagePublications` `perform` decided — written onto the `ActiveRun` the mutation carried — close the lineage, mirror the affected stages to the issue |
+  | `run.delete` | `DiscardCheckout` | `RunDeleted` (a `DiscardSettlement`) | the store delete, `forget_run`, the card off the board |
   | `worktree.finish` | `FinishWorktree` | `WorktreeArchived` | the archive record |
   | `run.finish` | `FinishWorktree` | `RunFinished` | retire the run (`active: Box<ActiveRun>`) |
   | `branch.finish` | `FinishWorktree` | `BranchFinished` | retire the run and settle the issue |
@@ -1698,18 +1721,6 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   A reply that needs `AppState` — `run.adopt`'s `run_view`, every
   `answer_run_mutation` — is built in the epilogue, which is why
   `WorktreeChange` carries no `reply`.
-- **A checkout no run owns yet is adopted under the mutex, until `run.adopt`
-  moves.** `adopt_implementation_checkout`'s decide phase (app.rs:11454) calls
-  `run_adopt` inline when `worktree_id` names a checkout with no live run —
-  the forced `scan_external_worktrees_now` plus `lifecycle::adopt`'s checkpoint
-  commit and scaffold, all under the app mutex, exactly where they ran before
-  this step. Chaining it is not this step's to do: an adoption is its own
-  `AdoptExternalCheckout` job, an epilogue may not defer a second job into a
-  drain that has already run, and `run.adopt` has not moved yet. The common
-  path — a `worktree_id` a run already owns, and every `run.create` that names
-  none — is off the lock. When `run.adopt` moves, this decide phase reserves
-  the checkout and hands the git to `AdoptExternalCheckout`, resuming
-  `AdoptImplementation` from its epilogue.
 - **What an apply-phase failure leaves on disk.** `perform` removes what it
   cut in its own error path, but an epilogue can fail after the git returned
   `Ok` — the Issue was deleted while the git ran, a store write failed — and

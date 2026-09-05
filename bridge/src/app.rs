@@ -1867,8 +1867,8 @@ pub struct AppState {
     /// It lives on the state rather than beside it because the state is what
     /// every path that takes this mutex can already reach: the relay's frame
     /// handler, the MCP done socket, and the delivery path both of them share.
-    /// A clock built per handler would give a relay reconnect a second set of
-    /// "since boot" counters and leave every non-relay caller with none.
+    /// A clock built per handler would leave the socket's frames, which have
+    /// no handler behind them, counted nowhere.
     /// Answering `bridge.stats` never goes through here — a frame parked on
     /// this mutex is exactly when the counters are needed, so the frame reads
     /// them off the clock its own timer holds.

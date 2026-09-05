@@ -1941,10 +1941,21 @@ Step 5 (SPA), as built. The overlay's patch records name what clears them
 (`patchRecord(key, fields, { clearedBy })`, core/optimistic.js): a patch whose
 row the entity will never carry as a field stands until the pushed entry
 answers it, instead of waiting out `PENDING_GRACE_MS`. `AGENT_STARTING` and
-`agentSessionIsLive` (core/agentRailModel.js) are what the rail lays over the
+`agentSessionAnswered` (core/agentRailModel.js) are what the rail lays over the
 row it just asked for a session for, and `agentIsUp` is what keeps a message
 sent behind that press from starting a second harness. The vocabulary stays in
 the agent's own module; the overlay stays general.
+
+The question a start asks has TWO answers, so the patch waits for either. A
+session is live, or one never opened — and a spawn that failed says nothing
+about a session, so waiting on liveness alone left the ring on for the whole
+grace and then dropped it silently, with the reason nowhere. The failing half
+travels on the agent that was to hear the turn: `record_agent_delivery_failure`
+writes `Agent.start_error` beside the entity's `last_error`, the digest ships
+it, and the next turn on its way to that agent forgets it — one write, in
+`take_pending_turns`, which is the one door every queued turn passes through
+before the verb that queued it has even answered. The rail says it on the
+agent's own bubble and raises it once, where the throw used to land.
 
 A reply the browser stopped waiting for is not a refusal. `replyOrNothing(pending)`
 in core/session.js is the whole rule — the reply, or null when the timer ended the

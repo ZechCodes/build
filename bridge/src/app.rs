@@ -3048,6 +3048,26 @@ impl AppState {
             .clone()
     }
 
+    /// A turn is on its way to this agent, so why the LAST one never arrived is
+    /// history: the row the client is about to wear a "starting" state on must
+    /// not be answered by the failure before it.
+    ///
+    /// Written only when there is one to forget, so an ordinary delivery costs
+    /// no store write.
+    fn forget_agent_start_error(&mut self, owner: &str, agent_id: &str) {
+        let recorded = self
+            .entity_agents(owner)
+            .ok()
+            .and_then(|roster| roster.by_id(agent_id))
+            .and_then(|agent| agent.start_error.as_ref());
+        if recorded.is_none() {
+            return;
+        }
+        self.edit_agent_record("forget_agent_start_error", owner, agent_id, |agent| {
+            agent.start_error = None;
+        });
+    }
+
     fn record_agent_active_model(&mut self, owner: &str, agent_id: &str, running: Option<String>) {
         if self.recorded_active_model(owner, agent_id) == running {
             return;
@@ -3197,9 +3217,9 @@ impl AppState {
         Err(format!("unknown conversation owner: {entity_id}"))
     }
 
-    /// A turn never reached an agent: record why on the entity and persist it,
-    /// so the surface says what happened instead of showing a working task with
-    /// nobody working.
+    /// A turn never reached an agent: record why on the entity and on the agent
+    /// itself, and persist it, so the surface says what happened instead of
+    /// showing a working task with nobody working and a row still starting.
     ///
     /// The state is deliberately left alone. The transition that queued this
     /// turn is already durable, and demotion belongs to one place — the idle
@@ -3215,6 +3235,19 @@ impl AppState {
             return;
         }
         let reason = format!("could not reach the agent: {error}");
+        // And on the agent the turn was for. The entity's `last_error` is the
+        // surface's line about the work; this is the agent's own word about the
+        // session it was asked to open, which is what the client laid a
+        // "starting" state over the row waiting for.
+        self.edit_agent_record(
+            "record_agent_delivery_failure",
+            &turn.owner,
+            &turn.agent_id,
+            {
+                let reason = reason.clone();
+                |agent| agent.start_error = Some(reason)
+            },
+        );
         // Plan and run ids are disjoint, so the owner lookup is the router.
         if self.plans.contains_key(&turn.owner) {
             let Ok(mut active) = self.take_plan(&turn.owner) else {
@@ -8713,6 +8746,11 @@ impl AppState {
             // decided by the argv, so the same provider answers differently on
             // two versions of the same CLI. No session, no turn to stop.
             "can_interrupt": tab.is_some_and(|tab| tab.session.can_interrupt()),
+            // Why the last turn queued for this agent never reached a harness.
+            // The client's "starting" state is laid on before there is any
+            // session to report, and this is what takes it off when none ever
+            // opened — the only word a start that failed ever gets to say.
+            "start_error": agent.start_error,
             "created_at": agent.created_at,
         });
         if let Some(surfaces) = digest_surfaces(tab, scope) {
@@ -9568,10 +9606,11 @@ impl AppState {
         // Back in the queue, in the order they were made: the drain that runs
         // after the job's epilogue takes them, and every frame drains.
         self.pending_agent_turns = held;
-        // The one door every cold prompt passes: the conversation is read and
-        // closed onto the prompt HERE, so the packet carries what the store
-        // holds under the tail and what was said while the turn waited.
         for turn in &mut queued {
+            self.forget_agent_start_error(&turn.owner, &turn.agent_id);
+            // The one door every cold prompt passes: the conversation is read and
+            // closed onto the prompt HERE, so the packet carries what the store
+            // holds under the tail and what was said while the turn waited.
             if !turn.wants_catch_up {
                 continue;
             }
@@ -34963,6 +35002,83 @@ mod tests {
         assert!(
             record.last_error.unwrap_or_default().contains("agent"),
             "the failure must be persisted, not just held in memory"
+        );
+    }
+
+    /// The agent's own record has to carry it too.
+    ///
+    /// The client lays a "starting" state over the row it pressed Resume on and
+    /// waits for the entity's next word about the session. A start that never
+    /// came up says nothing about the SESSION, so without this the row wears
+    /// the ring until the overlay's grace runs out and then goes quietly idle,
+    /// with the reason nowhere.
+    #[test]
+    fn a_start_that_never_reached_a_harness_says_so_on_its_agent() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-no-start",
+            RunState::Building,
+        );
+        let state = app.shared();
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-no-start"));
+
+        deliver_pending_agent_turns(&state);
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("run.get", json!({ "run_id": "run-no-start" })));
+        let agent = &got["result"]["agents"][0];
+        assert!(
+            agent["start_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("could not reach the agent"),
+            "the agent says why its session never opened: {got:?}"
+        );
+    }
+
+    /// And it is the LAST start's failure, not a permanent mark: a fresh turn
+    /// on its way to the agent makes it history, so the next press wears its
+    /// own ring instead of being answered by the failure before it.
+    #[test]
+    fn a_fresh_turn_forgets_the_last_start_failure() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(&mut app, &repo, dir.path(), "run-retry", RunState::Building);
+        let state = app.shared();
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-retry"));
+        deliver_pending_agent_turns(&state);
+
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-retry"));
+        // Taken, not delivered: the point is that reaching for the agent is
+        // what forgets the last failure, before anything is known about how
+        // this one ends. The marks it holds are released when it drops.
+        let _taken = state.lock().unwrap().take_pending_turns();
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("run.get", json!({ "run_id": "run-retry" })));
+        assert!(
+            got["result"]["agents"][0]["start_error"].is_null(),
+            "the turn now on its way answers for the session, not the one before it: {got:?}"
         );
     }
 

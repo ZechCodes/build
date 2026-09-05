@@ -5,6 +5,7 @@ import {
   AGENT_STARTING,
   agentCanInterrupt,
   agentIsUp,
+  agentSessionAnswered,
   agentSessionIsLive,
   agentPattern,
   agentTitle,
@@ -18,6 +19,7 @@ import {
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  startFailuresLearned,
   startupStatusLine,
   statText,
   elapsedClock,
@@ -80,6 +82,29 @@ describe("an agent whose start has been asked for", () => {
     expect(agentSessionIsLive(agent({ state: AGENT_STARTING }))).toBe(false);
     expect(agentSessionIsLive(agent({ state: "ended" }))).toBe(false);
     expect(agentSessionIsLive(null)).toBe(false);
+  });
+
+  // The question a start asks has two answers, and either one ends the wait.
+  // A spawn that never came up says nothing about a session, so a client
+  // waiting on liveness alone waits out its own grace and then goes quiet.
+  it("is also answered by a start that never reached a harness", () => {
+    const failed = agent({ state: "idle", start_error: "could not reach the agent: gone" });
+    expect(agentSessionAnswered(failed)).toBe(true);
+    expect(agentSessionAnswered(agent({ state: "live" }))).toBe(true);
+    expect(agentSessionAnswered(agent({ state: "idle" }))).toBe(false);
+    expect(bubbleTip(failed)).toBe("Claude Code 1 — could not reach the agent: gone");
+  });
+
+  // Said once, and only about a start this rail was already showing an agent
+  // for: a reason that was on the payload before the comparison began is what
+  // the row already says.
+  it("names only the failures that have just arrived", () => {
+    const quiet = agent({ id: "ag-1", state: "idle" });
+    const failed = agent({ id: "ag-1", state: "idle", start_error: "no worktree" });
+    expect(startFailuresLearned([quiet], [failed]).map((a) => a.id)).toEqual(["ag-1"]);
+    expect(startFailuresLearned([failed], [failed])).toEqual([]);
+    expect(startFailuresLearned([], [failed])).toEqual([]);
+    expect(startFailuresLearned([failed], [quiet])).toEqual([]);
   });
 
   it("says so on its bubble", () => {

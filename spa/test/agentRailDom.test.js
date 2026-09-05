@@ -870,6 +870,32 @@ describe("the conversation panel", () => {
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
   });
 
+  // The other answer to a start. A spawn that never came up says nothing about
+  // a session, so waiting on `live` alone left the ring on for the overlay's
+  // whole 30 s grace and then dropped it silently, with the reason nowhere.
+  it("takes the ring off and says why when the entity reports the start failed", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+
+    await mountAgentTab.mock.calls[0][2].onStart();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+
+    payload = branchRow({
+      agents: [agent({ state: "idle", start_error: "could not reach the agent: no such worktree" })],
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(false);
+    expect(bubbles()[0].title).toContain("could not reach the agent");
+    expect(notifyError).toHaveBeenCalledWith(
+      "Could not start the agent",
+      "could not reach the agent: no such worktree",
+    );
+  });
+
   // A start that names no agent is still a start: the entity names the agent it
   // opened on its next answer, and the rail reads it there.
   it("carries on when the start answers without naming the agent it opened", async () => {

@@ -29,7 +29,8 @@ import {
   agentCanInterrupt,
   agentHasTerminal,
   agentIsUp,
-  agentSessionIsLive,
+  agentSessionAnswered,
+  agentStartFailure,
   agentTitle,
   canRemoveAgent,
   providerLabel,
@@ -39,6 +40,7 @@ import {
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  startFailuresLearned,
 } from "./agentRailModel.js";
 import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
 import { createAgentSelection } from "./agentSelection.js";
@@ -584,6 +586,12 @@ export function mountAgentRail(host, context) {
     if (asked !== selectedId) return;
     const answered = railEntity(payload, context.kind);
     if (answerLostTheAgents(answered)) return;
+    // A start that never reached a harness is answered here and nowhere else:
+    // the daemon replied to the press long before the spawn, so this push is
+    // the first word about it. Said once, where the throw used to land.
+    for (const failed of startFailuresLearned(entity.agents, answered.agents)) {
+      notifyError("Could not start the agent", agentStartFailure(failed));
+    }
     agentlessOnce = false;
     entity = answered;
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
@@ -1483,7 +1491,7 @@ export function mountAgentRail(host, context) {
     const settled = await runOptimistic({
       scope: pendingAgentsScope(),
       records: agent
-        ? [patchRecord(agent.id, { state: AGENT_STARTING }, { clearedBy: agentSessionIsLive })]
+        ? [patchRecord(agent.id, { state: AGENT_STARTING }, { clearedBy: agentSessionAnswered })]
         : [],
       call: async () => {
         const entityId = await ensureEntity();

@@ -3712,11 +3712,8 @@ impl AppState {
             let chosen = model_choice_from(params, self.default_harness)?;
             self.set_entity_model_choice(&entity_id, chosen)?;
         }
-        let named = params
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty());
-        let agent_id = match named {
+        let named = named_agent_id(params);
+        let agent_id = match named.as_deref() {
             None => self.ensure_primary_agent(&entity_id)?,
             named => self.resolve_agent(&entity_id, named)?.id,
         };
@@ -4440,8 +4437,7 @@ impl AppState {
                                 // A dispatch queues the branch agent's first
                                 // turn; it is sent on a thread of its own, so
                                 // the harness that asked is answered now.
-                                let turns = timer.lock(&state).take_pending_turns();
-                                DeliveryRunner::spawn(&state, turns);
+                                DeliveryRunner::drain(&state, &timer);
                                 let _ = write_half.write_all(response.to_string().as_bytes()).await;
                                 let _ = write_half.write_all(b"\n").await;
                                 let _ = write_half.flush().await;
@@ -4469,8 +4465,7 @@ impl AppState {
                             // queued under the lock above and delivered off
                             // this socket's thread, exactly as on the relay's
                             // frame path.
-                            let turns = timer.lock(&state).take_pending_turns();
-                            DeliveryRunner::spawn(&state, turns);
+                            DeliveryRunner::drain(&state, &timer);
                             continue;
                         }
                         if let Ok(action) = serde_json::from_value::<BridgeAction>(
@@ -5511,7 +5506,7 @@ impl AppState {
         entity_id: &str,
         params: &Value,
     ) -> Result<Option<Value>, String> {
-        let addressed = addressed_agent(params);
+        let addressed = named_agent_id(params);
         let cursor = thread_cursor(params);
         if addressed.is_none() && cursor.is_none() {
             return Ok(None);
@@ -9208,16 +9203,18 @@ impl AppState {
                 say.cold = self.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &say.cold);
             }
         }
+        let state = self.settling_handle();
         let turns = queued
             .into_iter()
             .map(|turn| {
-                let mark = self.turns_in_flight.take(&turn);
+                let mark = self.turns_in_flight.take(&turn, state.clone());
                 (turn, mark)
             })
             .collect();
         PendingTurns {
             turns,
-            state: self.settling_handle(),
+            state,
+            clock: Arc::clone(&self.frame_clock),
         }
     }
 
@@ -11052,7 +11049,7 @@ impl AppState {
     /// way it merges the page it opened on.
     fn thread_page(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
-        let thread = self.agent_conversation(&entity_id, addressed_agent(params).as_deref())?;
+        let thread = self.agent_conversation(&entity_id, named_agent_id(params).as_deref())?;
         let before = params.get("before_sequence").and_then(Value::as_u64);
         let limit = thread_page_limit(params);
         // A conversation is loaded as its tail, so a walk far enough up one
@@ -11792,7 +11789,7 @@ impl AppState {
         // or the branch's first agent — the one every surface that predates the
         // rail meant. Resolved on the run's OWN roster, before the swap below
         // can hand it the Issue's.
-        let addressed = addressed_agent(params);
+        let addressed = named_agent_id(params);
         let run_agent_id = active.agents.resolve(addressed.as_deref())?.id.clone();
         let addresses_primary_agent = active.agents.is_primary(&run_agent_id);
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
@@ -13300,7 +13297,7 @@ impl AppState {
                 view
             }
             // A checkout Build owns no run in has no agent to name.
-            None => match addressed_agent(params) {
+            None => match named_agent_id(params) {
                 Some(agent_id) => return Err(format!("unknown agent_id: {agent_id}")),
                 None => Value::Null,
             },
@@ -15356,7 +15353,7 @@ fn conversation_owner_param(params: &Value) -> Result<String, String> {
 /// The optional `agent_id` a verb was addressed to. Empty reads as absent: a
 /// client with no bubble open yet means the entity's own conversation, which is
 /// its first agent's.
-fn addressed_agent(params: &Value) -> Option<String> {
+fn named_agent_id(params: &Value) -> Option<String> {
     params
         .get("agent_id")
         .and_then(Value::as_str)
@@ -17441,8 +17438,7 @@ fn dispatch_frame(
             // durable, and a cold spawn blocks for seconds on the harness's
             // readiness wait while the browser gives up at twelve.
             if dispatched.is_ok() {
-                let turns = timer.lock(state).take_pending_turns();
-                DeliveryRunner::spawn(state, turns);
+                DeliveryRunner::drain(state, &timer);
             }
             dispatched
         }
@@ -17703,10 +17699,7 @@ fn agent_attach(
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
 
-    let requested_agent = params
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty());
+    let requested_agent = named_agent_id(params);
 
     let mut guard = timer.lock(state);
     let s = &mut *guard;
@@ -17726,7 +17719,7 @@ fn agent_attach(
     // surface that predates the rail still attaches to the agent it always did.
     // A scope-addressed attach with no entity can only mean the agent already
     // running there.
-    let agent_id = match (&entity_id, requested_agent) {
+    let agent_id = match (&entity_id, requested_agent.as_deref()) {
         (Some(entity_id), requested) => s.resolve_agent(entity_id, requested)?.id,
         (None, Some(requested)) => requested.to_string(),
         // A worktree Build owns nothing in yet — an unadopted checkout, the
@@ -17796,7 +17789,7 @@ fn agent_start(
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    let (turns, agent) = {
+    let agent = {
         let mut s = timer.lock(state);
         let agent = s.addressed_agent(params)?;
         s.pending_agent_turns.push(PendingAgentTurn {
@@ -17821,9 +17814,9 @@ fn agent_start(
             wants_catch_up: true,
         });
         s.touch_attention(&agent.entity_id);
-        (s.take_pending_turns(), agent)
+        agent
     };
-    DeliveryRunner::spawn(state, turns);
+    DeliveryRunner::drain(state, timer);
 
     Ok(json!({
         "term_id": agent_tab_id(&agent.agent_id),
@@ -18446,6 +18439,10 @@ fn deliver(
 struct PendingTurns {
     turns: std::collections::VecDeque<(PendingAgentTurn, TurnMark)>,
     state: SettlingHandle,
+    /// The clock the delivery times itself by, taken under the acquisition
+    /// that took the turns so the runner never takes the app mutex just to
+    /// find it.
+    clock: Arc<FrameClock>,
 }
 
 /// The turns that have left [`AppState::pending_agent_turns`] and have not yet
@@ -18469,26 +18466,46 @@ struct TurnsInFlight {
 }
 
 /// One turn's pair of marks, owed back by whoever took them.
+///
+/// Given back by [`TurnMark::settle`] under a lock the caller holds once the
+/// turn has landed, and by [`Drop`] on any path that never got there — a
+/// delivery that panicked after the turn left its batch and before it was
+/// settled. The same guard [`SpawnClaim`] is, one phase earlier: a mark that
+/// outlived its delivery would spare its owner from the idle sweep forever.
 struct TurnMark {
     owner: String,
     /// The agent this turn will tell to read its thread — `None` for a turn
     /// that says nothing.
     told_agent: Option<TabKey>,
+    state: SettlingHandle,
+    settled: bool,
 }
 
 impl TurnMark {
     /// Give this turn's marks back, under a lock the caller holds. Consumes the
     /// mark, so one turn settles once.
-    fn settle(self, s: &mut AppState) {
+    fn settle(mut self, s: &mut AppState) {
         s.turns_in_flight.give_back(&self);
+        self.settled = true;
+    }
+}
+
+impl Drop for TurnMark {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.state.settle(|s| s.turns_in_flight.give_back(self));
     }
 }
 
 impl TurnsInFlight {
-    fn take(&mut self, turn: &PendingAgentTurn) -> TurnMark {
+    fn take(&mut self, turn: &PendingAgentTurn, state: SettlingHandle) -> TurnMark {
         let mark = TurnMark {
             owner: turn.owner.clone(),
             told_agent: turn.says_something().then(|| turn.tab_key()),
+            state,
+            settled: false,
         };
         *self.owners.entry(mark.owner.clone()).or_default() += 1;
         if let Some(agent) = &mark.told_agent {
@@ -18549,7 +18566,7 @@ impl Drop for PendingTurns {
         }
         self.state.settle(|s| {
             for (_, mark) in undelivered {
-                s.turns_in_flight.give_back(&mark);
+                mark.settle(s);
             }
         });
     }
@@ -18575,6 +18592,14 @@ const AGENT_DELIVERY_METHOD: &str = "agent.deliver";
 struct DeliveryRunner;
 
 impl DeliveryRunner {
+    /// Take whatever the verbs that just ran queued, under one acquisition
+    /// charged to `timer`, and deliver it off this thread. The one call every
+    /// path that queues a turn makes once its own state change is durable.
+    fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
+        let turns = timer.lock(state).take_pending_turns();
+        DeliveryRunner::spawn(state, turns);
+    }
+
     /// Deliver `turns` on a thread of the runtime's, and return at once.
     ///
     /// With no runtime under it — the synchronous unit tests — there is no
@@ -18614,7 +18639,7 @@ impl DeliveryRunner {
     /// "the revise agent started here". A warm delivery continues the session
     /// already open.
     fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
-        let timer = Arc::clone(&state.lock().unwrap().frame_clock).frame(AGENT_DELIVERY_METHOD);
+        let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
         while let Some((turn, mark)) = turns.next_turn() {
             let delivered = deliver(
                 state,
@@ -18777,10 +18802,9 @@ fn end_of_session(
             .tabs
             .get_mut(key)
             .expect("the tab this pump holds was just found");
-        match &tab.role {
-            TabRole::Agent {
-                owner, agent_id, ..
-            } => {
+        match tab.role.agent() {
+            Some((owner, agent_id)) => {
+                let ended = (owner.to_string(), agent_id.to_string());
                 tab.live = false;
                 // Told in the same acquisition that marks the tab, because a
                 // marked tab is a REPLACEABLE one: the next spawn takes this
@@ -18795,9 +18819,9 @@ fn end_of_session(
                 // session that replaces it paints onto the same screen, with
                 // the same clients still on it.
                 screen.session_ended("agent_session_ended");
-                Some((owner.clone(), agent_id.clone()))
+                Some(ended)
             }
-            TabRole::Shell => {
+            None => {
                 s.retire_tab(key, "exited");
                 None
             }
@@ -19065,17 +19089,15 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
         s.tabs
             .values()
             .filter(|tab| tab.live)
-            .filter_map(|tab| match &tab.role {
-                TabRole::Agent {
-                    owner, agent_id, ..
-                } => Some(LiveAgent {
-                    owner: owner.clone(),
-                    agent_id: agent_id.clone(),
+            .filter_map(|tab| {
+                let (owner, agent_id) = tab.role.agent()?;
+                Some(LiveAgent {
+                    owner: owner.to_string(),
+                    agent_id: agent_id.to_string(),
                     session: Arc::clone(&tab.session),
                     recorded: s.recorded_resume_id(owner, agent_id),
                     recorded_model: s.recorded_active_model(owner, agent_id),
-                }),
-                TabRole::Shell => None,
+                })
             })
             .collect()
     };
@@ -19109,12 +19131,8 @@ fn digest_surfaces(tab: Option<&Tab>, scope: DigestScope) -> Option<Value> {
 /// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
 /// the tab is gone or was never an agent's.
 fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
-    match &state.tabs.get(key)?.role {
-        TabRole::Agent {
-            owner, agent_id, ..
-        } => Some((owner.clone(), agent_id.clone())),
-        TabRole::Shell => None,
-    }
+    let (owner, agent_id) = state.tabs.get(key)?.role.agent()?;
+    Some((owner.to_string(), agent_id.to_string()))
 }
 
 /// The conversation event one reported activity becomes. The five kinds are the
@@ -33011,7 +33029,8 @@ mod tests {
         );
 
         // The panic no delivery can catch: another frame died holding the app
-        // mutex, so the runner's very first acquisition unwraps a poisoned lock.
+        // mutex, so the delivery's first acquisition unwraps a poisoned lock —
+        // after the turn and its mark have already left the batch.
         let poisoner = Arc::clone(&state);
         std::thread::spawn(move || {
             let _held = poisoner.lock().unwrap();

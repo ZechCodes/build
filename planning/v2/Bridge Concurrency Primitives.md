@@ -478,7 +478,8 @@ noted below.
   /// What one lock acquisition took, each turn paired with the mark it OWES
   /// back — so the turn that landed is the only one whose mark can be settled.
   struct PendingTurns { turns: VecDeque<(PendingAgentTurn, TurnMark)>,
-                        state: SettlingHandle }
+                        state: SettlingHandle,
+                        clock: Arc<FrameClock> }   // the runner's timer, so it never locks to find one
   impl PendingTurns {
       fn next_turn(&mut self) -> Option<(PendingAgentTurn, TurnMark)>;
   }
@@ -490,8 +491,10 @@ noted below.
   /// counts under its owner; only a turn that says something counts under its
   /// agent, because only that turn tells the agent to read its thread.
   struct TurnsInFlight { owners: HashMap<String, usize>, agents: HashMap<TabKey, usize> }
-  struct TurnMark { owner: String, told_agent: Option<TabKey> }
+  struct TurnMark { owner: String, told_agent: Option<TabKey>,
+                    state: SettlingHandle, settled: bool }
   impl TurnMark { fn settle(self, s: &mut AppState); }       // one delivered turn
+  impl Drop for TurnMark { .. }                              // unsettled: gives itself back
   impl TurnsInFlight {
       fn take(&mut self, turn: &PendingAgentTurn) -> TurnMark;
       fn give_back(&mut self, mark: &TurnMark);
@@ -510,6 +513,9 @@ noted below.
                           model_choice: ModelChoice, has_unread: bool }
   struct DeliveryRunner;
   impl DeliveryRunner {
+      /// `take_pending_turns` under one acquisition charged to `timer`, then
+      /// `spawn`. The one call every path that queued a turn makes.
+      fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer);
       fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns);  // returns at once
       fn run(state: &Arc<Mutex<AppState>>, turns: PendingTurns);    // no runtime: sync tests
   }
@@ -543,8 +549,8 @@ noted below.
   resume/transcript/locator order — no verb knows a harness exists.
 - **Replaces** every site that drained the queue on the caller's thread:
   `dispatch_frame`'s inline `deliver_pending_agent_turns`, the MCP done
-  socket's two, and `agent.start`'s inline `deliver` → `take_pending_turns` +
-  `DeliveryRunner::spawn`. `ensure_agent_tab`'s `sleep(25 ms)` loop against
+  socket's two, and `agent.start`'s inline `deliver` → `DeliveryRunner::drain`,
+  one call at all four sites. `ensure_agent_tab`'s `sleep(25 ms)` loop against
   `AGENT_SPAWN_WAIT` → the condvar wait below. `scaffold_agent_worktree`,
   `resume_id_probe`, `transcript_probe`, `session_locator_factory` and
   `agent_harness_spec` left the reservation block for `probe_and_scaffold`.
@@ -624,8 +630,9 @@ noted below.
   that inserts the tab; its `Drop` releases the claim and notifies every waiter
   on any path that never got there, a panic included. `AGENT_SPAWN_WAIT` is the
   condvar's deadline.
-- **What a background job took, it gives back while unwinding.** `SpawnClaim`
-  and `PendingTurns` are the two, and they hold the daemon the same way:
+- **What a background job took, it gives back while unwinding.** `SpawnClaim`,
+  `PendingTurns` and `TurnMark` are the three, and they hold the daemon the
+  same way:
 
   ```rust
   /// Weakly — a job outliving the daemon has nothing to give back to — and
@@ -639,9 +646,16 @@ noted below.
   `take_pending_turns` marks every turn in flight, and a marked turn is spared
   by the idle sweep for as long as the mark stands — so a batch that unwound
   without giving its marks back left its runs Working with no agent and nothing
-  in the daemon able to demote them. `PendingTurns::settle` returns one turn's
-  marks under the lock the runner already holds, and `Drop` returns whatever the
-  batch still owes. `SpawnClaim`'s `Drop` is the same guard one phase later, and
+  in the daemon able to demote them. `TurnMark::settle` returns one turn's
+  marks under the lock the runner already holds; `PendingTurns`'s `Drop`
+  settles whatever is still in the batch under one acquisition; and a mark
+  that has LEFT the batch — handed out by `next_turn`, then dropped by a
+  delivery that panicked before settling it — gives itself back through its
+  own `Drop`. The runner's first acquisition used to be a bare one for the
+  clock, so a poisoned mutex unwound it before any turn left the batch and
+  the batch's `Drop` covered everything; with the clock travelling in
+  `PendingTurns` the first acquisition is the delivery's own, one turn out.
+  `SpawnClaim`'s `Drop` is the same guard one phase later, and
   a leak there is worse: `agent_spawns_in_flight` is removed from in exactly two
   places, so the claim would be held for the life of the daemon — every later
   delivery to that tab waiting out `AGENT_SPAWN_WAIT` and then failing, the
@@ -658,7 +672,9 @@ noted below.
 - **A delivery is a frame of its own.** `DeliveryRunner::run` opens a
   `FrameTimer` under `AGENT_DELIVERY_METHOD` (`agent.deliver`), so `bridge.stats`
   reports a cold spawn's seconds against the delivery rather than against every
-  verb that ever spoke to an agent.
+  verb that ever spoke to an agent. The clock travels in `PendingTurns`, taken
+  under the acquisition that took the turns: the runner's first act is never a
+  bare acquisition of the app mutex to find the clock it will time itself by.
 - **The session gate is asked where the answer is atomic.** An issue whose
   session is over (approved, abandoned) holds no workspace, and its checkout is
   the project's primary one — no place to spawn a replacement for work nobody is

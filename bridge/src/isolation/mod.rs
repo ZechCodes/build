@@ -164,6 +164,16 @@ impl IsolationAvailability {
         }
     }
 
+    /// Nothing can be cloned, for a reason no volume answered — the caller's
+    /// own sentence, carried in the shape every control already reads, so the
+    /// representation stays here rather than being rebuilt by whoever has a
+    /// sentence of their own.
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        IsolationAvailability {
+            cow: Err(reason.into()),
+        }
+    }
+
     /// Why `isolation` cannot be used here, or `None` when it can. A linked
     /// worktree is never locked; a clone is locked by the probe's reason. The
     /// one owner of which isolation a volume can lock, so nothing outside this

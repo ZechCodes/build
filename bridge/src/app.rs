@@ -3731,9 +3731,7 @@ impl AppState {
     fn account_availability(&self) -> IsolationAvailability {
         match self.projects.first() {
             Some(project) => project.orch.worktrees().availability(),
-            None => IsolationAvailability {
-                cow: Err("no project registered yet".to_string()),
-            },
+            None => IsolationAvailability::unavailable("no project registered yet"),
         }
     }
 
@@ -3743,7 +3741,7 @@ impl AppState {
     /// can actually make: a request it cannot honour comes back as the
     /// isolation every volume can, with the reason for whoever tells the human.
     /// The one place a setting becomes a decision — nothing else reads either.
-    pub fn resolved_isolation(&self, project_id: &str) -> (Isolation, Option<String>) {
+    fn resolved_isolation(&self, project_id: &str) -> (Isolation, Option<String>) {
         let Some(project) = self.projects.iter().find(|p| p.id == project_id) else {
             return (Isolation::default(), None);
         };

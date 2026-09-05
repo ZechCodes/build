@@ -700,14 +700,23 @@ mod tests {
             std::thread::spawn(move || born.carry_clients_from(&waiting))
         };
 
+        // The drain is polled, not sampled: the carry has only been spawned,
+        // so a single reading proves nothing about ordering. Every poll takes
+        // the source screen's lock while the destination stays held, which is
+        // the property under test — a carry that held both would wedge this
+        // loop and the timeout below would fire.
         let (answered, answers) = std::sync::mpsc::channel();
         let source = waiting.clone();
         std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while source.attached() > 0 && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             let _ = answered.send(source.attached());
         });
         assert_eq!(
             answers
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(Duration::from_secs(10))
                 .expect("the source screen is free while the destination is waited on"),
             0,
             "the waiting screen is drained before the new one is locked"

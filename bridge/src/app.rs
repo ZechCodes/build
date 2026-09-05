@@ -17878,6 +17878,12 @@ fn ensure_agent_tab(
         let (mut tab, rx) = match spawned {
             Ok(spawned) => spawned,
             Err(error) => {
+                // The dead session's grid was kept for the session that was
+                // going to paint it, and there is none — see
+                // [`SPAWN_NEVER_OPENED`].
+                if let Some(screen) = &carried {
+                    screen.close(SPAWN_NEVER_OPENED);
+                }
                 let mut state = timer.lock(state);
                 state.agent_spawns_in_flight.remove(&key);
                 if state
@@ -17907,7 +17913,7 @@ fn ensure_agent_tab(
                     tab.screen = Some(screen);
                 }
                 // The replacement paints nothing, so the retained grid has
-                // nothing to become — see [`a_screen_with_no_terminal_left`].
+                // nothing to become — see [`NO_TERMINAL_LEFT`].
                 None => screen.close(NO_TERMINAL_LEFT),
             }
         }
@@ -17982,7 +17988,7 @@ fn inherit_waiting_clients(
             })
         }
         // There is no real screen to carry them onto — see
-        // [`a_screen_with_no_terminal_left`].
+        // [`NO_TERMINAL_LEFT`].
         Err(_) => {
             waiting.close(NO_TERMINAL_LEFT);
             None
@@ -18025,6 +18031,15 @@ const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn coul
 /// stops offering the terminal; this is what closes the door for a client that
 /// was already through it.
 const NO_TERMINAL_LEFT: &str = "no_terminal";
+
+/// Why a screen a spawn was holding is closed when that spawn never opened.
+///
+/// The reservation takes the dead session's tab out of the registry and keeps
+/// its grid, telling the clients on it NOTHING, because they are about to be
+/// handed to the session replacing it. A spawn that fails has nobody to hand
+/// them to, and the grid it is holding is in no registry for a reaper or a
+/// close to reach: they are told here or they are told never.
+const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
 /// The one pipe from Build to a worktree's agent.
 ///
@@ -18261,10 +18276,11 @@ fn still_pumping(s: &AppState, key: &TabKey, session: &Arc<dyn AgentSession>) ->
 
 /// The death rites of the session a byte pump was watching.
 ///
-/// The app mutex is taken twice, with the screen's own work between: what the
-/// tab becomes is bookkeeping, what the clients are told is the screen's, and
-/// the reading a dying session owes is neither. Both acquisitions are guarded
-/// by [`still_pumping`], because the gap between them is a filesystem walk.
+/// The app mutex is taken twice, with the reading a dying session owes between
+/// them: what the tab becomes and what its clients are told are one bounded
+/// step and are taken together, while the reading is a filesystem walk that
+/// belongs under no lock at all. Both acquisitions are guarded by
+/// [`still_pumping`], because that walk is the gap between them.
 fn end_of_session(
     state: &Arc<Mutex<AppState>>,
     key: &TabKey,
@@ -18285,6 +18301,19 @@ fn end_of_session(
                 owner, agent_id, ..
             } => {
                 tab.live = false;
+                // Told in the same acquisition that marks the tab, because a
+                // marked tab is a REPLACEABLE one: the next spawn takes this
+                // screen, clients and all, onto its own session without a
+                // word. A close pushed after the release would land on
+                // browsers already watching the replacement, in among its
+                // opening reset. The screen's lock and one send per client is
+                // bounded work, which is what makes it allowed here.
+                screen.flush();
+                // The clients hear the session ended and STAY: the grid they
+                // are watching is the last thing this agent painted, and the
+                // session that replaces it paints onto the same screen, with
+                // the same clients still on it.
+                screen.session_ended("agent_session_ended");
                 Some((owner.clone(), agent_id.clone()))
             }
             TabRole::Shell => {
@@ -18296,11 +18325,6 @@ fn end_of_session(
     let Some((owner, agent_id)) = ended_agent else {
         return;
     };
-    screen.flush();
-    // The clients hear the session ended and STAY: the grid they are watching
-    // is the last thing this agent painted, and the session that replaces it
-    // paints onto the same screen, with the same clients still on it.
-    screen.session_ended("agent_session_ended");
     // One final reading, so a session shorter than a sweep tick is still named
     // — and the respawn that needs the name is the very next thing after a
     // close. It RECORDS; it never clears: a terminal resumed in place writes no
@@ -20398,6 +20422,97 @@ mod tests {
                 .working_since()
                 .is_some(),
             "the dead session's rites closed the turn its replacement is holding"
+        );
+    }
+    /// The close a dying session owes its clients and the `live = false` that
+    /// makes its tab replaceable are ONE acquisition.
+    ///
+    /// A tab reads as replaceable the moment `live` goes false, and
+    /// [`ensure_agent_tab`] replaces it by taking its screen — clients and all
+    /// — over to the new session without a word. So a close pushed after that
+    /// acquisition released would reach browsers that are watching the LIVE
+    /// replacement, interleaved with its opening reset; and the post that
+    /// triggers the replacement is the ordinary case, a human answering an
+    /// agent that just exited. The close is bounded — the screen's own lock
+    /// and one send per client — so it belongs inside the acquisition that
+    /// marks the tab, where nothing can come between them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_replacement_cannot_slip_between_a_session_ending_and_its_close() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-atomic-close",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let key = TabKey::agent(&root, &agent_id);
+        let dying = gated_tab(
+            &root,
+            TabRole::Agent {
+                owner: run_id.clone(),
+                agent_id: agent_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            GatedHarness::new(),
+        );
+        let session = Arc::clone(&dying.session);
+        let screen = screen_of(&dying).clone();
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        screen.attach(&sender, None);
+        state.lock().unwrap().tabs.insert(key.clone(), dying);
+
+        // The screen is busy the way a flooding pump makes it busy, so the
+        // rites park inside the close they owe.
+        let held = screen.hold();
+        let rites = {
+            let state = Arc::clone(&state);
+            let key = key.clone();
+            let session = Arc::clone(&session);
+            let screen = screen.clone();
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                end_of_session(&state, &key, &session, &screen);
+                let _ = done.send(());
+            });
+            finished
+        };
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut replaceable = false;
+        while !replaceable && std::time::Instant::now() < deadline {
+            if let Ok(s) = state.try_lock() {
+                replaceable = !s.tabs[&key].live;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !replaceable,
+            "a spawn could have read this tab as dead and carried its screen \
+             onto a new session before the old one's clients heard it end"
+        );
+
+        drop(held);
+        rites
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the rites finish once the screen frees up");
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter().any(|push| push["type"] == "term.closed")
+        })
+        .await;
+        let closed: Vec<&Value> = seen
+            .iter()
+            .filter(|push| push["type"] == "term.closed")
+            .collect();
+        assert_eq!(closed.len(), 1, "told once, and once only: {seen:?}");
+        assert_eq!(closed[0]["reason"], "agent_session_ended", "{closed:?}");
+        assert_eq!(
+            screen.attached(),
+            1,
+            "and the client stays on the retained grid, for the session that \
+             paints here next"
         );
     }
 
@@ -34334,18 +34449,13 @@ mod tests {
         );
     }
 
-    /// Point a fixture's project at a headless provider running `spec`, and
-    /// hand back the model choice that opens it.
+    /// Point a fixture's project at a provider running `spec`.
     ///
-    /// The provider on the choice is the whole launch config — it is what
-    /// `Tab::spawn` asks which carrier to open — so a test that swaps the spec
-    /// without swapping the provider would run a stream-json child inside a
-    /// PTY and prove nothing.
-    fn a_headless_provider_running(
-        state: &Arc<Mutex<AppState>>,
-        repo: &std::path::Path,
-        spec: HarnessSpec,
-    ) -> ModelChoice {
+    /// The program and the carrier are two halves of one launch config — the
+    /// provider on the caller's `ModelChoice` is what `Tab::spawn` asks which
+    /// carrier to open — so a caller that swaps the spec swaps the choice
+    /// beside it, or runs a stream-json child inside a PTY and proves nothing.
+    fn a_provider_running(state: &Arc<Mutex<AppState>>, repo: &std::path::Path, spec: HarnessSpec) {
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         let agent = Agent::WarmBuilder(Arc::new(
@@ -34353,6 +34463,16 @@ mod tests {
         ));
         s.projects[0].orch =
             Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+    }
+
+    /// The same, for a carrier with no terminal, handing back the choice that
+    /// opens it.
+    fn a_headless_provider_running(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        spec: HarnessSpec,
+    ) -> ModelChoice {
+        a_provider_running(state, repo, spec);
         ModelChoice {
             provider: AgentProvider::ClaudeAdk,
             ..ModelChoice::default()
@@ -34497,6 +34617,80 @@ mod tests {
             "and the retained grid is not hung on a session that cannot paint it"
         );
         s.tabs[&key].session.end();
+    }
+
+    /// A spawn that never opens closes the grid it took.
+    ///
+    /// The reservation takes the dead session's tab out of the registry and
+    /// keeps its screen, deliberately telling the clients on it nothing: they
+    /// are about to be handed to the replacement. A replacement that fails to
+    /// open — the binary is gone, the harness was reconfigured wrongly — has
+    /// nobody to hand them to, and the screen is in no registry for a reaper
+    /// or a close to find. So the failure says the words itself, rather than
+    /// leaving browsers on a grid nothing will paint and nothing will close.
+    #[tokio::test]
+    async fn a_spawn_that_fails_closes_the_grid_it_took_from_the_dead_session() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-spawn-fails");
+        let agent_id = crate::agent::derived_agent_id("run-spawn-fails");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-spawn-fails");
+
+        // A terminal session, watched by a client, that then dies.
+        deliver(
+            &state,
+            &root,
+            "run-spawn-fails",
+            &agent_id,
+            &ModelChoice::default(),
+            "FIRST-SESSION",
+            "warm",
+        )
+        .expect("the first delivery spawns a PTY");
+        wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        {
+            let s = state.lock().unwrap();
+            screen_of(&s.tabs[&key]).attach(&sender, None);
+        }
+        state.lock().unwrap().tabs[&key].session.end();
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the dead session leaves a retained screen behind");
+
+        // The harness this agent is locked to is no longer on the machine.
+        a_provider_running(
+            &state,
+            &repo,
+            HarnessSpec::new(dir.path().join("no-such-harness").display().to_string()),
+        );
+        let refused = deliver(
+            &state,
+            &root,
+            "run-spawn-fails",
+            &agent_id,
+            &ModelChoice::default(),
+            "SECOND-SESSION",
+            "warm",
+        )
+        .expect_err("a harness that is not there cannot be opened");
+        assert!(!refused.is_empty(), "and the delivery says why");
+
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter().any(|push| push["reason"] == SPAWN_NEVER_OPENED)
+        })
+        .await;
+        let closed = seen
+            .iter()
+            .find(|push| push["reason"] == SPAWN_NEVER_OPENED)
+            .expect("the client is told, rather than left on an orphaned grid");
+        assert_eq!(closed["type"], "term.closed", "{closed:?}");
+        assert_eq!(closed["term_id"], key.tab_id, "{closed:?}");
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "the failed spawn leaves no tab behind either"
+        );
     }
 
     /// A client can be waiting on the Agent tab of a worktree that is then

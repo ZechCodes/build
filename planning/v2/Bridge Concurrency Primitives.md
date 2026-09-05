@@ -259,7 +259,7 @@ from the design above.
 ## 2. `ScreenHandle` — the per-tab screen
 
 **Shipped** — this is step 1 (`bridge/src/screen.rs`). What landed differs from
-the sketch below in seven places, each because the code said so:
+the sketch below in eight places, each because the code said so:
 
 - `attach` takes `viewport: Option<(u16, u16)>` rather than `cols, rows`. `None`
   is a dead tab, whose retained screen is never reflowed to a browser window
@@ -296,6 +296,12 @@ the sketch below in seven places, each because the code said so:
 - `close_a_screen_with_no_terminal` became the reason constant
   `NO_TERMINAL_LEFT`, since with `ScreenHandle::close` the function was one call
   and a name.
+- A second reason constant, `SPAWN_NEVER_OPENED`, closes the retained grid when
+  `Tab::spawn` fails. `retire_tab_keeping_screen` takes the dead tab out of the
+  registry and tells its clients nothing, because they are about to be handed
+  over; a spawn that never opens has nobody to hand them to and leaves that
+  screen in no registry, so a reaper cannot reach it either. The failure path
+  says the words itself.
 - `screen_epitaph` moved onto the handle as `ScreenHandle::epitaph`; `drop_session`
   keeps its acquisition (a `retain` per screen, bounded, app mutex → screen).
 - `spawn_tab_pumps` takes a `TabPumps` — the session, the screen handle and the
@@ -387,10 +393,16 @@ the spec's load test.
 - **Lock discipline** app mutex → resolve `TabKey` → clone the handle →
   **release** → lock the screen. `spawn_tab_pump` takes the app mutex twice in
   a tab's life, both at EOF with the reading between them: **take** the tab's
-  role out; **release**, then `SelfReport::read` and, for a shell,
-  `retire_tab`; **re-acquire** for `note_self_report` and
-  `record_agent_session_end`. Every chunk and flush in between is screen-lock
-  only. `term.input`/`term.resize` clone a `TerminalHandle`, release, then
+  role out and, in that same acquisition, tell the clients — `flush` then
+  `session_ended` for an agent, `retire_tab` for a shell, each the bounded
+  close every `retire_tab` already makes under the app mutex; **release**, then
+  `SelfReport::read`; **re-acquire** for `note_self_report` and
+  `record_agent_session_end`. Marking the tab and telling its clients cannot be
+  two acquisitions: `live = false` is what makes a tab replaceable, and the
+  spawn that replaces it carries this screen — clients and all — onto its own
+  session without a word, so a close pushed after the release would reach
+  browsers already watching the replacement, in among its opening reset. Every
+  chunk and flush in between is screen-lock only. `term.input`/`term.resize` clone a `TerminalHandle`, release, then
   write, so a pty nobody drains blocks one worker. `SessionSender::push` is all
   that runs under the screen lock.
 - **Every acquisition a pump makes asks whose session it is.** `still_pumping`
@@ -417,8 +429,10 @@ the spec's load test.
   `a_late_attach_lands_on_the_screen_its_clients_were_carried_to`,
   `a_screen_whose_session_ended_takes_the_session_that_replaces_it`,
   `a_client_attaching_to_a_closed_screen_is_told_it_closed`,
-  `telling_an_inherited_child_its_size_never_holds_the_app_mutex`. All fourteen
-  were watched to fail first; two test-side waits followed
+  `telling_an_inherited_child_its_size_never_holds_the_app_mutex`,
+  `a_replacement_cannot_slip_between_a_session_ending_and_its_close`,
+  `a_spawn_that_fails_closes_the_grid_it_took_from_the_dead_session`. All
+  sixteen were watched to fail first; two test-side waits followed
   (`process_reaped` and `SessionLog::ended` poll the retirement thread out
   rather than asking once, which is when the fact can first be observed, not a
   weaker assertion).

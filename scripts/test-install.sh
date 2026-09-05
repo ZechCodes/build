@@ -129,13 +129,16 @@ new_sandbox() {
 
 # Runs install.sh against a sandbox and prints its exit status; stdout and
 # stderr land beside the sandbox for the assertions to read. A case shapes the
-# run by setting CASE_COSIGN_STATUS — the verdict the cosign shim returns — in
-# front of the call, where the command substitution keeps it local.
+# run by setting CASE_COSIGN_STATUS (the verdict the cosign shim returns) or
+# CASE_ONLY_SHIMS_ON_PATH=1 (nothing but the shims is installed on this host)
+# in front of the call, where the command substitution keeps it local.
 run_install() {
     ri_root="$1"
+    ri_path="$ri_root/shims"
+    [ "${CASE_ONLY_SHIMS_ON_PATH:-0}" = "1" ] || ri_path="$ri_path:$PATH"
     ri_status=0
     (
-        PATH="$ri_root/shims:$PATH"
+        PATH="$ri_path"
         BUILD_TEST_MIRROR="$ri_root/mirror"
         BUILD_TEST_UNAME_S="${2:-$PINNED_UNAME_S}"
         BUILD_TEST_UNAME_M="${3:-$PINNED_UNAME_M}"
@@ -144,7 +147,7 @@ run_install() {
         BUILD_BRIDGE_SKIP_SERVICE=1
         export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M
         export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE
-        sh "$INSTALL_SH" > "$ri_root/stdout" 2> "$ri_root/stderr"
+        /bin/sh "$INSTALL_SH" > "$ri_root/stdout" 2> "$ri_root/stderr"
     ) || ri_status=$?
     printf '%s\n' "$ri_status"
 }
@@ -203,6 +206,17 @@ unmapped_uname_exits_2() {
     pass "$name"
 }
 
+# Mapping the platform is the first thing the script decides, so a host it does
+# not build for is told exactly that — not that it is missing a download tool
+# it would never have needed.
+an_unsupported_platform_is_named_before_any_tool_is_demanded() {
+    name="an_unsupported_platform_is_named_before_any_tool_is_demanded"
+    root="$(new_sandbox "$name")"
+    rm "$root/shims/curl"
+    status="$(CASE_ONLY_SHIMS_ON_PATH=1 run_install "$root" Plan9 mips)"
+    assert_refused "$name" "$root" "$status" 2 && pass "$name"
+}
+
 # Every case reports its own failure through `fail`, so a non-zero return only
 # says the case is over; the suite's verdict is FAILURES, not $?.
 for case_name in \
@@ -210,7 +224,8 @@ for case_name in \
     refuses_a_tampered_tarball \
     refuses_an_asset_with_no_published_digest \
     refuses_when_cosign_rejects_the_bundle \
-    unmapped_uname_exits_2; do
+    unmapped_uname_exits_2 \
+    an_unsupported_platform_is_named_before_any_tool_is_demanded; do
     "$case_name" || true
 done
 

@@ -19,7 +19,7 @@ set -eu
 
 DEFAULT_REPO="ZechCodes/build-releases"
 COSIGN_IDENTITY_REGEXP='^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v'
-COSIGN_ISSUER="https://token.actions.githubusercontent.com"
+COSIGN_ISSUER='https://token.actions.githubusercontent.com'
 ASSET_PREFIX="build-bridge-"
 CHECKSUMS="SHA256SUMS"
 BUNDLE="SHA256SUMS.sigstore.json"
@@ -63,8 +63,14 @@ release_url() {
     fi
 }
 
+# Whether this machine has a command at all — asked of the tools the script
+# cannot proceed without, and of the two it merely prefers.
+has() {
+    command -v "$1" > /dev/null 2>&1
+}
+
 need() {
-    command -v "$1" > /dev/null 2>&1 || fail "$1 is required to install build-bridge and is not on PATH"
+    has "$1" || fail "$1 is required to install build-bridge and is not on PATH"
 }
 
 fetch() {
@@ -77,9 +83,9 @@ expected_sum() {
 }
 
 actual_sum() {
-    if command -v sha256sum > /dev/null 2>&1; then
+    if has sha256sum; then
         sha256sum "$1" | cut -d ' ' -f 1
-    elif command -v shasum > /dev/null 2>&1; then
+    elif has shasum; then
         shasum -a 256 "$1" | cut -d ' ' -f 1
     else
         fail "neither sha256sum nor shasum is available, so $1 cannot be verified"
@@ -99,7 +105,7 @@ verify_checksum() {
 # demanding cosign would make a signature the price of installing at all, and
 # the checksum above was taken from the file this would verify.
 verify_signature() {
-    if ! command -v cosign > /dev/null 2>&1; then
+    if ! has cosign; then
         say "cosign not found; skipping signature verification (checksum verified)"
         return 0
     fi
@@ -135,9 +141,12 @@ enable_service() {
 }
 
 main() {
+    # The platform is decided first: a host this project does not build for is
+    # told exactly that, rather than being sent to find a download tool it was
+    # never going to need.
+    m_key="$(platform_key)"
     need curl
     need tar
-    m_key="$(platform_key)"
     m_tarball="${ASSET_PREFIX}${m_key}.tar.gz"
     m_url="$(release_url)"
     m_workdir="$(mktemp -d)"

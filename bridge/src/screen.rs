@@ -46,6 +46,17 @@ struct TermScreen {
     /// client a resync and must not send raw output — the bytes it would carry
     /// are no longer contiguous.
     snapshot_due: bool,
+    /// Why this screen ended, once it has, and the answer every client that
+    /// arrives afterwards is given. A client's attach registers with the app
+    /// mutex released while a close runs under it, so the app mutex cannot
+    /// order the two: this — set and read under the screen's own lock — is
+    /// what decides which of them happened first. Permanent: a closed screen
+    /// is never painted again.
+    closed: Option<String>,
+    /// The screen this one's clients were carried to, once they have been.
+    /// Whoever attaches here afterwards holds a handle that was cloned before
+    /// the carry, and belongs on the screen their fellow clients went to.
+    superseded_by: Option<ScreenHandle>,
     cols: u16,
     rows: u16,
 }
@@ -121,6 +132,8 @@ impl TermScreen {
             last_flood_snapshot_at: None,
             snapshot_min_interval: Duration::from_millis(TERM_SNAPSHOT_MIN_INTERVAL_MS),
             snapshot_due: false,
+            closed: None,
+            superseded_by: None,
             cols,
             rows,
         }
@@ -165,7 +178,15 @@ impl TermScreen {
     /// response carries that same cursor with the screen snapshot, so it owes
     /// nothing for anything that came before. It starts unpaused and, until its
     /// first ack, exempt from flow control.
-    fn register(&mut self, sender: &SessionSender) {
+    ///
+    /// A client that arrives after this screen closed is told so instead, in
+    /// the same words its fellow clients heard, and is not added: a screen
+    /// nothing will paint or close again would leave it watching forever.
+    fn register(&mut self, term_id: &str, sender: &SessionSender) {
+        if let Some(reason) = &self.closed {
+            sender.push(closed_payload(term_id, reason));
+            return;
+        }
         self.attached
             .retain(|client| client.sender.session_id() != sender.session_id());
         self.attached.push(AttachedClient {
@@ -302,12 +323,31 @@ impl TermScreen {
     /// hears it too: flow control withholds output, never the fact that there
     /// is no more of it coming.
     fn push_closed(&self, term_id: &str, reason: &str) {
-        let payload = json!({ "type": "term.closed", "term_id": term_id, "reason": reason });
+        let payload = closed_payload(term_id, reason);
         for client in &self.attached {
             client.sender.push(payload.clone());
         }
     }
+
+    /// The same words, and this screen is finished: every client attached now
+    /// hears it, and so does every client that arrives from here on.
+    fn close(&mut self, term_id: &str, reason: &str) {
+        self.push_closed(term_id, reason);
+        self.closed = Some(reason.to_string());
+    }
 }
+
+/// What a client is told when the terminal it is watching — or the one it just
+/// tried to watch — is over.
+fn closed_payload(term_id: &str, reason: &str) -> Value {
+    json!({ "type": "term.closed", "term_id": term_id, "reason": reason })
+}
+
+/// How far an attach follows a chain of supersessions before it registers where
+/// it stands. Carries only ever point forward in time and only ever from a
+/// screen waiting for its first spawn, so the chain is one link long; this is
+/// the stop for a cycle that would otherwise be an unbounded walk.
+const MAX_SUPERSESSIONS_FOLLOWED: usize = 8;
 
 /// One tab's screen, shared by everything that reads or writes it.
 ///
@@ -348,15 +388,37 @@ impl ScreenHandle {
     /// `viewport` is the grid the client is looking at, or `None` for a dead
     /// tab — a retained screen is the last thing its agent painted and is never
     /// reflowed to fit a browser window that arrived after it died.
+    ///
+    /// A handle cloned before a carry lands where that carry took its clients:
+    /// the walk asks each screen for its successor and registers on the first
+    /// that has none, under the same acquisition that asked — which is the
+    /// acquisition a carry takes to drain it, so an attach is on one screen or
+    /// the other and never between them. One lock at a time, all the way down.
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
-        let mut screen = self.screen.lock().unwrap();
-        if let Some((cols, rows)) = viewport {
-            if (screen.cols, screen.rows) != (cols, rows) {
-                screen.set_size(cols, rows);
-            }
+        let mut here = self.clone();
+        let mut followed = 0;
+        loop {
+            let onward = {
+                let mut screen = here.screen.lock().unwrap();
+                let onward = (followed < MAX_SUPERSESSIONS_FOLLOWED)
+                    .then(|| screen.superseded_by.clone())
+                    .flatten();
+                match onward {
+                    Some(onward) => onward,
+                    None => {
+                        if let Some((cols, rows)) = viewport {
+                            if (screen.cols, screen.rows) != (cols, rows) {
+                                screen.set_size(cols, rows);
+                            }
+                        }
+                        screen.register(&here.term_id, sender);
+                        return Self::reading(&screen);
+                    }
+                }
+            };
+            here = onward;
+            followed += 1;
         }
-        screen.register(sender);
-        Self::reading(&screen)
     }
 
     /// The screen as it stands, for a client that is not attaching to it.
@@ -428,7 +490,8 @@ impl ScreenHandle {
     }
 
     /// Take the clients waiting on `waiting` — and the viewport they are
-    /// rendering at — onto this screen.
+    /// rendering at — onto this screen, and leave that screen pointing here so
+    /// a client still on its way finds them.
     ///
     /// Two screens are never locked at once: the waiting screen is drained
     /// under its own lock, which is released before this one is taken.
@@ -436,21 +499,33 @@ impl ScreenHandle {
         let (carried, cols, rows) = {
             let mut waiting = waiting.screen.lock().unwrap();
             let carried = std::mem::take(&mut waiting.attached);
+            waiting.superseded_by = Some(self.clone());
             (carried, waiting.cols, waiting.rows)
         };
         let mut screen = self.screen.lock().unwrap();
         screen.set_size(cols, rows);
         for client in &carried {
-            screen.register(&client.sender);
+            screen.register(&self.term_id, &client.sender);
         }
     }
 
-    /// Tell every attached client this terminal ended, and why.
+    /// Tell every attached client this terminal ended, and why — and every
+    /// client that arrives afterwards the same thing. The screen is finished:
+    /// its tab is gone, and nothing will paint it or close it again.
     ///
     /// Bounded by construction — one encrypt and one unbounded channel send per
     /// client — which is why this is the one screen call a caller may make with
     /// the app mutex still in hand.
     pub fn close(&self, reason: &str) {
+        self.screen.lock().unwrap().close(&self.term_id, reason);
+    }
+
+    /// Tell every attached client the process painting here ended, and why.
+    ///
+    /// The screen STAYS, and so do its clients: a retained grid is the last
+    /// thing an agent painted, and the browser that is watching it must still
+    /// be watching when the session that replaces it starts painting.
+    pub fn session_ended(&self, reason: &str) {
         self.screen
             .lock()
             .unwrap()
@@ -594,14 +669,6 @@ impl TerminalHandle {
         }
         self.screen.attach(sender, viewport)
     }
-
-    /// Take the clients waiting on `waiting` onto this terminal's screen, and
-    /// size the child to the viewport they are rendering at.
-    pub fn adopt_clients_of(&self, waiting: &ScreenHandle) {
-        let (cols, rows) = waiting.size();
-        let _ = self.tell_child(cols, rows);
-        self.screen.carry_clients_from(waiting);
-    }
 }
 
 /// A screen's lock, held open by a test. The guard is the whole point: it is
@@ -660,6 +727,106 @@ mod tests {
         );
     }
 
+    /// An attach clones its handle under the app mutex and registers with it
+    /// released, so a spawn can carry that screen's clients away in between.
+    /// The client that arrives late belongs with the ones it was attaching
+    /// beside: left where it landed it would be on a screen nothing feeds and
+    /// nothing closes, blank until the human remounted the tab.
+    #[test]
+    fn a_late_attach_lands_on_the_screen_its_clients_were_carried_to() {
+        let waiting = ScreenHandle::new("agent:late", 90, 25);
+        // What an attach already in flight is holding.
+        let in_flight = waiting.clone();
+        let born = ScreenHandle::new("agent:late", 80, 24);
+        born.carry_clients_from(&waiting);
+
+        let (sender, mut pushes, session_key) = SessionSender::observable("late-client");
+        in_flight.attach(&sender, Some((90, 25)));
+
+        assert_eq!(
+            waiting.attached(),
+            0,
+            "the drained screen took a client nothing would ever feed"
+        );
+        assert_eq!(
+            born.attached_sessions(),
+            vec!["late-client".to_string()],
+            "the late client is where its fellow clients went"
+        );
+        born.feed(b"SECOND-SESSION");
+        born.flush();
+        let seen = drain_pushes(&mut pushes, &session_key);
+        assert!(
+            output_text(&seen, "agent:late").contains("SECOND-SESSION"),
+            "and hears what the new session paints: {seen:?}"
+        );
+    }
+
+    /// A session ending is not a screen ending. The grid is the last thing that
+    /// agent painted, the clients watching it are the ones the replacement must
+    /// paint to, and a client mounting the dead tab in between is registered
+    /// like any other — the restart is what wipes them all to the new session.
+    #[test]
+    fn a_screen_whose_session_ended_takes_the_session_that_replaces_it() {
+        let (watching, mut watching_pushes, watching_key) = SessionSender::observable("watching");
+        let screen = ScreenHandle::new("agent:restarted", 80, 24);
+        screen.attach(&watching, None);
+        screen.session_ended("agent_session_ended");
+        assert_eq!(
+            screen.attached(),
+            1,
+            "the client stays for the session that replaces this one"
+        );
+
+        let (mounting, mut mounting_pushes, mounting_key) = SessionSender::observable("mounting");
+        screen.attach(&mounting, None);
+        assert_eq!(
+            screen.attached(),
+            2,
+            "and a client mounting the dead tab is taken, not refused"
+        );
+
+        screen.restart();
+        screen.feed(b"SECOND-SESSION");
+        screen.flush();
+        for (pushes, key) in [
+            (&mut watching_pushes, &watching_key),
+            (&mut mounting_pushes, &mounting_key),
+        ] {
+            let seen = drain_pushes(pushes, key);
+            assert!(
+                output_text(&seen, "agent:restarted").contains("SECOND-SESSION"),
+                "both hear the session that replaced it: {seen:?}"
+            );
+        }
+    }
+
+    /// A closed screen is finished: its tab is gone, and nothing will paint it
+    /// or close it again. The client whose attach was in flight when that
+    /// happened hears the same words its fellow clients heard, rather than
+    /// being left holding a live-looking grid forever.
+    #[test]
+    fn a_client_attaching_to_a_closed_screen_is_told_it_closed() {
+        let screen = ScreenHandle::new("term-1", 80, 24);
+        let in_flight = screen.clone();
+        screen.close("closed");
+
+        let (sender, mut pushes, session_key) = SessionSender::observable("late-client");
+        in_flight.attach(&sender, Some((80, 24)));
+
+        assert_eq!(
+            screen.attached(),
+            0,
+            "a screen nothing will close again took a client anyway"
+        );
+        let seen = drain_pushes(&mut pushes, &session_key);
+        assert!(
+            seen.iter()
+                .any(|push| push["type"] == "term.closed" && push["reason"] == "closed"),
+            "the late client is told the terminal is gone: {seen:?}"
+        );
+    }
+
     /// The bytes one `term.output` push carries.
     fn b64decode(data: &str) -> Vec<u8> {
         use base64::Engine as _;
@@ -708,7 +875,7 @@ mod tests {
         let (sender, pushes, session_key) = SessionSender::observable("flood-client");
         let mut screen = TermScreen::new(80, 24);
         screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
-        screen.register(&sender);
+        screen.register("term-1", &sender);
         (screen, pushes, session_key)
     }
 
@@ -870,8 +1037,8 @@ mod tests {
         let (second_sender, second_pushes, second_key) = SessionSender::observable("client-two");
         let mut screen = TermScreen::new(80, 24);
         screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
-        screen.register(&first_sender);
-        screen.register(&second_sender);
+        screen.register("term-1", &first_sender);
+        screen.register("term-1", &second_sender);
         (
             screen,
             (first_pushes, first_key),

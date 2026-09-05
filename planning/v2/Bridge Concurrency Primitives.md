@@ -259,17 +259,36 @@ from the design above.
 ## 2. `ScreenHandle` — the per-tab screen
 
 **Shipped** — this is step 1 (`bridge/src/screen.rs`). What landed differs from
-the sketch below in five places, each because the code said so:
+the sketch below in seven places, each because the code said so:
 
 - `attach` takes `viewport: Option<(u16, u16)>` rather than `cols, rows`. `None`
   is a dead tab, whose retained screen is never reflowed to a browser window
   that arrived after its agent died — the condition `attach_to_tab` spelled
   inline.
 - `TerminalHandle` owns the whole attach (`attach`, which sizes the child and
-  then registers the client) and the whole carry (`adopt_clients_of`, which
-  sizes the child to the viewport the waiting clients render at and then calls
-  `carry_clients_from`). Both were the caller sequencing a pty write against a
-  screen write; a caller that sequences them can get the order wrong.
+  then registers the client), which was the caller sequencing a pty write
+  against a screen write. The carry is the one place those two halves are NOT
+  owned together: `ensure_agent_tab` publishes the tab under the lock, so the
+  bounded half (`ScreenHandle::carry_clients_from`, which also takes the
+  waiting screen's grid) runs there and the child is told
+  (`TerminalHandle::resize`) once the guard is down — an ioctl goes to a
+  process that may not answer, and `TerminalHandle`'s two writes both keep
+  their "with the app mutex released" promise.
+- `close` and `session_ended` are different verbs. `close` is a screen whose
+  TAB is gone: it pushes `term.closed`, and every client that arrives
+  afterwards is pushed the same words instead of being registered — a client's
+  attach registers with the app mutex released while a close runs under it, so
+  the app mutex cannot order the two and the screen's own lock decides.
+  `session_ended` is the byte pump's EOF on an agent: the clients are told and
+  STAY, because the retained grid is the last thing that agent painted and the
+  session that replaces it paints onto the same screen.
+- `carry_clients_from` leaves the drained screen pointing at the one its
+  clients went to (`superseded_by`), and `attach` follows that link before it
+  registers, under the same acquisition that asks. `agent_attach` clones a
+  waiting screen's handle under the lock and registers on it released, so a
+  spawn can carry those clients away in between; without the link the late
+  client would sit on a screen nothing feeds and nothing closes. One lock at a
+  time, all the way down.
 - `close_a_screen_with_no_terminal` became the reason constant
   `NO_TERMINAL_LEFT`, since with `ScreenHandle::close` the function was one call
   and a name.
@@ -309,6 +328,7 @@ the spec's load test.
       pub fn resize(&self, cols: u16, rows: u16);
       pub fn carry_clients_from(&self, waiting: &ScreenHandle);
       pub fn close(&self, reason: &str);     // bounded: leaf lock + one push per client
+      pub fn session_ended(&self, reason: &str);   // told, and the clients stay
   }
   pub struct AttachSnapshot { snapshot: String, cursor: u64, cols: u16, rows: u16 }
   pub struct TerminalHandle { session: Arc<dyn AgentSession>, screen: ScreenHandle }
@@ -361,15 +381,24 @@ the spec's load test.
   `ScreenHandle::close`; the two hand-built attach payloads → `attach_view`; the
   shell EOF's `tab.session.end()` → `AppState::retire_tab`.
 - **Lock discipline** app mutex → resolve `TabKey` → clone the handle →
-  **release** → lock the screen. `spawn_tab_pump` takes the app mutex three
-  times in a tab's life — at start to look the handle up, and twice at EOF with
-  the reading between them: **take** the session `Arc` and the tab's role out
-  (only if `Arc::ptr_eq` with the session it pumps); **release**, then
-  `SelfReport::read` and, for a shell, `retire_tab`; **re-acquire** for
-  `note_self_report` and `record_agent_session_end`. Every chunk and flush in
-  between is screen-lock only. `term.input`/`term.resize` clone a
-  `TerminalHandle`, release, then write, so a pty nobody drains blocks one
-  worker. `SessionSender::push` is all that runs under the screen lock.
+  **release** → lock the screen. `spawn_tab_pump` takes the app mutex twice in
+  a tab's life, both at EOF with the reading between them: **take** the tab's
+  role out; **release**, then `SelfReport::read` and, for a shell,
+  `retire_tab`; **re-acquire** for `note_self_report` and
+  `record_agent_session_end`. Every chunk and flush in between is screen-lock
+  only. `term.input`/`term.resize` clone a `TerminalHandle`, release, then
+  write, so a pty nobody drains blocks one worker. `SessionSender::push` is all
+  that runs under the screen lock.
+- **Every acquisition a pump makes asks whose session it is.** `still_pumping`
+  is one named rule — the tab at this key still holds the `Arc` this pump was
+  started for — and both of the byte pump's acquisitions and all three of the
+  activity pump's ask it. The guard on the first alone is not enough: the gap
+  between them is `SelfReport::read`, a transcript-tree walk, and a post
+  arriving in that window replaces the dead tab and leaves the replacement
+  working. What the dead session then reports would close the live turn
+  (`record_agent_session_end` → `close_turn_of_dead_agent`) and overwrite the
+  conversation to resume. The activity pump carries its session for the same
+  reason and takes it from `TabPumps` at the one place both pumps start.
 - **Tests** `a_streaming_pty_never_takes_the_app_mutex`,
   `a_frame_answers_while_a_screen_lock_is_held`,
   `term_input_to_a_pty_that_is_not_draining_leaves_the_app_mutex_free`,
@@ -377,7 +406,13 @@ the spec's load test.
   `an_agent_tabs_last_reading_leaves_the_app_mutex_free`,
   `killing_a_wedged_harness_never_holds_the_app_mutex`,
   `a_close_after_a_wedged_kill_still_reaches_its_clients`,
-  `a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone`. All eight
+  `a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone`,
+  `a_late_self_report_never_lands_on_the_session_that_replaced_it`,
+  `a_replaced_sessions_late_activity_close_leaves_the_replacement_alone`,
+  `a_client_attaching_to_a_tab_that_just_closed_is_told_so`,
+  `a_late_attach_lands_on_the_screen_its_clients_were_carried_to`,
+  `a_screen_whose_session_ended_takes_the_session_that_replaces_it`,
+  `a_client_attaching_to_a_closed_screen_is_told_it_closed`. All thirteen
   were watched to fail first; two test-side waits followed
   (`process_reaped` and `SessionLog::ended` poll the retirement thread out
   rather than asking once, which is when the fact can first be observed, not a

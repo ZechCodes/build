@@ -17514,6 +17514,11 @@ fn agent_attach(
         // worktree's agent will be born onto — because it must go live where it
         // stands when that delivery comes, not sit blank until the human
         // unmounts and remounts the tab.
+        //
+        // The handle is cloned under the lock and registered on with it
+        // released, so a spawn can carry this screen's clients away in between;
+        // the register follows them, because a carried screen points at the one
+        // its clients went to.
         let term_id = agent_tab_id(&agent_id);
         let screen = s
             .agent_screens_awaiting_spawn
@@ -17908,16 +17913,21 @@ fn ensure_agent_tab(
         }
         let wire_id = tab.wire_id();
         let pumps;
+        // The child that inherited a waiting screen's clients, and the viewport
+        // they are rendering at: told once the lock is down, because an ioctl
+        // goes to a process that may not answer.
+        let inherited_viewport;
         {
             let mut s = timer.lock(state);
             // Clients that mounted the Agent tab before this worktree had one
             // are attached to a screen with no PTY. Carry them — and the
             // viewport they render at, the same rule an attach to a live tab
-            // follows — onto the real screen, under the SAME lock acquisition
-            // that publishes the tab, so a client attaching during the spawn is
-            // on one screen or the other and never between them. The waiting
-            // screen's cursor is not carried: it painted nothing, while a
-            // retained screen's cursor is the one that must never rewind.
+            // follows — onto the real screen. The carry is what makes the
+            // waiting screen point at this one, so a client attaching during
+            // the spawn is on one screen or the other and never between them
+            // however the two acquisitions fall. The waiting screen's cursor is
+            // not carried: it painted nothing, while a retained screen's cursor
+            // is the one that must never rewind.
             let first_here = !s
                 .tabs
                 .keys()
@@ -17933,14 +17943,21 @@ fn ensure_agent_tab(
                     ))
                 })?
             });
-            if let Some(waiting) = waiting {
-                match tab.terminal_handle() {
-                    Ok(terminal) => terminal.adopt_clients_of(&waiting),
+            inherited_viewport = match waiting {
+                None => None,
+                Some(waiting) => match tab.terminal_handle() {
+                    Ok(terminal) => {
+                        terminal.screen().carry_clients_from(&waiting);
+                        Some((terminal, waiting.size()))
+                    }
                     // There is no real screen to carry them onto — see
                     // [`a_screen_with_no_terminal_left`].
-                    Err(_) => waiting.close(NO_TERMINAL_LEFT),
-                }
-            }
+                    Err(_) => {
+                        waiting.close(NO_TERMINAL_LEFT);
+                        None
+                    }
+                },
+            };
             let running = tab
                 .session
                 .active_model()
@@ -17949,6 +17966,11 @@ fn ensure_agent_tab(
             s.tabs.insert(key.clone(), tab);
             s.agent_spawns_in_flight.remove(&key);
             s.record_agent_active_model(owner, agent_id, running);
+        }
+        // A child that refuses the ioctl is dying, and its clients still get
+        // the screen it dies on — the same judgement an attach makes.
+        if let Some((terminal, (cols, rows))) = inherited_viewport {
+            let _ = terminal.resize(cols, rows);
         }
         spawn_tab_pumps(state, key, pumps);
         return Ok((wire_id, Spawned::Fresh));
@@ -18124,8 +18146,14 @@ fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
         screen,
         output,
     } = pumps;
-    spawn_tab_pump(state, key.clone(), session, screen, output.bytes);
-    spawn_activity_pump(state, key, output.activity, output.surfaces);
+    spawn_tab_pump(
+        state,
+        key.clone(),
+        Arc::clone(&session),
+        screen,
+        output.bytes,
+    );
+    spawn_activity_pump(state, key, session, output.activity, output.surfaces);
 }
 
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
@@ -18186,11 +18214,26 @@ fn spawn_tab_pump(
     });
 }
 
+/// Whether the tab at `key` is still the one `session` was pumped for.
+///
+/// A retirement kills and reaps on a thread of its own, so a replaced session's
+/// stream can end after its replacement is already in the registry — and a
+/// pump's death rites take the app mutex more than once, with a filesystem read
+/// between, so the tab can turn over mid-rite. Every acquisition asks, not just
+/// the first: writing a dead session's findings onto a live one closes the
+/// replacement's turn and records the wrong conversation against it.
+fn still_pumping(s: &AppState, key: &TabKey, session: &Arc<dyn AgentSession>) -> bool {
+    s.tabs
+        .get(key)
+        .is_some_and(|tab| Arc::ptr_eq(&tab.session, session))
+}
+
 /// The death rites of the session a byte pump was watching.
 ///
 /// The app mutex is taken twice, with the screen's own work between: what the
 /// tab becomes is bookkeeping, what the clients are told is the screen's, and
-/// the reading a dying session owes is neither.
+/// the reading a dying session owes is neither. Both acquisitions are guarded
+/// by [`still_pumping`], because the gap between them is a filesystem walk.
 fn end_of_session(
     state: &Arc<Mutex<AppState>>,
     key: &TabKey,
@@ -18199,15 +18242,13 @@ fn end_of_session(
 ) {
     let ended_agent = {
         let mut s = state.lock().unwrap();
-        let Some(tab) = s.tabs.get_mut(key) else {
-            return;
-        };
-        // The session this pump watched, and not whatever replaced it: a
-        // retirement runs on its own thread now, so a killed session's EOF can
-        // land after its replacement is in the registry.
-        if !Arc::ptr_eq(&tab.session, session) {
+        if !still_pumping(&s, key, session) {
             return;
         }
+        let tab = s
+            .tabs
+            .get_mut(key)
+            .expect("the tab this pump holds was just found");
         match &tab.role {
             TabRole::Agent {
                 owner, agent_id, ..
@@ -18225,7 +18266,10 @@ fn end_of_session(
         return;
     };
     screen.flush();
-    screen.close("agent_session_ended");
+    // The clients hear the session ended and STAY: the grid they are watching
+    // is the last thing this agent painted, and the session that replaces it
+    // paints onto the same screen, with the same clients still on it.
+    screen.session_ended("agent_session_ended");
     // One final reading, so a session shorter than a sweep tick is still named
     // — and the respawn that needs the name is the very next thing after a
     // close. It RECORDS; it never clears: a terminal resumed in place writes no
@@ -18236,6 +18280,12 @@ fn end_of_session(
     // acquisitions, and not inside either.
     let report = SelfReport::read(session);
     let mut s = state.lock().unwrap();
+    // A replacement can have taken the tab over while that walk ran. Its turn
+    // is in flight and its conversation is its own; this session's findings
+    // would close the one and overwrite the other.
+    if !still_pumping(&s, key, session) {
+        return;
+    }
     s.note_self_report(&owner, &agent_id, report);
     // The process is what a session IS, so this is where the conversation's
     // lineage closes — and where a turn the dead process was holding is closed,
@@ -18257,9 +18307,14 @@ fn end_of_session(
 /// already keep every client off one — and the tab is RETAINED for the same
 /// reason the byte pump retains an agent's, so the rail still shows the agent
 /// that was here.
+///
+/// It carries the session it pumps for the same reason the byte pump does, and
+/// asks [`still_pumping`] at every acquisition: what it writes belongs to that
+/// session, and a tab holding a different one is somebody else's.
 fn spawn_activity_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
+    session: Arc<dyn AgentSession>,
     rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
     mut surfaces_changed: Option<tokio::sync::watch::Receiver<u64>>,
 ) {
@@ -18287,7 +18342,7 @@ fn spawn_activity_pump(
             let reported = match woke {
                 PumpWake::SurfacesMoved => {
                     let s = state.lock().unwrap();
-                    let Some((owner, _)) = agent_of_tab(&s, &key) else {
+                    let Some((owner, _)) = pumped_agent_of_tab(&s, &key, &session) else {
                         return;
                     };
                     s.note_entity_changed(&owner);
@@ -18301,12 +18356,17 @@ fn spawn_activity_pump(
             };
             match reported {
                 Ok(report) => {
-                    let Some((owner, agent_id, session)) = agent_session_of_tab(&state, &key)
-                    else {
+                    let Some((owner, agent_id)) = ({
+                        let s = state.lock().unwrap();
+                        pumped_agent_of_tab(&s, &key, &session)
+                    }) else {
                         return;
                     };
                     let said = SelfReport::read(&session);
                     let mut s = state.lock().unwrap();
+                    if !still_pumping(&s, &key, &session) {
+                        return;
+                    }
                     s.note_self_report(&owner, &agent_id, said);
                     record_activity(&mut s, &key, &owner, &agent_id, &report);
                 }
@@ -18315,15 +18375,25 @@ fn spawn_activity_pump(
                 // lost, and the events after it still belong in the timeline.
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
-                    let Some((owner, agent_id, session)) = agent_session_of_tab(&state, &key)
-                    else {
+                    let Some((owner, agent_id)) = ({
+                        let s = state.lock().unwrap();
+                        pumped_agent_of_tab(&s, &key, &session)
+                    }) else {
                         return;
                     };
                     let said = SelfReport::read(&session);
                     let mut s = state.lock().unwrap();
-                    let Some(tab) = s.tabs.get_mut(&key) else {
+                    // The reading is a filesystem walk, and a replacement can
+                    // have taken the tab over while it ran: what follows ends a
+                    // session, and ending the live one would mark it dead,
+                    // harvest its open tool calls and close its turn.
+                    if !still_pumping(&s, &key, &session) {
                         return;
-                    };
+                    }
+                    let tab = s
+                        .tabs
+                        .get_mut(&key)
+                        .expect("the tab this pump holds was just found");
                     tab.live = false;
                     let unanswered_call_sequences = take_unanswered_call_sequences(tab);
                     match said.named {
@@ -18414,15 +18484,19 @@ impl AppState {
     }
 }
 
-/// One live agent tab's identity and its session, taken out of the registry so
-/// the session can be asked anything with the app mutex released.
-fn agent_session_of_tab(
-    state: &Arc<Mutex<AppState>>,
+/// Who the tab at `key` speaks for, if `session` is still the session behind it.
+///
+/// The pump's own reader: an agent's owner and id, refused outright once the
+/// tab has turned over, so nothing a dead session says is written under a live
+/// one's name.
+fn pumped_agent_of_tab(
+    s: &AppState,
     key: &TabKey,
-) -> Option<(String, String, Arc<dyn AgentSession>)> {
-    let s = state.lock().unwrap();
-    let (owner, agent_id) = agent_of_tab(&s, key)?;
-    Some((owner, agent_id, Arc::clone(&s.tabs.get(key)?.session)))
+    session: &Arc<dyn AgentSession>,
+) -> Option<(String, String)> {
+    still_pumping(s, key, session)
+        .then(|| agent_of_tab(s, key))
+        .flatten()
 }
 
 /// The terminal carrier's capture point: ask every live agent session for the
@@ -18773,13 +18847,16 @@ mod tests {
             key: TabKey,
             rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
         ) {
-            let surfaces_changed = state
+            let Some((session, surfaces_changed)) = state
                 .lock()
                 .unwrap()
                 .tabs
                 .get(&key)
-                .and_then(|tab| tab.session.surfaces_changed());
-            super::super::spawn_activity_pump(state, key, rx, surfaces_changed)
+                .map(|tab| (Arc::clone(&tab.session), tab.session.surfaces_changed()))
+            else {
+                return;
+            };
+            super::super::spawn_activity_pump(state, key, session, rx, surfaces_changed)
         }
 
         pub(super) fn ensure_agent_tab(
@@ -20196,6 +20273,201 @@ mod tests {
             "a dead session's EOF closed the tab that replaced it"
         );
         living.end();
+    }
+
+    /// The rites of a dying session take the app mutex twice, with a
+    /// filesystem walk between them, so the tab can turn over mid-rite: a post
+    /// arrives, the dead tab is replaced, and the replacement is already
+    /// working. What the dead session then reports is its own — writing it down
+    /// against the live agent closes the turn in flight and records the wrong
+    /// conversation to resume.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_self_report_never_lands_on_the_session_that_replaced_it() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-late-report",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let role = TabRole::Agent {
+            owner: run_id.clone(),
+            agent_id: agent_id.clone(),
+            provider: AgentProvider::default(),
+        };
+        let key = TabKey::agent(&root, &agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let dying = gated_tab(
+            &root,
+            role.clone(),
+            GatedHarness::new().naming_its_conversation_through(gate, "the-dead-conversation"),
+        );
+        let session = Arc::clone(&dying.session);
+        let screen = screen_of(&dying).clone();
+        state.lock().unwrap().tabs.insert(key.clone(), dying);
+
+        let rites = {
+            let state = Arc::clone(&state);
+            let key = key.clone();
+            let session = Arc::clone(&session);
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                end_of_session(&state, &key, &session, &screen);
+                let _ = done.send(());
+            });
+            finished
+        };
+        gate_handle.wait_for_arrival();
+
+        // A post lands in the window: the dead tab is replaced, the replacement
+        // names its own conversation, and it is holding a turn.
+        {
+            let mut s = state.lock().unwrap();
+            s.tabs
+                .insert(key.clone(), gated_tab(&root, role, GatedHarness::new()));
+            s.record_agent_resume_id(
+                &run_id,
+                &agent_id,
+                Some("the-live-conversation".to_string()),
+            );
+        }
+        open_a_turn(&state, &run_id);
+
+        gate_handle.release();
+        rites
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the dying session finishes its rites");
+
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&key].live,
+            "the dead session's rites marked its replacement dead"
+        );
+        assert_eq!(
+            s.recorded_resume_id(&run_id, &agent_id).as_deref(),
+            Some("the-live-conversation"),
+            "the dead session's name was written over the live one's"
+        );
+        assert!(
+            primary_thread(&s.runs[&run_id].agents)
+                .working_since()
+                .is_some(),
+            "the dead session's rites closed the turn its replacement is holding"
+        );
+    }
+
+    /// The same rite, on the carrier with no bytes. Its stream closing ends a
+    /// session too — not live, open tool calls harvested as unanswered, the
+    /// turn closed — and none of that belongs to the session that took the tab
+    /// over while it was reading.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_replaced_sessions_late_activity_close_leaves_the_replacement_alone() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-late-activity",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let role = TabRole::Agent {
+            owner: run_id.clone(),
+            agent_id: agent_id.clone(),
+            provider: AgentProvider::default(),
+        };
+        let key = TabKey::agent(&root, &agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let reporting = gated_tab(
+            &root,
+            role.clone(),
+            GatedHarness::new().naming_its_conversation_through(gate, "the-dead-conversation"),
+        );
+        let session = Arc::clone(&reporting.session);
+        state.lock().unwrap().tabs.insert(key.clone(), reporting);
+        let (activity, subscribed) = broadcast::channel(4);
+        super::spawn_activity_pump(&state, key.clone(), session, Some(subscribed), None);
+        // The stream closes: the session behind this tab is over.
+        drop(activity);
+        gate_handle.wait_for_arrival();
+
+        {
+            let mut s = state.lock().unwrap();
+            s.tabs
+                .insert(key.clone(), gated_tab(&root, role, GatedHarness::new()));
+            s.record_agent_resume_id(
+                &run_id,
+                &agent_id,
+                Some("the-live-conversation".to_string()),
+            );
+        }
+        open_a_turn(&state, &run_id);
+
+        gate_handle.release();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&key].live,
+            "a closed stream marked the tab that replaced it dead"
+        );
+        assert_eq!(
+            s.recorded_resume_id(&run_id, &agent_id).as_deref(),
+            Some("the-live-conversation"),
+            "the dead session's name was written over the live one's"
+        );
+        assert!(
+            primary_thread(&s.runs[&run_id].agents)
+                .working_since()
+                .is_some(),
+            "the dead session's close ended the turn its replacement is holding"
+        );
+    }
+
+    /// An attach clones the tab's handle under the app mutex and registers with
+    /// it released, so a close can take the tab out in between. The screen's own
+    /// lock decides which happened first, because the app mutex no longer can:
+    /// the late client hears `term.closed` rather than sitting on a live-looking
+    /// grid nothing will ever paint or close.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_client_attaching_to_a_tab_that_just_closed_is_told_so() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(&root, TabRole::Shell, GatedHarness::new()),
+        );
+        // What an attach already in flight is holding.
+        let screen = screen_of(&state.lock().unwrap().tabs[&key]).clone();
+
+        let closed = handler.call(
+            SessionSender::detached("s-close"),
+            req("term.close", json!({ "term_id": "term-1" })),
+        );
+        assert_eq!(closed["ok"], true, "{closed:?}");
+
+        let (sender, mut pushes, session_key) = SessionSender::observable("late");
+        screen.attach(&sender, Some((80, 24)));
+
+        let seen = wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed" && push["term_id"] == "term-1"
+        })
+        .await;
+        assert!(!seen.is_empty(), "{seen:?}");
+        assert_eq!(
+            screen.attached(),
+            0,
+            "a screen nothing will close again took a client anyway"
+        );
     }
 
     /// A terminal names its conversation by listing the harness's transcript

@@ -732,17 +732,64 @@ mod tests {
         source
     }
 
+    /// The implementation types no module above `harness_for` may name: the
+    /// harnesses `harness_for` constructs, and the sessions they open. Kept
+    /// honest against its owner by
+    /// [`the_ban_list_covers_every_harness_harness_for_constructs`].
+    const CONCRETE_HARNESS_TYPES: [&str; 6] = [
+        "AdkHarness",
+        "AdkSession",
+        "ClaudeHarness",
+        "CodexHarness",
+        "CodexAppServerHarness",
+        "CodexAppServerSession",
+    ];
+
+    /// The harness types `harness_for` names, read out of the function itself so
+    /// the guard's ban list is checked against the registry that owns the fact
+    /// rather than against a second hand-kept copy of it.
+    fn harnesses_named_by_harness_for() -> Vec<String> {
+        const REGISTRY: &str = include_str!("mod.rs");
+        const SIGNATURE: &str = "pub fn harness_for";
+
+        let body = REGISTRY
+            .split_once(SIGNATURE)
+            .expect("harness_for is defined in this module")
+            .1
+            .split_once("\n}\n")
+            .expect("harness_for's body closes")
+            .0;
+        body.lines()
+            .filter_map(|line| line.trim().strip_suffix(','))
+            .filter(|arm| arm.contains("=> &"))
+            .map(|arm| {
+                arm.rsplit("::")
+                    .next()
+                    .expect("a dispatch arm names a type")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Whether the text around a provider mention tests it for equality rather
+    /// than matching on it — the same second dispatch worn as an `if`.
+    fn compares_against_a_provider(preceding: &str, following: &str) -> bool {
+        let statement = preceding
+            .rsplit('\n')
+            .next()
+            .unwrap_or(preceding)
+            .trim_start();
+        preceding.trim_end().ends_with("==")
+            || preceding.trim_end().ends_with("!=")
+            || following.starts_with("==")
+            || following.starts_with("!=")
+            || statement.contains("matches!(")
+            || statement.starts_with("if let ")
+    }
+
     /// What in `source` claims a provider dispatch of its own, if anything.
     fn provider_dispatch_offence(source: &str) -> Option<String> {
         const PROVIDER_PATH: &str = "AgentProvider::";
-        const CONCRETE_HARNESS_TYPES: [&str; 6] = [
-            "AdkHarness",
-            "AdkSession",
-            "ClaudeHarness",
-            "CodexHarness",
-            "CodexAppServerHarness",
-            "CodexAppServerSession",
-        ];
 
         let shipped = production_source(source);
         for (mention, _) in shipped.match_indices(PROVIDER_PATH) {
@@ -755,9 +802,12 @@ mod tests {
                     .lines()
                     .next()
                     .is_some_and(|first| first.contains("=>"));
+            let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
             if arm_head.starts_with("=>") || guard_reaches_an_arrow {
-                let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
                 return Some(format!("matches on {PROVIDER_PATH}{variant}"));
+            }
+            if compares_against_a_provider(&shipped[..mention], arm_head) {
+                return Some(format!("compares against {PROVIDER_PATH}{variant}"));
             }
         }
 
@@ -825,11 +875,15 @@ mod tests {
     /// than a detector that quietly stopped matching.
     #[test]
     fn a_second_provider_dispatch_is_caught() {
-        const SECOND_DISPATCHES: [&str; 5] = [
+        const SECOND_DISPATCHES: [&str; 9] = [
             "match provider {\n    AgentProvider::Codex => launch(),\n}",
             "match named {\n    Some(AgentProvider::Codex) => launch(),\n}",
             "match provider {\n    AgentProvider::Codex if resume => launch(),\n}",
             "match provider {\n    AgentProvider::CodexAppServer\n        => launch(),\n}",
+            "if provider == AgentProvider::Codex { launch() }",
+            "if provider != AgentProvider::Claude { launch() }",
+            "if matches!(provider, AgentProvider::Codex) { launch() }",
+            "if let AgentProvider::Codex = provider { launch() }",
             "let session: AdkSession = open(root);",
         ];
 
@@ -846,10 +900,30 @@ mod tests {
                               Err(already_named()),\n}";
         assert_eq!(provider_dispatch_offence(single_dispatch), None);
 
+        let compared_only_by_value = "if choice.model == catalogued.model { keep() }";
+        assert_eq!(provider_dispatch_offence(compared_only_by_value), None);
+
         let dispatch_only_in_tests = format!(
             "pub fn run() {{}}\n#[cfg(test)]\nmod tests {{\n    {}\n}}\n",
             "let harness = ClaudeHarness;"
         );
         assert_eq!(provider_dispatch_offence(&dispatch_only_in_tests), None);
+    }
+
+    /// The ban list the guard reads and the registry that constructs harnesses
+    /// are one fact, so a provider added to `harness_for` cannot leave a harness
+    /// type the guard would let a caller above it name.
+    #[test]
+    fn the_ban_list_covers_every_harness_harness_for_constructs() {
+        let constructed = harnesses_named_by_harness_for();
+        assert_eq!(constructed.len(), AgentProvider::ALL.len());
+
+        for harness_type in constructed {
+            assert!(
+                CONCRETE_HARNESS_TYPES.contains(&harness_type.as_str()),
+                "harness_for constructs {harness_type} but the guard does not ban it above \
+                 harness_for"
+            );
+        }
     }
 }

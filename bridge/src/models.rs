@@ -481,15 +481,15 @@ mod tests {
     /// name, and answers the old default for everything else.
     #[test]
     fn the_old_claude_mode_words_map_to_providers_and_back() {
-        assert_eq!(provider_of_claude_mode("tui"), Some(AgentProvider::Claude));
+        assert_eq!(carrier_of_claude_mode("tui"), Some(AgentProvider::Claude));
         assert_eq!(
-            provider_of_claude_mode("headless"),
+            carrier_of_claude_mode("headless"),
             Some(AgentProvider::ClaudeAdk)
         );
-        assert_eq!(provider_of_claude_mode("codex"), None);
+        assert_eq!(carrier_of_claude_mode("codex"), None);
         for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
             assert_eq!(
-                provider_of_claude_mode(claude_mode_of_harness(provider)),
+                carrier_of_claude_mode(claude_mode_of_harness(provider)),
                 Some(provider)
             );
         }

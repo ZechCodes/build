@@ -37,6 +37,12 @@ git around them. Two methods that straddle both halves are split:
 
 ### `Retirement` — ending a tab, off the lock
 
+**Shipped** with step 1 (`bridge/src/reaper.rs`), as declared. The three
+`retire_*` calls, the `Arc::ptr_eq` pump check, and `Retirement::wait` — which
+only §5's `DiscardCheckout` will call — are all in place. One deviation from
+the sketch below: `retire_tab` takes `reason: &str`, not `&'static str`, so it
+serves the reasons that are already spelled where they are pushed.
+
 `AgentSession::end` is `child.kill()` then `child.wait()` for both carriers
 (`PtySession::kill_and_reap`, pty.rs:683; `AdkSession::end`, harness/adk.rs:723).
 SIGKILL does not land on a child wedged in uninterruptible I/O until that I/O
@@ -252,6 +258,37 @@ from the design above.
 
 ## 2. `ScreenHandle` — the per-tab screen
 
+**Shipped** — this is step 1 (`bridge/src/screen.rs`). What landed differs from
+the sketch below in five places, each because the code said so:
+
+- `attach` takes `viewport: Option<(u16, u16)>` rather than `cols, rows`. `None`
+  is a dead tab, whose retained screen is never reflowed to a browser window
+  that arrived after its agent died — the condition `attach_to_tab` spelled
+  inline.
+- `TerminalHandle` owns the whole attach (`attach`, which sizes the child and
+  then registers the client) and the whole carry (`adopt_clients_of`, which
+  sizes the child to the viewport the waiting clients render at and then calls
+  `carry_clients_from`). Both were the caller sequencing a pty write against a
+  screen write; a caller that sequences them can get the order wrong.
+- `close_a_screen_with_no_terminal` became the reason constant
+  `NO_TERMINAL_LEFT`, since with `ScreenHandle::close` the function was one call
+  and a name.
+- `screen_epitaph` moved onto the handle as `ScreenHandle::epitaph`; `drop_session`
+  keeps its acquisition (a `retain` per screen, bounded, app mutex → screen).
+- `spawn_tab_pumps` takes a `TabPumps` — the session, the screen handle and the
+  streams, taken off the tab before it is handed to the registry — so the byte
+  pump takes the app mutex **twice in a tab's life** rather than three times:
+  both at EOF, with `SelfReport::read` between them. Nothing is looked up at
+  start.
+
+`a_board_read_answers_while_three_screens_are_flooding` is not among the tests.
+Every bound it could assert passes on the old code too — chunk parses are
+milliseconds each, so a read never blocked measurably on one — and the property
+it names is covered by two tests that do discriminate:
+`a_streaming_pty_never_takes_the_app_mutex` (three flooding screens are three of
+one) and `a_frame_answers_while_a_screen_lock_is_held`. The number belongs to
+the spec's load test.
+
 - **Boundary** `bridge/src/screen.rs` (new; `TermScreen`, `AttachedClient` and
   the flow-control constants move out of `app.rs`): one tab's grid and its
   attached clients. The module cannot see `AppState`, which makes "the pump never
@@ -334,13 +371,17 @@ from the design above.
   `TerminalHandle`, release, then write, so a pty nobody drains blocks one
   worker. `SessionSender::push` is all that runs under the screen lock.
 - **Tests** `a_streaming_pty_never_takes_the_app_mutex`,
-  `a_board_read_answers_while_three_screens_are_flooding`,
+  `a_frame_answers_while_a_screen_lock_is_held`,
   `term_input_to_a_pty_that_is_not_draining_leaves_the_app_mutex_free`,
   `carrying_clients_between_two_screens_holds_one_lock_at_a_time`,
   `an_agent_tabs_last_reading_leaves_the_app_mutex_free`,
   `killing_a_wedged_harness_never_holds_the_app_mutex`,
   `a_close_after_a_wedged_kill_still_reaches_its_clients`,
-  `a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone`.
+  `a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone`. All eight
+  were watched to fail first; two test-side waits followed
+  (`process_reaped` and `SessionLog::ended` poll the retirement thread out
+  rather than asking once, which is when the fact can first be observed, not a
+  weaker assertion).
 
 ## 3. `DeliveryRunner` — the background delivery runner
 

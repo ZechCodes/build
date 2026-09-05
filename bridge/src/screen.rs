@@ -613,6 +613,53 @@ pub struct HeldScreen<'a>(#[allow(dead_code)] std::sync::MutexGuard<'a, TermScre
 mod tests {
     use super::*;
 
+    /// Two screens are never locked at once. A spawn carries the clients that
+    /// were waiting for it onto the screen it just made, and if it held the
+    /// waiting screen while it waited for the new one, two spawns racing
+    /// through the same pair would deadlock the daemon. The waiting screen is
+    /// drained and released first.
+    #[test]
+    fn carrying_clients_between_two_screens_holds_one_lock_at_a_time() {
+        let (sender, _pushes, _key) = SessionSender::observable("waiting-client");
+        let waiting = ScreenHandle::new("agent:carried", 90, 25);
+        waiting.attach(&sender, None);
+        let born = ScreenHandle::new("agent:carried", 80, 24);
+
+        // The destination is busy — a flood, a snapshot, a slow client.
+        let held = born.hold();
+        let carrying = {
+            let born = born.clone();
+            let waiting = waiting.clone();
+            std::thread::spawn(move || born.carry_clients_from(&waiting))
+        };
+
+        let (answered, answers) = std::sync::mpsc::channel();
+        let source = waiting.clone();
+        std::thread::spawn(move || {
+            let _ = answered.send(source.attached());
+        });
+        assert_eq!(
+            answers
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the source screen is free while the destination is waited on"),
+            0,
+            "the waiting screen is drained before the new one is locked"
+        );
+
+        drop(held);
+        carrying.join().expect("the carry completes");
+        assert_eq!(
+            born.attached_sessions(),
+            vec!["waiting-client".to_string()],
+            "the client it was holding is on the new screen"
+        );
+        assert_eq!(
+            born.size(),
+            (90, 25),
+            "at the viewport it was already rendering at"
+        );
+    }
+
     /// The bytes one `term.output` push carries.
     fn b64decode(data: &str) -> Vec<u8> {
         use base64::Engine as _;

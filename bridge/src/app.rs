@@ -30,9 +30,11 @@ use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
     Turn,
 };
+#[cfg(test)]
+use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
 use crate::lifecycle::{
-    CreateWorktree, DispatchCheckout, LifecycleEpilogue, LifecycleOutcome, PendingRow,
-    PendingState, Performed, ReservedRow, WorktreeLifecycleJob,
+    CreateWorktree, DispatchCheckout, DispatchTarget, LifecycleEpilogue, LifecycleOutcome,
+    PendingRow, PendingState, Performed, ReservedRow, WorktreeChange, WorktreeLifecycleJob,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -1048,17 +1050,6 @@ enum FinishRequirement {
     /// [`crate::branch::branch_finish_warnings`]) for the user to confirm
     /// through. The bridge does not second-guess a confirmed decision.
     Unconditional,
-}
-
-/// Tests only: where to fail a `branch.dispatch`, so the cleanup that has to
-/// undo what the call created can be exercised at each seam it opens.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BranchDispatchStep {
-    /// After the checkout is resolved or cut, before a run owns it.
-    Adopt,
-    /// After the branch has a run, before its new agent and first message land.
-    Post,
 }
 
 /// The verbs that count as the human acting on an entity, and the param naming
@@ -7524,7 +7515,10 @@ impl AppState {
             entity_id: placeholder_id.clone(),
             project_id: project_id.clone(),
             title: name,
-            branch: None,
+            // The ref this create is cutting, so a dispatch onto the same one
+            // collides with it: creates and dispatches claim branches out of a
+            // single namespace, and neither can see the other's git.
+            branch: Some(format!("{}/{slug}", crate::worktree::BRANCH_PREFIX)),
             state: PendingState::Creating,
             checkout_id: None,
             since: std::time::Instant::now(),
@@ -7711,6 +7705,12 @@ impl AppState {
     /// amend the project's checkout list with what moved, and then let the
     /// verb's own epilogue settle the record. A failure rolls the reservation
     /// back instead, and answers with the error the git gave.
+    ///
+    /// An epilogue that fails is the harder half: the git already ran, so what
+    /// it made is on disk whatever the records say. The amendment is re-applied
+    /// over whatever the epilogue got through before it failed, which puts the
+    /// checkout back on the board as the unowned card it is — invisible until
+    /// the next full rescan is how a minted checkout gets lost.
     fn apply_lifecycle(&mut self, outcome: LifecycleOutcome) -> Result<Value, String> {
         let LifecycleOutcome {
             reservation,
@@ -7725,16 +7725,26 @@ impl AppState {
                 return Err(error);
             }
         };
-        for worktree in change.appeared {
-            self.note_worktree_appeared(&project_id, worktree);
+        self.amend_checkouts(&project_id, &change);
+        epilogue.apply(self).inspect_err(|_| {
+            self.amend_checkouts(&project_id, &change);
+            reservation.roll_back(self);
+        })
+    }
+
+    /// Move what one mutation did to the checkouts on disk into the list the
+    /// board reads: what appeared, what went, and — when the mutation touched a
+    /// checkout it could not describe — the rescan that finds it.
+    fn amend_checkouts(&mut self, project_id: &str, change: &WorktreeChange) {
+        for worktree in &change.appeared {
+            self.note_worktree_appeared(project_id, worktree.clone());
         }
         for path in &change.gone {
-            self.note_worktree_gone(&project_id, path);
+            self.note_worktree_gone(project_id, path);
         }
         if change.rescan {
-            self.rescan_external_worktrees(&project_id);
+            self.rescan_external_worktrees(project_id);
         }
-        epilogue.apply(self)
     }
 
     /// Write back what the lock-free git work found: release the claim, take
@@ -12682,24 +12692,19 @@ impl AppState {
             )
         };
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        // Judged before anything is written: a refusal leaves the checkout
-        // exactly as it was found.
-        let adoptable = AdoptableCheckout::judge(&checkout, &base, scope).map_err(err)?;
+        // Judged and checkpointed by the one adoption every caller shares: a
+        // refusal leaves the checkout exactly as it was found.
         let project = self.orch_for(&project_id)?.clone();
-        project
-            .prepare_adoption(&adoptable, &base, &run_id)
-            .map_err(err)?;
-        let active = project
-            .adopt_run(RunId::new(&run_id), &adoptable, &base, model_choice)
-            .map_err(err)?;
-        self.entity_project
-            .insert(run_id.clone(), project_id.clone());
-        // The row this checkout showed as belongs to a run from here on, and a
-        // run is cleared through its conversation: whatever was dismissed
-        // against the entity-less row is spent, and must not come back with the
-        // bare row if the run is ever released.
-        self.forget_row_dismissals(&project_id, checkout.branch.as_deref(), adopting_primary);
-        self.note_worktree_gone(&project_id, &checkout.path);
+        let adopted = crate::lifecycle::adopt(
+            &project,
+            &project_id,
+            &checkout,
+            &base,
+            scope,
+            &run_id,
+            model_choice,
+        )?;
+        let active = adopted.open_run(self)?;
         let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         persisted?;
         Ok(view)
@@ -13680,15 +13685,19 @@ impl AppState {
         // The provider is parsed before anything is created, so an unrunnable
         // one refuses instead of leaving a branch nothing can work on.
         let requested_choice = model_choice_from(params, self.default_harness)?;
+        // The ref, before anything is reserved or cut: it is what one dispatch
+        // reserves against another, and deriving it in the git phase left two
+        // calls on one instruction racing into `git worktree add`.
+        let target = DispatchTarget::of(branch.as_deref(), &instruction)?;
 
         // Build already runs this branch: the dispatch joins the checkout that
         // is there, adds an agent to it, and touches no git at all.
-        if let Some(run_id) = branch
-            .as_deref()
+        if let Some(run_id) = target
+            .adopted_branch()
             .and_then(|branch| self.run_on_branch(&project_id, branch))
         {
             #[cfg(test)]
-            self.fail_dispatch_at(BranchDispatchStep::Post)?;
+            fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Post)?;
             // The agent's own provider, not the branch's: several agents share
             // a branch and a dispatch may have asked for one the branch does
             // not run.
@@ -13696,31 +13705,33 @@ impl AppState {
                 true => requested_choice,
                 false => self.entity_model_choice(&run_id)?,
             };
-            return self.dispatch_to_run(&project_id, &run_id, &instruction, choice);
+            return self.join_dispatched_run(&project_id, &run_id, &instruction, choice);
         }
 
-        let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        let row = self.reserve_row(PendingRow {
-            entity_id: run_id.clone(),
-            project_id: project_id.clone(),
-            title: branch.clone().unwrap_or_else(|| instruction.clone()),
-            branch: branch.clone(),
-            state: PendingState::Creating,
-            checkout_id: None,
-            since: std::time::Instant::now(),
-        })?;
+        // Nothing fallible runs between the reservation and the deferral: a `?`
+        // in between would leave the row standing on the board with no job
+        // behind it to release it.
         let mutation = DispatchCheckout {
             project: self.orch_for(&project_id)?.clone(),
             base_branch: self.base_for(&project_id)?,
             excluded: self.bound_worktree_paths(),
-            project_id,
-            run_id,
-            branch,
-            instruction,
+            project_id: project_id.clone(),
+            run_id: format!("run-{}", uuid::Uuid::new_v4()),
+            target,
+            instruction: instruction.clone(),
             model_choice: requested_choice,
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
+        let row = self.reserve_row(PendingRow {
+            entity_id: mutation.run_id.clone(),
+            project_id,
+            title: branch.unwrap_or(instruction),
+            branch: Some(mutation.target.branch().to_string()),
+            state: PendingState::Creating,
+            checkout_id: None,
+            since: std::time::Instant::now(),
+        })?;
         Ok(self.defer_lifecycle(WorktreeLifecycleJob::new(
             Box::new(ReservedRow::new(row)),
             Box::new(mutation),
@@ -13752,47 +13763,60 @@ impl AppState {
     /// Open the run `branch.dispatch` just checkpointed a checkout for, and put
     /// its agent to work — the apply half of [`BranchDispatched`], and the only
     /// half that touches state.
+    ///
+    /// One store write, made after every decision: the git has already cut a
+    /// branch, checked the repository out into it and written a checkpoint
+    /// commit, so a second fallible step here would be a way to strand all of
+    /// that under no run at all.
     fn open_dispatched_run(&mut self, dispatched: BranchDispatched) -> Result<Value, String> {
         let BranchDispatched {
-            project_id,
-            run_id,
-            base_branch,
-            checkout,
+            adopted,
             instruction,
-            model_choice,
         } = dispatched;
-        let active = self
-            .orch_for(&project_id)?
-            .adopt_run(
-                RunId::new(&run_id),
-                &checkout,
-                &base_branch,
-                model_choice.clone(),
-            )
-            .map_err(err)?;
-        self.entity_project
-            .insert(run_id.clone(), project_id.clone());
-        // The row this checkout showed as belongs to a run from here on, and a
-        // run is cleared through its conversation: whatever was dismissed
-        // against the entity-less row is spent.
-        self.forget_row_dismissals(&project_id, Some(&checkout.branch), false);
-        self.note_worktree_gone(&project_id, &checkout.path);
+        #[cfg(test)]
+        fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Open)?;
+        let project_id = adopted.project_id.clone();
+        let run_id = adopted.run_id.clone();
+        let choice = adopted.model_choice.clone();
+        let mut active = adopted.open_run(self)?;
+        let agent = self.dispatch_to_run(&run_id, &mut active, &instruction, choice);
         self.finish_run_mutation(run_id.clone(), active)?;
-        self.dispatch_to_run(&project_id, &run_id, &instruction, model_choice)
+        self.touch_attention(&run_id);
+        Ok(agent.json(&project_id, &run_id))
     }
 
-    /// Add the agent a dispatch speaks through to a run that has a checkout,
-    /// and hand it the words. The half every dispatch shares — the branch Build
-    /// already ran, and the one it has just taken ownership of.
-    fn dispatch_to_run(
+    /// `branch.dispatch` onto a branch Build already runs: the run is there,
+    /// its checkout is there, and no git runs at all — so the run is taken,
+    /// told, and put back under this one acquisition.
+    fn join_dispatched_run(
         &mut self,
         project_id: &str,
         run_id: &str,
         instruction: &str,
         choice: ModelChoice,
     ) -> Result<Value, String> {
-        let now = now_rfc3339();
         let mut active = self.take_run(run_id)?;
+        let agent = self.dispatch_to_run(run_id, &mut active, instruction, choice);
+        self.finish_run_mutation(run_id.to_string(), active)?;
+        self.touch_attention(run_id);
+        Ok(agent.json(project_id, run_id))
+    }
+
+    /// Add the agent a dispatch speaks through to a run that has a checkout,
+    /// and hand it the words. The half every dispatch shares — the branch Build
+    /// already ran, and the one it has just taken ownership of.
+    ///
+    /// The run is mutated where its owner is holding it, and handed back
+    /// unwritten: whoever took it out of the map is the one that puts it back,
+    /// in the single write that settles the dispatch.
+    fn dispatch_to_run(
+        &mut self,
+        run_id: &str,
+        active: &mut ActiveRun,
+        instruction: &str,
+        choice: ModelChoice,
+    ) -> DispatchedAgent {
+        let now = now_rfc3339();
         // A dispatch always adds the agent it is about to speak to — an
         // adoption mints none, and a branch Build already runs keeps the agents
         // it has.
@@ -13823,24 +13847,7 @@ impl AppState {
             phase: "dispatch",
             wants_catch_up: true,
         });
-        let persisted = self.finish_run_mutation(run_id.to_string(), active);
-        persisted?;
-        self.touch_attention(run_id);
-        Ok(json!({
-            "project_id": project_id,
-            "branch": branch,
-            "run_id": run_id,
-            "agent_id": agent_id,
-        }))
-    }
-
-    /// Fail this dispatch when a test asked for a failure at `step`.
-    #[cfg(test)]
-    fn fail_dispatch_at(&self, step: BranchDispatchStep) -> Result<(), String> {
-        if self.dispatch_fault == Some(step) {
-            return Err(format!("branch.dispatch: injected failure at {step:?}"));
-        }
-        Ok(())
+        DispatchedAgent { branch, agent_id }
     }
 
     /// Archived plans and external worktrees for one project, grouped by kind.
@@ -16089,16 +16096,77 @@ impl LifecycleEpilogue for WorktreeCreated {
     }
 }
 
-/// `branch.dispatch`'s apply half: the checkout is checkpointed and scaffolded,
-/// and the run that owns it — with the agent that will hear the instruction —
-/// is opened here, under the mutex, where the records live.
-pub struct BranchDispatched {
+/// The agent one dispatch put on a branch, and the branch it is working.
+struct DispatchedAgent {
+    branch: String,
+    agent_id: String,
+}
+
+impl DispatchedAgent {
+    /// What every dispatch answers with, whichever way it reached its run.
+    fn json(&self, project_id: &str, run_id: &str) -> Value {
+        json!({
+            "project_id": project_id,
+            "branch": self.branch,
+            "run_id": run_id,
+            "agent_id": self.agent_id,
+        })
+    }
+}
+
+/// A checkout Build has taken ownership of on disk, and the run that is about
+/// to stand for it. The apply half of every adoption, and the one place the
+/// order of those writes is spelled.
+///
+/// What is deliberately NOT here is the write that settles the run: it comes
+/// back out of [`RunAdopted::open_run`] un-persisted so its caller can add what
+/// it still owes — a dispatch's agent and first turn — and write once, leaving
+/// no window where a run exists that a later failure would strand.
+pub struct RunAdopted {
     pub project_id: String,
     pub run_id: String,
     pub base_branch: String,
     pub checkout: AdoptableCheckout,
-    pub instruction: String,
+    pub scope: AdoptionScope,
     pub model_choice: ModelChoice,
+}
+
+impl RunAdopted {
+    /// Open the run around the checkout, and move the board's bookkeeping onto
+    /// it. Nothing here can fail once the run record is minted.
+    fn open_run(&self, state: &mut AppState) -> Result<ActiveRun, String> {
+        let active = state
+            .orch_for(&self.project_id)?
+            .adopt_run(
+                RunId::new(&self.run_id),
+                &self.checkout,
+                &self.base_branch,
+                self.model_choice.clone(),
+            )
+            .map_err(err)?;
+        state
+            .entity_project
+            .insert(self.run_id.clone(), self.project_id.clone());
+        // The row this checkout showed as belongs to a run from here on, and a
+        // run is cleared through its conversation: whatever was dismissed
+        // against the entity-less row is spent, and must not come back with the
+        // bare row if the run is ever released.
+        state.forget_row_dismissals(
+            &self.project_id,
+            Some(&self.checkout.branch),
+            self.scope == AdoptionScope::PrimaryCheckout,
+        );
+        state.note_worktree_gone(&self.project_id, &self.checkout.path);
+        Ok(active)
+    }
+}
+
+/// `branch.dispatch`'s apply half: the checkout is checkpointed and scaffolded,
+/// and the run that owns it — with the agent that will hear the instruction —
+/// is opened here, under the mutex, where the records live.
+pub struct BranchDispatched {
+    pub adopted: RunAdopted,
+    pub instruction: String,
 }
 
 impl LifecycleEpilogue for BranchDispatched {
@@ -42785,6 +42853,103 @@ mod tests {
         assert_eq!(created["ok"], true, "{created:?}");
     }
 
+    /// Two dispatches of the same words name the same branch, and the branch is
+    /// what they collide on: the ref is settled before either one runs git, so
+    /// the second is refused rather than racing the first into `git worktree
+    /// add` with the same slug.
+    #[test]
+    fn two_dispatches_of_one_instruction_cut_one_branch() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let first = frame_on_a_thread(
+            &state,
+            "s-first",
+            "branch.dispatch",
+            json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let second = frame_on_a_thread(
+            &state,
+            "s-second",
+            "branch.dispatch",
+            json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second dispatch is answered rather than queued behind the first");
+        assert_eq!(second["ok"], false, "{second:?}");
+
+        gate_handle.release();
+        let first = first
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first dispatch answers");
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            first["result"]["branch"], "build/add-a-health-endpoint",
+            "{first:?}"
+        );
+        let checkouts = state
+            .lock()
+            .unwrap()
+            .scan_external_worktrees_now(&project_id)
+            .unwrap();
+        assert!(
+            checkouts.is_empty(),
+            "one dispatch, one checkout — and the run owns it: {checkouts:?}"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs.len(),
+            1,
+            "the refused dispatch opened a run of its own"
+        );
+    }
+
+    /// A create and a dispatch claim branches out of one namespace, so they
+    /// collide with each other too: the dispatch names `build/scratch`, which
+    /// is the branch the create in flight is cutting.
+    #[test]
+    fn a_dispatch_onto_a_branch_being_created_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let dispatched = frame_on_a_thread(
+            &state,
+            "s-dispatch",
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "build/scratch",
+                "instruction": "pick this up",
+            }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the dispatch is answered rather than queued behind the create");
+        assert_eq!(dispatched["ok"], false, "{dispatched:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers");
+        assert_eq!(created["ok"], true, "{created:?}");
+    }
+
     /// A dispatch cuts a branch, checks out the whole repository into it and
     /// writes a checkpoint commit — all of it git, and none of it holding the
     /// daemon still.
@@ -45551,7 +45716,7 @@ mod tests {
     #[test]
     fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
         let (dir, repo) = init_repo();
-        for step in [BranchDispatchStep::Adopt, BranchDispatchStep::Post] {
+        for step in [BranchDispatchStep::Adopt, BranchDispatchStep::Own] {
             let mut state = qa_state(&repo, dir.path());
             let project_id = state.projects[0].id.clone();
             // A board that has been looked at once: the checkout the dispatch
@@ -45602,6 +45767,63 @@ mod tests {
                 "{step:?} left the branch ref it cut"
             );
         }
+    }
+
+    /// The other half of the failure: the git ran, and the writes it was
+    /// supposed to lead to did not. What it made is real, so the checkout stays
+    /// on the board as the unowned card it is — and nothing pretends a run
+    /// exists.
+    #[test]
+    fn a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        // A board that has been looked at once, so the amendment has a list to
+        // put the checkout back into.
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        state.dispatch_fault = Some(BranchDispatchStep::Open);
+
+        let failed = state.handle(req(
+            "branch.dispatch",
+            json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(state.runs.is_empty(), "the failed apply opened a run");
+        assert!(
+            state.pending_rows.is_empty(),
+            "the failed apply left its row on the board"
+        );
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the failed apply queued a turn for an agent that does not exist"
+        );
+        let checkout = crate::worktree::canonical_root(
+            &dir.path()
+                .join("wt")
+                .join(&project_id)
+                .join("add-a-health-endpoint"),
+        );
+        assert!(checkout.is_dir(), "the git that succeeded was undone");
+        assert!(
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
+            "the checkout it cut is invisible until the next full rescan: {:?}",
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .map(|c| &c.worktrees)
+        );
+        // And it is adoptable from that card: nothing about it is half-owned.
+        state.dispatch_fault = None;
+        let worktree_id = crate::worktree::external_worktree_id(&checkout);
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
     }
 
     /// A named branch that existed before the call is checked out, not cut. So
@@ -45656,7 +45878,7 @@ mod tests {
         // cleanup un-adopts and leaves every file alone.
         let by_hand = add_external_worktree(&repo, dir.path(), "by-hand", "feature-by-hand");
         std::fs::write(by_hand.join("mine.txt"), "not Build's to delete\n").unwrap();
-        state.dispatch_fault = Some(BranchDispatchStep::Post);
+        state.dispatch_fault = Some(BranchDispatchStep::Own);
 
         let failed = state.handle(req(
             "branch.dispatch",
@@ -45675,6 +45897,7 @@ mod tests {
 
         // A branch Build already runs: cleanup leaves the run and its checkout
         // standing, with the agent roster it had before the call.
+        state.dispatch_fault = Some(BranchDispatchStep::Post);
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-running");
         let worktree = state.runs[&run_id].worktree.path.clone();
         let agents_before = state.runs[&run_id].agents.len();

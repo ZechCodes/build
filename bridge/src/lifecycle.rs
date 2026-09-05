@@ -246,6 +246,119 @@ impl WorktreeMutation for CreateWorktree {
     }
 }
 
+/// Tests only: where to fail a `branch.dispatch`, so the cleanup that has to
+/// undo what the call created can be exercised at each seam it opens. One
+/// variant is one seam, and every seam is checked through [`fail_dispatch_at`].
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchDispatchStep {
+    /// The git phase, after the checkout is resolved or cut, before Build's
+    /// ownership is written into it.
+    Adopt,
+    /// The git phase, after the checkpoint and the scaffold, before the run
+    /// record exists.
+    Own,
+    /// The apply phase, under the mutex again, before the run this dispatch's
+    /// checkout is opened around.
+    Open,
+    /// A branch Build already runs: before its new agent and first message land.
+    Post,
+}
+
+/// Fail a dispatch where a test asked it to. One carrier for the injected
+/// fault, so a seam cannot be checked in one arm and forgotten in another.
+#[cfg(test)]
+pub fn fail_dispatch_at(
+    fault: Option<BranchDispatchStep>,
+    step: BranchDispatchStep,
+) -> Result<(), String> {
+    if fault == Some(step) {
+        return Err(format!("branch.dispatch: injected failure at {step:?}"));
+    }
+    Ok(())
+}
+
+/// Where one dispatch's work goes, named before any git runs.
+///
+/// A branch the caller spelled out is used exactly as it stands — re-deriving a
+/// name from a name is how `build/csv-export` became `build/build-csv-export`.
+/// Anything else is words about the work (the router's guess, or the
+/// instruction itself when no branch was named), and words are slugified into
+/// Build's namespace.
+///
+/// It is settled under the app mutex because it is what one dispatch reserves
+/// against another: two calls that name the same ref must collide on the board
+/// rather than in `git worktree add`.
+pub enum DispatchTarget {
+    /// The caller named a ref. The checkout already on it is where the work
+    /// goes; with none, the ref is cut exactly as given.
+    Named(String),
+    /// Nobody named a ref, so the words did. The branch is this call's own, and
+    /// nothing already on disk is taken over into it.
+    Minted { branch: String, slug: String },
+}
+
+impl DispatchTarget {
+    /// Read the ref out of what the caller said. Words with nothing to name a
+    /// branch after are refused here, before anything is reserved or cut.
+    pub fn of(branch: Option<&str>, instruction: &str) -> Result<DispatchTarget, String> {
+        if let Some(name) = branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
+            return Ok(DispatchTarget::Named(name.to_string()));
+        }
+        let words = branch.unwrap_or(instruction);
+        if !words.chars().any(|c| c.is_ascii_alphanumeric()) {
+            return Err(format!(
+                "branch.dispatch: {words:?} has no letter or number to name a branch after"
+            ));
+        }
+        let slug = crate::worktree::slugify(words);
+        Ok(DispatchTarget::Minted {
+            branch: format!("{}/{slug}", crate::worktree::BRANCH_PREFIX),
+            slug,
+        })
+    }
+
+    /// The ref this dispatch claims: what the board's row stands for, and what
+    /// a second claim on it collides with.
+    pub fn branch(&self) -> &str {
+        match self {
+            DispatchTarget::Named(branch) => branch,
+            DispatchTarget::Minted { branch, .. } => branch,
+        }
+    }
+
+    /// The branch whose existing checkout this dispatch takes over, when there
+    /// is one to take: a ref the caller named may already have work in it, while
+    /// a ref minted from words is this call's alone.
+    pub fn adopted_branch(&self) -> Option<&str> {
+        match self {
+            DispatchTarget::Named(branch) => Some(branch),
+            DispatchTarget::Minted { .. } => None,
+        }
+    }
+
+    /// Add the checkout this dispatch's work goes in. A named ref is cut under
+    /// that exact name (or checked out, when it is already a branch); a minted
+    /// one goes through the slug namespace, which suffixes rather than collides.
+    fn cut(
+        &self,
+        project: &Orchestrator,
+        base_branch: &str,
+    ) -> Result<NamedBranchCheckout, String> {
+        match self {
+            DispatchTarget::Named(branch) => project
+                .create_worktree_on_named_branch(branch, base_branch)
+                .map_err(|error| error.to_string()),
+            DispatchTarget::Minted { slug, .. } => Ok(NamedBranchCheckout {
+                worktree: project
+                    .create_bare_worktree(slug, base_branch)
+                    .map_err(|error| error.to_string())?,
+                branch_was_cut: true,
+            }),
+        }
+    }
+}
+
 /// `branch.dispatch` — reach the checkout the instruction is meant for: the
 /// bare one already on that branch, or one cut for it. Whichever it is, the
 /// checkout comes back checkpointed and scaffolded, ready for the run the
@@ -255,16 +368,15 @@ pub struct DispatchCheckout {
     pub project_id: String,
     pub base_branch: String,
     pub run_id: String,
-    /// The branch the caller named, if any. With none, the instruction names
-    /// the branch this cuts.
-    pub branch: Option<String>,
+    /// The ref this dispatch claims, settled before any git ran.
+    pub target: DispatchTarget,
     pub instruction: String,
     /// Checkouts a run already owns, excluded from the scan exactly as the
     /// board excludes them.
     pub excluded: HashSet<PathBuf>,
     pub model_choice: ModelChoice,
     #[cfg(test)]
-    pub fault: Option<crate::app::BranchDispatchStep>,
+    pub fault: Option<BranchDispatchStep>,
 }
 
 impl WorktreeMutation for DispatchCheckout {
@@ -301,7 +413,7 @@ impl DispatchCheckout {
     /// branch a run already owns never reaches here — that dispatch joins the
     /// run and builds no job at all.
     fn find_checkout(&self) -> Result<Option<ExternalWorktree>, String> {
-        let Some(branch) = self.branch.as_deref() else {
+        let Some(branch) = self.target.adopted_branch() else {
             return Ok(None);
         };
         // Forced rather than cached: a dispatch decides against the checkouts
@@ -315,71 +427,65 @@ impl DispatchCheckout {
     }
 
     /// Cut the branch this dispatch has nowhere else to put its work.
-    ///
-    /// A `branch` that is already a branch name is used exactly as it stands —
-    /// the caller named a ref, and re-deriving one from it is how
-    /// `build/csv-export` became `build/build-csv-export`. Anything else is
-    /// words about the work (the router's guess, or the instruction itself when
-    /// no branch was named), and words are slugified into Build's namespace.
     fn cut_branch(&self) -> Result<NamedBranchCheckout, String> {
-        let named = self
-            .branch
-            .as_deref()
-            .filter(|name| crate::worktree::is_usable_branch_name(name));
-        if let Some(name) = named {
-            return self
-                .project
-                .create_worktree_on_named_branch(name, &self.base_branch)
-                .map_err(|error| error.to_string());
-        }
-        let words = self.branch.as_deref().unwrap_or(&self.instruction);
-        if !words.chars().any(|c| c.is_ascii_alphanumeric()) {
-            return Err(format!(
-                "branch.dispatch: {words:?} has no letter or number to name a branch after"
-            ));
-        }
-        Ok(NamedBranchCheckout {
-            worktree: self
-                .project
-                .create_bare_worktree(&crate::worktree::slugify(words), &self.base_branch)
-                .map_err(|error| error.to_string())?,
-            branch_was_cut: true,
-        })
+        self.target.cut(&self.project, &self.base_branch)
     }
 
-    /// Judge the checkout, then write Build's ownership into it: the checkpoint
-    /// commit that keeps pre-Build work its own legible commit, and the
-    /// `.build/` scaffold. Nothing here touches the run record.
+    /// Take Build's ownership of the checkout this dispatch reached, and owe the
+    /// apply phase the instruction on top of it.
     fn take_ownership(&self, checkout: &ExternalWorktree) -> Result<Performed, String> {
         #[cfg(test)]
-        self.fail_at(crate::app::BranchDispatchStep::Adopt)?;
-        let adoptable =
-            AdoptableCheckout::judge(checkout, &self.base_branch, AdoptionScope::ExternalWorktree)
-                .map_err(|error| error.to_string())?;
-        self.project
-            .prepare_adoption(&adoptable, &self.base_branch, &self.run_id)
-            .map_err(|error| error.to_string())?;
+        fail_dispatch_at(self.fault, BranchDispatchStep::Adopt)?;
+        let adopted = adopt(
+            &self.project,
+            &self.project_id,
+            checkout,
+            &self.base_branch,
+            AdoptionScope::ExternalWorktree,
+            &self.run_id,
+            self.model_choice.clone(),
+        )?;
         #[cfg(test)]
-        self.fail_at(crate::app::BranchDispatchStep::Post)?;
+        fail_dispatch_at(self.fault, BranchDispatchStep::Own)?;
         Ok(Performed {
             change: WorktreeChange::appeared(checkout.clone()),
             epilogue: Box::new(crate::app::BranchDispatched {
-                project_id: self.project_id.clone(),
-                run_id: self.run_id.clone(),
-                base_branch: self.base_branch.clone(),
-                checkout: adoptable,
+                adopted,
                 instruction: self.instruction.clone(),
-                model_choice: self.model_choice.clone(),
             }),
         })
     }
+}
 
-    /// Fail this dispatch where a test asked it to.
-    #[cfg(test)]
-    fn fail_at(&self, step: crate::app::BranchDispatchStep) -> Result<(), String> {
-        if self.fault == Some(step) {
-            return Err(format!("branch.dispatch: injected failure at {step:?}"));
-        }
-        Ok(())
-    }
+/// Write Build's ownership into a checkout, for the run that is about to stand
+/// for it: judge it, and — only if it passes every refusal — make the checkpoint
+/// commit that keeps pre-Build work its own legible commit and lay down the
+/// `.build/` scaffold.
+///
+/// Every adoption goes through here, whatever reached the checkout: `run.adopt`
+/// of a card or of the primary checkout, and the dispatch that just cut one. A
+/// refusal leaves the checkout exactly as it was found, and what comes back is
+/// the apply half — no disk, no refusals left to make.
+pub fn adopt(
+    project: &Orchestrator,
+    project_id: &str,
+    checkout: &ExternalWorktree,
+    base_branch: &str,
+    scope: AdoptionScope,
+    run_id: &str,
+    model_choice: ModelChoice,
+) -> Result<crate::app::RunAdopted, String> {
+    let adoptable = AdoptableCheckout::judge(checkout, base_branch, scope)
+        .map_err(|error| error.to_string())?;
+    project
+        .prepare_adoption(&adoptable, base_branch, run_id)
+        .map_err(|error| error.to_string())?;
+    Ok(crate::app::RunAdopted {
+        project_id: project_id.to_string(),
+        run_id: run_id.to_string(),
+        base_branch: base_branch.to_string(),
+        checkout: adoptable,
+        scope,
+        model_choice,
+    })
 }

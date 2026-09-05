@@ -17,7 +17,7 @@ use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundServerRequest, ParentThreadFilter,
     ParentThreadRoute, PendingOperation, RequestId, RoutedServerRequest, RpcError,
-    ServerNotification, ServerRequest, TurnCompletion,
+    ServerNotification, ServerRequest, ServerResponse, TurnCompletion,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent, StateError, StateTransition};
 use super::translator::{
@@ -370,6 +370,25 @@ fn outbound_limit_and_close_are_enforced_before_or_during_writes() {
     assert!(connection.close().is_ok());
     assert!(connection.close().is_ok());
     assert!(connection.notify(ClientNotification::Initialized).is_err());
+}
+
+#[test]
+fn every_write_path_enforces_the_outbound_frame_limit() {
+    let mut tiny = limits();
+    tiny.outbound_frame_bytes = 16;
+    let capped = AppServerConnection::memory(tiny.connection());
+    let oversized_response =
+        || ServerResponse::error(json!("x".repeat(64)), -32601, "method not found");
+    assert!(matches!(
+        capped.notify(ClientNotification::Initialized).unwrap_err(),
+        ConnectionError::FrameTooLarge(16)
+    ));
+    assert!(matches!(
+        capped.respond(oversized_response()).unwrap_err(),
+        ConnectionError::FrameTooLarge(16)
+    ));
+    let roomy = AppServerConnection::memory(AppServerLimits::default().connection());
+    assert!(roomy.respond(oversized_response()).is_ok());
 }
 
 #[test]

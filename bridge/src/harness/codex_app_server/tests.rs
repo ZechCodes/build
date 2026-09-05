@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 
 use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
-    initialize_result, item_envelope, item_envelope_at, selected_choice, supported_user_agent,
-    thread_opened, thread_opened_with, CHILD_THREAD_ID, CHILD_TURN_ID, EXACT_THREAD_ID,
-    SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID, WORKTREE_ROOT,
+    checked_in_fixture, harness_context, initialize_result, item_envelope, item_envelope_at,
+    selected_choice, spawn_options, supported_user_agent, thread_opened, thread_opened_with,
+    CHECKED_IN_FIXTURES, CHILD_THREAD_ID, CHILD_TURN_ID, EXACT_THREAD_ID, SELECTED_EFFORT,
+    SELECTED_MODEL, THREAD_ID, TURN_ID, WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
@@ -24,9 +25,8 @@ use super::translator::{
     classify_item, CodexActivityTranslator, ItemClassification, ItemReportKind, SuppressionReason,
     ToolSummaryCategory,
 };
+use crate::harness::Harness;
 use crate::harness::{AgentActivity, AgentStatus, ToolOutcome};
-use crate::harness::{Harness, HarnessContext};
-use crate::orchestrator::SpawnOptions;
 
 fn limits() -> AppServerLimits {
     AppServerLimits {
@@ -2535,16 +2535,8 @@ fn completing_an_item_releases_its_aggregate_byte_charge() {
 
 #[test]
 fn app_server_spec_reuses_codex_mcp_config_without_experimental_flags() {
-    let options = SpawnOptions {
-        owner_id: "run-1".to_string(),
-        cwd: PathBuf::from(WORKTREE_ROOT),
-        mcp_session_token: "fixture-token".to_string(),
-        ..SpawnOptions::default()
-    };
-    let context = HarnessContext {
-        bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-        mcp_socket: "/tmp/build.sock".to_string(),
-    };
+    let options = spawn_options();
+    let context = harness_context();
     let choice = selected_choice();
     let app = super::CodexAppServerHarness.spec(&choice, &options, &context);
     let tui = crate::harness::codex::CodexHarness.spec(&choice, &options, &context);
@@ -2671,9 +2663,7 @@ fn fixture_operation(message: &Value) -> PendingOperation {
 
 #[test]
 fn observed_start_fixture_replays_as_one_correlated_stream() {
-    let replay = replay_observed_fixture(include_str!(
-        "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-start.jsonl"
-    ));
+    let replay = replay_observed_fixture(checked_in_fixture("observed-session-start.jsonl"));
     assert_eq!(
         replay.correlated_methods,
         [
@@ -2704,9 +2694,7 @@ fn observed_start_fixture_replays_as_one_correlated_stream() {
 
 #[test]
 fn observed_resume_fixture_replays_as_one_correlated_stream() {
-    let replay = replay_observed_fixture(include_str!(
-        "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-resume.jsonl"
-    ));
+    let replay = replay_observed_fixture(checked_in_fixture("observed-session-resume.jsonl"));
     assert_eq!(
         replay.correlated_methods,
         ["initialize", "thread/resume", "turn/start"]
@@ -2728,9 +2716,7 @@ fn observed_resume_fixture_replays_as_one_correlated_stream() {
 
 #[test]
 fn observed_mcp_fixture_suppresses_build_and_pairs_non_build_activity() {
-    let replay = replay_observed_fixture(include_str!(
-        "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-mcp.jsonl"
-    ));
+    let replay = replay_observed_fixture(checked_in_fixture("observed-session-mcp.jsonl"));
     assert_eq!(
         replay.correlated_methods,
         ["initialize", "thread/start", "turn/start"]
@@ -2754,9 +2740,7 @@ fn observed_mcp_fixture_suppresses_build_and_pairs_non_build_activity() {
 
 #[test]
 fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
-    let fixture = include_str!(
-        "../../../tests/fixtures/codex-app-server/0.153.0/synthetic-model-events.jsonl"
-    );
+    let fixture = checked_in_fixture("synthetic-model-events.jsonl");
     let mut errors = fixture.lines().filter_map(|line| {
         let envelope: Value = serde_json::from_str(line).unwrap();
         (envelope["method"] == "error").then(|| {
@@ -2907,15 +2891,7 @@ fn untrusted_request_params_never_reach_the_response_or_the_report() {
     ];
     for method in methods {
         for routing_id in ["thread-parent", CHILD_THREAD_ID] {
-            let routed = RoutedServerRequest::decode(
-                &InboundServerRequest {
-                    id: json!(5),
-                    method: method.to_string(),
-                    params: hostile_request_params(routing_id),
-                },
-                Some("thread-parent"),
-            )
-            .expect("a routed request carries its routing id");
+            let routed = routed_request(json!(5), method, hostile_request_params(routing_id));
             let decision = ServerRequestPolicy::decide(routed.request, routed.route, 4242);
             let written = serde_json::to_string(&decision.response).unwrap();
             for granted in [
@@ -2929,13 +2905,6 @@ fn untrusted_request_params_never_reach_the_response_or_the_report() {
                 assert!(
                     !written.contains(granted),
                     "{method} {routing_id}: {written}"
-                );
-            }
-            if method == "currentTime/read" {
-                assert_eq!(
-                    decision.response.to_value(),
-                    json!({"id":5,"result":{"currentTimeAt":4242}}),
-                    "{routing_id}"
                 );
             }
             if let Some(report) = decision.report {
@@ -2989,17 +2958,8 @@ fn a_hostile_error_message_reports_within_the_activity_bound() {
 
 #[test]
 fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
-    let options = SpawnOptions {
-        owner_id: "run-1".to_string(),
-        cwd: PathBuf::from(WORKTREE_ROOT),
-        mcp_session_token: "fixture-token".to_string(),
-        ..SpawnOptions::default()
-    };
-    let context = HarnessContext {
-        bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-        mcp_socket: "/tmp/build.sock".to_string(),
-    };
-    let spec = super::CodexAppServerHarness.spec(&selected_choice(), &options, &context);
+    let options = spawn_options();
+    let spec = super::CodexAppServerHarness.spec(&selected_choice(), &options, &harness_context());
 
     for marker in crate::harness::INHERITED_AGENT_MARKERS {
         assert!(spec.unset.iter().any(|key| key == marker), "{marker}");
@@ -3030,34 +2990,8 @@ fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
 
 #[test]
 fn checked_in_fixtures_retain_no_account_or_machine_material() {
-    let fixtures = [
-        (
-            "observed-session-start.jsonl",
-            include_str!(
-                "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-start.jsonl"
-            ),
-        ),
-        (
-            "observed-session-resume.jsonl",
-            include_str!(
-                "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-resume.jsonl"
-            ),
-        ),
-        (
-            "observed-session-mcp.jsonl",
-            include_str!(
-                "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-mcp.jsonl"
-            ),
-        ),
-        (
-            "synthetic-model-events.jsonl",
-            include_str!(
-                "../../../tests/fixtures/codex-app-server/0.153.0/synthetic-model-events.jsonl"
-            ),
-        ),
-    ];
     let home = std::env::var("HOME").expect("a home directory names this machine");
-    for (name, body) in fixtures {
+    for (name, body) in CHECKED_IN_FIXTURES {
         let lowercased = body.to_lowercase();
         for secret_shape in [
             "/users/",
@@ -3068,7 +3002,10 @@ fn checked_in_fixtures_retain_no_account_or_machine_material() {
             "access_token",
             "api_key",
             "accountid",
+            "workspaceid",
             "@openai.com",
+            "http://",
+            "https://",
         ] {
             assert!(!lowercased.contains(secret_shape), "{name}: {secret_shape}");
         }

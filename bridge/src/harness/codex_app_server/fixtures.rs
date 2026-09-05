@@ -1,7 +1,11 @@
+use std::path::PathBuf;
+
 use serde_json::{json, Value};
 
 use super::protocol::CLIENT_NAME;
+use crate::harness::HarnessContext;
 use crate::models::{AgentProvider, ModelChoice};
+use crate::orchestrator::SpawnOptions;
 
 pub(super) const SELECTED_MODEL: &str = "gpt-5.6-sol";
 pub(super) const SELECTED_EFFORT: &str = "high";
@@ -71,4 +75,53 @@ pub(super) fn item_envelope_at(thread_id: &str, turn_id: &str, item: Value) -> V
 
 pub(super) fn item_envelope(item: Value) -> Value {
     item_envelope_at(THREAD_ID, TURN_ID, item)
+}
+
+pub(super) fn spawn_options() -> SpawnOptions {
+    SpawnOptions {
+        owner_id: "run-1".to_string(),
+        cwd: PathBuf::from(WORKTREE_ROOT),
+        mcp_session_token: "fixture-token".to_string(),
+        ..SpawnOptions::default()
+    }
+}
+
+pub(super) fn harness_context() -> HarnessContext {
+    HarnessContext {
+        bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+        mcp_socket: "/tmp/build.sock".to_string(),
+    }
+}
+
+pub(super) const CHECKED_IN_FIXTURES: [(&str, &str); 4] = [
+    (
+        "observed-session-start.jsonl",
+        include_str!(
+            "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-start.jsonl"
+        ),
+    ),
+    (
+        "observed-session-resume.jsonl",
+        include_str!(
+            "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-resume.jsonl"
+        ),
+    ),
+    (
+        "observed-session-mcp.jsonl",
+        include_str!("../../../tests/fixtures/codex-app-server/0.153.0/observed-session-mcp.jsonl"),
+    ),
+    (
+        "synthetic-model-events.jsonl",
+        include_str!(
+            "../../../tests/fixtures/codex-app-server/0.153.0/synthetic-model-events.jsonl"
+        ),
+    ),
+];
+
+pub(super) fn checked_in_fixture(name: &str) -> &'static str {
+    CHECKED_IN_FIXTURES
+        .iter()
+        .find(|(fixture_name, _)| *fixture_name == name)
+        .unwrap_or_else(|| panic!("{name} is not a checked-in fixture"))
+        .1
 }

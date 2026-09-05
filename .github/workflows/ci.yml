@@ -202,12 +202,12 @@ jobs:
         working-directory: spa
         run: npx vitest run
 
-  # scripts/install.sh is published verbatim as a release asset and piped into
+  # scripts/install.sh is served by the api out of the app image and piped into
   # `sh` on a stranger's machine, so it is checked as POSIX sh — the shell it
   # actually runs under — and not as the bash a developer happens to test with,
   # and then run against a mirror on disk so the rules it exists for are
   # exercised and not merely parsed. The release workflow runs both of these
-  # lines, verbatim, before it packages the script.
+  # lines, verbatim, before it builds anything.
   # shellcheck itself is the `shell` job's (every *.sh in the tree, one home);
   # this job is install.sh's behaviour, which only its own harness can check.
   scripts:

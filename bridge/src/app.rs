@@ -9992,36 +9992,20 @@ impl AppState {
             persisted?;
             return Ok(view);
         }
-        let project = self.orch_for(&project_id)?.clone();
-        let row = PendingRow {
-            entity_id: plan_id.clone(),
-            project_id: project_id.clone(),
-            title: goal.clone(),
-            // A plan cuts no branch and claims no checkout: it is written
-            // against the primary one, so nothing else can collide with it.
-            branch: None,
-            state: PendingState::Creating,
-            checkout_id: None,
-            implements: None,
-            since: std::time::Instant::now(),
-        };
-        let store = self.require_store()?.clone();
-        self.defer_lifecycle(
-            row,
-            Box::new(OpenPlanWorkspace {
-                project,
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            project_id.clone(),
+            goal.clone(),
+            Box::new(IssueOpened {
+                project_id,
                 plan_id: plan_id.clone(),
-                store,
-                opening: Box::new(IssueOpened {
-                    project_id,
-                    plan_id,
-                    goal,
-                    base_branch: base,
-                    model_choice,
-                    detail: thread_detail(params),
-                }),
+                goal,
+                base_branch: base,
+                model_choice,
+                detail: thread_detail(params),
             }),
-        )
+        )?;
+        Ok(self.defer_job(job))
     }
 
     /// `plan.create`'s apply half: the Issue's record, its first turn, and the
@@ -10095,7 +10079,8 @@ impl AppState {
         if self.agent_is_on_its_way(&checkout, &agent_id) {
             return Ok(None);
         }
-        self.reserve_plan_workspace(issue_id, title, opening)
+        let project_id = self.project_of(issue_id)?;
+        self.reserve_plan_workspace(issue_id, project_id, title, opening)
             .map(Some)
     }
 
@@ -10103,13 +10088,17 @@ impl AppState {
     /// build the job that writes it. The row stands on the Issue itself: what
     /// it holds is the one workspace every door writes into, so a second door
     /// waits rather than racing this one's `.build/` config.
+    ///
+    /// The project comes from the caller: an Issue being created is not in
+    /// `entity_project` until its epilogue runs, and `plan.create` reserves
+    /// through here like every other door.
     fn reserve_plan_workspace(
         &mut self,
         issue_id: &str,
+        project_id: String,
         title: String,
         opening: Box<dyn PlanSessionOpening>,
     ) -> Result<WorktreeLifecycleJob, String> {
-        let project_id = self.project_of(issue_id)?;
         let project = self.orch_for(&project_id)?.clone();
         let store = self.require_store()?.clone();
         let row = PendingRow {
@@ -11143,6 +11132,7 @@ impl AppState {
         persisted?;
         let job = self.reserve_plan_workspace(
             &plan_id,
+            project_id.clone(),
             title,
             Box::new(PlanNotesSent {
                 plan_id: plan_id.clone(),
@@ -11229,6 +11219,7 @@ impl AppState {
         let title = active.plan.goal.clone();
         let job = self.reserve_plan_workspace(
             &plan_id,
+            project_id.clone(),
             title,
             Box::new(StageNotesSent {
                 plan_id: plan_id.clone(),
@@ -11263,6 +11254,7 @@ impl AppState {
         persisted?;
         let job = self.reserve_plan_workspace(
             &plan_id,
+            project_id.clone(),
             title,
             Box::new(PlanMessaged {
                 plan_id: plan_id.clone(),

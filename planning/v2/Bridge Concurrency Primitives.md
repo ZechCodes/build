@@ -2024,3 +2024,16 @@ that mark.
 
 The spec's load test, `bridge/tests/concurrency_load.rs`, is the only one that
 measures a number.
+
+**Shipped**, as `the_daemon_answers_reads_and_writes_while_three_ptys_flood`.
+Three of the human's own shells are spawned by `term.create` and flooded
+through the pump at a rate the test sets rather than at whatever speed a
+machine can run `yes` — each shell is a script that answers one line of input
+with a fixed burst, so the same bytes per second are parsed on a laptop and on
+a loaded CI box — while one caller per method reads `board.list`, posts to an
+adopted run's agent and cuts a worktree, each timed around
+`FrameHandler::call` and reconciled against `bridge.stats` so a frame the
+clock did not count fails the run. On the machine it was written on: 98 KB/s
+painted into each of the three screens, `board.list` p95 4.4 ms over 176
+frames, `thread.post` p95 3.6 ms, `worktree.create` p95 65 ms — against the
+spec's 200 ms and 500 ms.

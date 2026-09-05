@@ -2638,3 +2638,68 @@ fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
         AgentActivity::TaskUpdate { summary } if summary.contains("Terminal")
     ));
 }
+
+#[test]
+fn context_compaction_and_review_mode_transitions_stay_visible() {
+    let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
+    let envelope = |item: Value| json!({"threadId":"thread-1","turnId":"turn-1","item":item});
+    let summaries = |reports: Vec<crate::harness::ActivityReport>| {
+        reports
+            .into_iter()
+            .map(|report| match report.activity {
+                AgentActivity::TaskUpdate { summary } => summary,
+                other => panic!("expected a task update, got {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let compaction = json!({"id":"compaction-1","type":"contextCompaction"});
+    let compaction_started = summaries(
+        translator
+            .translate("item/started", &envelope(compaction.clone()))
+            .unwrap(),
+    );
+    let compaction_completed = summaries(
+        translator
+            .translate("item/completed", &envelope(compaction))
+            .unwrap(),
+    );
+    assert_eq!(compaction_started.len(), 1);
+    assert!(compaction_started[0].contains("Context compaction"));
+    assert!(compaction_started[0].contains("started"));
+    assert_eq!(compaction_completed.len(), 1);
+    assert!(compaction_completed[0].contains("Context compaction"));
+    assert!(compaction_completed[0].contains("completed"));
+
+    let mut transitions = Vec::new();
+    for (item, expected) in [
+        (
+            json!({"id":"review-1","type":"enteredReviewMode"}),
+            "Entered review mode",
+        ),
+        (
+            json!({"id":"review-2","type":"exitedReviewMode"}),
+            "Exited review mode",
+        ),
+    ] {
+        assert!(translator
+            .translate("item/started", &envelope(item.clone()))
+            .unwrap()
+            .is_empty());
+        let completed = summaries(
+            translator
+                .translate("item/completed", &envelope(item))
+                .unwrap(),
+        );
+        assert_eq!(completed, vec![expected.to_string()]);
+        transitions.extend(completed);
+    }
+
+    for summary in compaction_started
+        .into_iter()
+        .chain(compaction_completed)
+        .chain(transitions)
+    {
+        assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT);
+    }
+}

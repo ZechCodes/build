@@ -5830,17 +5830,23 @@ impl AppState {
     /// A screen waiting for its first spawn is a tab one step early and follows
     /// the same rule: [`ensure_agent_tab`] carries its clients onto the real
     /// screen, so a session left behind here would be pushed to for the life of
-    /// that tab. Such a screen exists only to hold clients and the viewport
-    /// they render at — with the last one gone there is nothing to hold, and
-    /// the spawn is sized the way an unwatched spawn always was.
+    /// that tab. The screen itself stays in the registry however empty it is:
+    /// an attach clones it under the app mutex and registers on it with the
+    /// mutex released, so the client arriving as the last one leaves must
+    /// still find it where the spawn will look. Emptied, it carries no
+    /// viewport — the spawn is sized the way an unwatched spawn always was —
+    /// and the next attach's viewport resizes it. It is bounded at one per
+    /// agent key and leaves with the spawn that inherits it, the agent's
+    /// retirement, or the reaper.
     fn drop_session(&mut self, session_id: &str) {
-        for tab in self.tabs.values() {
-            if let Some(screen) = &tab.screen {
-                screen.detach(session_id);
-            }
+        for screen in self
+            .tabs
+            .values()
+            .filter_map(|tab| tab.screen.as_ref())
+            .chain(self.agent_screens_awaiting_spawn.values())
+        {
+            screen.detach(session_id);
         }
-        self.agent_screens_awaiting_spawn
-            .retain(|_, screen| screen.detach(session_id));
     }
 
     /// Close every tab whose worktree is gone from disk (spec §2.6.3), killing
@@ -17980,12 +17986,14 @@ fn inherit_waiting_clients(
     match tab.terminal_handle() {
         Ok(terminal) => {
             let (cols, rows) = waiting.size();
-            terminal.screen().carry_clients_from(&waiting);
-            Some(InheritedViewport {
-                terminal,
-                cols,
-                rows,
-            })
+            terminal
+                .screen()
+                .carry_clients_from(&waiting)
+                .then_some(InheritedViewport {
+                    terminal,
+                    cols,
+                    rows,
+                })
         }
         // There is no real screen to carry them onto — see
         // [`NO_TERMINAL_LEFT`].
@@ -34868,6 +34876,74 @@ mod tests {
             (120, 40),
             "with nobody left waiting, the spawn keeps the size Build chose"
         );
+    }
+
+    /// An attach clones the waiting screen under the app mutex and registers
+    /// on it with the mutex released, so the last client already on that
+    /// screen can leave in between. The screen must still be the one the spawn
+    /// carries from: dropped from the registry the moment it emptied, the
+    /// client arriving on it would be on a screen nothing feeds and nothing
+    /// closes, blank for the life of the tab.
+    #[tokio::test]
+    async fn a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_the_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _) = agent_tab_fixture(&repo, dir.path(), "run-attach-race");
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let (leaving, _pushes, _key) = SessionSender::observable("leaving");
+        let waiting = handler.call(
+            leaving,
+            req(
+                "agent.attach",
+                json!({ "project_id": project_id, "cols": 90, "rows": 25 }),
+            ),
+        );
+        assert_eq!(waiting["ok"], true, "{waiting:?}");
+
+        // What a second attach, already past the app mutex, is holding.
+        let in_flight = state
+            .lock()
+            .unwrap()
+            .agent_screens_awaiting_spawn
+            .values()
+            .next()
+            .expect("the first attach left a screen waiting for the spawn")
+            .clone();
+        state.lock().unwrap().drop_session("leaving");
+        let (arriving, mut pushes, session_key) = SessionSender::observable("arriving");
+        in_flight.attach(&arriving, Some((90, 25)));
+
+        let (wire_id, _) = deliver(
+            &state,
+            &repo,
+            "run-attach-race",
+            &crate::agent::derived_agent_id("run-attach-race"),
+            &ModelChoice::default(),
+            "COLD-PROMPT",
+            "WARM-NUDGE",
+        )
+        .expect("the delivery spawns the worktree's agent");
+
+        let key = derived_agent_key(&AppState::canonical_root(&repo), "run-attach-race");
+        {
+            let s = state.lock().unwrap();
+            let screen = screen_of(&s.tabs[&key]);
+            assert_eq!(
+                screen.attached_sessions(),
+                vec!["arriving".to_string()],
+                "the client that arrived as the last one left is on the agent's screen"
+            );
+            assert_eq!(
+                screen.size(),
+                (90, 25),
+                "at the viewport it is rendering at"
+            );
+        }
+        wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.reset" && push["term_id"] == wire_id
+        })
+        .await;
+        state.lock().unwrap().tabs[&key].session.end();
     }
 
     #[tokio::test]

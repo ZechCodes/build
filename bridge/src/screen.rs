@@ -456,15 +456,13 @@ impl ScreenHandle {
             .ack(&self.term_id, session_id, cursor);
     }
 
-    /// Drop a client from this screen. Answers whether any client is left —
-    /// a screen nobody is watching for an agent that does not exist yet is a
-    /// screen with nothing to hold.
-    pub fn detach(&self, session_id: &str) -> bool {
-        let mut screen = self.screen.lock().unwrap();
-        screen
+    /// Drop a client from this screen.
+    pub fn detach(&self, session_id: &str) {
+        self.screen
+            .lock()
+            .unwrap()
             .attached
             .retain(|client| client.sender.session_id() != session_id);
-        !screen.attached.is_empty()
     }
 
     /// The pump's write: PTY bytes into the model and the coalescing buffer.
@@ -506,22 +504,28 @@ impl ScreenHandle {
 
     /// Take the clients waiting on `waiting` — and the viewport they are
     /// rendering at — onto this screen, and leave that screen pointing here so
-    /// a client still on its way finds them.
+    /// a client still on its way finds them. Answers whether anyone was
+    /// carried: a waiting screen everybody has left has no viewport to adopt,
+    /// and this screen keeps the grid it was born with.
     ///
     /// Two screens are never locked at once: the waiting screen is drained
     /// under its own lock, which is released before this one is taken.
-    pub fn carry_clients_from(&self, waiting: &ScreenHandle) {
+    pub fn carry_clients_from(&self, waiting: &ScreenHandle) -> bool {
         let (carried, cols, rows) = {
             let mut waiting = waiting.screen.lock().unwrap();
             let carried = std::mem::take(&mut waiting.attached);
             waiting.superseded_by = Some(self.clone());
             (carried, waiting.cols, waiting.rows)
         };
+        if carried.is_empty() {
+            return false;
+        }
         let mut screen = self.screen.lock().unwrap();
         screen.set_size(cols, rows);
         for client in &carried {
             screen.register(&self.term_id, &client.sender);
         }
+        true
     }
 
     /// Tell every attached client this terminal ended, and why — and every
@@ -848,6 +852,30 @@ mod tests {
             seen.iter()
                 .any(|push| push["type"] == "term.closed" && push["reason"] == "closed"),
             "the late client is told the terminal is gone: {seen:?}"
+        );
+    }
+
+    /// A waiting screen everyone has left stays in the registry for the client
+    /// whose attach is already holding it, so a spawn can inherit it empty. It
+    /// has no viewport to hand on then: the new screen keeps the grid it was
+    /// born with, and the child is told nothing.
+    #[test]
+    fn carrying_from_a_screen_everyone_left_adopts_no_viewport() {
+        let waiting = ScreenHandle::new("agent:unwatched", 90, 25);
+        let (sender, _pushes, _key) = SessionSender::observable("left");
+        waiting.attach(&sender, Some((90, 25)));
+        waiting.detach("left");
+        let born = ScreenHandle::new("agent:unwatched", 120, 40);
+
+        assert!(!born.carry_clients_from(&waiting), "nobody was carried");
+        assert_eq!(born.size(), (120, 40), "the grid Build chose stands");
+
+        let (late, _pushes, _key) = SessionSender::observable("late");
+        waiting.attach(&late, Some((90, 25)));
+        assert_eq!(
+            born.attached_sessions(),
+            vec!["late".to_string()],
+            "the carry still points a late attach at the screen it superseded"
         );
     }
 

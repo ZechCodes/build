@@ -36,7 +36,6 @@ LOGIN_PATH_TEMPLATE = "/auth/login?next={next_path}"
 EMAIL_FIELD = "email"
 
 
-
 def login_redirect_path(token: str) -> str:
     """Back here after login. Skrift stores ``next`` in its own session key and honours
     it after a sign-in AND after a passkey account creation, so a guest with no account

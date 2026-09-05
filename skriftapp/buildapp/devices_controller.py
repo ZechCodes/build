@@ -33,7 +33,7 @@ from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device, EphemeralToken
-from buildapp.request_body import require_json_object
+from buildapp.request_body import read_json_object
 from buildapp.session_auth import require_user
 from buildapp.token_hash import token_hash
 
@@ -41,7 +41,6 @@ from buildapp.token_hash import token_hash
 PENDING_TTL = timedelta(minutes=15)
 # Gateway tokens are short-lived; the SPA re-mints on (re)connect.
 GATEWAY_TOKEN_TTL = timedelta(minutes=5)
-
 
 
 def device_summary(device: Device) -> dict:
@@ -81,7 +80,7 @@ class DevicesController(Controller):
     async def register(self, request: Request, db_session: AsyncSession) -> Response:
         """A bridge self-registers as *pending*. Verifies the Ed25519 signature over the
         registration challenge (proof of key possession) before storing anything."""
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         try:
             device_id = UUID(str(body["device_id"]))
             name = str(body["name"]).strip() or "device"
@@ -150,7 +149,7 @@ class DevicesController(Controller):
         """Resolve a pairing code to a pending device so the human can compare its
         fingerprint before approving."""
         require_user(request)
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         code = str(body.get("code", "")).strip()
         if not code:
             raise ClientException("code required")
@@ -174,7 +173,7 @@ class DevicesController(Controller):
         cap is checked here, the one moment a device becomes an account's, so a
         revoked device frees its slot and a pending one waits for it."""
         user_id = require_user(request)
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         code = str(body.get("code", "")).strip()
         if not code:
             raise ClientException("code required")
@@ -294,7 +293,7 @@ class DevicesController(Controller):
         self, device_id: UUID, request: Request, db_session: AsyncSession
     ) -> Response:
         """The relay reports a device online/offline so the SPA can show a status dot."""
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         online = bool(body.get("online", False))
         device = await db_session.get(Device, device_id)
         if device is None:

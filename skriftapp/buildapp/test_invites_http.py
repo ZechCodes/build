@@ -42,6 +42,7 @@ from buildapp.invites_controller import (
     InvitesController,
 )
 from buildapp.models import Invite
+from buildapp.request_body import MALFORMED_JSON_MESSAGE
 
 INVITED = "invitee@example.com"
 OTHER_ADDRESS = "someone.else@example.com"
@@ -216,6 +217,19 @@ def test_a_body_that_is_not_an_object_is_refused(client):
     assert client.post(INVITES_API_PATH, json=["invitee@example.com"]).status_code == (
         HTTP_400_BAD_REQUEST
     )
+
+
+def test_a_body_that_is_not_json_at_all_is_refused(client, email_backend):
+    sign_in_as_admin(client)
+    response = client.post(
+        INVITES_API_PATH,
+        content=b"{not json",
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == HTTP_400_BAD_REQUEST
+    assert response.json()["detail"] == MALFORMED_JSON_MESSAGE
+    assert stored_invites(client) == []
+    assert email_backend.sent == []
 
 
 def test_an_account_without_the_administrator_permission_may_not_invite(

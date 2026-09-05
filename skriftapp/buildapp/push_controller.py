@@ -42,9 +42,8 @@ from buildapp import pairing_crypto, web_push
 from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.models import Device
-from buildapp.request_body import require_json_object
+from buildapp.request_body import read_json_object
 from buildapp.session_auth import require_user
-
 
 
 # The freshness window alone leaves a captured signed notify replayable for its
@@ -93,7 +92,7 @@ class PushController(Controller):
         user. The endpoint is unique per browser+origin, so an existing row for it
         is updated in place — including when a different account logs in."""
         user_id = require_user(request)
-        body = await request.json()
+        body = await read_json_object(request)
         try:
             endpoint = str(body["endpoint"])
             keys = body["keys"]
@@ -111,7 +110,7 @@ class PushController(Controller):
     async def unsubscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Remove this browser's subscription — only if the current user owns it."""
         user_id = require_user(request)
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         endpoint = str(body.get("endpoint", ""))
         if not endpoint:
             raise ClientException("endpoint required")
@@ -133,7 +132,7 @@ class PushController(Controller):
         into ``/app/``) to every subscription of the device's owner. Authenticated
         by the device's Ed25519 signature over a timestamped challenge that binds
         the task and kind; a freshness window bounds replay."""
-        body = await request.json()
+        body = await read_json_object(request)
         try:
             device_id = UUID(str(body["device_id"]))
             task_id = str(body["task_id"])

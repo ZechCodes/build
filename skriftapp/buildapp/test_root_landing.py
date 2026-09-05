@@ -12,8 +12,9 @@ from pathlib import Path
 
 import pytest
 from litestar.exceptions import NotFoundException
-from litestar.response import Response
+from litestar.response import Redirect, Response
 
+from buildapp import releases
 from buildapp.landing_page import SHELL_NAME, slot_placeholder
 from buildapp.root_controller import (
     LANDING_DIR,
@@ -1031,3 +1032,17 @@ def test_every_markup_class_has_a_rule_and_every_rule_class_is_applied():
     assert markup_classes <= styled_classes
     for styled_class in styled_classes - markup_classes:
         assert f'"{styled_class}"' in module_sources
+
+
+def test_install_sh_redirects_to_the_install_script_on_the_configured_release_repo():
+    response = asyncio.run(RootController.install_script.fn(None))
+    assert isinstance(response, Redirect)
+    assert response.url == (
+        "https://github.com/ZechCodes/build-releases/releases/latest/download/install.sh"
+    )
+
+
+def test_install_sh_follows_the_release_repo_the_environment_names(monkeypatch):
+    monkeypatch.setenv(releases.RELEASES_REPO_ENV, "someone/forks")
+    response = asyncio.run(RootController.install_script.fn(None))
+    assert response.url.startswith("https://github.com/someone/forks/releases/latest/")

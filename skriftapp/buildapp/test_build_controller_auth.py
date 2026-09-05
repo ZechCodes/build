@@ -11,14 +11,22 @@ from __future__ import annotations
 import asyncio
 import inspect
 from types import SimpleNamespace
+from unittest.mock import patch
+from uuid import uuid4
 
 from litestar.handlers import HTTPRouteHandler
 from litestar.response import Redirect
 
 from skrift.auth.session_keys import SESSION_USER_ID
 
+SIGNED_IN_ADDRESS = "someone@example.com"
+
+from buildapp import controllers
 from buildapp.controllers import BuildController
 from buildapp.desktop_auth import build_auth_guard
+from buildapp.email_test_support import email_settings
+from buildapp.invite_pages import INVITE_ONLY_HEADING
+from buildapp.releases import PLATFORMS
 
 
 def _route_handlers() -> list[HTTPRouteHandler]:
@@ -29,9 +37,21 @@ def _route_handlers() -> list[HTTPRouteHandler]:
     ]
 
 
-def _call_index(session: dict):
+def _call_index(session: dict, *, member: bool = False, email: str = SIGNED_IN_ADDRESS):
     request = SimpleNamespace(session=session)
-    return asyncio.run(BuildController.index.fn(None, request=request, db_session=None))
+    with patch.object(controllers, "is_alpha_member", _answer(member)), patch.object(
+        controllers, "account_email", _answer(email)
+    ):
+        return asyncio.run(
+            BuildController.index.fn(None, request=request, db_session=None)
+        )
+
+
+def _answer(value):
+    async def answer(*_args, **_kwargs):
+        return value
+
+    return answer
 
 
 def test_index_redirects_anonymous_visitors_to_login():
@@ -64,3 +84,27 @@ def test_no_async_handler_carries_sync_to_thread():
                 f"{list(handler.paths)}: sync_to_thread has no effect on an async "
                 "callable and warns on every boot"
             )
+
+
+def test_a_signed_in_account_with_no_invite_gets_the_invite_only_page():
+    response = _call_index({SESSION_USER_ID: str(uuid4())}, member=False)
+    assert response.status_code == 403
+    assert response.media_type == "text/html"
+    assert INVITE_ONLY_HEADING in response.content
+    assert SIGNED_IN_ADDRESS in response.content
+
+
+def test_the_downloads_route_carries_the_membership_guard():
+    downloads = next(
+        handler for handler in _route_handlers() if "/downloads" in handler.paths
+    )
+    assert build_auth_guard in (downloads.guards or [])
+
+
+def test_the_downloads_route_answers_the_shared_payload():
+    with patch.object(controllers, "get_settings", email_settings):
+        payload = asyncio.run(BuildController.downloads.fn(None))
+    assert [platform["key"] for platform in payload["platforms"]] == [
+        key for key, _ in PLATFORMS
+    ]
+    assert payload["install_command"].startswith("curl -fsSL ")

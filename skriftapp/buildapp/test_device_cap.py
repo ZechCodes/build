@@ -1,10 +1,15 @@
 """An account holds at most MAX_DEVICES_PER_USER approved devices: approving a
 pairing code past the cap is refused with a message that says so, and revoking
-one frees its slot."""
+one frees its slot.
+
+The user here is an alpha member — every device route rides ``build_auth_guard``,
+which now requires a redeemed invite — so these tests seed one and then say nothing
+more about membership."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,7 +22,8 @@ from sqlalchemy.pool import StaticPool
 
 from buildapp import desktop_auth, devices_controller, pairing_crypto
 from buildapp.devices_controller import MAX_DEVICES_PER_USER, DevicesController
-from buildapp.models import Device
+from buildapp.models import Device, Invite
+from buildapp.token_hash import token_hash
 
 IN_MEMORY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 USER = uuid4()
@@ -39,6 +45,10 @@ def client(monkeypatch) -> Iterator[TestClient]:
     async def create_tables(app: Litestar) -> None:
         async with engine.begin() as connection:
             await connection.run_sync(Device.__table__.create)
+            await connection.run_sync(Invite.__table__.create)
+        async with make_session() as session:
+            session.add(_membership(USER))
+            await session.commit()
 
     async def dispose_engine(app: Litestar) -> None:
         await engine.dispose()
@@ -50,8 +60,21 @@ def client(monkeypatch) -> Iterator[TestClient]:
         on_shutdown=[dispose_engine],
     )
     app.state.make_session = make_session
+    app.state.session_maker_class = make_session
     with TestClient(app=app) as test_client:
         yield test_client
+
+
+def _membership(user_id: UUID) -> Invite:
+    """The redeemed, unrevoked invite that makes this account an alpha member."""
+    now = datetime.now(tz=timezone.utc)
+    return Invite(
+        token_hash=token_hash(f"inv_{user_id}"),
+        email="member@example.com",
+        expires_at=now + timedelta(days=14),
+        redeemed_by=user_id,
+        redeemed_at=now,
+    )
 
 
 def _pending(code: str) -> Device:

@@ -1212,13 +1212,20 @@ build settled differently, and why:
   (a card goes back on the board if the record fails; the primary checkout was
   never a card and must not become one). Two mutations spelled the same
   sequence twice.
-- **Convergence is an answer, not a refusal.** The decide phase's third early
-  return answers `{"run_id", "adopting": true}` from the row already claiming
-  this checkout, so a second browser gets the id of the run the first one is
-  opening — `createScopedAdoptingCall` (spa/src/core/adoption.js:20) reads
-  `view.run_id` and nothing else. Which rows can be converged on is
-  `PendingState::leaves_a_record`'s question, on the type: a verb discarding a
-  checkout leaves nothing to converge on.
+- **Convergence is a refusal, and the retry is the answer.** The decide phase
+  has two early returns, not three: a checkout that already has an owner
+  answers with that run's view, and a checkout an adoption is opening right now
+  is refused by the row that adoption reserved — the same refusal every other
+  lifecycle collision gets. Answering `{"run_id", "adopting": true}` from the
+  row instead was a reply promising state that is not durable: that run is not
+  in `self.runs` until the epilogue lands, and an adoption whose `perform`
+  fails never mints it at all, while `createScopedAdoptingCall`
+  (spa/src/core/adoption.js:20) caches the id and fires the next verb against
+  it. A refusal is what that client already handles — `adoptInFlight` is
+  cleared on a rejected adopt — so the retry re-adopts, finds the real owner
+  through `run_owning_worktree_id`, and converges one round trip later on an id
+  every verb accepts. `PendingState::leaves_a_record` went with it: the state
+  is rendered and nothing branches on it.
 - **A checkout no run owns is adopted through the same job now.**
   `adopt_implementation_checkout`'s `None` arm no longer calls `run_adopt`
   under the mutex (the note in the first half's build said this was the
@@ -1237,19 +1244,39 @@ build settled differently, and why:
   legality of the abandon is judged in the decide phase instead
   (`run_transition(state, Abandon)`, pure), so the epilogue's verdict cannot
   refuse — `AdoptableCheckout::judge`'s rule, applied to the run.
-- **`run.delete` uses the same mutation.** It is the other caller of
-  `Orchestrator::discard_worktree`, and it ran that under the mutex. One
-  `DiscardedCheckout` covers all three outcomes — `Removed` (directory goes,
-  branch stays: abandon), `Pruned` (both go: delete), `Kept` (nothing on disk
-  is touched: the primary checkout, or a checkout adopted from the user) — and
-  owns the wait, which only a removal needs. `Orchestrator::discard_worktree`
-  and `discard_checkout_keeping_branch` collapse into one public
-  `discard_checkout(worktree, keep_branch)`: whether the branch stays is the
-  caller's fact and was never derivable there.
-- **What each discard still owes is a `DiscardSettlement`.** `RunAbandoned`
-  writes the verdict, the stage reconciliation and the Issue's lineage;
-  `RunDeleted` clears the card. Both take the `ActiveRun` and the
-  `StagePublications` as arguments, because the git phase carried them.
+- **`run.delete` uses the same mutation, and the same decide phase.** It is the
+  other caller of `Orchestrator::discard_worktree`, and it ran that under the
+  mutex. One `DiscardedCheckout` covers all three outcomes — `Removed`
+  (directory goes, branch stays: abandon), `Pruned` (both go: delete), `Kept`
+  (nothing on disk is touched) — and owns the wait, which only a removal needs.
+  `Orchestrator::discard_worktree` and `discard_checkout_keeping_branch`
+  collapse into one public `discard_checkout(worktree, keep_branch)`: whether
+  the branch stays is the caller's fact and was never derivable there.
+  Everything the two verbs share — the row, the run coming out of the map, the
+  cached stat, the agents retired — is one `AppState::discard_run`, and each
+  verb is its own refusals plus the three things that differ (which
+  `DiscardedCheckout`, which `DiscardSettlement`, what the row is called).
+- **The `Orchestrator` rides in the arms that prune with it.**
+  `DiscardedCheckout::Removed` and `Pruned` carry `{ project, worktree }`;
+  `Kept` carries nothing, because there is a discard with no orchestrator to
+  reach for. A run recovered after its repository moved off disk has no
+  `entity_project` entry (`recover_run` inserts one only when
+  `record.project_path` still exists), and that stale card is exactly what
+  `run.delete` is for — so the delete resolves `Option<String>` /
+  `Option<Orchestrator>`, forces `Kept` when either is absent, and leaves the
+  directory alone. A required `project` field on the mutation would have made
+  the one card that most needs deleting undeletable.
+- **What each discard still owes is a `DiscardSettlement`, and it says what
+  git it needs.** `RunAbandoned` writes the verdict, the stage reconciliation
+  and the Issue's lineage; `RunDeleted` clears the card. `settle` takes only
+  the `ActiveRun`, which the git phase carried; the stage verdict is
+  `RunAbandoned`'s own, asked through `judge_before_removal` — a trait method
+  with an empty default body, so a settlement that judges nothing declares
+  nothing and `run.delete` builds no `StagePublicationQuery` and pays for no
+  `bounded_git_fetch`. Passing every settlement a verdict only one of them
+  reads hid which verb needs a pre-removal question, and would have charged a
+  plan-less run carrying stage progress a 30 s-bounded fetch per stage for an
+  answer it discards.
 - **`run.release` builds no job, as declared.** Re-read against the code: a
   store delete, a map remove, `retire_agent_tabs` (receipts dropped — the kill
   is already a thread's) and `rescan_external_worktrees` (already a spawn).
@@ -1257,11 +1284,22 @@ build settled differently, and why:
   `AppState::forget_run`.
 - **`MintedProject` was not built either.** `add_project` mints from its own
   counter and is idempotent by canonical path; minting in the decide phase
-  would put that fact in two places for a row nobody renders yet. What two
-  project verbs actually contend over is the directory, so the row's
-  `entity_id` IS the destination's checkout id — `project.clone` and
-  `project.create` racing one folder collide on the board instead of in `git
-  clone`. `project_id` on those rows is empty until the epilogue registers one.
+  would put that fact in two places for a row nobody renders. What two project
+  verbs actually contend over is the directory, so the row's `entity_id` IS the
+  destination's checkout id — `project.clone` and `project.create` racing one
+  folder collide on the board instead of in `git clone`, and
+  `project.set_remote` reserves the repository it is about to rewrite through
+  the same door, so two of those are one. `PendingRow.project_id` is
+  `Option<String>` and every project row's is `None`: nothing the board lists
+  stands where such a row does, so `pending_rows_json` skips them rather than
+  handing `board.list` a row whose `entity_id` is a folder hash beside rows
+  whose ids are runs and checkouts. `PendingState` gained `Updating` for
+  `set_remote`, which mints nothing and takes nothing away — borrowing
+  `Creating` told the board a registered project was being created, and told
+  the user's refusal message the same. The rows that do render now name their
+  project through `project_name_by_id`; `project_name_of` reads `entity_project`
+  and had been answering the empty string on every pending row since the row
+  was introduced.
 - **`project.create` moved with the other three.** It is four subprocesses
   (`init`, `add`, `commit`, `remote add`) under the mutex and the same
   primitive, so leaving it would have been the one project door still holding
@@ -1300,7 +1338,20 @@ build settled differently, and why:
   `project_clone_registers_its_project_from_the_landed_path`,
   `project_create_writes_its_repository_with_the_state_lock_free`,
   `project_set_remote_writes_its_config_with_the_state_lock_free`,
-  `a_clone_that_fails_rolls_its_reservation_back_and_leaves_no_row`.
+  `a_clone_that_fails_rolls_its_reservation_back_and_leaves_no_row`,
+  `a_run_whose_project_is_gone_is_still_deletable`,
+  `discarding_a_run_drops_the_stat_the_board_cached_for_it`,
+  `a_project_verb_reserves_its_directory_without_a_row_on_the_board`.
+- **`PendingRow` is built through constructors, not a literal.**
+  `PendingRow::creating` / `::discarding` / `::on_directory` with
+  `.on_branch()`, `.on_checkout()` and `.implementing()` — so `since` and the
+  three optional claims are spelled in the module that owns the concept rather
+  than at eleven decide phases, and a new verb cannot forget one.
+- **`settle_abandoned_run` is three functions.** The run's own verdict stays;
+  `close_abandoned_run_conversations(&mut ActiveRun)` takes the primary
+  thread's close and the per-agent death loop, and `record_abandon_on_issue`
+  takes both halves of the Issue write, so the `Option<issue_id>` is
+  destructured once at the call site instead of twice in a row.
 - **`DiscardedCheckout::Pruned` is defensive, not reachable from today's board.**
   `run.delete` prunes only a run that is plan-less AND not adopted, and every
   plan-less run the daemon mints now comes through `adopt` (`run.adopt` and

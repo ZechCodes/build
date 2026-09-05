@@ -2165,6 +2165,32 @@ fn completed_item_lru_evicts_non_fatally_and_refreshes_duplicates() {
 }
 
 #[test]
+fn an_individually_oversized_completion_key_is_processed_but_not_retained() {
+    let mut bounded = limits();
+    bounded.completed_items = 4;
+    bounded.completed_item_bytes = 4;
+    let mut translator = CodexActivityTranslator::new(bounded.translator());
+    let completed = item_envelope(json!({"id":"a","type":"agentMessage","text":"once"}));
+
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(translator.completed_item_count(), 0);
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(translator.completed_item_count(), 0);
+}
+
+#[test]
 fn more_than_256_valid_completions_remain_live_and_turn_close_clears_keys() {
     let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
     for index in 0..300 {

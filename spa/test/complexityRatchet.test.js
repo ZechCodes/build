@@ -15,6 +15,9 @@ const RATCHETED_FUNCTIONS = 78;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";
+// A block or file-level disable would switch the rule off for everything
+// below it without touching the count above: none may exist.
+const BLANKET = /eslint-disable(?!-next-line)[^\n]*complexity/;
 
 function jsFiles(dir) {
   return readdirSync(dir, { withFileTypes: true })
@@ -27,6 +30,11 @@ function jsFiles(dir) {
 }
 
 describe("the complexity ratchet", () => {
+  it("is never switched off for a whole block or file", () => {
+    const blanket = jsFiles(SRC).filter((path) => BLANKET.test(readFileSync(path, "utf8")));
+    expect(blanket, "a blanket eslint-disable for complexity defeats the ratchet").toEqual([]);
+  });
+
   it("holds at the count measured when the gate landed", () => {
     const found = jsFiles(SRC).flatMap((path) =>
       readFileSync(path, "utf8")

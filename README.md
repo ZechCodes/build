@@ -63,8 +63,8 @@ itself never leaves the api Secret.
 
 ```bash
 cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
-cd skriftapp && uv run pytest
-cd spa && npm test && npm run build
+cd skriftapp && uv run --frozen ruff check buildapp && uv run --frozen pytest buildapp
+cd spa && npm run lint && npm test && npm run build
 cd desktop && npm test && npm run pack
 ```
 

@@ -138,6 +138,7 @@ async function refreshEntity(entityId) {
   }
 }
 
+// eslint-disable-next-line complexity -- ratchet: onSnapshot is at 14, cap 10 — reduce it, then drop this line
 async function onSnapshot(snapshot) {
   const deviceId = deviceIdNow();
   // The feed's boot paint is this cache talking; only live answers are news.

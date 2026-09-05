@@ -44,6 +44,7 @@ const expiry = (ms, message) => new Promise((_, reject) => setTimeout(() => reje
  *   the moment it does not. Awaited, so what re-establishes a session on a wire
  *   it just took finishes before the link calls itself up.
  */
+// eslint-disable-next-line complexity -- ratchet: createRelayLink is at 13, cap 10 — reduce it, then drop this line
 export function createRelayLink({
   relayUrl,
   transport,
@@ -104,6 +105,7 @@ export function createRelayLink({
     }, delay);
   };
 
+  // eslint-disable-next-line complexity -- ratchet: connect is at 15, cap 10 — reduce it, then drop this line
   async function connect() {
     const mine = ++generation;
     onConnecting();

@@ -64,7 +64,9 @@ class SessionRow:
     ended_at: datetime | None = None
 
 
-def apply_event(row: SessionRow, event: str, path: str, at: datetime) -> None:
+def apply_event(  # noqa: C901 — ratchet: at 13, cap 10; a handler table keyed by event word, then drop this
+    row: SessionRow, event: str, path: str, at: datetime
+) -> None:
     """Absorb one event into ``row``. Out-of-order and repeated events are
     absorbed (spec §Storage): the earliest ``minted`` and ``ended`` stand, a
     ``carrying`` before its ``minted`` still counts, and nothing unsets an end.

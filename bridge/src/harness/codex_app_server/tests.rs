@@ -319,6 +319,7 @@ impl Write for CapturedWriter {
 }
 
 #[test]
+#[allow(clippy::cognitive_complexity)] // ratchet: request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them is at 20, threshold 15 — bring it under, then remove
 fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let connection = AppServerConnection::new(
@@ -1604,6 +1605,7 @@ fn parent_decision(
 }
 
 #[test]
+#[allow(clippy::cognitive_complexity)] // ratchet: every_server_request_has_a_refusing_or_read_only_policy is at 17, threshold 15 — bring it under, then remove
 fn every_server_request_has_a_refusing_or_read_only_policy() {
     let cases = [
         (

@@ -2824,6 +2824,7 @@ impl AppState {
     /// is `Abandoned` (worktree gone, branch kept — exactly what `Abandoned`
     /// means); the repo-missing arms park an adopted run needs-attention and
     /// abandon a native one, both with a reason.
+    #[allow(clippy::cognitive_complexity)] // ratchet: recover_run is at 29, threshold 15 — bring it under, then remove
     fn recover_run(&mut self, record: PersistedRun) -> Result<(), String> {
         let run_id = record.id.clone();
         // Re-derive `plan_path` from the owning plan (recovered first); adopted
@@ -5240,6 +5241,7 @@ impl AppState {
     /// set) is a cross-entity store write-back to the owning plan; every other
     /// report advances the run on `on_run_done`, and a validation pass may then
     /// auto-advance the next approved stage when run-all is armed.
+    #[allow(clippy::cognitive_complexity)] // ratchet: on_run_agent_done is at 20, threshold 15 — bring it under, then remove
     fn on_run_agent_done(&mut self, run_id: &str, report: DoneReport) {
         let Some(mut active) = self.runs.remove(run_id) else {
             return;
@@ -5475,6 +5477,7 @@ impl AppState {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)] // ratchet: consume_recovery_report is at 16, threshold 15 — bring it under, then remove
     fn consume_recovery_report(&mut self, run_id: &str, mut active: ActiveRun, report: DoneReport) {
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let now = now_rfc3339();
@@ -12475,6 +12478,7 @@ impl AppState {
     /// Finish-the-worktree git actions from the diff review: `commit`/`push`
     /// keep the worktree; `merge`/`merge_push` merge into the base and end the
     /// run. Every action commits outstanding work first.
+    #[allow(clippy::cognitive_complexity)] // ratchet: run_git_action is at 18, threshold 15 — bring it under, then remove
     fn run_git_action(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let action = require_str(params, "action")?;
@@ -23029,6 +23033,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: models_list_serves_the_catalog_and_effort_levels is at 16, threshold 15 — bring it under, then remove
     fn models_list_serves_the_catalog_and_effort_levels() {
         let (dir, repo) = init_repo();
         let mut state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock");
@@ -23868,6 +23873,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: git_show_shapes_a_commit_and_its_root_parent is at 17, threshold 15 — bring it under, then remove
     fn git_show_shapes_a_commit_and_its_root_parent() {
         let (dir, repo) = init_repo();
         std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
@@ -24008,6 +24014,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: git_status_reports_tristate_staging_and_excludes_the_mcp_config is at 19, threshold 15 — bring it under, then remove
     fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);
@@ -25661,6 +25668,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: full_multi_stage_lifecycle_plan_then_run is at 16, threshold 15 — bring it under, then remove
     fn full_multi_stage_lifecycle_plan_then_run() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -26387,6 +26395,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: missing_original_branch_starts_nonce_bound_recovery_instead_of_archiving is at 19, threshold 15 — bring it under, then remove
     fn missing_original_branch_starts_nonce_bound_recovery_instead_of_archiving() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -29130,6 +29139,7 @@ mod tests {
     /// told to read them, while a cold one gets the same instruction wrapped in
     /// the plan context it has no way to reconstruct.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: plan_verbs_are_turns_addressed_to_the_primary_checkout is at 26, threshold 15 — bring it under, then remove
     fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -41403,6 +41413,7 @@ mod tests {
     /// in the inbox with live status, and unmuting shows exactly what was
     /// waiting — the read cursor never moved.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: muting_an_entry_silences_its_badge_and_unmuting_brings_it_back is at 27, threshold 15 — bring it under, then remove
     fn muting_an_entry_silences_its_badge_and_unmuting_brings_it_back() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -41553,6 +41564,7 @@ mod tests {
     /// moment the agent asks for something. Nothing un-dismisses it, because
     /// nothing has to.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: dismissing_a_row_clears_it_until_the_work_speaks_again is at 17, threshold 15 — bring it under, then remove
     fn dismissing_a_row_clears_it_until_the_work_speaks_again() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -42755,6 +42767,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: archived_list_gathers_finished_work_across_every_project is at 19, threshold 15 — bring it under, then remove
     fn archived_list_gathers_finished_work_across_every_project() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
@@ -43216,6 +43229,7 @@ mod tests {
     /// conversation. Nothing an agent says lands in another agent's thread —
     /// that separation is the whole point of the rail.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: agent_add_gives_a_branch_a_second_conversation is at 20, threshold 15 — bring it under, then remove
     fn agent_add_gives_a_branch_a_second_conversation() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -43391,6 +43405,7 @@ mod tests {
     /// agent, an unknown entity, and an issue — whose one agent IS the issue's
     /// conversation. On a branch every agent may go, the primary included.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: agent_remove_refuses_an_issue_and_an_unknown_agent_but_never_the_primary is at 18, threshold 15 — bring it under, then remove
     fn agent_remove_refuses_an_issue_and_an_unknown_agent_but_never_the_primary() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -44148,6 +44163,7 @@ mod tests {
     /// deep-links to it), but `board_list`'s feed leaves it out — it is not
     /// work the user started in Build.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows is at 25, threshold 15 — bring it under, then remove
     fn the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -44949,6 +44965,7 @@ mod tests {
     /// merge finishes both; deleting the branch instead hands the issue back
     /// to the inbox, with its conversation naming the branch it lost.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: branch_finish_ends_the_issue_only_when_the_work_was_merged is at 16, threshold 15 — bring it under, then remove
     fn branch_finish_ends_the_issue_only_when_the_work_was_merged() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
@@ -45094,6 +45111,7 @@ mod tests {
     /// call cuts the branch, takes ownership of it, puts an agent on it, hands
     /// that agent the words, and tells the harness there is something to read.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: branch_dispatch_cuts_a_branch_and_puts_an_agent_to_work_on_it is at 19, threshold 15 — bring it under, then remove
     fn branch_dispatch_cuts_a_branch_and_puts_an_agent_to_work_on_it() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
@@ -45834,6 +45852,7 @@ mod tests {
     /// shape every work item ships: what it says, that nothing has been
     /// decided yet, and none of the branch facts it does not have.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: a_capture_being_routed_is_a_feed_row is at 21, threshold 15 — bring it under, then remove
     fn a_capture_being_routed_is_a_feed_row() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());

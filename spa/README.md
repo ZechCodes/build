@@ -31,6 +31,7 @@ next to this repo (same convention as `web/` and CI).
 
 ```bash
 npm install
+npm run lint       # eslint: one rule — no function over complexity 10
 npm test           # vitest: session core, diff, markdown, notes, router, terminal
 npm run build      # emits skriftapp/buildapp/static/ (served by BuildController)
 npm run dev        # Vite dev server (proxy /api to a running skriftapp yourself)

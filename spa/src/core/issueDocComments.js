@@ -122,6 +122,7 @@ export function createDocCommentLayer({
   /** The tray's actionbar: a quiet hint while nothing is pending, Clear + Send
    *  once there is. Re-rendered in place so a repaint is never needed to keep
    *  the buttons honest. */
+  // eslint-disable-next-line complexity -- ratchet: renderActions is at 11, cap 10 — reduce it, then drop this line
   function renderActions() {
     const actions = q(".csactions");
     const hintHost = q(".cshint");

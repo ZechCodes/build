@@ -8,7 +8,7 @@ One read-only page at ``/admin/transport``, in the admin nav behind the
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from uuid import UUID

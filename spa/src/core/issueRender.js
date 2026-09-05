@@ -142,6 +142,7 @@ export function assignmentPanelHtml({ assignment, catalog = {}, worktrees = [] }
  *  rather than a later hand reaching in to disable it; `deletable` is whether
  *  the issue can still be deleted. Both are decisions (core/taskActions.js), so
  *  they arrive already made. */
+// eslint-disable-next-line complexity -- ratchet: stageListHtml is at 30, cap 10 — reduce it, then drop this line
 export function stageListHtml({
   issue,
   stagesData,
@@ -193,6 +194,7 @@ export function stageListHtml({
 /** One persisted doc comment — which is a message on the issue's conversation,
  *  so its id is the message's. An open one can be withdrawn; an addressed one
  *  carries the agent's reply and is muted. */
+// eslint-disable-next-line complexity -- ratchet: docCommentCardHtml is at 13, cap 10 — reduce it, then drop this line
 export function docCommentCardHtml(comment) {
   const anchor = comment.anchor;
   const headingPath = (anchor && anchor.heading_path) || [];

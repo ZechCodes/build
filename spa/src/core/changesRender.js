@@ -52,6 +52,7 @@ export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now(
 /// rail is reconciled by name rather than rewritten: a commit that is still
 /// there is still the same element after a poll, and the labels between the
 /// rows keep their places without being anything special.
+// eslint-disable-next-line complexity -- ratchet: changesRailEntries is at 12, cap 10 — reduce it, then drop this line
 export function changesRailEntries({ status, log, selected, review = null, nowSeconds = Date.now() / 1000 }) {
   const rrow = (sel, title, sub) =>
     `<div class="${["rrow", selected === sel ? "sel" : ""].filter(Boolean).join(" ")}" data-sel="${sel}">

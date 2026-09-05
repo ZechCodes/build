@@ -288,6 +288,7 @@ export function railStatusShape(status) {
  * A branch with no run is a checkout nobody has claimed: the rail still shows a
  * conversation, and sending in it is what adopts the checkout.
  */
+// eslint-disable-next-line complexity -- ratchet: railEntity is at 19, cap 10 — reduce it, then drop this line
 export function railEntity(payload, kind = "branch") {
   const row = payload || {};
   if (kind === "issue") {

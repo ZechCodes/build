@@ -48,7 +48,9 @@ class TransportController(Controller):
     # 200, not Litestar's 201: nothing is created for the caller to find, and the
     # bridge treats any 2xx as delivered.
     @post(REPORT_ROUTE_PATH, status_code=HTTP_200_OK)
-    async def report(self, request: Request, db_session: AsyncSession) -> Response:
+    async def report(  # noqa: C901 — ratchet: at 11, cap 10; split out the parse and the authorize, then drop this
+        self, request: Request, db_session: AsyncSession
+    ) -> Response:
         body = require_json_object(await request.json())
         try:
             device_id = UUID(str(body["device_id"]))

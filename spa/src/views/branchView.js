@@ -343,6 +343,7 @@ export async function renderBranch() {
 
   /** One read of the branch row. `force` remounts even when the backing is
    *  unchanged (an adoption just happened underneath the plug). */
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
   const refresh = async (force = false) => {
     let payload;
     try {

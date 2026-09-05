@@ -361,6 +361,7 @@ export function taskAgentCommitOptions(state, goal) {
  *  plug owns the detail pane's DOM while selected (this pane never repaints
  *  over it).
  *  `revisionId()` names the diff revision this surface's comments anchor to. */
+// eslint-disable-next-line complexity -- ratchet: mountGitPane is at 21, cap 10 — reduce it, then drop this line
 export function mountGitPane(
   container,
   {
@@ -634,6 +635,7 @@ export function mountGitPane(
   /** The commit box: disclosed only while uncommitted changes exist, and only
    *  on the changeset it commits. It commits everything — the message is the
    *  only input it takes. */
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const renderCommitBox = () => {
     const commitHost = container.querySelector(".gp-commit");
     if (!commitHost) return;
@@ -669,6 +671,7 @@ export function mountGitPane(
     }
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
   const render = () => {
     if (disposed || !lastStatus || !lastLog) return;
     if (!container.querySelector(".changes2")) paintSkeleton();
@@ -829,6 +832,7 @@ export function mountGitPane(
     }
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 18, cap 10 — reduce it, then drop this line
   const performCommitOption = async (optionId) => {
     setHint("");
     if (optionId === "commit") {
@@ -1176,6 +1180,7 @@ export function mountGitPane(
     container.innerHTML = `<div class="gitpane"><div class="empty giterror">${esc(message)}</div></div>`;
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 19, cap 10 — reduce it, then drop this line
   const poll = async () => {
     if (disposed) return;
     let status, log;

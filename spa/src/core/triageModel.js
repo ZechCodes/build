@@ -42,6 +42,7 @@ function levelOf(token) {
 /** The pass's classification per hunk id, with the reviewer's overrides applied
  *  over it: `surface` puts a hunk back in the stack, `collapse` puts one in a
  *  group. The reviewer's direction wins — that is what an override is. */
+// eslint-disable-next-line complexity -- ratchet: classifiedHunks is at 18, cap 10 — reduce it, then drop this line
 function classifiedHunks(triage) {
   const byId = new Map();
   for (const hunk of (triage && triage.hunks) || []) {
@@ -146,6 +147,7 @@ function hunkRowCount(file) {
 /** One file's hunks, in order, as the render reads them: the level that applies,
  *  the rationale to show, and whether the pass said anything about this hunk at
  *  all. */
+// eslint-disable-next-line complexity -- ratchet: markFile is at 11, cap 10 — reduce it, then drop this line
 function markFile(file, queue, classified) {
   const marks = [];
   for (let index = 0; index < hunkRowCount(file); index++) {
@@ -213,6 +215,7 @@ function plainPlan(files, status) {
  * (no pass, or a pass that names nothing in this changeset). Sections come out
  * in render order: critical, normal, then one per named group.
  */
+// eslint-disable-next-line complexity -- ratchet: planChangesetTriage is at 23, cap 10 — reduce it, then drop this line
 export function planChangesetTriage({ files = [], patch = "", triage = null } = {}) {
   const classified = classifiedHunks(triage);
   if (classified.size === 0) return plainPlan(files, "none");

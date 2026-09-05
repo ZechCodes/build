@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Protocol, runtime_checkable
 
 import requests
@@ -74,19 +74,24 @@ class PrivateAssets:
     def __init__(self, token: str, fetch=requests.get):
         self.token = token
         self._fetch = fetch
+        self._release_headers = self._bearer() | {
+            "Accept": GITHUB_JSON,
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        }
+        self._asset_headers = self._bearer() | {"Accept": OCTET_STREAM}
 
     async def deliver(self, name: str) -> Response:
         asset = self._named(await self._latest_release(), name)
         response = await asyncio.to_thread(
             self._get,
             asset["url"],
-            headers=self._headers(OCTET_STREAM),
+            headers=self._asset_headers,
             stream=True,
         )
         if response.status_code != 200:
             raise _bad_gateway(LOOKUP_FAILED_DETAIL)
         return Stream(
-            response.iter_content(CHUNK_BYTES),
+            _chunks(response),
             media_type=OCTET_STREAM,
             headers={
                 "Content-Disposition": f'attachment; filename="{name}"',
@@ -96,7 +101,7 @@ class PrivateAssets:
 
     async def _latest_release(self) -> dict:
         response = await asyncio.to_thread(
-            self._get, LATEST_RELEASE_URL, headers=self._headers(GITHUB_JSON)
+            self._get, LATEST_RELEASE_URL, headers=self._release_headers
         )
         if response.status_code == HTTP_404_NOT_FOUND:
             raise NotFoundException(NO_RELEASE_DETAIL)
@@ -120,14 +125,19 @@ class PrivateAssets:
         except requests.exceptions.RequestException as exc:
             raise _bad_gateway(LOOKUP_FAILED_DETAIL) from exc
 
-    def _headers(self, accept: str) -> dict[str, str]:
-        """GitHub answers the asset url with a 302 to a signed objects.
-        githubusercontent.com URL; requests follows it and strips Authorization
-        across hosts, so the token never leaves api.github.com."""
-        headers = {"Authorization": f"Bearer {self.token}", "Accept": accept}
-        if accept == GITHUB_JSON:
-            headers["X-GitHub-Api-Version"] = GITHUB_API_VERSION
-        return headers
+    def _bearer(self) -> dict[str, str]:
+        """Who the api is to GitHub. Safe on the asset url too: GitHub answers that
+        with a 302 to a signed objects.githubusercontent.com URL and requests strips
+        Authorization across hosts, so the token never leaves api.github.com."""
+        return {"Authorization": f"Bearer {self.token}"}
+
+
+def _chunks(response) -> Iterator[bytes]:
+    """The asset's bytes, with the upstream response's life tied to them. A caller
+    that walks away mid-tarball closes this generator, which returns the connection
+    to the pool there and then rather than whenever the collector gets to it."""
+    with response:
+        yield from response.iter_content(CHUNK_BYTES)
 
 
 def _bad_gateway(detail: str) -> HTTPException:

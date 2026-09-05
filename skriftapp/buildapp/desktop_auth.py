@@ -69,11 +69,10 @@ async def bearer_user(connection: ASGIConnection) -> UUID | None:
 
 
 async def download_token_user(connection: ASGIConnection) -> UUID | None:
-    """The member whose install one-liner is making this request. Malformed tokens
-    never reach the database — ``download_tokens`` owns that rule."""
+    """The member whose install one-liner is making this request. Whether the token
+    is even the right shape is ``download_tokens``' judgement, not a second copy of
+    the rule here — it checks before it reads, so junk still costs no query."""
     raw = connection.query_params.get(DOWNLOAD_TOKEN_PARAM)
-    if not download_tokens.is_well_formed(raw):
-        return None
     session_maker = connection.app.state.session_maker_class
     async with session_maker() as db_session:
         return await download_tokens.holder(db_session, raw, utc_now())

@@ -43,6 +43,7 @@ class FakeResponse:
         self.status_code = status_code
         self._body = body or {}
         self._chunks = list(chunks)
+        self.closed = False
 
     def json(self) -> dict:
         return self._body
@@ -50,6 +51,15 @@ class FakeResponse:
     def iter_content(self, chunk_size: int):
         assert chunk_size > 0
         return iter(self._chunks)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, *_exception) -> None:
+        self.close()
 
 
 class RecordingFetch:
@@ -160,6 +170,31 @@ def test_the_private_source_streams_the_bytes_as_a_named_attachment():
     )
     assert response.headers["Content-Length"] == str(ASSET_SIZE)
     assert list(response.iterator) == CHUNKS
+
+
+def test_a_delivered_stream_closes_the_upstream_response_when_it_ends():
+    """The bytes come out of a generator that owns the response, so the pooled
+    connection goes back when the download finishes."""
+    upstream = FakeResponse(200, chunks=CHUNKS)
+    fetch = RecordingFetch(_release(_asset()), upstream)
+    response = _delivered(PrivateAssets(TOKEN, fetch=fetch))
+    assert list(response.iterator) == CHUNKS
+    assert upstream.closed
+
+
+def test_an_abandoned_stream_closes_the_upstream_response_too():
+    """A browser that walks away mid-tarball must not strand a connection in the
+    pool until the collector notices."""
+    upstream = FakeResponse(200, chunks=CHUNKS)
+    fetch = RecordingFetch(_release(_asset()), upstream)
+    response = _delivered(PrivateAssets(TOKEN, fetch=fetch))
+
+    chunks = response.iterator
+    assert next(chunks) == CHUNKS[0]
+    assert not upstream.closed
+    chunks.close()
+
+    assert upstream.closed
 
 
 def test_a_repository_with_no_release_yet_is_a_404_that_says_so():

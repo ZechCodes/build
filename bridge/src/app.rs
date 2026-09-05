@@ -4527,7 +4527,25 @@ impl AppState {
                         if let Ok(report) = serde_json::from_value::<DoneReport>(
                             v.get("report").cloned().unwrap_or(Value::Null),
                         ) {
-                            timer.lock(&state).on_agent_done(&entity_id, report);
+                            // A report can carry an Issue's scheduler on to
+                            // its next stage, which is a whole checkout of
+                            // git. It comes back here rather than running
+                            // under the guard, exactly as a router tool's
+                            // does, and on a blocking thread rather than a
+                            // runtime worker.
+                            let deferred = timer.lock(&state).done_deferring(&entity_id, report);
+                            if let Some(deferred) = deferred {
+                                let done = tokio::task::spawn_blocking(move || deferred.run())
+                                    .await
+                                    .expect("the lifecycle job panicked");
+                                if let Err(error) = timer.lock(&state).apply_deferred(
+                                    MCP_CONTROL_METHOD,
+                                    &Value::Null,
+                                    done,
+                                ) {
+                                    eprintln!("done report {entity_id}: {error}");
+                                }
+                            }
                             // A report can start the next phase (a built
                             // stage hands itself to validation). The turn is
                             // queued under the lock above and delivered off
@@ -4557,14 +4575,32 @@ impl AppState {
     }
 
     /// Route an agent's `done` to its owner's lifecycle transition, by owner
-    /// lookup (plans map, then runs map).
-    fn on_agent_done(&mut self, entity_id: &str, report: DoneReport) {
+    /// lookup (plans map, then runs map), without draining: a report that
+    /// carries an Issue's scheduler on to its next stage hands that git back
+    /// HERE, to the socket that can release the guard before running it. The
+    /// `done` twin of [`AppState::dispatch_deferring`].
+    fn done_deferring(&mut self, entity_id: &str, report: DoneReport) -> Option<DeferredWork> {
         if self.plans.contains_key(entity_id) {
             self.on_plan_agent_done(entity_id, report);
         } else if self.runs.contains_key(entity_id) {
             self.on_run_agent_done(entity_id, report);
         } else {
             eprintln!("on_agent_done: unknown entity {entity_id}");
+        }
+        self.deferred_work.take()
+    }
+
+    /// One agent's `done`, drained — the synchronous twin of
+    /// [`AppState::done_deferring`], for the tests that own the state directly
+    /// and have no guard to release. Running it is what the MCP control socket
+    /// does with the guard released.
+    #[cfg(test)]
+    fn on_agent_done(&mut self, entity_id: &str, report: DoneReport) {
+        if let Some(deferred) = self.done_deferring(entity_id, report) {
+            let done = deferred.run();
+            if let Err(error) = self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done) {
+                eprintln!("on_agent_done {entity_id}: {error}");
+            }
         }
     }
 
@@ -5289,10 +5325,14 @@ impl AppState {
                 }
             }
             if succeeded {
+                // The stage this recovery was for is next, and reaching it
+                // cuts or puts back a checkout. The socket that carried this
+                // report runs that git with the guard released, as a frame
+                // does; a refusal is already written onto the Issue here.
                 if let Err(error) =
-                    self.advance_issue_scheduler_here(&issue_id, &json!({ "issue_id": issue_id }))
+                    self.defer_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }), None)
                 {
-                    self.block_issue_scheduler(&issue_id, None, &error);
+                    eprintln!("recovery {run_id}: scheduler blocked: {error}");
                 }
             } else if let Err(error) = self.refresh_issue_scheduler_activity(&issue_id) {
                 eprintln!("recovery {run_id}: scheduler refresh failed: {error}");
@@ -43919,6 +43959,138 @@ mod tests {
             1,
             "{implemented:?}"
         );
+    }
+
+    /// The `done` socket's twin of [`frame_on_a_thread`]: the guard is taken
+    /// for the report, released for whatever git the report handed back, and
+    /// taken again to write the result down.
+    fn done_on_a_thread(
+        state: &Arc<Mutex<AppState>>,
+        entity_id: &str,
+        report: DoneReport,
+    ) -> std::sync::mpsc::Receiver<Result<Value, String>> {
+        let (answered, answers) = std::sync::mpsc::channel();
+        let state = Arc::clone(state);
+        let entity_id = entity_id.to_string();
+        std::thread::spawn(move || {
+            let deferred = state.lock().unwrap().done_deferring(&entity_id, report);
+            let settled = match deferred {
+                Some(deferred) => {
+                    let done = deferred.run();
+                    state
+                        .lock()
+                        .unwrap()
+                        .apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+                }
+                None => Ok(Value::Null),
+            };
+            let _ = answered.send(settled);
+        });
+        answers
+    }
+
+    /// A recovery agent's own report carries its Issue's scheduler on to the
+    /// stage it was recovering for, and that hop is a checkout. The socket
+    /// releases the guard for it, the way it already does for a router tool.
+    #[test]
+    fn a_recovery_report_advances_its_scheduler_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "recover, then carry on");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let branch = app.runs[&run_id].worktree.branch();
+        let worktree = app.runs[&run_id].worktree.path.clone();
+        let head_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&worktree)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args(["branch", "-D", "--", &branch])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        app.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        let recovery_id = app.runs[&run_id].recovery.as_ref().unwrap().id.clone();
+        assert!(Command::new("git")
+            .args(["branch", &branch, &head_sha])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let other_run = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let settled = done_on_a_thread(
+            &state,
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Recover,
+                status: DoneStatus::Completed,
+                summary: "exact branch recovered".into(),
+                outputs: DoneOutputs {
+                    recovery: Some(crate::mcp::RecoveryReport {
+                        recovery_id,
+                        recovered: true,
+                        branch,
+                        head_sha,
+                        findings: "local reflog proved the exact tip".into(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the recovery report is holding the app mutex through its scheduler's git"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": other_run, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the recovered Issue's git runs");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let settled = settled
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the report settles once its git is done");
+        assert!(settled.is_ok(), "{settled:?}");
+        let app = state.lock().unwrap();
+        assert_eq!(
+            app.runs[&run_id].recovery.as_ref().unwrap().state,
+            crate::run::RecoveryState::Succeeded
+        );
+        assert!(app.runs[&run_id].worktree.path.exists());
     }
 
     /// Approving a stage an armed Implement All is parked on is what starts

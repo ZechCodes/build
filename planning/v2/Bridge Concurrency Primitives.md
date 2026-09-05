@@ -1424,15 +1424,30 @@ settled differently, and why:
   gone — and state is written under the mutex. `Reservation::roll_back` is for
   registry writes, and it cannot see the error that caused them to be undone.
 - **The Issue scheduler hands its git back rather than running it.**
-  `advance_issue_scheduler` returns `Result<Option<WorktreeLifecycleJob>>`: a
-  frame (`issue.implement_*`) defers it, and the callers with no frame to hand
-  it to — boot (app.rs:2173), an agent's own recovery report (5293), and the
-  stage approval that unblocks a waiting scheduler (11011) — run it where they
-  stand through `advance_issue_scheduler_here`, which is where that git ran
-  before this split anyway. The pass resumes from the job's own epilogue
+  `advance_issue_scheduler` returns `Result<Option<WorktreeLifecycleJob>>`, and
+  every caller that has a drain reaches it through one call,
+  `defer_issue_scheduler`: put the job on the drain, or block the Issue on a
+  refusal. Three callers have one — `issue.implement_*`, the stage approval
+  that wakes a scheduler parked on an unapproved stage (`plan_stage_approve`,
+  which serves both `issue.stage_approve` and `plan.stage_approve`), and an
+  agent's own recovery report on the MCP `done` socket. The approval's is an
+  ordinary frame, and the report's socket already releases its guard for a
+  router tool's git; both cut whole implementation checkouts, so neither may
+  run one under the mutex. What each answers with is unchanged: the approval
+  answers with the Issue view it was going to answer with anyway, read after
+  the hop rather than before it, and the report answers with nothing.
+  `advance_issue_scheduler_here` is left to boot (app.rs:2173), which
+  reconciles every armed Issue before the first frame is served and has no
+  drain to hand git to. The pass resumes from the job's own epilogue
   (`dispatch_ready_stage`), so no caller decides anything but where the git
   runs, and no epilogue ever defers a second job into a drain that has already
   run.
+
+  The `done` socket gets `dispatch_frame`'s shape for it: `done_deferring`
+  routes the report and hands back `deferred_work`, `spawn_blocking` runs it
+  with the guard released, `apply_deferred` writes it down. `on_agent_done`
+  survives as the synchronous test twin that drains inline, the way
+  `AppState::dispatch` is `dispatch_deferring`'s.
 - **`run.release` builds no job.** Spec finding 2 lists it, but `run_release`
   (app.rs:12741) runs no git: a store delete, a map remove, `close_agent_tab`,
   `invalidate_external_scan`. Its one unbounded step was the kill, which

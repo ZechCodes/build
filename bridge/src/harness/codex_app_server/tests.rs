@@ -68,6 +68,15 @@ fn initialized_then_opens_thread() -> Vec<SessionEffect> {
     ]
 }
 
+fn state_with_resume_id(thread_id: &str) -> CodexSessionState {
+    CodexSessionState::new(
+        PathBuf::from("/tmp/worktree"),
+        Some("gpt-5.6-sol".to_string()),
+        Some("high".to_string()),
+        Some(thread_id.to_string()),
+    )
+}
+
 fn resume_thread() -> PendingOperation {
     PendingOperation::ResumeThread {
         thread_id: "thread-exact".to_string(),
@@ -563,14 +572,61 @@ fn concurrent_version_probes_share_one_cached_result() {
 #[test]
 fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
     let fresh = initialized_state();
-    let resumed = CodexSessionState::new(
-        PathBuf::from("/tmp/worktree"),
-        None,
-        None,
-        Some("thread-exact".to_string()),
-    );
     assert!(fresh.resume_id().is_none());
+    let fresh_open = initialize_transition(SUPPORTED_USER_AGENT).unwrap();
+    assert_eq!(fresh_open.effects, initialized_then_opens_thread());
+    assert!(matches!(
+        fresh_open.effects.last(),
+        Some(SessionEffect::Request(PendingOperation::StartThread { cwd, .. })) if cwd == "/tmp/worktree"
+    ));
+
+    let resumed = state_with_resume_id("thread-exact");
     assert_eq!(resumed.resume_id(), Some("thread-exact"));
+    let resumed_open = resumed
+        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
+        .unwrap()
+        .state
+        .transition(
+            initialize_response(SUPPORTED_USER_AGENT),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert_eq!(
+        resumed_open.effects,
+        vec![
+            SessionEffect::NotifyInitialized,
+            SessionEffect::Request(resume_thread()),
+        ]
+    );
+}
+
+#[test]
+fn thread_open_error_after_started_notification_fails() {
+    let announced = initialize_transition(SUPPORTED_USER_AGENT)
+        .unwrap()
+        .state
+        .transition(
+            SessionEvent::ThreadStarted("thread-1".to_string()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    let error = announced
+        .transition(
+            correlated(start_thread(), Err(RpcError::new(-32000, "open refused"))),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("thread was announced and then open failed"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("open refused"), "{error}");
 }
 
 #[test]

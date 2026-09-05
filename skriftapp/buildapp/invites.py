@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.models import Invite
 from buildapp.token_hash import token_hash
-from buildapp.waitlist_address import normalize_waitlist_address
+from buildapp.waitlist_address import canonical_address, normalize_waitlist_address
 
 #: How long an invite link stays open. One redemption, then it is spent.
 INVITE_TTL = timedelta(days=14)
@@ -93,7 +93,10 @@ def redeem(
     state = invite_state(invite, now)
     if state is not InviteState.OPEN:
         return Redemption(ok=False, reason=state)
-    if normalize_waitlist_address(user_email) != invite.email:
+    # Identity, not deliverability: the stored address is already normalized, and a
+    # seeded invite for an address the waitlist would refuse (the dev stack's
+    # qa@localhost) must still be redeemable by that account.
+    if canonical_address(user_email) != canonical_address(invite.email):
         return Redemption(ok=False, reason=EMAIL_MISMATCH)
     invite.redeemed_by = user_id
     invite.redeemed_at = now

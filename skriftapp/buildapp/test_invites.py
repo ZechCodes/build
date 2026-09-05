@@ -170,3 +170,17 @@ async def test_revoke_stamps_the_row_and_is_idempotent(db):
 @pytest.mark.asyncio
 async def test_revoking_an_invite_that_does_not_exist_is_quiet(db):
     await invites.revoke_invite(db, uuid4(), NOW)
+
+
+def test_redeem_matches_an_address_the_waitlist_itself_would_refuse():
+    """A seeded invite (the dev stack's, for qa@localhost) must still be redeemable by
+    that account: matching two addresses is about identity, not deliverability."""
+    row = invite(email="qa@localhost")
+    user_id = uuid4()
+    assert redeem(row, user_id, " QA@Localhost ", NOW).ok is True
+    assert row.redeemed_by == user_id
+
+
+def test_redeem_still_refuses_a_different_address_of_that_shape():
+    row = invite(email="qa@localhost")
+    assert redeem(row, uuid4(), "someone@localhost", NOW).reason is EMAIL_MISMATCH

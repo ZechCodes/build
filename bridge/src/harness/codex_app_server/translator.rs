@@ -3,9 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde_json::Value;
 
 use super::limits::TranslatorLimits;
-use super::protocol::{
-    tag_for, ErrorNotification, ItemLifecycle, ItemNotification, ServerNotification,
-};
+use super::protocol::{tag_for, ItemLifecycle, ItemNotification, ServerNotification};
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::{ActivityReport, AgentActivity, ToolOutcome};
 
@@ -310,12 +308,12 @@ impl CodexActivityTranslator {
     ) -> Result<Vec<ActivityReport>, TranslationError> {
         match notification {
             ServerNotification::Item(item) => self.translate_item(item),
-            ServerNotification::Error(error) => Ok(error_report(error).into_iter().collect()),
             ServerNotification::Unknown => {
                 self.unknown_events = self.unknown_events.saturating_add(1);
                 Ok(Vec::new())
             }
             ServerNotification::Delta
+            | ServerNotification::Error(_)
             | ServerNotification::ThreadStarted { .. }
             | ServerNotification::TurnStarted { .. }
             | ServerNotification::TurnCompleted { .. } => Ok(Vec::new()),
@@ -603,9 +601,4 @@ fn task_update(summary: String) -> ActivityReport {
     ActivityReport::own_work(AgentActivity::TaskUpdate {
         summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
     })
-}
-
-fn error_report(notification: &ErrorNotification) -> Option<ActivityReport> {
-    let message = notification.error.message.trim();
-    (!message.is_empty()).then(|| task_update(message.to_string()))
 }

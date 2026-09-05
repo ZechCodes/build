@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 
 use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
-    initialize_result, item_envelope, item_envelope_at, selected_choice, thread_opened,
-    EXACT_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, SUPPORTED_USER_AGENT, THREAD_ID, TURN_ID,
+    initialize_result, item_envelope, item_envelope_at, selected_choice, supported_user_agent,
+    thread_opened, EXACT_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID,
     WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
@@ -17,7 +17,7 @@ use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundServerRequest, ParentThreadFilter,
     ParentThreadRoute, PendingOperation, RequestId, RoutedServerRequest, RpcError,
-    ServerNotification, ServerRequest, ServerResponse, TurnCompletion,
+    ServerNotification, ServerRequest, ServerResponse, TurnCompletion, CLIENT_NAME,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent, StateError, StateTransition};
 use super::translator::{
@@ -146,7 +146,7 @@ fn turn_completed(turn_id: &str, error: Option<&str>) -> SessionEvent {
 }
 
 fn advance_to_waiting() -> CodexSessionState {
-    initialize_transition(SUPPORTED_USER_AGENT)
+    initialize_transition(&supported_user_agent())
         .unwrap()
         .state
         .transition(
@@ -196,7 +196,7 @@ fn correlation_resolves_out_of_order_to_typed_operations() {
     .unwrap();
     let first_event = decode(
         &connection,
-        json!({"id":first,"result":initialize_result(SUPPORTED_USER_AGENT)}),
+        json!({"id":first,"result":initialize_result(&supported_user_agent())}),
     )
     .unwrap();
 
@@ -260,7 +260,7 @@ fn a_response_body_that_does_not_match_its_operation_fails_the_connection() {
 fn a_second_response_on_a_resolved_id_is_unknown() {
     let connection = AppServerConnection::memory(limits().connection());
     let request_id = request_one(&connection, PendingOperation::Initialize);
-    let response = json!({"id":request_id,"result":initialize_result(SUPPORTED_USER_AGENT)});
+    let response = json!({"id":request_id,"result":initialize_result(&supported_user_agent())});
 
     decode(&connection, response.clone()).unwrap();
     let error = decode(&connection, response)
@@ -284,7 +284,7 @@ fn pending_overflow_and_failed_write_leave_correlation_unchanged() {
     assert_eq!(failed.pending_count(), 0);
     assert!(decode(
         &failed,
-        json!({"id":1,"result":initialize_result(SUPPORTED_USER_AGENT)})
+        json!({"id":1,"result":initialize_result(&supported_user_agent())})
     )
     .unwrap_err()
     .to_string()
@@ -338,6 +338,7 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(frames[0]["method"], "initialize");
+    assert_eq!(frames[0]["params"]["clientInfo"]["name"], CLIENT_NAME);
     assert!(frames[0].get("jsonrpc").is_none());
     assert!(frames[0]["params"]["capabilities"]
         .as_object()
@@ -453,12 +454,12 @@ fn initialize_is_first_and_a_turn_waits_for_readiness() {
 
 #[test]
 fn initialize_success_sends_initialized_once_then_opens_the_thread() {
-    let initialized = initialize_transition(SUPPORTED_USER_AGENT).unwrap();
+    let initialized = initialize_transition(&supported_user_agent()).unwrap();
     assert_eq!(initialized.effects, initialized_then_opens_thread());
     let repeated = initialized
         .state
         .transition(
-            initialize_response(SUPPORTED_USER_AGENT),
+            initialize_response(&supported_user_agent()),
             Duration::ZERO,
             limits().state(),
         )
@@ -485,7 +486,7 @@ fn initialize_error_fails_the_session() {
 
 #[test]
 fn a_below_floor_user_agent_fails_without_asking_the_probe() {
-    let refused = initialize_transition("build_bridge/0.152.9");
+    let refused = initialize_transition(&format!("{CLIENT_NAME}/0.152.9"));
     let asked_probe = refused.as_ref().is_ok_and(|transition| {
         transition
             .effects
@@ -507,21 +508,24 @@ fn initialize_effects_for_user_agent(user_agent: &str) -> Vec<SessionEffect> {
 
 #[test]
 fn initialize_version_floor_uses_only_the_leading_matching_component() {
-    for passing in ["build_bridge/0.153.0", "build_bridge/0.154.1 (0.1.0)"] {
+    for passing in [
+        format!("{CLIENT_NAME}/0.153.0"),
+        format!("{CLIENT_NAME}/0.154.1 (0.1.0)"),
+    ] {
         assert_eq!(
-            initialize_effects_for_user_agent(passing),
+            initialize_effects_for_user_agent(&passing),
             initialized_then_opens_thread(),
             "{passing}"
         );
     }
     for probe_needed in [
-        "other/0.153.0 build_bridge/9.0.0",
-        "build_bridge/not-a-version 0.200.0",
-        "0.153.0 build_bridge/0.153.0",
-        "",
+        format!("other/0.153.0 {CLIENT_NAME}/9.0.0"),
+        format!("{CLIENT_NAME}/not-a-version 0.200.0"),
+        format!("0.153.0 {CLIENT_NAME}/0.153.0"),
+        String::new(),
     ] {
         assert_eq!(
-            initialize_effects_for_user_agent(probe_needed),
+            initialize_effects_for_user_agent(&probe_needed),
             vec![SessionEffect::RequireVersionEvidence],
             "{probe_needed}"
         );
@@ -629,13 +633,13 @@ fn concurrent_version_probes_share_one_cached_result() {
 fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
     let fresh = session_state(None);
     assert!(fresh.resume_id().is_none());
-    let fresh_open = initialize_transition(SUPPORTED_USER_AGENT).unwrap();
+    let fresh_open = initialize_transition(&supported_user_agent()).unwrap();
     assert_eq!(fresh_open.effects, initialized_then_opens_thread());
 
     let resumed = session_state(Some(EXACT_THREAD_ID));
     assert_eq!(resumed.resume_id(), Some(EXACT_THREAD_ID));
     let resumed_open =
-        initialize_transition_for(Some(EXACT_THREAD_ID), SUPPORTED_USER_AGENT).unwrap();
+        initialize_transition_for(Some(EXACT_THREAD_ID), &supported_user_agent()).unwrap();
     assert_eq!(
         resumed_open.effects,
         vec![
@@ -649,7 +653,7 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
 fn thread_open_response_operation_must_match_the_persisted_resume_id() {
     let opened = thread_opened(THREAD_ID, None);
 
-    let resumed = initialize_transition_for(Some(EXACT_THREAD_ID), SUPPORTED_USER_AGENT)
+    let resumed = initialize_transition_for(Some(EXACT_THREAD_ID), &supported_user_agent())
         .unwrap()
         .state;
     let start_answered_a_resume = resumed
@@ -666,7 +670,9 @@ fn thread_open_response_operation_must_match_the_persisted_resume_id() {
         "{start_answered_a_resume}"
     );
 
-    let fresh = initialize_transition(SUPPORTED_USER_AGENT).unwrap().state;
+    let fresh = initialize_transition(&supported_user_agent())
+        .unwrap()
+        .state;
     let resume_answered_a_start = fresh
         .transition(
             correlated(resume_thread(), Ok(opened)),
@@ -684,7 +690,7 @@ fn thread_open_response_operation_must_match_the_persisted_resume_id() {
 
 #[test]
 fn thread_open_error_after_started_notification_fails() {
-    let announced = initialize_transition(SUPPORTED_USER_AGENT)
+    let announced = initialize_transition(&supported_user_agent())
         .unwrap()
         .state
         .transition(
@@ -712,7 +718,9 @@ fn thread_open_error_after_started_notification_fails() {
 
 #[test]
 fn thread_open_error_without_notification_fails() {
-    let opening = initialize_transition(SUPPORTED_USER_AGENT).unwrap().state;
+    let opening = initialize_transition(&supported_user_agent())
+        .unwrap()
+        .state;
     let error = opening
         .transition(
             correlated(start_thread(), Err(RpcError::new(-32000, "open refused"))),
@@ -729,7 +737,9 @@ fn thread_open_error_without_notification_fails() {
 
 #[test]
 fn thread_notification_and_response_orders_converge_and_ids_must_match() {
-    let opening = initialize_transition(SUPPORTED_USER_AGENT).unwrap().state;
+    let opening = initialize_transition(&supported_user_agent())
+        .unwrap()
+        .state;
     let notified = opening
         .transition(
             SessionEvent::ThreadStarted(THREAD_ID.to_string()),
@@ -865,7 +875,7 @@ fn conflicting_duplicate_completion_is_rejected() {
 
 #[test]
 fn completion_before_start_response_applies_accepted_turn_facts() {
-    let waiting = initialize_transition(SUPPORTED_USER_AGENT)
+    let waiting = initialize_transition(&supported_user_agent())
         .unwrap()
         .state
         .transition(
@@ -2695,28 +2705,57 @@ fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
     let fixture = include_str!(
         "../../../tests/fixtures/codex-app-server/0.153.0/synthetic-model-events.jsonl"
     );
-    let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
-    let reports = fixture
-        .lines()
-        .filter_map(|line| {
-            let envelope: Value = serde_json::from_str(line).unwrap();
-            (envelope["method"] == "error").then_some(envelope)
+    let mut errors = fixture.lines().filter_map(|line| {
+        let envelope: Value = serde_json::from_str(line).unwrap();
+        (envelope["method"] == "error").then(|| {
+            match ServerNotification::decode("error", envelope["params"].clone()).unwrap() {
+                ServerNotification::Error(error) => error,
+                other => panic!("expected an error notification, got {other:?}"),
+            }
         })
-        .flat_map(|envelope| {
-            translator
-                .translate(envelope["method"].as_str().unwrap(), &envelope["params"])
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(reports.len(), 2);
-    assert!(matches!(
-        &reports[0].activity,
-        AgentActivity::TaskUpdate { summary } if summary.contains("Temporary")
-    ));
-    assert!(matches!(
-        &reports[1].activity,
-        AgentActivity::TaskUpdate { summary } if summary.contains("Terminal")
-    ));
+    });
+
+    let retried = working_state()
+        .transition(
+            SessionEvent::ObservedError(errors.next().unwrap()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            retried.effects.as_slice(),
+            [SessionEffect::Report(report)]
+                if matches!(&report.activity, AgentActivity::TaskUpdate { summary } if summary.contains("Temporary"))
+        ),
+        "{:?}",
+        retried.effects
+    );
+    assert_eq!(retried.state.status(), AgentStatus::Working);
+    assert_eq!(retried.state.epitaph(), None);
+
+    let terminal = retried
+        .state
+        .transition(
+            SessionEvent::ObservedError(errors.next().unwrap()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            terminal.effects.as_slice(),
+            [SessionEffect::Report(report), SessionEffect::Close]
+                if matches!(&report.activity, AgentActivity::TaskUpdate { summary } if summary.contains("Terminal"))
+        ),
+        "{:?}",
+        terminal.effects
+    );
+    assert_eq!(terminal.state.status(), AgentStatus::Ended { code: None });
+    assert_eq!(
+        terminal.state.epitaph().as_deref(),
+        Some("Terminal synthetic fixture failure.")
+    );
 }
 
 #[test]

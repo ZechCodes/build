@@ -357,12 +357,8 @@ impl SessionCore {
                 self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
                 self.translate(&notification)
             }
-            ServerNotification::Error(params) => {
-                self.translate(&notification)?;
-                if params.will_retry {
-                    return Ok(());
-                }
-                self.apply_state(SessionEvent::FailSession(params.error.message.clone()))
+            ServerNotification::Error(error) => {
+                self.apply_state(SessionEvent::ObservedError(error.clone()))
             }
             ServerNotification::Delta => Ok(()),
             ServerNotification::Unknown => self.translate(&notification),
@@ -686,8 +682,8 @@ mod tests {
 
     use super::*;
     use crate::harness::codex_app_server::fixtures::{
-        initialize_result, selected_choice, thread_opened_at, SELECTED_EFFORT,
-        SUPPORTED_USER_AGENT, THREAD_ID, TURN_ID,
+        initialize_result, selected_choice, supported_user_agent, thread_opened_at,
+        SELECTED_EFFORT, THREAD_ID, TURN_ID,
     };
     use crate::harness::codex_app_server::policy::AfterResponse;
     use crate::harness::codex_app_server::protocol::ServerResponse;
@@ -769,7 +765,7 @@ mod tests {
 
     fn opened_thread_script(root: &Path, thread_traffic: &str) -> String {
         let initialize_response = serde_json::to_string(
-            &json!({"id":1,"result":initialize_result(SUPPORTED_USER_AGENT)}),
+            &json!({"id":1,"result":initialize_result(&supported_user_agent())}),
         )
         .unwrap();
         let thread_response = serde_json::to_string(&json!({

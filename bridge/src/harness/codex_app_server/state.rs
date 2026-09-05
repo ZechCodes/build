@@ -4,13 +4,12 @@ use std::time::Duration;
 
 use super::limits::StateLimits;
 use super::protocol::{
-    ConnectionEvent, InitializeResult, OperationResult, PendingOperation, RpcError,
-    ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult,
+    ConnectionEvent, ErrorNotification, InitializeResult, OperationResult, PendingOperation,
+    RpcError, ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult, CLIENT_NAME,
 };
 use crate::harness::{ActivityReport, AgentActivity, AgentStatus};
 use semver::Version;
 
-const CLIENT_NAME: &str = "build_bridge";
 const MINIMUM_VERSION: &str = "0.153.0";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +32,7 @@ pub enum SessionEvent {
     ThreadStarted(String),
     TurnStarted(String),
     ObservedCompletion(TurnCompletion),
+    ObservedError(ErrorNotification),
     VersionEvidence(Result<String, String>),
     CheckTimeouts,
     FailTurn(String),
@@ -158,6 +158,7 @@ impl CodexSessionState {
             lifecycle @ (SessionEvent::ThreadStarted(_)
             | SessionEvent::TurnStarted(_)
             | SessionEvent::ObservedCompletion(_)
+            | SessionEvent::ObservedError(_)
             | SessionEvent::Eof) => self.apply_lifecycle(lifecycle, now, limits),
             reconciliation @ (SessionEvent::VersionEvidence(_) | SessionEvent::CheckTimeouts) => {
                 self.apply_reconciliation(reconciliation, now, limits)
@@ -193,6 +194,7 @@ impl CodexSessionState {
             SessionEvent::ObservedCompletion(completion) => {
                 self.complete_turn(completion, now, limits)
             }
+            SessionEvent::ObservedError(notification) => self.observe_error(notification),
             SessionEvent::Eof => {
                 self.phase = Phase::Ended;
                 Ok(vec![SessionEffect::Close])
@@ -233,13 +235,27 @@ impl CodexSessionState {
     fn apply_failure(&mut self, event: SessionEvent) -> Result<Vec<SessionEffect>, StateError> {
         match event {
             SessionEvent::FailTurn(reason) => self.fail_turn(reason),
-            SessionEvent::FailSession(reason) => {
-                self.reported_error = Some(reason.clone());
-                self.phase = Phase::Ending;
-                Ok(vec![operational_report(reason), SessionEffect::Close])
-            }
+            SessionEvent::FailSession(reason) => self.fail_session(reason),
             _ => unreachable!(),
         }
+    }
+
+    fn observe_error(
+        &mut self,
+        notification: ErrorNotification,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let message = notification.error.message;
+        if notification.will_retry {
+            Ok(vec![operational_report(message)])
+        } else {
+            self.fail_session(message)
+        }
+    }
+
+    fn fail_session(&mut self, reason: String) -> Result<Vec<SessionEffect>, StateError> {
+        self.reported_error = Some(reason.clone());
+        self.phase = Phase::Ending;
+        Ok(vec![operational_report(reason), SessionEffect::Close])
     }
 
     fn start(&mut self) -> Result<Vec<SessionEffect>, StateError> {

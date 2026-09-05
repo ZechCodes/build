@@ -5,6 +5,9 @@ use serde_json::Value;
 
 pub type RequestId = u64;
 
+/// The `clientInfo.name` this bridge sends in `initialize` and requires back in `userAgent`.
+pub const CLIENT_NAME: &str = "build_bridge";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingOperation {
     Initialize,
@@ -58,7 +61,7 @@ impl PendingOperation {
                 self.method(),
                 &InitializeParams {
                     client_info: ClientInfo {
-                        name: "build_bridge",
+                        name: CLIENT_NAME,
                         title: "Build",
                         version: env!("CARGO_PKG_VERSION"),
                     },

@@ -1,14 +1,18 @@
 use serde_json::{json, Value};
 
+use super::protocol::CLIENT_NAME;
 use crate::models::{AgentProvider, ModelChoice};
 
-pub(super) const SUPPORTED_USER_AGENT: &str = "build_bridge/0.153.0 (fixture)";
 pub(super) const SELECTED_MODEL: &str = "gpt-5.6-sol";
 pub(super) const SELECTED_EFFORT: &str = "high";
 pub(super) const WORKTREE_ROOT: &str = "/tmp/worktree";
 pub(super) const THREAD_ID: &str = "thread-1";
 pub(super) const TURN_ID: &str = "turn-1";
 pub(super) const EXACT_THREAD_ID: &str = "thread-exact";
+
+pub(super) fn supported_user_agent() -> String {
+    format!("{CLIENT_NAME}/0.153.0 (fixture)")
+}
 
 pub(super) fn selected_choice() -> ModelChoice {
     ModelChoice {

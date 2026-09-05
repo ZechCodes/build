@@ -690,6 +690,13 @@ impl PendingAgentTurn {
         self.say.as_ref().expect("this turn carries text")
     }
 
+    /// The registry entry this turn is on its way to. The same key
+    /// [`ensure_agent_tab`] will reserve, so a turn in the queue, a turn
+    /// mid-delivery and a spawn in flight are all one agent's under one name.
+    fn tab_key(&self) -> TabKey {
+        TabKey::agent(&AppState::canonical_root(&self.root), &self.agent_id)
+    }
+
     /// Address a run's turn to the run's worktree. Canonical, because the same
     /// worktree reaches the tab registry under several scope shapes.
     ///
@@ -1816,16 +1823,15 @@ pub struct AppState {
     /// lock a verb RECORDS what to say (a `PendingAgentTurn`), and
     /// [`DeliveryRunner`] SAYS it on a thread of its own, after the frame that
     /// queued it has answered. Everything that has to look agentless-versus-in-flight
-    /// ([`AppState::agent_turns_in_flight`], the idle sweep) exists to cover
+    /// ([`AppState::turns_in_flight`], the idle sweep) exists to cover
     /// the gap this split opens; none of it is optional.
     pending_agent_turns: Vec<PendingAgentTurn>,
-    /// Owners whose turn has left [`AppState::pending_agent_turns`] and is
-    /// being delivered right now, counted because one drain can carry several
-    /// turns for the same owner. Between a verb's transition and the tab its
-    /// turn spawns, a working entity legitimately has no agent tab yet — the
-    /// queue and this counter are what tell the idle sweep the difference
-    /// between an agent on its way and an agent that never arrived.
-    agent_turns_in_flight: HashMap<String, usize>,
+    /// The turns that have left [`AppState::pending_agent_turns`] and are being
+    /// delivered right now. Between a verb's transition and the tab its turn
+    /// spawns, a working entity legitimately has no agent tab yet — the queue
+    /// and this are what tell the daemon the difference between an agent on its
+    /// way and an agent that never arrived.
+    turns_in_flight: TurnsInFlight,
     /// Current unlogged MCP capability per lifecycle owner. Knowing an Issue or
     /// implementation id is intentionally insufficient to forge local control
     /// frames; replacing an agent tab rotates this token.
@@ -1993,7 +1999,7 @@ impl AppState {
             agent_spawn_finished: Arc::new(std::sync::Condvar::new()),
             agent_screens_awaiting_spawn: HashMap::new(),
             pending_agent_turns: Vec::new(),
-            agent_turns_in_flight: HashMap::new(),
+            turns_in_flight: TurnsInFlight::default(),
             mcp_session_tokens: HashMap::new(),
             next_term: 1,
             self_handle: None,
@@ -3246,11 +3252,35 @@ impl AppState {
     /// perfectly healthy. Everywhere else, a working entity without one is an
     /// anomaly.
     fn agent_turn_is_undelivered(&self, owner: &str) -> bool {
-        self.agent_turns_in_flight.contains_key(owner)
+        self.turns_in_flight.holds_owner(owner)
             || self
                 .pending_agent_turns
                 .iter()
                 .any(|turn| turn.owner == owner)
+    }
+
+    /// Is a harness for this agent already coming?
+    ///
+    /// Three states, one question, because a turn on its way passes through all
+    /// three and is never in none of them: queued, taken off the queue and
+    /// mid-delivery, and claimed by the spawn that delivery makes. The delivery
+    /// gives its in-flight mark back only after the spawn claim it became has
+    /// been settled, so the three overlap and leave no window in which an agent
+    /// on its way reads as absent.
+    ///
+    /// Asked by every verb that would otherwise queue a SECOND turn for it: two
+    /// harnesses in one checkout both report `done` for the same owner, and
+    /// even where the spawn claim prevents that, the second turn survives as a
+    /// duplicate `read_unread_messages` nudge. Keyed per (root, agent), so a
+    /// branch's second agent is never suppressed by its first agent's turn.
+    fn agent_is_on_its_way(&self, root: &std::path::Path, agent_id: &str) -> bool {
+        let key = TabKey::agent(&Self::canonical_root(root), agent_id);
+        self.agent_spawns_in_flight.contains(&key)
+            || self.turns_in_flight.holds_agent(&key)
+            || self
+                .pending_agent_turns
+                .iter()
+                .any(|queued| queued.tab_key() == key)
     }
 
     /// Move `entity_state_changed_at` only when the entity's wire state
@@ -9080,20 +9110,19 @@ impl AppState {
         )
     }
 
-    /// Take everything the verbs that just ran queued, and mark their owners in
-    /// flight in the same breath.
+    /// Take everything the verbs that just ran queued, and mark it in flight in
+    /// the same breath.
     ///
-    /// One acquisition for both halves, because between them an entity that is
-    /// working has neither a queued turn nor an agent tab, and the idle sweep
-    /// reading it there would demote a run whose agent is on its way.
+    /// One acquisition for both halves, because between them a turn on its way
+    /// would be in neither the queue nor the marks: the idle sweep reading that
+    /// demotes a run whose agent is coming, and a second message reading it
+    /// queues a duplicate turn behind the one already on its way.
     fn take_pending_turns(&mut self) -> PendingTurns {
         let mut queued = std::mem::take(&mut self.pending_agent_turns);
-        for turn in &queued {
-            *self
-                .agent_turns_in_flight
-                .entry(turn.owner.clone())
-                .or_default() += 1;
-        }
+        let owed = queued
+            .iter()
+            .map(|turn| self.turns_in_flight.take(turn))
+            .collect();
         // The one door every cold prompt passes: the conversation is read and
         // closed onto the prompt HERE, so the packet carries what the store
         // holds under the tail and what was said while the turn waited.
@@ -9106,23 +9135,9 @@ impl AppState {
             }
         }
         PendingTurns {
-            owed: queued.iter().map(|turn| turn.owner.clone()).collect(),
+            owed,
             turns: queued.into(),
             state: self.settling_handle(),
-        }
-    }
-
-    /// Give one turn's in-flight mark back. Counted per owner, because one
-    /// drain can carry several turns for the same one.
-    fn settle_agent_turn(&mut self, owner: &str) {
-        let std::collections::hash_map::Entry::Occupied(mut in_flight) =
-            self.agent_turns_in_flight.entry(owner.to_string())
-        else {
-            return;
-        };
-        *in_flight.get_mut() -= 1;
-        if *in_flight.get() == 0 {
-            in_flight.remove();
         }
     }
 
@@ -9200,14 +9215,7 @@ impl AppState {
             eprintln!("route: {issue_id} belongs to no project with a checkout");
             return false;
         };
-        let root = Self::canonical_root(&checkout);
-        let key = TabKey::agent(&root, &agent_id);
-        let already_starting = self.agent_spawns_in_flight.contains(&key)
-            || self
-                .pending_agent_turns
-                .iter()
-                .any(|queued| queued.root == root && queued.agent_id == agent_id);
-        if already_starting {
+        if self.agent_is_on_its_way(&checkout, &agent_id) {
             return true;
         }
         let mut active = match self.take_plan(issue_id) {
@@ -11375,12 +11383,7 @@ impl AppState {
         // the one that reads this message: it opens on the cold prompt, which
         // tells it to call `read_unread_messages`, and the message is durable
         // on the thread before it can ask.
-        let already_starting = self.agent_spawns_in_flight.contains(&key)
-            || self
-                .pending_agent_turns
-                .iter()
-                .any(|queued| queued.root == root && queued.agent_id == agent_id);
-        if already_starting {
+        if self.agent_is_on_its_way(&root, agent_id) {
             return;
         }
         self.pending_agent_turns.push(PendingAgentTurn {
@@ -18392,8 +18395,74 @@ fn deliver(
 struct PendingTurns {
     turns: std::collections::VecDeque<PendingAgentTurn>,
     /// One entry per mark this batch has yet to give back.
-    owed: Vec<String>,
+    owed: Vec<TurnMark>,
     state: SettlingHandle,
+}
+
+/// The turns that have left [`AppState::pending_agent_turns`] and have not yet
+/// reached an agent.
+///
+/// Counted under two keys, because two questions are asked of the same fact and
+/// neither answers the other. The idle sweep asks about an OWNER: between a
+/// verb's transition and the tab its turn spawns, a working entity legitimately
+/// has no agent tab. The verbs that would queue a second turn ask about an
+/// AGENT TAB: a harness already on its way is the one that reads the next
+/// message, and a turn queued behind it is a duplicate nudge.
+///
+/// Counted rather than flagged, because one batch can carry several turns for
+/// one owner and several for one agent.
+#[derive(Default)]
+struct TurnsInFlight {
+    owners: HashMap<String, usize>,
+    agents: HashMap<TabKey, usize>,
+}
+
+/// One turn's pair of marks, owed back by whoever took them.
+struct TurnMark {
+    owner: String,
+    agent: TabKey,
+}
+
+impl TurnsInFlight {
+    fn take(&mut self, turn: &PendingAgentTurn) -> TurnMark {
+        let mark = TurnMark {
+            owner: turn.owner.clone(),
+            agent: turn.tab_key(),
+        };
+        *self.owners.entry(mark.owner.clone()).or_default() += 1;
+        *self.agents.entry(mark.agent.clone()).or_default() += 1;
+        mark
+    }
+
+    fn give_back(&mut self, mark: &TurnMark) {
+        Self::drop_one(&mut self.owners, &mark.owner);
+        Self::drop_one(&mut self.agents, &mark.agent);
+    }
+
+    fn holds_owner(&self, owner: &str) -> bool {
+        self.owners.contains_key(owner)
+    }
+
+    fn holds_agent(&self, key: &TabKey) -> bool {
+        self.agents.contains_key(key)
+    }
+
+    /// Nothing is being delivered, for a test waiting out the deliveries a verb
+    /// it called triggered.
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty() && self.agents.is_empty()
+    }
+
+    fn drop_one<K: std::hash::Hash + Eq>(counts: &mut HashMap<K, usize>, key: &K) {
+        let Some(count) = counts.get_mut(key) else {
+            return;
+        };
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(key);
+        }
+    }
 }
 
 impl PendingTurns {
@@ -18405,13 +18474,13 @@ impl PendingTurns {
         self.turns.pop_front()
     }
 
-    /// Give one delivered turn's mark back, under a lock the caller holds.
+    /// Give one delivered turn's marks back, under a lock the caller holds.
     fn settle(&mut self, owner: &str, s: &mut AppState) {
-        let Some(at) = self.owed.iter().position(|owed| owed == owner) else {
+        let Some(at) = self.owed.iter().position(|owed| owed.owner == owner) else {
             return;
         };
-        self.owed.swap_remove(at);
-        s.settle_agent_turn(owner);
+        let mark = self.owed.swap_remove(at);
+        s.turns_in_flight.give_back(&mark);
     }
 }
 
@@ -18422,8 +18491,8 @@ impl Drop for PendingTurns {
             return;
         }
         self.state.settle(|s| {
-            for owner in owed {
-                s.settle_agent_turn(&owner);
+            for mark in owed {
+                s.turns_in_flight.give_back(&mark);
             }
         });
     }
@@ -32804,13 +32873,70 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
-            s.agent_turns_in_flight.is_empty(),
+            s.turns_in_flight.is_empty(),
             "an unwinding delivery gives its in-flight marks back"
         );
         assert_eq!(
             s.mark_idle_tasks(Duration::from_secs(3600)),
             vec!["run-panicked".to_string()],
             "the entity it stranded is demotable again"
+        );
+    }
+
+    /// A harness already on its way is the one that reads the next message,
+    /// and the guard that says so has to see a turn in every state a turn can
+    /// be in.
+    ///
+    /// The queue is emptied under the frame's own acquisition and the spawn
+    /// claim is taken on a thread of the delivery's, so between the two there
+    /// is a stretch — a thread-pool handoff for the first turn, the whole of
+    /// every earlier turn's cold spawn for the rest — in which a turn on its
+    /// way is in neither the queue nor the claim set. A second message landing
+    /// there queues a duplicate turn: the claim still stops a second harness,
+    /// but nothing stops the duplicate `read_unread_messages` nudge.
+    #[test]
+    fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-nudged",
+            RunState::Building,
+        );
+        let state = app.shared();
+        let post = |body: &str| {
+            state.lock().unwrap().handle(req(
+                "thread.post",
+                json!({ "entity_id": "run-nudged", "body": body }),
+            ))
+        };
+
+        let first = post("start on this");
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            state.lock().unwrap().pending_agent_turns.len(),
+            1,
+            "the first message wakes the agent"
+        );
+
+        // Off the queue, no claim yet: the delivery is between its two halves.
+        let _delivering = state.lock().unwrap().take_pending_turns();
+        {
+            let s = state.lock().unwrap();
+            assert!(s.pending_agent_turns.is_empty());
+            assert!(s.agent_spawns_in_flight.is_empty());
+        }
+
+        let second = post("and this");
+        assert_eq!(
+            second["ok"], true,
+            "the message is durable on the thread either way: {second:?}"
+        );
+        assert!(
+            state.lock().unwrap().pending_agent_turns.is_empty(),
+            "a second turn was queued behind the one already coming"
         );
     }
 
@@ -32838,18 +32964,15 @@ mod tests {
         );
 
         // Mid-delivery — off the queue, not yet a tab — is the same story.
-        state.pending_agent_turns.clear();
-        *state
-            .agent_turns_in_flight
-            .entry("run-dispatching".into())
-            .or_default() += 1;
+        let mut delivering = state.take_pending_turns();
+        assert!(state.pending_agent_turns.is_empty());
         assert!(
             state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
             "a turn mid-delivery means the agent is coming, not missing"
         );
 
         // Once the delivery is over and no tab appeared, it IS the anomaly.
-        state.agent_turns_in_flight.clear();
+        delivering.settle("run-dispatching", &mut state);
         assert_eq!(
             state.mark_idle_tasks(Duration::from_secs(3600)),
             vec!["run-dispatching".to_string()]
@@ -36867,7 +36990,7 @@ mod tests {
     async fn wait_for_deliveries(state: &Arc<Mutex<AppState>>) {
         wait_for(Duration::from_secs(20), || {
             let s = state.lock().unwrap();
-            (s.pending_agent_turns.is_empty() && s.agent_turns_in_flight.is_empty()).then_some(())
+            (s.pending_agent_turns.is_empty() && s.turns_in_flight.is_empty()).then_some(())
         })
         .await
         .expect("every queued turn reached its agent");

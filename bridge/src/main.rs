@@ -146,15 +146,15 @@ async fn serve() {
     };
     // How the identity came to be paired is `pair`'s business to report; serve
     // only needs the keys.
-    let (identity, transport_keypair, _) = match load_device_identity(&runtime.config).await {
+    let loaded = match load_device_identity(&runtime.config).await {
         Ok(loaded) => loaded,
         Err(error) => exit_startup(error),
     };
-    let app = match construct_app(&runtime, &identity) {
+    let app = match construct_app(&runtime, &loaded.identity) {
         Ok(app) => app,
         Err(error) => exit_startup(error),
     };
-    run_daemon(runtime, identity, transport_keypair, app).await;
+    run_daemon(runtime, loaded.identity, loaded.transport, app).await;
 }
 
 fn adopt_login_path() {
@@ -258,6 +258,16 @@ impl PairingOutcome {
     }
 }
 
+/// What `load_device_identity` produced: the keys the daemon runs on, and how
+/// they came to be paired. `outcome` is decided from the single load the
+/// function already performs, so `pair` can report it without re-reading the
+/// identity file behind that function's back.
+struct LoadedIdentity {
+    identity: DeviceIdentity,
+    transport: transport::KeyPairB64,
+    outcome: PairingOutcome,
+}
+
 /// The device's identity and its transport keypair. A provisioned identity in
 /// the environment (matches the relay DB seed) is a prod/seed override that is
 /// treated as already approved and skips pairing. Otherwise the bridge
@@ -267,28 +277,23 @@ impl PairingOutcome {
 ///
 /// The transport keypair travels beside the identity, not inside it: its one
 /// owner is the intake that opens session keys with it (`carrier.rs`).
-///
-/// The third element says which of those paths was taken, so `pair` can report
-/// it without re-reading the identity file behind this function's back.
-async fn load_device_identity(
-    config: &BridgeConfig,
-) -> Result<(DeviceIdentity, transport::KeyPairB64, PairingOutcome), String> {
+async fn load_device_identity(config: &BridgeConfig) -> Result<LoadedIdentity, String> {
     match (
         std::env::var("BRIDGE_IDENTITY_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PUB"),
     ) {
-        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => Ok((
-            DeviceIdentity {
+        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => Ok(LoadedIdentity {
+            identity: DeviceIdentity {
                 device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
                 identity_private_key_b64: id_priv,
             },
-            transport::KeyPairB64 {
+            transport: transport::KeyPairB64 {
                 public_key_b64: tp_pub,
                 private_key_b64: tp_priv,
             },
-            PairingOutcome::Provisioned,
-        )),
+            outcome: PairingOutcome::Provisioned,
+        }),
         _ => {
             let identity_path = config.identity_file.clone();
             let stored = match identity::load(&identity_path) {
@@ -320,11 +325,11 @@ async fn load_device_identity(
             )
             .await
             .map_err(|error| format!("pairing failed: {error}"))?;
-            Ok((
-                identity::to_device_identity(&approved),
-                approved.transport.clone(),
+            Ok(LoadedIdentity {
+                identity: identity::to_device_identity(&approved),
+                transport: approved.transport.clone(),
                 outcome,
-            ))
+            })
         }
     }
 }
@@ -486,18 +491,18 @@ async fn pair() {
     // place first.
     relay::install_crypto_provider();
     let cfg = bridge_config();
-    let (identity, _, outcome) = match load_device_identity(&cfg).await {
+    let loaded = match load_device_identity(&cfg).await {
         Ok(loaded) => loaded,
         Err(error) => exit_startup(error),
     };
-    if !outcome.belongs_to_an_account() {
+    if !loaded.outcome.belongs_to_an_account() {
         println!(
             "provisioned device {} — nothing to pair",
-            identity.device_id
+            loaded.identity.device_id
         );
         return;
     }
-    if let Some(note) = outcome.note() {
+    if let Some(note) = loaded.outcome.note() {
         println!("{note}");
     }
     match approved_owner(&cfg).await {

@@ -14,11 +14,20 @@ pub const UNIT_NAME: &str = "build-bridge.service";
 
 pub struct Systemd;
 
-/// systemd's own quoting for an `Environment=` assignment: a double-quoted
-/// string in which `\` and `"` are backslash-escaped. Quoting unconditionally
-/// keeps a value with spaces (a PATH entry, a device name) one assignment.
+/// systemd's own quoting for a unit value: a double-quoted string in which `\`
+/// and `"` are backslash-escaped and `%` is doubled. Quoting unconditionally
+/// keeps a value with spaces (a PATH entry, a device name, an install directory)
+/// one word; doubling `%` stops systemd expanding a specifier (`%h`, `%i`, …) in
+/// an `Environment=` value or an `ExecStart=` word, which would otherwise make
+/// the unit carry something other than what was written.
 fn systemd_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('%', "%%")
+    )
 }
 
 impl ServiceManager for Systemd {
@@ -33,8 +42,14 @@ impl ServiceManager for Systemd {
     /// Restart on failure rather than `always`: a bridge that exits 0 was told
     /// to stop. Logs append to the same two files the LaunchAgent writes, so
     /// "where are the logs" has one answer on both platforms.
+    ///
+    /// The `ExecStart=` program is quoted because it is wherever the installer
+    /// put the binary — a directory with a space or a `%` in it must still run
+    /// the command that was written, exactly as the launchd renderer escapes an
+    /// arbitrary path into its plist. The `append:` log paths are left bare:
+    /// systemd.exec(5) does not document a quoted form for them.
     fn render_unit(&self, config: &ServiceConfig) -> String {
-        let binary = config.binary_path.display();
+        let binary = systemd_quote(&config.binary_path.to_string_lossy());
         let stdout_log = config.log_dir.join("bridge.log");
         let stderr_log = config.log_dir.join("bridge.err.log");
         let environment = config
@@ -106,7 +121,7 @@ mod tests {
     #[test]
     fn unit_runs_serve_restarts_on_failure_and_logs_under_the_state_dir() {
         let unit = Systemd.render_unit(&sample_config(HOME));
-        assert!(unit.contains("ExecStart=/home/dev/.local/bin/build-bridge serve\n"));
+        assert!(unit.contains("ExecStart=\"/home/dev/.local/bin/build-bridge\" serve\n"));
         assert!(unit.contains("Restart=on-failure\n"));
         assert!(unit.contains("RestartSec=5\n"));
         assert!(unit.contains("StandardOutput=append:/home/dev/.build/log/bridge.log\n"));
@@ -130,6 +145,30 @@ mod tests {
         assert!(
             unit.contains(r#"Environment="BRIDGE_DEVICE_NAME=Zech's \"Mac\" \\ desk""#),
             "the value stays one assignment: {unit}"
+        );
+    }
+
+    #[test]
+    fn exec_start_quotes_the_binary_path() {
+        let unit = Systemd.render_unit(&ServiceConfig {
+            binary_path: PathBuf::from("/home/dev/my tools/100% build/build-bridge"),
+            ..sample_config(HOME)
+        });
+        assert!(
+            unit.contains("ExecStart=\"/home/dev/my tools/100%% build/build-bridge\" serve\n"),
+            "the installed path stays one argument, specifiers unexpanded: {unit}"
+        );
+    }
+
+    #[test]
+    fn unit_escapes_percent_so_systemd_expands_no_specifier() {
+        let unit = Systemd.render_unit(&ServiceConfig {
+            env: vec![("BRIDGE_DEVICE_NAME".into(), "100% mine %H".into())],
+            ..sample_config(HOME)
+        });
+        assert!(
+            unit.contains(r#"Environment="BRIDGE_DEVICE_NAME=100%% mine %%H""#),
+            "the value reaches the daemon verbatim: {unit}"
         );
     }
 

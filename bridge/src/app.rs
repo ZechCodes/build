@@ -13572,12 +13572,16 @@ impl AppState {
             }
         }
         if let Some(worktree) = created.minted_worktree {
+            // Taken while the directory is still there: the scan keys checkouts
+            // by canonical path, and a path cannot be canonicalized once what
+            // it named is gone.
+            let canonical = Self::canonical_root(&worktree.path);
             match self.orch_for(project_id) {
                 Ok(orch) if created.minted_branch => orch.discard_worktree(&worktree),
                 Ok(orch) => orch.discard_checkout_keeping_branch(&worktree),
                 Err(error) => eprintln!("branch.dispatch cleanup: {error}"),
             }
-            self.note_worktree_gone(project_id, &worktree.path);
+            self.note_worktree_gone(project_id, &canonical);
         }
     }
 
@@ -44817,6 +44821,9 @@ mod tests {
         for step in [BranchDispatchStep::Adopt, BranchDispatchStep::Post] {
             let mut state = qa_state(&repo, dir.path());
             let project_id = state.projects[0].id.clone();
+            // A board that has been looked at once: the checkout the dispatch
+            // cuts joins that list, and the rollback has to take it back out.
+            state.scan_external_worktrees_now(&project_id).unwrap();
             state.dispatch_fault = Some(step);
 
             let failed = state.handle(req(
@@ -44833,6 +44840,17 @@ mod tests {
             assert!(
                 !dir.path().join("wt").join("add-a-health-endpoint").exists(),
                 "{step:?} left the worktree it minted on disk"
+            );
+            assert!(
+                state.projects[0]
+                    .external_scan
+                    .as_ref()
+                    .is_some_and(|cache| cache.worktrees.is_empty()),
+                "{step:?} left a checkout on the board that is not on disk: {:?}",
+                state.projects[0]
+                    .external_scan
+                    .as_ref()
+                    .map(|c| &c.worktrees)
             );
             state.dispatch_fault = None;
             assert!(

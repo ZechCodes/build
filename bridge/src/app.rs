@@ -49865,6 +49865,81 @@ mod tests {
         );
     }
 
+    /// A planning workspace that cannot be written never fails the route: the
+    /// capture is recorded and the Issue holds the text, so the route answers
+    /// with an inert Issue that says no agent is reading it — and once the
+    /// disk is fixed, the same Issue starts. The refusal travels the whole way
+    /// through `PlanWorkspaceRefused` and `RoutedIssueDrafting::refused`,
+    /// which is the one override of the trait's `Err`.
+    #[test]
+    fn routing_to_an_issue_whose_workspace_cannot_be_written_keeps_the_route() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+        // Every Issue's scratch docs dir is cut under this root; a plain file
+        // standing there fails `create_dir_all` for any Issue.
+        let docs_root = dir.path().join("wt").join(&project_id).join(".issue-docs");
+        std::fs::create_dir_all(docs_root.parent().unwrap()).unwrap();
+        std::fs::write(&docs_root, "not a directory").unwrap();
+
+        let filed = state
+            .router_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id: project_id.clone(),
+                    goal: "fix the login redirect".to_string(),
+                    rationale: None,
+                },
+            )
+            .expect("an unwritable workspace never fails the route");
+        let issue_id = filed["issue_id"].as_str().unwrap().to_string();
+
+        assert_eq!(filed["planning"], false, "{filed:?}");
+        assert_eq!(
+            state.plans[&issue_id].plan.state,
+            PlanState::Created,
+            "the Issue is inert, not half-started"
+        );
+        assert!(
+            state.plans[&issue_id].workspace.is_none(),
+            "no workspace was written"
+        );
+        assert!(
+            !state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.owner == issue_id),
+            "no turn was queued for an agent that has nowhere to work"
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the refused workspace left its row on the board"
+        );
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["state"], "routed");
+        assert_eq!(record["routing"]["kind"], "issue");
+        assert_eq!(record["routing"]["target_id"], issue_id.as_str());
+
+        // Re-startable: with the disk fixed, the same Issue's session opens.
+        std::fs::remove_file(&docs_root).unwrap();
+        let job = routed_planning_start(&mut state, &issue_id, &capture_id)
+            .expect("an inert Issue has a session to start");
+        state
+            .run_lifecycle_here(job)
+            .expect("the session opens once the disk is fixed");
+        assert_ne!(state.plans[&issue_id].plan.state, PlanState::Created);
+        assert!(state.plans[&issue_id].workspace.is_some());
+        assert_eq!(
+            state
+                .pending_agent_turns
+                .iter()
+                .filter(|turn| turn.owner == issue_id)
+                .count(),
+            1
+        );
+    }
+
     /// What a route finds when it asks for a planning session a second time.
     /// `None` is "nothing to start", which is the whole answer this is asked
     /// for: a job would mean a second harness on the same issue.

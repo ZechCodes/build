@@ -1311,6 +1311,42 @@ fn completion_before_interrupt_error_preserves_the_error_during_steer_reconcilia
     );
 }
 
+#[test]
+fn interrupt_answered_with_no_active_turn_after_completion_settles_quietly() {
+    let interrupted = working_state()
+        .transition(SessionEvent::Interrupt, Duration::ZERO, limits().state())
+        .unwrap()
+        .state;
+    let completed = interrupted
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: None,
+            },
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    let settled = completed
+        .transition(
+            correlated(
+                interrupt_turn(),
+                Err(RpcError::new(-32600, "no active turn")),
+            ),
+            Duration::from_secs(2),
+            limits().state(),
+        )
+        .unwrap();
+
+    assert!(!settled
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, SessionEffect::Report(_))));
+    assert_eq!(settled.state.status(), AgentStatus::Waiting);
+    assert_eq!(settled.state.epitaph(), None);
+}
+
 fn active_turn_not_steerable_error() -> RpcError {
     RpcError::with_data(
         -32600,

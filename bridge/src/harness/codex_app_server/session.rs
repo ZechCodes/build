@@ -779,6 +779,16 @@ mod tests {
         )
     }
 
+    fn wait_until(expectation: &str, condition: impl Fn() -> bool) {
+        for _ in 0..400 {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the session never {expectation}");
+    }
+
     fn drain_reports(
         activity: &mut broadcast::Receiver<ActivityReport>,
         until: impl Fn(&[ActivityReport]) -> bool,
@@ -1084,6 +1094,41 @@ mod tests {
             session.quiet_for()
         );
         assert_eq!(session.epitaph(), None);
+        session.end();
+    }
+
+    #[test]
+    fn interrupt_asks_codex_to_stop_and_never_kills_the_process() {
+        let root = tempfile::tempdir().unwrap();
+        let interrupt_capture = root.path().join("interrupt-frame.json");
+        let script = opened_thread_script(
+            root.path(),
+            &format!(
+                "read turn; printf '%s\\n' '{}'; read interrupt; printf '%s\\n' \"$interrupt\" > {}; read hold",
+                r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
+                interrupt_capture.display(),
+            ),
+        );
+        let (session, _activity) = scripted_session(root.path(), &script);
+        wait_until("opened its thread", || session.session_id().is_some());
+        session
+            .send_turn(&Turn {
+                text: "go".to_string(),
+            })
+            .unwrap();
+        wait_until("started a turn to interrupt", || session.can_interrupt());
+        session.interrupt().unwrap();
+
+        wait_until("asked codex to interrupt the turn", || {
+            interrupt_capture.exists()
+        });
+        let frame: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&interrupt_capture).unwrap()).unwrap();
+        assert_eq!(frame["method"], "turn/interrupt");
+        assert_eq!(frame["params"]["threadId"], "thread-1");
+        assert_eq!(frame["params"]["turnId"], "turn-1");
+        assert!(!session.exited_within(Duration::ZERO));
+        assert!(!matches!(session.status(), AgentStatus::Ended { .. }));
         session.end();
     }
 

@@ -250,9 +250,11 @@ async fn serve(
         let graceful = writer_gone_tx;
         // WebSocket pings ride the same sink. A pong comes back only when the
         // peer's READ loop polls its socket — which is exactly what a wedged
-        // bridge stops doing while its heartbeat task keeps writing. The device
-        // loop enforces the pong deadline; browsers pong from the WS stack and
-        // are not held to it.
+        // bridge stops doing while its heartbeat task keeps writing, and what a
+        // browser that is gone never does again. Both serve loops enforce the
+        // pong deadline: a browser pongs from the WS stack itself, so a ping it
+        // does not answer is the one proof the relay gets that nobody is there
+        // when a load balancer keeps the TCP connection established regardless.
         //
         // The first ping waits a full interval: a peer that just completed the
         // handshake has proven liveness, and pinging at spawn races the
@@ -553,12 +555,28 @@ async fn serve_client(
         );
     }
 
+    // A browser is held to the pong deadline alone: a quiet one sends no frame
+    // for as long as it likes, but its WS stack answers every ping as long as
+    // the page is there. Unanswered pings past the window are a client that
+    // went away without a close — a suspended tab, a socket a load balancer
+    // keeps established for a browser that is gone — and until it is severed,
+    // its sessions pin the device's keys and its socket counts as a live client.
+    let liveness_timeout = shared.config.device_liveness_timeout;
+    let mut pong_deadline = tokio::time::Instant::now() + liveness_timeout;
+
     loop {
         let message = tokio::select! {
             next = source.next() => match next {
                 Some(Ok(message)) => message,
                 _ => break,
             },
+            _ = tokio::time::sleep_until(pong_deadline) => {
+                eprintln!(
+                    "client {client_id}: pings unanswered for {}s; severing",
+                    liveness_timeout.as_secs()
+                );
+                break;
+            }
             _ = &mut *writer_gone => {
                 eprintln!("client {client_id}: writer severed (stalled or failed write); severing");
                 break;
@@ -566,6 +584,9 @@ async fn serve_client(
             _ = shutdown.recv() => break,
         };
         let Message::Text(text) = message else {
+            if matches!(message, Message::Pong(_)) {
+                pong_deadline = tokio::time::Instant::now() + liveness_timeout;
+            }
             if matches!(message, Message::Close(_)) {
                 break;
             }

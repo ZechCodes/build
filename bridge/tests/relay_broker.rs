@@ -447,10 +447,11 @@ async fn silent_device_is_severed_and_reported_offline() {
     let mut device_ws = authed_device(&relay, &device).await;
     assert_eq!(recv_json(&mut client).await["type"], "device_online");
 
-    // The device sends nothing at all. The relay must cut it loose…
-    expect_disconnect(&mut device_ws).await;
-    // …and tell the owner's browsers the truth instead of leaving them waiting.
-    let offline = recv_json(&mut client).await;
+    // The device sends nothing at all. The relay must cut it loose and tell the
+    // owner's browsers the truth instead of leaving them waiting. The browser
+    // is read the whole time, as a browser is: it is held to the same liveness
+    // window as the device, and answers the relay's pings only while polled.
+    let (_, offline) = tokio::join!(expect_disconnect(&mut device_ws), recv_json(&mut client));
     assert_eq!(offline["type"], "device_offline");
     assert_eq!(offline["device_id"], device.device_id.as_str());
 }
@@ -632,4 +633,116 @@ async fn sigterm_closes_websockets_cleanly_and_exits_zero() {
         }
     }
     relay.wait_for_clean_exit();
+}
+
+/// A browser that stopped reading — a tab the OS suspended, a socket a load
+/// balancer keeps established after the client went away — answers no pings.
+/// The relay holds a client to the same pong deadline it holds a device to:
+/// browsers pong from the WebSocket stack itself, so an unanswered ping is the
+/// one proof the relay can get that nobody is there, and the device is told
+/// its session is gone within the liveness window instead of never.
+#[tokio::test]
+async fn a_client_that_stops_answering_pings_is_severed_within_the_liveness_window() {
+    let api = mock_api().await;
+    let device = identity::generate("laptop");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "3")]);
+
+    let mut client = authed_client(&relay).await;
+    let mut device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    client
+        .send(Message::Text(
+            json!({
+                "type": "session_init",
+                "session_id": "s-abandoned",
+                "route_to": format!("device:{}", device.device_id),
+                "session_init": {"device_id": device.device_id},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(recv_json(&mut device_ws).await["session_id"], "s-abandoned");
+
+    // From here the client is never polled: its socket stays open and every
+    // ping the relay writes lands unanswered. `client` is held so the TCP
+    // connection itself does not close — that is the shape a load balancer
+    // leaves behind, and it is what a dead-client detector has to see through.
+    let started = std::time::Instant::now();
+    let notice = recv_json(&mut device_ws).await;
+    assert_eq!(notice["type"], "session_closed", "{notice}");
+    assert_eq!(notice["session_id"], "s-abandoned");
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "severed only after {:?}, not within the liveness window",
+        started.elapsed()
+    );
+    drop(client);
+}
+
+/// The other half: a browser that is merely quiet — reading, ponging, saying
+/// nothing — is not a dead one, and keeps its session past the liveness window.
+#[tokio::test]
+async fn a_quiet_client_that_answers_pings_keeps_its_session() {
+    let api = mock_api().await;
+    let device = identity::generate("laptop");
+    mount_device_record(&api, &device, "u1").await;
+    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "2")]);
+
+    let mut client = authed_client(&relay).await;
+    let mut device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+    client
+        .send(Message::Text(
+            json!({
+                "type": "session_init",
+                "session_id": "s-quiet",
+                "route_to": format!("device:{}", device.device_id),
+                "session_init": {"device_id": device.device_id},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(recv_json(&mut device_ws).await["session_id"], "s-quiet");
+
+    // Reading is all a browser does to pong: the WebSocket stack answers each
+    // ping as it is read. Drain for two liveness windows and more.
+    let reading = tokio::spawn(async move {
+        let until = tokio::time::Instant::now() + Duration::from_secs(5);
+        while let Ok(Some(_)) = tokio::time::timeout_at(until, client.next()).await {}
+        client
+    });
+    // The device is held to its own liveness window meanwhile, so it heartbeats
+    // as a bridge does — this test is about the client's deadline, not its.
+    let (mut device_tx, mut device_rx) = device_ws.split();
+    let heartbeats = tokio::spawn(async move {
+        let mut beat = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            beat.tick().await;
+            if device_tx
+                .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    let window = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(window);
+    loop {
+        tokio::select! {
+            _ = &mut window => break,
+            frame = device_rx.next() => match frame {
+                Some(Ok(Message::Text(text))) => panic!("a reading client was severed: {text}"),
+                Some(Ok(_)) => continue,
+                other => panic!("device socket ended: {other:?}"),
+            }
+        }
+    }
+    heartbeats.abort();
+    let _client = reading.await.expect("the reader task finishes");
 }

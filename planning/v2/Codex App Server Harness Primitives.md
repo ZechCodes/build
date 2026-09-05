@@ -304,7 +304,10 @@ the selected turn values update them when a turn is accepted.
 correlated response must name the same id, after which `Waiting` begins. A
 response-first path becomes `Waiting` immediately and a later matching
 notification is idempotent. A differing id or an error response after a
-successful notification is a protocol contradiction and fails the session.
+successful notification is a protocol contradiction and fails the session. So
+is a thread-open response whose operation disagrees with the persisted resume
+id: a `thread/start` result for a session that resumed, or a `thread/resume`
+result for a fresh session, fails the session.
 
 A failure at initialize or thread open closes the activity stream and emits
 `FailSession(reason)` carrying the correlated JSON-RPC error as the reason.

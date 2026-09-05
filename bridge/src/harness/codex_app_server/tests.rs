@@ -69,6 +69,17 @@ fn start_thread() -> PendingOperation {
     }
 }
 
+fn thread_opened(thread_id: &str, reasoning_effort: Value) -> Value {
+    json!({
+        "thread":{"id":thread_id},
+        "model":SELECTED_MODEL,
+        "reasoningEffort":reasoning_effort,
+        "cwd":WORKTREE_ROOT,
+        "approvalPolicy":"never",
+        "sandbox":{"type":"dangerFullAccess"}
+    })
+}
+
 fn initialized_then_opens_thread() -> Vec<SessionEffect> {
     vec![
         SessionEffect::NotifyInitialized,
@@ -132,22 +143,24 @@ fn initialize_transition(user_agent: &str) -> Result<StateTransition, StateError
     )
 }
 
+fn resumed_initialize_transition() -> Result<StateTransition, StateError> {
+    session_state(Some(EXACT_THREAD_ID))
+        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
+        .unwrap()
+        .state
+        .transition(
+            initialize_response(SUPPORTED_USER_AGENT),
+            Duration::ZERO,
+            limits().state(),
+        )
+}
+
 fn advance_to_waiting() -> CodexSessionState {
     initialize_transition(SUPPORTED_USER_AGENT)
         .unwrap()
         .state
         .transition(
-            correlated(
-                start_thread(),
-                Ok(json!({
-                    "thread":{"id":"thread-1"},
-                    "model":"gpt-5.6-sol",
-                    "reasoningEffort":"high",
-                    "cwd":"/tmp/worktree",
-                    "approvalPolicy":"never",
-                    "sandbox":{"type":"dangerFullAccess"}
-                })),
-            ),
+            correlated(start_thread(), Ok(thread_opened("thread-1", json!("high")))),
             Duration::ZERO,
             limits().state(),
         )
@@ -335,12 +348,12 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
         .unwrap()
         .is_empty());
     assert_eq!(frames[1]["method"], "thread/resume");
-    assert_eq!(frames[1]["params"]["threadId"], "thread-exact");
-    assert_eq!(frames[1]["params"]["model"], "gpt-5.6-sol");
+    assert_eq!(frames[1]["params"]["threadId"], EXACT_THREAD_ID);
+    assert_eq!(frames[1]["params"]["model"], SELECTED_MODEL);
     assert!(frames[1]["params"].get("effort").is_none());
     assert_eq!(frames[1]["params"]["approvalPolicy"], "never");
     assert_eq!(frames[1]["params"]["sandbox"], "danger-full-access");
-    assert_eq!(frames[2]["params"]["model"], "gpt-5.6-sol");
+    assert_eq!(frames[2]["params"]["model"], SELECTED_MODEL);
     assert_eq!(frames[2]["params"]["effort"], "high");
     assert!(frames[3]["params"].get("model").is_none());
     assert!(frames[3]["params"].get("effort").is_none());
@@ -577,16 +590,7 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
 
     let resumed = session_state(Some(EXACT_THREAD_ID));
     assert_eq!(resumed.resume_id(), Some(EXACT_THREAD_ID));
-    let resumed_open = resumed
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state
-        .transition(
-            initialize_response(SUPPORTED_USER_AGENT),
-            Duration::ZERO,
-            limits().state(),
-        )
-        .unwrap();
+    let resumed_open = resumed_initialize_transition().unwrap();
     assert_eq!(
         resumed_open.effects,
         vec![
@@ -598,26 +602,9 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
 
 #[test]
 fn thread_open_response_operation_must_match_the_persisted_resume_id() {
-    let opened = json!({
-        "thread":{"id":"thread-1"},
-        "model":SELECTED_MODEL,
-        "reasoningEffort":null,
-        "cwd":WORKTREE_ROOT,
-        "approvalPolicy":"never",
-        "sandbox":{"type":"dangerFullAccess"}
-    });
+    let opened = thread_opened("thread-1", Value::Null);
 
-    let resumed = session_state(Some(EXACT_THREAD_ID))
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state
-        .transition(
-            initialize_response(SUPPORTED_USER_AGENT),
-            Duration::ZERO,
-            limits().state(),
-        )
-        .unwrap()
-        .state;
+    let resumed = resumed_initialize_transition().unwrap().state;
     let start_answered_a_resume = resumed
         .transition(
             correlated(start_thread(), Ok(opened.clone())),
@@ -704,11 +691,28 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
         )
         .unwrap()
         .state;
-    let matching = notified.transition(correlated(start_thread(), Ok(json!({"thread":{"id":"thread-1"},"model":"gpt-5.6-sol","reasoningEffort":null,"cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}))), Duration::ZERO, limits().state()).unwrap();
+    let matching = notified
+        .transition(
+            correlated(start_thread(), Ok(thread_opened("thread-1", Value::Null))),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
     assert_eq!(matching.state.status(), AgentStatus::Waiting);
 
-    let mismatch = opening.transition(SessionEvent::ThreadStarted("other".to_string()), Duration::ZERO, limits().state()).unwrap().state
-        .transition(correlated(start_thread(), Ok(json!({"thread":{"id":"thread-1"},"model":"gpt-5.6-sol","reasoningEffort":null,"cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}))), Duration::ZERO, limits().state());
+    let mismatch = opening
+        .transition(
+            SessionEvent::ThreadStarted("other".to_string()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state
+        .transition(
+            correlated(start_thread(), Ok(thread_opened("thread-1", Value::Null))),
+            Duration::ZERO,
+            limits().state(),
+        );
     assert!(mismatch.is_err());
 }
 
@@ -830,17 +834,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
         .unwrap()
         .state
         .transition(
-            correlated(
-                start_thread(),
-                Ok(json!({
-                    "thread":{"id":"thread-1"},
-                    "model":"gpt-5.6-sol",
-                    "reasoningEffort":"low",
-                    "cwd":"/tmp/worktree",
-                    "approvalPolicy":"never",
-                    "sandbox":{"type":"dangerFullAccess"}
-                })),
-            ),
+            correlated(start_thread(), Ok(thread_opened("thread-1", json!("low")))),
             Duration::ZERO,
             limits().state(),
         )

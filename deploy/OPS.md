@@ -18,16 +18,26 @@ either.
    estimate.
 2. Compare it against the 1000 GB included. Above it, budget $0.05 per further
    GB.
-3. If egress is climbing, ask how many sessions are actually being relayed. The
-   bridge writes one line to stderr per session, the moment its peer connection
-   first carries:
+3. If egress is climbing, ask how many sessions are actually being relayed.
+   **The admin transport page** (`/admin/transport`, administrator permission)
+   answers first: sessions in the window bucketed as Direct WebRTC / TURN /
+   Relay only / Unstable, per device, with the newest sessions' trails. Every
+   bridge reports each session's transport events to the api
+   (`POST /api/transport/report`, device-signed, content-free), and the page
+   counts a session as TURN when any of its carries was relayed. The bridge's
+   own stderr is the device-side cross-check: one line per event, and one
+   per path each time its peer connection carries — the first time, and
+   again after every ICE restart:
 
    ```
+   transport: session <session_id> minted over the relay
    rtc: session <session_id> carrying over host/relay candidates (TURN, billed)
+   transport: session <session_id> fell back to the relay
+   transport: session <session_id> ended
    ```
 
    The pair is named at both ends, device first, browser second. Count the
-   billed ones with:
+   billed carries on a device with:
 
    ```bash
    grep -c 'TURN, billed' bridge.err.log

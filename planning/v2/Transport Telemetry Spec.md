@@ -1,6 +1,6 @@
 # Transport Telemetry Spec
 
-Status: **draft, being built** (2026-09-05). Companion to `WebRTC Transport Spec.md`.
+Status: **built** (2026-09-05; stages 1–5 below). Companion to `WebRTC Transport Spec.md`.
 
 ## The question this answers
 

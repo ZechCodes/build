@@ -263,7 +263,7 @@ Starting
   -> Working(thread id, turn id)
   -> Waiting(thread id)
   -> Ending
-  -> Ended(exit code)
+  -> Ended
 ```
 
 Initialization sends one `initialize` request with Build client metadata, waits
@@ -557,10 +557,15 @@ call does.
   stays in `CodexSessionState`.
 
 `Working` lasts from accepted turn start until `turn/completed`, even during a
-long silent model call, so the existing idle sweep does not report false quiet.
-EOF, malformed required lifecycle messages, oversized frames, and correlation
-violations begin the terminal sequence; after final publication, the existing
-activity pump performs the tab and session-lineage death rites.
+long silent model call, plus the terminal settling window below, so the existing
+idle sweep does not report false quiet. Between the first terminal trigger and
+publication `status()` reports `Working`: shutdown is in flight, the session can
+accept no turn, and `Waiting` would tell `app.rs` the agent is idle at a prompt.
+The `Ending` and `Ended` phases carry no code; only the published
+`TerminalOutcome` does. EOF, malformed required lifecycle messages, oversized
+frames, and correlation violations begin the terminal sequence; after final
+publication, the existing activity pump performs the tab and session-lineage
+death rites.
 
 `AgentSession::status()` is a pure snapshot read. It does not poll the child,
 inspect drainer health, transition state, close activity, or initiate shutdown.
@@ -592,7 +597,12 @@ epitaph selection:
 
 The protocol reader sends decoded events in wire order and then exactly one
 `TerminalSourceEvent::StdoutSettled { reader_error }` after EOF or its terminal
-decode error. Any terminal trigger may begin idempotent process shutdown
+decode error. A source that never settles is settled for it: `AppServerProcess`
+arms `stderr_settle_grace` once the child is reaped and, when it expires, sends
+a `StderrSettled` carrying that expiry as a drainer failure, so a detached
+grandchild holding the stderr pipe open cannot leave the barrier unfinished. The
+first settlement of a source wins, so the grace is inert whenever the drainer
+settled first. Any terminal trigger may begin idempotent process shutdown
 immediately, but the coordinator does not publish `Ended`, close the activity
 sender, or publish the final epitaph until `outcome()` returns `Some`. A clean
 settled source remains part of the barrier; reader completion alone is
@@ -647,6 +657,7 @@ Production uses these conservative defaults:
 | aggregate completed-item key bytes | 128 KiB |
 | one emitted activity summary | existing 240-character summary limit |
 | notification/response reconciliation | 5 seconds |
+| stderr settle grace after child reap | 5 seconds |
 | activity broadcast backlog | existing 1,024 reports |
 
 The stdout decoder incrementally reads into a buffer capped at 1 MiB plus one

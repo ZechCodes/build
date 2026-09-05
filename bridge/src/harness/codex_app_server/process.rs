@@ -109,7 +109,7 @@ impl AppServerProcess {
             .ok_or_else(|| HarnessError::Session("Codex stderr was not piped".to_string()))?;
         drain_stderr(stderr, StderrTail::new(limits), Arc::clone(&events));
         let process = AppServerProcess::new(Box::new(child));
-        process.start_monitor(events);
+        process.start_monitor(events, limits.stderr_settle_grace);
         Ok((process, ConnectionPipes { stdin, stdout }))
     }
 
@@ -130,7 +130,7 @@ impl AppServerProcess {
         }
     }
 
-    fn start_monitor(&self, events: TerminalEventSink) {
+    fn start_monitor(&self, events: TerminalEventSink, stderr_settle_grace: Duration) {
         let slot = Arc::clone(&self.slot);
         std::thread::spawn(move || {
             let settled = loop {
@@ -140,6 +140,8 @@ impl AppServerProcess {
                 std::thread::sleep(EXIT_POLL_INTERVAL);
             };
             events(settled);
+            std::thread::sleep(stderr_settle_grace);
+            events(stderr_grace_expiry(stderr_settle_grace));
         });
     }
 
@@ -228,6 +230,15 @@ fn poll_settlement(slot: &ProcessSlot) -> Option<TerminalSourceEvent> {
             Some(settled_event(&state))
         }
         None => Some(settled_event(&state)),
+    }
+}
+
+fn stderr_grace_expiry(stderr_settle_grace: Duration) -> TerminalSourceEvent {
+    TerminalSourceEvent::StderrSettled {
+        retained_tail: None,
+        drainer_error: Some(format!(
+            "Codex stderr did not settle within {stderr_settle_grace:?}"
+        )),
     }
 }
 
@@ -363,6 +374,7 @@ mod tests {
         let mut tail = StderrTail::new(ProcessLimits {
             stderr_line_bytes: 4,
             stderr_total_bytes: 7,
+            stderr_settle_grace: Duration::from_secs(5),
         });
         for byte in b"123456\nabc\ndef\n" {
             tail.push(*byte);
@@ -434,7 +446,7 @@ mod tests {
             let _ = sender.send(event);
         });
 
-        process.start_monitor(events);
+        process.start_monitor(events, Duration::from_secs(5));
 
         assert!(matches!(
             receiver.recv_timeout(Duration::from_secs(1)).unwrap(),

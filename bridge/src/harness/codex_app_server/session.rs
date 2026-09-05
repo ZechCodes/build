@@ -758,15 +758,17 @@ mod tests {
         root: &Path,
         script: &str,
     ) -> (CodexAppServerSession, broadcast::Receiver<ActivityReport>) {
+        scripted_session_under(root, script, AppServerLimits::default())
+    }
+
+    fn scripted_session_under(
+        root: &Path,
+        script: &str,
+        limits: AppServerLimits,
+    ) -> (CodexAppServerSession, broadcast::Receiver<ActivityReport>) {
         let spec = HarnessSpec::new("sh").arg("-c").arg(script);
-        CodexAppServerSession::spawn(
-            &spec,
-            root.to_path_buf(),
-            selected_choice(),
-            None,
-            AppServerLimits::default(),
-        )
-        .unwrap()
+        CodexAppServerSession::spawn(&spec, root.to_path_buf(), selected_choice(), None, limits)
+            .unwrap()
     }
 
     fn opened_thread_script(root: &Path, thread_traffic: &str) -> String {
@@ -1169,6 +1171,36 @@ mod tests {
         assert!(settled_code.is_some());
         assert_eq!(session.status(), AgentStatus::Ended { code: settled_code });
         assert_eq!(session.epitaph().as_deref(), Some("late"));
+        assert!(matches!(
+            activity.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
+    }
+
+    #[test]
+    fn stderr_held_open_past_the_grace_still_publishes_ended() {
+        let root = tempfile::tempdir().unwrap();
+        let (session, mut activity) = scripted_session_under(
+            root.path(),
+            "exec 1>&-; (sleep 30; echo late >&2) & exec cat >/dev/null",
+            AppServerLimits {
+                stderr_settle_grace: Duration::from_millis(100),
+                ..AppServerLimits::default()
+            },
+        );
+
+        wait_until("published its terminal outcome", || {
+            matches!(session.status(), AgentStatus::Ended { .. })
+        });
+        assert!(
+            matches!(session.status(), AgentStatus::Ended { code: Some(_) }),
+            "{:?}",
+            session.status()
+        );
+        assert_eq!(
+            session.epitaph().as_deref(),
+            Some("Codex stderr did not settle within 100ms")
+        );
         assert!(matches!(
             activity.try_recv(),
             Err(broadcast::error::TryRecvError::Closed)

@@ -187,18 +187,19 @@ pub fn restore(&self, worktree: &Worktree, when_unregistered: UnregisteredRestor
 
 ## (d) SPA: pure model vs DOM
 
-`spa/src/core/branchPickerModel.js` — two exports, and a row that is the whole pressable action:
+`spa/src/core/branchPickerModel.js` — three exports, and a row that is the whole pressable action:
 
 ```js
 export function branchPickerRows({ projectId, branches = [], query = "" })
-// -> [{ key, name, intent, verb, detail, remote, branch, focusComposer, call, land(answer) }]
+// -> [{ name, verb, detail, remote, call, land(answer) }]
 export function pressedRow({ rows, query, highlight })
+export const INTENT_VERB  // the row-copy table, so the tests assert the words the human reads rather than spelling them again
 ```
 
-A row carries its own verb, its own `call` and its own `land` — where the answer opens — so the DOM presses a row without asking what kind of row it is, and never re-staples a route out of pieces the model already fitted together. `HOLDER_START` maps `holder.kind` to the verb, the detail line and the call; a branch with no holder is a checkout (`materialise` when only a remote has it). `fuzzyRank` and `branchNamePreview` are reused unchanged; the cut-new row leads the list whenever the text could cut a branch and names none of the project's own, and it is the module's own row rather than something the caller rebuilds.
+A row carries its own verb, its own `call` and its own `land` — where the answer opens — so the DOM presses a row without asking what kind of row it is, and never re-staples a route out of pieces the model already fitted together. `HOLDER_START` maps `holder.kind` to the verb, the detail line and the call; a branch with no holder is a checkout (`materialise` when only a remote has it), while a holder of a kind this table has no entry for — a bridge released after this client — reads as held and opens, so a missing entry can never fall through to a checkout of a branch already checked out. `fuzzyRank` and `branchNamePreview` are reused unchanged; the cut-new row leads the list whenever the text could cut a branch and names none of the project's own, and it is the module's own row rather than something the caller rebuilds.
 
 `pressedRow` owns what an Enter press with nothing highlighted means: the row the list leads with, which is the branch the text would cut when it could cut one and the listed branch itself when the text spells one exactly. That rule has one home, so an arrow key that walks the highlight off the top of the list cannot make Enter cut a branch that is sitting right there.
 
-The two rows call the same RPC with different keys, which is what keeps the preview honest: a listed row sends `branch`, the cut-new row sends `name`.
+The two rows call the same RPC with different keys, which is what keeps the preview honest: a listed row sends `branch`, the cut-new row sends `name`. The preview line under the field is the pressed row's own name, read off the rows the list is painting rather than slugified a third time from the raw field, so it can never promise a branch that pressing Enter would not take.
 
 `createWork.js` holds the DOM and nothing else. Each tab is one entry in `CREATE_TABS` carrying its copy, its field, what sits under it, what it preloads, and what typing, the arrow keys and Create mean there — so the modal never compares its tab to a literal, and a third tab is a third entry.

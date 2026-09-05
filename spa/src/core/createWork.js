@@ -26,7 +26,6 @@ import { App, go } from "../app.js";
 import { refreshFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
-import { branchNamePreview } from "./toolbarModel.js";
 import { branchPickerRows, pressedRow } from "./branchPickerModel.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 
@@ -39,6 +38,8 @@ const CHOICE_PREFIX = "create-choice";
 
 const NOTHING_HIGHLIGHTED = -1;
 
+const LEADING_ROW = 0;
+
 const catalog = () => App.modelCatalog || { providers: [] };
 
 /** The rows the Branch tab is showing for what has been typed. Read off state
@@ -46,6 +47,12 @@ const catalog = () => App.modelCatalog || { providers: [] };
  *  be two different answers. */
 const pickerRows = (state) =>
   branchPickerRows({ projectId: state.projectId, branches: state.branches, query: state.values.branch || "" });
+
+/** The row pressing Create would take, which is also the branch the field is
+ *  promising — one answer, so the preview cannot say one thing while Enter
+ *  does another. */
+const pressedAction = (state) =>
+  pressedRow({ rows: pickerRows(state), query: state.values.branch || "", highlight: state.highlight });
 
 function branchRowHtml(row, index, highlight) {
   const marks = [
@@ -77,21 +84,16 @@ function branchPickerHtml(state) {
     .join("")}${note}</div>`;
 }
 
-/** The project's branches, asked for once, when the tab that shows them is the
- *  one being looked at. Requested and listed are two facts: until the answer
- *  is in, the list has nothing to say about what matches. */
-async function loadBranches(state, repaint) {
-  if (state.branchesRequested || !state.projectId) return;
-  state.branchesRequested = true;
+/** The project's branches, and the reason there are none to show. A listing
+ *  that could not be read still leaves the field able to cut a branch by name,
+ *  so the failure is an answer here and not a throw. */
+async function readBranches(projectId) {
   try {
-    const listing = await App.call("git.branches", { project_id: state.projectId });
-    state.branches = (listing && listing.branches) || [];
+    const listing = await App.call("git.branches", { project_id: projectId });
+    return { branches: (listing && listing.branches) || [], error: "" };
   } catch (error) {
-    state.branchesError = error.message || String(error);
-  } finally {
-    state.branchesLoaded = true;
+    return { branches: [], error: error.message || String(error) };
   }
-  repaint();
 }
 
 /** Filing an issue: inert by contract — the record exists, and nothing runs
@@ -114,11 +116,14 @@ const issueAction = (projectId, goal, choice) => ({
  * under that field, what it preloads, what typing and the keys mean there, and
  * what pressing Create asks for.
  *
- * `action` answers the whole pressable thing — a call and where its answer
- * lands — or null while the tab is asking for nothing. `onTyped` answers
- * whether what sits under the field changed and must be repainted. `handleKey`
- * answers whether the key was the tab's, and `controls` is what a tab's keys
- * can do: move its highlight, or submit.
+ * Every entry is a pure description of its tab: it answers, and the modal's
+ * own closure is the only thing that writes the modal's state. `action`
+ * answers the whole pressable thing — a call and where its answer lands — or
+ * null while the tab is asking for nothing. `onTyped` answers the highlight
+ * the typed text asks for, or null where the tab has no highlight to move.
+ * `load` answers what the tab preloads, or is null where it preloads nothing.
+ * `handleKey` answers whether the key was the tab's, and `controls` is what a
+ * tab's keys can do: move its highlight, or submit.
  */
 const CREATE_TABS = {
   branch: {
@@ -129,15 +134,9 @@ const CREATE_TABS = {
     fieldHtml: (value) =>
       `<input id="create-work-input" type="text" class="path" placeholder="Find a branch, or name a new one…" autocomplete="off" value="${esc(value)}" />`,
     underHtml: branchPickerHtml,
-    previewHtml: (value) => esc(branchNamePreview(value)),
-    action: (state) =>
-      pressedRow({ rows: pickerRows(state), query: state.values.branch || "", highlight: state.highlight }),
-    onTyped: (state, value) => {
-      // The branch the text would cut leads the list, so highlighting the top
-      // row keeps Enter on what this field has always done.
-      state.highlight = value.trim() ? 0 : NOTHING_HIGHLIGHTED;
-      return true;
-    },
+    previewHtml: (state) => esc(pressedAction(state)?.name || ""),
+    action: pressedAction,
+    onTyped: (value) => (value.trim() ? LEADING_ROW : NOTHING_HIGHLIGHTED),
     handleKey: (state, event, controls) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         controls.moveHighlight(event.key === "ArrowDown" ? 1 : -1);
@@ -147,7 +146,7 @@ const CREATE_TABS = {
       controls.submit();
       return true;
     },
-    load: loadBranches,
+    load: readBranches,
   },
   issue: {
     tab: "Issue",
@@ -162,13 +161,13 @@ const CREATE_TABS = {
       const goal = (state.values.issue || "").trim();
       return goal ? issueAction(state.projectId, goal, state.choice) : null;
     },
-    onTyped: () => false,
+    onTyped: () => null,
     handleKey: (state, event, controls) => {
       if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return false;
       controls.submit();
       return true;
     },
-    load: () => {},
+    load: null,
   },
 };
 
@@ -192,7 +191,7 @@ export function createWorkBodyHtml(state) {
     ${tab.underHtml(state)}
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
     <div class="row create-row">
-      <span class="dim mono create-preview" id="create-work-preview">${tab.previewHtml(value)}</span>
+      <span class="dim mono create-preview" id="create-work-preview">${tab.previewHtml(state)}</span>
       <button class="btn" data-create-cancel type="button">Cancel</button>
       <button class="btn primary" data-create-go type="button"${state.busy ? " disabled" : ""}>${state.busy ? "creating…" : "Create"}</button>
     </div>`;
@@ -226,6 +225,20 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
   const { body, close } = openModal({ dialogHtml: createWorkHtml(state), scrimId: "create-scrim" });
   const controls = { moveHighlight, submit };
 
+  /** What the tab being looked at preloads, asked for once. Requested and
+   *  listed are two facts: until the answer is in, the list has nothing to say
+   *  about what matches. */
+  async function preload() {
+    const { load } = CREATE_TABS[state.kind];
+    if (!load || state.branchesRequested || !state.projectId) return;
+    state.branchesRequested = true;
+    const { branches, error } = await load(state.projectId);
+    state.branches = branches;
+    state.branchesError = error;
+    state.branchesLoaded = true;
+    paint();
+  }
+
   function paint() {
     // The typed answer is state, not something the DOM happens to be holding:
     // a refused create repaints this form, and it must repaint with what was
@@ -242,7 +255,7 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
         state.kind = button.dataset.createTab;
         state.error = "";
         paint();
-        CREATE_TABS[state.kind].load(state, paint);
+        preload();
       };
     });
     const input = body.querySelector("#create-work-input");
@@ -250,7 +263,10 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     input.setSelectionRange(caret, caret);
     input.oninput = () => {
       state.values[state.kind] = input.value;
-      if (CREATE_TABS[state.kind].onTyped(state, input.value)) paint();
+      const highlight = CREATE_TABS[state.kind].onTyped(input.value);
+      if (highlight === null) return;
+      state.highlight = highlight;
+      paint();
     };
     input.onkeydown = (event) => {
       if (CREATE_TABS[state.kind].handleKey(state, event, controls)) event.preventDefault();
@@ -325,6 +341,6 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
   }
 
   wire((state.values[state.kind] || "").length);
-  CREATE_TABS[state.kind].load(state, paint);
+  preload();
   return { close };
 }

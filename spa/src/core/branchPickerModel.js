@@ -8,10 +8,6 @@
 // text that names no branch cuts build/<slug> the way this modal always has.
 // The bridge names the holder; this module maps that name to a verb, a call and
 // a landing place, and orders nothing of its own.
-//
-// Every one of those answers is built here, once, at the moment a row is made:
-// a row carries its own verb, its own call and its own landing place, so the
-// wiring presses a row without ever asking what kind of row it is.
 
 import { fuzzyRank } from "./fuzzy.js";
 import { primaryAdoptScope, worktreeAdoptScope } from "./adoption.js";
@@ -25,9 +21,6 @@ export const INTENT_VERB = {
   materialise: "Fetch & check out",
   cut: "Create",
 };
-
-/** The one row that is not a branch: the branch this text would cut. */
-const CUT_NEW_KEY = "create-new";
 
 const worktreeCreate = (projectId, params) => ({ method: "worktree.create", params: { project_id: projectId, ...params } });
 
@@ -55,12 +48,20 @@ const HOLDER_START = {
   }),
 };
 
+/** What a holder this build has no name for offers: the branch is taken, so the
+ *  row opens it and asks the bridge for nothing. The bridge ships apart from
+ *  this client and can name a kind it was released before, and a held branch
+ *  that read as unheld would send a checkout of a branch already checked out. */
+const HELD_ELSEWHERE = { intent: "open", detail: "checked out elsewhere", call: null, emptyCheckout: false };
+
 /** What starting work on this listed branch means: what its holder offers, or
  *  a checkout of the branch nothing holds. */
 function branchStart(projectId, listed) {
   const holder = listed.holder;
-  const held = holder && HOLDER_START[holder.kind];
-  if (held) return held(projectId, holder);
+  if (holder) {
+    const held = HOLDER_START[holder.kind];
+    return held ? held(projectId, holder) : HELD_ELSEWHERE;
+  }
   return {
     intent: listed.remote ? "materialise" : "checkout",
     detail: "",
@@ -69,11 +70,24 @@ function branchStart(projectId, listed) {
   };
 }
 
+/** Cutting build/<slug> after the typed text — this modal's original and only
+ *  behaviour, kept whole. */
+const cutStart = (projectId, query) => ({
+  intent: "cut",
+  detail: "",
+  call: worktreeCreate(projectId, { name: query }),
+  emptyCheckout: true,
+});
+
 /**
  * Where a pressed row lands. Every checkout of this project — a run, an
  * adopted worktree, the primary checkout, a branch just cut — is opened by the
  * branch it is on, so one route serves them all. A row with no branch of its
  * own learns it from the answer that made it.
+ *
+ * The composer is focused for a checkout with nobody in it, which opens on the
+ * ghost composer where the first message belongs; a run already has a
+ * conversation of its own.
  */
 const landing = (projectId, branch, focusComposer) => (answer) => ({
   route: { name: "branch", projectId, branch: branch || (answer && answer.branch) || "", tab: "changes" },
@@ -81,47 +95,38 @@ const landing = (projectId, branch, focusComposer) => (answer) => ({
 });
 
 /**
- * One listed branch, as the whole action pressing it takes: the verb it
- * promises, the call that keeps the promise, and where the answer lands.
- * `focusComposer` is set for a checkout with nobody in it, which opens on the
- * ghost composer where the first message belongs; a run already has a
- * conversation of its own.
+ * One pressable row, as the whole action pressing it takes: the verb it
+ * promises, the call that keeps the promise, and where the answer lands. What
+ * the start is stays behind it — the wiring presses a row without ever asking
+ * what kind of row it is.
  */
-function branchRow(projectId, listed) {
-  const start = branchStart(projectId, listed);
-  return {
-    key: `branch:${listed.name}`,
-    name: listed.name,
-    intent: start.intent,
-    verb: INTENT_VERB[start.intent],
-    detail: start.detail,
-    remote: listed.remote || null,
-    branch: listed.name,
-    focusComposer: start.emptyCheckout,
-    call: start.call,
-    land: landing(projectId, listed.name, start.emptyCheckout),
-  };
-}
+const pressableRow = (projectId, { name, remote, branch, start }) => ({
+  name,
+  verb: INTENT_VERB[start.intent],
+  detail: start.detail,
+  remote: remote || null,
+  call: start.call,
+  land: landing(projectId, branch, start.emptyCheckout),
+});
 
-/**
- * The row that cuts a new branch after `query` — this modal's original and
- * only behaviour, kept whole. Its branch is not known until the bridge answers
- * with the name it slugified, so the row carries none.
- */
-function cutNewRow(projectId, query) {
-  return {
-    key: CUT_NEW_KEY,
+const branchRow = (projectId, listed) =>
+  pressableRow(projectId, {
+    name: listed.name,
+    remote: listed.remote,
+    branch: listed.name,
+    start: branchStart(projectId, listed),
+  });
+
+/** The row that is not a branch of the project's: the branch this text would
+ *  cut. Its branch is not known until the bridge answers with the name it
+ *  slugified, so the row carries none. */
+const cutNewRow = (projectId, query) =>
+  pressableRow(projectId, {
     name: branchNamePreview(query),
-    intent: "cut",
-    verb: INTENT_VERB.cut,
-    detail: "",
     remote: null,
     branch: null,
-    focusComposer: true,
-    call: worktreeCreate(projectId, { name: query }),
-    land: landing(projectId, null, true),
-  };
-}
+    start: cutStart(projectId, query),
+  });
 
 /**
  * The rows the typed text leaves standing, most likely first.

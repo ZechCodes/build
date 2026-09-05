@@ -240,6 +240,13 @@ describe("the create modal's branch picker", () => {
     expect(document.activeElement).toBe(input());
   });
 
+  it("previews the row a press would take, so a branch that exists is never previewed as one about to be cut", async () => {
+    await openOnBranches([listed("feature-x")]);
+    type("feature-x");
+    expect(rowNames()).toEqual(["feature-x"]);
+    expect(modal().querySelector("#create-work-preview").textContent).toBe("feature-x");
+  });
+
   it("checks out a branch nothing holds, and opens it with the composer focused", async () => {
     await openOnBranches([listed("feature-x")]);
     rows()[0].click();

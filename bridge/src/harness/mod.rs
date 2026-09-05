@@ -713,4 +713,51 @@ mod tests {
             );
         }
     }
+    /// What in `source` claims a provider dispatch of its own, if anything.
+    fn provider_dispatch_offence(source: &str) -> Option<String> {
+        const PROVIDER_PATH: &str = "AgentProvider::";
+        const CONCRETE_HARNESS_TYPES: [&str; 3] = [
+            "AdkSession",
+            "CodexAppServerSession",
+            "CodexAppServerHarness",
+        ];
+
+        for (mention, _) in source.match_indices(PROVIDER_PATH) {
+            let variant_onward = &source[mention + PROVIDER_PATH.len()..];
+            let after_variant =
+                variant_onward.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+            if after_variant.starts_with(" =>") {
+                let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
+                return Some(format!("matches on {PROVIDER_PATH}{variant}"));
+            }
+        }
+
+        CONCRETE_HARNESS_TYPES
+            .into_iter()
+            .find(|harness_type| source.contains(harness_type))
+            .map(|harness_type| format!("names {harness_type}"))
+    }
+
+    /// `harness_for` is the only place a provider becomes an implementation. A
+    /// caller above it that matches on `AgentProvider` or names a concrete
+    /// harness or session type has opened a second dispatch, and every provider
+    /// added after it has to be added in two places instead of one.
+    #[test]
+    fn open_session_is_the_only_provider_dispatch() {
+        const CALLERS_ABOVE_HARNESS_FOR: [(&str, &str); 4] = [
+            ("src/app.rs", include_str!("../app.rs")),
+            ("src/agent.rs", include_str!("../agent.rs")),
+            ("src/orchestrator.rs", include_str!("../orchestrator.rs")),
+            ("src/run.rs", include_str!("../run.rs")),
+        ];
+
+        for (path, source) in CALLERS_ABOVE_HARNESS_FOR {
+            if let Some(offence) = provider_dispatch_offence(source) {
+                panic!(
+                    "{path} {offence}; only harness_for may dispatch on a provider, so a second \
+                     dispatch above it makes the next provider a two-place change"
+                );
+            }
+        }
+    }
 }

@@ -919,6 +919,32 @@ describe("the conversation panel", () => {
     expect(callsTo("agent.start")).toHaveLength(1);
   });
 
+  // A start the browser stopped waiting for is not a refusal: the daemon is
+  // spawning the harness behind the answer it already gave. Painting "could not
+  // start the agent" over a session that is coming up is the same confusion the
+  // other verbs were fixed for.
+  it("leaves the bubble starting and says nothing when the start outlives the timer", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        const timedOut = new Error("agent.start timed out");
+        timedOut.timedOut = true;
+        throw timedOut;
+      }
+      return answering(method, params);
+    });
+
+    await expect(mountAgentTab.mock.calls[0][2].onStart()).resolves.toBeNull();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+  });
+
   it("puts the agent back where it was and says why when the start is refused", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
@@ -2494,6 +2520,29 @@ describe("sending to an agent that is already there", () => {
     expect(copiesOf("look at the login flow")).toBe(1);
     expect(composer().value).toBe("");
     expect(notifyError).toHaveBeenCalledTimes(1);
+  });
+
+  // The post landed. A start behind it that outlives the timer says nothing
+  // about the post, so raising "Message failed" would be an error about a
+  // message that is on the thread.
+  it("keeps a delivered message, and raises nothing, when only the wake outlives the timer", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "agent.start") return answer(method, params);
+      calls.push({ method, params });
+      const timedOut = new Error("agent.start timed out");
+      timedOut.timedOut = true;
+      throw timedOut;
+    });
+
+    await press("look at the login flow");
+
+    expect(callsTo("thread.post")).toHaveLength(1);
+    expect(copiesOf("look at the login flow")).toBe(1);
+    expect(composer().value).toBe("");
+    expect(notifyError).not.toHaveBeenCalled();
   });
 
   it("puts the words back in the box and says why when thread.post is refused", async () => {

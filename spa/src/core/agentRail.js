@@ -66,6 +66,7 @@ import { notifyError } from "./notify.js";
 import { cacheDeviceId } from "./cacheScope.js";
 import { createConversationCache } from "./conversationCache.js";
 import { entityIdOf } from "./entityId.js";
+import { replyOrNothing } from "./session.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
@@ -1193,9 +1194,10 @@ export function mountAgentRail(host, context) {
    *
    *  The daemon answers a start before the harness exists and need not name the
    *  agent it opened; the entity does, on its next answer, so a reply without
-   *  one is read there instead. */
+   *  one — or no reply at all, when the start outlives the timer — is read
+   *  there instead. */
   const wakeAgent = async (entityId, addressed) => {
-    const started = await App.call("agent.start", { id: entityId, ...addressed });
+    const started = await replyOrNothing(App.call("agent.start", { id: entityId, ...addressed }));
     if (started && started.agent_id) return started.agent_id;
     if (addressed.agent_id) return addressed.agent_id;
     await refresh();
@@ -1461,7 +1463,9 @@ export function mountAgentRail(host, context) {
    *
    *  The daemon answers the start before the harness exists, so the row wears
    *  AGENT_STARTING from the press: the answer to a start is the entity's own
-   *  next word about the session, never this reply. */
+   *  next word about the session, never this reply. A start that outlives the
+   *  timer settles the same way — the patch stands, and nothing is thrown at
+   *  the pane that would paint a refusal over a session coming up. */
   const startAgent = async () => {
     const agent = agentOf(selectedId);
     let started = null;
@@ -1473,10 +1477,12 @@ export function mountAgentRail(host, context) {
         : [],
       call: async () => {
         const entityId = await ensureEntity();
-        started = await App.call("agent.start", {
-          id: entityId,
-          ...(agent ? { agent_id: agent.id } : {}),
-        });
+        started = await replyOrNothing(
+          App.call("agent.start", {
+            id: entityId,
+            ...(agent ? { agent_id: agent.id } : {}),
+          }),
+        );
       },
       notify: false,
       onRevert: (error) => {

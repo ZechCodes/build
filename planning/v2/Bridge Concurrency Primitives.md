@@ -1937,13 +1937,32 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
 `agent.choose` (app.rs:8200) opens no tab and spawns nothing: it validates a
 model choice against the agent's locked harness, writes it, and answers.
 
-Step 5 (SPA): the `agent_starting` state goes on the overlay `core/optimistic.js`
-already owns, and the four views that read a tab id out of a reply
-(`thread.post`, `agent.start`, `branch.dispatch`, `worktree.create`) read the
-entity's fields from the next push instead — including the `live` and `spawned`
-that `agent.start` used to answer with. `createBranch`
-(spa/src/core/createWork.js:87) today awaits the reply and inserts no
-provisional row; step 5 gives it one, keyed by the placeholder id the reply
-carries and rekeyed by the settling push, so the board's `Creating` row and
-the overlay's are one row. The spec's load test,
-`bridge/tests/concurrency_load.rs`, is the only one that measures a number.
+Step 5 (SPA), as built. The overlay's patch records name what clears them
+(`patchRecord(key, fields, { clearedBy })`, core/optimistic.js): a patch whose
+row the entity will never carry as a field stands until the pushed entry
+answers it, instead of waiting out `PENDING_GRACE_MS`. `AGENT_STARTING` and
+`agentSessionIsLive` (core/agentRailModel.js) are what the rail lays over the
+row it just asked for a session for, and `agentIsUp` is what keeps a message
+sent behind that press from starting a second harness. The vocabulary stays in
+the agent's own module; the overlay stays general.
+
+A reply the browser stopped waiting for is not a refusal, and the rejection now
+says which it is (`rpcTimedOut`, core/session.js; the 12 s timer is unchanged).
+Three verbs read it: `worktree.create` and `branch.dispatch` shut their form and
+let the board carry the work, and `issue.implement_*` refreshes the issue rather
+than reporting a refusal the daemon never made. A reply that lands but names
+nothing is the same story told by the payload instead of by the timer, and reads
+the same way: `agent.start` takes the agent off the entity's next answer, and
+`worktree.create` opens nothing and leaves the row where it stands.
+
+The `Creating` row is the daemon's, not the client's: `board.list`'s `pending`
+carries one row per lifecycle verb in flight, published before the git runs, and
+`mergePendingRows` (core/inbox.js) merges it into the feed — on its own under
+the id the record will settle as, or onto the card the verb is acting on
+(`checkout_id`). So `createBranch` needs no provisional row of its own and the
+placeholder needs no `rekey`: there is one row, and the record replaces it in
+place. A row with a verb in flight opens nowhere and offers no verbs; every one
+of them would race the verb already running.
+
+The spec's load test, `bridge/tests/concurrency_load.rs`, is the only one that
+measures a number.

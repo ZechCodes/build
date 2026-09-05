@@ -136,27 +136,28 @@ jobs:
   # Developer ID signing and notarization, when — and only when — the account
   # credentials exist. They do not yet, and that must not stop a release: the
   # unsigned builds publish, loudly labelled, and macOS users answer one
-  # Gatekeeper prompt. Secrets are readable in a step's `env` but not in a
-  # job-level `if`, so the check is a step that publishes an output.
+  # Gatekeeper prompt. The credentials are named once, here, for the whole job;
+  # a job-level `if` cannot read secrets, so the check is a step that publishes
+  # an output the later steps and the release notes read.
   sign-macos:
     name: Sign and notarize the macOS builds
     needs: [version, build]
     runs-on: macos-14
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     outputs:
       signed: ${{ steps.creds.outputs.configured }}
     steps:
       - id: creds
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
           configured=true
-          for name in APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD APPLE_TEAM_ID APPLE_ID APPLE_APP_PASSWORD; do
-            eval "value=\${$name:-}"
+          for value in "$APPLE_CERTIFICATE_P12" "$APPLE_CERTIFICATE_PASSWORD" \
+            "$APPLE_TEAM_ID" "$APPLE_ID" "$APPLE_APP_PASSWORD"; do
             if [ -z "$value" ]; then configured=false; fi
           done
           echo "configured=${configured}" >> "$GITHUB_OUTPUT"
@@ -176,12 +177,6 @@ jobs:
 
       - name: Sign and notarize each macOS build
         if: steps.creds.outputs.configured == 'true'
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
           keychain="${RUNNER_TEMP}/build-release.keychain-db"

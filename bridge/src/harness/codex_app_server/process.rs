@@ -6,7 +6,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use super::limits::ProcessLimits;
+use super::limits::{ProcessLimits, StderrRetention};
 use crate::harness::HarnessError;
 use crate::pty::HarnessSpec;
 
@@ -107,9 +107,13 @@ impl AppServerProcess {
             .stderr
             .take()
             .ok_or_else(|| HarnessError::Session("Codex stderr was not piped".to_string()))?;
-        drain_stderr(stderr, StderrTail::new(limits), Arc::clone(&events));
+        drain_stderr(
+            stderr,
+            StderrTail::new(limits.retention),
+            Arc::clone(&events),
+        );
         let process = AppServerProcess::new(Box::new(child));
-        process.start_monitor(events, limits.stderr_settle_grace);
+        process.start_monitor(events, limits.source_settle_grace);
         Ok((process, ConnectionPipes { stdin, stdout }))
     }
 
@@ -130,7 +134,7 @@ impl AppServerProcess {
         }
     }
 
-    fn start_monitor(&self, events: TerminalEventSink, stderr_settle_grace: Duration) {
+    fn start_monitor(&self, events: TerminalEventSink, source_settle_grace: Duration) {
         let slot = Arc::clone(&self.slot);
         std::thread::spawn(move || {
             let settled = loop {
@@ -140,8 +144,10 @@ impl AppServerProcess {
                 std::thread::sleep(EXIT_POLL_INTERVAL);
             };
             events(settled);
-            std::thread::sleep(stderr_settle_grace);
-            events(stderr_grace_expiry(stderr_settle_grace));
+            std::thread::sleep(source_settle_grace);
+            for expiry in grace_expiries(source_settle_grace) {
+                events(expiry);
+            }
         });
     }
 
@@ -233,13 +239,20 @@ fn poll_settlement(slot: &ProcessSlot) -> Option<TerminalSourceEvent> {
     }
 }
 
-fn stderr_grace_expiry(stderr_settle_grace: Duration) -> TerminalSourceEvent {
-    TerminalSourceEvent::StderrSettled {
-        retained_tail: None,
-        drainer_error: Some(format!(
-            "Codex stderr did not settle within {stderr_settle_grace:?}"
-        )),
-    }
+fn grace_expiries(source_settle_grace: Duration) -> [TerminalSourceEvent; 2] {
+    [
+        TerminalSourceEvent::StdoutSettled {
+            reader_error: Some(format!(
+                "Codex stdout did not settle within {source_settle_grace:?}"
+            )),
+        },
+        TerminalSourceEvent::StderrSettled {
+            retained_tail: None,
+            drainer_error: Some(format!(
+                "Codex stderr did not settle within {source_settle_grace:?}"
+            )),
+        },
+    ]
 }
 
 fn settled_event(state: &ProcessState) -> TerminalSourceEvent {
@@ -307,12 +320,12 @@ struct StderrTail {
 }
 
 impl StderrTail {
-    fn new(limits: ProcessLimits) -> StderrTail {
+    fn new(retention: StderrRetention) -> StderrTail {
         StderrTail {
-            line_limit: limits.stderr_line_bytes,
-            total_limit: limits.stderr_total_bytes,
-            current: Vec::with_capacity(limits.stderr_line_bytes),
-            retained: VecDeque::with_capacity(limits.stderr_total_bytes),
+            line_limit: retention.line_bytes,
+            total_limit: retention.total_bytes,
+            current: Vec::with_capacity(retention.line_bytes),
+            retained: VecDeque::with_capacity(retention.total_bytes),
         }
     }
 
@@ -371,10 +384,9 @@ mod tests {
 
     #[test]
     fn stderr_tail_caps_each_line_and_the_aggregate() {
-        let mut tail = StderrTail::new(ProcessLimits {
-            stderr_line_bytes: 4,
-            stderr_total_bytes: 7,
-            stderr_settle_grace: Duration::from_secs(5),
+        let mut tail = StderrTail::new(StderrRetention {
+            line_bytes: 4,
+            total_bytes: 7,
         });
         for byte in b"123456\nabc\ndef\n" {
             tail.push(*byte);
@@ -482,7 +494,7 @@ mod tests {
         }
 
         assert!(matches!(
-            drain_stderr_reader(FailedReader, StderrTail::new(AppServerLimits::default().process())),
+            drain_stderr_reader(FailedReader, StderrTail::new(AppServerLimits::default().process().retention)),
             TerminalSourceEvent::StderrSettled {
                 retained_tail: None,
                 drainer_error: Some(error),
@@ -493,7 +505,7 @@ mod tests {
     #[test]
     fn stderr_drainer_settles_with_the_retained_tail() {
         assert!(matches!(
-            drain_stderr_reader(Cursor::new(b"first\nsecond\n"), StderrTail::new(AppServerLimits::default().process())),
+            drain_stderr_reader(Cursor::new(b"first\nsecond\n"), StderrTail::new(AppServerLimits::default().process().retention)),
             TerminalSourceEvent::StderrSettled {
                 retained_tail: Some(tail),
                 drainer_error: None,

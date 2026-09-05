@@ -598,10 +598,11 @@ epitaph selection:
 The protocol reader sends decoded events in wire order and then exactly one
 `TerminalSourceEvent::StdoutSettled { reader_error }` after EOF or its terminal
 decode error. A source that never settles is settled for it: `AppServerProcess`
-arms `stderr_settle_grace` once the child is reaped and, when it expires, sends
-a `StderrSettled` carrying that expiry as a drainer failure, so a detached
-grandchild holding the stderr pipe open cannot leave the barrier unfinished. The
-first settlement of a source wins, so the grace is inert whenever the drainer
+arms `source_settle_grace` once the child is reaped and, when it expires, sends
+both a `StdoutSettled` carrying that expiry as a reader failure and a
+`StderrSettled` carrying it as a drainer failure, so a detached grandchild
+holding either pipe open cannot leave the barrier unfinished. The first
+settlement of a source wins, so each expiry is inert whenever that source
 settled first. Any terminal trigger may begin idempotent process shutdown
 immediately, but the coordinator does not publish `Ended`, close the activity
 sender, or publish the final epitaph until `outcome()` returns `Some`. A clean
@@ -657,7 +658,7 @@ Production uses these conservative defaults:
 | aggregate completed-item key bytes | 128 KiB |
 | one emitted activity summary | existing 240-character summary limit |
 | notification/response reconciliation | 5 seconds |
-| stderr settle grace after child reap | 5 seconds |
+| terminal-source settle grace after child reap | 5 seconds |
 | activity broadcast backlog | existing 1,024 reports |
 
 The stdout decoder incrementally reads into a buffer capped at 1 MiB plus one
@@ -778,7 +779,7 @@ Implementation follows TDD. Each matrix row starts as a failing test:
 | Translation | one table-driven case for each of the 19 `ThreadItem` discriminators in the generated 0.153.0 schema, plus separate Build/non-Build `mcpToolCall` and unknown-fallback cases, asserts the exact `ItemClassification`, lifecycle behavior, and tool summary category; each required item emits the stated report once; tool result pairs by item id; natural collaboration events and review-mode transitions remain visible; all suppressed items require no id and consume no ledger capacity; experimental `plan` remains suppressed/deferred; open calls close `Unanswered` at turn end |
 | Completed-item ledger | duplicates suppress completion and late start while retained and refresh recency; count and byte pressure evict oldest keys without failure; individually oversized keys process without retention; long turns exceeding the window remain live; evicted duplicates document the finite-window tradeoff; turn close clears only that turn's keys |
 | Bounds/decoder | exact-limit frames pass; limit-plus-one is discarded through newline at fixed capacity before one terminal error; an oversized suffix is never decoded as another frame; no-newline, invalid UTF-8, invalid/trailing JSON, and blank frames fail at bounded allocation; aggregate queue/open-item limits release bytes on removal; stderr drains while retained bytes stay capped |
-| Process/liveness | all permutations of stdout, process, and stderr settlement publish `Ended`, close activity, and expose the epitaph only after all three settle; process-monitor and stderr-drainer failures arriving after stdout settlement are retained in the final snapshot; fixed precedence is protocol/session error, process-monitor failure, stderr-drainer failure, stderr tail, then none; process exit and the retained stderr tail reach the coordinator only through the settled events, with no process accessor for either; both failures reach the coordinator without status polling; `status()` is a pure read; close/end/drop kill at most once and reap exactly once; signal exits have stable codes |
+| Process/liveness | all permutations of stdout, process, and stderr settlement publish `Ended`, close activity, and expose the epitaph only after all three settle; process-monitor and stderr-drainer failures arriving after stdout settlement are retained in the final snapshot; fixed precedence is protocol/session error, process-monitor failure, stderr-drainer failure, stderr tail, then none; process exit and the retained stderr tail reach the coordinator only through the settled events, with no process accessor for either; both failures reach the coordinator without status polling; `status()` is a pure read; a stdout or stderr pipe still held open by a detached grandchild past the settle grace publishes `Ended` with that expiry as the epitaph; close/end/drop kill at most once and reap exactly once; signal exits have stable codes |
 | Dispatch shape | method lookup selects focused typed request and notification handlers; the single item classifier selects lifecycle behavior and summary category; each dispatch function remains under the `~10-path` complexity target |
 | Compatibility/UI | existing activity pump, idle sweep, resume persistence, store fixtures, and MCP `done` tests pass; settings lists the new provider; only allowed provider/default wiring changes in the SPA |
 

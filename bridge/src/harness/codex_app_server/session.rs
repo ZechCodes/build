@@ -1184,7 +1184,7 @@ mod tests {
             root.path(),
             "exec 1>&-; (sleep 30; echo late >&2) & exec cat >/dev/null",
             AppServerLimits {
-                stderr_settle_grace: Duration::from_millis(100),
+                source_settle_grace: Duration::from_millis(100),
                 ..AppServerLimits::default()
             },
         );
@@ -1200,6 +1200,36 @@ mod tests {
         assert_eq!(
             session.epitaph().as_deref(),
             Some("Codex stderr did not settle within 100ms")
+        );
+        assert!(matches!(
+            activity.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
+    }
+
+    #[test]
+    fn stdout_held_open_past_the_grace_still_publishes_ended() {
+        let root = tempfile::tempdir().unwrap();
+        let (session, mut activity) = scripted_session_under(
+            root.path(),
+            "exec 2>&-; (sleep 30) & sleep 0.2",
+            AppServerLimits {
+                source_settle_grace: Duration::from_millis(100),
+                ..AppServerLimits::default()
+            },
+        );
+
+        wait_until("published its terminal outcome", || {
+            matches!(session.status(), AgentStatus::Ended { .. })
+        });
+        assert!(
+            matches!(session.status(), AgentStatus::Ended { code: Some(_) }),
+            "{:?}",
+            session.status()
+        );
+        assert_eq!(
+            session.epitaph().as_deref(),
+            Some("Codex stdout did not settle within 100ms")
         );
         assert!(matches!(
             activity.try_recv(),

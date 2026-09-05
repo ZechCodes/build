@@ -16,7 +16,7 @@ pub struct AppServerLimits {
     pub completed_items: usize,
     pub completed_item_bytes: usize,
     pub reconciliation: Duration,
-    pub stderr_settle_grace: Duration,
+    pub source_settle_grace: Duration,
 }
 
 /// The bounds the JSONL connection enforces on framing and request correlation.
@@ -27,13 +27,19 @@ pub struct ConnectionLimits {
     pub pending_requests: usize,
 }
 
-/// The bounds the child process enforces on retained stderr and on how long the
-/// stderr drainer may stay unsettled after the child is reaped.
+/// The bounds the stderr drainer enforces on the text it retains for the epitaph.
+#[derive(Debug, Clone, Copy)]
+pub struct StderrRetention {
+    pub line_bytes: usize,
+    pub total_bytes: usize,
+}
+
+/// The bounds the child process enforces on retained stderr and on how long any
+/// terminal source may stay unsettled after the child is reaped.
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessLimits {
-    pub stderr_line_bytes: usize,
-    pub stderr_total_bytes: usize,
-    pub stderr_settle_grace: Duration,
+    pub retention: StderrRetention,
+    pub source_settle_grace: Duration,
 }
 
 /// The bounds the session state machine enforces on queued input and reconciliation.
@@ -64,9 +70,11 @@ impl AppServerLimits {
 
     pub fn process(self) -> ProcessLimits {
         ProcessLimits {
-            stderr_line_bytes: self.stderr_line_bytes,
-            stderr_total_bytes: self.stderr_total_bytes,
-            stderr_settle_grace: self.stderr_settle_grace,
+            retention: StderrRetention {
+                line_bytes: self.stderr_line_bytes,
+                total_bytes: self.stderr_total_bytes,
+            },
+            source_settle_grace: self.source_settle_grace,
         }
     }
 
@@ -103,7 +111,7 @@ impl Default for AppServerLimits {
             completed_items: 256,
             completed_item_bytes: 128 * 1024,
             reconciliation: Duration::from_secs(5),
-            stderr_settle_grace: Duration::from_secs(5),
+            source_settle_grace: Duration::from_secs(5),
         }
     }
 }
@@ -122,9 +130,9 @@ mod tests {
         assert_eq!(connection.pending_requests, 64);
 
         let process = limits.process();
-        assert_eq!(process.stderr_line_bytes, 16 * 1024);
-        assert_eq!(process.stderr_total_bytes, 32 * 1024);
-        assert_eq!(process.stderr_settle_grace, Duration::from_secs(5));
+        assert_eq!(process.retention.line_bytes, 16 * 1024);
+        assert_eq!(process.retention.total_bytes, 32 * 1024);
+        assert_eq!(process.source_settle_grace, Duration::from_secs(5));
 
         let state = limits.state();
         assert_eq!(state.queued_turns, 16);

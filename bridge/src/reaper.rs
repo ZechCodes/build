@@ -57,14 +57,19 @@ impl Retirement {
         *done
     }
 
-    /// Whether every one of `writers` is reaped, waiting up to `timeout` for
-    /// each in turn. The wait a directory removal makes before it walks: a
-    /// child still creating files under the walk fails it.
-    pub fn wait_all(writers: &[Retirement], timeout: Duration) -> bool {
-        writers.iter().fold(true, |every_writer_reaped, writer| {
+    /// Wait up to `timeout` for each of `writers` to be reaped, in turn. The
+    /// wait a directory removal makes before it walks: a child still creating
+    /// files under the walk fails it. A writer still alive when the timeout
+    /// expires is logged under `subject`, and the caller removes anyway —
+    /// best-effort, as every removal in the daemon has always been.
+    pub fn wait_all(writers: &[Retirement], timeout: Duration, subject: &str) {
+        let every_writer_reaped = writers.iter().fold(true, |every_writer_reaped, writer| {
             let reaped = writer.wait(timeout);
             every_writer_reaped && reaped
-        })
+        });
+        if !every_writer_reaped {
+            eprintln!("{subject}: a session did not die within {timeout:?}; removing its directory anyway");
+        }
     }
 }
 
@@ -103,12 +108,7 @@ pub fn remove_dir_once_reaped(
         }
     };
     std::thread::spawn(move || {
-        if !Retirement::wait_all(&writers, timeout) {
-            eprintln!(
-                "{subject}: a session did not die within {timeout:?}; removing {} anyway",
-                doomed.display()
-            );
-        }
+        Retirement::wait_all(&writers, timeout, &subject);
         if let Err(error) = std::fs::remove_dir_all(&doomed) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 eprintln!("{subject}: could not remove {}: {error}", doomed.display());

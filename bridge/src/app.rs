@@ -3933,7 +3933,7 @@ impl AppState {
 
     /// The refresh that rescans one project's external worktrees.
     fn external_scan_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let project = self.project(project_id)?;
         Some(DiffCacheRefresh::ExternalScan {
             project_id: project.id.clone(),
             repo_path: project.repo_path.clone(),
@@ -3944,7 +3944,7 @@ impl AppState {
 
     /// The refresh that recomputes one project's primary-checkout summary.
     fn primary_summary_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let project = self.project(project_id)?;
         Some(DiffCacheRefresh::PrimarySummary {
             project_id: project.id.clone(),
             repo_path: project.repo_path.clone(),
@@ -4214,12 +4214,19 @@ impl AppState {
     /// or gave up on a repository it could not read. What the interval is
     /// measured from, so a broken repo is not walked again by every poll.
     fn scan_settled_at(&self, project_id: &str) -> Option<std::time::Instant> {
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let project = self.project(project_id)?;
         project
             .external_scan
             .as_ref()
             .map(|cache| cache.scanned_at)
             .max(project.external_scan_failed_at)
+    }
+
+    /// One registered project, to be read. The shared-borrow half of
+    /// [`Self::project_mut`]: every read of a project's caches or repository
+    /// resolves it through here.
+    fn project(&self, project_id: &str) -> Option<&Project> {
+        self.projects.iter().find(|p| p.id == project_id)
     }
 
     /// One registered project, to be written to. Every edit of a project's
@@ -13923,7 +13930,7 @@ impl AppState {
     ) -> Option<crate::branch::WorkItemCandidate> {
         let project_id = entry["project_id"].as_str()?.to_string();
         let branch = entry["branch"].as_str()?.to_string();
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let project = self.project(&project_id)?;
         let repo_path = project.repo_path.display().to_string();
         let sync = WorkItemStat::from_primary_entry(entry);
         let row = json!({

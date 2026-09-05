@@ -3,9 +3,10 @@ fixture.
 
 One in-memory database (StaticPool, so every session in a test reaches the same
 connection), one schema builder, one account factory, one alpha-membership factory,
-one Litestar builder for every route the tests drive over HTTP, and one jinja
-environment for the admin templates. The pytest fixtures over these live in
-``conftest.py``."""
+one Litestar builder for every route the tests drive over HTTP, the three moves every
+membership-gated HTTP spec makes over a client (enrol a member, sign out, revoke the
+alpha), and one jinja environment for the admin templates. The pytest fixtures over
+these live in ``conftest.py``."""
 
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from skrift.auth.session_keys import SESSION_USER_ID
 from skrift.db.base import Base
 from skrift.db.models.role import Role, RolePermission
 from skrift.db.models.user import User
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -152,6 +154,40 @@ def sign_in(client: TestClient, email: str, *, administrator: bool = False) -> U
         user_id = portal.call(create)
     client.set_session_data({SESSION_USER_ID: str(user_id)})
     return user_id
+
+
+def sign_in_member(client: TestClient, email: str = MEMBER_ADDRESS) -> UUID:
+    """Sign a fresh account in over the client and enrol it in the alpha — the one
+    move every membership-gated route needs made before it will answer."""
+    user_id = sign_in(client, email)
+
+    async def enrol() -> None:
+        async with client.app.state.make_session() as session:
+            await add_member(session, user_id, email)
+
+    with client.portal() as portal:
+        portal.call(enrol)
+    return user_id
+
+
+def sign_out(client: TestClient) -> None:
+    """Forget the session cookie, so whatever the client does next has no browser
+    identity behind it."""
+    client.cookies.clear()
+
+
+def revoke_every_invite(client: TestClient) -> None:
+    """Revoke the alpha for everyone the app under test knows — how a spec puts a
+    member outside the gate they were just inside."""
+
+    async def revoke() -> None:
+        async with client.app.state.make_session() as session:
+            for invite in (await session.execute(select(Invite))).scalars().all():
+                invite.revoked_at = utc_now()
+            await session.commit()
+
+    with client.portal() as portal:
+        portal.call(revoke)
 
 
 def admin_template_environment() -> Environment:

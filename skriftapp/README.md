@@ -99,10 +99,27 @@ app password), `SMTP_FROM_ADDRESS` (the address mail is sent from, e.g.
 notification goes; empty disables it). `app.yaml` interpolates the three `SMTP_*`
 variables and the app refuses to boot without them.
 
-Optional: `RELEASES_REPO` — the GitHub `owner/name` holding the bridge release
-assets, default `ZechCodes/build-releases`. It is the one source for
-`/app/downloads` and for the `/install.sh` redirect (`buildapp/releases.py`); no
-template or SPA file carries a download URL.
+Optional: `GITHUB_RELEASES_TOKEN` — a fine-grained GitHub PAT with `Contents:
+read` on `ZechCodes/build-web`, the one repository everything ships from
+(`buildapp/releases.py` names it; no template, script or SPA file carries a
+download URL). Present, the api streams release assets out of the GitHub REST
+API, which is what a private repository needs; absent, the same routes `302` to
+the public asset URLs. That decision is made once, in
+`release_assets.asset_source`, and nothing else reads the variable — so removing
+the secret at launch is the whole change.
+
+### Downloads
+
+`GET /app/downloads` (alpha members only) answers the platform table, the
+checksums URL and a copyable install one-liner, minting the ten-minute **download
+token** the line carries; `POST /app/downloads/token` mints another when a page
+has been open too long. The line runs with no browser session, so
+`GET /app/downloads/{asset}` accepts that token in `?t=` as well as a session —
+and asks the alpha question either way, so a revoked invite closes a live token.
+Downloading a tarball spends it; the checksums and the signature do not, because
+one install fetches all three. `GET /install.sh` serves the script the image
+ships (`COPY scripts/install.sh`) with this deployment's origin and the token
+substituted in.
 
 ### Email
 

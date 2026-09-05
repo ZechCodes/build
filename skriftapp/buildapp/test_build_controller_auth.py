@@ -20,13 +20,12 @@ from litestar.response import Redirect
 
 from skrift.auth.session_keys import SESSION_USER_ID
 
-from buildapp import controllers, email_message
+from buildapp import controllers
 from buildapp.controllers import BuildController
-from buildapp.desktop_auth import build_auth_guard
+from buildapp.desktop_auth import build_auth_guard, download_auth_guard
 from buildapp.email_message import provide_public_base_url
-from buildapp.email_test_support import email_settings
 from buildapp.invite_pages import INVITE_ONLY_HEADING
-from buildapp.releases import PLATFORMS, provide_releases_repo
+from buildapp.release_assets import provide_asset_source
 
 SIGNED_IN_ADDRESS = "someone@example.com"
 
@@ -103,35 +102,40 @@ def test_the_downloads_route_carries_the_membership_guard():
     assert build_auth_guard in (downloads.guards or [])
 
 
-def test_the_downloads_route_answers_the_shared_payload():
-    with patch.object(email_message, "get_settings", email_settings):
-        payload = asyncio.run(
-            BuildController.downloads.fn(
-                None, provide_public_base_url(), provide_releases_repo()
-            )
-        )
-    assert [platform["key"] for platform in payload["platforms"]] == [
-        key for key, _ in PLATFORMS
-    ]
-    assert payload["install_command"].startswith("curl -fsSL ")
-
-
-def test_the_downloads_route_is_handed_both_halves_of_its_payload_by_providers():
-    """C3 gives /app/downloads no parameters. A value the handler declares but the app
-    does not provide would silently become a query parameter, so this asserts the
-    registered route resolves both as dependencies — from the two shared providers, so
-    neither handler reaches into the environment itself."""
+def test_the_download_routes_are_handed_everything_they_need_by_providers():
+    """C3 gives these routes no query parameters. A value a handler declares but the
+    app does not provide would silently become one, so this asserts the registered
+    routes resolve their dependencies — from the two shared providers, so no handler
+    reaches into the environment itself."""
     app = Litestar(route_handlers=[BuildController], openapi_config=None)
-    handler = next(iter(app.route_handler_method_map["/app/downloads"].values()))
-    assert sorted(handler.resolve_dependencies()) == [
-        "public_base_url",
-        "releases_repo",
-    ]
+    for path in ("/app/downloads", "/app/downloads/token", "/app/downloads/{asset:str}"):
+        handler = next(iter(app.route_handler_method_map[path].values()))
+        assert sorted(handler.resolve_dependencies()) == [
+            "asset_source",
+            "public_base_url",
+        ], path
     assert (
         BuildController.dependencies["public_base_url"].dependency
         is provide_public_base_url
     )
     assert (
-        BuildController.dependencies["releases_repo"].dependency
-        is provide_releases_repo
+        BuildController.dependencies["asset_source"].dependency is provide_asset_source
     )
+
+
+def test_no_route_still_asks_for_a_releases_repository():
+    """There is one repository now, named in ``releases``; a per-request repo value
+    was the two-repo design's last handle."""
+    assert "releases_repo" not in BuildController.dependencies
+    for handler in _route_handlers():
+        assert "releases_repo" not in inspect.signature(handler.fn).parameters
+
+
+def test_the_asset_route_admits_an_install_lines_token_and_the_others_do_not():
+    for path in ("/downloads", "/downloads/token"):
+        handler = next(h for h in _route_handlers() if path in h.paths)
+        assert handler.guards == [build_auth_guard], path
+    asset_route = next(
+        h for h in _route_handlers() if "/downloads/{asset:str}" in h.paths
+    )
+    assert asset_route.guards == [download_auth_guard]

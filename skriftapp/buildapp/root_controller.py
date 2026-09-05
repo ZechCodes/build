@@ -4,13 +4,14 @@ the page, so it is written once in ``waitlist.html`` and substituted into both s
 
 import asyncio
 
-from litestar import Controller, get
+from litestar import Controller, Request, get
 from litestar.di import Provide
 from litestar.enums import MediaType
-from litestar.exceptions import NotFoundException
-from litestar.response import Redirect, Response
+from litestar.exceptions import ClientException, NotFoundException
+from litestar.response import Response
 
-from buildapp import releases
+from buildapp import download_tokens, releases
+from buildapp.email_message import provide_public_base_url
 from buildapp.landing_page import (
     LANDING_DIR,
     fill_slots,
@@ -27,6 +28,8 @@ LANDING_DESCRIPTION = (
     "ne, and a review agent lays the changes out so you know exactly what went out and why."
 )
 LANDING_SCRIPTS = '<script type="module" src="/landing/main.js"></script>'
+#: What a query string that is not even shaped like a token is answered with.
+MALFORMED_TOKEN_DETAIL = "malformed download token"
 
 LANDING_MEDIA_TYPES = {
     ".js": "text/javascript",
@@ -53,7 +56,7 @@ def render_landing_page() -> str:
 class RootController(Controller):
     path = ""
     dependencies = {
-        "releases_repo": Provide(releases.provide_releases_repo, sync_to_thread=False),
+        "public_base_url": Provide(provide_public_base_url, sync_to_thread=False),
     }
 
     @get("/")
@@ -62,14 +65,22 @@ class RootController(Controller):
         return Response(html, media_type=MediaType.HTML)
 
     @get(releases.INSTALL_SCRIPT_PATH)
-    async def install_script(self, releases_repo: str) -> Redirect:
-        """The one-liner's target: ``curl -fsSL <host>/install.sh | sh``. Redirects to
-        the script published with the latest release rather than serving a copy, so
-        there is exactly one install script and it is the one the release signed.
+    async def install_script(self, request: Request, public_base_url: str) -> Response:
+        """The one-liner's target: ``curl -fsSL "<host>/install.sh?t=<token>" | sh``.
 
-        Until the first release is published this 302 lands on a GitHub 404."""
-        return Redirect(
-            releases.latest_asset_url(releases_repo, releases.INSTALL_SCRIPT_ASSET)
+        Serves the script this image ships, filled in for this deployment: its own
+        origin and the caller's download token. Never a redirect to GitHub — the
+        repository may be private — and never a database read: the download routes are
+        the one judge of a token. A token that is not even shaped like one is refused
+        outright, because the value is substituted into a shell script."""
+        token = request.query_params.get(releases.DOWNLOAD_TOKEN_PARAM, "")
+        if token and not download_tokens.is_well_formed(token):
+            raise ClientException(MALFORMED_TOKEN_DETAIL)
+        script = await asyncio.to_thread(releases.INSTALL_SCRIPT_FILE.read_text)
+        return Response(
+            releases.render_install_script(script, public_base_url, token),
+            media_type=MediaType.TEXT,
+            headers={"Cache-Control": "no-store"},
         )
 
     @get("/landing/{asset_path:path}", sync_to_thread=True)

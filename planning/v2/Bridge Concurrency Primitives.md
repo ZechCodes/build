@@ -462,6 +462,16 @@ the spec's load test.
 Shipped. What it does differs from what was declared here in four places, each
 noted below.
 
+- **A turn for a checkout in flight waits for it.** The one acquisition that
+  takes the queue also reads the rows §5's lifecycle verbs reserved, and leaves
+  behind any turn whose owner holds one. Spawning an agent scaffolds its
+  checkout directory, and `WorktreeManager::restore`'s `git worktree add`
+  refuses a path that reappeared under it (worktree.rs:342) — which
+  `settle_restored_checkout` reads as a lost branch and answers by handing a
+  healthy run to the verified recovery agent, blocking the Issue. The row is
+  already the claim on that directory, so it is the claim here too; the drain
+  that runs after the job's epilogue takes what was left, and every frame
+  drains.
 - **Boundary** `bridge/src/delivery.rs` (new) holds the lock-free half of a
   spawn — `SessionProbes`, `SessionPickup`, `AgentSpawnPlan`, `ReadyToSpawn` —
   and cannot name `AppState`. `deliver`, `ensure_agent_tab` and

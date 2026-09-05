@@ -7794,6 +7794,15 @@ impl AppState {
         self.note_board_changed();
     }
 
+    /// Whether a lifecycle verb is holding this entity's checkout open right
+    /// now. Nothing may touch that directory while its git runs — see
+    /// [`AppState::take_pending_turns`], which is what would.
+    fn checkout_is_in_flight(&self, entity_id: &str) -> bool {
+        self.pending_rows
+            .iter()
+            .any(|row| row.entity_id == entity_id)
+    }
+
     /// The lifecycle verbs in flight, as rows the board shows beside the
     /// checkouts that already exist.
     fn pending_rows_json(&self) -> Vec<Value> {
@@ -9559,8 +9568,20 @@ impl AppState {
     /// would be in neither the queue nor the marks: the idle sweep reading that
     /// demotes a run whose agent is coming, and a second message reading it
     /// queues a duplicate turn behind the one already on its way.
+    ///
+    /// A turn for an entity whose checkout is being cut, put back or removed
+    /// right now stays in the queue — the same acquisition reads the rows the
+    /// lifecycle verbs reserved. Spawning that entity's agent scaffolds its
+    /// checkout directory, and `git worktree add` refuses a path that has
+    /// reappeared under it, which a restore reads as a lost branch and answers
+    /// by handing a healthy run to the recovery agent.
     fn take_pending_turns(&mut self) -> PendingTurns {
-        let mut queued = std::mem::take(&mut self.pending_agent_turns);
+        let (held, mut queued): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_turns)
+            .into_iter()
+            .partition(|turn| self.checkout_is_in_flight(&turn.owner));
+        // Back in the queue, in the order they were made: the drain that runs
+        // after the job's epilogue takes them, and every frame drains.
+        self.pending_agent_turns = held;
         // The one door every cold prompt passes: the conversation is read and
         // closed onto the prompt HERE, so the packet carries what the store
         // holds under the tail and what was said while the turn waited.
@@ -44184,10 +44205,6 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        // The turn the dispatch queued would spawn an agent in that checkout,
-        // and spawning one scaffolds the directory back into existence — which
-        // is a race with the restore, not the restore's own doing.
-        app.pending_agent_turns.clear();
         let (gate, gate_handle) = OffLockGate::new();
         app.off_lock_gate = Some(gate);
         let state = app.shared();
@@ -44219,6 +44236,75 @@ mod tests {
             .expect("the stage answers once its git is done");
         assert_eq!(implemented["ok"], true, "{implemented:?}");
         assert!(worktree.exists(), "the checkout is back: {implemented:?}");
+    }
+
+    /// Spawning an agent scaffolds its checkout directory, and `git worktree
+    /// add` refuses a path that reappeared under it — which a restore reads as
+    /// a lost branch and answers by handing a healthy run to the recovery
+    /// agent. So a turn for a checkout being put back waits for it.
+    #[test]
+    fn a_turn_queued_for_a_restoring_checkout_never_sends_its_run_to_recovery() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "restore under a queued turn");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let worktree = app.runs[&run_id].worktree.path.clone();
+        assert!(
+            !app.pending_agent_turns.is_empty(),
+            "the implementation queued its agent's first turn"
+        );
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-stage",
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        // This frame drains the queue while the restore is held open. The turn
+        // for the run being restored is not its to deliver.
+        let got = frame_on_a_thread(
+            &state,
+            "s-get",
+            "issue.get",
+            json!({ "issue_id": issue_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the Issue answers while its checkout is being put back");
+        assert_eq!(got["ok"], true, "{got:?}");
+        assert!(
+            !worktree.exists(),
+            "an agent was spawned into the checkout being restored: {got:?}"
+        );
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the stage answers once its git is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let app = state.lock().unwrap();
+        assert!(worktree.exists(), "the checkout is back");
+        assert!(
+            app.runs[&run_id].recovery.is_none(),
+            "a healthy run was handed to the recovery agent: {:?}",
+            app.runs[&run_id].recovery
+        );
     }
 
     /// `plan.create` writes the planning workspace its agent works in — a

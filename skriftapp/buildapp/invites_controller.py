@@ -8,7 +8,7 @@ branches on a state to pick a page: it looks the refusal up in ``OUTCOMES``.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from litestar import Controller, Request, get, post
 from litestar.di import Provide
@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
 from buildapp.accounts import account_email
+from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, resolve_public_base_url
 from buildapp.invite_mail import invite_email_task
 from buildapp.invite_pages import APP_PATH, OUTCOMES
@@ -35,9 +36,6 @@ INVITES_API_PATH = "/api/invites"
 LOGIN_PATH_TEMPLATE = "/auth/login?next={next_path}"
 EMAIL_FIELD = "email"
 
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
 
 
 def provide_public_base_url() -> str:
@@ -64,7 +62,7 @@ class InvitesController(Controller):
     ) -> Response | Redirect:
         """Public. Every state but OPEN is a page from the outcome table; an OPEN link
         needs an account before it can be spent."""
-        now = _now()
+        now = utc_now()
         invite = await invites.find_by_token(db_session, token)
         state = invites.invite_state(invite, now)
         if state is not InviteState.OPEN:
@@ -102,7 +100,7 @@ class InvitesController(Controller):
         body = await read_json_object(request)
         try:
             invite, raw = await invites.issue_invite(
-                db_session, str(body.get(EMAIL_FIELD, "")), session_user_id(request), _now()
+                db_session, str(body.get(EMAIL_FIELD, "")), session_user_id(request), utc_now()
             )
         except ValueError as bad_address:
             raise ClientException(invites.INVALID_ADDRESS_MESSAGE) from bad_address

@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import pairing_crypto, transport_report
+from buildapp.clock import utc_now
 from buildapp.models import Device, TransportSession
 from buildapp.request_body import require_json_object
 
@@ -35,9 +36,6 @@ def reset_replay_guard_for_tests() -> None:
     global _replay_guard
     _replay_guard = transport_report.replay_guard()
 
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class TransportController(Controller):
@@ -76,7 +74,7 @@ class TransportController(Controller):
             device.identity_public_key_b64, challenge, signature
         ):
             raise NotAuthorizedException("transport report signature invalid")
-        now = _now()
+        now = utc_now()
         if not transport_report.report_timestamp_fresh(timestamp, now):
             raise NotAuthorizedException("transport report timestamp out of window")
         if not _replay_guard.check_and_record(str(device_id), timestamp, signature, now):

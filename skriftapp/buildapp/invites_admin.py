@@ -9,7 +9,7 @@ Revoke button.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Iterable, Mapping
 from uuid import UUID
 
@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
+from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, resolve_public_base_url
 from buildapp.invite_mail import invite_email_task
 from buildapp.invites import InviteState, invite_state
@@ -54,9 +55,6 @@ INVITE_REVOKED_MESSAGE = "Invite revoked."
 INVITE_MISSING_MESSAGE = "That invite no longer exists."
 CSRF_REFUSED_MESSAGE = "That form expired. Try again."
 
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
 
 
 def build_invites_dashboard(
@@ -111,7 +109,7 @@ class InvitesAdminController(Controller):
             context={
                 "flash_messages": get_flash_messages(request),
                 "invites": build_invites_dashboard(
-                    rows, await _addresses_by_id(db_session), _now()
+                    rows, await _addresses_by_id(db_session), utc_now()
                 ),
                 **ctx,
             },
@@ -129,7 +127,7 @@ class InvitesAdminController(Controller):
                 db_session,
                 str(form.get(EMAIL_FIELD, "")),
                 session_user_id(request),
-                _now(),
+                utc_now(),
             )
         except ValueError:
             return _flashed(request, INVITE_REFUSED_MESSAGE, ok=False)
@@ -142,7 +140,7 @@ class InvitesAdminController(Controller):
     ) -> Redirect:
         if not await verify_csrf(request):
             return _flashed(request, CSRF_REFUSED_MESSAGE, ok=False)
-        revoked = await invites.revoke_invite(db_session, invite_id, _now())
+        revoked = await invites.revoke_invite(db_session, invite_id, utc_now())
         message = INVITE_REVOKED_MESSAGE if revoked else INVITE_MISSING_MESSAGE
         return _flashed(request, message, ok=revoked is not None)
 

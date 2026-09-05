@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
 from uuid import UUID
 
 from litestar import Controller, Request, get, post
@@ -40,14 +39,12 @@ from skrift.db.models.push_subscription import PushSubscription
 from skrift.push import save_subscription
 
 from buildapp import pairing_crypto, web_push
+from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.models import Device
 from buildapp.request_body import require_json_object
 from buildapp.session_auth import require_user
 
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
 
 
 # The freshness window alone leaves a captured signed notify replayable for its
@@ -156,10 +153,10 @@ class PushController(Controller):
             device.identity_public_key_b64, challenge, signature
         ):
             raise NotAuthorizedException("notify signature invalid")
-        if not web_push.notify_timestamp_fresh(timestamp, _now()):
+        if not web_push.notify_timestamp_fresh(timestamp, utc_now()):
             raise NotAuthorizedException("notify timestamp out of window")
         if not _notify_replay_guard.check_and_record(
-            str(device_id), timestamp, signature, _now()
+            str(device_id), timestamp, signature, utc_now()
         ):
             raise NotAuthorizedException("notify replayed")
 

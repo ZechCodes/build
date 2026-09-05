@@ -13,7 +13,7 @@ Three audiences, three guard styles:
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from uuid import UUID
 
 from litestar import Controller, Request, get, post
@@ -29,6 +29,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import pairing_crypto
+from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device, EphemeralToken
@@ -41,9 +42,6 @@ PENDING_TTL = timedelta(minutes=15)
 # Gateway tokens are short-lived; the SPA re-mints on (re)connect.
 GATEWAY_TOKEN_TTL = timedelta(minutes=5)
 
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
 
 
 def device_summary(device: Device) -> dict:
@@ -104,7 +102,7 @@ class DevicesController(Controller):
         await db_session.execute(
             delete(Device).where(
                 Device.approved.is_(False),
-                Device.created_at < _now() - PENDING_TTL,
+                Device.created_at < utc_now() - PENDING_TTL,
             )
         )
 
@@ -238,7 +236,7 @@ class DevicesController(Controller):
         # purge): every reconnect mints a 5-minute token, and nothing else ever
         # deletes them — without this the table grows forever.
         await db_session.execute(
-            delete(EphemeralToken).where(EphemeralToken.expires_at < _now())
+            delete(EphemeralToken).where(EphemeralToken.expires_at < utc_now())
         )
         raw = "gw_" + secrets.token_urlsafe(24)
         db_session.add(
@@ -246,7 +244,7 @@ class DevicesController(Controller):
                 token_hash=token_hash(raw),
                 purpose="gateway",
                 user_id=user_id,
-                expires_at=_now() + GATEWAY_TOKEN_TTL,
+                expires_at=utc_now() + GATEWAY_TOKEN_TTL,
             )
         )
         await db_session.commit()
@@ -283,7 +281,7 @@ class DevicesController(Controller):
                 select(EphemeralToken).where(
                     EphemeralToken.token_hash == token_hash(token),
                     EphemeralToken.purpose == "gateway",
-                    EphemeralToken.expires_at > _now(),
+                    EphemeralToken.expires_at > utc_now(),
                 )
             )
         ).scalar_one_or_none()
@@ -303,7 +301,7 @@ class DevicesController(Controller):
             raise NotFoundException()
         device.status = "online" if online else "offline"
         if online:
-            device.last_seen_at = _now()
+            device.last_seen_at = utc_now()
         await db_session.commit()
         return Response({"ok": True})
 
@@ -316,7 +314,7 @@ class DevicesController(Controller):
                 select(Device).where(
                     Device.pairing_code_hash == code_hash,
                     Device.approved.is_(False),
-                    Device.created_at >= _now() - PENDING_TTL,
+                    Device.created_at >= utc_now() - PENDING_TTL,
                 )
             )
         ).scalar_one_or_none()

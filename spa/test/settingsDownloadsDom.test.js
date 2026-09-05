@@ -6,22 +6,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { asset, downloadsPayload } from "./downloadsFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
-const DOWNLOADS = {
-  install_command: "curl -fsSL https://getbuild.ing/install.sh | sh",
-  install_script_url: "https://getbuild.ing/install.sh",
-  releases_url: "https://github.com/ZechCodes/build-releases/releases/latest",
-  checksums_url: "https://github.com/ZechCodes/build-releases/releases/latest/download/SHA256SUMS",
-  platforms: [
-    {
-      key: "linux-x86_64",
-      label: "Linux · x86_64",
-      url: "https://github.com/ZechCodes/build-releases/releases/latest/download/build-bridge-linux-x86_64.tar.gz",
-    },
-  ],
-};
+const DOWNLOADS = downloadsPayload({
+  platforms: [{ key: "linux-x86_64", label: "Linux · x86_64", url: asset("linux-x86_64") }],
+});
 
 const CATALOG = {
   default_provider: "claude",

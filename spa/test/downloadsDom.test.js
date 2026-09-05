@@ -5,20 +5,11 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { downloadsPlaceholderHtml, mountDownloads } from "../src/core/downloads.js";
+import { asset, downloadsPayload } from "./downloadsFixture.js";
 
-const DOWNLOADS = {
-  install_command: "curl -fsSL https://getbuild.ing/install.sh | sh",
-  install_script_url: "https://getbuild.ing/install.sh",
-  releases_url: "https://github.com/ZechCodes/build-releases/releases/latest",
-  checksums_url: "https://github.com/ZechCodes/build-releases/releases/latest/download/SHA256SUMS",
-  platforms: [
-    {
-      key: "macos-arm64",
-      label: "macOS · Apple silicon",
-      url: "https://github.com/ZechCodes/build-releases/releases/latest/download/build-bridge-macos-arm64.tar.gz",
-    },
-  ],
-};
+const DOWNLOADS = downloadsPayload({
+  platforms: [{ key: "macos-arm64", label: "macOS · Apple silicon", url: asset("macos-arm64") }],
+});
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const host = () => document.getElementById("root");

@@ -6,22 +6,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { asset, downloadsPayload } from "./downloadsFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
-const DOWNLOADS = {
-  install_command: "curl -fsSL https://getbuild.ing/install.sh | sh",
-  install_script_url: "https://getbuild.ing/install.sh",
-  releases_url: "https://github.com/ZechCodes/build-releases/releases/latest",
-  checksums_url: "https://github.com/ZechCodes/build-releases/releases/latest/download/SHA256SUMS",
-  platforms: [
-    {
-      key: "macos-arm64",
-      label: "macOS · Apple silicon",
-      url: "https://github.com/ZechCodes/build-releases/releases/latest/download/build-bridge-macos-arm64.tar.gz",
-    },
-  ],
-};
+const DOWNLOADS = downloadsPayload({
+  platforms: [{ key: "macos-arm64", label: "macOS · Apple silicon", url: asset("macos-arm64") }],
+});
 
 let devices = [];
 let downloads = async () => DOWNLOADS;

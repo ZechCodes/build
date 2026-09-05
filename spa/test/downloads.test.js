@@ -4,21 +4,9 @@
 
 import { describe, it, expect } from "vitest";
 import { downloadsHtml } from "../src/core/downloads.js";
+import { asset, downloadsPayload } from "./downloadsFixture.js";
 
-const asset = (key) => `https://github.com/ZechCodes/build-releases/releases/latest/download/build-bridge-${key}.tar.gz`;
-
-const DOWNLOADS = {
-  install_command: "curl -fsSL https://getbuild.ing/install.sh | sh",
-  install_script_url: "https://getbuild.ing/install.sh",
-  releases_url: "https://github.com/ZechCodes/build-releases/releases/latest",
-  checksums_url: "https://github.com/ZechCodes/build-releases/releases/latest/download/SHA256SUMS",
-  platforms: [
-    { key: "macos-arm64", label: "macOS · Apple silicon", url: asset("macos-arm64") },
-    { key: "macos-x86_64", label: "macOS · Intel", url: asset("macos-x86_64") },
-    { key: "linux-x86_64", label: "Linux · x86_64", url: asset("linux-x86_64") },
-    { key: "linux-aarch64", label: "Linux · arm64", url: asset("linux-aarch64") },
-  ],
-};
+const DOWNLOADS = downloadsPayload();
 
 const parse = (html) => {
   const host = document.createElement("div");

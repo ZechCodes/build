@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { openRelaySession } from "../src/core/session.js";
+import { DEFAULT_RPC_TIMEOUT_MS, openRelaySession, rpcTimedOut } from "../src/core/session.js";
 
 // ---- fakes -------------------------------------------------------------------
 
@@ -310,8 +310,18 @@ describe("openRelaySession", () => {
       reply.catch(() => {});
       await vi.advanceTimersByTimeAsync(1500);
       await expect(reply).rejects.toThrow("timed out");
+      // A reply that never came is not a refusal: the daemon answers a mutation
+      // when its own state change is durable, and the work behind it can outlast
+      // the timer. The rejection says which of the two this is.
+      await reply.catch((error) => expect(rpcTimedOut(error)).toBe(true));
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("says the timer is the browser's own, at twelve seconds", () => {
+    expect(DEFAULT_RPC_TIMEOUT_MS).toBe(12000);
+    expect(rpcTimedOut(new Error("worktree.create failed"))).toBe(false);
+    expect(rpcTimedOut(null)).toBe(false);
   });
 });

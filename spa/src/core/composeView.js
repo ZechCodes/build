@@ -33,6 +33,7 @@ import {
   saveCaptureQueue,
   withoutQueued,
 } from "./compose.js";
+import { rpcTimedOut } from "./session.js";
 import { esc } from "./text.js";
 import "../styles/shell.css";
 
@@ -414,13 +415,21 @@ async function submitManual() {
   });
   try {
     const created = await App.call(method, params);
-    const destination = manualRouteDestination(box.kind, created, box.projectId);
-    closeCompose();
-    refreshFeed();
-    go(destination);
+    settleManualRoute(manualRouteDestination(box.kind, created, box.projectId));
   } catch (error) {
-    fail(messageOf(error));
+    // A reply the browser stopped waiting for is not a refusal: the work is
+    // still being made, and the board is already carrying its row.
+    if (rpcTimedOut(error)) settleManualRoute(null);
+    else fail(messageOf(error));
   }
+}
+
+/** The box is done with: shut it, re-read the board, and open what was made
+ *  wherever the reply named it. */
+function settleManualRoute(destination) {
+  closeCompose();
+  refreshFeed();
+  if (destination) go(destination);
 }
 
 // ---- mounting -----------------------------------------------------------------

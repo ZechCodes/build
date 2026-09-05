@@ -14,8 +14,25 @@
 // timeouts so calls fail fast instead of hanging on a dead session.
 
 const DEFAULT_DEVICE_WAIT_MS = 8000;
-const DEFAULT_RPC_TIMEOUT_MS = 12000;
+/** How long the browser waits for a reply before giving up on it. The daemon
+ *  answers a mutation as soon as its own state change is durable and runs what
+ *  that triggers behind the answer, so this is a bound on the ANSWER, never on
+ *  the work. */
+export const DEFAULT_RPC_TIMEOUT_MS = 12000;
 const DEFAULT_ACCEPT_TIMEOUT_MS = 10000;
+
+/** Whether this rejection is that timer rather than a refusal — the difference
+ *  between "the daemon said no" and "the daemon has not said yet". A caller
+ *  that can carry on without the reply (the record it made is on the board, and
+ *  the push will bring it) asks this before calling the call a failure. */
+export const rpcTimedOut = (error) => Boolean(error && error.timedOut);
+
+/** The rejection the timer makes, saying which of the two it is. */
+function timedOutError(method) {
+  const error = new Error(`${method} timed out`);
+  error.timedOut = true;
+  return error;
+}
 
 export async function openRelaySession({
   relayUrl,
@@ -190,7 +207,7 @@ export async function openRelaySession({
       new Promise((_, reject) =>
         setTimeout(() => {
           pending.delete(rid);
-          reject(new Error(`${method} timed out`));
+          reject(timedOutError(method));
         }, timeoutMs),
       ),
     ]);

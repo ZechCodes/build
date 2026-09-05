@@ -90,6 +90,37 @@ describe("the create modal", () => {
     expect(modal()).toBeNull();
   });
 
+  // The daemon cuts the checkout with its state lock released and answers when
+  // the git lands. A reply that names no branch — or one the browser's own timer
+  // gave up on — is not a failure: the board is already carrying the row as
+  // Creating, and it opens itself when the record settles.
+  it("closes and leaves the board carrying the row when the create answers without a branch", async () => {
+    App.call = vi.fn(async () => ({ project_id: "p1", pending_worktree_id: "wt-pending" }));
+    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    type("mascot spike");
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(modal()).toBeNull();
+    expect(refreshFeed).toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(App.focusComposerOnMount).toBe(false);
+  });
+
+  it("closes the same way when the reply outlives the browser's timer", async () => {
+    App.call = vi.fn(async () => {
+      const timedOut = new Error("worktree.create timed out");
+      timedOut.timedOut = true;
+      throw timedOut;
+    });
+    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    type("mascot spike");
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(modal()).toBeNull();
+    expect(refreshFeed).toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("files an issue that starts nothing, carrying the harness choice", async () => {
     openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });
     type("Add a health endpoint");

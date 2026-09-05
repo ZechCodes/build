@@ -19,6 +19,7 @@ import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { branchNamePreview } from "./toolbarModel.js";
 import { modalDialogHtml, openModal } from "./modal.js";
+import { rpcTimedOut } from "./session.js";
 
 /** The two things a project can hold, in the order the tabs offer them. */
 export const CREATE_KINDS = ["branch", "issue"];
@@ -84,8 +85,14 @@ export function createWorkHtml(state) {
   return modalDialogHtml(createWorkBodyHtml(state), { className: "modal-create" });
 }
 
+/** Cut the branch, and say where it opens — or nothing, when the reply does not
+ *  name it. The daemon cuts the checkout with its state lock released and
+ *  answers once the git lands, so a create can settle after this browser has
+ *  stopped waiting. Either way the board is already carrying the row (the
+ *  daemon puts it there before the git runs) and the record settles into it. */
 async function createBranch(projectId, name) {
   const created = await App.call("worktree.create", { project_id: projectId, name });
+  if (!created || !created.branch) return null;
   return { name: "branch", projectId: created.project_id || projectId, branch: created.branch, tab: "changes" };
 }
 
@@ -192,17 +199,30 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     paint();
     try {
       const route = kind === "branch" ? await createBranch(projectId, value) : await createIssue(projectId, value, state.choice);
-      close();
-      refreshFeed();
-      // A freshly cut branch has nobody in it yet — the rail opens on the ghost
-      // composer, and that is exactly where typing the first message belongs.
-      if (kind === "branch") App.focusComposerOnMount = true;
-      navigate(route);
+      settle(kind, route);
     } catch (error) {
+      // A reply the browser stopped waiting for is not a refusal: the create is
+      // still running, and its row is on the board.
+      if (rpcTimedOut(error)) {
+        settle(kind, null);
+        return;
+      }
       state.busy = false;
       state.error = error.message || String(error);
       paint();
     }
+  }
+
+  /** The form is done with: shut it, re-read the board, and open what was made
+   *  where the reply named it. */
+  function settle(kind, route) {
+    close();
+    refreshFeed();
+    if (!route) return;
+    // A freshly cut branch has nobody in it yet — the rail opens on the ghost
+    // composer, and that is exactly where typing the first message belongs.
+    if (kind === "branch") App.focusComposerOnMount = true;
+    navigate(route);
   }
 
   wire((state.values[state.kind] || "").length);

@@ -2377,18 +2377,8 @@ impl AppState {
                                 match &issue.plan.implementation_intent {
                                     ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
                                     ImplementationIntent::All => {
-                                        issue.stages.iter().find_map(|doc| {
-                                            active
-                                                .stage_progress(&doc.id)
-                                                .is_none_or(|progress| {
-                                                    progress.state
-                                                        != StageProgressState::Validated {
-                                                            passed: true,
-                                                        }
-                                                        || progress.invalidation_reason.is_some()
-                                                })
-                                                .then(|| doc.id.clone())
-                                        })
+                                        next_unsettled_stage(&issue.stages, Some(&active))
+                                            .map(|doc| doc.id.clone())
                                     }
                                     ImplementationIntent::None => active.current_stage_id.clone(),
                                 }
@@ -10393,18 +10383,11 @@ impl AppState {
 
         let target_stage = match &intent {
             ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
-            ImplementationIntent::All => self.plans[issue_id]
-                .stages
-                .iter()
-                .find(|doc| {
-                    self.current_issue_implementation(issue_id)
-                        .and_then(|run| run.stage_progress(&doc.id))
-                        .is_none_or(|progress| {
-                            progress.state != StageProgressState::Validated { passed: true }
-                                || progress.invalidation_reason.is_some()
-                        })
-                })
-                .map(|doc| doc.id.clone()),
+            ImplementationIntent::All => next_unsettled_stage(
+                &self.plans[issue_id].stages,
+                self.current_issue_implementation(issue_id),
+            )
+            .map(|doc| doc.id.clone()),
             ImplementationIntent::None => None,
         };
         let Some(target_stage) = target_stage else {
@@ -10685,15 +10668,7 @@ impl AppState {
         let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
         let requested_stage_id = match &issue.plan.implementation_intent {
             ImplementationIntent::Stage(stage_id) => stage_id.clone(),
-            ImplementationIntent::All => issue
-                .stages
-                .iter()
-                .find(|doc| {
-                    active.stage_progress(&doc.id).is_none_or(|progress| {
-                        progress.state != StageProgressState::Validated { passed: true }
-                            || progress.invalidation_reason.is_some()
-                    })
-                })
+            ImplementationIntent::All => next_unsettled_stage(&issue.stages, Some(&active))
                 .map(|doc| doc.id.clone())
                 .unwrap_or_default(),
             ImplementationIntent::None => active.current_stage_id.clone().unwrap_or_default(),
@@ -10813,15 +10788,7 @@ impl AppState {
                 ImplementationActivity::Idle,
             ),
             RunState::StageGate => {
-                let next = issue
-                    .stages
-                    .iter()
-                    .find(|doc| {
-                        run.stage_progress(&doc.id).is_none_or(|progress| {
-                            progress.state != StageProgressState::Validated { passed: true }
-                                || progress.invalidation_reason.is_some()
-                        })
-                    })
+                let next = next_unsettled_stage(&issue.stages, Some(run))
                     .map(|doc| (doc.id.clone(), doc.state));
                 match next {
                     Some((stage_id, StageDocState::Planned)) => {
@@ -15686,6 +15653,29 @@ fn parse_anchor_line(anchor: &Value, field: &str) -> Result<Option<u32>, String>
             .map(Some)
             .ok_or_else(|| format!("anchor.{field} must be a line number")),
     }
+}
+
+/// The first stage an Issue still owes work on: the earliest one this run has
+/// recorded no progress against, or whose progress is not a passed validation,
+/// or whose pass a later change invalidated. `None` once every stage of the
+/// manifest has settled. A run that does not exist yet has settled nothing, so
+/// the first stage is the answer.
+///
+/// One predicate, four readers — boot's activity reconstruction, the
+/// scheduler's target stage, a recovery's requested stage, and the Issue's
+/// rendered activity — because what counts as settled has to move for all of
+/// them at once.
+fn next_unsettled_stage<'a>(
+    stages: &'a [StageDoc],
+    run: Option<&ActiveRun>,
+) -> Option<&'a StageDoc> {
+    stages.iter().find(|doc| {
+        run.and_then(|run| run.stage_progress(&doc.id))
+            .is_none_or(|progress| {
+                progress.state != StageProgressState::Validated { passed: true }
+                    || progress.invalidation_reason.is_some()
+            })
+    })
 }
 
 /// The first stage `run.stage_dispatch` would currently accept for a run: the

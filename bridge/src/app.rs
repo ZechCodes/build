@@ -13301,10 +13301,14 @@ impl AppState {
                     && row["branch"] == json!(branch)
             });
         let Some(mut row) = found else {
+            // This project's own scan, not the rail's board-wide flag: what a
+            // neighbour has or has not been scanned for says nothing about the
+            // branch that was asked for here.
+            let settled = self.scan_settled_at(&project_id).is_some();
             self.rescan_external_worktrees(&project_id);
             return Err(format!(
                 "branch.get: no checkout of this project is on branch {branch} ({})",
-                scan_may_yet_show_it(!checkouts.scanning)
+                scan_may_yet_show_it(settled)
             ));
         };
         let run = match row["run_id"].as_str().map(str::to_string) {
@@ -45955,6 +45959,23 @@ mod tests {
         let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
         add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        // A second project, whose own checkouts have been scanned. Whether the
+        // scan can still show a checkout is a fact about one project, never
+        // about the board as a whole.
+        let other_repo = init_repo_named(dir.path(), "other");
+        let other_id = {
+            let mut app = state.lock().unwrap();
+            let added = app
+                .dispatch(
+                    "project.add",
+                    &json!({ "path": other_repo.to_string_lossy() }),
+                )
+                .expect("the second project registers");
+            let id = added["project_id"].as_str().unwrap().to_string();
+            app.scan_external_worktrees_now(&id)
+                .expect("its checkouts are scanned");
+            id
+        };
         // The primary walk lands; the checkout scan is held open, so every read
         // below is answered by a project nothing has scanned.
         let gate = gate_scan_computes(&state);
@@ -45987,6 +46008,19 @@ mod tests {
                 "the refusal blamed the checkout for a scan nobody has run: {refusal}"
             );
         }
+
+        let missed = state
+            .lock()
+            .unwrap()
+            .dispatch(
+                "branch.get",
+                &json!({ "project_id": other_id, "branch": "nothing-is-on-this" }),
+            )
+            .expect_err("no checkout of the scanned project is on that branch");
+        assert!(
+            missed.contains("made outside Build since the last scan"),
+            "a scanned project's miss was answered out of an unscanned neighbour's scan: {missed}"
+        );
 
         gate.wait_for_arrival();
         gate.release();

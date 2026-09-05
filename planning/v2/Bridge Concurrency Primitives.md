@@ -761,7 +761,7 @@ noted below.
 
 **Shipped** with step 3, as declared: the three reads, `refresh_now` /
 `refresh_if_stale`, `ScanRead`, `note_worktree_appeared` /
-`note_worktree_gone`, and every deletion listed below. Eleven deviations from
+`note_worktree_gone`, and every deletion listed below. Thirteen deviations from
 the sketch, each argued where it appears:
 
 1. `board.list` gains a sibling `"scanning"` boolean rather than turning
@@ -797,10 +797,10 @@ the sketch, each argued where it appears:
    `git worktree add` under the lock; §5 moves the pair off it together. A
    project whose scan has never landed is returned from before anything is
    described: there is nowhere to put the answer, the first scan is what finds
-   this checkout anyway, and the amend that would have followed neither drops
-   that scan's claim nor pushes an invalidation for an edit it did not make.
+   this checkout anyway, and the amend that would have followed neither
+   supersedes that scan nor pushes an invalidation for an edit it did not make.
    `amend_external_scan` is where that is decided, so only an edit that
-   happened releases a claim and notes the board.
+   happened supersedes a scan and notes the board.
 5. `rescan_external_worktrees(project_id)` is what the five
    `invalidate_external_scan` sites became that name neither an appearance nor a
    removal: a git-scope mutation inside a checkout, a branch switch, a released
@@ -826,9 +826,12 @@ the sketch, each argued where it appears:
    promises, and refuse in the caller's own words. `resolve_external_worktree`,
    `branch.finish`'s bare-checkout arm and `entity.dismiss`'s branch row miss
    through it; `branch.get`, which misses a work item rather than a checkout,
-   ends its own refusal with the same sentence and claims the same rescan.
-   Before this step `warm_diff_caches` computed the first scan ahead of all
-   four, so none of them could see a cold cache and `no checkout of this
+   ends its own refusal with the same sentence and claims the same rescan —
+   from `scan_settled_at` for the project it was asked about, never from
+   `ExternalWorktreeRows.scanning`, which is the rail's board-wide flag and
+   would blame an unscanned neighbour for a miss on a project that is fully
+   scanned. Before this step `warm_diff_caches` computed the first scan ahead
+   of all four, so none of them could see a cold cache and `no checkout of this
    project is on branch <b>` was never a lie.
 9. `primary_row` answers `Result`. A row built from a summary that has not
    landed carries no head, and `entity.dismiss` on it writes a dismissal at an
@@ -858,11 +861,28 @@ the sketch, each argued where it appears:
     `run.abandon` and a failed recovery — ask git through `classify_stages_now`,
     which names what it does so the two sites §5 moves stay visible.
 
+12. A mutation **supersedes** the refresh it overtakes rather than releasing
+    its claim (`diff_refreshes_superseded`, `supersede_diff_refresh`), and
+    `publish_diff_refresh` drops what a superseded refresh computed. Releasing
+    was two bugs in one: the claim is single-flight, so the very next read
+    started a SECOND compute of the same thing behind the first, and the claim
+    is also the right to publish, so the first, pre-edit one landed on the
+    second's claim, stored its stale answer over the edit, and left the second
+    to be discarded. A checkout created during a scan was off the rail and
+    unresolvable for a whole interval; a checkout adopted during one came back
+    as the unbound card `run_adopt` must never act on. All three sites take the
+    same mechanism — `amend_external_scan`, `invalidate_run_stat`,
+    `invalidate_primary_summary` — and the reader that is superseded meanwhile
+    is answered from the amended cache, which is the newer truth.
+13. `store_diff_entry` is a four-line dispatch over `store_run_stat`,
+    `store_external_scan`, `store_scan_failure` and `store_primary_summary`.
+    The match stays the single construction point where a kind of entry names
+    its cache; each arm is that cache's own write, resolved through one
+    `project_mut` — the lookup every write into a project's caches goes through.
+
 `amend_external_scan` does not restamp `scanned_at`: an edit knows about one
 checkout and the rest of the list is exactly as old as it was, so the
-reconciling scan is not pushed back an interval. It does release any in-flight
-scan's claim, for the reason `invalidate_run_stat` does — that scan described
-the repository before the edit.
+reconciling scan is not pushed back an interval.
 
 - **Boundary** `bridge/src/app.rs`, beside `DiffCacheKey`: between a poll surface
   and the git work its numbers come from. Three typed reads are the only way a
@@ -955,8 +975,9 @@ the repository before the edit.
   `dismissing_the_primary_row_before_its_walk_lands_is_refused` (deviation 9),
   `attention_survives_a_stamp_taken_before_the_first_scan` /
   `attention_for_a_dead_run_is_pruned_before_the_first_scan` (deviation 10),
-  and `a_vanished_runs_stages_are_judged_with_the_state_lock_free`
-  (deviation 11). The four stale-while-revalidate tests are unchanged in what
+  `a_vanished_runs_stages_are_judged_with_the_state_lock_free`
+  (deviation 11), `a_create_during_a_scan_outlives_that_scans_landing` and
+  `an_invalidated_stat_discards_the_compute_it_overtook` (deviation 12). The four stale-while-revalidate tests are unchanged in what
   they pin; each now seeds its cache by waiting for the refresh a first poll
   claimed (`seeded_run_stat`) instead of by making that poll compute.
   `a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock` is

@@ -4,15 +4,13 @@ device's identity key lands as one session row; anything else is refused."""
 from __future__ import annotations
 
 import base64
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from litestar import Litestar
-from litestar.di import Provide
 from litestar.status_codes import (
     HTTP_200_OK,
     HTTP_400_BAD_REQUEST,
@@ -20,11 +18,9 @@ from litestar.status_codes import (
 )
 from litestar.testing import TestClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from buildapp import transport_controller
-from buildapp.db_test_support import IN_MEMORY_DATABASE_URL
+from buildapp.db_test_support import asgi_app, in_memory_session_maker
 from buildapp.models import Device, TransportSession
 from buildapp.transport_controller import REPORT_ROUTE_PATH, TransportController
 from buildapp.transport_report import NO_PATH, report_challenge
@@ -65,29 +61,8 @@ class Bridge:
 
 @pytest.fixture()
 def client() -> Iterator[TestClient]:
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    make_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def provide_db_session() -> AsyncIterator[AsyncSession]:
-        async with make_session() as session:
-            yield session
-
-    async def create_tables(app: Litestar) -> None:
-        async with engine.begin() as connection:
-            await connection.run_sync(Device.__table__.create)
-            await connection.run_sync(TransportSession.__table__.create)
-
-    async def dispose_engine(app: Litestar) -> None:
-        await engine.dispose()
-
     transport_controller.reset_replay_guard_for_tests()
-    app = Litestar(
-        route_handlers=[TransportController],
-        dependencies={"db_session": Provide(provide_db_session)},
-        on_startup=[create_tables],
-        on_shutdown=[dispose_engine],
-    )
-    app.state.make_session = make_session
+    app = asgi_app([TransportController], session_maker=in_memory_session_maker())
     with TestClient(app=app) as test_client:
         yield test_client
 

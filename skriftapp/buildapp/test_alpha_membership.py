@@ -16,30 +16,22 @@ from buildapp.alpha_membership import (
     is_alpha_member,
     require_alpha_member,
 )
-from buildapp.models import Invite
+from buildapp.db_test_support import MEMBER_ADDRESS, add_member
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
-MEMBER_ADDRESS = "member@example.com"
-
-
-async def redeemed_invite(db, user_id) -> Invite:
-    invite, _ = await invites.issue_invite(db, MEMBER_ADDRESS, uuid4(), NOW)
-    assert invites.redeem(invite, user_id, MEMBER_ADDRESS, NOW).ok is True
-    await db.commit()
-    return invite
 
 
 @pytest.mark.asyncio
 async def test_a_redeemed_unrevoked_invite_makes_its_account_a_member(db):
     user_id = uuid4()
-    await redeemed_invite(db, user_id)
+    await add_member(db, user_id)
     assert await is_alpha_member(db, user_id) is True
 
 
 @pytest.mark.asyncio
 async def test_revoking_the_redeemed_invite_removes_the_member(db):
     user_id = uuid4()
-    invite = await redeemed_invite(db, user_id)
+    invite = await add_member(db, user_id)
     await invites.revoke_invite(db, invite.id, NOW + timedelta(days=1))
     assert await is_alpha_member(db, user_id) is False
 
@@ -66,7 +58,7 @@ async def test_an_account_with_no_invite_at_all_is_not_a_member(db):
 @pytest.mark.asyncio
 async def test_require_alpha_member_passes_a_member_through(db):
     user_id = uuid4()
-    await redeemed_invite(db, user_id)
+    await add_member(db, user_id)
     assert await require_alpha_member(db, user_id) is None
 
 

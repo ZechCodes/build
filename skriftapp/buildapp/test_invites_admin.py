@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from litestar.handlers import HTTPRouteHandler
@@ -16,13 +16,14 @@ from skrift.auth.guards import auth_guard
 from skrift.auth.session_keys import SESSION_USER_ID
 from skrift.forms.core import CSRF_FIELD_NAME, CSRF_SESSION_KEY
 
-from buildapp import email_message, invites
+from buildapp import email_message
 from buildapp.db_test_support import (
-    add_account,
     admin_template_environment,
+    asgi_app,
     in_memory_session_maker,
-    session_app,
     session_backend_config,
+    sign_in,
+    stored_invites,
 )
 from buildapp.email_test_support import email_settings
 from buildapp.invites import INVITE_TTL, InviteState
@@ -213,34 +214,18 @@ def admin_client(monkeypatch, email_backend) -> Iterator[TestClient]:
     app needs no template engine — only the session the CSRF token lives in."""
     monkeypatch.setattr(email_message, "get_settings", email_settings)
     session_config = session_backend_config()
-    make_session = in_memory_session_maker()
-    app = session_app(
+    app = asgi_app(
         [InvitesAdminController],
-        session_maker=make_session,
+        session_maker=in_memory_session_maker(),
         session_config=session_config,
     )
     app.state.email_backend = email_backend
     with TestClient(app=app, session_config=session_config) as test_client:
-
-        async def create_operator() -> UUID:
-            async with make_session() as session:
-                return await add_account(session, INVITER_ADDRESS, administrator=True)
-
-        with test_client.portal() as portal:
-            user_id = portal.call(create_operator)
+        user_id = sign_in(test_client, INVITER_ADDRESS, administrator=True)
         test_client.set_session_data(
             {SESSION_USER_ID: str(user_id), CSRF_SESSION_KEY: CSRF_TOKEN}
         )
         yield test_client
-
-
-def stored(client: TestClient) -> list[Invite]:
-    async def read() -> list[Invite]:
-        async with client.app.state.make_session() as session:
-            return await invites.all_invites(session)
-
-    with client.portal() as portal:
-        return portal.call(read)
 
 
 def send_invite(client: TestClient, email: str, **body):
@@ -254,7 +239,7 @@ def send_invite(client: TestClient, email: str, **body):
 def test_the_send_form_issues_an_invite_and_mails_it(admin_client, email_backend):
     response = send_invite(admin_client, "  Invitee@Example.COM ", **CSRF_BODY)
     assert response.headers["location"] == INVITES_ADMIN_PATH
-    assert [row.email for row in stored(admin_client)] == [INVITED]
+    assert [row.email for row in stored_invites(admin_client)] == [INVITED]
     assert [sent.to for sent in email_backend.sent] == [INVITED]
 
 
@@ -262,19 +247,19 @@ def test_a_send_without_the_csrf_field_stores_and_sends_nothing(
     admin_client, email_backend
 ):
     send_invite(admin_client, INVITED)
-    assert stored(admin_client) == []
+    assert stored_invites(admin_client) == []
     assert email_backend.sent == []
 
 
 def test_an_address_the_form_cannot_send_to_stores_nothing(admin_client, email_backend):
     send_invite(admin_client, "not-an-address", **CSRF_BODY)
-    assert stored(admin_client) == []
+    assert stored_invites(admin_client) == []
     assert email_backend.sent == []
 
 
 def test_the_revoke_form_takes_the_seat_back(admin_client):
     send_invite(admin_client, INVITED, **CSRF_BODY)
-    (issued,) = stored(admin_client)
+    (issued,) = stored_invites(admin_client)
     # A verified CSRF token is single-use: the page the operator lands on carries the
     # rotated one, so the revoke form submits that.
     rotated = admin_client.get_session_data()[CSRF_SESSION_KEY]
@@ -283,13 +268,13 @@ def test_the_revoke_form_takes_the_seat_back(admin_client):
         data={CSRF_FIELD_NAME: rotated},
         follow_redirects=False,
     )
-    assert stored(admin_client)[0].revoked_at is not None
+    assert stored_invites(admin_client)[0].revoked_at is not None
 
 
 def test_a_revoke_without_the_csrf_field_changes_nothing(admin_client):
     send_invite(admin_client, INVITED, **CSRF_BODY)
-    (issued,) = stored(admin_client)
+    (issued,) = stored_invites(admin_client)
     admin_client.post(
         REVOKE_PATH.format(invite_id=issued.id), data={}, follow_redirects=False
     )
-    assert stored(admin_client)[0].revoked_at is None
+    assert stored_invites(admin_client)[0].revoked_at is None

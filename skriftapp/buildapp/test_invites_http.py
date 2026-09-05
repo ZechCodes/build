@@ -6,7 +6,7 @@ the dependency wiring are all under test."""
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,14 +23,15 @@ from litestar.status_codes import (
 from litestar.handlers import HTTPRouteHandler
 from litestar.testing import TestClient
 from skrift.auth.guards import auth_guard
-from skrift.auth.session_keys import SESSION_USER_ID
 
 from buildapp import email_message, invites
+from buildapp.clock import utc_now
 from buildapp.db_test_support import (
-    add_account,
+    asgi_app,
     in_memory_session_maker,
-    session_app,
     session_backend_config,
+    sign_in,
+    stored_invites,
 )
 from buildapp.email_test_support import email_settings
 from buildapp.invite_mail import INVITE_SUBJECT
@@ -41,22 +42,17 @@ from buildapp.invites_controller import (
     INVITES_API_PATH,
     InvitesController,
 )
-from buildapp.models import Invite
 from buildapp.request_body import MALFORMED_JSON_MESSAGE
 
 INVITED = "invitee@example.com"
 OTHER_ADDRESS = "someone.else@example.com"
 
 
-def now() -> datetime:
-    return datetime.now(tz=timezone.utc)
-
-
 @pytest.fixture()
 def client(monkeypatch, email_backend) -> Iterator[TestClient]:
     monkeypatch.setattr(email_message, "get_settings", email_settings)
     session_config = session_backend_config()
-    app = session_app(
+    app = asgi_app(
         [InvitesController],
         session_maker=in_memory_session_maker(),
         session_config=session_config,
@@ -71,7 +67,7 @@ def issue(client: TestClient, *, email: str = INVITED, **edits) -> str:
 
     async def create() -> str:
         async with client.app.state.make_session() as session:
-            invite, raw = await invites.issue_invite(session, email, uuid4(), now())
+            invite, raw = await invites.issue_invite(session, email, uuid4(), utc_now())
             for field, value in edits.items():
                 setattr(invite, field, value)
             await session.commit()
@@ -81,28 +77,6 @@ def issue(client: TestClient, *, email: str = INVITED, **edits) -> str:
         return portal.call(create)
 
 
-def stored_invites(client: TestClient) -> list[Invite]:
-    async def read() -> list[Invite]:
-        async with client.app.state.make_session() as session:
-            return await invites.all_invites(session)
-
-    with client.portal() as portal:
-        return portal.call(read)
-
-
-def sign_in(client: TestClient, email: str, *, administrator: bool = False) -> UUID:
-    """Create an account with this address and put it in the session."""
-
-    async def create() -> UUID:
-        async with client.app.state.make_session() as session:
-            return await add_account(session, email, administrator=administrator)
-
-    with client.portal() as portal:
-        user_id = portal.call(create)
-    client.set_session_data({SESSION_USER_ID: str(user_id)})
-    return user_id
-
-
 def test_a_token_that_was_never_issued_is_not_found(client):
     response = client.get(invite_path("inv_never-issued"))
     assert response.status_code == HTTP_404_NOT_FOUND
@@ -110,21 +84,21 @@ def test_a_token_that_was_never_issued_is_not_found(client):
 
 
 def test_a_revoked_invite_is_gone(client):
-    raw = issue(client, revoked_at=now())
+    raw = issue(client, revoked_at=utc_now())
     response = client.get(invite_path(raw))
     assert response.status_code == HTTP_410_GONE
     assert OUTCOMES[InviteState.REVOKED].heading in response.text
 
 
 def test_an_expired_invite_is_gone(client):
-    raw = issue(client, expires_at=now() - timedelta(seconds=1))
+    raw = issue(client, expires_at=utc_now() - timedelta(seconds=1))
     response = client.get(invite_path(raw))
     assert response.status_code == HTTP_410_GONE
     assert OUTCOMES[InviteState.EXPIRED].heading in response.text
 
 
 def test_an_already_redeemed_invite_points_at_the_app(client):
-    raw = issue(client, redeemed_by=uuid4(), redeemed_at=now())
+    raw = issue(client, redeemed_by=uuid4(), redeemed_at=utc_now())
     response = client.get(invite_path(raw))
     assert response.status_code == HTTP_200_OK
     assert OUTCOMES[InviteState.REDEEMED].heading in response.text

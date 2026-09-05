@@ -5,19 +5,15 @@ form body."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 
 import pytest
-from litestar import Litestar
-from litestar.di import Provide
 from litestar.status_codes import HTTP_200_OK, HTTP_404_NOT_FOUND
 from litestar.testing import TestClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from buildapp import waitlist_controller
-from buildapp.db_test_support import IN_MEMORY_DATABASE_URL
+from buildapp.db_test_support import asgi_app, in_memory_session_maker
 from buildapp.email_test_support import OWNER_ADDRESS, SECRET_KEY, email_settings
 from buildapp.models import WaitlistSignup
 from buildapp.unsubscribe_pages import (
@@ -38,28 +34,8 @@ ONE_CLICK_FORM_BODY = {"List-Unsubscribe": "One-Click"}
 def client(monkeypatch, email_backend) -> Iterator[TestClient]:
     monkeypatch.setattr(waitlist_controller, "get_settings", email_settings)
     monkeypatch.setenv(NOTIFY_ADDRESS_ENV, OWNER_ADDRESS)
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    make_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def provide_db_session() -> AsyncIterator[AsyncSession]:
-        async with make_session() as session:
-            yield session
-
-    async def create_tables(app: Litestar) -> None:
-        async with engine.begin() as connection:
-            await connection.run_sync(WaitlistSignup.__table__.create)
-
-    async def dispose_engine(app: Litestar) -> None:
-        await engine.dispose()
-
-    app = Litestar(
-        route_handlers=[WaitlistController],
-        dependencies={"db_session": Provide(provide_db_session)},
-        on_startup=[create_tables],
-        on_shutdown=[dispose_engine],
-    )
+    app = asgi_app([WaitlistController], session_maker=in_memory_session_maker())
     app.state.email_backend = email_backend
-    app.state.make_session = make_session
     with TestClient(app=app) as test_client:
         yield test_client
 

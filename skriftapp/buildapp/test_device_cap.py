@@ -8,25 +8,24 @@ more about membership."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
-from datetime import datetime, timedelta, timezone
+from collections.abc import Iterator
 from uuid import UUID, uuid4
 
 import pytest
-from litestar import Litestar
-from litestar.di import Provide
 from litestar.status_codes import HTTP_409_CONFLICT
 from litestar.testing import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import desktop_auth, devices_controller, pairing_crypto
-from buildapp.db_test_support import IN_MEMORY_DATABASE_URL
+from buildapp.db_test_support import add_member, asgi_app, in_memory_session_maker
 from buildapp.devices_controller import MAX_DEVICES_PER_USER, DevicesController
-from buildapp.models import Device, Invite
-from buildapp.token_hash import token_hash
+from buildapp.models import Device
 
 USER = uuid4()
+
+
+async def _seed_membership(session: AsyncSession) -> None:
+    await add_member(session, USER)
 
 
 @pytest.fixture()
@@ -35,46 +34,13 @@ def client(monkeypatch) -> Iterator[TestClient]:
     # the guard and the handler both resolve the user through these two.
     monkeypatch.setattr(desktop_auth, "session_user_id", lambda connection: USER)
     monkeypatch.setattr(devices_controller, "require_user", lambda request: USER)
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
-    make_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def provide_db_session() -> AsyncIterator[AsyncSession]:
-        async with make_session() as session:
-            yield session
-
-    async def create_tables(app: Litestar) -> None:
-        async with engine.begin() as connection:
-            await connection.run_sync(Device.__table__.create)
-            await connection.run_sync(Invite.__table__.create)
-        async with make_session() as session:
-            session.add(_membership(USER))
-            await session.commit()
-
-    async def dispose_engine(app: Litestar) -> None:
-        await engine.dispose()
-
-    app = Litestar(
-        route_handlers=[DevicesController],
-        dependencies={"db_session": Provide(provide_db_session)},
-        on_startup=[create_tables],
-        on_shutdown=[dispose_engine],
+    app = asgi_app(
+        [DevicesController],
+        session_maker=in_memory_session_maker(),
+        seed=_seed_membership,
     )
-    app.state.make_session = make_session
-    app.state.session_maker_class = make_session
     with TestClient(app=app) as test_client:
         yield test_client
-
-
-def _membership(user_id: UUID) -> Invite:
-    """The redeemed, unrevoked invite that makes this account an alpha member."""
-    now = datetime.now(tz=timezone.utc)
-    return Invite(
-        token_hash=token_hash(f"inv_{user_id}"),
-        email="member@example.com",
-        expires_at=now + timedelta(days=14),
-        redeemed_by=user_id,
-        redeemed_at=now,
-    )
 
 
 def _pending(code: str) -> Device:

@@ -1,6 +1,6 @@
-"""Alpha membership has one home and one definition: a redeemed, unrevoked invite. This
-pins that definition — including that revoking a redeemed invite is how a member is
-removed — and the 403 the guards raise for everyone else."""
+"""Alpha membership has one home and one table of rules: a redeemed, unrevoked invite,
+or the administrator permission. This pins both — including that revoking a redeemed
+invite is how a member is removed — and the 403 the guards raise for everyone else."""
 
 from __future__ import annotations
 
@@ -13,10 +13,13 @@ from litestar.exceptions import PermissionDeniedException
 from buildapp import invites
 from buildapp.alpha_membership import (
     INVITE_ONLY_DETAIL,
+    MEMBERSHIP_RULES,
+    holds_a_redeemed_invite,
     is_alpha_member,
+    is_an_administrator,
     require_alpha_member,
 )
-from buildapp.db_test_support import MEMBER_ADDRESS, add_member
+from buildapp.db_test_support import MEMBER_ADDRESS, add_account, add_member
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 
@@ -69,3 +72,21 @@ async def test_require_alpha_member_refuses_everyone_else_with_invite_only(db):
     assert refusal.value.detail == INVITE_ONLY_DETAIL
     assert INVITE_ONLY_DETAIL == "invite only"
     assert refusal.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_an_administrator_is_a_member_without_an_invite(db):
+    admin_id = await add_account(db, "operator@example.com", administrator=True)
+    assert await is_alpha_member(db, admin_id) is True
+    assert await require_alpha_member(db, admin_id) is None
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_account_with_no_invite_is_still_refused(db):
+    user_id = await add_account(db, "someone@example.com")
+    assert await is_alpha_member(db, user_id) is False
+
+
+def test_the_ways_in_are_a_table_the_invite_rule_leads():
+    # A new way into the alpha is a new entry here, never a branch in a gate.
+    assert MEMBERSHIP_RULES == (holds_a_redeemed_invite, is_an_administrator)

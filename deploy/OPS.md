@@ -23,21 +23,39 @@ either.
    first carries:
 
    ```
-   rtc: session <session_id> carrying over relay candidates
+   rtc: session <session_id> carrying over host/relay candidates (TURN, billed)
    ```
 
-   Count the billed ones with:
+   The pair is named at both ends, device first, browser second. Count the
+   billed ones with:
 
    ```bash
-   grep 'carrying over relay' bridge.err.log | wc -l
+   grep -c 'TURN, billed' bridge.err.log
    ```
 
-   `host`, `srflx` and `prflx` are the direct, free paths; `relay` is the
-   billed one; `unknown` means the bridge found no nominated pair in its stats
-   report — count it as unbilled, but a rise in `unknown` is a bridge bug, not
-   TURN usage. A rise in `relay` lines without a rise in users means more
-   clients are failing to hole-punch, not that each client is moving more
-   bytes.
+   `host`, `srflx` and `prflx` are the direct, free paths; `relay` at
+   **either** end is the billed one — and the usual billed shape is
+   `host/relay`: a device on a home box pairing its own host candidate with a
+   browser that could only reach it through TURN. The bridge states the bill
+   itself so the count needs no rule about which side to read. `unknown` means
+   the bridge found no nominated pair (or candidate) in its stats report —
+   never billed, but a rise in `unknown` is a bridge bug, not TURN usage. A
+   rise in billed lines without a rise in users means more clients are
+   failing to hole-punch, not that each client is moving more bytes.
+
+   Before trusting the count after a bridge change, prove the billed path
+   once from a machine with the TURN key: mint a list and run the relay-only
+   peer test, which crosses Cloudflare TURN for real and asserts the pair
+   read both ways:
+
+   ```bash
+   export BUILD_ICE_SERVERS_JSON="$(cd skriftapp && uv run --frozen python -c \
+     'import os,json; from buildapp.ice_servers import ice_servers; \
+      print(json.dumps(ice_servers(os.environ["CF_TURN_KEY_ID"], os.environ["CF_TURN_KEY_API_TOKEN"])))')"
+   (cd bridge && cargo test --test rtc_peer a_browser_that_can_only_relay -- --nocapture)
+   ```
+
+   Without the variable the test skips, which is how CI runs it.
 
 ## Monthly — the TURN key still works
 

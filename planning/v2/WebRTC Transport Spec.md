@@ -321,7 +321,11 @@ for stage gates.
 
 - **The bridge logs the negotiated candidate pair type** (open question 2, closed in
   stage 4): one line per session, the moment its peer connection first carries, naming
-  the winning local candidate's type — `host` and `srflx` are direct and free, `relay` is
-  TURN egress that is billed. One line per session is what makes "how often is TURN
-  actually used" answerable from the logs without a metrics pipeline. It goes to stderr,
-  where everything else `rtc.rs` says goes.
+  the winning pair's candidate types at both ends — `host` and `srflx` are direct and
+  free, `relay` at either end is TURN egress that is billed, and the line says
+  `(TURN, billed)` itself. Both ends, because the first real TURN session (a relay-only
+  browser peer against the bridge, `rtc_peer.rs`) paired the device's `host` candidate
+  with the browser's `relay` one: a line naming only the device's end had called the
+  billed path free. One line per session is what makes "how often is TURN actually
+  used" answerable from the logs without a metrics pipeline. It goes to stderr, where
+  everything else `rtc.rs` says goes.

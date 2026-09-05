@@ -14,7 +14,8 @@ use build_bridge::app::AppState;
 use build_bridge::carrier::testing::{reporting, within_patience};
 use build_bridge::carrier::FrameIntake;
 use build_bridge::rtc::testing::{
-    browser_peer, orphan_part, past_one_message, BrowserPeer, RelaySignaling,
+    browser_peer, browser_peer_with, orphan_part, past_one_message, BrowserIce, BrowserPeer,
+    RelaySignaling,
 };
 use build_bridge::rtc::WebrtcPeerFactory;
 use build_bridge::transport::{self, Envelope};
@@ -75,9 +76,12 @@ impl RelaySession {
 /// negotiate.
 #[async_trait::async_trait]
 impl RelaySignaling for RelaySession {
-    async fn offer(&self, sdp: String) -> String {
+    async fn offer(&self, sdp: String, ice_servers: &[Value]) -> String {
         let answered = self
-            .call("rtc.offer", json!({ "sdp": sdp, "ice_servers": [] }))
+            .call(
+                "rtc.offer",
+                json!({ "sdp": sdp, "ice_servers": ice_servers }),
+            )
             .await;
         assert_eq!(answered["ok"], true, "{answered}");
         answered["result"]["sdp"]
@@ -306,4 +310,65 @@ async fn a_channel_that_carried_last_ends_the_session_with_it() {
         format!("close:{}", session.session_id),
         "the last carrier takes the session with it"
     );
+}
+
+/// The ICE servers the api would mint, handed in by the environment as the
+/// JSON array `POST /api/rtc/ice-servers` answers with. Absent means no TURN
+/// key is at hand and the test has nothing to reach.
+const ICE_SERVERS_ENV: &str = "BUILD_ICE_SERVERS_JSON";
+
+/// The paid path, exercised for real: a browser that may only use relay
+/// candidates reaches the device through Cloudflare TURN with credentials the
+/// api minted, and the session answers over that channel as over any other.
+///
+/// This is the one claim a loopback test cannot make. It runs only when the
+/// environment carries a minted list — CI has no TURN key and skips; an
+/// operator with the key runs it before a rollout (`deploy/OPS.md`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_that_can_only_relay_rides_cloudflare_turn() {
+    let Ok(minted) = std::env::var(ICE_SERVERS_ENV) else {
+        eprintln!("skipped: {ICE_SERVERS_ENV} is not set, so there is no TURN server to reach");
+        return;
+    };
+    let servers: Vec<Value> = serde_json::from_str(&minted).expect("a minted ICE server array");
+    assert!(
+        servers.iter().any(|server| {
+            server["urls"]
+                .as_array()
+                .map(|urls| {
+                    urls.iter()
+                        .any(|u| u.as_str().unwrap_or("").starts_with("turn"))
+                })
+                .unwrap_or(false)
+                && server.get("credential").is_some()
+        }),
+        "the minted list carries no credentialed TURN server: {minted}"
+    );
+
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, _reports) = peer_bridge(state_dir.path());
+    let (session, _demux) = browser_session("sess-turn", intake).await;
+
+    let mut peer = browser_peer_with(
+        &session.session_id,
+        &session.session_key,
+        &session,
+        BrowserIce {
+            servers,
+            relay_only: true,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        peer.negotiated_local_candidate_type().await,
+        "relay",
+        "a relay-only browser must have paired on a TURN allocation"
+    );
+    assert!(
+        peer.negotiated_path_is_billed().await,
+        "and the same pair, read the device's way, is the billed shape"
+    );
+    let over_turn = peer.app.call("project.list", json!({})).await;
+    assert_eq!(over_turn["ok"], true, "{over_turn}");
 }

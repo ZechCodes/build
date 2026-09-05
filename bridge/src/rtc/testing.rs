@@ -14,11 +14,14 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
-    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCIceCandidateInit,
-    RTCPeerConnectionIceEvent, RTCSessionDescription,
+    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
+    RTCIceCandidateInit, RTCIceTransportPolicy, RTCPeerConnectionIceEvent, RTCSessionDescription,
+    StatsSelector,
 };
 
-use super::{chunk, negotiated_channel, NEGOTIATED_CHANNELS};
+use super::{
+    chunk, negotiated_channel, negotiated_path, offered_server, NegotiatedPath, NEGOTIATED_CHANNELS,
+};
 use crate::carrier::testing::{client_request, closed_within_patience, within_patience};
 use crate::transport::{self, Envelope, DATA_FRAME_TYPE};
 
@@ -27,14 +30,31 @@ use crate::transport::{self, Envelope, DATA_FRAME_TYPE};
 /// nothing else about the relay.
 #[async_trait]
 pub trait RelaySignaling: Send + Sync {
-    /// `rtc.offer` — the browser's SDP out, the device's answer back.
-    async fn offer(&self, sdp: String) -> String;
+    /// `rtc.offer` — the browser's SDP out, with the ICE servers the api
+    /// minted for it, and the device's answer back.
+    async fn offer(&self, sdp: String, ice_servers: &[Value]) -> String;
 
     /// `rtc.ice` — one of the browser's own gathered candidates.
     async fn trickle(&self, candidate: Value);
 
     /// The next candidate the device trickled back, off its push stream.
     async fn device_candidate(&self) -> Value;
+}
+
+/// Where the browser's candidates may come from.
+///
+/// The default is the loopback-only, no-server shape every ordinary test
+/// wants: host candidates pair and nothing leaves the machine. A list of
+/// servers gathers from every interface instead, as a browser does, and
+/// `relay_only` is the browser's `iceTransportPolicy: "relay"` — the one way
+/// to make a test PROVE it crossed a TURN server rather than merely offered
+/// one.
+#[derive(Default)]
+pub struct BrowserIce {
+    /// ICE servers as the api mints them, the array `rtc.offer` carries.
+    pub servers: Vec<Value>,
+    /// Gather and pair on relay candidates alone.
+    pub relay_only: bool,
 }
 
 /// The browser's end of the upgrade, whole job in one call: build the peer
@@ -48,11 +68,35 @@ pub async fn browser_peer(
     session_key: &str,
     signaling: &dyn RelaySignaling,
 ) -> BrowserPeer {
+    browser_peer_with(session_id, session_key, signaling, BrowserIce::default()).await
+}
+
+/// [`browser_peer`], gathering as `ice` says.
+pub async fn browser_peer_with(
+    session_id: &str,
+    session_key: &str,
+    signaling: &dyn RelaySignaling,
+    ice: BrowserIce,
+) -> BrowserPeer {
     let (gathered, mut candidates) = mpsc::unbounded_channel();
+    let gather_from = if ice.servers.is_empty() {
+        LOOPBACK_ONLY
+    } else {
+        EVERY_INTERFACE
+    };
+    let configuration = RTCConfigurationBuilder::new()
+        .with_ice_servers(ice.servers.iter().map(offered_server).collect())
+        .with_ice_transport_policy(if ice.relay_only {
+            RTCIceTransportPolicy::Relay
+        } else {
+            RTCIceTransportPolicy::All
+        })
+        .build();
     let connection: Arc<dyn PeerConnection> = Arc::new(
         PeerConnectionBuilder::new()
+            .with_configuration(configuration)
             .with_handler(Arc::new(BrowserEvents { gathered }))
-            .with_udp_addrs(vec![LOOPBACK_ONLY.to_string()])
+            .with_udp_addrs(vec![gather_from.to_string()])
             .build()
             .await
             .expect("the browser opens a peer connection"),
@@ -81,7 +125,7 @@ pub async fn browser_peer(
         .set_local_description(offer.clone())
         .await
         .expect("the browser's own offer");
-    let answer = signaling.offer(offer.sdp).await;
+    let answer = signaling.offer(offer.sdp, &ice.servers).await;
     peer.connection
         .set_remote_description(
             RTCSessionDescription::answer(answer).expect("the device's answer parses"),
@@ -126,12 +170,39 @@ pub fn orphan_part() -> String {
 /// candidates and reaches no STUN or TURN server.
 const LOOPBACK_ONLY: &str = "127.0.0.1:0";
 
+/// Where a browser given ICE servers gathers from: every interface, the way
+/// the device does (`GATHER_FROM`), so a STUN or TURN server can be reached.
+const EVERY_INTERFACE: &str = "0.0.0.0:0";
+
 /// The browser's peer connection, with the same two negotiated channels the
 /// device creates. Holding it is what keeps the connection open.
 pub struct BrowserPeer {
     connection: Arc<dyn PeerConnection>,
     pub app: BrowserChannel,
     pub term: BrowserChannel,
+}
+
+impl BrowserPeer {
+    /// Which kind of local candidate this browser's nominated pair won on —
+    /// `host`, `srflx`, `prflx` or `relay` — read the same way the device reads
+    /// its own, so a test asserts the path with the code that reports it.
+    pub async fn negotiated_local_candidate_type(&self) -> String {
+        self.negotiated_path().await.local().to_string()
+    }
+
+    /// Whether this browser's nominated pair moves bytes through a TURN
+    /// server — what the device's log line says of the same pair from its end.
+    pub async fn negotiated_path_is_billed(&self) -> bool {
+        self.negotiated_path().await.billed()
+    }
+
+    async fn negotiated_path(&self) -> NegotiatedPath {
+        let report = self
+            .connection
+            .get_stats(std::time::Instant::now(), StatsSelector::None)
+            .await;
+        negotiated_path(&report)
+    }
 }
 
 /// One negotiated channel as the browser holds it: one session's frames,

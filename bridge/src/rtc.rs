@@ -450,10 +450,11 @@ impl PeerConnectionEventHandler for PeerEvents {
     }
 }
 
-/// Say once, when a session's peer starts carrying, which kind of path won:
-/// `host` and `srflx` are direct and free, `relay` is TURN egress somebody
-/// pays for. One line per session is what makes "how often is TURN actually
-/// used" answerable from the logs (spec §Open questions, closed).
+/// Say once, when a session's peer starts carrying, which kind of path won at
+/// each end: `host` and `srflx` are direct and free, `relay` at either end is
+/// TURN egress somebody pays for, and the line says so. One line per session is
+/// what makes "how often is TURN actually used" answerable from the logs (spec
+/// §Open questions, closed).
 ///
 /// It goes to stderr because everything this module says does: the daemon's
 /// log is one stream, and a measurement split off from the errors around it
@@ -470,38 +471,95 @@ async fn report_negotiated_path(
         .get_stats(std::time::Instant::now(), StatsSelector::None)
         .await;
     eprintln!(
-        "rtc: session {session_id} carrying over {} candidates",
+        "rtc: session {session_id} carrying over {}",
         negotiated_path(&report)
     );
 }
 
-/// Which kind of local candidate the nominated pair won on. The pair names the
-/// candidate by the id ICE gave it and the report keys the candidate under a
-/// prefixed form of that same id, so the entry is found by the id it ends
-/// with rather than by a key built from a convention this module does not own.
-fn negotiated_path(report: &RTCStatsReport) -> String {
-    let unknown = || "unknown".to_string();
+/// The path a nominated pair won on, both ends named: the device's own
+/// candidate type and the browser's.
+///
+/// Both, because TURN bills whichever end allocated the relay and the common
+/// billed shape is the browser's — a device on a home box pairs its host
+/// candidate with a browser's relay one. So the line carries the billing fact
+/// itself (`billed`), and nothing above it has to know which side to look at.
+pub(crate) struct NegotiatedPath {
+    local: String,
+    remote: String,
+}
+
+/// The candidate type ICE reports for a relayed (TURN) candidate.
+const RELAY_CANDIDATE: &str = "relay";
+
+/// What a missing pair or candidate reads as: not a type, and never billed.
+const UNKNOWN_CANDIDATE: &str = "unknown";
+
+impl NegotiatedPath {
+    pub(crate) fn new(local: &str, remote: &str) -> Self {
+        NegotiatedPath {
+            local: local.to_string(),
+            remote: remote.to_string(),
+        }
+    }
+
+    /// The device's own candidate type: `host`, `srflx`, `prflx`, `relay`, or
+    /// `unknown`.
+    pub(crate) fn local(&self) -> &str {
+        &self.local
+    }
+
+    /// Whether this pair moves bytes through a TURN server somebody pays for.
+    pub(crate) fn billed(&self) -> bool {
+        self.local == RELAY_CANDIDATE || self.remote == RELAY_CANDIDATE
+    }
+}
+
+impl std::fmt::Display for NegotiatedPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{} candidates", self.local, self.remote)?;
+        if self.billed() {
+            write!(f, " (TURN, billed)")?;
+        }
+        Ok(())
+    }
+}
+
+/// Which kinds of candidate the nominated pair won on, at both ends. The pair
+/// names each candidate by the id ICE gave it and the report keys the
+/// candidate under a prefixed form of that same id, so the entry is found by
+/// the id it ends with rather than by a key built from a convention this
+/// module does not own.
+pub(crate) fn negotiated_path(report: &RTCStatsReport) -> NegotiatedPath {
     let Some(pair) = report.candidate_pairs().find(|pair| pair.nominated) else {
-        return unknown();
+        return NegotiatedPath::new(UNKNOWN_CANDIDATE, UNKNOWN_CANDIDATE);
     };
-    report
-        .iter()
-        .find_map(|entry| match entry {
-            RTCStatsReportEntry::LocalCandidate(local)
-                if local.stats.id.ends_with(&pair.local_candidate_id) =>
+    let (mut local, mut remote) = (None, None);
+    for entry in report.iter() {
+        match entry {
+            RTCStatsReportEntry::LocalCandidate(candidate)
+                if candidate.stats.id.ends_with(&pair.local_candidate_id) =>
             {
-                Some(local.candidate_type.to_string())
+                local = Some(candidate.candidate_type.to_string());
             }
-            _ => None,
-        })
-        .unwrap_or_else(unknown)
+            RTCStatsReportEntry::RemoteCandidate(candidate)
+                if candidate.stats.id.ends_with(&pair.remote_candidate_id) =>
+            {
+                remote = Some(candidate.candidate_type.to_string());
+            }
+            _ => {}
+        }
+    }
+    NegotiatedPath::new(
+        local.as_deref().unwrap_or(UNKNOWN_CANDIDATE),
+        remote.as_deref().unwrap_or(UNKNOWN_CANDIDATE),
+    )
 }
 
 /// One ICE server as the browser fetched it from the api, as this crate takes
 /// one. Tolerant on purpose: Cloudflare answers a credentialed entry and a
 /// device with no TURN key configured answers a bare STUN url, and both are
 /// the same array to everything above the peer.
-fn offered_server(offered: &Value) -> RTCIceServer {
+pub(crate) fn offered_server(offered: &Value) -> RTCIceServer {
     let urls = match offered.get("urls") {
         Some(Value::String(url)) => vec![url.clone()],
         Some(Value::Array(urls)) => urls
@@ -902,5 +960,42 @@ mod peer_transport_tests {
         let one = offered_server(&json!({ "urls": "stun:stun.cloudflare.com:3478" }));
 
         assert_eq!(one.urls, vec!["stun:stun.cloudflare.com:3478".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod negotiated_path_tests {
+    use super::NegotiatedPath;
+
+    /// TURN egress bills whichever end allocated the relay, and the common
+    /// shape is the browser's: a device on a home box pairs its own host
+    /// candidate with the browser's relay one. A log that named only the
+    /// device's end would count exactly that session as free.
+    #[test]
+    fn a_pair_with_a_relay_on_either_end_is_billed() {
+        assert!(NegotiatedPath::new("host", "relay").billed());
+        assert!(NegotiatedPath::new("relay", "host").billed());
+        assert!(NegotiatedPath::new("relay", "relay").billed());
+        assert!(!NegotiatedPath::new("host", "srflx").billed());
+        assert!(!NegotiatedPath::new("unknown", "unknown").billed());
+    }
+
+    /// The line states the billing fact itself, so the ops count greps for a
+    /// phrase the bridge asserts rather than a rule the reader applies to one
+    /// side of the pair.
+    #[test]
+    fn the_log_line_names_both_ends_and_states_the_bill() {
+        assert_eq!(
+            NegotiatedPath::new("host", "relay").to_string(),
+            "host/relay candidates (TURN, billed)"
+        );
+        assert_eq!(
+            NegotiatedPath::new("host", "srflx").to_string(),
+            "host/srflx candidates"
+        );
+        assert_eq!(
+            NegotiatedPath::new("unknown", "unknown").to_string(),
+            "unknown/unknown candidates"
+        );
     }
 }

@@ -46,4 +46,7 @@ tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6.5"
 # wss integration test: self-signed cert + local TLS WebSocket server.
 rcgen = "0.13"
+# The enforcement guards in src/harness read the crate's own modules as syntax
+# trees (patterns, comparisons, impl blocks) rather than as text.
+syn = { version = "2", features = ["full", "visit"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }

@@ -317,6 +317,9 @@ pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
 
 #[cfg(test)]
 mod tests {
+    use syn::punctuated::Punctuated;
+    use syn::visit::Visit;
+
     use super::*;
 
     /// Every provider is reachable and answers for itself — the invariant that
@@ -713,23 +716,45 @@ mod tests {
             );
         }
     }
-    /// The part of a module that ships: everything before its inline test
-    /// module, so scaffolding that drives one carrier on purpose is not read as
-    /// a production dispatch.
-    fn production_source(source: &str) -> &str {
-        let mut consumed = 0;
-        let mut lines = source.lines().peekable();
-        while let Some(line) = lines.next() {
-            let opens_a_test_module = line == "#[cfg(test)]"
-                && lines
-                    .peek()
-                    .is_some_and(|next| next.starts_with("mod ") && next.ends_with(" {"));
-            if opens_a_test_module {
-                return &source[..consumed];
-            }
-            consumed += line.len() + 1;
+
+    /// Whether `attributes` gate their item behind `#[cfg(test)]`, so its
+    /// whole body is test code the guards leave alone.
+    fn is_test_gated(attributes: &[syn::Attribute]) -> bool {
+        attributes.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute
+                    .parse_args::<syn::Ident>()
+                    .is_ok_and(|gate| gate == "test")
+        })
+    }
+
+    /// `items` with every `#[cfg(test)]`-gated module dropped, at any depth,
+    /// so scaffolding that drives one carrier on purpose is not read as a
+    /// production dispatch.
+    fn without_test_gated_modules(items: Vec<syn::Item>) -> Vec<syn::Item> {
+        items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Mod(module) if is_test_gated(&module.attrs) => None,
+                syn::Item::Mod(mut module) => {
+                    module.content = module
+                        .content
+                        .map(|(brace, nested)| (brace, without_test_gated_modules(nested)));
+                    Some(syn::Item::Mod(module))
+                }
+                other => Some(other),
+            })
+            .collect()
+    }
+
+    /// The syntax tree of what ships from `source`: the module as the compiler
+    /// reads it, minus its test-gated modules.
+    fn shipped_syntax_of(source: &str) -> syn::File {
+        let module = syn::parse_file(source).expect("a module the compiler accepts");
+        syn::File {
+            items: without_test_gated_modules(module.items),
+            ..module
         }
-        source
     }
 
     /// The implementation types no module above `harness_for` may name: the
@@ -771,14 +796,41 @@ mod tests {
             .collect()
     }
 
+    /// Collects the types a module's shipped `impl AgentSession for` blocks
+    /// name.
+    #[derive(Default)]
+    struct SessionImplementors {
+        types: Vec<String>,
+    }
+
+    impl<'ast> Visit<'ast> for SessionImplementors {
+        fn visit_item_impl(&mut self, block: &'ast syn::ItemImpl) {
+            let implements_a_session = block.trait_.as_ref().is_some_and(|(_, implemented, _)| {
+                implemented
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "AgentSession")
+            });
+            if let (true, syn::Type::Path(implementor)) = (implements_a_session, &*block.self_ty) {
+                self.types.push(
+                    implementor
+                        .path
+                        .segments
+                        .last()
+                        .expect("a type path has a segment")
+                        .ident
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     /// The session types the harness modules open, read out of every shipped
     /// `impl AgentSession for` under `src/harness` so the guard's ban list is
     /// checked against the modules that own those types rather than against a
     /// second hand-kept copy. `PtySession` lives in `src/pty.rs`, outside the
     /// walk, and stays out of the list.
     fn sessions_opened_by_the_harness_modules() -> Vec<String> {
-        const SESSION_IMPL: &str = "impl AgentSession for ";
-
         let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("harness");
@@ -786,22 +838,13 @@ mod tests {
             .iter()
             .flat_map(|path| {
                 let source = std::fs::read_to_string(path).expect("a readable harness module");
-                production_source(&source)
-                    .lines()
-                    .filter_map(|line| line.split_once(SESSION_IMPL).map(|(_, rest)| rest))
-                    .map(|implementor| {
-                        implementor
-                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                            .next()
-                            .expect("an impl names its type")
-                            .to_string()
-                    })
-                    .collect::<Vec<String>>()
+                let mut implementors = SessionImplementors::default();
+                implementors.visit_file(&shipped_syntax_of(&source));
+                implementors.types
             })
             .collect()
     }
 
-    /// Every entry directly inside `directory`.
     fn entries(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
         std::fs::read_dir(directory)
             .expect("a readable source directory")
@@ -853,187 +896,159 @@ mod tests {
     /// `mod.rs`, or the sibling `<directory>.rs` — places behind
     /// `#[cfg(test)]`.
     fn test_only_modules_declared_for(directory: &std::path::Path) -> Vec<String> {
-        const TEST_GATE: &str = "#[cfg(test)]";
-        const DECLARATION: &str = "mod ";
-
-        let Some(declaring_file) = [directory.join("mod.rs"), directory.with_extension("rs")]
+        [directory.join("mod.rs"), directory.with_extension("rs")]
             .into_iter()
             .find(|candidate| candidate.is_file())
-        else {
-            return Vec::new();
-        };
-        let source = std::fs::read_to_string(declaring_file).expect("a readable module file");
-        let mut gated = Vec::new();
-        let mut lines = source.lines().peekable();
-        while let Some(line) = lines.next() {
-            if line.trim() != TEST_GATE {
-                continue;
-            }
-            let declared = lines
-                .peek()
-                .and_then(|next| next.trim().strip_suffix(';'))
-                .and_then(|declaration| declaration.rsplit_once(DECLARATION))
-                .map(|(_, module)| module.to_string());
-            gated.extend(declared);
-        }
-        gated
+            .map(|declaring_file| {
+                std::fs::read_to_string(declaring_file).expect("a readable module file")
+            })
+            .map_or_else(Vec::new, |source| test_only_modules_in(&source))
     }
 
-    const PROVIDER_PATH: &str = "AgentProvider::";
-
-    fn is_identifier_char(character: char) -> bool {
-        character.is_alphanumeric() || character == '_'
-    }
-
-    /// Whether `character` can sit inside a pattern between its brackets: an
-    /// identifier, a binding, an alternation, or the whitespace around them.
-    fn is_pattern_filler(character: char) -> bool {
-        is_identifier_char(character)
-            || character.is_whitespace()
-            || matches!(character, ':' | '|' | '&' | '@')
-    }
-
-    /// The variant a provider mention at `mention` names, and the code that
-    /// follows the pattern the mention sits in — the rest of its tuple, struct
-    /// or slice and the brackets that close them — so a mention anywhere in an
-    /// arm's pattern lands on the arm's `=>`.
-    fn variant_and_continuation(shipped: &str, mention: usize) -> (&str, &str) {
-        let variant_onward = &shipped[mention + PROVIDER_PATH.len()..];
-        let after_variant = variant_onward.trim_start_matches(is_identifier_char);
-        let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
-        (
-            variant,
-            &after_variant[pattern_remainder_length(after_variant)..],
-        )
-    }
-
-    /// How many bytes of `after_variant` still belong to the pattern the
-    /// mention sits in. Brackets opened after the mention are consumed whole;
-    /// a bracket closing an enclosing group is consumed too, but a comma past
-    /// that point separates arms or arguments and ends the pattern, as does a
-    /// brace opened at the pattern's own level.
-    fn pattern_remainder_length(after_variant: &str) -> usize {
-        let mut depth = 0_i32;
-        let mut characters = after_variant.char_indices().peekable();
-        while let Some((index, character)) = characters.next() {
-            match character {
-                filler if is_pattern_filler(filler) => {}
-                '.' if characters.peek().is_some_and(|(_, next)| *next == '.') => {
-                    characters.next();
+    /// The out-of-line modules (`mod name;`) that `source` declares behind
+    /// `#[cfg(test)]`. An inline gated module carries its own body and
+    /// declares no file.
+    fn test_only_modules_in(source: &str) -> Vec<String> {
+        syn::parse_file(source)
+            .expect("a module the compiler accepts")
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Mod(module)
+                    if module.content.is_none() && is_test_gated(&module.attrs) =>
+                {
+                    Some(module.ident.to_string())
                 }
-                ',' if depth >= 0 => {}
-                '(' | '[' => depth += 1,
-                '{' if depth > 0 => depth += 1,
-                ')' | ']' | '}' => depth -= 1,
-                _ => return index,
-            }
-        }
-        after_variant.len()
+                _ => None,
+            })
+            .collect()
     }
 
-    /// Whether the code before a provider mention places it in an arm's
-    /// pattern rather than its body: walking back over the rest of the pattern
-    /// reaches the arm's start before it reaches a `=>`.
-    fn sits_in_an_arm_pattern(preceding: &str) -> bool {
-        let mut depth = 0_i32;
-        let mut remaining = preceding;
-        loop {
-            if remaining.ends_with("=>") {
-                return false;
-            }
-            let Some(character) = remaining.chars().next_back() else {
-                return true;
-            };
-            remaining = &remaining[..remaining.len() - character.len_utf8()];
-            match character {
-                filler if is_pattern_filler(filler) || filler == '.' => {}
-                ',' if depth > 0 => {}
-                ')' | ']' | '}' => depth += 1,
-                '(' | '[' | '{' if depth > 0 => depth -= 1,
-                '(' | '[' => {}
-                '{' if remaining.trim_end().ends_with("=>") => return false,
-                '{' if !names_a_struct(remaining) => return true,
-                '{' => {}
-                _ => return true,
-            }
+    const PROVIDER_ENUM: &str = "AgentProvider";
+
+    /// The variant `path` names when it reaches into `AgentProvider`, whether
+    /// written bare or through the modules above it.
+    fn provider_variant(path: &syn::Path) -> Option<String> {
+        let segments: Vec<&syn::PathSegment> = path.segments.iter().collect();
+        segments
+            .windows(2)
+            .find(|pair| pair[0].ident == PROVIDER_ENUM)
+            .map(|pair| pair[1].ident.to_string())
+    }
+
+    /// The path a pattern matches by, when it matches by one: a bare path, or
+    /// the struct or tuple variant it destructures.
+    fn pattern_path(pattern: &syn::Pat) -> Option<&syn::Path> {
+        match pattern {
+            syn::Pat::Path(path) => Some(&path.path),
+            syn::Pat::Struct(fields) => Some(&fields.path),
+            syn::Pat::TupleStruct(elements) => Some(&elements.path),
+            _ => None,
         }
     }
 
-    /// Whether the code ending at a `{` names a struct or enum variant before
-    /// it — an upper-case path — rather than the scrutinee of a `match` or the
-    /// condition of a block.
-    fn names_a_struct(before_brace: &str) -> bool {
-        let path = before_brace.trim_end();
-        let path_start = path.trim_end_matches(|c: char| is_identifier_char(c) || c == ':');
-        path[path_start.len()..]
-            .split("::")
-            .next()
-            .and_then(|segment| segment.chars().next())
-            .is_some_and(char::is_uppercase)
+    /// The arguments of a `matches!` call: the scrutinee, the pattern it is
+    /// tested against, and whatever guard and trailing comma follow.
+    struct MatchesArguments {
+        pattern: syn::Pat,
     }
 
-    /// Whether the mention sits in the pattern of the nearest `let` — between
-    /// the keyword and its `=` — which is where `if let`, `while let` and
-    /// let-else all place the value they dispatch on.
-    fn sits_in_a_let_pattern(preceding: &str) -> bool {
-        const BINDING: &str = "let ";
-
-        preceding
-            .rfind(BINDING)
-            .is_some_and(|binding| !preceding[binding + BINDING.len()..].contains(['=', ';']))
+    impl syn::parse::Parse for MatchesArguments {
+        fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+            let _scrutinee: syn::Expr = input.parse()?;
+            let _separator: syn::Token![,] = input.parse()?;
+            let pattern = syn::Pat::parse_multi_with_leading_vert(input)?;
+            if input.peek(syn::Token![if]) {
+                let _guard_keyword: syn::Token![if] = input.parse()?;
+                let _guard: syn::Expr = input.parse()?;
+            }
+            let _trailing_comma: Option<syn::Token![,]> = input.parse()?;
+            Ok(Self { pattern })
+        }
     }
 
-    /// Whether the mention sits in the pattern of a still-open `matches!` —
-    /// after its first comma — wherever rustfmt has broken the call's lines.
-    fn sits_in_a_matches_pattern(preceding: &str) -> bool {
-        const MACRO: &str = "matches!(";
-
-        preceding.rfind(MACRO).is_some_and(|call| {
-            let arguments = &preceding[call + MACRO.len()..];
-            let still_open = arguments
-                .chars()
-                .try_fold(1usize, |depth, character| match character {
-                    '(' => Some(depth + 1),
-                    ')' => (depth > 1).then_some(depth - 1),
-                    _ => Some(depth),
-                })
-                .is_some();
-            still_open && arguments.contains(',')
-        })
+    /// The expressions a macro is called with, for the macros that take them —
+    /// `assert!`, `format!` and their kin — so a dispatch written inside one is
+    /// still walked. A macro fed something else (`thread_local!`,
+    /// `macro_rules!`) has no expression to walk.
+    fn expression_arguments(
+        invocation: &syn::Macro,
+    ) -> Option<Punctuated<syn::Expr, syn::Token![,]>> {
+        invocation
+            .parse_body_with(Punctuated::parse_terminated)
+            .ok()
     }
 
-    /// Whether the provider mention at `mention` tests it for equality or binds
-    /// it as a pattern rather than matching on it — the same second dispatch
-    /// worn as an `if`, a `while` or a `let`.
-    fn compares_against_a_provider(shipped: &str, mention: usize) -> bool {
-        let preceding = &shipped[..mention];
-        let (_, continuation) = variant_and_continuation(shipped, mention);
-        let compared_by_operator = preceding.trim_end().ends_with("==")
-            || preceding.trim_end().ends_with("!=")
-            || continuation.starts_with("==")
-            || continuation.starts_with("!=");
-        compared_by_operator
-            || sits_in_a_let_pattern(preceding)
-            || sits_in_a_matches_pattern(preceding)
+    /// Walks a module's shipped items for a second provider dispatch: a pattern
+    /// naming a provider variant wherever patterns go (match arms with or
+    /// without guards, `if let`, `while let`, let-else, `matches!`), an
+    /// equality test against one, or a mention of a concrete harness or
+    /// session type. The first one found is kept.
+    #[derive(Default)]
+    struct ProviderDispatchFinder {
+        offence: Option<String>,
+    }
+
+    impl ProviderDispatchFinder {
+        fn record(&mut self, offence: String) {
+            self.offence.get_or_insert(offence);
+        }
+    }
+
+    impl<'ast> Visit<'ast> for ProviderDispatchFinder {
+        fn visit_pat(&mut self, pattern: &'ast syn::Pat) {
+            if let Some(variant) = pattern_path(pattern).and_then(provider_variant) {
+                self.record(format!("matches on {PROVIDER_ENUM}::{variant}"));
+            }
+            syn::visit::visit_pat(self, pattern);
+        }
+
+        fn visit_expr_binary(&mut self, comparison: &'ast syn::ExprBinary) {
+            let tests_equality = matches!(comparison.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_));
+            let against_a_variant = [&*comparison.left, &*comparison.right]
+                .into_iter()
+                .find_map(|operand| match operand {
+                    syn::Expr::Path(path) => provider_variant(&path.path),
+                    _ => None,
+                });
+            if let (true, Some(variant)) = (tests_equality, against_a_variant) {
+                self.record(format!("compares against {PROVIDER_ENUM}::{variant}"));
+            }
+            syn::visit::visit_expr_binary(self, comparison);
+        }
+
+        fn visit_macro(&mut self, invocation: &'ast syn::Macro) {
+            let mut inside_the_call = ProviderDispatchFinder::default();
+            if invocation.path.is_ident("matches") {
+                let tested: MatchesArguments = invocation
+                    .parse_body()
+                    .expect("matches! takes a scrutinee and a pattern");
+                inside_the_call.visit_pat(&tested.pattern);
+            } else if let Some(arguments) = expression_arguments(invocation) {
+                arguments
+                    .iter()
+                    .for_each(|argument| inside_the_call.visit_expr(argument));
+            }
+            if let Some(offence) = inside_the_call.offence {
+                self.record(offence);
+            }
+        }
+
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if let Some(harness_type) = CONCRETE_HARNESS_TYPES
+                .into_iter()
+                .find(|harness_type| ident == harness_type)
+            {
+                self.record(format!("names {harness_type}"));
+            }
+        }
     }
 
     /// What in `source` claims a provider dispatch of its own, if anything.
     fn provider_dispatch_offence(source: &str) -> Option<String> {
-        let shipped = production_source(source);
-        for (mention, _) in shipped.match_indices(PROVIDER_PATH) {
-            let (variant, arm_head) = variant_and_continuation(shipped, mention);
-            if arm_head.starts_with("=>") && sits_in_an_arm_pattern(&shipped[..mention]) {
-                return Some(format!("matches on {PROVIDER_PATH}{variant}"));
-            }
-            if compares_against_a_provider(shipped, mention) {
-                return Some(format!("compares against {PROVIDER_PATH}{variant}"));
-            }
-        }
-
-        CONCRETE_HARNESS_TYPES
-            .into_iter()
-            .find(|harness_type| shipped.contains(harness_type))
-            .map(|harness_type| format!("names {harness_type}"))
+        let mut finder = ProviderDispatchFinder::default();
+        finder.visit_file(&shipped_syntax_of(source));
+        finder.offence
     }
 
     /// Every module that sits above `harness_for`: the crate's top-level
@@ -1092,13 +1107,18 @@ mod tests {
     /// than a detector that quietly stopped matching.
     #[test]
     fn a_second_provider_dispatch_is_caught() {
-        const SECOND_DISPATCHES: [&str; 16] = [
+        const SECOND_DISPATCHES: [&str; 20] = [
             "match (provider, resume) {\n    (AgentProvider::Codex, true) => launch(),\n}",
             "match agent {\n    Agent { provider: AgentProvider::Codex, .. } => launch(),\n}",
             "match providers {\n    [AgentProvider::Codex, ..] => launch(),\n}",
             "match provider {\n    AgentProvider::Codex => launch(),\n}",
             "match named {\n    Some(AgentProvider::Codex) => launch(),\n}",
             "match provider {\n    AgentProvider::Codex if resume => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if attempts > 1 => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if resume.is_some() => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if !resume => launch(),\n}",
+            "match kind {\n    Kind::Default => match DEFAULT_PROVIDER {\n        \
+             AgentProvider::Codex => launch(),\n    },\n}",
             "match provider {\n    AgentProvider::CodexAppServer\n        => launch(),\n}",
             "if provider == AgentProvider::Codex { launch() }",
             "if provider != AgentProvider::Claude { launch() }",
@@ -1114,7 +1134,7 @@ mod tests {
 
         for source in SECOND_DISPATCHES {
             assert!(
-                provider_dispatch_offence(source).is_some(),
+                provider_dispatch_offence(&inside_a_function(source)).is_some(),
                 "a second dispatch went unnoticed: {source}"
             );
         }
@@ -1123,39 +1143,71 @@ mod tests {
                               harness_for(provider).open_session(request)?;\nmatch named {\n    \
                               Some(agent) if AgentProvider::from_wire(agent).is_some() => \
                               Err(already_named()),\n}";
-        assert_eq!(provider_dispatch_offence(single_dispatch), None);
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(single_dispatch)),
+            None
+        );
 
         let compared_only_by_value = "if choice.model == catalogued.model { keep() }";
-        assert_eq!(provider_dispatch_offence(compared_only_by_value), None);
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(compared_only_by_value)),
+            None
+        );
 
         let constructed_inside_a_binding = "if let Some(found) = catalog(AgentProvider::Claude) \
                                             { keep() }";
         assert_eq!(
-            provider_dispatch_offence(constructed_inside_a_binding),
+            provider_dispatch_offence(&inside_a_function(constructed_inside_a_binding)),
             None
         );
 
         let checked_after_an_earlier_matches = "let quiet = matches!(status, Idle);\nlet \
                                                 opened = harness_for(AgentProvider::Codex);";
         assert_eq!(
-            provider_dispatch_offence(checked_after_an_earlier_matches),
+            provider_dispatch_offence(&inside_a_function(checked_after_an_earlier_matches)),
             None
         );
 
         let constructed_in_an_arm_body = "match found {\n    Ok(_) => AgentProvider::Claude,\n    \
                                          Err(_) => AgentProvider::Codex,\n}";
-        assert_eq!(provider_dispatch_offence(constructed_in_an_arm_body), None);
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(constructed_in_an_arm_body)),
+            None
+        );
 
         let struct_built_in_an_arm_body = "match found {\n    Some(model) => ModelChoice { \
                                           provider: AgentProvider::Codex, model },\n    None => \
                                           fallback(),\n}";
-        assert_eq!(provider_dispatch_offence(struct_built_in_an_arm_body), None);
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(struct_built_in_an_arm_body)),
+            None
+        );
 
         let dispatch_only_in_tests = format!(
             "pub fn run() {{}}\n#[cfg(test)]\nmod tests {{\n    {}\n}}\n",
-            "let harness = ClaudeHarness;"
+            inside_a_function("let harness = ClaudeHarness;")
         );
         assert_eq!(provider_dispatch_offence(&dispatch_only_in_tests), None);
+    }
+
+    /// A statement or expression as it would sit in a shipped function, so a
+    /// fixture reads as the compiler would read it.
+    fn inside_a_function(body: &str) -> String {
+        format!("fn shipped() {{\n{body}\n}}\n")
+    }
+
+    /// Only an out-of-line module behind `#[cfg(test)]` names a file the walk
+    /// must skip; an inline gated module and an ungated declaration name none.
+    #[test]
+    fn test_only_modules_are_the_gated_out_of_line_declarations() {
+        let declaring_file =
+            "mod session;\n#[cfg(test)]\nmod tests;\n#[cfg(test)]\npub(crate) mod \
+                              stream_fixtures;\n#[cfg(test)]\nmod inline_tests {\n    fn \
+                              scaffold() {}\n}\n";
+        assert_eq!(
+            test_only_modules_in(declaring_file),
+            ["tests", "stream_fixtures"]
+        );
     }
 
     /// The walk that finds opened sessions reads every shipped harness module

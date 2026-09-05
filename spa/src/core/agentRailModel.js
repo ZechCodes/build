@@ -41,6 +41,24 @@ export function agentHasTerminal(agent) {
   return !agent || agent.has_terminal !== false;
 }
 
+/** The state of an agent this client has asked for a session for and not been
+ *  told about yet.
+ *
+ *  The daemon answers a start as soon as the turn is durable and opens the
+ *  harness behind that answer, so the reply says nothing about a session. The
+ *  row wears this until the entity's own push says the session is live; it is
+ *  the client's word, and no payload ever carries it. */
+export const AGENT_STARTING = "starting";
+
+/** Whether this agent has a session running right now — the one answer to a
+ *  start, and the only one the daemon speaks. */
+export const agentSessionIsLive = (agent) => !!agent && agent.state === "live";
+
+/** Whether this agent has a session or is getting one. The question the
+ *  composer asks before waking an agent, so a message sent behind a start that
+ *  has not been answered does not open a second harness. */
+export const agentIsUp = (agent) => agentSessionIsLive(agent) || (!!agent && agent.state === AGENT_STARTING);
+
 /** Whether the turn this agent is running can be stopped and re-steered right
  *  now — which is two things at once, and the composer offers the interrupting
  *  send only where both hold: there is a turn in flight, and the child running
@@ -83,6 +101,7 @@ export function bubbleTip(agent) {
     return reason ? `${title} — ${reason}` : `${title} — ${agent.unread_count} unread`;
   }
   if (agent && agent.working) return `${title} — working`;
+  if (agent && agent.state === AGENT_STARTING) return `${title} — starting…`;
   return title;
 }
 
@@ -124,7 +143,8 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
     active: agent.id === selectedId,
     unread: agent.unread_count || 0,
     working: !!agent.working,
-    live: agent.state === "live",
+    live: agentSessionIsLive(agent),
+    starting: agent.state === AGENT_STARTING,
   }));
   // Issues carry exactly one agent session: implementing one hands the work to
   // a new agent on a branch, which is a different work item entirely.

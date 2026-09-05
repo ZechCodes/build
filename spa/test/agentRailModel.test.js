@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import {
   AGENT_PATTERN_COUNT,
+  AGENT_STARTING,
   agentCanInterrupt,
+  agentIsUp,
+  agentSessionIsLive,
   agentPattern,
   agentTitle,
   aheadBehindText,
@@ -57,6 +60,41 @@ describe("who an agent is", () => {
     expect(bubbleTip(agent({ unread_count: 3, unread_reason: "done" })))
       .toBe("Claude Code 1 — The agent finished — review the work");
     expect(bubbleTip(agent())).toBe("Claude Code 1");
+  });
+});
+
+// The bridge answers a start as soon as the turn is durable and spawns the
+// harness behind that answer, so the reply says nothing about a session. The
+// row wears `starting` meanwhile, and the entity's own answer is what takes it
+// off.
+describe("an agent whose start has been asked for", () => {
+  it("is up while it is starting, so a message behind the press starts nothing twice", () => {
+    expect(agentIsUp(agent({ state: AGENT_STARTING }))).toBe(true);
+    expect(agentIsUp(agent({ state: "live" }))).toBe(true);
+    expect(agentIsUp(agent({ state: "idle" }))).toBe(false);
+    expect(agentIsUp(null)).toBe(false);
+  });
+
+  it("is answered only by a live session", () => {
+    expect(agentSessionIsLive(agent({ state: "live" }))).toBe(true);
+    expect(agentSessionIsLive(agent({ state: AGENT_STARTING }))).toBe(false);
+    expect(agentSessionIsLive(agent({ state: "ended" }))).toBe(false);
+    expect(agentSessionIsLive(null)).toBe(false);
+  });
+
+  it("says so on its bubble", () => {
+    const bubbles = railBubbles({ agents: [agent({ state: AGENT_STARTING })], selectedId: null, kind: "branch" });
+    expect(bubbles[0].starting).toBe(true);
+    expect(bubbles[0].live).toBe(false);
+    expect(bubbleTip(agent({ state: AGENT_STARTING }))).toBe("Claude Code 1 — starting…");
+    expect(railBubbles({ agents: [agent()], selectedId: null, kind: "branch" })[0].starting).toBe(false);
+  });
+
+  // Unread wins over starting the way it wins over working: an agent that asked
+  // something before its session dropped is still asking.
+  it("still says what it is waiting on", () => {
+    expect(bubbleTip(agent({ state: AGENT_STARTING, unread_count: 2, unread_reason: "blocked" })))
+      .toBe("Claude Code 1 — Blocked — the agent needs you");
   });
 });
 

@@ -849,7 +849,51 @@ describe("the conversation panel", () => {
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-1" });
   });
 
-  it("marks the agent live the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
+  // The daemon answers a start before the harness exists, so the reply cannot
+  // say whether one came up. The bubble wears `starting` from the press until
+  // the entity's own answer says the session is live.
+  it("wears starting from the press until the entity says the session is live", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+
+    await mountAgentTab.mock.calls[0][2].onStart();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+    expect(bubbles()[0].title).toContain("starting…");
+
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(false);
+  });
+
+  // A start that names no agent is still a start: the entity names the agent it
+  // opened on its next answer, and the rail reads it there.
+  it("carries on when the start answers without naming the agent it opened", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        return {};
+      }
+      return answering(method, params);
+    });
+
+    await mountAgentTab.mock.calls[0][2].onStart();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(bubbles()[0].dataset.agent).toBe("ag-1");
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+  });
+
+  it("marks the agent starting the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();

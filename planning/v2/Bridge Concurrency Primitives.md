@@ -1153,9 +1153,10 @@ settled differently, and why:
   in `dispatch_frame` alone: the MCP control socket's drain and both
   synchronous test twins skipped it, so a socket dispatch that failed in its
   apply phase — after `dispatch_to_run` had queued the branch agent's first
-  turn — spawned a harness for a run with no record. `dispatch_deferring` and
-  `apply_deferred` own it now, through one `drop_turns_queued_since`, and every
-  drain inherits it. `PendingAgentTurn.survives_refusal` is the exception the
+  turn — spawned a harness for a run with no record. `dispatch_deferring`,
+  `apply_deferred` and the router's own `router_deferring` own it now, through
+  one `drop_turns_queued_since`, and every drain inherits it — the socket
+  answers a router tool through the same twin its tests do. `PendingAgentTurn.survives_refusal` is the exception the
   rule needs: a recovery is written down and started and THEN its verb refuses
   its caller to say so, so that turn outlives the refusal while everything
   else's is dropped.

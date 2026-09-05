@@ -4476,11 +4476,8 @@ impl AppState {
                                 // checkout — hands that work back here, exactly
                                 // as a browser frame does, and it runs with the
                                 // guard released.
-                                let (answered, deferred) = {
-                                    let mut app = timer.lock(&state);
-                                    let answered = app.on_router_mcp_action(&capture_id, action);
-                                    (answered, app.deferred_work.take())
-                                };
+                                let (answered, deferred) =
+                                    timer.lock(&state).router_deferring(&capture_id, action);
                                 let answered = match deferred {
                                     Some(deferred) => {
                                         // Minutes of git belong on a blocking
@@ -5818,14 +5815,31 @@ impl AppState {
     /// does with the guard released.
     #[cfg(test)]
     fn router_action(&mut self, capture_id: &str, action: BridgeAction) -> Result<Value, String> {
-        let answered = self.on_router_mcp_action(capture_id, action);
-        match self.deferred_work.take() {
+        let (answered, deferred) = self.router_deferring(capture_id, action);
+        match deferred {
             Some(deferred) => {
                 let done = deferred.run();
                 self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
             }
             None => answered,
         }
+    }
+
+    /// One router tool, without draining: the router's twin of
+    /// [`AppState::dispatch_deferring`]. A tool whose git must not run under
+    /// the app mutex hands that work back the same way a verb does, and a tool
+    /// that refused leaves the same nothing behind it.
+    fn router_deferring(
+        &mut self,
+        capture_id: &str,
+        action: BridgeAction,
+    ) -> (Result<Value, String>, Option<DeferredWork>) {
+        let queued_before = self.pending_agent_turns.len();
+        let answered = self.on_router_mcp_action(capture_id, action);
+        if answered.is_err() {
+            self.drop_turns_queued_since(queued_before);
+        }
+        (answered, self.deferred_work.take())
     }
 
     /// Dispatch without draining: a verb that handed its git work to
@@ -46115,6 +46129,32 @@ mod tests {
         assert!(
             state.pending_agent_turns.is_empty(),
             "joining a run left a turn queued for a dispatch that failed: {:?}",
+            queued_owners(&state)
+        );
+
+        // And the same arm reached over the socket, which answers a router tool
+        // without a deferral to apply and so has to drop the turn itself.
+        state.dispatch_fault = None;
+        adopted_run(&mut state, &repo, dir.path(), "feature-elsewhere");
+        let (second_capture, _) = captured(&mut state, "and this too");
+        state.pending_agent_turns.clear();
+        state.dispatch_fault = Some(BranchDispatchStep::Settle);
+
+        let routed = state
+            .router_action(
+                &second_capture,
+                BridgeAction::DispatchBranch {
+                    project_id,
+                    branch: Some("feature-elsewhere".to_string()),
+                    instruction: "one more thing".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap_err();
+        assert!(routed.contains("Settle"), "{routed}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the router's join left a turn queued for a dispatch that failed: {:?}",
             queued_owners(&state)
         );
     }

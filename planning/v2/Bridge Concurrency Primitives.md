@@ -1264,7 +1264,14 @@ build settled differently, and why:
   cannot reach it. `DiscardCheckout::perform` cannot fail, so reaching
   `RunDeleted::settle` is what says the delete is happening; a crash in between
   leaves the record for boot to reload and the vanished-run sweep to archive,
-  the story every other reservation already has.
+  the story every other reservation already has. The one thing that can still
+  refuse there is the store, and a refused `delete_run` puts the `ActiveRun`
+  the git phase carried back under its id before answering with the error:
+  the record stands, so the card stands (its checkout gone, which the
+  vanished-run sweep archives), and the delete is retried like any other
+  failed write. Dropping the run on that path cleared the card with the
+  record intact, which a restart then brought back
+  (`a_delete_the_store_refuses_puts_the_run_back_on_the_board`).
 - **The `Orchestrator` rides in the arms that prune with it.**
   `DiscardedCheckout::Removed` and `Pruned` carry `{ project, worktree }`;
   `Kept` carries nothing, because there is a discard with no orchestrator to
@@ -1285,7 +1292,11 @@ build settled differently, and why:
   `bounded_git_fetch`. Passing every settlement a verdict only one of them
   reads hid which verb needs a pre-removal question, and would have charged a
   plan-less run carrying stage progress a 30 s-bounded fetch per stage for an
-  answer it discards.
+  answer it discards. The trait is the whole cross-module surface:
+  `RunAbandoned`, `RunDeleted`, `StagePublicationQuery` and
+  `StagePublications` are private to `app.rs`, built and boxed there, and
+  `lifecycle::DiscardCheckout` holds a `Box<dyn DiscardSettlement>` and
+  nothing narrower.
 - **`run.release` builds no job, as declared.** Re-read against the code: a
   store delete, a map remove, `retire_agent_tabs` (receipts dropped — the kill
   is already a thread's) and `rescan_external_worktrees` (already a spawn).
@@ -1326,6 +1337,14 @@ build settled differently, and why:
   every project epilogue. The four mutating verbs pass what their own git read
   or wrote; `project.list` reads it at its call site, where it is visible — the
   one remaining project-family read under the mutex, argued in the audit below.
+- **The git subprocess helpers live in `worktree.rs`.** `git_in`,
+  `git_stdout`, `git_remote_origin`, `git_default_branch` and `remotes_match`
+  sit beside `bounded_git_fetch`, `pub(crate)`, and the mutations import them
+  from there. They had been widened in `app.rs` for `lifecycle.rs` to reach,
+  which made the state module the home of five functions that read nothing
+  from it and gave `lifecycle.rs` a dependency on `app.rs` beyond the
+  epilogues. `app.rs` exports `AppState`, the epilogues and the settlement
+  trait, which is the surface this document declares.
 - **`defer_lifecycle_holding` is the second reservation door.** `run.abandon`
   and `run.delete` take the run out of the registry between reserving the row
   and building the job, and a refusal in between would have left the run

@@ -237,7 +237,9 @@ pub async fn ensure_paired(
     let owner = poll_until_approved(client, api_url, &stored.device_id, poll_interval).await?;
     stored.approved = true;
     identity::save(identity_path, &stored).map_err(|e| PairingError::Identity(e.to_string()))?;
-    eprintln!("  Device approved (owner {owner}); connecting to the relay…");
+    // What happens next is the caller's business — `serve` connects to the
+    // relay, `pair` exits — so pairing reports only the pairing it did.
+    eprintln!("  Device approved (owner {owner})");
     Ok(stored)
 }
 

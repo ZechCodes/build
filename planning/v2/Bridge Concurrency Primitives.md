@@ -882,7 +882,13 @@ the sketch, each argued where it appears:
 
 `amend_external_scan` does not restamp `scanned_at`: an edit knows about one
 checkout and the rest of the list is exactly as old as it was, so the
-reconciling scan is not pushed back an interval.
+reconciling scan is not pushed back an interval. Its closure answers whether it
+changed the list, and only a change supersedes the scan and notes the board: a
+checkout bound to a run is excluded from the scan, so `note_worktree_gone` for
+one — `run.finish`'s failure branch, the finish epilogue — removes nothing,
+and an amendment that removed nothing must not drop the fresh list a running
+scan is about to land (`a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone`,
+`re_noting_an_unchanged_checkout_leaves_the_running_scan_alone`).
 
 - **Boundary** `bridge/src/app.rs`, beside `DiffCacheKey`: between a poll surface
   and the git work its numbers come from. Three typed reads are the only way a

@@ -4209,18 +4209,26 @@ impl AppState {
     /// scan rather than emptying it, so the very next board poll shows it.
     fn note_worktree_appeared(&mut self, project_id: &str, worktree: ExternalWorktree) {
         self.amend_external_scan(project_id, |worktrees| {
-            worktrees.retain(|known| known.path != worktree.path);
+            let replaced = worktrees
+                .iter()
+                .position(|known| known.path == worktree.path)
+                .map(|index| worktrees.remove(index));
+            let changed = replaced.as_ref() != Some(&worktree);
             worktrees.push(worktree);
             crate::worktree::sort_checkouts(worktrees);
+            changed
         });
     }
 
     /// A checkout that is gone, or that a run has taken ownership of: it leaves
-    /// the last scan, which is what the rail lists as unbound.
+    /// the last scan, which is what the rail lists as unbound. A checkout bound
+    /// to a run was never in the list, so this is routinely a no-op.
     fn note_worktree_gone(&mut self, project_id: &str, path: &std::path::Path) {
         let canonical = Self::canonical_root(path);
         self.amend_external_scan(project_id, |worktrees| {
+            let before = worktrees.len();
             worktrees.retain(|known| known.path != canonical);
+            before != worktrees.len()
         });
     }
 
@@ -4230,18 +4238,21 @@ impl AppState {
     /// project that has never been scanned is left alone, and so is the scan it
     /// has running: there is nothing here that scan is out of date about, and
     /// its first list is what shows the checkout.
+    ///
+    /// `amend` answers whether it changed the list. An amendment that changed
+    /// nothing is not an edit: it neither overtakes the running scan nor
+    /// tells the browser about a board that is as it was.
     fn amend_external_scan(
         &mut self,
         project_id: &str,
-        amend: impl FnOnce(&mut Vec<ExternalWorktree>),
+        amend: impl FnOnce(&mut Vec<ExternalWorktree>) -> bool,
     ) {
         let amended = self
             .project_mut(project_id)
             .and_then(|project| project.external_scan.as_mut())
             // The stamp is not touched: this edit knows about one checkout, and
             // the rest of the list is exactly as old as it was.
-            .map(|cache| amend(&mut cache.worktrees))
-            .is_some();
+            .is_some_and(|cache| amend(&mut cache.worktrees));
         if !amended {
             return;
         }
@@ -46100,6 +46111,65 @@ mod tests {
         assert!(
             !state.changes.has_pending(),
             "the create pushed an invalidation for an edit it did not make"
+        );
+    }
+
+    /// A checkout bound to a run is excluded from the scan, so removing it
+    /// from the list is routinely a no-op — `run.finish`'s failure branch and
+    /// the finish epilogue both reach here with a path the list never held.
+    /// A removal that removed nothing neither overtakes the scan in flight
+    /// (whose whole fresh list would be dropped on landing) nor tells every
+    /// browser to refetch a board that did not change.
+    #[test]
+    fn a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let scan = DiffCacheKey::ExternalScan(project_id.clone());
+        state.diff_refreshes_in_flight.insert(scan.clone());
+        state.changes.flush();
+
+        state.note_worktree_gone(&project_id, &dir.path().join("never-in-the-list"));
+
+        assert!(
+            !state.diff_refreshes_superseded.contains(&scan),
+            "a removal that removed nothing superseded the running scan"
+        );
+        assert!(
+            !state.changes.has_pending(),
+            "a removal that removed nothing pushed an invalidation"
+        );
+        assert_eq!(
+            state.external_scan_of(&project_id).unwrap().worktrees.len(),
+            1,
+            "the removal touched a checkout it was not asked about"
+        );
+    }
+
+    /// The mirror for an appearance: describing the checkout the list already
+    /// holds, unchanged, is not an edit either.
+    #[test]
+    fn re_noting_an_unchanged_checkout_leaves_the_running_scan_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
+        let known = state.scan_external_worktrees_now(&project_id).unwrap()[0].clone();
+        let scan = DiffCacheKey::ExternalScan(project_id.clone());
+        state.diff_refreshes_in_flight.insert(scan.clone());
+        state.changes.flush();
+
+        state.note_worktree_appeared(&project_id, known);
+
+        assert!(
+            !state.diff_refreshes_superseded.contains(&scan),
+            "re-noting an unchanged checkout superseded the running scan"
+        );
+        assert!(
+            !state.changes.has_pending(),
+            "re-noting an unchanged checkout pushed an invalidation"
         );
     }
 

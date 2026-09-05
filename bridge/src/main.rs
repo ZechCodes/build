@@ -143,8 +143,16 @@ async fn serve() {
     let relay_url = cfg.relay_url.clone();
     // Canonical from here on: every checkout id is minted from a canonical
     // path, and the row that stands for a checkout before `git worktree add`
-    // has made it hashes the path it is about to have.
-    let _ = std::fs::create_dir_all(&cfg.worktrees);
+    // has made it hashes the path it is about to have. A root that cannot be
+    // made is fatal rather than best-effort: canonicalization falls back to the
+    // path as given, so the ids the rows carry would never match the ids the
+    // checkouts settle under, and no lifecycle verb could be served.
+    std::fs::create_dir_all(&cfg.worktrees).unwrap_or_else(|error| {
+        panic!(
+            "the worktrees root {} cannot be created: {error}",
+            cfg.worktrees.display()
+        )
+    });
     let worktrees = build_bridge::worktree::canonical_root(&cfg.worktrees)
         .to_string_lossy()
         .into_owned();

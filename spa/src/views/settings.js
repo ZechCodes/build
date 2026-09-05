@@ -119,7 +119,7 @@ export async function renderSettings() {
   await refresh();
   const callRpc = (method, params) => App.call(method, params);
   await mountDefaultHarness($("#root"), { callRpc });
-  await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION, settings: await callRpc("settings.get") });
+  await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);

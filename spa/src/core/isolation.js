@@ -115,10 +115,14 @@ const lockLine = (available) => {
 
 /** Wire a select to one place a chosen isolation is sent — `ACCOUNT_ISOLATION`
  *  or `projectIsolationTarget(project)` — and to the payload that place answers
- *  with. The control paints from what the caller already read, saves the choice
- *  through the target, and repaints from the bridge's answer, so it shows what
- *  the bridge holds rather than what was merely asked for. A refusal is the
- *  bridge's own sentence, and the control goes back to the answer it last had. */
+ *  with. A caller holding the payload already, as a project surface holds its
+ *  row, hands it over; a caller holding none leaves it out and the control reads
+ *  the account setting itself. Either way the control owns that read: a bridge
+ *  that will not answer costs this panel its select and nothing else on the
+ *  page. It saves the choice through the target and repaints from the bridge's
+ *  answer, so it shows what the bridge holds rather than what was merely asked
+ *  for; a refusal is the bridge's own sentence, and the control goes back to the
+ *  answer it last had. */
 export async function mountIsolation(host, { callRpc, target, settings }) {
   const select = host.querySelector("[data-isolation=select]");
   if (!select) return;
@@ -136,7 +140,15 @@ export async function mountIsolation(host, { callRpc, target, settings }) {
     lock.textContent = lockLine(available);
   };
 
-  paint(settings);
+  if (settings) paint(settings);
+  else {
+    try {
+      paint(await callRpc("settings.get"));
+    } catch (refusal) {
+      error.textContent = refusal.message;
+      return;
+    }
+  }
   select.disabled = false;
 
   select.onchange = async () => {

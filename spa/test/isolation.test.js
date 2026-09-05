@@ -223,6 +223,30 @@ describe("the mounted control", () => {
     expect(callRpc).toHaveBeenCalledWith("t", { isolation: "worktree" });
   });
 
+  // The account has no row to be painted from, so the control reads the account
+  // setting itself — and then owns that read's failure, the way every other
+  // panel on the settings page owns its own.
+  it("reads the account's setting itself when the caller hands it none", async () => {
+    const callRpc = vi.fn(async () => ({ isolation: "cow", isolation_available: { cow: true, reason: null } }));
+    document.body.innerHTML = isolationPanelHtml();
+    await mountIsolation(document.body, { callRpc, target: ACCOUNT_ISOLATION });
+
+    expect(callRpc).toHaveBeenCalledWith("settings.get");
+    expect(select().value).toBe("cow");
+    expect(select().disabled).toBe(false);
+  });
+
+  it("keeps a refused read to itself, in the bridge's words, and offers no choice", async () => {
+    const callRpc = vi.fn(async () => {
+      throw new Error("the bridge is offline");
+    });
+    document.body.innerHTML = isolationPanelHtml();
+    await mountIsolation(document.body, { callRpc, target: ACCOUNT_ISOLATION });
+
+    expect(error().textContent).toBe("the bridge is offline");
+    expect(select().disabled).toBe(true);
+  });
+
   it("paints the choice it was handed, without asking the bridge again", async () => {
     const callRpc = vi.fn();
     await mount(ACCOUNT_ISOLATION, { isolation: "cow", isolation_available: { cow: true, reason: null } }, callRpc);
@@ -410,6 +434,23 @@ describe("the Settings page", () => {
     await flush();
 
     expect(call).toHaveBeenCalledWith("settings.set", { isolation: "cow" });
+  }, SLOW_IMPORT_MS);
+
+  // Every panel on this page owns its own bridge read: a settings.get the
+  // bridge refuses takes down the isolation panel and nothing else — not the
+  // devices list, which is api-backed and lives while the bridge is gone.
+  it("survives a settings read the bridge refuses, panel by panel", async () => {
+    await renderWith(async (method) => {
+      if (method === "project.list") return { projects: [] };
+      if (method === "models.list") return { default_provider: "claude", providers: [] };
+      throw new Error("the bridge is offline");
+    });
+
+    expect(document.querySelector("#root [data-isolation=error]").textContent).toBe("the bridge is offline");
+    expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(true);
+    expect(document.querySelector("#pushtoggle").textContent).not.toBe("checking…");
+    expect(document.querySelector("#devlist").textContent).not.toContain("loading…");
+    expect(document.querySelector("#themepick")).not.toBe(null);
   }, SLOW_IMPORT_MS);
 
   it("names on every project row what that project will actually do", async () => {

@@ -1491,33 +1491,70 @@ fn primary_changes_summary(
     }
 }
 
-/// Run a claimed refresh on the runtime, off every lock.
+/// One unit of work split the way the rule splits everything: `decide` runs
+/// with the state lock released, `apply` under it. The caller has already
+/// taken this job's single-flight claim; `claim` names it, so a decide phase
+/// that never returns — a panic on the blocking pool — can still hand it back
+/// through `abandon`, or that claim would never be taken again.
+trait OffLockJob: Send + 'static {
+    type Claim: Send + 'static;
+    type Decided: Send + 'static;
+    fn claim(&self) -> Self::Claim;
+    /// MUST run with the state lock released.
+    fn decide(self) -> Self::Decided;
+    fn apply(state: &mut AppState, claim: Self::Claim, decided: Self::Decided);
+    fn abandon(state: &mut AppState, claim: Self::Claim);
+}
+
+/// Run a claimed job on the runtime, off every lock, and apply it under the
+/// lock when it has decided.
 ///
-/// `spawn_blocking` on purpose: this is libgit2 walking a worktree, and it must
-/// not sit on a runtime worker the relay's read loop needs. Returns the refresh
-/// back to the caller when there is no runtime to spawn onto (the synchronous
-/// unit tests), so the caller can compute it itself.
-fn spawn_diff_refresh(
-    state: Arc<Mutex<AppState>>,
-    refresh: DiffCacheRefresh,
-    observer: Option<DiffComputeObserver>,
-) -> Result<(), DiffCacheRefresh> {
+/// `spawn_blocking` on purpose: the decide phase is libgit2 walking a worktree
+/// or a bounded fetch, and it must not sit on a runtime worker the relay's read
+/// loop needs. Returns the job back when there is no runtime to spawn onto
+/// (the synchronous unit tests), so the caller can decide what to do with it.
+fn spawn_off_lock<J: OffLockJob>(state: Arc<Mutex<AppState>>, job: J) -> Result<(), J> {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        return Err(refresh);
+        return Err(job);
     };
     runtime.spawn(async move {
-        let key = refresh.key();
-        let computed =
-            tokio::task::spawn_blocking(move || refresh.compute(observer.as_ref())).await;
+        let claim = job.claim();
+        let decided = tokio::task::spawn_blocking(move || job.decide()).await;
         let mut app = state.lock().unwrap();
-        match computed {
-            Ok(entry) => app.publish_diff_refresh(&key, entry),
-            // The compute panicked. Publish nothing, but let the claim go or
-            // this key would never refresh again.
-            Err(_) => app.release_diff_refresh(&key),
+        match decided {
+            Ok(decided) => J::apply(&mut app, claim, decided),
+            Err(_) => J::abandon(&mut app, claim),
         }
     });
     Ok(())
+}
+
+/// A claimed diff-cache refresh on its way to the blocking pool: the git work
+/// and the test seam that watches it start.
+struct DiffRefreshJob {
+    refresh: DiffCacheRefresh,
+    observer: Option<DiffComputeObserver>,
+}
+
+impl OffLockJob for DiffRefreshJob {
+    type Claim = DiffCacheKey;
+    type Decided = Option<DiffCacheEntry>;
+
+    fn claim(&self) -> DiffCacheKey {
+        self.refresh.key()
+    }
+
+    fn decide(self) -> Option<DiffCacheEntry> {
+        self.refresh.compute(self.observer.as_ref())
+    }
+
+    fn apply(state: &mut AppState, key: DiffCacheKey, entry: Option<DiffCacheEntry>) {
+        state.publish_diff_refresh(&key, entry);
+    }
+
+    fn abandon(state: &mut AppState, key: DiffCacheKey) {
+        state.release_diff_refresh(&key);
+    }
 }
 
 /// Build the warm agent adapter shared by every project's orchestrator. Build is
@@ -3883,18 +3920,27 @@ impl AppState {
     /// call, and one that starts here runs on a thread that holds nothing. No
     /// age test — the caller has already decided it wants the git work done.
     fn refresh_now(&mut self, refresh: DiffCacheRefresh) {
-        let key = refresh.key();
-        if !self.diff_refreshes_in_flight.insert(key.clone()) {
+        if !self.diff_refreshes_in_flight.insert(refresh.key()) {
             return;
         }
-        let observer = self.diff_compute_observer.clone();
+        self.run_off_lock(DiffRefreshJob {
+            refresh,
+            observer: self.diff_compute_observer.clone(),
+        });
+    }
+
+    /// Run a job whose claim the caller has just taken: on the runtime with
+    /// the lock released, or — with no runtime and no shared handle to apply
+    /// through — as [`decide_without_a_runtime`](Self::decide_without_a_runtime)
+    /// has it. The one place "decide off the lock, apply under it" is written.
+    fn run_off_lock<J: OffLockJob>(&mut self, job: J) {
         let spawned = match self.self_handle.as_ref().and_then(std::sync::Weak::upgrade) {
-            Some(shared) => spawn_diff_refresh(shared, refresh, observer),
-            // No shared handle: nothing could publish what a thread computed.
-            None => Err(refresh),
+            Some(shared) => spawn_off_lock(shared, job),
+            // No shared handle: nothing could apply what a thread decided.
+            None => Err(job),
         };
         if let Err(unspawned) = spawned {
-            self.compute_without_a_runtime(unspawned, &key);
+            self.decide_without_a_runtime(unspawned);
         }
     }
 
@@ -3913,23 +3959,21 @@ impl AppState {
         }
     }
 
-    /// What a claimed refresh does when there is no runtime to carry it.
+    /// What a claimed job does when there is no runtime to carry it.
     ///
     /// In production that means the daemon is shutting down or was built
-    /// unrooted: the claim goes straight back and the next reader tries again.
+    /// unrooted: the claim goes straight back and the next caller tries again.
     /// The synchronous tests have no runtime and no mutex — nobody is waiting
-    /// on this thread — so there the refresh runs here, and the read that
+    /// on this thread — so there the job decides here, and the read that
     /// claimed it is answered from what it found.
-    fn compute_without_a_runtime(&mut self, refresh: DiffCacheRefresh, key: &DiffCacheKey) {
+    fn decide_without_a_runtime<J: OffLockJob>(&mut self, job: J) {
+        let claim = job.claim();
         #[cfg(test)]
-        {
-            let entry = refresh.compute(self.diff_compute_observer.as_ref());
-            self.publish_diff_refresh(key, entry);
-        }
+        J::apply(self, claim, job.decide());
         #[cfg(not(test))]
         {
-            let _ = refresh;
-            self.release_diff_refresh(key);
+            let _ = job;
+            J::abandon(self, claim);
         }
     }
 
@@ -13976,20 +14020,11 @@ impl AppState {
             return;
         }
         self.vanished_run_sweep_in_flight = true;
-        let sweep = VanishedRunSweep {
+        self.run_off_lock(VanishedRunSweep {
             queries,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
-        };
-        let spawned = match self.self_handle.as_ref().and_then(std::sync::Weak::upgrade) {
-            Some(shared) => spawn_vanished_run_sweep(shared, sweep),
-            // No shared handle: nothing could apply what a thread decided.
-            None => Err(sweep),
-        };
-        if let Err(unspawned) = spawned {
-            let decided = unspawned.decide();
-            self.archive_vanished_runs(decided);
-        }
+        });
     }
 
     /// A run the user deletes must disappear from Build. Any live run whose
@@ -16460,9 +16495,14 @@ struct VanishedRunSweep {
     gate: Option<OffLockGate>,
 }
 
-impl VanishedRunSweep {
+impl OffLockJob for VanishedRunSweep {
+    type Claim = ();
+    type Decided = Vec<DecidedVanishedRun>;
+
+    fn claim(&self) {}
+
     /// The git half — a bounded fetch and two graph walks per completed stage,
-    /// per run. MUST run with the state lock released.
+    /// per run.
     fn decide(self) -> Vec<DecidedVanishedRun> {
         #[cfg(test)]
         if let Some(gate) = self.gate {
@@ -16472,6 +16512,14 @@ impl VanishedRunSweep {
             .into_iter()
             .map(DecidedVanishedRun::decide)
             .collect()
+    }
+
+    fn apply(state: &mut AppState, (): (), decided: Vec<DecidedVanishedRun>) {
+        state.archive_vanished_runs(decided);
+    }
+
+    fn abandon(state: &mut AppState, (): ()) {
+        state.vanished_run_sweep_in_flight = false;
     }
 }
 
@@ -16546,29 +16594,6 @@ fn reconcile_missing_run_worktree(
         }
     }
     affected
-}
-
-/// Decide the vanished runs on the runtime, off every lock, and archive them
-/// when the verdicts are in. Returns the sweep back when there is no runtime to
-/// spawn onto (the synchronous unit tests), so the caller decides it itself.
-fn spawn_vanished_run_sweep(
-    state: Arc<Mutex<AppState>>,
-    sweep: VanishedRunSweep,
-) -> Result<(), VanishedRunSweep> {
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        return Err(sweep);
-    };
-    runtime.spawn(async move {
-        let decided = tokio::task::spawn_blocking(move || sweep.decide()).await;
-        let mut app = state.lock().unwrap();
-        match decided {
-            Ok(decided) => app.archive_vanished_runs(decided),
-            // The sweep panicked. Give the claim back or no board read would
-            // ever sweep again.
-            Err(_) => app.vanished_run_sweep_in_flight = false,
-        }
-    });
-    Ok(())
 }
 
 fn classify_stage_publication(
@@ -45960,6 +45985,94 @@ mod tests {
         })
         .await
         .expect("the sweep archives the run whose checkout is gone");
+    }
+
+    /// A job for the off-lock primitive that reports which half ran. Its claim
+    /// is the channel, so `apply` and `abandon` — which see no job — can still
+    /// say what became of it.
+    struct ProbeJob {
+        outcomes: std::sync::mpsc::Sender<&'static str>,
+        decide_panics: bool,
+    }
+
+    impl OffLockJob for ProbeJob {
+        type Claim = std::sync::mpsc::Sender<&'static str>;
+        type Decided = &'static str;
+
+        fn claim(&self) -> Self::Claim {
+            self.outcomes.clone()
+        }
+
+        fn decide(self) -> &'static str {
+            assert!(!self.decide_panics, "this probe's decide phase panics");
+            "decided"
+        }
+
+        fn apply(_state: &mut AppState, claim: Self::Claim, decided: &'static str) {
+            claim.send(decided).unwrap();
+        }
+
+        fn abandon(_state: &mut AppState, claim: Self::Claim) {
+            claim.send("abandoned").unwrap();
+        }
+    }
+
+    /// With no runtime and no shared handle — the synchronous tests — the
+    /// primitive decides inline and applies, so a read that claimed a job is
+    /// answered from what it found.
+    #[test]
+    fn an_off_lock_job_with_no_runtime_decides_inline_and_applies() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (outcomes, seen) = std::sync::mpsc::channel();
+
+        state.run_off_lock(ProbeJob {
+            outcomes,
+            decide_panics: false,
+        });
+
+        assert_eq!(seen.try_recv(), Ok("decided"));
+    }
+
+    /// A decide phase that panics on the blocking pool gives its claim back
+    /// through `abandon`, under the lock, or the claim it held would never be
+    /// taken again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_off_lock_job_whose_decide_panics_gives_its_claim_back() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (outcomes, seen) = std::sync::mpsc::channel();
+
+        state.lock().unwrap().run_off_lock(ProbeJob {
+            outcomes,
+            decide_panics: true,
+        });
+
+        let outcome =
+            tokio::task::spawn_blocking(move || seen.recv_timeout(Duration::from_secs(5)))
+                .await
+                .unwrap();
+        assert_eq!(outcome, Ok("abandoned"));
+    }
+
+    /// The same job under a runtime runs its decide phase on the blocking
+    /// pool and applies under the lock afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_off_lock_job_under_a_runtime_applies_what_it_decided() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (outcomes, seen) = std::sync::mpsc::channel();
+
+        state.lock().unwrap().run_off_lock(ProbeJob {
+            outcomes,
+            decide_panics: false,
+        });
+
+        let outcome =
+            tokio::task::spawn_blocking(move || seen.recv_timeout(Duration::from_secs(5)))
+                .await
+                .unwrap();
+        assert_eq!(outcome, Ok("decided"));
     }
 
     /// "Nothing has looked yet" is not the answer "there is no such checkout",

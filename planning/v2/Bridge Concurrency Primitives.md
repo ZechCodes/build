@@ -879,6 +879,31 @@ the sketch, each argued where it appears:
     The match stays the single construction point where a kind of entry names
     its cache; each arm is that cache's own write, resolved through one
     `project_mut` — the lookup every write into a project's caches goes through.
+14. The spawn is one primitive, `OffLockJob`, not one helper per payload.
+    `spawn_diff_refresh` and `spawn_vanished_run_sweep` were the same function
+    written twice — `Handle::try_current()` or hand the job back,
+    `spawn_blocking` the git, take the lock, apply or give the claim back —
+    and `refresh_now` and `sweep_vanished_runs` each repeated the other half:
+    upgrade `self_handle`, spawn, decide inline when nothing could carry it.
+    Now `OffLockJob { type Claim; type Decided; claim(&self); decide(self);
+    apply(state, claim, decided); abandon(state, claim) }` is the trait,
+    `spawn_off_lock` puts one on the runtime, and `AppState::run_off_lock` is
+    the one place "decide off the lock, apply under it" is written, with
+    `decide_without_a_runtime` as the no-runtime fallback (deviation 6).
+    `DiffRefreshJob` (claim `DiffCacheKey`, apply `publish_diff_refresh`,
+    abandon `release_diff_refresh`) and `VanishedRunSweep` (claim `()`, apply
+    `archive_vanished_runs`, abandon clears `vanished_run_sweep_in_flight`)
+    implement it. The single-flight claim itself stays with each cache —
+    `diff_refreshes_in_flight`, `vanished_run_sweep_in_flight` — because what
+    is claimed differs (a key, a daemon-wide flag); what was duplicated was the
+    carrying, and that is what the trait owns. `Claim` exists so a decide phase
+    that never returns (a panic on the blocking pool) can still hand back what
+    it held through `abandon`, which sees no job. §5's `WorktreeLifecycleJob`
+    runs through `DeferredWork`'s drain on the frame's own worker; a lifecycle
+    verb that must leave the frame is a third implementor, not a third spawn.
+    Tests: `an_off_lock_job_with_no_runtime_decides_inline_and_applies`,
+    `an_off_lock_job_under_a_runtime_applies_what_it_decided`,
+    `an_off_lock_job_whose_decide_panics_gives_its_claim_back`.
 
 `amend_external_scan` does not restamp `scanned_at`: an edit knows about one
 checkout and the rest of the list is exactly as old as it was, so the
@@ -927,7 +952,7 @@ scan is about to land (`a_removal_of_a_checkout_the_scan_never_had_leaves_the_ru
   `key()` and `compute()` (app.rs:1501, 1513) are the single construction point
   where a refresh names itself and picks its git work.
 - **Hides** staleness, the single-flight claim, the spawn. Every miss and every
-  stale entry end alike: an answer now, `spawn_diff_refresh` behind it,
+  stale entry end alike: an answer now, `run_off_lock` behind it,
   `publish_diff_refresh` + `note_board_changed` when it lands. No read returns
   a variant to be matched: a stat or `None`, the scan and whether one has ever
   landed, a summary or `None`.

@@ -124,16 +124,25 @@ registry it just read (§5.4). The orchestrator holds no isolation state: creati
 argument, and the reason, when present, joins the events a create already writes.
 
 ## `spa/src/core/isolation.js`
-Mirrors `core/defaultHarness.js`: `ISOLATIONS` (the client's only naming table), `isolationOf`, `isolationLockReason`,
-`isolationOptionsHtml`, `isolationPanelHtml`, `mountIsolation`, plus `ACCOUNT_ISOLATION` and `projectIsolationTarget`
-(§7). Pure except `mountIsolation`, which owns the one save/refuse/repaint cycle — save, then repaint from the payload
-the bridge answered with, so the control lands on what the bridge holds. It is written once because
-`mountIsolation(host, {callRpc, target, settings})` takes a target — an RPC name and its fixed params — and calls
-`callRpc(target.rpc, {...target.params, isolation})`, the wire word or `null` for inherit. `ACCOUNT_ISOLATION`
-(`settings.set`, no params, no inherit option) serves the settings page from `settings.get`.
+Mirrors `core/defaultHarness.js`: `ISOLATIONS` (the client's only naming table), `isolationLabel`, `isolationOf`,
+`isolationLockReason`, `isolationOptionsHtml`, `isolationFieldHtml`, `isolationPanelHtml`, `mountIsolation`, plus
+`ACCOUNT_ISOLATION` and `projectIsolationTarget` (§7). `isolationLabel(name)` is the table's answer for one wire word,
+defaulted to a git worktree for a word this client cannot read, so the Settings projects list names a row's effective
+isolation without spelling either name itself. `isolationFieldHtml` is the control alone — the select and the lock,
+saved and error lines `mountIsolation` reaches for by `data-isolation` hook — and both views paint it, which is what
+lets "neither view learns a locked look" hold; `isolationPanelHtml` is that field wrapped in the account's own heading
+and hint, so the project sheet takes the field without the account's copy. Pure except `mountIsolation`, which owns the
+one save/refuse/repaint cycle — save, then repaint from the payload the bridge answered with, so the control lands on
+what the bridge holds. It is written once because `mountIsolation(host, {callRpc, target, settings})` takes a target —
+an RPC name, its fixed params, and whether that target can inherit — and calls
+`callRpc(target.rpc, {...target.params, isolation})`, the wire word or `null` for inherit. `target.inherits`, not the
+presence of a label, is what decides whether "no choice" is a choice or the default; the label is copy and decides
+nothing. `settings` is the payload the caller already holds: a project surface hands over its row, the settings page
+hands over nothing and the control reads `settings.get` itself, so a bridge that refuses costs that panel its select
+and nothing else on the page. `ACCOUNT_ISOLATION` (`settings.set`, no params, no inherit).
 `projectIsolationTarget(project)` keys `project.set_isolation` on the `project.list` row's `project_id` and builds
-`inheritLabel` from its `isolation_default` through `ISOLATIONS`, so §7's "Account default (Git worktree)" is composed
-once from a fact the bridge owns. Neither view learns a variant name, a label, an RPC shape or a locked look.
+`inheritLabel` from its `isolation_default` through `isolationLabel`, so §7's "Account default (Git worktree)" is
+composed once from a fact the bridge owns. Neither view learns a variant name, a label, an RPC shape or a locked look.
 
 ## Boundaries and test seams
 Dependencies run one way: `app`/`orchestrator` → `worktree.rs` (façade) → `isolation/` → `git_process.rs` → nothing.

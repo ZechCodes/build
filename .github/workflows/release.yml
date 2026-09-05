@@ -56,7 +56,10 @@ jobs:
           echo "releasing build-bridge ${version} to ${RELEASES_REPO}"
 
       - name: The install script is published verbatim, so it is linted first
-        run: shellcheck -s sh scripts/install.sh
+        run: shellcheck -s sh scripts/*.sh
+
+      - name: The install script does what it promises
+        run: scripts/test-install.sh
 
   # One entry per platform key, and every entry runs the same steps: the
   # matrix is the only place a platform is named. Native runners throughout —

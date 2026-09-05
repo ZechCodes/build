@@ -128,6 +128,7 @@ while [ $# -gt 0 ]; do
 done
 request="${url##*/}"
 printf '%s\n' "$request" >> "$BUILD_TEST_REQUESTS"
+printf '%s\n' "$url" >> "$BUILD_TEST_URLS"
 
 segment="${request%%\?*}"
 token=""
@@ -213,13 +214,14 @@ run_install() {
         PATH="$ri_path"
         BUILD_TEST_MIRROR="$ri_root/mirror"
         BUILD_TEST_REQUESTS="$ri_root/requests"
+        BUILD_TEST_URLS="$ri_root/urls"
         BUILD_TEST_TOKEN="$PINNED_TOKEN"
         BUILD_TEST_UNAME_S="${2:-$PINNED_UNAME_S}"
         BUILD_TEST_UNAME_M="${3:-$PINNED_UNAME_M}"
         BUILD_TEST_COSIGN_STATUS="${CASE_COSIGN_STATUS:-0}"
         BUILD_BRIDGE_INSTALL_DIR="$ri_root/dest"
         BUILD_BRIDGE_SKIP_SERVICE=1
-        export PATH BUILD_TEST_MIRROR BUILD_TEST_REQUESTS BUILD_TEST_TOKEN
+        export PATH BUILD_TEST_MIRROR BUILD_TEST_REQUESTS BUILD_TEST_URLS BUILD_TEST_TOKEN
         export BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M
         export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE
         /bin/sh "$ri_root/install.sh" > "$ri_root/stdout" 2> "$ri_root/stderr"
@@ -332,6 +334,25 @@ every_download_carries_the_token() {
     pass "$name"
 }
 
+# The route shape is the one string contract this script holds against the
+# api (`releases.py` DOWNLOADS_PATH): every request is the api's base, the
+# downloads path, one segment, and the token — nothing else, nowhere else.
+every_download_is_asked_of_the_api_downloads_route() {
+    name="every_download_is_asked_of_the_api_downloads_route"
+    root="$(new_sandbox "$name")"
+    status="$(run_install "$root")"
+    assert_exit "$name" "$root" "$status" 0 || return 1
+    if [ "$(wc -l < "$root/urls")" -ne 3 ]; then
+        fail "$name" "asked the api at '$(tr '\n' ' ' < "$root/urls")'"
+        return 1
+    fi
+    if grep -qvE "^$PINNED_BASE_URL/app/downloads/[^/?]+\?t=$PINNED_TOKEN\$" "$root/urls"; then
+        fail "$name" "a request left the downloads route: '$(tr '\n' ' ' < "$root/urls")'"
+        return 1
+    fi
+    pass "$name"
+}
+
 # The tarball is the one request that spends the token, so it goes last: a
 # token spent before its checksums and signature arrived has bought nothing.
 the_binary_is_fetched_last() {
@@ -387,6 +408,7 @@ for case_name in \
     refuses_to_run_without_a_token \
     a_refused_token_installs_nothing \
     every_download_carries_the_token \
+    every_download_is_asked_of_the_api_downloads_route \
     the_binary_is_fetched_last \
     a_failed_download_names_the_asset_and_not_the_token \
     the_no_token_verdict_comes_before_any_tool_is_demanded; do

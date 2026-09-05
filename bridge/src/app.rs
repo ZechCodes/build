@@ -45830,6 +45830,28 @@ mod tests {
         );
     }
 
+    /// Delete a checkout the way a user does: with nothing of Build's own still
+    /// writing into it. A queued turn scaffolds `.build/` into the checkout on a
+    /// thread of its own, after the verb that queued it has answered — and a
+    /// directory being written into is neither one `remove_dir_all` can walk nor
+    /// one that stays deleted once it has been.
+    async fn delete_the_checkout(state: &Arc<Mutex<AppState>>, checkout: &std::path::Path) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                {
+                    let app = state.lock().unwrap();
+                    if app.pending_agent_turns.is_empty() && app.turns_in_flight.is_empty() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("every turn the run's verbs queued arrives");
+        std::fs::remove_dir_all(checkout).expect("the user deleted their checkout");
+    }
+
     /// The board sweeps runs whose checkout vanished, and deciding whether each
     /// stage's commits were ever published is a fetch and two graph walks per
     /// stage. The read answers with the run it still has and the sweep archives
@@ -45840,7 +45862,7 @@ mod tests {
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
         let (_, run_id) = planned_run_in_review_delivered(&handler, "a run that vanishes");
         let worktree = state.lock().unwrap().runs[&run_id].worktree.path.clone();
-        std::fs::remove_dir_all(&worktree).unwrap();
+        delete_the_checkout(&state, &worktree).await;
 
         let (gate, held) = OffLockGate::new();
         state.lock().unwrap().off_lock_gate = Some(gate);

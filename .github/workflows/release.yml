@@ -72,10 +72,18 @@ jobs:
       - name: install.sh and this workflow demand the same signing identity
         run: |
           set -euo pipefail
-          grep -qF "COSIGN_IDENTITY_REGEXP='${COSIGN_IDENTITY_REGEXP}'" scripts/install.sh || {
-            echo '::error::install.sh pins a different cosign identity than release.yml'
-            exit 1
-          }
+          # An identity is a certificate subject AND the issuer that vouched
+          # for it, so both halves are checked; pinning one lets the pair
+          # drift by half, which is the bug this step exists to prevent.
+          for pin in "COSIGN_IDENTITY_REGEXP=${COSIGN_IDENTITY_REGEXP}" \
+            "COSIGN_ISSUER=${COSIGN_ISSUER}"; do
+            name="${pin%%=*}"
+            value="${pin#*=}"
+            grep -qF "${name}='${value}'" scripts/install.sh || {
+              echo "::error::install.sh pins a different ${name} than release.yml"
+              exit 1
+            }
+          done
 
   # One entry per platform key, and every entry runs the same steps: the
   # matrix is the only place a platform is named. Native runners throughout —

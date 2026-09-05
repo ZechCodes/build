@@ -36,7 +36,7 @@ from buildapp.db_test_support import (
 from buildapp.email_test_support import email_settings
 from buildapp.invite_mail import INVITE_SUBJECT
 from buildapp.invite_pages import OUTCOMES
-from buildapp.invites import EMAIL_MISMATCH, InviteState, invite_path
+from buildapp.invites import EMAIL_FIELD, EMAIL_MISMATCH, InviteState, invite_path
 from buildapp.invites_controller import (
     INVITE_ROUTE_PATH,
     INVITES_API_PATH,
@@ -154,7 +154,9 @@ def test_the_admin_route_creates_one_invite_and_mails_the_normalized_address(
     client, email_backend
 ):
     inviter = sign_in_as_admin(client)
-    response = client.post(INVITES_API_PATH, json={"email": "  Invitee@Example.COM "})
+    response = client.post(
+        INVITES_API_PATH, json={EMAIL_FIELD: "  Invitee@Example.COM "}
+    )
     assert response.status_code == HTTP_201_CREATED
     body = response.json()
     assert body["email"] == INVITED

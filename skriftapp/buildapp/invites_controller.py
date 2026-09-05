@@ -25,22 +25,18 @@ from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, provide_public_base_url
 from buildapp.invite_mail import invite_email_task
 from buildapp.invite_pages import APP_PATH, OUTCOMES
-from buildapp.invites import INVITE_PATH_PREFIX, InviteState, invite_path
+from buildapp.invites import (
+    EMAIL_FIELD,
+    INVITE_PATH_PREFIX,
+    InviteState,
+    invite_path,
+)
 from buildapp.models import Invite
 from buildapp.request_body import read_json_object
-from buildapp.session_auth import session_user_id
+from buildapp.session_auth import login_redirect, session_user_id
 
 INVITE_ROUTE_PATH = f"{INVITE_PATH_PREFIX}{{token:str}}"
 INVITES_API_PATH = "/api/invites"
-LOGIN_PATH_TEMPLATE = "/auth/login?next={next_path}"
-EMAIL_FIELD = "email"
-
-
-def login_redirect_path(token: str) -> str:
-    """Back here after login. Skrift stores ``next`` in its own session key and honours
-    it after a sign-in AND after a passkey account creation, so a guest with no account
-    yet makes one and lands on their invite."""
-    return LOGIN_PATH_TEMPLATE.format(next_path=invite_path(token))
 
 
 class InvitesController(Controller):
@@ -63,7 +59,7 @@ class InvitesController(Controller):
             return OUTCOMES[state].response()
         user_id = session_user_id(request)
         if user_id is None:
-            return Redirect(login_redirect_path(token))
+            return login_redirect(invite_path(token))
         return await self._redeem(db_session, invite, user_id, now)
 
     @staticmethod
@@ -106,6 +102,5 @@ class InvitesController(Controller):
                 "expires_at": invite.expires_at.isoformat(),
                 "url": url,
             },
-            status_code=HTTP_201_CREATED,
             background=invite_email_task(email_backend, invite.email, url),
         )

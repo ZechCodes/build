@@ -30,7 +30,7 @@ from buildapp.accounts import addresses_by_id
 from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, provide_public_base_url
 from buildapp.invite_mail import send_invite_email
-from buildapp.invites import InviteState, invite_state
+from buildapp.invites import EMAIL_FIELD, InviteState, invite_state
 from buildapp.models import Invite
 from buildapp.session_auth import session_user_id
 
@@ -38,15 +38,15 @@ from buildapp.session_auth import session_user_id
 #: the page renders are the two composed, so the prefix is written once.
 ADMIN_PREFIX = "/admin"
 INVITES_PAGE_ROUTE_PATH = "/invites"
-REVOKE_ROUTE_PATH = f"{INVITES_PAGE_ROUTE_PATH}/{{invite_id:uuid}}/revoke"
+REVOKE_SUFFIX = "/revoke"
+REVOKE_ROUTE_PATH = f"{INVITES_PAGE_ROUTE_PATH}/{{invite_id:uuid}}{REVOKE_SUFFIX}"
 INVITES_ADMIN_PATH = f"{ADMIN_PREFIX}{INVITES_PAGE_ROUTE_PATH}"
-REVOKE_PATH = f"{INVITES_ADMIN_PATH}/{{invite_id}}/revoke"
+REVOKE_PATH = f"{INVITES_ADMIN_PATH}/{{invite_id}}{REVOKE_SUFFIX}"
 TEMPLATE_NAME = "admin/invites.html"
 
 SEND_INVITE_LABEL = "Send invite"
 REVOKE_LABEL = "Revoke"
 NO_ONE = "—"
-EMAIL_FIELD = "email"
 
 #: The states whose seat can still be taken back. Revoking a redeemed invite is the
 #: "remove member" action; a revoked or expired one has nothing left to revoke.
@@ -86,11 +86,13 @@ def build_invites_dashboard(
 
 def invites_page_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Everything the template renders that this module owns: the rows, where the send
-    form posts, and the words on the two buttons. The template holds the markup; the
-    paths and the labels have one home, here."""
+    form posts, the name its one field goes by, and the words on the two buttons. The
+    template holds the markup; the paths, the field name and the labels have one home —
+    and the field name is the domain's, the same key the JSON route reads."""
     return {
         "invites": rows,
         "send_path": INVITES_ADMIN_PATH,
+        "email_field": EMAIL_FIELD,
         "send_label": SEND_INVITE_LABEL,
         "revoke_label": REVOKE_LABEL,
     }

@@ -16,8 +16,8 @@
     <form method="post" action="{{ send_path }}">
         {{ csrf_field() }}
         <label for="invite-email">Email address</label>
-        <input id="invite-email" type="email" name="email" required autocomplete="off"
-               placeholder="someone@example.com">
+        <input id="invite-email" type="email" name="{{ email_field }}" required
+               autocomplete="off" placeholder="someone@example.com">
         <button class="sk-btn" type="submit">{{ send_label }}</button>
     </form>
     <p class="sk-muted">

@@ -27,6 +27,9 @@ INVITE_PATH_PREFIX = "/invite/"
 TOKEN_PREFIX = "inv_"
 TOKEN_BYTES = 32
 INVALID_ADDRESS_MESSAGE = "invalid email address"
+#: The one name the address goes by on the way in: the JSON key of the admin route's
+#: body and the name of the admin page's form field are the same fact.
+EMAIL_FIELD = "email"
 
 
 class InviteState(Enum):

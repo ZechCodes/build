@@ -20,8 +20,8 @@ from buildapp.accounts import account_email
 from buildapp.alpha_membership import is_alpha_member
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_message import provide_public_base_url
-from buildapp.invite_pages import invite_only_outcome
-from buildapp.session_auth import require_user, session_user_id
+from buildapp.invite_pages import APP_PATH, invite_only_outcome
+from buildapp.session_auth import login_redirect, require_user, session_user_id
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -56,7 +56,7 @@ class BuildController(Controller):
         # the board afterwards, never the empty CMS root.
         user_id = session_user_id(request)
         if user_id is None:
-            return Redirect("/auth/login?next=/app/")
+            return login_redirect(APP_PATH)
         if not await is_alpha_member(db_session, user_id):
             email = await account_email(db_session, user_id)
             return invite_only_outcome(email).response()

@@ -26,7 +26,7 @@ from buildapp.db_test_support import (
     stored_invites,
 )
 from buildapp.email_test_support import email_settings
-from buildapp.invites import INVITE_TTL, InviteState
+from buildapp.invites import EMAIL_FIELD, INVITE_TTL, InviteState
 from buildapp.invites_controller import InvitesController
 from buildapp.invites_admin import (
     ADMIN_PREFIX,
@@ -34,6 +34,8 @@ from buildapp.invites_admin import (
     INVITES_PAGE_ROUTE_PATH,
     REVOKE_LABEL,
     REVOKE_PATH,
+    REVOKE_ROUTE_PATH,
+    REVOKE_SUFFIX,
     SEND_INVITE_LABEL,
     TEMPLATE_NAME,
     InvitesAdminController,
@@ -177,22 +179,27 @@ def test_the_template_carries_a_send_form_with_a_csrf_field():
     assert CSRF_FIELD_NAME in html
 
 
-def test_the_page_takes_its_path_and_both_button_labels_from_the_module():
+def test_the_page_takes_its_path_field_name_and_both_button_labels_from_the_module():
     """The template renders what the module says, so the constants the tests read are
-    the strings an operator clicks — not two copies that happen to agree."""
+    the strings an operator clicks — not two copies that happen to agree. The field
+    name is the domain's, so the form posts the key the JSON route reads."""
     context = invites_page_context(build_invites_dashboard([invite()], {}, NOW))
     assert context["send_path"] == INVITES_ADMIN_PATH
+    assert context["email_field"] == EMAIL_FIELD
     assert context["send_label"] == SEND_INVITE_LABEL
     assert context["revoke_label"] == REVOKE_LABEL
     html = render_page(build_invites_dashboard([invite()], {}, NOW))
+    assert f'name="{EMAIL_FIELD}"' in html
     assert SEND_INVITE_LABEL in html
     assert REVOKE_LABEL in html
 
 
-def test_the_admin_prefix_is_written_once():
+def test_the_admin_prefix_and_the_revoke_suffix_are_each_written_once():
     assert InvitesAdminController.path == ADMIN_PREFIX
     assert INVITES_ADMIN_PATH == f"{ADMIN_PREFIX}{INVITES_PAGE_ROUTE_PATH}"
     assert REVOKE_PATH.startswith(f"{ADMIN_PREFIX}{INVITES_PAGE_ROUTE_PATH}/")
+    assert REVOKE_PATH.endswith(REVOKE_SUFFIX)
+    assert REVOKE_ROUTE_PATH.endswith(REVOKE_SUFFIX)
 
 
 def test_the_template_offers_revoke_only_where_the_row_allows_it():

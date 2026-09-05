@@ -218,6 +218,7 @@ export function defaultAssignment(issue) {
  *  user has actually overridden. An existing checkout is named by its branch,
  *  which is the only part of it the reviewer thinks in — `choices` is what turns
  *  the held id back into that name. */
+// eslint-disable-next-line complexity -- ratchet: assignmentSummary is at 12, cap 10 — reduce it, then drop this line
 export function assignmentSummary(assignment, choices = []) {
   const targetingExisting = assignment.worktree === "existing";
   const chosen = targetingExisting
@@ -245,6 +246,7 @@ export function assignmentSummary(assignment, choices = []) {
  * preference naming the other claude carrier clamps in both places or in
  * neither.
  */
+// eslint-disable-next-line complexity -- ratchet: implementParams is at 15, cap 10 — reduce it, then drop this line
 export function implementParams(issueId, assignment, { catalog = {}, stageId = null } = {}) {
   const worktreeGap = unsupportedTargetReason(WORKTREE_TARGETS, assignment.worktree);
   if (worktreeGap) throw new Error(worktreeGap);

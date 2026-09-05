@@ -31,6 +31,7 @@ function calendarDayNumber(date) {
   return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS;
 }
 
+// eslint-disable-next-line complexity -- ratchet: formatRelativeDate is at 19, cap 10 — reduce it, then drop this line
 export function formatRelativeDate(value, nowValue = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
@@ -480,6 +481,7 @@ function harnessLabel(thread, override) {
   return providerLabel(LEGACY_PROVIDER_IDS[raw] || raw);
 }
 
+// eslint-disable-next-line complexity -- ratchet: linkLocation is at 12, cap 10 — reduce it, then drop this line
 function linkLocation(link) {
   if (link.kind !== "file") {
     return link.path || link.implementation_id || link.run_id || link.worktree_id || link.sha || link.recovery_id || "Open";
@@ -493,6 +495,7 @@ function linkLocation(link) {
 function linksHtml(links) {
   if (!links || !links.length) return "";
   return `<div class="thread-references">${links
+    // eslint-disable-next-line complexity -- ratchet: this callback is at 13, cap 10 — reduce it, then drop this line
     .map((link) => {
       const attributes = [
         `data-kind="${esc(link.kind || "")}"`,
@@ -656,6 +659,7 @@ function outcomeMarkerHtml(outcome, agentLabel) {
   </div>`;
 }
 
+// eslint-disable-next-line complexity -- ratchet: messageHtml is at 11, cap 10 — reduce it, then drop this line
 function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer = "") {
   const user = message.role === "user";
   const status = user
@@ -857,6 +861,7 @@ function foldActivityRuns(entries) {
   return rows;
 }
 
+// eslint-disable-next-line complexity -- ratchet: eventHtml is at 11, cap 10 — reduce it, then drop this line
 function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml);
@@ -930,6 +935,7 @@ function timelineHtml(sourceItems, agentLabel, threadId) {
   // only that one. An event between it and now changes nothing — a commit
   // landing is not somebody speaking.
   const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const entries = topLevelItems.flatMap((item, index) => {
     if (item.type !== "message") {
       const event = item.data || {};
@@ -1000,6 +1006,7 @@ function threadActionsHtml(actionsId) {
   return actionsId ? `<div class="thread-actions" id="${esc(actionsId)}"></div>` : "";
 }
 
+// eslint-disable-next-line complexity -- ratchet: threadHtml is at 11, cap 10 — reduce it, then drop this line
 export function threadHtml(thread, options = {}) {
   const agentLabel = harnessLabel(thread, options.agentLabel);
   const sourceItems = (thread && thread.items) || [];
@@ -1068,6 +1075,7 @@ const composerSurvives = (live, next) => {
 /// must wire everything in it again, including any composer this render
 /// created; false means the wired one is still there and re-wiring it would
 /// throw away the tray's uploads.
+// eslint-disable-next-line complexity -- ratchet: writeThreadKeepingComposer is at 11, cap 10 — reduce it, then drop this line
 export function writeThreadKeepingComposer(container, html) {
   const live = container.querySelector(".review-thread");
   const rendered = container.ownerDocument.createElement("div");
@@ -1238,6 +1246,7 @@ export function wireThreadAttachments(root, load) {
 export function wireThreadLinks(root, openLink) {
   if (!root) return;
   root.querySelectorAll(".thread-reference").forEach((button) => {
+    // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
     button.onclick = () => {
       const link = { kind: button.dataset.kind };
       if (button.dataset.path) link.path = button.dataset.path;
@@ -1315,6 +1324,7 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
     if (caret) caret.disabled = !pressable;
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
   const submit = async ({ interrupt = false } = {}) => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;

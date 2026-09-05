@@ -109,6 +109,7 @@ export function blockIsFolded(block, folds) {
  *  how much inside is waiting, and the + that opens the create surface. The
  *  fold is disabled on a block with nothing to fold. `ui`: { folded } — the
  *  set of folded project ids, as blockIsFolded decides. */
+// eslint-disable-next-line complexity -- ratchet: projectHeadHtml is at 11, cap 10 — reduce it, then drop this line
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.id));
   const foldable = block.entries.length > 0 || block.recent.length > 0;

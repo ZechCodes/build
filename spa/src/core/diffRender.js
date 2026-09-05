@@ -34,6 +34,7 @@ function codeCellHtml(text, lang, maskDotenv) {
 export function diffRowsHtml(rows, lang = null, { maskDotenv = false, hunkMarks = null, overridable = false } = {}) {
   let hunkIndex = 0;
   return rows
+    // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
     .map((r) => {
       if (r.t !== "hunk")
         return `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}" data-side="${r.t === "del" ? "old" : "new"}" data-old-line="${r.o ?? ""}" data-new-line="${r.n ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`;
@@ -124,6 +125,7 @@ function foldClassOf(file, { folds, viewed }) {
   return FOLD_CLASS[folds ? folds.foldOf(key, { viewed }) : untouchedFold(key, viewed)];
 }
 
+// eslint-disable-next-line complexity -- ratchet: diffFileHtml is at 17, cap 10 — reduce it, then drop this line
 export function diffFileHtml(file, options = {}) {
   const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false, openable = false, sectionClass = "" } = options;
   const lang = langForPath(file.path);

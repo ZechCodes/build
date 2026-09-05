@@ -40,6 +40,7 @@ jobs:
       e2e: ${{ steps.filter.outputs.e2e }}
       desktop: ${{ steps.filter.outputs.desktop }}
       scripts: ${{ steps.filter.outputs.scripts }}
+      shell: ${{ steps.filter.outputs.shell }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -71,6 +72,7 @@ jobs:
           touched '^bridge/|^deploy/k8s/relay\.yaml$' && relay=true || relay=false
           touched '^desktop/' && desktop=true || desktop=false
           touched '^scripts/' && scripts=true || scripts=false
+          touched '\.sh$' && shell=true || shell=false
           # The end-to-end job also has to run when the harness itself moves —
           # the QA client under web/ or the compose stack it drives — or a
           # change to the test would skip the test.
@@ -82,6 +84,8 @@ jobs:
           echo "desktop=$desktop" >> "$GITHUB_OUTPUT"
           echo "scripts=$scripts" >> "$GITHUB_OUTPUT"
           echo "app=$app relay=$relay e2e=$e2e desktop=$desktop scripts=$scripts"
+          echo "shell=$shell" >> "$GITHUB_OUTPUT"
+          echo "app=$app relay=$relay e2e=$e2e desktop=$desktop shell=$shell"
 
   bridge:
     name: Rust bridge
@@ -188,6 +192,12 @@ jobs:
       - name: Install
         working-directory: spa
         run: npm install --legacy-peer-deps --no-audit --no-fund
+      # The complexity gate (CLAUDE.md "Complexity gates"). It runs BEFORE the
+      # suite: a function past the cap is a review finding, and a two-second
+      # answer beats waiting out 2,500 tests to hear it.
+      - name: eslint
+        working-directory: spa
+        run: npm run lint
       - name: vitest
         working-directory: spa
         run: npx vitest run
@@ -209,6 +219,45 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: install.sh behaviour
         run: scripts/test-install.sh
+  # The API tier's own gate, the mirror of `spa` above: ruff (correctness plus
+  # the C901 complexity cap) and the pytest suite. The app image ships spa/ AND
+  # skriftapp/ together, so both halves have to be green before it builds — the
+  # Python half had no CI job at all until now.
+  skriftapp:
+    name: Python API tests
+    needs: [changes]
+    if: ${{ needs.changes.outputs.app == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skriftapp
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Install
+        run: uv sync --frozen
+      - name: ruff
+        run: uv run --frozen ruff check buildapp
+      - name: pytest
+        run: uv run --frozen pytest buildapp -q
+
+  # Every tracked shell script in the repo, wherever it lives — the container
+  # entrypoints today, scripts/install.sh the moment it lands. Listing the files
+  # from git rather than naming one directory is what keeps this a single job
+  # that no later branch has to add a second copy of. Each script's own shebang
+  # picks the dialect, so a POSIX install.sh is checked as sh.
+  shell:
+    name: Shell scripts
+    needs: [changes]
+    if: ${{ needs.changes.outputs.shell == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # shellcheck is preinstalled on ubuntu runners; locally, `brew install
+      # shellcheck`.
+      - name: shellcheck
+        run: git ls-files '*.sh' | xargs shellcheck
 
   desktop:
     name: Desktop client
@@ -262,13 +311,14 @@ jobs:
   # per stylesheet. They still gate `build-relay`, which is the tier they test.
   build-app:
     name: build-app image (skriftapp)
-    needs: [changes, spa, secrets]
+    needs: [changes, spa, skriftapp, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
           && needs.changes.outputs.app == 'true'
           && needs.spa.result == 'success'
+          && needs.skriftapp.result == 'success'
           && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:

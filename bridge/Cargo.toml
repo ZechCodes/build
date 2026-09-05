@@ -44,6 +44,14 @@ libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 webrtc = "0.20"
 
+# The Rust half of the complexity gate (CLAUDE.md "Complexity gates"). The
+# threshold itself lives in clippy.toml; this promotes the lint from
+# allow-by-default to a warning, which the CI gate
+# `cargo clippy --all-targets -- -D warnings` turns into an error for the lib,
+# the bins and the tests alike.
+[lints.clippy]
+cognitive_complexity = "warn"
+
 [features]
 # `carrier::testing`: the browser-side frame fixtures the crate's tests and the
 # integration tests both build from. Never compiled into the daemon.

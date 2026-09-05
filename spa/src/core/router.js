@@ -112,6 +112,7 @@ function resolveIssueRoute(id, tailSegments) {
   return route;
 }
 
+// eslint-disable-next-line complexity -- ratchet: routeFromHash is at 28, cap 10 — reduce it, then drop this line
 export function routeFromHash(hash) {
   const parts = (hash || "")
     .replace(/^#\/?/, "")
@@ -168,6 +169,7 @@ export function routeFromHash(hash) {
   }
 }
 
+// eslint-disable-next-line complexity -- ratchet: hashFromRoute is at 12, cap 10 — reduce it, then drop this line
 export function hashFromRoute(route) {
   const encode = encodeURIComponent;
   if (route.name === "branch" && route.projectId && route.branch) {

@@ -105,4 +105,6 @@ from address must be an address or alias on that account.
 The one-time setup is normally the Skrift web wizard (a fresh deploy serves
 `/setup` until completed); the steps above seed it non-interactively.
 
-Tests: `uv run pytest buildapp/` (from this directory).
+Tests: `uv run --frozen pytest buildapp` (from this directory).
+Lint: `uv run --frozen ruff check buildapp` — correctness plus the C901
+complexity cap (CLAUDE.md “Complexity gates”).

@@ -67,6 +67,7 @@ export function mountCaptureDecision(host, captureId) {
    *  named, else the one it was routed to, else the first this device has. A
    *  project the feed has never heard of is no default at all — the selector
    *  could not show it. */
+  // eslint-disable-next-line complexity -- ratchet: ensureProject is at 12, cap 10 — reduce it, then drop this line
   function ensureProject() {
     if (draft.projectId) return;
     const known = (projectId) => projectId && feed.projects.some((project) => project.id === projectId);

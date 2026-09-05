@@ -254,6 +254,7 @@ export function mountConsole(host, context) {
     writeCached(address, { scope, termIds: terms.ids() });
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
   const ensureTerminals = async () => {
     if (terms || loading) return;
     loading = true;

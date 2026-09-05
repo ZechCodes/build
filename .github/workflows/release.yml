@@ -25,12 +25,20 @@ env:
   # extended attributes. A release tarball holds exactly one entry, so turn
   # that off everywhere rather than on the two runners where it bites.
   COPYFILE_DISABLE: "1"
+  # The identity a downloader demands of the signature. install.sh is the
+  # contract's home for it; these two are this workflow's single copy, used by
+  # the self-verification, quoted in the release notes, and checked against
+  # install.sh in the `version` job so the two homes cannot drift apart.
+  COSIGN_IDENTITY_REGEXP: '^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v'
+  COSIGN_ISSUER: https://token.actions.githubusercontent.com
 
 jobs:
   # Nothing is built until the tag and the crate agree on a version, because a
   # release whose binary prints a different number than its name is worse than
-  # no release. The shellcheck run is here too: install.sh ships as an asset,
-  # so a broken one is a broken release, not a lint failure after the fact.
+  # no release. install.sh's own gates are here for the same reason — it ships
+  # as an asset, so a broken one is a broken release, not a lint failure after
+  # the fact: it is linted, run against a mirror on disk, and checked for the
+  # signing identity this workflow will sign with.
   version:
     name: The tag names a version this tree can build
     runs-on: ubuntu-22.04
@@ -60,6 +68,14 @@ jobs:
 
       - name: The install script does what it promises
         run: scripts/test-install.sh
+
+      - name: install.sh and this workflow demand the same signing identity
+        run: |
+          set -euo pipefail
+          grep -qF "COSIGN_IDENTITY_REGEXP='${COSIGN_IDENTITY_REGEXP}'" scripts/install.sh || {
+            echo '::error::install.sh pins a different cosign identity than release.yml'
+            exit 1
+          }
 
   # One entry per platform key, and every entry runs the same steps: the
   # matrix is the only place a platform is named. Native runners throughout —
@@ -260,15 +276,16 @@ jobs:
         working-directory: assets
         run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
 
-      # The same command install.sh runs on a user's machine, with the same
-      # identity regexp — so a signature that would fail there fails here.
+      # The same command install.sh runs on a user's machine, with the identity
+      # the `version` job proved install.sh pins — so a signature that would
+      # fail there fails here.
       - name: Verify it the way install.sh will
         working-directory: assets
         run: |
           cosign verify-blob \
             --bundle SHA256SUMS.sigstore.json \
-            --certificate-identity-regexp '^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer "$COSIGN_ISSUER" \
             SHA256SUMS
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -318,8 +335,8 @@ jobs:
               sha256sum --check --ignore-missing SHA256SUMS
               cosign verify-blob \\
                 --bundle SHA256SUMS.sigstore.json \\
-                --certificate-identity-regexp '^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v' \\
-                --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+                --certificate-identity-regexp '${COSIGN_IDENTITY_REGEXP}' \\
+                --certificate-oidc-issuer ${COSIGN_ISSUER} \\
                 SHA256SUMS
           NOTES
           cat notes.md

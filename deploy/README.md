@@ -124,7 +124,9 @@ There is no signing key to rotate or lose: cosign signs with the OIDC token
 GitHub mints for the workflow, so the certificate's identity *is*
 `…/build-web/.github/workflows/release.yml@refs/tags/bridge-vX.Y.Z`. That string
 is what install.sh pins, which is why the workflow file's path may not move
-without updating both.
+without updating both. The release refuses to build when they disagree: the
+`version` job greps install.sh for the identity release.yml carries in its own
+`COSIGN_IDENTITY_REGEXP`.
 
 ### What a user does
 

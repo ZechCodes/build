@@ -30,14 +30,11 @@ describe("platformKeyFor", () => {
     expect(platformKeyFor({ platform: "macOS", userAgent: MAC_CHROME, architecture: "x86" })).toBe("macos-x86_64");
   });
 
-  it("ignores an x86_64 token in the shape when no architecture is offered", () => {
+  it("reads Intel only from userAgentData.architecture, never from the shape's text", () => {
     expect(platformKeyFor({ platform: "MacIntel x86_64", userAgent: MAC_SAFARI })).toBe("macos-arm64");
-  });
-
-  it("keeps Apple silicon when the architecture hint contradicts an x86_64 token", () => {
-    expect(
-      platformKeyFor({ platform: "MacIntel x86_64", userAgent: MAC_SAFARI, architecture: "arm" }),
-    ).toBe("macos-arm64");
+    expect(platformKeyFor({ platform: "MacIntel x86_64", userAgent: MAC_SAFARI, architecture: "arm" })).toBe(
+      "macos-arm64",
+    );
   });
 
   it("reads Linux as x86_64 unless the shape names arm", () => {

@@ -80,6 +80,15 @@ describe("Settings → Downloads", () => {
     expect(document.getElementById("adddev")).toBeTruthy();
   });
 
+  it("wires the rest of Settings without waiting on the downloads round trip", async () => {
+    downloads = () => new Promise(() => {});
+    renderSettings();
+    await flush();
+    expect(typeof document.getElementById("adddev").onclick).toBe("function");
+    expect(typeof document.getElementById("newrepo").onclick).toBe("function");
+    expect(document.getElementById("downloads").textContent).toContain("loading…");
+  });
+
   it("keeps the devices panel intact when the downloads route refuses", async () => {
     downloads = async () => {
       throw new Error("invite only");

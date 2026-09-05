@@ -123,12 +123,6 @@ export async function renderSettings() {
   };
   await refresh();
   await mountDefaultHarness($("#root"), { callRpc: (method, params) => App.call(method, params) });
-  // The same block the first-run gate mounts — one renderer, two hosts.
-  await mountDownloads($("#root"), {
-    fetchDownloads,
-    platformKey: currentPlatformKey(),
-    clipboard: navigator.clipboard,
-  });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);
@@ -298,4 +292,14 @@ export async function renderSettings() {
   };
   await refreshDeviceList();
   $("#adddev").onclick = () => openAddDevice(refreshDeviceList);
+
+  // The same block the first-run gate mounts — one renderer, two hosts. It is
+  // the only thing here that asks the api rather than the bridge, and nothing
+  // on the page depends on its answer, so it goes last: a slow round trip
+  // leaves a "loading…" line, not a page of dead buttons.
+  await mountDownloads($("#root"), {
+    fetchDownloads,
+    platformKey: currentPlatformKey(),
+    clipboard: navigator.clipboard,
+  });
 }

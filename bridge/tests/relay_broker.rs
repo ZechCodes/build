@@ -447,10 +447,11 @@ async fn silent_device_is_severed_and_reported_offline() {
     let mut device_ws = authed_device(&relay, &device).await;
     assert_eq!(recv_json(&mut client).await["type"], "device_online");
 
-    // The device sends nothing at all. The relay must cut it loose…
-    expect_disconnect(&mut device_ws).await;
-    // …and tell the owner's browsers the truth instead of leaving them waiting.
-    let offline = recv_json(&mut client).await;
+    // The device sends nothing at all. The relay must cut it loose and tell the
+    // owner's browsers the truth instead of leaving them waiting. The browser
+    // is read the whole time, as a browser is: it is held to the same liveness
+    // window as the device, and answers the relay's pings only while polled.
+    let (_, offline) = tokio::join!(expect_disconnect(&mut device_ws), recv_json(&mut client));
     assert_eq!(offline["type"], "device_offline");
     assert_eq!(offline["device_id"], device.device_id.as_str());
 }

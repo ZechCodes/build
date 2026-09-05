@@ -12,7 +12,6 @@ Three audiences, three guard styles:
 
 from __future__ import annotations
 
-import secrets
 from datetime import timedelta
 from uuid import UUID
 
@@ -28,19 +27,20 @@ from litestar.status_codes import HTTP_409_CONFLICT
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp import pairing_crypto
+from buildapp import ephemeral_tokens, pairing_crypto
 from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.internal_auth import internal_auth_guard
-from buildapp.models import Device, EphemeralToken
+from buildapp.models import Device
 from buildapp.request_body import read_json_object
 from buildapp.session_auth import require_user
-from buildapp.token_hash import token_hash
 
 # Pending registrations that are never approved get cleaned up after this long.
 PENDING_TTL = timedelta(minutes=15)
 # Gateway tokens are short-lived; the SPA re-mints on (re)connect.
 GATEWAY_TOKEN_TTL = timedelta(minutes=5)
+GATEWAY_TOKEN_PURPOSE = "gateway"
+GATEWAY_TOKEN_PREFIX = "gw_"
 
 
 def device_summary(device: Device) -> dict:
@@ -230,23 +230,14 @@ class DevicesController(Controller):
     async def gateway_token(self, request: Request, db_session: AsyncSession) -> Response:
         """Mint a short-TTL token the browser presents to the relay so it can be scoped
         to this user's devices."""
-        user_id = require_user(request)
-        # Opportunistically purge expired tokens (mirrors register's pending-device
-        # purge): every reconnect mints a 5-minute token, and nothing else ever
-        # deletes them — without this the table grows forever.
-        await db_session.execute(
-            delete(EphemeralToken).where(EphemeralToken.expires_at < utc_now())
+        raw = await ephemeral_tokens.mint(
+            db_session,
+            purpose=GATEWAY_TOKEN_PURPOSE,
+            prefix=GATEWAY_TOKEN_PREFIX,
+            user_id=require_user(request),
+            ttl=GATEWAY_TOKEN_TTL,
+            now=utc_now(),
         )
-        raw = "gw_" + secrets.token_urlsafe(24)
-        db_session.add(
-            EphemeralToken(
-                token_hash=token_hash(raw),
-                purpose="gateway",
-                user_id=user_id,
-                expires_at=utc_now() + GATEWAY_TOKEN_TTL,
-            )
-        )
-        await db_session.commit()
         return Response({"token": raw, "expires_in_s": int(GATEWAY_TOKEN_TTL.total_seconds())})
 
     # ----- internal (relay-facing, shared-secret guarded) ---------------------
@@ -275,18 +266,12 @@ class DevicesController(Controller):
         self, token: str, db_session: AsyncSession
     ) -> Response:
         """The relay validates a browser's gateway token → the owning user id."""
-        row = (
-            await db_session.execute(
-                select(EphemeralToken).where(
-                    EphemeralToken.token_hash == token_hash(token),
-                    EphemeralToken.purpose == "gateway",
-                    EphemeralToken.expires_at > utc_now(),
-                )
-            )
-        ).scalar_one_or_none()
-        if row is None:
+        user_id = await ephemeral_tokens.holder_of(
+            db_session, purpose=GATEWAY_TOKEN_PURPOSE, raw=token, now=utc_now()
+        )
+        if user_id is None:
             raise NotFoundException()
-        return Response({"user_id": str(row.user_id)})
+        return Response({"user_id": str(user_id)})
 
     @post("/internal/devices/{device_id:uuid}/status", guards=[internal_auth_guard])
     async def internal_set_status(

@@ -4025,6 +4025,7 @@ impl AppState {
         }
     }
 
+    /// The last scan of a project's checkouts, if one has ever landed.
     fn external_scan_of(&self, project_id: &str) -> Option<&ExternalScanCache> {
         self.projects
             .iter()
@@ -6883,6 +6884,7 @@ impl AppState {
             .map(|(_, summary)| summary.clone())
     }
 
+    /// The last walk of a project's primary checkout, if one has ever landed.
     fn primary_summary_of(&self, project_id: &str) -> Option<&(std::time::Instant, Value)> {
         self.projects
             .iter()

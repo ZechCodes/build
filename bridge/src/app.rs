@@ -13610,18 +13610,21 @@ impl AppState {
         params: &Value,
         created: &mut BranchDispatchCreations,
     ) -> Result<Value, String> {
-        let run_id = match branch
-            .as_deref()
-            .and_then(|branch| self.run_on_branch(project_id, branch))
-        {
+        let holder = self.dispatch_branch_holder(project_id, branch.as_deref())?;
+        let run_id = match holder.held_by(crate::branch::BranchSource::Run) {
             // Build already runs this branch: the dispatch joins the checkout
             // that is there, and creates no checkout of its own.
-            Some(run_id) => run_id,
+            Some(run_id) => run_id.to_string(),
             None => {
                 let worktree_id =
-                    match self.bare_checkout_on_branch(project_id, branch.as_deref())? {
-                        Some(worktree_id) => worktree_id,
+                    match holder.held_by(crate::branch::BranchSource::ExternalWorktree) {
+                        Some(worktree_id) => worktree_id.to_string(),
                         None => {
+                            if let Some(refusal) =
+                                branch.as_deref().and_then(|branch| holder.refusal(branch))
+                            {
+                                return Err(refusal);
+                            }
                             let minted = self.cut_branch_for_dispatch(
                                 project_id,
                                 branch.as_deref(),
@@ -13698,24 +13701,21 @@ impl AppState {
         }))
     }
 
-    /// The checkout of `branch` that no run owns yet, if this project has one.
-    /// A dispatch that named no branch has nothing to look for: it always cuts
+    /// Which of the project's checkouts holds the branch a dispatch named —
+    /// the same answer `worktree.create {branch}` gets, from the same forced
+    /// rescan, so the two verbs never disagree about who has a branch. A
+    /// dispatch that named no branch has nothing to look for: it always cuts
     /// a new branch rather than adopting whatever happens to be lying around.
-    fn bare_checkout_on_branch(
+    fn dispatch_branch_holder(
         &mut self,
         project_id: &str,
         branch: Option<&str>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<BranchHolder, String> {
         let Some(branch) = branch else {
-            return Ok(None);
+            return Ok(BranchHolder::nobody());
         };
-        // Forced, for the same reason adoption forces it: a dispatch must
-        // decide against the checkouts that exist now, not a cached summary.
-        Ok(self
-            .external_worktrees(project_id, true)?
-            .into_iter()
-            .find(|worktree| worktree.branch.as_deref() == Some(branch))
-            .map(|worktree| worktree.id))
+        let ownership = self.project_checkouts(project_id, true)?.holders()?;
+        Ok(BranchHolder::of(&ownership, branch))
     }
 
     /// Cut the branch a dispatch has nowhere else to put its work.
@@ -15471,9 +15471,11 @@ struct BranchScope {
 }
 
 /// A project's checkouts as the app mutex knows them, snapshotted for the
-/// drain: the on-lock half of a branch listing's ownership. Nothing here was
-/// read from the disk under the lock — the scan is the board's cached one,
-/// and a run's checkout is the record the run already carries.
+/// drain: the on-lock half of a branch listing's ownership. A listing builds
+/// it from the scan the board already holds; `worktree.create {branch}` and
+/// `branch.dispatch` force a rescan into it on the lock knowingly (see
+/// [`AppState::project_checkouts`]). A run's checkout is the record the run
+/// already carries.
 struct ProjectCheckouts {
     /// The repository's own checkout, which the external scan deliberately
     /// leaves out — so without it the branch the repo root is on would look
@@ -15550,6 +15552,12 @@ struct BranchHolder {
 }
 
 impl BranchHolder {
+    /// A branch nothing holds — the answer for a caller that named no branch
+    /// at all, so it never has to ask.
+    fn nobody() -> Self {
+        Self { holder: None }
+    }
+
     fn of(ownership: &BranchOwnershipIndex, branch: &str) -> Self {
         let holders = [
             (
@@ -16452,48 +16460,84 @@ fn delete_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
 
 /// Land what the action promised to keep, then take the checkout away — and
 /// its branch with it when the checkout says teardown owns it.
-///
-/// The teardown is read before `remove_registered_worktree` prunes the admin
-/// directory the answer lives in.
 fn finish_by_landing_then_removing(
     context: &FinishContext<'_>,
     land: Option<FinishLanding>,
 ) -> Result<(), String> {
-    let record = context.record;
-    let branch = match record.branch.as_deref() {
-        Some(branch) => local_branch_exists(context.project_path, branch)?.then_some(branch),
-        None => None,
-    };
-    if !context.worktree_path.exists() {
-        let verb = record.action.verb();
-        return match branch {
-            Some(_) => Err(format!(
-                "worktree.finish {verb} lost its worktree before branch deletion"
-            )),
-            None => Ok(()),
-        };
+    let branch = finish_branch_still_present(context)?;
+    if !refuse_finish_that_lost_its_checkout(context, branch)? {
+        return Ok(());
     }
+    let deleted_branch = match branch {
+        Some(branch) => land_then_delete_branch_if_owned(context, branch, land)?,
+        None => false,
+    };
+    remove_finished_checkout_restoring_branch_on_failure(context, deleted_branch)
+}
+
+/// The branch this finish acts on, if the record names one and git still has
+/// it. A checkout with no branch (a detached HEAD) or whose branch is already
+/// gone has nothing for the finish to land or delete.
+fn finish_branch_still_present<'a>(context: &FinishContext<'a>) -> Result<Option<&'a str>, String> {
+    match context.record.branch.as_deref() {
+        Some(branch) => Ok(local_branch_exists(context.project_path, branch)?.then_some(branch)),
+        None => Ok(None),
+    }
+}
+
+/// Whether there is still a checkout to act on. A checkout that vanished
+/// while a branch is still at stake is refused: the finish promised to land
+/// or delete that branch from a checkout it no longer has. One that vanished
+/// with no branch behind it has simply finished already.
+fn refuse_finish_that_lost_its_checkout(
+    context: &FinishContext<'_>,
+    branch: Option<&str>,
+) -> Result<bool, String> {
+    if context.worktree_path.exists() {
+        return Ok(true);
+    }
+    match branch {
+        Some(_) => Err(format!(
+            "worktree.finish {} lost its worktree before branch deletion",
+            context.record.action.verb()
+        )),
+        None => Ok(false),
+    }
+}
+
+/// Land the branch as the action promised, then delete it when the checkout
+/// says teardown owns it. Answers whether the branch was deleted, so a
+/// removal that fails afterwards knows what to put back.
+///
+/// The teardown is read here, before `remove_registered_worktree` prunes the
+/// admin directory the answer lives in.
+fn land_then_delete_branch_if_owned(
+    context: &FinishContext<'_>,
+    branch: &str,
+    land: Option<FinishLanding>,
+) -> Result<bool, String> {
     let deletes_branch = crate::worktree::branch_teardown(context.worktree_path)
         .map_err(|error| error.to_string())?
         .deletes_branch();
-    let deleted_branch = match branch {
-        Some(branch) => {
-            if let Some(land) = land {
-                land(context.project_path, branch, context.base_branch)?;
-            }
-            if deletes_branch {
-                delete_local_branch_for_finish(context.project_path, branch, &record.head_sha)?;
-            }
-            deletes_branch
-        }
-        None => false,
-    };
+    if let Some(land) = land {
+        land(context.project_path, branch, context.base_branch)?;
+    }
+    if deletes_branch {
+        delete_local_branch_for_finish(context.project_path, branch, &context.record.head_sha)?;
+    }
+    Ok(deletes_branch)
+}
+
+fn remove_finished_checkout_restoring_branch_on_failure(
+    context: &FinishContext<'_>,
+    deleted_branch: bool,
+) -> Result<(), String> {
     if let Err(remove_error) =
         remove_registered_worktree(context.project_path, context.worktree_path, true)
     {
         restore_finish_branch_after_removal_failure(
             context.project_path,
-            record,
+            context.record,
             deleted_branch,
             &remove_error,
         )?;
@@ -34966,6 +35010,14 @@ mod tests {
             json!({ "project_id": project_id, "branch": "theirs", "name": "theirs" }),
         ));
         assert_eq!(refused["ok"], false, "{refused:?}");
+
+        let refused = state.handle(req("worktree.create", json!({ "project_id": project_id })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let message = refused["error"].as_str().unwrap();
+        assert!(
+            message.contains("branch") && message.contains("name"),
+            "the refusal names both slots: {message}"
+        );
     }
 
     /// The whole point of not cutting: finishing the checkout hands the branch
@@ -43866,6 +43918,35 @@ mod tests {
         assert!(state.runs.contains_key(&run_id), "the run was released");
         assert_eq!(state.runs[&run_id].agents.len(), agents_before);
         assert!(state.pending_agent_turns.is_empty());
+    }
+
+    /// A branch the repository's own checkout is on is one git refuses to
+    /// check out a second time, and its refusal names nothing the caller can
+    /// act on. The dispatch answers with the checkout that holds the branch,
+    /// as `worktree.create {branch}` does — one resolution for both.
+    #[test]
+    fn branch_dispatch_names_the_primary_checkout_holding_its_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "main",
+                "instruction": "work on main itself",
+            }),
+        ));
+
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let message = refused["error"].as_str().unwrap();
+        assert!(message.contains("primary checkout"), "{message}");
+        assert!(state.runs.is_empty(), "nothing was created");
+        assert!(state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .is_empty());
     }
 
     /// Refusals come before anything is created: an unknown project and an

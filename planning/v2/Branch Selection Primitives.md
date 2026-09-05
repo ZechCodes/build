@@ -63,24 +63,17 @@ Wire row:
 
 Facts go in, a strategy comes out, and the strategy names its own label — so the listing's verb and the start's execution are the same object, not two matches on the same variation.
 
-**A name is not the same input as words.** Two callers reach this decision with an absent ref and want opposite things, and no fact about the repository can tell them apart, so the difference is carried in as an input:
-
-```rust
-enum BranchTarget {
-    Ref { name: String, origin: crate::gitgui::BranchOrigin },
-    Words(String),
-}
-```
-
-- `branch.dispatch` with `branch: "hotfix-login"` must cut `hotfix-login` exactly, and `build/csv-export` must not become `build/build-csv-export`.
-- The picker's typed-text row must preview and produce `build/hotfix-login`.
+**A name is not the same input as words.** Two callers reach this decision with an absent ref and want opposite things, and no fact about the repository can tell them apart, so the difference is carried in as an input — here, as which of two RPC slots the caller filled:
 
 ```
 worktree.create { project_id, branch } -> a branch that already exists, here or on a remote
 worktree.create { project_id, name }   -> words to cut a new branch after
 ```
 
-Exactly one of `branch` / `name` is accepted; both or neither is an error.
+Exactly one of `branch` / `name` is accepted; both or neither is an error. The `BranchTarget` type the table below is written against belongs to the later `branch.start` item; here the distinction is carried by the two params and the two `WorktreeManager` verbs of §(c).
+
+- `branch.dispatch` with `branch: "hotfix-login"` must cut `hotfix-login` exactly, and `build/csv-export` must not become `build/build-csv-export`.
+- The picker's typed-text row must preview and produce `build/hotfix-login`.
 
 **Two name rules, each with one home.**
 
@@ -89,7 +82,7 @@ Exactly one of `branch` / `name` is accepted; both or neither is an error.
 
 `branch.dispatch` keeps its single free-text slot and adapts it at its own edge, with the rule `cut_branch_for_dispatch` uses today: a `branch` that passes `is_usable_branch_name` is a name to cut exactly, anything else is words to slugify.
 
-**The single match is exhaustive by construction.** The three ownership lookups come first for both targets; only then does the target decide:
+**The single match is exhaustive by construction.** The three ownership lookups come first for both targets; only then does the target decide. Both callers ask them the same way: `worktree.create {branch}` and `branch.dispatch {branch}` each build a `BranchHolder` from `ProjectCheckouts::holders()` over a forced rescan, so the two verbs never disagree about who has a branch. Two survivors of that resolution are named here so nobody looks for what does not exist: `branch.dispatch` opens the run and adopts the external worktree the holder names, but a branch the **primary** checkout holds is *refused* by dispatch (with the same structured message `worktree.create {branch}` gives) rather than adopted — adopting the primary from a dispatch is deferred to the `branch.start` item, which owns the `AdoptCheckout { primary: true }` strategy; and dispatch keeps `cut_branch_for_dispatch` as its own adapter for a slot that may be a name or words.
 
 | facts | strategy | intent |
 |---|---|---|

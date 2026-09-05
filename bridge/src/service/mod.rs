@@ -240,7 +240,7 @@ pub fn uninstall(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             Ok(Uninstalled::NothingInstalled(unit_path))
         }
-        Err(error) => Err(ServiceError::Io(error)),
+        Err(error) => Err(error.into()),
     }
 }
 

@@ -30,8 +30,10 @@
 //!   a random one, so a scripted approver can complete the flow
 //!
 //! `build-bridge pair` runs the pairing flow on its own — register, print the
-//! pairing code, wait for the human to approve it in the web app, persist — and
-//! exits. It is what an installer runs before it installs the service.
+//! pairing code, wait for the human to approve it in the web app, persist — then
+//! asks the api which account owns the device and prints it. It is what an
+//! installer runs before it installs the service, and it ends on the same gate
+//! `install-service` starts with, so the two cannot disagree.
 //!
 //! `build-bridge install-service` installs the platform's own "keep this
 //! running" unit: on macOS a launchd LaunchAgent, on Linux a systemd `--user`
@@ -141,7 +143,9 @@ async fn serve() {
         Ok(runtime) => runtime,
         Err(error) => exit_startup(error),
     };
-    let (identity, transport_keypair) = match load_device_identity(&runtime.config).await {
+    // How the identity came to be paired is `pair`'s business to report; serve
+    // only needs the keys.
+    let (identity, transport_keypair, _) = match load_device_identity(&runtime.config).await {
         Ok(loaded) => loaded,
         Err(error) => exit_startup(error),
     };
@@ -207,6 +211,41 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
     })
 }
 
+/// What `load_device_identity` had to do to produce the identity it returns.
+/// It is the one place that reads the stored identity, so it is the one place
+/// that knows; callers report it instead of loading the file again to guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairingOutcome {
+    /// The keys came from the environment (a provisioned/seeded device). Nothing
+    /// was paired: that identity is treated as approved by construction.
+    Provisioned,
+    /// The stored identity was already approved, so `ensure_paired` returned it
+    /// untouched.
+    AlreadyApproved,
+    /// A human approved this device during this run.
+    JustApproved,
+}
+
+impl PairingOutcome {
+    /// The outcome for a stored identity, read from the same `approved` flag
+    /// `pairing::ensure_paired` decides on.
+    fn for_stored(approved: bool) -> Self {
+        if approved {
+            Self::AlreadyApproved
+        } else {
+            Self::JustApproved
+        }
+    }
+
+    /// What `pair` says about the pairing itself, before it names the account.
+    fn note(self) -> Option<&'static str> {
+        match self {
+            Self::AlreadyApproved => Some("already paired"),
+            Self::Provisioned | Self::JustApproved => None,
+        }
+    }
+}
+
 /// The device's identity and its transport keypair. A provisioned identity in
 /// the environment (matches the relay DB seed) is a prod/seed override that is
 /// treated as already approved and skips pairing. Otherwise the bridge
@@ -216,9 +255,12 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
 ///
 /// The transport keypair travels beside the identity, not inside it: its one
 /// owner is the intake that opens session keys with it (`carrier.rs`).
+///
+/// The third element says which of those paths was taken, so `pair` can report
+/// it without re-reading the identity file behind this function's back.
 async fn load_device_identity(
     config: &BridgeConfig,
-) -> Result<(DeviceIdentity, transport::KeyPairB64), String> {
+) -> Result<(DeviceIdentity, transport::KeyPairB64, PairingOutcome), String> {
     match (
         std::env::var("BRIDGE_IDENTITY_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PRIV"),
@@ -233,6 +275,7 @@ async fn load_device_identity(
                 public_key_b64: tp_pub,
                 private_key_b64: tp_priv,
             },
+            PairingOutcome::Provisioned,
         )),
         _ => {
             let identity_path = config.identity_file.clone();
@@ -251,6 +294,7 @@ async fn load_device_identity(
                     ))
                 }
             };
+            let outcome = PairingOutcome::for_stored(stored.approved);
             let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
             let client = reqwest::Client::new();
             let approved = pairing::ensure_paired(
@@ -267,6 +311,7 @@ async fn load_device_identity(
             Ok((
                 identity::to_device_identity(&approved),
                 approved.transport.clone(),
+                outcome,
             ))
         }
     }
@@ -414,27 +459,27 @@ fn exit_startup(error: String) -> ! {
 
 /// Pair this device to an account and stop. Registers the identity, prints the
 /// pairing code + fingerprint + approve link, and waits for a human to approve
-/// it in the web app; an already-approved identity returns at once with no
-/// network call. This is the pairing half of a first install, on its own, so an
-/// installer can run it and then `install-service`.
+/// it in the web app; an already-approved identity skips all of that and says
+/// `already paired`. This is the pairing half of a first install, on its own, so
+/// an installer can run it and then `install-service`.
+///
+/// It ends on the same gate `install-service` runs — one status GET, even for an
+/// identity that was already approved — so the account it names is the account
+/// the api will name, and an installer that gets past `pair` cannot then be
+/// refused by `install-service`.
 async fn pair() {
     // Pairing talks https before anything else does; the provider must be in
     // place first.
     relay::install_crypto_provider();
     let cfg = bridge_config();
-    let already_paired =
-        matches!(identity::load(&cfg.identity_file), Ok(Some(stored)) if stored.approved);
-    match load_device_identity(&cfg).await {
-        Ok((identity, _)) => {
-            let outcome = if already_paired {
-                "already paired"
-            } else {
-                "paired to account"
-            };
-            println!("{outcome} — device {}", identity.device_id);
-        }
+    let outcome = match load_device_identity(&cfg).await {
+        Ok((_, _, outcome)) => outcome,
         Err(error) => exit_startup(error),
+    };
+    if let Some(note) = outcome.note() {
+        println!("{note}");
     }
+    println!("paired to account {}", approved_owner_or_exit(&cfg).await);
 }
 
 /// Install the platform's service unit — a launchd LaunchAgent on macOS, a
@@ -594,8 +639,7 @@ fn home_dir() -> std::path::PathBuf {
 
 /// Resolve the runtime config from BRIDGE_* env against $HOME.
 fn bridge_config() -> build_bridge::config::BridgeConfig {
-    let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"));
-    build_bridge::config::resolve(|key| std::env::var(key).ok(), &home)
+    build_bridge::config::resolve(|key| std::env::var(key).ok(), &home_dir())
 }
 
 fn env(key: &str, default: &str) -> String {
@@ -703,6 +747,8 @@ fn mcp_stdio() {
 
 #[cfg(test)]
 mod tests {
+    use super::PairingOutcome;
+
     /// `service::manager_for` is the crate's one platform branch: it turns
     /// `std::env::consts::OS` into a `ServiceManager`, and everything above it
     /// is platform-blind. A compile-time platform check in this file would be a
@@ -719,5 +765,48 @@ mod tests {
             source.contains("service::manager_for(std::env::consts::OS)"),
             "and it must ask service::manager_for, so the two stay one decision"
         );
+    }
+
+    /// `$HOME` is one fact, so it is read in one place: every caller that wants
+    /// the home directory asks `home_dir()`.
+    #[test]
+    fn home_is_read_in_exactly_one_place() {
+        // Split so this assertion is not itself an occurrence.
+        let read_home = concat!(r#"std::env::var("HOME")"#, ".expect");
+        let source = include_str!("main.rs");
+        assert_eq!(
+            source.matches(read_home).count(),
+            1,
+            "resolve HOME through home_dir(), not a second copy of the expression"
+        );
+    }
+
+    #[test]
+    fn a_stored_identity_already_approved_needed_no_pairing() {
+        assert_eq!(
+            PairingOutcome::for_stored(true),
+            PairingOutcome::AlreadyApproved
+        );
+    }
+
+    #[test]
+    fn a_stored_identity_awaiting_approval_was_paired_by_this_run() {
+        assert_eq!(
+            PairingOutcome::for_stored(false),
+            PairingOutcome::JustApproved
+        );
+    }
+
+    /// Only the device that was already approved is told "already paired" —
+    /// pairing that happened just now, and a provisioned identity that never
+    /// pairs at all, say nothing extra before the account line.
+    #[test]
+    fn only_an_already_approved_identity_is_announced_as_already_paired() {
+        assert_eq!(
+            PairingOutcome::AlreadyApproved.note(),
+            Some("already paired")
+        );
+        assert_eq!(PairingOutcome::JustApproved.note(), None);
+        assert_eq!(PairingOutcome::Provisioned.note(), None);
     }
 }

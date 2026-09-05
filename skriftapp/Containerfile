@@ -58,6 +58,8 @@ RUN uv sync --frozen --no-dev
 COPY skriftapp/app.yaml skriftapp/entrypoint.sh ./
 COPY skriftapp/buildapp ./buildapp
 COPY skriftapp/migrations ./migrations
+# The app's own admin templates: Skrift's engine also reads ./templates/.
+COPY skriftapp/templates ./templates
 COPY --from=spa /build/repo/skriftapp/buildapp/static ./buildapp/static
 RUN chmod +x /app/entrypoint.sh \
  && useradd --create-home --uid 10001 appuser \

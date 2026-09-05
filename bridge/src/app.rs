@@ -9550,6 +9550,7 @@ impl AppState {
                 routed_at: now_rfc3339(),
                 rationale,
             },
+            &issue_id,
         )?;
         let planning = self.start_routed_issue_agent(&issue_id);
         Ok(json!({
@@ -9622,7 +9623,7 @@ impl AppState {
         branch: Option<&str>,
         instruction: &str,
         rationale: Option<String>,
-        answer: fn(&AppState, &str, Value) -> Result<Value, String>,
+        answer: fn(&crate::capture::Capture, Value) -> Value,
     ) -> Result<Value, String> {
         self.dispatch_branch(
             &json!({
@@ -9687,6 +9688,11 @@ impl AppState {
     }
 
     /// Record where a capture went, and settle what it was routed to before.
+    /// `entity_id` is the work it became — the issue filed, or the run the
+    /// branch is dispatched into — which the caller knows and the map need not
+    /// hold yet: a dispatch records its route ahead of the write that opens
+    /// the run, so the anchor it inherits is held in memory until that write
+    /// lands and persists it.
     ///
     /// An issue no human has touched is archived and its planning agent stopped
     /// — it was never anything but a guess, and leaving it would put a second
@@ -9698,34 +9704,57 @@ impl AppState {
         &mut self,
         capture_id: &str,
         routing: crate::capture::CaptureRouting,
-    ) -> Result<(), String> {
+        entity_id: &str,
+    ) -> Result<crate::capture::Capture, String> {
         let capture = self
             .captures
             .get(capture_id)
             .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
         let previous = capture.routing.clone();
         let routed = capture.routed_to(routing);
-        let destination = routed.routing.clone();
-        self.save_capture(routed)?;
+        self.save_capture(routed.clone())?;
         // The work keeps the capture's place in the inbox. Said on Monday and
         // routed on Tuesday, it is still Monday's business — and it is ONE
         // entry, so the capture's row leaving and the work's row arriving must
         // not read as the list gaining something new.
-        if let Some(destination) = destination {
-            let entity_id = match destination.kind {
-                crate::capture::CaptureTarget::Issue => Some(destination.target_id.clone()),
-                crate::capture::CaptureTarget::Branch => {
-                    self.run_on_branch(&destination.project_id, &destination.target_id)
-                }
-            };
-            if let Some(entity_id) = entity_id {
-                self.inherit_capture_anchor(&entity_id, capture_id);
-            }
-        }
+        self.inherit_capture_anchor(entity_id, capture_id);
         if let Some(previous) = previous {
             self.release_misrouted_artifact(&previous);
         }
-        Ok(())
+        Ok(routed)
+    }
+
+    /// Write down the route a dispatch is the destination of, against the run
+    /// it opens. Ahead of the write that settles the run, never after it: the
+    /// app mutex was free while the git ran, so the capture may be gone by
+    /// now, and a refusal has to come before anything is durable — a run that
+    /// exists and a caller told it does not is the one outcome nothing can
+    /// reconcile.
+    fn record_dispatch_route(
+        &mut self,
+        routed: Option<RoutedCapture>,
+        project_id: &str,
+        run_id: &str,
+        branch: &str,
+    ) -> Result<Option<RouteRecorded>, String> {
+        let Some(routed) = routed else {
+            return Ok(None);
+        };
+        let capture = self.record_routing(
+            &routed.capture_id,
+            crate::capture::CaptureRouting {
+                project_id: project_id.to_string(),
+                kind: crate::capture::CaptureTarget::Branch,
+                target_id: branch.to_string(),
+                routed_at: now_rfc3339(),
+                rationale: routed.rationale,
+            },
+            run_id,
+        )?;
+        Ok(Some(RouteRecorded {
+            capture,
+            answered_with: routed.answer,
+        }))
     }
 
     /// Take back what a misroute created, when there is anything to take back.
@@ -13838,10 +13867,14 @@ impl AppState {
                 true => requested_choice,
                 false => self.entity_model_choice(&run_id)?,
             };
-            let branch = target.branch().to_string();
-            let dispatched =
-                self.join_dispatched_run(&project_id, &run_id, &instruction, choice)?;
-            return self.answer_dispatch(routed, &project_id, &branch, dispatched);
+            return self.join_dispatched_run(
+                &project_id,
+                &run_id,
+                target.branch(),
+                &instruction,
+                choice,
+                routed,
+            );
         }
 
         let mutation = DispatchCheckout {
@@ -13876,7 +13909,9 @@ impl AppState {
     /// One store write, made after every decision: the git has already cut a
     /// branch, checked the repository out into it and written a checkpoint
     /// commit, so a second fallible step here would be a way to strand all of
-    /// that under no run at all.
+    /// that under no run at all. The route a capture took to get here is one
+    /// of those decisions, and is written first: nothing that can refuse sits
+    /// on the far side of the write.
     fn open_dispatched_run(&mut self, dispatched: BranchDispatched) -> Result<Value, String> {
         let BranchDispatched {
             adopted,
@@ -13887,65 +13922,42 @@ impl AppState {
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Open)?;
         let project_id = adopted.project_id.clone();
         let run_id = adopted.run_id.clone();
-        let branch = adopted.checkout.branch.clone();
         let choice = adopted.model_choice.clone();
+        let route =
+            self.record_dispatch_route(routed, &project_id, &run_id, &adopted.checkout.branch)?;
         let mut active = adopted.open_run(self)?;
         let agent = self.dispatch_to_run(&run_id, &mut active, &instruction, choice);
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.clone(), active)?;
         self.touch_attention(&run_id);
-        self.answer_dispatch(
-            routed,
-            &project_id,
-            &branch,
+        Ok(RouteRecorded::answer(
+            route,
             agent.json(&project_id, &run_id),
-        )
-    }
-
-    /// Answer a dispatch, and — when it is where a capture was routed — write
-    /// that route down first. The branch is real by now either way, which is
-    /// what the record names.
-    fn answer_dispatch(
-        &mut self,
-        routed: Option<RoutedCapture>,
-        project_id: &str,
-        branch: &str,
-        dispatched: Value,
-    ) -> Result<Value, String> {
-        let Some(routed) = routed else {
-            return Ok(dispatched);
-        };
-        self.record_routing(
-            &routed.capture_id,
-            crate::capture::CaptureRouting {
-                project_id: project_id.to_string(),
-                kind: crate::capture::CaptureTarget::Branch,
-                target_id: branch.to_string(),
-                routed_at: now_rfc3339(),
-                rationale: routed.rationale,
-            },
-        )?;
-        (routed.answer)(self, &routed.capture_id, dispatched)
+        ))
     }
 
     /// `branch.dispatch` onto a branch Build already runs: the run is there,
     /// its checkout is there, and no git runs at all — so the run is taken,
-    /// told, and put back under this one acquisition.
+    /// told, and put back under this one acquisition. The route is written
+    /// before the run is taken, so a refused route leaves the run in its map.
     fn join_dispatched_run(
         &mut self,
         project_id: &str,
         run_id: &str,
+        branch: &str,
         instruction: &str,
         choice: ModelChoice,
+        routed: Option<RoutedCapture>,
     ) -> Result<Value, String> {
+        let route = self.record_dispatch_route(routed, project_id, run_id, branch)?;
         let mut active = self.take_run(run_id)?;
         let agent = self.dispatch_to_run(run_id, &mut active, instruction, choice);
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.to_string(), active)?;
         self.touch_attention(run_id);
-        Ok(agent.json(project_id, run_id))
+        Ok(RouteRecorded::answer(route, agent.json(project_id, run_id)))
     }
 
     /// Add the agent a dispatch speaks through to a run that has a checkout,
@@ -16250,28 +16262,40 @@ impl LifecycleEpilogue for WorktreeCreated {
 pub struct RoutedCapture {
     pub capture_id: String,
     pub rationale: Option<String>,
-    /// What the caller answers with — the capture's own record for the user's
-    /// reroute, which redraws the row; where the work went for the router's
-    /// tool, which is told what it did.
-    pub answer: fn(&AppState, &str, Value) -> Result<Value, String>,
+    /// What the caller answers with, given the capture as its route was
+    /// written — the capture's own record for the user's reroute, which
+    /// redraws the row; where the work went for the router's tool, which is
+    /// told what it did. Nothing here can refuse: every refusal a dispatch can
+    /// make came before the write that made its run real.
+    pub answer: fn(&crate::capture::Capture, Value) -> Value,
+}
+
+/// A capture's route, written down ahead of the run it names being durable,
+/// and what its caller hears once it is.
+struct RouteRecorded {
+    capture: crate::capture::Capture,
+    answered_with: fn(&crate::capture::Capture, Value) -> Value,
+}
+
+impl RouteRecorded {
+    /// The caller's answer over the dispatch — or the dispatch itself, when no
+    /// capture routed it.
+    fn answer(route: Option<Self>, dispatched: Value) -> Value {
+        match route {
+            Some(route) => (route.answered_with)(&route.capture, dispatched),
+            None => dispatched,
+        }
+    }
 }
 
 /// The reroute's answer: the capture as its row now reads.
-fn capture_after_routing(
-    state: &AppState,
-    capture_id: &str,
-    _dispatched: Value,
-) -> Result<Value, String> {
-    state.capture_get(&json!({ "capture_id": capture_id }))
+fn capture_after_routing(capture: &crate::capture::Capture, _dispatched: Value) -> Value {
+    capture_json(capture)
 }
 
 /// The router tool's answer: where the work went.
-fn the_dispatch_itself(
-    _state: &AppState,
-    _capture_id: &str,
-    dispatched: Value,
-) -> Result<Value, String> {
-    Ok(dispatched)
+fn the_dispatch_itself(_capture: &crate::capture::Capture, dispatched: Value) -> Value {
+    dispatched
 }
 
 /// The agent one dispatch put on a branch, and the branch it is working.
@@ -48763,6 +48787,91 @@ mod tests {
         assert_eq!(
             rerouted["result"]["routing"]["target_id"], "build/add-the-csv-export",
             "the reroute still answers with the capture's own row: {rerouted:?}"
+        );
+    }
+
+    /// The app mutex is free while a dispatch cuts its branch, so the capture
+    /// it was routed from can be cancelled meanwhile. A route that cannot be
+    /// written down refuses BEFORE the run is durable: nothing is ever both
+    /// persisted and reported as a failure, and the checkout the git made
+    /// stays on the board as the unowned card it is.
+    #[test]
+    fn a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run_is_durable() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        app.scan_external_worktrees_now(&project_id).unwrap();
+        let (capture_id, _) = captured(&mut app, "add the CSV export");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let rerouted = frame_on_a_thread(
+            &state,
+            "s-reroute",
+            "capture.reroute",
+            json!({ "capture_id": capture_id, "project_id": project_id, "kind": "branch" }),
+        );
+        gate_handle.wait_for_arrival();
+        let cancelled = frame_on_a_thread(
+            &state,
+            "s-cancel",
+            "capture.cancel",
+            json!({ "capture_id": capture_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the cancel answers while the reroute cuts its branch");
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+
+        gate_handle.release();
+        let rerouted = rerouted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the reroute answers once its git is done");
+        assert_eq!(rerouted["ok"], false, "{rerouted:?}");
+        assert!(
+            rerouted["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown capture_id"),
+            "{rerouted:?}"
+        );
+
+        let state = state.lock().unwrap();
+        assert!(
+            state.runs.is_empty(),
+            "the refused dispatch left a run in memory"
+        );
+        let durable = state.store.as_ref().unwrap().load_all_runs().unwrap();
+        assert!(
+            durable.is_empty(),
+            "the refused dispatch left {} run(s) in the store",
+            durable.len()
+        );
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .all(|turn| !turn.owner.starts_with("run-")),
+            "the refused dispatch left a turn queued for a run that does not exist"
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the refused dispatch left its row on the board"
+        );
+        assert!(
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| {
+                    cache.worktrees.iter().any(|worktree| {
+                        worktree.branch.as_deref() == Some("build/add-the-csv-export")
+                    })
+                }),
+            "the checkout the git cut is not on the board: {:?}",
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .map(|cache| &cache.worktrees)
         );
     }
 

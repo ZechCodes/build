@@ -1685,11 +1685,14 @@ pub struct AppState {
     run_files_changed_at: HashMap<String, String>,
     /// Diff-cache entries with a refresh running right now. Single-flight: a
     /// poll that finds one of these stale serves the value it has and adds no
-    /// second worktree scan to the disk. The claim is also the right to publish
-    /// — a mutation that invalidates an entry drops the claim with it, so a
-    /// compute that started before the mutation is discarded instead of putting
-    /// pre-mutation numbers back on the board.
+    /// second worktree scan to the disk.
     diff_refreshes_in_flight: std::collections::HashSet<DiffCacheKey>,
+    /// Of those, the ones a mutation has overtaken — see
+    /// [`supersede_diff_refresh`](AppState::supersede_diff_refresh). The claim
+    /// is also the right to publish, and these have lost it: what they compute
+    /// describes the tree as it was before the mutation, and is dropped rather
+    /// than put back on the board.
+    diff_refreshes_superseded: std::collections::HashSet<DiffCacheKey>,
     /// Test seam: see [`DiffComputeObserver`]. `None` in production.
     diff_compute_observer: Option<DiffComputeObserver>,
     /// Whether a [`sweep_vanished_runs`](AppState::sweep_vanished_runs) is
@@ -1929,6 +1932,7 @@ impl AppState {
             run_stat_cache: HashMap::new(),
             run_files_changed_at: HashMap::new(),
             diff_refreshes_in_flight: std::collections::HashSet::new(),
+            diff_refreshes_superseded: std::collections::HashSet::new(),
             vanished_run_sweep_in_flight: false,
             diff_compute_observer: None,
             #[cfg(test)]
@@ -3929,11 +3933,13 @@ impl AppState {
         }
     }
 
-    /// Store what a refresh computed and let its claim go. A claim that is no
-    /// longer held means the entry was invalidated while the compute ran, so
-    /// the value in hand describes a tree that has since changed: it is dropped.
+    /// Store what a refresh computed and let its claim go. A refresh that was
+    /// superseded while it ran describes a tree the daemon has since changed
+    /// on purpose, so what it computed is dropped and only the claim goes back.
     fn publish_diff_refresh(&mut self, key: &DiffCacheKey, entry: Option<DiffCacheEntry>) {
-        if !self.diff_refreshes_in_flight.remove(key) {
+        let claimed = self.diff_refreshes_in_flight.remove(key);
+        let superseded = self.diff_refreshes_superseded.remove(key);
+        if !claimed || superseded {
             return;
         }
         if let Some(entry) = entry {
@@ -3944,103 +3950,138 @@ impl AppState {
     /// Let a claim go without publishing anything.
     fn release_diff_refresh(&mut self, key: &DiffCacheKey) {
         self.diff_refreshes_in_flight.remove(key);
+        self.diff_refreshes_superseded.remove(key);
     }
 
-    /// Write a computed entry into the cache it belongs to. An entry whose run
-    /// or project has since gone is simply dropped.
+    /// Overtake whatever refresh of this entry is running: the caller has just
+    /// written something newer than that refresh can possibly know about, so
+    /// its result is dropped when it lands.
+    ///
+    /// The claim is deliberately kept until then. Releasing it instead — which
+    /// is what the caches did before — lets the very next read start a second
+    /// compute of the same thing behind the first, and then lets the first,
+    /// pre-edit one land on top of the edit and discard the second's answer.
+    fn supersede_diff_refresh(&mut self, key: &DiffCacheKey) {
+        if self.diff_refreshes_in_flight.contains(key) {
+            self.diff_refreshes_superseded.insert(key.clone());
+        }
+    }
+
+    /// Write a computed entry into the cache it belongs to. The one place a
+    /// kind of entry names the cache it settles in; each arm below is that
+    /// cache's own write, and an entry whose run or project has since gone is
+    /// dropped by it.
     fn store_diff_entry(&mut self, entry: DiffCacheEntry) {
         let now = std::time::Instant::now();
         match entry {
-            DiffCacheEntry::RunStat { run_id, stat } => {
-                // Two computes that disagree are files that changed. Only when
-                // there was something to disagree with: an invalidated entry
-                // recomputes from nothing, and that is a mutation, not a
-                // filesystem event.
-                let (first, changed) = match self.run_stat_cache.get(&run_id) {
-                    Some((_, previous)) => (false, previous != &stat),
-                    None => (true, false),
-                };
-                if changed {
-                    self.run_files_changed_at
-                        .insert(run_id.clone(), now_rfc3339());
-                    // This cache IS the git watcher: two computes that disagree
-                    // are files that landed in the checkout, which is exactly
-                    // what an entity's diff surface is showing.
-                    self.note_entity_changed(&run_id);
-                }
-                self.run_stat_cache.insert(run_id, (now, stat));
-                // A board answered `stat: null` for this run and claimed this
-                // refresh; nothing else will ever tell it the number arrived.
-                if first {
-                    self.note_board_changed();
-                }
-            }
+            DiffCacheEntry::RunStat { run_id, stat } => self.store_run_stat(run_id, stat, now),
             DiffCacheEntry::ExternalScan {
                 project_id,
                 worktrees,
-            } => {
-                let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
-                    return;
-                };
-                // A board answered "still scanning", or answered from a list
-                // this one disagrees with. Either way the rows the browser is
-                // holding are not the rows this daemon would send now, so it is
-                // told to ask again.
-                let changed = project
-                    .external_scan
-                    .as_ref()
-                    .is_none_or(|cache| cache.worktrees != worktrees);
-                project.external_scan = Some(ExternalScanCache {
-                    scanned_at: now,
-                    worktrees,
-                });
-                project.external_scan_failed_at = None;
-                if changed {
-                    self.note_board_changed();
-                }
-            }
+            } => self.store_external_scan(&project_id, worktrees, now),
             DiffCacheEntry::ExternalScanUnreadable { project_id } => {
-                let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
-                    return;
-                };
-                let settling = project.external_scan_failed_at.is_none();
-                project.external_scan_failed_at = Some(now);
-                if settling {
-                    self.note_board_changed();
-                }
+                self.store_scan_failure(&project_id, now)
             }
             DiffCacheEntry::PrimarySummary {
                 project_id,
                 summary,
-            } => {
-                let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else {
-                    return;
-                };
-                let changed = project
-                    .primary_summary
-                    .as_ref()
-                    .is_none_or(|(_, previous)| previous != &summary);
-                project.primary_summary = Some((now, summary));
-                if changed {
-                    self.note_board_changed();
-                }
-            }
+            } => self.store_primary_summary(&project_id, summary, now),
+        }
+    }
+
+    /// A run's diffstat, as of `now`.
+    fn store_run_stat(&mut self, run_id: String, stat: Value, now: std::time::Instant) {
+        // Two computes that disagree are files that changed. Only when there
+        // was something to disagree with: an invalidated entry recomputes from
+        // nothing, and that is a mutation, not a filesystem event.
+        let (first, changed) = match self.run_stat_cache.get(&run_id) {
+            Some((_, previous)) => (false, previous != &stat),
+            None => (true, false),
+        };
+        if changed {
+            self.run_files_changed_at
+                .insert(run_id.clone(), now_rfc3339());
+            // This cache IS the git watcher: two computes that disagree are
+            // files that landed in the checkout, which is exactly what an
+            // entity's diff surface is showing.
+            self.note_entity_changed(&run_id);
+        }
+        self.run_stat_cache.insert(run_id, (now, stat));
+        // A board answered `stat: null` for this run and claimed this refresh;
+        // nothing else will ever tell it the number arrived.
+        if first {
+            self.note_board_changed();
+        }
+    }
+
+    /// A project's checkouts, as one walk of its repository found them.
+    fn store_external_scan(
+        &mut self,
+        project_id: &str,
+        worktrees: Vec<ExternalWorktree>,
+        now: std::time::Instant,
+    ) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        // A board answered "still scanning", or answered from a list this one
+        // disagrees with. Either way the rows the browser is holding are not
+        // the rows this daemon would send now, so it is told to ask again.
+        let changed = project
+            .external_scan
+            .as_ref()
+            .is_none_or(|cache| cache.worktrees != worktrees);
+        project.external_scan = Some(ExternalScanCache {
+            scanned_at: now,
+            worktrees,
+        });
+        project.external_scan_failed_at = None;
+        if changed {
+            self.note_board_changed();
+        }
+    }
+
+    /// A repository this daemon could not read, so the interval is measured
+    /// from the attempt rather than from a list that never arrived.
+    fn store_scan_failure(&mut self, project_id: &str, now: std::time::Instant) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        let settling = project.external_scan_failed_at.is_none();
+        project.external_scan_failed_at = Some(now);
+        if settling {
+            self.note_board_changed();
+        }
+    }
+
+    /// A project's primary-checkout summary, as of `now`.
+    fn store_primary_summary(&mut self, project_id: &str, summary: Value, now: std::time::Instant) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        let changed = project
+            .primary_summary
+            .as_ref()
+            .is_none_or(|(_, previous)| previous != &summary);
+        project.primary_summary = Some((now, summary));
+        if changed {
+            self.note_board_changed();
         }
     }
 
     /// Drop a run's cached diffstat — the mutation that calls this just changed
-    /// the tree it described. Any refresh in flight loses its claim with it.
+    /// the tree it described. Any refresh in flight is superseded with it.
     fn invalidate_run_stat(&mut self, run_id: &str) {
         self.run_stat_cache.remove(run_id);
-        self.release_diff_refresh(&DiffCacheKey::RunStat(run_id.to_string()));
+        self.supersede_diff_refresh(&DiffCacheKey::RunStat(run_id.to_string()));
     }
 
     /// Drop a project's cached primary-checkout summary, same reasoning.
     fn invalidate_primary_summary(&mut self, project_id: &str) {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+        if let Some(project) = self.project_mut(project_id) {
             project.primary_summary = None;
         }
-        self.release_diff_refresh(&DiffCacheKey::PrimarySummary(project_id.to_string()));
+        self.supersede_diff_refresh(&DiffCacheKey::PrimarySummary(project_id.to_string()));
     }
 
     /// The live run that owns a branch in a project, if one does.
@@ -4083,6 +4124,13 @@ impl AppState {
             .as_ref()
             .map(|cache| cache.scanned_at)
             .max(project.external_scan_failed_at)
+    }
+
+    /// One registered project, to be written to. Every edit of a project's
+    /// caches resolves it through here; a project that has since been removed
+    /// is `None`, and the write that found it so is dropped.
+    fn project_mut(&mut self, project_id: &str) -> Option<&mut Project> {
+        self.projects.iter_mut().find(|p| p.id == project_id)
     }
 
     /// The last scan of a project's checkouts, if one has ever landed.
@@ -4177,20 +4225,18 @@ impl AppState {
     }
 
     /// Edit a project's last scan in place. A scan in flight described the
-    /// repository as it was before this change, so its claim goes with the
-    /// edit and whatever it finds is dropped — the amended list is the newer
-    /// truth. A project that has never been scanned is left alone, and so is
-    /// the scan it has running: there is nothing here that scan is out of date
-    /// about, and its first list is what shows the checkout.
+    /// repository as it was before this change, so the edit supersedes it and
+    /// whatever it finds is dropped — the amended list is the newer truth. A
+    /// project that has never been scanned is left alone, and so is the scan it
+    /// has running: there is nothing here that scan is out of date about, and
+    /// its first list is what shows the checkout.
     fn amend_external_scan(
         &mut self,
         project_id: &str,
         amend: impl FnOnce(&mut Vec<ExternalWorktree>),
     ) {
         let amended = self
-            .projects
-            .iter_mut()
-            .find(|p| p.id == project_id)
+            .project_mut(project_id)
             .and_then(|project| project.external_scan.as_mut())
             // The stamp is not touched: this edit knows about one checkout, and
             // the rest of the list is exactly as old as it was.
@@ -4199,7 +4245,7 @@ impl AppState {
         if !amended {
             return;
         }
-        self.release_diff_refresh(&DiffCacheKey::ExternalScan(project_id.to_string()));
+        self.supersede_diff_refresh(&DiffCacheKey::ExternalScan(project_id.to_string()));
         self.note_board_changed();
     }
 
@@ -46163,6 +46209,125 @@ mod tests {
             scans.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "the board rescanned the repository for a checkout it had been handed"
+        );
+    }
+
+    /// Age a project's last scan past the interval, so the next read of it
+    /// claims a rescan.
+    fn age_out_scan(state: &Arc<Mutex<AppState>>, project_id: &str) {
+        let mut app = state.lock().unwrap();
+        let cache = app
+            .project_mut(project_id)
+            .and_then(|project| project.external_scan.as_mut())
+            .expect("a scan to age");
+        cache.scanned_at -= EXTERNAL_SCAN_INTERVAL + Duration::from_secs(1);
+    }
+
+    /// A create that lands while a scan of the same repository is walking it.
+    /// The walk describes the repository as it was before the create, so what
+    /// it finds is dropped — but its claim is held to the end, because letting
+    /// it go lets the very next read start a second walk behind the first and
+    /// then lets the first land on top of the amendment.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_create_during_a_scan_outlives_that_scans_landing() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
+        settled_board(&handler).await;
+        age_out_scan(&state, &project_id);
+
+        let gate = gate_scan_computes(&state);
+        poll_board(&handler).await;
+        gate.wait_for_arrival();
+
+        let created = {
+            let handler = handler.clone();
+            let project_id = project_id.clone();
+            tokio::task::spawn_blocking(move || {
+                call(
+                    &handler,
+                    "worktree.create",
+                    json!({ "project_id": project_id, "name": "scratch" }),
+                )
+            })
+            .await
+            .unwrap()
+        };
+        assert_eq!(created["ok"], true, "{created:?}");
+        let worktree_id = created["result"]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let scan = DiffCacheKey::ExternalScan(project_id.clone());
+        assert!(
+            state.lock().unwrap().diff_refresh_is_running(&scan),
+            "the create un-claimed the scan it had already overtaken"
+        );
+        poll_board(&handler).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            gate.arrivals.try_recv().is_err(),
+            "a second walk of the same repository started behind the first"
+        );
+
+        gate.release();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if !state.lock().unwrap().diff_refresh_is_running(&scan) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the superseded scan lands and lets its claim go");
+
+        let listed = state
+            .lock()
+            .unwrap()
+            .external_scan_of(&project_id)
+            .expect("the amended scan is still there")
+            .worktrees
+            .clone();
+        assert!(
+            listed.iter().any(|w| w.id == worktree_id),
+            "the pre-create walk landed on top of the checkout the create had added: {listed:?}"
+        );
+    }
+
+    /// The same rule for the caches a mutation empties rather than amends. A
+    /// stat computed against the tree as it was before the mutation is dropped,
+    /// and the claim it held is not handed to a second compute behind it.
+    #[test]
+    fn an_invalidated_stat_discards_the_compute_it_overtook() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = "run-1".to_string();
+        let key = DiffCacheKey::RunStat(run_id.clone());
+        state.diff_refreshes_in_flight.insert(key.clone());
+
+        state.invalidate_run_stat(&run_id);
+        assert!(
+            state.diff_refresh_is_running(&key),
+            "the mutation un-claimed a compute that is still running"
+        );
+
+        state.publish_diff_refresh(
+            &key,
+            Some(DiffCacheEntry::RunStat {
+                run_id: run_id.clone(),
+                stat: json!({ "files_changed": 3 }),
+            }),
+        );
+        assert!(
+            !state.run_stat_cache.contains_key(&run_id),
+            "a stat read before the mutation was published as the run's current one"
+        );
+        assert!(
+            !state.diff_refresh_is_running(&key),
+            "the superseded compute kept its claim after landing"
         );
     }
 

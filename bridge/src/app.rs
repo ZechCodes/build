@@ -7652,6 +7652,7 @@ impl AppState {
             branch: Some(crate::worktree::branch_name_for(&slug)),
             state: PendingState::Creating,
             checkout_id: None,
+            implements: None,
             since: std::time::Instant::now(),
         };
         self.defer_lifecycle(
@@ -7762,7 +7763,8 @@ impl AppState {
             held.project_id == row.project_id
                 && (held.entity_id == row.entity_id
                     || (held.branch.is_some() && held.branch == row.branch)
-                    || (held.checkout_id.is_some() && held.checkout_id == row.checkout_id))
+                    || (held.checkout_id.is_some() && held.checkout_id == row.checkout_id)
+                    || (held.implements.is_some() && held.implements == row.implements))
         };
         if let Some(held) = self.pending_rows.iter().find(claimed) {
             return Err(format!(
@@ -7807,6 +7809,7 @@ impl AppState {
                     "branch": row.branch,
                     "state": row.state.as_str(),
                     "checkout_id": row.checkout_id,
+                    "implements": row.implements,
                     // How long this row has stood. A row older than a scan
                     // interval reads as stuck rather than as work in flight.
                     "pending_seconds": row.since.elapsed().as_secs(),
@@ -9999,6 +10002,7 @@ impl AppState {
             branch: None,
             state: PendingState::Creating,
             checkout_id: None,
+            implements: None,
             since: std::time::Instant::now(),
         };
         let store = self.require_store()?.clone();
@@ -10117,6 +10121,7 @@ impl AppState {
             branch: None,
             state: PendingState::Creating,
             checkout_id: None,
+            implements: None,
             since: std::time::Instant::now(),
         };
         self.reserve_lifecycle(
@@ -10652,6 +10657,7 @@ impl AppState {
             branch: None,
             checkout_id: Some(crate::worktree::external_worktree_id(&worktree.path)),
             state: PendingState::Creating,
+            implements: Some(issue_id.to_string()),
             since: std::time::Instant::now(),
         };
         self.reserve_lifecycle(
@@ -11506,6 +11512,7 @@ impl AppState {
             branch: Some(crate::worktree::branch_name_for(issue.slug())),
             state: PendingState::Creating,
             checkout_id: None,
+            implements: Some(issue_id.to_string()),
             since: std::time::Instant::now(),
         };
         self.reserve_lifecycle(
@@ -11623,6 +11630,7 @@ impl AppState {
             branch: None,
             state: PendingState::Creating,
             checkout_id: Some(worktree_id.to_string()),
+            implements: Some(issue_id.to_string()),
             since: std::time::Instant::now(),
         };
         self.reserve_lifecycle(
@@ -14422,6 +14430,7 @@ impl AppState {
             branch: Some(mutation.target.branch().to_string()),
             state: PendingState::Creating,
             checkout_id: None,
+            implements: None,
             since: std::time::Instant::now(),
         };
         self.defer_lifecycle(row, Box::new(mutation))
@@ -44393,6 +44402,67 @@ mod tests {
         assert!(
             commits[baseline + 1].ends_with("Checkpoint: before Build implements an Issue here"),
             "the branch's own work was swept into the docs commit: {log}"
+        );
+    }
+
+    /// The single-active-writer gate on an Issue is the reservation, not the
+    /// run map: the run a `run.create` is opening is not in that map until its
+    /// git has landed, and a second `run.create` naming a checkout would pass
+    /// `ImplementableIssue::judge` meanwhile. Both rows claim the Issue, so the
+    /// second is refused where a second create of one slug is.
+    #[test]
+    fn a_second_implementation_of_an_issue_is_refused_while_the_first_is_being_cut() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "one writer per issue");
+        let target = adopted_run(&mut app, &repo, dir.path(), "already-started");
+        let worktree_id = worktree_id_of_run(&app, &target);
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let first = frame_on_a_thread(
+            &state,
+            "s-first",
+            "run.create",
+            json!({ "plan_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let second = frame_on_a_thread(
+            &state,
+            "s-second",
+            "run.create",
+            json!({ "plan_id": issue_id, "worktree_id": worktree_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second run.create is answered while the first cuts its checkout");
+        assert_eq!(second["ok"], false, "{second:?}");
+        assert!(
+            second["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("already creating")),
+            "{second:?}"
+        );
+
+        gate_handle.release();
+        let first = first
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first run.create answers once its git is done");
+        assert_eq!(first["ok"], true, "{first:?}");
+        let app = state.lock().unwrap();
+        let implementing = app
+            .runs
+            .values()
+            .filter(|run| {
+                run.run.plan_id.as_ref().map(|p| p.0.as_str()) == Some(issue_id.as_str())
+                    && !run.run.state.is_terminal()
+            })
+            .count();
+        assert_eq!(implementing, 1, "two runs are implementing one Issue");
+        assert!(
+            app.runs[&target].run.plan_id.is_none(),
+            "the refused run.create bound the target checkout to the Issue anyway"
         );
     }
 

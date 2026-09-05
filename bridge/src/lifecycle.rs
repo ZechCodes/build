@@ -146,6 +146,12 @@ pub struct PendingRow {
     /// The existing card this verb acts on, when there is one: the state is
     /// rendered on that card rather than as a second row.
     pub checkout_id: Option<String>,
+    /// The Issue this verb is opening an implementation of, when it is one.
+    /// An Issue has one active writer, and the run that will be it is not in
+    /// the run map until the git has landed — so the row is the gate for the
+    /// length of that git, and a second implementation of the same Issue is
+    /// refused while it stands.
+    pub implements: Option<String>,
     pub since: Instant,
 }
 

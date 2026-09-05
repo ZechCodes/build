@@ -1335,6 +1335,14 @@ settled differently, and why:
                           /// one (adopt, abandon, dispatch onto a branch): the
                           /// state is rendered on it, not as a second row.
                           checkout_id: Option<String>,
+                          /// The Issue an implementation is being opened for.
+                          /// `ImplementableIssue::judge` reads the run map, and
+                          /// the run it is about to open is not there until the
+                          /// git lands; the row is the single-writer gate for
+                          /// that window, so a second implementation of one
+                          /// Issue is refused where a second create of one slug
+                          /// and a second adopt of one checkout already are.
+                          implements: Option<String>,
                           since: Instant }
   pub enum PendingState { Creating, Discarding }   // rendered, never branched on
 

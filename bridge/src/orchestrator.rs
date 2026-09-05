@@ -2814,7 +2814,10 @@ impl Orchestrator {
     /// whole.
     pub fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
         if let Err(e) = self.worktrees.remove(worktree, keep_branch) {
-            eprintln!("discard_worktree {}: {e}", worktree.name);
+            eprintln!(
+                "discard_checkout {} (keep_branch {keep_branch}): {e}",
+                worktree.name
+            );
         }
     }
 

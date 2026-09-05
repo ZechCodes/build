@@ -6559,6 +6559,7 @@ impl AppState {
         self.defer_project(
             path.clone(),
             path.display().to_string(),
+            PendingState::Creating,
             Box::new(OpenRepo {
                 requested_base: requested_base_branch(params),
                 path,
@@ -6574,20 +6575,14 @@ impl AppState {
         &mut self,
         dest: std::path::PathBuf,
         title: String,
+        state: PendingState,
         mutation: Box<dyn WorktreeMutation>,
     ) -> Result<Value, String> {
-        let row = PendingRow {
-            entity_id: crate::worktree::external_worktree_id(
-                &crate::worktree::canonical_planned_path(&dest),
-            ),
-            project_id: String::new(),
+        let row = PendingRow::on_directory(
+            crate::worktree::external_worktree_id(&crate::worktree::canonical_planned_path(&dest)),
             title,
-            branch: None,
-            state: PendingState::Creating,
-            checkout_id: None,
-            implements: None,
-            since: std::time::Instant::now(),
-        };
+            state,
+        );
         self.defer_lifecycle(row, mutation)
     }
 
@@ -6805,6 +6800,7 @@ impl AppState {
         self.defer_project(
             dest.clone(),
             name.clone(),
+            PendingState::Creating,
             Box::new(CloneRepo {
                 url,
                 name,
@@ -6841,6 +6837,7 @@ impl AppState {
         self.defer_project(
             dest,
             name.clone(),
+            PendingState::Creating,
             Box::new(CreateRepo {
                 name,
                 parent,
@@ -6865,18 +6862,15 @@ impl AppState {
             .find(|project| project.id == project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
         let repo_path = project.repo_path.clone();
-        let row = PendingRow {
-            entity_id: project_id.clone(),
-            project_id: project_id.clone(),
-            title: project.name.clone(),
-            branch: None,
-            state: PendingState::Creating,
-            checkout_id: None,
-            implements: None,
-            since: std::time::Instant::now(),
-        };
-        self.defer_lifecycle(
-            row,
+        let title = project.name.clone();
+        // The repository is the row's identity here as it is for every other
+        // project verb: what a second `set_remote` collides with is the config
+        // file it would be rewriting, and nothing about the project's record
+        // is being minted or taken away.
+        self.defer_project(
+            repo_path.clone(),
+            title,
+            PendingState::Updating,
             Box::new(SetRemote {
                 project_id,
                 repo_path,
@@ -7586,19 +7580,11 @@ impl AppState {
         let base_branch = self.base_for(&project_id)?;
         let project = self.orch_for(&project_id)?.clone();
         let placeholder_id = self.planned_checkout_id(&project_id, &slug)?;
-        let row = PendingRow {
-            entity_id: placeholder_id.clone(),
-            project_id: project_id.clone(),
-            title: name,
-            // The ref this create is cutting, so a dispatch onto the same one
-            // collides with it: creates and dispatches claim branches out of a
-            // single namespace, and neither can see the other's git.
-            branch: Some(crate::worktree::branch_name_for(&slug)),
-            state: PendingState::Creating,
-            checkout_id: None,
-            implements: None,
-            since: std::time::Instant::now(),
-        };
+        // The ref this create is cutting is on the row, so a dispatch onto the
+        // same one collides with it: creates and dispatches claim branches out
+        // of a single namespace, and neither can see the other's git.
+        let row = PendingRow::creating(placeholder_id.clone(), Some(project_id.clone()), name)
+            .on_branch(crate::worktree::branch_name_for(&slug));
         self.defer_lifecycle(
             row,
             Box::new(CreateWorktree {
@@ -7741,14 +7727,19 @@ impl AppState {
 
     /// The lifecycle verbs in flight, as rows the board shows beside the
     /// checkouts that already exist.
+    ///
+    /// Only the rows that stand for a card: a project verb reserves the folder
+    /// it is reaching for, and a folder is not something the board lists, so
+    /// nothing about it belongs in a list of cards.
     fn pending_rows_json(&self) -> Vec<Value> {
         self.pending_rows
             .iter()
-            .map(|row| {
-                json!({
+            .filter_map(|row| {
+                let project_id = row.project_id.as_ref()?;
+                Some(json!({
                     "entity_id": row.entity_id,
-                    "project_id": row.project_id,
-                    "project": self.project_name_of(&row.project_id),
+                    "project_id": project_id,
+                    "project": self.project_name_by_id(project_id),
                     "title": row.title,
                     "branch": row.branch,
                     "state": row.state.as_str(),
@@ -7757,7 +7748,7 @@ impl AppState {
                     // How long this row has stood. A row older than a scan
                     // interval reads as stuck rather than as work in flight.
                     "pending_seconds": row.since.elapsed().as_secs(),
-                })
+                }))
             })
             .collect()
     }
@@ -7882,9 +7873,9 @@ impl AppState {
                 return Err(error);
             }
         };
-        self.amend_checkouts(&project_id, &change);
+        self.amend_checkouts(project_id.as_deref(), &change);
         epilogue.apply(self).inspect_err(|_| {
-            self.amend_checkouts(&project_id, &change);
+            self.amend_checkouts(project_id.as_deref(), &change);
             reservation.roll_back(self);
         })
     }
@@ -7892,7 +7883,13 @@ impl AppState {
     /// Move what one mutation did to the checkouts on disk into the list the
     /// board reads: what appeared, what went, and — when the mutation touched a
     /// checkout it could not describe — the rescan that finds it.
-    fn amend_checkouts(&mut self, project_id: &str, change: &WorktreeChange) {
+    ///
+    /// A project verb has no project to amend and moves no checkout, so there
+    /// is nothing here for it to do.
+    fn amend_checkouts(&mut self, project_id: Option<&str>, change: &WorktreeChange) {
+        let Some(project_id) = project_id else {
+            return;
+        };
         for worktree in &change.appeared {
             self.note_worktree_appeared(project_id, worktree.clone());
         }
@@ -10072,18 +10069,9 @@ impl AppState {
     ) -> Result<WorktreeLifecycleJob, String> {
         let project = self.orch_for(&project_id)?.clone();
         let store = self.require_store()?.clone();
-        let row = PendingRow {
-            entity_id: issue_id.to_string(),
-            project_id,
-            title,
-            // A plan cuts no branch and claims no checkout: it is written
-            // against the primary one, so nothing else can collide with it.
-            branch: None,
-            state: PendingState::Creating,
-            checkout_id: None,
-            implements: None,
-            since: std::time::Instant::now(),
-        };
+        // A plan cuts no branch and claims no checkout: it is written against
+        // the primary one, so nothing else can collide with it.
+        let row = PendingRow::creating(issue_id.to_string(), Some(project_id), title);
         self.reserve_lifecycle(
             row,
             Box::new(OpenPlanWorkspace {
@@ -10610,16 +10598,9 @@ impl AppState {
         }
         let project_id = self.project_of(run_id)?;
         let project = self.orch_for(&project_id)?.clone();
-        let row = PendingRow {
-            entity_id: run_id.to_string(),
-            project_id,
-            title,
-            branch: None,
-            checkout_id: Some(crate::worktree::external_worktree_id(&worktree.path)),
-            state: PendingState::Creating,
-            implements: Some(issue_id.to_string()),
-            since: std::time::Instant::now(),
-        };
+        let row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
+            .on_checkout(crate::worktree::external_worktree_id(&worktree.path))
+            .implementing(issue_id.to_string());
         self.reserve_lifecycle(
             row,
             Box::new(RestoreImplementationCheckout {
@@ -11466,18 +11447,12 @@ impl AppState {
         .map_err(err)?;
         let project = self.orch_for(&project_id)?.clone();
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        let row = PendingRow {
-            entity_id: run_id.clone(),
-            project_id: project_id.clone(),
-            title,
-            // The ref this implementation is about to cut, so a create or a
-            // dispatch claiming the same one collides here rather than in git.
-            branch: Some(crate::worktree::branch_name_for(issue.slug())),
-            state: PendingState::Creating,
-            checkout_id: None,
-            implements: Some(issue_id.to_string()),
-            since: std::time::Instant::now(),
-        };
+        // The ref this implementation is about to cut is on the row, so a
+        // create or a dispatch claiming the same one collides here rather than
+        // in git.
+        let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
+            .on_branch(crate::worktree::branch_name_for(issue.slug()))
+            .implementing(issue_id.to_string());
         self.reserve_lifecycle(
             row,
             Box::new(OpenImplementation {
@@ -11581,16 +11556,9 @@ impl AppState {
         // the length of two commits would read as one that had been abandoned.
         // What the row holds is the checkout, which nothing else may claim
         // until this hand-over is written down.
-        let row = PendingRow {
-            entity_id: run_id.clone(),
-            project_id: project_id.clone(),
-            title,
-            branch: None,
-            state: PendingState::Creating,
-            checkout_id: Some(worktree_id.to_string()),
-            implements: Some(issue_id.to_string()),
-            since: std::time::Instant::now(),
-        };
+        let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
+            .on_checkout(worktree_id.to_string())
+            .implementing(issue_id.to_string());
         self.reserve_lifecycle(
             row,
             Box::new(AdoptImplementation {
@@ -13113,46 +13081,77 @@ impl AppState {
         // Abandoning removes the run's worktree — which for a primary run is
         // the repository. That run ends by letting go of the checkout instead.
         let keeps_checkout = self.owns_primary_checkout(&run_id, active);
-        let row = PendingRow {
-            entity_id: run_id.clone(),
-            project_id: project_id.clone(),
-            title: active.run.goal.clone(),
-            branch: None,
-            state: PendingState::Discarding,
-            checkout_id: Some(crate::worktree::external_worktree_id(
-                &Self::canonical_root(&active.worktree.path),
-            )),
-            implements: None,
-            since: std::time::Instant::now(),
-        };
+        let title = active.run.goal.clone();
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let stages = self.stage_publication_query(&run_id, active);
         let project = self.orch_for(&project_id)?.clone();
-        let detail = thread_detail(params);
+        let settlement = Box::new(RunAbandoned {
+            run_id: run_id.clone(),
+            project_id: project_id.clone(),
+            issue_id,
+            detail: thread_detail(params),
+            stages,
+            published: StagePublications::default(),
+        });
+        self.discard_run(
+            run_id,
+            Some(project_id),
+            title,
+            move |worktree| match keeps_checkout {
+                true => DiscardedCheckout::Kept,
+                false => DiscardedCheckout::Removed {
+                    project,
+                    worktree: worktree.clone(),
+                },
+            },
+            settlement,
+        )
+    }
+
+    /// Take one run off the board and let go of the checkout it was working in.
+    ///
+    /// `run.abandon` and `run.delete` differ in three things: what happens to
+    /// the directory, what is still owed the records once it is gone, and what
+    /// the row standing in the run's place is called. Everything around
+    /// them — the row, the run coming out of the map, the stat the board
+    /// cached, the agents that were writing into the directory — is the same
+    /// decide phase, and it is this one.
+    ///
+    /// The caller's refusals are all spent before it gets here: `take` runs
+    /// with the row already on the board and cannot fail.
+    fn discard_run(
+        &mut self,
+        run_id: String,
+        project_id: Option<String>,
+        title: String,
+        checkout: impl FnOnce(&crate::worktree::Worktree) -> DiscardedCheckout,
+        settlement: Box<dyn DiscardSettlement>,
+    ) -> Result<Value, String> {
+        let worktree_path = self
+            .runs
+            .get(&run_id)
+            .ok_or("unknown run_id")?
+            .worktree
+            .path
+            .clone();
+        let row = PendingRow::discarding(run_id.clone(), project_id, title).on_checkout(
+            crate::worktree::external_worktree_id(&Self::canonical_root(&worktree_path)),
+        );
         self.defer_lifecycle_holding(row, move |state| {
             let active = state
                 .runs
                 .remove(&run_id)
                 .expect("the run was read out of the map above");
             state.invalidate_run_stat(&run_id);
-            let stages = state.stage_publication_query(&run_id, &active);
-            // A human who abandoned a run must not keep paying for the agent
-            // that was working on it, so the kill is explicit — and the removal
-            // waits it out rather than walking a directory a live child is
-            // still writing into.
+            // A human who took a run off the board must not keep paying for the
+            // agent that was working on it, so the kill is explicit — and the
+            // removal waits it out rather than walking a directory a live child
+            // is still writing into.
             let retirements = state.retire_agent_tabs(&active.worktree.path);
             Box::new(DiscardCheckout {
-                project,
-                checkout: match keeps_checkout {
-                    true => DiscardedCheckout::Kept,
-                    false => DiscardedCheckout::Removed(active.worktree.clone()),
-                },
+                checkout: checkout(&active.worktree),
                 retirements,
-                stages,
-                settlement: Box::new(RunAbandoned {
-                    issue_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),
-                    run_id: run_id.clone(),
-                    project_id,
-                    detail,
-                }),
+                settlement,
                 active: Box::new(active),
                 run_id,
             })
@@ -13169,13 +13168,14 @@ impl AppState {
         &mut self,
         abandoned: RunAbandoned,
         mut active: ActiveRun,
-        published: StagePublications,
     ) -> Result<Value, String> {
         let RunAbandoned {
             run_id,
             project_id,
             issue_id,
             detail,
+            published,
+            ..
         } = abandoned;
         let branch = active.worktree.branch();
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
@@ -13184,82 +13184,74 @@ impl AppState {
             .and_then(|orch| orch.abandon_run_keeping_checkout(&mut active).map_err(err));
         let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
         if verdict.is_ok() {
-            // The run is out of the map, so its lineage closes on the thread
-            // this call holds rather than through the owner lookup.
-            let now = now_rfc3339();
-            if let Some(primary) = active.agents.primary_mut() {
-                finish_open_session(&mut primary.thread, &now);
-                primary.thread.push_event(
-                    crate::thread::ThreadEventKind::Abandoned,
-                    Some("Run abandoned".to_string()),
-                    None,
-                    None,
-                    now,
-                );
-            }
-            // A branch may carry several agents and the decide phase took every
-            // one of them. `Abandoned` closed the first agent's turn (and, for
-            // a planned implementation, its Issue's — see
-            // `mirror_run_outcome_to_issue`); the agents beside it were told
-            // nothing, so each one that died mid-turn is closed on its own
-            // conversation. Every other teardown path removes the run from the
-            // board entirely, so there is no row left to read as working.
-            let now = now_rfc3339();
-            for agent in active.agents.iter_mut() {
-                if agent.thread.working_since().is_some() {
-                    record_session_death_in_thread(&mut agent.thread, &now);
-                }
-            }
+            close_abandoned_run_conversations(&mut active);
         }
         let (view, persisted) = self.answer_run_mutation(run_id.clone(), active, detail);
         verdict?;
         persisted?;
-        if let Some(issue_id) = &issue_id {
-            // Abandoning is deleting the branch with nothing merged out of it,
-            // so the issue this was implementing comes back to the inbox — and
-            // its conversation says which branch it lost and why.
-            self.mirror_run_outcome_to_issue(
+        if let Some(issue_id) = issue_id {
+            self.record_abandon_on_issue(
+                &issue_id,
                 &run_id,
-                issue_id,
-                crate::thread::ThreadEventKind::Abandoned,
-                abandoned_branch_summary(&branch, "abandoned"),
+                &branch,
+                worktree_id,
+                &affected_stages,
             )?;
         }
-        if let Some(issue_id) = issue_id {
-            let mut issue = self.take_plan(&issue_id)?;
-            let mut links = vec![
-                crate::thread::ThreadLink::Implementation {
-                    issue_id: issue_id.clone(),
-                    implementation_id: run_id.clone(),
-                },
-                crate::thread::ThreadLink::Worktree { worktree_id },
-            ];
-            links.extend(
-                issue
-                    .stages
-                    .iter()
-                    .filter(|stage| affected_stages.contains(&stage.id))
-                    .map(|stage| crate::thread::ThreadLink::IssueStage {
-                        issue_id: issue_id.clone(),
-                        stage_id: stage.id.clone(),
-                        path: stage.path.clone(),
-                    }),
-            );
-            issue.agents.sole_thread_mut().push_event_with_links(
-                crate::thread::ThreadEventKind::WorktreeDeleted,
-                Some(format!(
-                    "Issue worktree deleted; {} unpublished stage(s) are incomplete",
-                    affected_stages.len()
-                )),
-                None,
-                None,
-                links,
-                now_rfc3339(),
-            );
-            let issue_persisted = self.finish_plan_mutation(issue_id, issue);
-            issue_persisted?;
-        }
         Ok(view)
+    }
+
+    /// Tell the Issue this run was implementing what it lost: the branch it was
+    /// on, and the stages whose commits the removal made unverifiable.
+    fn record_abandon_on_issue(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        branch: &str,
+        worktree_id: String,
+        affected_stages: &[String],
+    ) -> Result<(), String> {
+        // Abandoning is deleting the branch with nothing merged out of it, so
+        // the issue this was implementing comes back to the inbox — and its
+        // conversation says which branch it lost and why.
+        self.mirror_run_outcome_to_issue(
+            run_id,
+            issue_id,
+            crate::thread::ThreadEventKind::Abandoned,
+            abandoned_branch_summary(branch, "abandoned"),
+        )?;
+        let mut issue = self.take_plan(issue_id)?;
+        let mut links = vec![
+            crate::thread::ThreadLink::Implementation {
+                issue_id: issue_id.to_string(),
+                implementation_id: run_id.to_string(),
+            },
+            crate::thread::ThreadLink::Worktree { worktree_id },
+        ];
+        links.extend(
+            issue
+                .stages
+                .iter()
+                .filter(|stage| affected_stages.contains(&stage.id))
+                .map(|stage| crate::thread::ThreadLink::IssueStage {
+                    issue_id: issue_id.to_string(),
+                    stage_id: stage.id.clone(),
+                    path: stage.path.clone(),
+                }),
+        );
+        issue.agents.sole_thread_mut().push_event_with_links(
+            crate::thread::ThreadEventKind::WorktreeDeleted,
+            Some(format!(
+                "Issue worktree deleted; {} unpublished stage(s) are incomplete",
+                affected_stages.len()
+            )),
+            None,
+            None,
+            links,
+            now_rfc3339(),
+        );
+        self.finish_plan_mutation(issue_id.to_string(), issue)?;
+        Ok(())
     }
 
     /// Delete a terminal run from the board: prune any leftover worktree,
@@ -13286,14 +13278,21 @@ impl AppState {
         if active.run.plan_id.is_some() {
             return Ok(json!({ "ok": true, "retained_as_issue_lineage": true }));
         }
-        let worktree = active.worktree.clone();
+        let checkout_path = active.worktree.path.clone();
         // A failed run still holds its worktree; deleting an adopted run's card
         // must never delete the user's files (delete removes the card, not the
         // worktree it was minted around).
-        let prunes_checkout = worktree.path.exists() && !active.adopted;
+        let prunes_checkout = checkout_path.exists() && !active.adopted;
         let title = active.run.goal.clone();
-        let project_id = self.project_of(&run_id)?;
-        let project = self.orch_for(&project_id)?.clone();
+        // A run recovered after its repository was moved or deleted has no
+        // project mapping at all, and that stale card is exactly what a delete
+        // is for. There is then no orchestrator to prune with, so the delete
+        // clears the card and leaves whatever is on disk alone.
+        let project_id = self.entity_project.get(&run_id).cloned();
+        let project = project_id
+            .as_deref()
+            .and_then(|id| self.orch_for(id).ok())
+            .cloned();
 
         if let Some(store) = &self.store {
             store
@@ -13301,46 +13300,24 @@ impl AppState {
                 .map_err(|e| format!("run store: {e}"))?;
         }
 
-        let row = PendingRow {
-            entity_id: run_id.clone(),
+        let settlement = Box::new(RunDeleted {
+            run_id: run_id.clone(),
             project_id: project_id.clone(),
+            checkout: checkout_path,
+        });
+        self.discard_run(
+            run_id,
+            project_id,
             title,
-            branch: None,
-            state: PendingState::Discarding,
-            checkout_id: Some(crate::worktree::external_worktree_id(
-                &Self::canonical_root(&worktree.path),
-            )),
-            implements: None,
-            since: std::time::Instant::now(),
-        };
-        self.defer_lifecycle_holding(row, move |state| {
-            let active = state
-                .runs
-                .remove(&run_id)
-                .expect("the run was read out of the map above");
-            // The card is gone, so this agent's `done` reports would have no
-            // owner to route to. Close the worktree's agent — the worktree
-            // itself may well survive, and reopening the Agent tab there
-            // re-adopts.
-            let retirements = state.retire_agent_tabs(&active.worktree.path);
-            let stages = state.stage_publication_query(&run_id, &active);
-            Box::new(DiscardCheckout {
-                project,
-                checkout: match prunes_checkout {
-                    true => DiscardedCheckout::Pruned(worktree.clone()),
-                    false => DiscardedCheckout::Kept,
+            move |worktree| match (prunes_checkout, project) {
+                (true, Some(project)) => DiscardedCheckout::Pruned {
+                    project,
+                    worktree: worktree.clone(),
                 },
-                retirements,
-                stages,
-                settlement: Box::new(RunDeleted {
-                    run_id: run_id.clone(),
-                    project_id,
-                    checkout: worktree.path,
-                }),
-                active: Box::new(active),
-                run_id,
-            })
-        })
+                _ => DiscardedCheckout::Kept,
+            },
+            settlement,
+        )
     }
 
     /// Forget every trace of a run whose record has been deleted. The map entry
@@ -13393,22 +13370,19 @@ impl AppState {
         let checkout_id = target.checkout_id();
         // The repo root is reachable from every reload and every second
         // browser, and a card is adoptable from more than one surface. An asker
-        // who arrives while the checkout is being taken over converges on the
-        // run that adoption is opening rather than minting a second owner.
-        if let Some(opening) = self.run_being_opened_on(&project_id, &checkout_id) {
-            return Ok(json!({ "run_id": opening, "adopting": true }));
-        }
+        // who arrives while the checkout is being taken over is refused by the
+        // row that adoption reserved, rather than handed a run id no verb would
+        // accept yet: the run that will carry it is not in the map until the
+        // adoption's epilogue lands, and an adoption that fails never mints it
+        // at all. The refusal is what makes the retry converge — by then the
+        // owner is real, and `run_owning_worktree_id` above answers with it.
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        let row = PendingRow {
-            entity_id: run_id.clone(),
-            project_id: project_id.clone(),
-            title: self.checkout_title(&project_id, &checkout_id),
-            branch: None,
-            state: PendingState::Creating,
-            checkout_id: Some(checkout_id),
-            implements: None,
-            since: std::time::Instant::now(),
-        };
+        let row = PendingRow::creating(
+            run_id.clone(),
+            Some(project_id.clone()),
+            self.checkout_title(&project_id, &checkout_id),
+        )
+        .on_checkout(checkout_id);
         let project = self.orch_for(&project_id)?.clone();
         self.defer_lifecycle(
             row,
@@ -13432,20 +13406,6 @@ impl AppState {
             .get(run_id)
             .expect("the caller found this run by scanning the map");
         self.run_view(run_id, active, thread_detail(params), DigestScope::Detail)
-    }
-
-    /// The run a verb in flight is opening on this checkout, if one is. A verb
-    /// that is taking a checkout away leaves nothing to converge on, which is
-    /// [`PendingState::leaves_a_record`]'s question.
-    fn run_being_opened_on(&self, project_id: &str, checkout_id: &str) -> Option<String> {
-        self.pending_rows
-            .iter()
-            .find(|row| {
-                row.project_id == project_id
-                    && row.checkout_id.as_deref() == Some(checkout_id)
-                    && row.state.leaves_a_record()
-            })
-            .map(|row| row.entity_id.clone())
     }
 
     /// What to call a checkout on the row standing in for it: the branch the
@@ -14489,16 +14449,12 @@ impl AppState {
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
-        let row = PendingRow {
-            entity_id: mutation.run_id.clone(),
-            project_id,
-            title: branch.unwrap_or(instruction),
-            branch: Some(mutation.target.branch().to_string()),
-            state: PendingState::Creating,
-            checkout_id: None,
-            implements: None,
-            since: std::time::Instant::now(),
-        };
+        let row = PendingRow::creating(
+            mutation.run_id.clone(),
+            Some(project_id),
+            branch.unwrap_or(instruction),
+        )
+        .on_branch(mutation.target.branch().to_string());
         self.defer_lifecycle(row, Box::new(mutation))
     }
 
@@ -17490,16 +17446,19 @@ impl LifecycleEpilogue for ProjectRemoteSet {
 /// What a run whose checkout has just been let go of still owes the records.
 /// `run.abandon` writes a verdict onto it; `run.delete` clears its card away.
 ///
-/// The run and git's verdict on its stages arrive as arguments because the git
-/// phase carried them: the run rides through the removal so that no failure can
-/// strand it, and the stages were judged while the refs still stood.
+/// The run arrives as an argument because the git phase carried it: it rides
+/// through the removal so that no failure can strand it off the board.
 pub trait DiscardSettlement: Send {
-    fn settle(
-        self: Box<Self>,
-        state: &mut AppState,
-        active: ActiveRun,
-        published: StagePublications,
-    ) -> Result<Value, String>;
+    /// Ask git whatever this settlement has to know before the checkout is let
+    /// go of — the refs an answer depends on are readable only until then. Runs
+    /// inside [`DiscardCheckout::perform`], with the app mutex released.
+    ///
+    /// Most settlements have nothing to ask, and a question nobody asked costs
+    /// nothing: it is the abandon that judges a run's stages, and saying so
+    /// here is what keeps a delete from paying for the verdict.
+    fn judge_before_removal(&mut self) {}
+
+    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String>;
 }
 
 /// `run.abandon`'s apply half: the agents are dead, the checkout is gone, and
@@ -17511,16 +17470,20 @@ pub struct RunAbandoned {
     /// The Issue this run was implementing, told what it lost.
     pub issue_id: Option<String>,
     pub detail: crate::thread::ThreadDetail,
+    /// What the run's stages are judged against, and git's answer once
+    /// [`DiscardSettlement::judge_before_removal`] has asked. An abandon is the
+    /// only verb that asks, so it is the only one that carries the query.
+    pub stages: StagePublicationQuery,
+    pub published: StagePublications,
 }
 
 impl DiscardSettlement for RunAbandoned {
-    fn settle(
-        self: Box<Self>,
-        state: &mut AppState,
-        active: ActiveRun,
-        published: StagePublications,
-    ) -> Result<Value, String> {
-        state.settle_abandoned_run(*self, active, published)
+    fn judge_before_removal(&mut self) {
+        self.published = self.stages.classify();
+    }
+
+    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String> {
+        state.settle_abandoned_run(*self, active)
     }
 }
 
@@ -17528,24 +17491,22 @@ impl DiscardSettlement for RunAbandoned {
 /// trace of the run in memory goes with the record the decide phase deleted.
 pub struct RunDeleted {
     pub run_id: String,
-    pub project_id: String,
+    /// The project whose board loses the card, when the run still has one: a
+    /// run recovered after its repository moved has no project mapping, and
+    /// clearing that stale card is exactly what a delete is for.
+    pub project_id: Option<String>,
     /// The directory the run worked in, consulted to tell a checkout that
     /// survived the delete — the user's own files — from one that was pruned.
     pub checkout: std::path::PathBuf,
 }
 
 impl DiscardSettlement for RunDeleted {
-    fn settle(
-        self: Box<Self>,
-        state: &mut AppState,
-        _active: ActiveRun,
-        _published: StagePublications,
-    ) -> Result<Value, String> {
+    fn settle(self: Box<Self>, state: &mut AppState, _active: ActiveRun) -> Result<Value, String> {
         state.forget_run(&self.run_id);
-        if self.checkout.exists() {
+        if let Some(project_id) = self.project_id.filter(|_| self.checkout.exists()) {
             // The checkout outlived its card — it was the user's — so it goes
             // back to the board as the bare one it is.
-            state.rescan_external_worktrees(&self.project_id);
+            state.rescan_external_worktrees(&project_id);
         }
         state.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
@@ -18814,6 +18775,34 @@ fn open_session_id(thread: &crate::thread::Thread) -> Option<String> {
         .rev()
         .find(|session| session.ended_at.is_none())
         .map(|session| session.id.clone())
+}
+
+/// Close every conversation an abandoned run was holding open. The run is out
+/// of the map by now, so its lineage closes on the record this call holds
+/// rather than through the owner lookup.
+fn close_abandoned_run_conversations(active: &mut ActiveRun) {
+    let now = now_rfc3339();
+    if let Some(primary) = active.agents.primary_mut() {
+        finish_open_session(&mut primary.thread, &now);
+        primary.thread.push_event(
+            crate::thread::ThreadEventKind::Abandoned,
+            Some("Run abandoned".to_string()),
+            None,
+            None,
+            now.clone(),
+        );
+    }
+    // A branch may carry several agents and the decide phase took every one of
+    // them. `Abandoned` closed the first agent's turn (and, for a planned
+    // implementation, its Issue's — see `mirror_run_outcome_to_issue`); the
+    // agents beside it were told nothing, so each one that died mid-turn is
+    // closed on its own conversation. Every other teardown path removes the run
+    // from the board entirely, so there is no row left to read as working.
+    for agent in active.agents.iter_mut() {
+        if agent.thread.working_since().is_some() {
+            record_session_death_in_thread(&mut agent.thread, &now);
+        }
+    }
 }
 
 /// What an issue's conversation says when the branch implementing it is gone
@@ -21601,6 +21590,56 @@ mod tests {
         assert!(
             !destination.exists(),
             "the half-written destination outlived the clone that failed"
+        );
+    }
+
+    /// A project verb reserves the folder it is reaching for — two clones into
+    /// one directory are one clone — but a folder is not a card, so the board's
+    /// list of cards is never handed a row for it.
+    #[test]
+    fn a_project_verb_reserves_its_directory_without_a_row_on_the_board() {
+        let (dir_src, repo_src) = init_repo();
+        let mut app = qa_state(&repo_src, dir_src.path());
+        app.projects_dir = dir_src.path().join("projects");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let cloning = frame_on_a_thread(
+            &state,
+            "s-clone",
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap(), "name": "landing" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while a repository is being cloned");
+        assert!(
+            pending_on_the_board(&board).is_empty(),
+            "the board was handed a row standing for a folder: {board:?}"
+        );
+        // The reservation is still what serializes the folder: a second clone
+        // into it is refused rather than run into the first one's directory.
+        let second = frame_on_a_thread(
+            &state,
+            "s-second",
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap(), "name": "landing" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second clone is answered");
+        assert_eq!(second["ok"], false, "{second:?}");
+
+        gate_handle.release();
+        let cloned = cloning
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the clone answers once its git is done");
+        assert_eq!(cloned["ok"], true, "{cloned:?}");
+        assert!(
+            state.lock().unwrap().pending_rows.is_empty(),
+            "the reservation outlived the verb that took it"
         );
     }
 
@@ -35983,8 +36022,8 @@ mod tests {
 
     /// The repo root is reachable from every reload and every second browser.
     /// While one adoption's git runs the checkout has no run yet, so the second
-    /// asker has to converge on the run the first is opening rather than mint a
-    /// second owner of one directory.
+    /// asker is refused rather than handed the id of a run no verb would
+    /// accept — and its retry converges on the one owner the first minted.
     #[test]
     fn two_adopts_of_one_checkout_converge_on_one_run() {
         let (dir, repo) = init_repo();
@@ -36009,16 +36048,38 @@ mod tests {
         )
         .recv_timeout(Duration::from_secs(10))
         .expect("a second browser is answered while the first adoption runs");
-        assert_eq!(second["ok"], true, "{second:?}");
+        assert_eq!(
+            second["ok"], false,
+            "the second asker was handed a run that does not exist yet: {second:?}"
+        );
 
         gate_handle.release();
         let first = first
             .recv_timeout(Duration::from_secs(30))
             .expect("the first adoption answers once its git is done");
         assert_eq!(first["ok"], true, "{first:?}");
+
+        let retried = frame_on_a_thread(
+            &state,
+            "s-two",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        )
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the retry is answered");
         assert_eq!(
-            second["result"]["run_id"], first["result"]["run_id"],
-            "both askers name one run: {second:?} {first:?}"
+            retried["result"]["run_id"], first["result"]["run_id"],
+            "both askers name one run: {retried:?} {first:?}"
+        );
+        // And the id it names is one every other verb accepts: a reply that
+        // promises a run must promise a durable one.
+        let converged = run_id_of(&retried);
+        let fetched = frame_on_a_thread(&state, "s-two", "run.get", json!({ "run_id": converged }))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("run.get is answered");
+        assert_eq!(
+            fetched["ok"], true,
+            "the id the second asker converged on resolves: {fetched:?}"
         );
         assert_eq!(
             state.lock().unwrap().runs.len(),
@@ -36441,6 +36502,81 @@ mod tests {
         );
         let board = state.handle(req("board.list", json!({})));
         assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
+    }
+
+    /// A run recovered after its repository moved off disk has no project
+    /// mapping at all — and that stale card is exactly what a delete is for. It
+    /// clears, and the directory it has no orchestrator to prune with is left
+    /// exactly where it stands.
+    #[test]
+    fn a_run_whose_project_is_gone_is_still_deletable() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "orphaned-card");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let run = app.runs.get_mut(&run_id).unwrap();
+        // Only a terminal run can be deleted, and a native one is the arm that
+        // would prune: the missing project is the only thing standing between
+        // this delete and a `git worktree remove`.
+        run.run.state = RunState::Failed;
+        run.adopted = false;
+        app.entity_project.remove(&run_id);
+        let state = app.shared();
+
+        let deleted = frame_on_a_thread(
+            &state,
+            "s-delete",
+            "run.delete",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the delete answers");
+        assert_eq!(
+            deleted["ok"], true,
+            "a card whose project is gone is unremovable: {deleted:?}"
+        );
+
+        let state = state.lock().unwrap();
+        assert!(!state.runs.contains_key(&run_id), "the card is cleared");
+        assert!(state.pending_rows.is_empty(), "the placeholder is retired");
+        assert!(
+            checkout.exists(),
+            "a delete with no orchestrator to prune with must leave the directory alone"
+        );
+    }
+
+    /// Both discard verbs take the run off the board, so both drop the stat the
+    /// board cached for it at the same moment — a number computed against a
+    /// checkout that is being let go of is not one to serve again.
+    #[test]
+    fn discarding_a_run_drops_the_stat_the_board_cached_for_it() {
+        for terminal in [false, true] {
+            let (dir, repo) = init_repo();
+            let mut app = qa_state(&repo, dir.path());
+            let run_id = adopted_run(&mut app, &repo, dir.path(), "counted");
+            app.run_stat_cache.insert(
+                run_id.clone(),
+                (std::time::Instant::now(), json!({ "files": 3 })),
+            );
+            let verb = match terminal {
+                false => "run.abandon",
+                true => {
+                    app.runs.get_mut(&run_id).unwrap().run.state = RunState::Failed;
+                    "run.delete"
+                }
+            };
+            let state = app.shared();
+
+            let discarded =
+                frame_on_a_thread(&state, "s-discard", verb, json!({ "run_id": run_id }))
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("the discard answers");
+            assert_eq!(discarded["ok"], true, "{verb}: {discarded:?}");
+            assert!(
+                !state.lock().unwrap().run_stat_cache.contains_key(&run_id),
+                "{verb} served the board a stat read off a checkout it let go of"
+            );
+        }
     }
 
     /// Which checkout a run owns is read back off the run record's own paths,
@@ -44759,6 +44895,11 @@ mod tests {
         assert_eq!(pending[0]["state"], "creating", "{pending:?}");
         assert_eq!(pending[0]["title"], "Scratch Space", "{pending:?}");
         assert_eq!(pending[0]["project_id"], json!(project_id), "{pending:?}");
+        assert_eq!(
+            pending[0]["project"],
+            json!(state.lock().unwrap().projects[0].name),
+            "a row the board renders says which project it belongs to: {pending:?}"
+        );
         let placeholder = pending[0]["entity_id"].as_str().unwrap().to_string();
 
         gate_handle.release();

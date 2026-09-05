@@ -135,24 +135,87 @@ pub struct PendingRow {
     /// The id the settled record is expected to carry — for a create, the
     /// checkout id its path will hash to; for a dispatch, the run it opens.
     pub entity_id: String,
-    pub project_id: String,
+    /// The project whose board renders this row. A project verb has none: there
+    /// is no project id until its git lands, and what it settles into is the
+    /// project itself rather than a card, so nothing renders it.
+    pub project_id: Option<String>,
     pub title: String,
-    /// The branch this verb is claiming, when it names one. A second verb
-    /// claiming the same branch is refused while this row stands: the checkout
-    /// it would work in does not exist yet, so the branch is the only identity
-    /// the two share.
     pub branch: Option<String>,
     pub state: PendingState,
-    /// The existing card this verb acts on, when there is one: the state is
-    /// rendered on that card rather than as a second row.
     pub checkout_id: Option<String>,
-    /// The Issue this verb is opening an implementation of, when it is one.
-    /// An Issue has one active writer, and the run that will be it is not in
-    /// the run map until the git has landed — so the row is the gate for the
-    /// length of that git, and a second implementation of the same Issue is
-    /// refused while it stands.
     pub implements: Option<String>,
     pub since: Instant,
+}
+
+impl PendingRow {
+    /// A card the board is about to have: the run or checkout `entity_id` names
+    /// once the git lands.
+    pub fn creating(entity_id: String, project_id: Option<String>, title: String) -> PendingRow {
+        PendingRow::of(entity_id, project_id, title, PendingState::Creating)
+    }
+
+    /// A card the board is about to lose.
+    pub fn discarding(entity_id: String, project_id: Option<String>, title: String) -> PendingRow {
+        PendingRow::of(entity_id, project_id, title, PendingState::Discarding)
+    }
+
+    /// A row for the directory a project verb reached for, which is the only
+    /// identity two of them share before either has a project id: two clones
+    /// into one folder, or two remotes written into one repository, collide
+    /// here. No card stands where it does, so no board renders it.
+    pub fn on_directory(entity_id: String, title: String, state: PendingState) -> PendingRow {
+        PendingRow::of(entity_id, None, title, state)
+    }
+
+    fn of(
+        entity_id: String,
+        project_id: Option<String>,
+        title: String,
+        state: PendingState,
+    ) -> PendingRow {
+        PendingRow {
+            entity_id,
+            project_id,
+            title,
+            branch: None,
+            state,
+            checkout_id: None,
+            implements: None,
+            since: Instant::now(),
+        }
+    }
+
+    /// The branch this verb is claiming. A second verb claiming the same branch
+    /// is refused while this row stands: the checkout it would work in does not
+    /// exist yet, so the branch is the only identity the two share.
+    pub fn on_branch(self, branch: String) -> PendingRow {
+        PendingRow {
+            branch: Some(branch),
+            ..self
+        }
+    }
+
+    /// The existing card this verb acts on: the state is rendered on that card
+    /// rather than as a second row, and a second verb reaching for the same
+    /// checkout is refused while this row stands.
+    pub fn on_checkout(self, checkout_id: String) -> PendingRow {
+        PendingRow {
+            checkout_id: Some(checkout_id),
+            ..self
+        }
+    }
+
+    /// The Issue this verb is opening an implementation of. An Issue has one
+    /// active writer, and the run that will be it is not in the run map until
+    /// the git has landed — so the row is the gate for the length of that git,
+    /// and a second implementation of the same Issue is refused while it
+    /// stands.
+    pub fn implementing(self, issue_id: String) -> PendingRow {
+        PendingRow {
+            implements: Some(issue_id),
+            ..self
+        }
+    }
 }
 
 /// What is happening to the row. Rendered, never branched on.
@@ -160,6 +223,10 @@ pub struct PendingRow {
 pub enum PendingState {
     Creating,
     Discarding,
+    /// A record that already exists is being rewritten in place. Nothing is
+    /// minted and nothing is taken away; what the row holds is the right to be
+    /// the one verb rewriting it.
+    Updating,
 }
 
 impl PendingState {
@@ -167,14 +234,8 @@ impl PendingState {
         match self {
             PendingState::Creating => "creating",
             PendingState::Discarding => "discarding",
+            PendingState::Updating => "updating",
         }
-    }
-
-    /// Whether a record will stand where this row does once its verb lands. A
-    /// verb taking a checkout away leaves nothing for a second caller asking
-    /// after the same checkout to converge on.
-    pub fn leaves_a_record(self) -> bool {
-        matches!(self, PendingState::Creating)
     }
 }
 
@@ -894,34 +955,39 @@ pub enum DiscardedCheckout {
     /// A worktree Build minted or adopted, whose run is being abandoned: the
     /// directory goes and the branch stays, because a run's work outlives the
     /// run so it can be re-attempted.
-    Removed(crate::worktree::Worktree),
+    Removed {
+        project: Orchestrator,
+        worktree: crate::worktree::Worktree,
+    },
     /// A worktree whose card is being cleared off the board altogether: the
     /// directory and the branch under it both go.
-    Pruned(crate::worktree::Worktree),
+    Pruned {
+        project: Orchestrator,
+        worktree: crate::worktree::Worktree,
+    },
     /// Nothing on disk is touched: the project's primary checkout, which IS the
-    /// repository, or a checkout adopted from the user, whose files are theirs.
+    /// repository, a checkout adopted from the user, whose files are theirs, or
+    /// a run whose project is no longer registered, which leaves no
+    /// [`Orchestrator`] to prune with. The project rides in the two arms that
+    /// need one so that the arm that touches no disk cannot be asked for one.
     Kept,
 }
 
 impl DiscardedCheckout {
-    /// The directory this takes away, and whether the branch under it stays.
-    fn removal(&self) -> Option<(&crate::worktree::Worktree, bool)> {
+    /// The directory this takes away, whose project takes it, and whether the
+    /// branch under it stays.
+    fn removal(&self) -> Option<(&Orchestrator, &crate::worktree::Worktree, bool)> {
         match self {
             DiscardedCheckout::Kept => None,
-            DiscardedCheckout::Removed(worktree) => Some((worktree, true)),
-            DiscardedCheckout::Pruned(worktree) => Some((worktree, false)),
+            DiscardedCheckout::Removed { project, worktree } => Some((project, worktree, true)),
+            DiscardedCheckout::Pruned { project, worktree } => Some((project, worktree, false)),
         }
     }
 
     /// Let go of the directory, waiting out the agents that were writing into
     /// it first — only when there is a walk for a live child to trip.
-    fn discard(
-        &self,
-        project: &Orchestrator,
-        writers: &[crate::reaper::Retirement],
-        run_id: &str,
-    ) -> WorktreeChange {
-        let Some((worktree, keep_branch)) = self.removal() else {
+    fn discard(&self, writers: &[crate::reaper::Retirement], run_id: &str) -> WorktreeChange {
+        let Some((project, worktree, keep_branch)) = self.removal() else {
             return WorktreeChange::nothing();
         };
         for writer in writers {
@@ -959,13 +1025,9 @@ impl DiscardedCheckout {
 /// so a `perform` that could return `Err` would be a run stranded off the
 /// board. What is written down is the apply half's, under the mutex.
 pub struct DiscardCheckout {
-    pub project: Orchestrator,
     pub checkout: DiscardedCheckout,
     /// The agents the decide phase killed, waited out here before the removal.
     pub retirements: Vec<crate::reaper::Retirement>,
-    /// What the run's stages are judged against — asked BEFORE the removal,
-    /// while the refs the answer depends on are still inspectable.
-    pub stages: crate::app::StagePublicationQuery,
     /// The run itself, off the board for the length of the removal so nothing
     /// answers verbs against a checkout that is being deleted.
     pub active: Box<crate::orchestrator::ActiveRun>,
@@ -975,16 +1037,16 @@ pub struct DiscardCheckout {
 }
 
 impl WorktreeMutation for DiscardCheckout {
-    fn perform(self: Box<Self>) -> Result<Performed, String> {
-        let published = self.stages.classify();
-        let change = self
-            .checkout
-            .discard(&self.project, &self.retirements, &self.run_id);
+    fn perform(mut self: Box<Self>) -> Result<Performed, String> {
+        // Whatever the verb has to ask git is asked here, before the removal:
+        // the refs its answer depends on are readable only until then. A verb
+        // with nothing to ask pays nothing for the question.
+        self.settlement.judge_before_removal();
+        let change = self.checkout.discard(&self.retirements, &self.run_id);
         Ok(Performed {
             change,
             epilogue: Box::new(CheckoutDiscarded {
                 active: self.active,
-                published,
                 settlement: self.settlement,
             }),
         })
@@ -995,13 +1057,12 @@ impl WorktreeMutation for DiscardCheckout {
 /// What is written down there is the verb's own.
 struct CheckoutDiscarded {
     active: Box<crate::orchestrator::ActiveRun>,
-    published: crate::app::StagePublications,
     settlement: Box<dyn crate::app::DiscardSettlement>,
 }
 
 impl LifecycleEpilogue for CheckoutDiscarded {
     fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        self.settlement.settle(state, *self.active, self.published)
+        self.settlement.settle(state, *self.active)
     }
 }
 

@@ -10,6 +10,10 @@
 import { esc } from "./text.js";
 
 const UNAVAILABLE = "Downloads aren't available right now.";
+// The api's download token lives ten minutes. A minute of that is the slack a
+// copy needs — long enough that a copy right after the paint costs nothing,
+// short enough that what lands on the clipboard still has most of its life.
+const FRESH_FOR_MS = 60_000;
 
 const dim = (text, extra = "") => `<div class="dim" style="font-size:12.5px;${extra}">${text}</div>`;
 
@@ -58,12 +62,15 @@ export function downloadsPlaceholderHtml() {
       <div class="adderr" id="downloadserr"></div>`;
 }
 
-/** Copy `text`, and say so for a moment. The gate and the downloads block share
- *  this so "Copied" means the same thing everywhere. */
-export function bindCopyButton(button, text, clipboard) {
+/** Copy what `resolveText` answers with, and say so for a moment. The text is
+ *  asked for at click time, not at bind time: the one-liner carries a token
+ *  with ten minutes to live, so what the human copies is decided when they
+ *  reach for it. The gate and the downloads block share this so "Copied" means
+ *  the same thing everywhere. */
+export function bindCopyButton(button, resolveText, clipboard) {
   if (!button) return;
-  button.onclick = () => {
-    clipboard?.writeText?.(text);
+  button.onclick = async () => {
+    clipboard?.writeText?.(await resolveText());
     button.textContent = "Copied";
     setTimeout(() => (button.textContent = "Copy"), 1500);
   };
@@ -73,7 +80,10 @@ export function bindCopyButton(button, text, clipboard) {
  *  #downloadserr and leaves every other control on the page usable — on the
  *  first-run screen the pairing code is what actually pairs a device, and it
  *  must survive a downloads route that is missing or closed. */
-export async function mountDownloads(host, { fetchDownloads, platformKey, clipboard } = {}) {
+export async function mountDownloads(
+  host,
+  { fetchDownloads, mintInstallCommand, platformKey, clipboard, now = Date.now } = {},
+) {
   const slot = host?.querySelector?.("#downloads");
   if (!slot) return;
   let downloads;
@@ -86,5 +96,26 @@ export async function mountDownloads(host, { fetchDownloads, platformKey, clipbo
     return;
   }
   slot.outerHTML = downloadsHtml(downloads, platformKey);
-  bindCopyButton(host.querySelector("#copycmd"), downloads?.install_command ?? "", clipboard);
+  bindCopyButton(host.querySelector("#copycmd"), freshCommand(host, downloads, mintInstallCommand, now), clipboard);
+}
+
+/** The line the human is about to copy. The api mints a token good for ten
+ *  minutes; a page left open past a minute of that asks for a new one, repaints
+ *  it so the screen and the clipboard never disagree, and — when the api
+ *  refuses — hands over the line already on screen and lets the api be the one
+ *  judge of it. */
+function freshCommand(host, downloads, mintInstallCommand, now) {
+  let command = downloads?.install_command ?? "";
+  let mintedAt = now();
+  return async () => {
+    if (now() - mintedAt <= FRESH_FOR_MS) return command;
+    try {
+      command = (await mintInstallCommand()).install_command;
+      mintedAt = now();
+      host.querySelector("#installcmd").textContent = command;
+    } catch {
+      /* the line on screen still has whatever life the api gave it */
+    }
+    return command;
+  };
 }

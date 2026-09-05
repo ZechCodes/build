@@ -5,7 +5,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { refreshDevices } from "../devices.js";
-import { fetchDownloads, revokeDevice } from "../api.js";
+import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openBrowser } from "../sheets/browser.js";
@@ -303,6 +303,7 @@ export async function renderSettings() {
   // nav next) waiting on the api's clock.
   void mountDownloads($("#root"), {
     fetchDownloads,
+    mintInstallCommand,
     platformKey: currentPlatformKey(),
     clipboard: navigator.clipboard,
   });

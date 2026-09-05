@@ -14,6 +14,7 @@ import { loginWithDummy } from "./skrift-auth.mjs";
 const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
 const pairingCode = process.env.PAIRING_CODE;
 const email = process.env.QA_EMAIL || "qa@localhost";
+const inviteToken = process.env.INVITE_TOKEN || "COMPOSE-INVITE";
 const deadlineMs = Number(process.env.PAIR_TIMEOUT_MS || 60000);
 
 if (!pairingCode) {
@@ -34,9 +35,28 @@ async function waitForApi(cookieless = `${apiUrl}/auth/dummy/login`, deadline = 
   }
 }
 
+// Build is invite-only: every device route sits behind alpha membership, so the QA
+// user must redeem the invite the dev entrypoint seeded before it may approve
+// anything. Redeeming is idempotent across runs — the second visit answers 200 with
+// the "already used" page instead of the 302 the first one gets.
+async function redeemInvite(cookie) {
+  const response = await fetch(`${apiUrl}/invite/${inviteToken}`, {
+    redirect: "manual",
+    headers: { Cookie: cookie },
+  });
+  if (response.status === 302 || response.status === 200) {
+    console.log(`pair.mjs: invite ${inviteToken} redeemed for ${email} (HTTP ${response.status})`);
+    return;
+  }
+  throw new Error(
+    `invite ${inviteToken} was not redeemable: HTTP ${response.status} — is BUILD_DEV_INVITE_TOKEN seeded on the app container and does it match INVITE_TOKEN here?`,
+  );
+}
+
 async function main() {
   await waitForApi();
   const { cookie } = await loginWithDummy(apiUrl, { email, name: "QA" });
+  await redeemInvite(cookie);
   const authed = (path, init = {}) =>
     fetch(`${apiUrl}${path}`, {
       ...init,

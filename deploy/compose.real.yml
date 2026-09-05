@@ -44,6 +44,9 @@ services:
       VAPID_PRIVATE_KEY: ${BUILD_VAPID_PRIVATE_KEY:-}
       VAPID_PUBLIC_KEY: ${BUILD_VAPID_PUBLIC_KEY:-}
       VAPID_SUBJECT: ${BUILD_VAPID_SUBJECT:-mailto:dev@getbuild.ing}
+      # Build is invite-only. The dev entrypoint seeds this raw token as one open
+      # invite for qa@localhost; the qa one-shot redeems it before it pairs.
+      BUILD_DEV_INVITE_TOKEN: ${BUILD_INVITE_TOKEN:-COMPOSE-INVITE}
     volumes:
       # Not baked into the image (production-only image): the dev config and a
       # dev entrypoint that seeds Skrift's first-run setup after migrating.
@@ -106,6 +109,7 @@ services:
       # In-network dev transport; TLS is the ingress's job in production.
       RELAY_URL: ws://relay:8799 # nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       PAIRING_CODE: ${BUILD_PAIRING_CODE:-COMPOSE-PAIR}
+      INVITE_TOKEN: ${BUILD_INVITE_TOKEN:-COMPOSE-INVITE}
       QA_EMAIL: qa@localhost
     command: ["/bin/sh", "-c", "node pair.mjs && node e2e.mjs && node qa.mjs"]
     depends_on:

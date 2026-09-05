@@ -12,7 +12,12 @@ import inspect
 import pytest
 from litestar.exceptions import ClientException, SerializationException
 
-from buildapp import devices_controller, invites_controller, push_controller
+from buildapp import (
+    devices_controller,
+    invites_controller,
+    push_controller,
+    waitlist_controller,
+)
 from buildapp.request_body import (
     MALFORMED_JSON_MESSAGE,
     NON_OBJECT_MESSAGE,
@@ -68,6 +73,6 @@ async def test_an_object_body_is_returned_as_it_was_parsed():
 
 def test_no_json_route_reads_a_body_any_other_way():
     """One spelling, so no route is left answering 500 for a truncated body."""
-    for module in (invites_controller, devices_controller, push_controller):
+    for module in (invites_controller, devices_controller, push_controller, waitlist_controller):
         source = inspect.getsource(module)
         assert "request.json()" not in source, module.__name__

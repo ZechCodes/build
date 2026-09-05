@@ -82,13 +82,6 @@ async def test_desktop_guard_accepts_a_verified_desktop_token(monkeypatch):
             "user_id": str(user_id),
         }
 
-    class DatabaseContext:
-        async def __aenter__(self):
-            return "database"
-
-        async def __aexit__(self, _error_type, _error, _traceback):
-            return None
-
     monkeypatch.setattr("buildapp.desktop_auth.verify_oauth_token", verify_token)
     monkeypatch.setattr(
         "buildapp.desktop_auth.get_settings",
@@ -99,7 +92,7 @@ async def test_desktop_guard_accepts_a_verified_desktop_token(monkeypatch):
         headers={"authorization": "Bearer desktop-token"},
         scope={},
         app=SimpleNamespace(
-            state=SimpleNamespace(session_maker_class=DatabaseContext)
+            state=SimpleNamespace(session_maker_class=_DatabaseContext)
         ),
     )
 

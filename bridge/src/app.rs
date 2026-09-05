@@ -3235,24 +3235,18 @@ impl AppState {
             return;
         }
         let reason = format!("could not reach the agent: {error}");
-        // And on the agent the turn was for. The entity's `last_error` is the
-        // surface's line about the work; this is the agent's own word about the
-        // session it was asked to open, which is what the client laid a
-        // "starting" state over the row waiting for.
-        self.edit_agent_record(
-            "record_agent_delivery_failure",
-            &turn.owner,
-            &turn.agent_id,
-            {
-                let reason = reason.clone();
-                |agent| agent.start_error = Some(reason)
-            },
-        );
+        // Both facts land in the one mutation. The entity's `last_error` is
+        // the surface's line about the work; the agent's `start_error` is its
+        // own word about the session it was asked to open, which is what the
+        // client laid a "starting" state over the row waiting for.
         // Plan and run ids are disjoint, so the owner lookup is the router.
         if self.plans.contains_key(&turn.owner) {
             let Ok(mut active) = self.take_plan(&turn.owner) else {
                 return;
             };
+            if let Some(agent) = active.agents.by_id_mut(&turn.agent_id) {
+                agent.start_error = Some(reason.clone());
+            }
             active.last_error = Some(reason);
             let persisted = self.finish_plan_mutation(turn.owner.clone(), active);
             if let Err(error) = persisted {
@@ -3263,11 +3257,27 @@ impl AppState {
         let Ok(mut active) = self.take_run(&turn.owner) else {
             return;
         };
+        if let Some(agent) = active.agents.by_id_mut(&turn.agent_id) {
+            agent.start_error = Some(reason.clone());
+        }
         active.last_error = Some(reason);
         let persisted = self.finish_run_mutation(turn.owner.clone(), active);
         if let Err(error) = persisted {
             eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
         }
+    }
+
+    /// A turn found no session to open: the entity's session is over, so no
+    /// agent is spawned for it. Not a failure of the work — the entity's
+    /// `last_error` is left alone — but the client laid a "starting" state
+    /// over the agent it addressed, and only the agent's own word takes it off.
+    fn record_agent_start_declined(&mut self, turn: &PendingAgentTurn) {
+        self.edit_agent_record(
+            "record_agent_start_declined",
+            &turn.owner,
+            &turn.agent_id,
+            |agent| agent.start_error = Some(AGENT_START_DECLINED_SESSION_OVER.to_string()),
+        );
     }
 
     /// Is this entity's agent merely on its way — a turn still queued, or one
@@ -20061,6 +20071,10 @@ fn inherit_waiting_clients(s: &mut AppState, key: &TabKey, tab: &Tab) -> Option<
 
 /// What a delivery reports when the tab it just ensured is already gone.
 const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn could be delivered";
+/// What a start says on its agent when the entity's session is over and no
+/// harness is opened for it — the third answer to a start, beside "live" and
+/// a spawn that failed.
+const AGENT_START_DECLINED_SESSION_OVER: &str = "no session to open: this entity's session is over";
 
 /// Why a screen the spawn was supposed to fill is closed instead.
 ///
@@ -20384,11 +20398,9 @@ impl DeliveryRunner {
                 // An issue whose session is over (approved, abandoned) holds no
                 // workspace — and its checkout is the project's primary one,
                 // which is emphatically not a place to spawn a replacement for
-                // work nobody is doing.
-                Ok(None) => eprintln!(
-                    "deliver to {}: the entity's session is over; the turn stays on its thread",
-                    turn.owner
-                ),
+                // work nobody is doing. The turn stays on its thread; the
+                // agent says why nothing opened.
+                Ok(None) => s.record_agent_start_declined(&turn),
                 Ok(Some((_, Spawned::Fresh))) => s.record_agent_session_start(&turn),
                 Ok(Some((_, Spawned::Warm))) => {}
                 // The turn stays durable on the thread — the agent picks it up
@@ -35079,6 +35091,55 @@ mod tests {
         assert!(
             got["result"]["agents"][0]["start_error"].is_null(),
             "the turn now on its way answers for the session, not the one before it: {got:?}"
+        );
+    }
+
+    /// The third answer to a start. An issue whose session is over holds no
+    /// workspace, so a turn for it opens nothing — and used to say so only on
+    /// stderr, leaving the client's "starting" ring on until its grace ran out.
+    /// The agent carries the reason; the issue's own `last_error` does not,
+    /// because nothing about the work failed.
+    #[test]
+    fn a_start_for_an_entity_whose_session_is_over_says_so_on_its_agent() {
+        let (dir, repo) = init_repo();
+        let app = qa_state(&repo, dir.path());
+        let state = app.shared();
+        let plan_id = "plan-session-over";
+        {
+            let side = Orchestrator::new(
+                repo.clone(),
+                dir.path().join("side-wt"),
+                Agent::Warm(HarnessSpec::new("true")),
+                Templates::default(),
+            );
+            let active = side.create_plan(
+                PlanId::new(plan_id),
+                "a goal whose session is over",
+                "main",
+                Default::default(),
+            );
+            let mut s = state.lock().unwrap();
+            let project_id = s.projects[0].id.clone();
+            s.entity_project.insert(plan_id.to_string(), project_id);
+            s.plans.insert(plan_id.to_string(), active);
+            s.pending_agent_turns.push(unreachable_turn(plan_id));
+        }
+
+        deliver_pending_agent_turns(&state);
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("issue.get", json!({ "issue_id": plan_id })));
+        let agent = &got["result"]["agents"][0];
+        assert_eq!(
+            agent["start_error"],
+            json!(AGENT_START_DECLINED_SESSION_OVER),
+            "the agent says why no session opened: {got:?}"
+        );
+        assert!(
+            got["result"]["last_error"].is_null(),
+            "a session that is over is not a failure of the work: {got:?}"
         );
     }
 

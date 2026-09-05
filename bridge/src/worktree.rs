@@ -609,12 +609,40 @@ pub fn discover_external_worktrees(
         excluded: excluded_paths,
     };
     let mut found = describe_checkouts(repo_path, base_branch, &target)?;
-    found.sort_by(|a, b| {
+    sort_checkouts(&mut found);
+    Ok(found)
+}
+
+/// The order a checkout list is served in: freshest commit first, canonical
+/// path as the tie-break. Shared, because a list amended in place has to stay
+/// in the order the scan that filled it used.
+pub fn sort_checkouts(checkouts: &mut [ExternalWorktree]) {
+    checkouts.sort_by(|a, b| {
         a.head_age_seconds
             .cmp(&b.head_age_seconds)
             .then_with(|| a.path.cmp(&b.path))
     });
-    Ok(found)
+}
+
+/// One checkout described exactly as [`discover_external_worktrees`] would have
+/// described it. A caller that has just created a worktree knows which one it
+/// wants and pays for that one, rather than rescanning the repository to learn
+/// what it already did.
+pub fn describe_checkout(
+    repo_path: &Path,
+    base_branch: &str,
+    path: &Path,
+) -> Result<ExternalWorktree, WorktreeError> {
+    let canonical = std::fs::canonicalize(path)?;
+    let target = ScanTarget::Only { path: &canonical };
+    describe_checkouts(repo_path, base_branch, &target)?
+        .pop()
+        .ok_or_else(|| {
+            WorktreeError::Command(format!(
+                "{} is not a checkout of this repository",
+                canonical.display()
+            ))
+        })
 }
 
 /// The primary checkout described in the shape adoption takes for an external
@@ -649,6 +677,10 @@ enum ScanTarget<'a> {
     Primary {
         primary: &'a Path,
     },
+    /// One named checkout, whichever of the repository's it turns out to be.
+    Only {
+        path: &'a Path,
+    },
 }
 
 impl ScanTarget<'_> {
@@ -658,6 +690,7 @@ impl ScanTarget<'_> {
                 canonical_path != *primary && !excluded.contains(canonical_path)
             }
             ScanTarget::Primary { primary } => canonical_path == *primary,
+            ScanTarget::Only { path } => canonical_path == *path,
         }
     }
 
@@ -1312,6 +1345,36 @@ mod tests {
 
         let primary_canonical = std::fs::canonicalize(&repo).unwrap();
         assert!(found.iter().all(|w| w.path != primary_canonical));
+    }
+
+    #[test]
+    fn one_checkout_describes_itself_the_way_the_scan_describes_it() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-one");
+        git_in(
+            &repo,
+            &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
+        );
+        std::fs::write(wt_path.join("dirty.txt"), "dirty\n").unwrap();
+
+        let scanned = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
+        let described = describe_checkout(&repo, "main", &wt_path).unwrap();
+
+        assert_eq!(
+            described, scanned[0],
+            "a checkout described on its own must be the entry a scan would have found"
+        );
+    }
+
+    #[test]
+    fn a_checkout_outside_the_repository_cannot_be_described() {
+        let (dir, repo) = init_repo();
+        let stranger = dir.path().join("not-a-worktree");
+        std::fs::create_dir_all(&stranger).unwrap();
+
+        let described = describe_checkout(&repo, "main", &stranger);
+
+        assert!(described.is_err(), "{described:?}");
     }
 
     #[test]

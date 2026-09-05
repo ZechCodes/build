@@ -8,8 +8,9 @@ use serde_json::{json, Value};
 
 use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
-    initialize_result, selected_choice, thread_opened, EXACT_THREAD_ID, SELECTED_EFFORT,
-    SELECTED_MODEL, SUPPORTED_USER_AGENT, WORKTREE_ROOT,
+    initialize_result, item_envelope, item_envelope_at, selected_choice, thread_opened,
+    EXACT_THREAD_ID, ITEM_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, SUPPORTED_USER_AGENT,
+    WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
@@ -1977,10 +1978,7 @@ fn suppressed_items_need_no_id_and_consume_no_ledgers() {
     ] {
         for method in ["item/started", "item/completed"] {
             assert!(translator
-                .translate(
-                    method,
-                    &json!({"threadId":"thread-1","turnId":"turn-1","item":item})
-                )
+                .translate(method, &item_envelope(item.clone()))
                 .unwrap()
                 .is_empty());
         }
@@ -1992,14 +1990,24 @@ fn suppressed_items_need_no_id_and_consume_no_ledgers() {
 #[test]
 fn completed_speech_and_tools_translate_without_raw_payloads() {
     let mut translator = CodexActivityTranslator::new(limits().translator());
-    let reasoning = translator.translate("item/completed", &json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":"r","type":"reasoning","summary":["final summary"]}})).unwrap();
+    let reasoning = translator
+        .translate(
+            "item/completed",
+            &item_envelope(json!({"id":"r","type":"reasoning","summary":["final summary"]})),
+        )
+        .unwrap();
     assert_eq!(
         reasoning[0].activity,
         AgentActivity::Reasoning {
             summary: "final summary".to_string()
         }
     );
-    let narration = translator.translate("item/completed", &json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":"n","type":"agentMessage","text":"finished"}})).unwrap();
+    let narration = translator
+        .translate(
+            "item/completed",
+            &item_envelope(json!({"id":"n","type":"agentMessage","text":"finished"})),
+        )
+        .unwrap();
     assert_eq!(
         narration[0].activity,
         AgentActivity::Narration {
@@ -2007,11 +2015,25 @@ fn completed_speech_and_tools_translate_without_raw_payloads() {
         }
     );
 
-    let started = translator.translate("item/started", &json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":"c","type":"commandExecution","command":"secret command","status":"inProgress"}})).unwrap();
+    let started = translator
+        .translate(
+            "item/started",
+            &item_envelope(
+                json!({"id":"c","type":"commandExecution","command":"secret command","status":"inProgress"}),
+            ),
+        )
+        .unwrap();
     assert!(
         matches!(&started[0].activity, AgentActivity::ToolUse { call_id, summary } if call_id == "c" && !summary.contains("secret"))
     );
-    let completed = translator.translate("item/completed", &json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":"c","type":"commandExecution","command":"secret command","aggregatedOutput":"secret output","status":"completed","exitCode":0}})).unwrap();
+    let completed = translator
+        .translate(
+            "item/completed",
+            &item_envelope(
+                json!({"id":"c","type":"commandExecution","command":"secret command","aggregatedOutput":"secret output","status":"completed","exitCode":0}),
+            ),
+        )
+        .unwrap();
     assert!(
         matches!(&completed[0].activity, AgentActivity::ToolResult { call_id, outcome: ToolOutcome::Ok, summary } if call_id == "c" && !summary.contains("secret"))
     );
@@ -2020,11 +2042,8 @@ fn completed_speech_and_tools_translate_without_raw_payloads() {
 #[test]
 fn duplicate_completed_items_emit_once_and_cannot_reopen_tools() {
     let mut translator = CodexActivityTranslator::new(limits().translator());
-    let completed_speech = json!({
-        "threadId":"thread-1",
-        "turnId":"turn-1",
-        "item":{"id":"speech","type":"agentMessage","text":"once"}
-    });
+    let completed_speech =
+        item_envelope(json!({"id":"speech","type":"agentMessage","text":"once"}));
     assert_eq!(
         translator
             .translate("item/completed", &completed_speech)
@@ -2037,16 +2056,9 @@ fn duplicate_completed_items_emit_once_and_cannot_reopen_tools() {
         .unwrap()
         .is_empty());
 
-    let started_tool = json!({
-        "threadId":"thread-1",
-        "turnId":"turn-1",
-        "item":{"id":"tool","type":"webSearch"}
-    });
-    let completed_tool = json!({
-        "threadId":"thread-1",
-        "turnId":"turn-1",
-        "item":{"id":"tool","type":"webSearch","status":"completed"}
-    });
+    let started_tool = item_envelope(json!({"id":"tool","type":"webSearch"}));
+    let completed_tool =
+        item_envelope(json!({"id":"tool","type":"webSearch","status":"completed"}));
     assert_eq!(
         translator
             .translate("item/started", &started_tool)
@@ -2078,11 +2090,11 @@ fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
     bounded.completed_item_bytes = 16;
     let mut translator = CodexActivityTranslator::new(bounded.translator());
     let completed = |turn: &str, id: &str| {
-        json!({
-            "threadId":"thread-1",
-            "turnId":turn,
-            "item":{"id":id,"type":"agentMessage","text":id}
-        })
+        item_envelope_at(
+            ITEM_THREAD_ID,
+            turn,
+            json!({"id":id,"type":"agentMessage","text":id}),
+        )
     };
 
     for id in ["a", "b"] {
@@ -2120,13 +2132,7 @@ fn completed_item_lru_evicts_non_fatally_and_refreshes_duplicates() {
     bounded.completed_items = 2;
     bounded.completed_item_bytes = 64;
     let mut translator = CodexActivityTranslator::new(bounded.translator());
-    let completed = |id: &str| {
-        json!({
-            "threadId":"thread-1",
-            "turnId":"turn-1",
-            "item":{"id":id,"type":"agentMessage","text":id}
-        })
-    };
+    let completed = |id: &str| item_envelope(json!({"id":id,"type":"agentMessage","text":id}));
 
     for id in ["a", "b"] {
         assert_eq!(
@@ -2165,15 +2171,11 @@ fn more_than_256_valid_completions_remain_live_and_turn_close_clears_keys() {
         let reports = translator
             .translate(
                 "item/completed",
-                &json!({
-                    "threadId":"thread-1",
-                    "turnId":"turn-1",
-                    "item":{
-                        "id":format!("message-{index}"),
-                        "type":"agentMessage",
-                        "text":format!("message {index}")
-                    }
-                }),
+                &item_envelope(json!({
+                    "id":format!("message-{index}"),
+                    "type":"agentMessage",
+                    "text":format!("message {index}")
+                })),
             )
             .unwrap();
         assert_eq!(reports.len(), 1);
@@ -2217,11 +2219,11 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
     ));
     let child = ServerNotification::decode(
         "item/started",
-        json!({
-            "threadId":"thread-child",
-            "turnId":"turn-child",
-            "item":{"id":"child-command","type":"commandExecution"}
-        }),
+        item_envelope_at(
+            "thread-child",
+            "turn-child",
+            json!({"id":"child-command","type":"commandExecution"}),
+        ),
     )
     .unwrap();
     let ServerNotification::Item(child_item) = child else {
@@ -2231,17 +2233,13 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
 
     let parent = ServerNotification::decode(
         "item/completed",
-        json!({
-            "threadId":"thread-1",
-            "turnId":"turn-1",
-            "item":{
-                "id":"subagent",
-                "type":"subAgentActivity",
-                "agentPath":"worker",
-                "agentThreadId":"thread-child",
-                "kind":"completed"
-            }
-        }),
+        item_envelope(json!({
+            "id":"subagent",
+            "type":"subAgentActivity",
+            "agentPath":"worker",
+            "agentThreadId":"thread-child",
+            "kind":"completed"
+        })),
     )
     .unwrap();
     let ServerNotification::Item(parent_item) = &parent else {
@@ -2276,10 +2274,7 @@ fn speech_summaries_share_the_activity_summary_bound() {
         json!({"id":"n","type":"agentMessage","text":"y".repeat(1000)}),
     ] {
         let reports = translator
-            .translate(
-                "item/completed",
-                &json!({"threadId":"thread-1","turnId":"turn-1","item":item}),
-            )
+            .translate("item/completed", &item_envelope(item))
             .unwrap();
         let summary = match &reports[0].activity {
             AgentActivity::Reasoning { summary } | AgentActivity::Narration { summary } => summary,
@@ -2309,20 +2304,14 @@ fn every_required_tool_kind_emits_one_paired_call() {
         let mut started_item = item.clone();
         started_item["id"] = json!(id);
         let started = translator
-            .translate(
-                "item/started",
-                &json!({"threadId":"thread-1","turnId":"turn-1","item":started_item}),
-            )
+            .translate("item/started", &item_envelope(started_item))
             .unwrap();
         assert_eq!(started.len(), 1, "{item:?}");
         let mut completed_item = item;
         completed_item["id"] = json!(id);
         completed_item["status"] = json!("completed");
         let completed = translator
-            .translate(
-                "item/completed",
-                &json!({"threadId":"thread-1","turnId":"turn-1","item":completed_item}),
-            )
+            .translate("item/completed", &item_envelope(completed_item))
             .unwrap();
         assert_eq!(completed.len(), 1);
         assert!(matches!(
@@ -2344,10 +2333,7 @@ fn build_mcp_dynamic_and_unknown_items_are_suppressed() {
         json!({"id":"future","type":"newItem"}),
     ] {
         assert!(translator
-            .translate(
-                "item/started",
-                &json!({"threadId":"thread-1","turnId":"turn-1","item":item})
-            )
+            .translate("item/started", &item_envelope(item))
             .unwrap()
             .is_empty());
     }
@@ -2357,7 +2343,12 @@ fn build_mcp_dynamic_and_unknown_items_are_suppressed() {
 fn open_tools_close_unanswered_and_release_limits() {
     let mut translator = CodexActivityTranslator::new(limits().translator());
     for id in ["a", "b"] {
-        translator.translate("item/started", &json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":id,"type":"webSearch","query":"not retained"}})).unwrap();
+        translator
+            .translate(
+                "item/started",
+                &item_envelope(json!({"id":id,"type":"webSearch","query":"not retained"})),
+            )
+            .unwrap();
     }
     let closed = translator.close_turn("turn-1").unwrap();
     assert_eq!(closed.len(), 2);
@@ -2376,7 +2367,9 @@ fn completing_an_item_releases_its_aggregate_byte_charge() {
     let mut bounded = limits();
     bounded.open_item_bytes = 20;
     let mut translator = CodexActivityTranslator::new(bounded.translator());
-    let envelope = |id: &str, status: &str| json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":id,"type":"webSearch","query":"not retained","status":status}});
+    let envelope = |id: &str, status: &str| {
+        item_envelope(json!({"id":id,"type":"webSearch","query":"not retained","status":status}))
+    };
     translator
         .translate("item/started", &envelope("a", "inProgress"))
         .unwrap();
@@ -2642,7 +2635,6 @@ fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
 #[test]
 fn context_compaction_and_review_mode_transitions_stay_visible() {
     let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
-    let envelope = |item: Value| json!({"threadId":"thread-1","turnId":"turn-1","item":item});
     let summaries = |reports: Vec<crate::harness::ActivityReport>| {
         reports
             .into_iter()
@@ -2656,12 +2648,12 @@ fn context_compaction_and_review_mode_transitions_stay_visible() {
     let compaction = json!({"id":"compaction-1","type":"contextCompaction"});
     let compaction_started = summaries(
         translator
-            .translate("item/started", &envelope(compaction.clone()))
+            .translate("item/started", &item_envelope(compaction.clone()))
             .unwrap(),
     );
     let compaction_completed = summaries(
         translator
-            .translate("item/completed", &envelope(compaction))
+            .translate("item/completed", &item_envelope(compaction))
             .unwrap(),
     );
     assert_eq!(compaction_started.len(), 1);
@@ -2683,12 +2675,12 @@ fn context_compaction_and_review_mode_transitions_stay_visible() {
         ),
     ] {
         assert!(translator
-            .translate("item/started", &envelope(item.clone()))
+            .translate("item/started", &item_envelope(item.clone()))
             .unwrap()
             .is_empty());
         let completed = summaries(
             translator
-                .translate("item/completed", &envelope(item))
+                .translate("item/completed", &item_envelope(item))
                 .unwrap(),
         );
         assert_eq!(completed, vec![expected.to_string()]);

@@ -14801,9 +14801,11 @@ impl AppState {
     }
 
     /// Ask git about this run's stages here and now, with the state lock in
-    /// hand. The two lifecycle verbs that still do it — `run.abandon` and a
-    /// failed recovery — decide against refs that are about to be deleted, and
-    /// move to a lock-free run phase with the rest of §5.
+    /// hand. Boot's failed-recovery arm alone: it decides against refs that are
+    /// about to be deleted, and runs before the first frame is served, so
+    /// nothing waits on the mutex it holds. Every other caller — `run.abandon`,
+    /// the vanished-run sweep — asks through [`StagePublicationQuery::classify`]
+    /// in a lock-free run phase.
     fn classify_stages_now(&self, run_id: &str, active: &ActiveRun) -> StagePublications {
         self.stage_publication_query(run_id, active).classify()
     }
@@ -21514,6 +21516,91 @@ mod tests {
         assert_eq!(
             git_remote_origin(&repo_a).as_deref(),
             Some("https://example.invalid/one.git")
+        );
+    }
+
+    /// Making a project is four subprocesses — `init`, `add`, `commit` and the
+    /// optional `remote add` — on a directory that did not exist when the verb
+    /// was asked for.
+    #[test]
+    fn project_create_writes_its_repository_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let parent = dir.path().join("made-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "project.create",
+            json!({
+                "name": "fresh",
+                "parent": parent.to_str().unwrap(),
+                "remote": "https://example.invalid/fresh.git",
+            }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the create is holding the app mutex through its git"
+        );
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a repository is being created");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        let landed = std::path::PathBuf::from(created["result"]["path"].as_str().unwrap());
+        assert!(landed.join(".git").exists(), "the repository is on disk");
+        assert_eq!(
+            created["result"]["remote"], "https://example.invalid/fresh.git",
+            "{created:?}"
+        );
+        assert_eq!(
+            state.lock().unwrap().projects.len(),
+            2,
+            "the project is registered by the epilogue"
+        );
+    }
+
+    /// A clone whose git failed leaves nothing at all: no project, no row on
+    /// the board, and a destination the retry finds as empty as this one did.
+    #[test]
+    fn a_clone_that_fails_rolls_its_reservation_back_and_leaves_no_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        state.projects_dir = dir.path().join("projects");
+        let destination = state.projects_dir.join("doomed");
+
+        let failed = state.handle(req(
+            "project.clone",
+            json!({
+                "url": dir.path().join("not-a-repository").to_str().unwrap(),
+                "name": "doomed",
+            }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert_eq!(
+            state.projects.len(),
+            1,
+            "the failed clone registered a project"
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the failed clone left its row on the board"
+        );
+        let board = state.handle(req("board.list", json!({})));
+        assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
+        assert!(
+            !destination.exists(),
+            "the half-written destination outlived the clone that failed"
         );
     }
 
@@ -36315,6 +36402,45 @@ mod tests {
         assert!(!checkout.exists(), "the checkout is removed anyway");
 
         death_handle.release();
+    }
+
+    /// Clearing the card of a run minted around a checkout the user already had
+    /// must never touch that directory — the run goes, the files stay — and the
+    /// placeholder the verb stood up goes with it either way.
+    #[test]
+    fn run_delete_clears_an_adopted_card_and_leaves_the_checkout_standing() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "theirs-to-keep");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let branch = app.runs[&run_id].worktree.branch();
+        // Only a terminal run can be deleted.
+        app.runs.get_mut(&run_id).unwrap().run.state = RunState::Failed;
+        let state = app.shared();
+
+        let deleted = frame_on_a_thread(
+            &state,
+            "s-delete",
+            "run.delete",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the delete answers");
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+
+        let mut state = state.lock().unwrap();
+        assert!(!state.runs.contains_key(&run_id), "the card is cleared");
+        assert!(state.pending_rows.is_empty(), "the placeholder is retired");
+        assert!(
+            checkout.exists(),
+            "clearing a card must never delete the user's files"
+        );
+        assert!(
+            local_branch_exists(&repo, &branch).unwrap(),
+            "nor the branch they were working on"
+        );
+        let board = state.handle(req("board.list", json!({})));
+        assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
     }
 
     /// Which checkout a run owns is read back off the run record's own paths,

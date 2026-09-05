@@ -1295,39 +1295,64 @@ build settled differently, and why:
   `run_abandon_judges_its_stages_with_the_state_lock_free`,
   `run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout`,
   `run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die`,
+  `run_delete_clears_an_adopted_card_and_leaves_the_checkout_standing`,
   `project_add_reads_the_default_branch_with_the_state_lock_free`,
   `project_clone_registers_its_project_from_the_landed_path`,
-  `project_set_remote_writes_its_config_with_the_state_lock_free`.
+  `project_create_writes_its_repository_with_the_state_lock_free`,
+  `project_set_remote_writes_its_config_with_the_state_lock_free`,
+  `a_clone_that_fails_rolls_its_reservation_back_and_leaves_no_row`.
+- **`DiscardedCheckout::Pruned` is defensive, not reachable from today's board.**
+  `run.delete` prunes only a run that is plan-less AND not adopted, and every
+  plan-less run the daemon mints now comes through `adopt` (`run.adopt` and
+  `branch.dispatch` both), so the live arms are `Kept` and — from
+  `run.abandon` — `Removed`. The arm stays because a run record persisted by an
+  older bridge can still load as one, and the condition is the one the fused
+  `run_delete` used before the split; changing it would change what a delete
+  does to a directory, which is not this step's to decide.
 
-**What still runs git under the app mutex**, after grepping `app.rs` for every
-`git2::Repository::open`, `Command::new("git")`, `git_in`, `git_stdout`,
-`git_default_branch`, `git_remote_origin`, `bounded_git_fetch`,
-`discover_external_worktrees` and `describe_primary_checkout`:
+**What still runs git under the app mutex**, after grepping `app.rs` above its
+test module for every `git2::Repository::open`, `Command::new("git")`,
+`git_in`, `git_stdout`, `git_default_branch`, `git_remote_origin`,
+`bounded_git_fetch`, `discover_external_worktrees`,
+`describe_primary_checkout`, `classify_stage_publication` and every
+`Orchestrator` method that reaches one of them. Five verbs remain, none of
+them a lifecycle verb, each one somebody else's migration:
 
-1. `project_json`'s `git_remote_origin`, on `project.list` only. A read verb,
-   not a lifecycle one. Caching it on `Project` would make the shown remote
-   lie the moment the user edits `.git/config`; keeping it live and lock-free
-   needs the deferred-read surface (`DeferredRead`/`ReadSubject`) generalized
-   past diffs, which is its own change.
-2. `run_publish`'s `run_commit` + `git rev-parse HEAD` (app.rs:12925). The
-   write-ahead intent the publication contract depends on. `run.publish`'s own
-   migration.
-3. `dispatch_run_stage`'s `git rev-parse HEAD` (orchestrator.rs:2276), reached
-   by `run.stage_dispatch` and by an implementation epilogue resuming an
-   Issue's scheduler. Named in the first half's build notes;
+1. `project_json`'s `git_remote_origin`, on `project.list` only (app.rs:6548).
+   A read verb, not a lifecycle one. Caching it on `Project` would make the
+   shown remote lie the moment the user edits `.git/config`; keeping it live
+   and lock-free needs the deferred-read surface (`DeferredRead`/`ReadSubject`)
+   generalized past diffs, which is its own change.
+2. `run.git_action` — the whole verb (`run_git_action`, app.rs:12848). The
+   write-ahead `run_commit` + `git rev-parse HEAD` the publication contract
+   depends on (12884-12885), the action itself (`run_commit` / `run_push` /
+   `run_approve_merge` / `run_merge_and_push`, 12907-12910), and the
+   `discard_checkout` a `Prune` cleanup ends on (13026). A push or a merge is
+   the longest git in the daemon and the one most worth moving, and it is a
+   whole publication protocol — the write-ahead intent, the attempt record,
+   the recovery on the far side — not a checkout being cut. `run.git_action`'s
+   own migration.
+3. `dispatch_run_stage`'s `git rev-parse HEAD` (orchestrator.rs:2286), reached
+   by `run.stage_dispatch` (app.rs:12676) and by `auto_advance_run`
+   (app.rs:12822). Named in the first half's build notes;
    `run.stage_dispatch`'s own migration.
-4. `recover_run`'s failed-recovery arm (`classify_stages_now`) and
-   `advance_issue_scheduler_here`, both boot-only: they run before the first
-   frame is served, when nothing waits on the mutex.
-5. The MCP `done` socket's recovery verification —
-   `restore_run_worktree` plus a `git2` open to check the reported HEAD
-   (app.rs:5198). The `done` report's own path.
-6. `prune_worktree_records` (`git worktree prune`, app.rs:14871), called from
+4. The MCP `done` report's two: `on_run_agent_done`'s `Orchestrator::run_diff`
+   (app.rs:4989), which renders the completed run's whole patch for the thread
+   event, and `consume_recovery_report`'s `restore_run_worktree` plus a `git2`
+   open to verify the reported HEAD (app.rs:5201). The `done` report's own
+   path.
+5. `prune_worktree_records` (`git worktree prune`, app.rs:14954), called from
    `archive_vanished_runs`'s apply phase — the write-back of a sweep whose git
    is already off the lock.
-7. `sweep_vanished_runs`'s `classify_stage_publication` — off the lock since
-   §4 (`VanishedRunSweep` is an `OffLockJob`); the open gate note asked
-   whether the sweep moves, and it already had.
+
+Two more the grep finds and neither is a hold anybody waits on:
+`recover_run`'s failed-recovery arm (`classify_stages_now`, app.rs:2437) and
+`advance_issue_scheduler_here` (10395) are boot-only, before the first frame
+is served; `scan_external_worktrees_now` (4183) is `#[cfg(test)]`.
+`sweep_vanished_runs`'s `classify_stage_publication` was the open gate note's
+question and has been off the lock since §4 (`VanishedRunSweep` is an
+`OffLockJob`, and `reconcile_missing_run_worktree` is now pure bookkeeping over
+the `StagePublications` that job carries back).
 
 Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
 `WorktreeFinishJob::run`, a `DeferredRead`, an `OffLockJob::decide`, a

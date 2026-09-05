@@ -1222,6 +1222,12 @@ export function mountAgentRail(host, context) {
     return selectAgentId(visibleAgents(), selectedId);
   };
 
+  /** The state a row wears from the moment a session is asked for until the
+   *  entity answers — one record, whichever verb asked: the Resume press or
+   *  the message that wakes the agent behind it. */
+  const startingRecord = (agentId) =>
+    patchRecord(agentId, { state: AGENT_STARTING }, { scope: pendingAgentsScope(), clearedBy: agentSessionAnswered });
+
   const createAgentWithMessage = async (message) => {
     const provisionalAgentId = provisionalKey("agent");
     const provisionalMessageKey = provisionalKey("message");
@@ -1303,16 +1309,17 @@ export function mountAgentRail(host, context) {
     const messageKey = provisionalKey("message");
     const provisionalMessage = provisionalMessageEntry(messageKey, message);
     const addressedAgentId = selectedId;
+    const agent = agentInFocus();
+    const wakesAgent = entity.kind === "branch" && !agentIsUp(agent);
 
     let messageDelivered = false;
 
     const call = async (handle) => {
       const entityId = await ensureEntity();
-      const agent = agentInFocus();
       const addressed = agent ? { agent_id: agent.id } : {};
       await postMessage(handle, { entityId, addressed, message, messageKey, provisionalMessage });
       messageDelivered = true;
-      if (entity.kind === "branch" && !agentIsUp(agent)) {
+      if (wakesAgent) {
         const startedAgentId = await wakeAgent(entityId, addressed);
         if (startedAgentId && startedAgentId !== addressedAgentId) {
           handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(startedAgentId));
@@ -1323,7 +1330,10 @@ export function mountAgentRail(host, context) {
 
     runOptimistic({
       scope: pendingThreadScope(addressedAgentId),
-      records: [insertRecord(messageKey, provisionalMessage)],
+      records: [
+        insertRecord(messageKey, provisionalMessage),
+        ...(wakesAgent && agent ? [startingRecord(agent.id)] : []),
+      ],
       call,
       failureSummary: "Message failed",
       onRevert: () => {
@@ -1490,9 +1500,7 @@ export function mountAgentRail(host, context) {
     let refusal = null;
     const settled = await runOptimistic({
       scope: pendingAgentsScope(),
-      records: agent
-        ? [patchRecord(agent.id, { state: AGENT_STARTING }, { clearedBy: agentSessionAnswered })]
-        : [],
+      records: agent ? [startingRecord(agent.id)] : [],
       call: async () => {
         const entityId = await ensureEntity();
         started = await replyOrNothing(

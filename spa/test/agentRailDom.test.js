@@ -945,6 +945,62 @@ describe("the conversation panel", () => {
     expect(callsTo("agent.start")).toHaveLength(1);
   });
 
+  // The common way a cold agent is started is a message, not the Resume press:
+  // the post wakes the agent behind it. That row wears the same starting state
+  // from the send, which is also what keeps a second send behind it from
+  // opening a second harness.
+  it("marks the agent starting from a message that wakes it, so a second message starts nothing twice", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
+      return answering(method, params);
+    });
+
+    panel().querySelector("#railinput").value = "wake up";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+
+    panel().querySelector("#railinput").value = "and carry on";
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("thread.post")).toHaveLength(2);
+    expect(callsTo("agent.start")).toHaveLength(1);
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+  });
+
+  // The third answer to a start: the entity's session is over, so there is no
+  // agent to open. The daemon says so on the agent, and the ring comes off the
+  // way it does for a spawn that failed.
+  it("takes the ring off a message-started agent when the entity says no session will open", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+
+    panel().querySelector("#railinput").value = "wake up";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+
+    payload = branchRow({
+      agents: [agent({ state: "exited", start_error: "no session to open: this entity's session is over" })],
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(false);
+    expect(bubbles()[0].title).toContain("no session to open");
+    expect(notifyError).toHaveBeenCalledWith(
+      "Could not start the agent",
+      "no session to open: this entity's session is over",
+    );
+  });
+
   // A start the browser stopped waiting for is not a refusal: the daemon is
   // spawning the harness behind the answer it already gave. Painting "could not
   // start the agent" over a session that is coming up is the same confusion the

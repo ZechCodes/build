@@ -1422,6 +1422,12 @@ mod tests {
         let scanned = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
         let described = describe_checkout(&repo, "main", &wt_path).unwrap();
 
+        // `head_age_seconds` is a reading of the clock, not a property of the
+        // checkout: two reads straddling a second boundary differ by one.
+        let described = ExternalWorktree {
+            head_age_seconds: scanned[0].head_age_seconds,
+            ..described
+        };
         assert_eq!(
             described, scanned[0],
             "a checkout described on its own must be the entry a scan would have found"

@@ -12,7 +12,6 @@ Three audiences, three guard styles:
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -35,6 +34,7 @@ from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device, EphemeralToken
 from buildapp.request_body import require_json_object
 from buildapp.session_auth import require_user
+from buildapp.token_hash import token_hash
 
 # Pending registrations that are never approved get cleaned up after this long.
 PENDING_TTL = timedelta(minutes=15)
@@ -44,10 +44,6 @@ GATEWAY_TOKEN_TTL = timedelta(minutes=5)
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
-
-
-def _token_hash(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def device_summary(device: Device) -> dict:
@@ -247,7 +243,7 @@ class DevicesController(Controller):
         raw = "gw_" + secrets.token_urlsafe(24)
         db_session.add(
             EphemeralToken(
-                token_hash=_token_hash(raw),
+                token_hash=token_hash(raw),
                 purpose="gateway",
                 user_id=user_id,
                 expires_at=_now() + GATEWAY_TOKEN_TTL,
@@ -285,7 +281,7 @@ class DevicesController(Controller):
         row = (
             await db_session.execute(
                 select(EphemeralToken).where(
-                    EphemeralToken.token_hash == _token_hash(token),
+                    EphemeralToken.token_hash == token_hash(token),
                     EphemeralToken.purpose == "gateway",
                     EphemeralToken.expires_at > _now(),
                 )

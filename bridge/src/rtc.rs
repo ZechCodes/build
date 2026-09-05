@@ -491,14 +491,37 @@ pub(crate) struct NegotiatedPath {
 /// The candidate type ICE reports for a relayed (TURN) candidate.
 const RELAY_CANDIDATE: &str = "relay";
 
-/// What a missing pair or candidate reads as: not a type, and never billed.
+/// What a report with no nominated pair reads as: not a type, and never billed.
 const UNKNOWN_CANDIDATE: &str = "unknown";
+
+/// The type of a candidate the ICE agent made for itself off a connectivity
+/// check — the one kind of candidate that exists without ever being added, so
+/// the one kind the stats report has no entry for.
+const PEER_REFLEXIVE_CANDIDATE: &str = "prflx";
 
 impl NegotiatedPath {
     pub(crate) fn new(local: &str, remote: &str) -> Self {
         NegotiatedPath {
             local: local.to_string(),
             remote: remote.to_string(),
+        }
+    }
+
+    /// The two ends as the stats report resolved them for the nominated pair.
+    ///
+    /// An end the report has no entry for is a peer-reflexive candidate: the
+    /// agent registers every candidate it is given, so the only candidate it
+    /// can pair on without an entry is one it discovered itself from a
+    /// connectivity check — which, with a browser, is the usual order of
+    /// events, its check landing before its trickled candidate does. Both
+    /// ends missing is no resolvable pair, and reads `unknown`.
+    pub(crate) fn from_report_ends(local: Option<&str>, remote: Option<&str>) -> Self {
+        match (local, remote) {
+            (None, None) => NegotiatedPath::new(UNKNOWN_CANDIDATE, UNKNOWN_CANDIDATE),
+            (local, remote) => NegotiatedPath::new(
+                local.unwrap_or(PEER_REFLEXIVE_CANDIDATE),
+                remote.unwrap_or(PEER_REFLEXIVE_CANDIDATE),
+            ),
         }
     }
 
@@ -549,10 +572,7 @@ pub(crate) fn negotiated_path(report: &RTCStatsReport) -> NegotiatedPath {
             _ => {}
         }
     }
-    NegotiatedPath::new(
-        local.as_deref().unwrap_or(UNKNOWN_CANDIDATE),
-        remote.as_deref().unwrap_or(UNKNOWN_CANDIDATE),
-    )
+    NegotiatedPath::from_report_ends(local.as_deref(), remote.as_deref())
 }
 
 /// One ICE server as the browser fetched it from the api, as this crate takes
@@ -978,6 +998,23 @@ mod negotiated_path_tests {
         assert!(NegotiatedPath::new("relay", "relay").billed());
         assert!(!NegotiatedPath::new("host", "srflx").billed());
         assert!(!NegotiatedPath::new("unknown", "unknown").billed());
+    }
+
+    /// A remote the report has no entry for is one the ICE agent made for
+    /// itself off a connectivity check that arrived before the browser's
+    /// trickled candidate did — a peer-reflexive candidate, the only kind an
+    /// agent creates on its own. The line says so instead of `unknown`, which
+    /// is reserved for a report with no nominated pair at all.
+    #[test]
+    fn a_remote_the_report_never_registered_is_peer_reflexive() {
+        let path = NegotiatedPath::from_report_ends(Some("host"), None);
+        assert_eq!(path.to_string(), "host/prflx candidates");
+        assert!(!path.billed());
+        assert_eq!(
+            NegotiatedPath::from_report_ends(None, None).to_string(),
+            "unknown/unknown candidates",
+            "no nominated pair is still unknown at both ends"
+        );
     }
 
     /// The line states the billing fact itself, so the ops count greps for a

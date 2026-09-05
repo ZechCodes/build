@@ -316,6 +316,15 @@ for stage gates.
 ## Open questions for review
 
 1. TURN credential TTL: 24 h as specified, or shorter with a scheduled ICE restart?
+2. The browser's end of the negotiated pair, as the bridge logs it, is `prflx` whenever
+   the browser's connectivity check reaches the bridge before its trickled candidate
+   does (webrtc-rs registers only candidates it is handed; the ICE agent's own
+   peer-reflexive discoveries never reach the stats report, and candidate ids are
+   random, so nothing on the bridge can resolve them later). A browser on TURN can
+   therefore log unbilled. Should the SPA report its own nominated local candidate
+   type (`getStats()` in the browser is exact) over the session — one push,
+   `rtc.path`, after the channels open — so the bridge's line names the billed end from
+   the end that allocated it?
 
 ## Decisions taken during the build
 

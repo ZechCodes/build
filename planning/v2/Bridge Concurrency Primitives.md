@@ -1393,7 +1393,7 @@ settled differently, and why:
   | `worktree.create` | `CreateWorktree` | `WorktreeCreated` | record the row, reply with the worktree |
   | `branch.dispatch` | `DispatchCheckout` | `BranchDispatched` | `RunAdopted`'s work on the `AdoptableCheckout` it was handed, then mint the agent and queue its first turn |
   | `run.create` / `issue.implement_*` | `OpenImplementation` | `ImplementationOpened` | open the run on the checkout that was cut, bind it to its issue |
-  | `run.create` into an existing checkout | `AdoptImplementation` | `ImplementationAdopted` | reset the branch's run onto the baseline the checkpoint made |
+  | `run.create` into an existing checkout | `AdoptImplementation` | `ImplementationAdopted` | reset the branch's run onto the baseline the checkpoint made (a checkout no run owns yet is adopted first, and that adoption is still `run_adopt`'s — see below) |
   | `issue.implement_*` with its checkout gone | `RestoreImplementationCheckout` | `RestoredCheckout` | write the recreated checkout onto the run, or hand the run to the recovery agent |
   | `plan.create` | `OpenPlanWorkspace` | `PlanWorkspaceOpened` | file the Issue around the docs dir the workspace made |
   | `run.adopt` | `AdoptExternalCheckout` / `AdoptPrimaryCheckout` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
@@ -1407,6 +1407,35 @@ settled differently, and why:
   A reply that needs `AppState` — `run.adopt`'s `run_view`, every
   `answer_run_mutation` — is built in the epilogue, which is why
   `WorktreeChange` carries no `reply`.
+- **A checkout no run owns yet is adopted under the mutex, until `run.adopt`
+  moves.** `adopt_implementation_checkout`'s decide phase (app.rs:11454) calls
+  `run_adopt` inline when `worktree_id` names a checkout with no live run —
+  the forced `scan_external_worktrees_now` plus `lifecycle::adopt`'s checkpoint
+  commit and scaffold, all under the app mutex, exactly where they ran before
+  this step. Chaining it is not this step's to do: an adoption is its own
+  `AdoptExternalCheckout` job, an epilogue may not defer a second job into a
+  drain that has already run, and `run.adopt` has not moved yet. The common
+  path — a `worktree_id` a run already owns, and every `run.create` that names
+  none — is off the lock. When `run.adopt` moves, this decide phase reserves
+  the checkout and hands the git to `AdoptExternalCheckout`, resuming
+  `AdoptImplementation` from its epilogue.
+- **What an apply-phase failure leaves on disk.** `perform` removes what it
+  cut in its own error path, but an epilogue can fail after the git returned
+  `Ok` — the Issue was deleted while the git ran, a store write failed — and
+  the removal is git, which the epilogue may not run. So the checkout stays,
+  and the rule is that it stays VISIBLE: `OpenImplementation::perform`
+  describes the checkout it cut as `WorktreeChange::appeared`, and
+  `open_implementation_run` calls `note_worktree_gone` once the run owns it, so
+  the amendment `apply_lifecycle` re-applies over a failed epilogue leaves the
+  checkout on the board as the unbound card it is. That is the same end state
+  the `PendingRow` deviation argues for: nothing is left that git and the next
+  scan cannot re-derive. `plan.create` is the one that leaves something no
+  board shows — `open_planned_issue` failing after `OpenPlanWorkspace` leaves
+  the Issue's scratch docs dir and the `.build/` config in the primary
+  checkout. Neither is a checkout or a branch: the config is overwritten by the
+  next plan the project drafts, and the docs dir is `discard_plan_docs_dir`'s
+  (orchestrator.rs:1268), which every approve and every abandon runs. A
+  scratch dir for a plan that never existed outlives them, and is left.
 - **An implementation's epilogue answers to whoever asked, not to a verb.**
   `run.create` and `issue.implement_*` cut the same checkout by the same three
   mutations; what differs is who is waiting. That is one object, carried by the
@@ -1561,7 +1590,11 @@ settled differently, and why:
   `run_create_opens_its_implementation_with_the_state_lock_free`,
   `issue_implement_all_opens_its_implementation_with_the_state_lock_free`,
   `implement_stage_restores_a_missing_checkout_with_the_state_lock_free`,
-  `plan_create_prepares_its_workspace_with_the_state_lock_free`.
+  `plan_create_prepares_its_workspace_with_the_state_lock_free`,
+  `a_stage_approval_that_implements_cuts_its_checkout_with_the_state_lock_free`,
+  `a_recovery_report_advances_its_scheduler_with_the_state_lock_free`,
+  `a_turn_queued_for_a_restoring_checkout_never_sends_its_run_to_recovery`,
+  `an_implementation_whose_apply_fails_leaves_its_checkout_on_the_board`.
 
 ## What builds no primitive
 

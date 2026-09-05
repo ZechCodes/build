@@ -269,8 +269,40 @@ impl WorktreeMutation for OpenImplementation {
             &self.run_id,
             &self.store,
         );
-        let epilogue: Box<dyn LifecycleEpilogue> = match prepared {
-            Ok(prepared) => Box::new(crate::app::ImplementationOpened {
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            // The checkout it cut, if it got that far, is already removed —
+            // what is left to settle is what the Issue says it was doing.
+            Err(error) => {
+                return Ok(Performed {
+                    change: WorktreeChange::nothing(),
+                    epilogue: Box::new(crate::app::ImplementationRefused {
+                        error: error.to_string(),
+                        caller: self.caller,
+                    }),
+                })
+            }
+        };
+        // The run that will own this checkout takes it back off the unbound
+        // list in the epilogue. Naming it here is what puts it on the board if
+        // that epilogue never gets there: a checkout on disk under no run,
+        // invisible until the next full rescan, is how a minted one gets lost.
+        let change = match self
+            .project
+            .describe_checkout(&prepared.worktree.path, &self.base_branch)
+        {
+            Ok(checkout) => WorktreeChange::appeared(checkout),
+            Err(error) => {
+                eprintln!(
+                    "describing the implementation checkout at {}: {error}",
+                    prepared.worktree.path.display()
+                );
+                WorktreeChange::undescribed()
+            }
+        };
+        Ok(Performed {
+            change,
+            epilogue: Box::new(crate::app::ImplementationOpened {
                 project_id: self.project_id,
                 issue_id: self.issue_id,
                 run_id: self.run_id,
@@ -278,18 +310,6 @@ impl WorktreeMutation for OpenImplementation {
                 model_choice: self.model_choice,
                 caller: self.caller,
             }),
-            // The checkout it cut, if it got that far, is already removed —
-            // what is left to settle is what the Issue says it was doing.
-            Err(error) => Box::new(crate::app::ImplementationRefused {
-                error: error.to_string(),
-                caller: self.caller,
-            }),
-        };
-        Ok(Performed {
-            // A checkout a run owns is on no unbound list, so there is nothing
-            // for the board's scan to be told about either way.
-            change: WorktreeChange::nothing(),
-            epilogue,
         })
     }
 }

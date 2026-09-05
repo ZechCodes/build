@@ -10051,6 +10051,12 @@ impl AppState {
     /// `plan.create`'s apply half: the Issue's record, its first turn, and the
     /// view the caller asked for. The workspace its agent works in is on disk
     /// by now, which is why nothing here can fail on a directory.
+    ///
+    /// What a failure here leaves is the workspace: a scratch docs dir for an
+    /// Issue that never opened, and the `.build/` config the next plan this
+    /// project drafts overwrites. Removing either is filesystem work, which an
+    /// epilogue may not do; neither is a checkout or a branch, so no board is
+    /// missing anything.
     fn open_planned_issue(&mut self, opened: PlanWorkspaceOpened) -> Result<Value, String> {
         let PlanWorkspaceOpened {
             project_id,
@@ -11491,6 +11497,14 @@ impl AppState {
                 run_id
             }
             None => {
+                // STILL UNDER THE APP MUTEX, deliberately: `run_adopt` forces a
+                // whole-repository scan and writes a checkpoint commit, and
+                // both stay there until `run.adopt` itself moves onto a job of
+                // its own. An epilogue cannot defer a second job into a drain
+                // that has already run, so chaining the two is that step's, not
+                // this one's. Everything else about this verb — the checkout a
+                // run already owns, and every `run.create` that names none — is
+                // off the lock.
                 let adopted = self.run_adopt(&json!({
                     "project_id": project_id,
                     "worktree_id": worktree_id,
@@ -11692,8 +11706,13 @@ impl AppState {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+        // The checkout belongs to a run from here on, so it leaves the unbound
+        // list its mutation named it on. A checkout that was already bound was
+        // never in that list, so this is routinely a no-op.
+        let checkout = active.worktree.path.clone();
         let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
+        self.note_worktree_gone(&project_id, &checkout);
         let mut plan = self.take_plan(&issue_id)?;
         let implementation_link = crate::thread::ThreadLink::Implementation {
             issue_id: issue_id.clone(),
@@ -15973,6 +15992,13 @@ fn thread_cursor(params: &Value) -> Option<u64> {
     params.get("thread_after_sequence").and_then(Value::as_u64)
 }
 
+/// What an Issue's scheduler is asked with when the frame that woke it was
+/// about something else: the Issue to advance, and the thread paging that
+/// frame's own answer is cut to.
+fn scheduler_request(issue_id: &str, params: &Value) -> Value {
+    json!({ "issue_id": issue_id, "thread_limit": params.get("thread_limit") })
+}
+
 /// How much conversation a call can hold — a detail poll's answer or a
 /// mutation's: a page of the size its `thread_limit` names, or the
 /// conversation whole when it names none.
@@ -15990,13 +16016,6 @@ fn thread_cursor(params: &Value) -> Option<u64> {
 /// falls back to the default page, not to the unbounded answer. (The garbage
 /// cursor above can afford to read as absent: what it falls back to is
 /// bounded.)
-/// What an Issue's scheduler is asked with when the frame that woke it was
-/// about something else: the Issue to advance, and the thread paging that
-/// frame's own answer is cut to.
-fn scheduler_request(issue_id: &str, params: &Value) -> Value {
-    json!({ "issue_id": issue_id, "thread_limit": params.get("thread_limit") })
-}
-
 fn thread_detail(params: &Value) -> ThreadDetail {
     match params.get("thread_limit") {
         // `null` is how a client spells a field it is not sending.
@@ -43878,8 +43897,12 @@ mod tests {
     fn run_create_opens_its_implementation_with_the_state_lock_free() {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
         let issue_id = approved_issue(&mut app, "implement off the lock");
         let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        // A board that has been looked at once, so the assertion below is
+        // about a list that exists.
+        app.scan_external_worktrees_now(&project_id).unwrap();
         let (gate, gate_handle) = OffLockGate::new();
         app.off_lock_gate = Some(gate);
         let state = app.shared();
@@ -43927,6 +43950,77 @@ mod tests {
         assert!(
             pending_on_the_board(&board).is_empty(),
             "the placeholder outlived the run it stood for: {board:?}"
+        );
+        let app = state.lock().unwrap();
+        let checkout = crate::worktree::canonical_root(
+            &app.runs[created["result"]["run_id"].as_str().expect("a run opened")]
+                .worktree
+                .path,
+        );
+        assert!(
+            !app.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
+            "the run's own checkout is on the board as an unbound card too"
+        );
+    }
+
+    /// The git ran and the epilogue did not, so the checkout it cut is on disk
+    /// under no run. It has to be on the board as the unbound card it is —
+    /// invisible until the next full rescan is how a minted checkout gets lost.
+    #[test]
+    fn an_implementation_whose_apply_fails_leaves_its_checkout_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let issue_id = approved_issue(&mut app, "leave nothing hidden");
+        // A board that has been looked at once, so the amendment has a list to
+        // put the checkout back into.
+        app.scan_external_worktrees_now(&project_id).unwrap();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-run",
+            "run.create",
+            json!({ "plan_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+        // The Issue goes while the git runs: the apply has nothing left to
+        // open a run around.
+        state.lock().unwrap().plans.remove(&issue_id);
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("run.create answers once its git is done");
+        assert_eq!(created["ok"], false, "{created:?}");
+
+        let app = state.lock().unwrap();
+        assert!(app.runs.is_empty(), "the failed apply opened a run");
+        assert!(
+            app.pending_rows.is_empty(),
+            "the failed apply left its row on the board"
+        );
+        let checkout = crate::worktree::canonical_root(
+            &dir.path()
+                .join("wt")
+                .join(&project_id)
+                .join("leave-nothing-hidden"),
+        );
+        assert!(checkout.is_dir(), "the git that succeeded was undone");
+        assert!(
+            app.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
+            "the checkout it cut is invisible until the next full rescan: {:?}",
+            app.projects[0]
+                .external_scan
+                .as_ref()
+                .map(|cache| &cache.worktrees)
         );
     }
 

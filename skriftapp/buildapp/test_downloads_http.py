@@ -13,6 +13,7 @@ from uuid import UUID
 
 import pytest
 from litestar.di import Provide
+from litestar.exceptions import HTTPException, NotFoundException
 from litestar.handlers import HTTPRouteHandler
 from litestar.response import Stream
 from litestar.status_codes import (
@@ -22,6 +23,7 @@ from litestar.status_codes import (
     HTTP_401_UNAUTHORIZED,
     HTTP_403_FORBIDDEN,
     HTTP_404_NOT_FOUND,
+    HTTP_502_BAD_GATEWAY,
 )
 from litestar.testing import TestClient
 from sqlalchemy import select
@@ -40,7 +42,7 @@ from buildapp.db_test_support import (
 from buildapp.desktop_auth import build_auth_guard, download_auth_guard
 from buildapp.email_test_support import PUBLIC_BASE_URL, email_settings
 from buildapp.models import EphemeralToken, Invite
-from buildapp.release_assets import PublicAssets
+from buildapp.release_assets import NO_RELEASE_DETAIL, PublicAssets
 from buildapp.releases import CHECKSUMS_ASSET, SIGNATURE_ASSET, asset_name
 from buildapp.token_hash import token_hash
 
@@ -370,6 +372,51 @@ def test_a_session_download_never_spends_a_token_it_does_not_hold(client):
     assert client.get(TARBALL_ROUTE, params={"t": token}).status_code == HTTP_200_OK
 
     assert token_hash(token) in _stored_token_hashes(client)
+
+
+# ----- what upstream's failures look like from here --------------------------
+
+
+class RefusingAssets:
+    """A source that cannot deliver: whatever it raises is what the caller sees."""
+
+    releases_url = None
+
+    def __init__(self, refusal: Exception):
+        self._refusal = refusal
+
+    async def deliver(self, name: str) -> Stream:
+        raise self._refusal
+
+
+def _refused_download(monkeypatch, refusal: Exception):
+    """Drive one tarball request through a source that refuses, and answer with the
+    response and the token hashes that survived it."""
+    for client in _client(monkeypatch, RefusingAssets(refusal)):
+        _member(client)
+        token = _one_liner_token(client)
+        _anonymous(client)
+        response = client.get(TARBALL_ROUTE, params={"t": token})
+        return response, _stored_token_hashes(client), token_hash(token)
+
+
+def test_a_repository_with_no_release_yet_answers_404_and_spends_nothing(monkeypatch):
+    response, stored, spent_hash = _refused_download(
+        monkeypatch, NotFoundException(NO_RELEASE_DETAIL)
+    )
+    assert response.status_code == HTTP_404_NOT_FOUND
+    assert response.json()["detail"] == NO_RELEASE_DETAIL
+    assert stored == [spent_hash]
+
+
+def test_an_unreachable_github_answers_502_and_spends_nothing(monkeypatch):
+    """A download that failed must not cost the member their install line."""
+    response, stored, spent_hash = _refused_download(
+        monkeypatch,
+        HTTPException(status_code=HTTP_502_BAD_GATEWAY, detail="release lookup failed"),
+    )
+    assert response.status_code == HTTP_502_BAD_GATEWAY
+    assert stored == [spent_hash]
 
 
 # ----- wiring ----------------------------------------------------------------

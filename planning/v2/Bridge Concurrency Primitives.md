@@ -1241,20 +1241,29 @@ build settled differently, and why:
   (a card goes back on the board if the record fails; the primary checkout was
   never a card and must not become one). Two mutations spelled the same
   sequence twice.
-- **Convergence is a refusal, and the retry is the answer.** The decide phase
-  has two early returns, not three: a checkout that already has an owner
-  answers with that run's view, and a checkout an adoption is opening right now
-  is refused by the row that adoption reserved — the same refusal every other
-  lifecycle collision gets. Answering `{"run_id", "adopting": true}` from the
-  row instead was a reply promising state that is not durable: that run is not
-  in `self.runs` until the epilogue lands, and an adoption whose `perform`
-  fails never mints it at all, while `createScopedAdoptingCall`
-  (spa/src/core/adoption.js:20) caches the id and fires the next verb against
-  it. A refusal is what that client already handles — `adoptInFlight` is
-  cleared on a rejected adopt — so the retry re-adopts, finds the real owner
-  through `run_owning_worktree_id`, and converges one round trip later on an id
-  every verb accepts. `PendingState::leaves_a_record` went with it: the state
-  is rendered and nothing branches on it.
+- **Convergence is an answer that names no run, and the re-ask is what
+  converges.** The decide phase has three early returns: a checkout that
+  already has an owner answers with that run's view; a checkout an adoption is
+  opening right now — the row `AppState::row_claiming` finds, the one rule for
+  what two lifecycle verbs collide on — answers `{"adopting": true}` and
+  nothing else; everything else reserves. Answering `{"run_id", "adopting":
+  true}` from the row was a reply promising state that is not durable: that
+  run is not in `self.runs` until the epilogue lands, and an adoption whose
+  `perform` fails never mints it at all, while `createScopedAdoptingCall`
+  (spa/src/core/adoption.js) caches the id and fires the next verb against it.
+  A refusal was the wrong word too. The asker has nothing to correct, and this
+  step put the adopt's git behind its answer, so the asker's own `run.adopt`
+  can outlive the 12 s timer while succeeding — a client that read the timer
+  as a refusal reverted the message it had just sent and the starting state it
+  had just laid, and its retry met the standing row's refusal instead of
+  converging. So the client asks again: `adoptUntilNamed` (adoption.js) reads
+  every reply through `replyOrNothing`, treats the timer and a reply naming no
+  run alike, waits `ADOPT_REASK_MS` and asks once more, up to
+  `ADOPT_REASK_LIMIT`; the one `adoptInFlight` chain stays alive for every
+  action queued behind it, and only a refusal clears it. Once the row is
+  released, `primary_run_of` / `run_owning_worktree_id` answer the re-ask with
+  the one owner. `PendingState::leaves_a_record` went with it: the state is
+  rendered and nothing branches on it.
 - **A checkout no run owns is adopted through the same job now.**
   `adopt_implementation_checkout`'s `None` arm no longer calls `run_adopt`
   under the mutex (the note in the first half's build said this was the
@@ -1946,30 +1955,40 @@ row it just asked for a session for, and `agentIsUp` is what keeps a message
 sent behind that press from starting a second harness. The vocabulary stays in
 the agent's own module; the overlay stays general.
 
-The question a start asks has TWO answers, so the patch waits for either. A
-session is live, or one never opened — and a spawn that failed says nothing
-about a session, so waiting on liveness alone left the ring on for the whole
-grace and then dropped it silently, with the reason nowhere. The failing half
-travels on the agent that was to hear the turn: `record_agent_delivery_failure`
-writes `Agent.start_error` beside the entity's `last_error`, the digest ships
-it, and the next turn on its way to that agent forgets it — one write, in
-`take_pending_turns`, which is the one door every queued turn passes through
-before the verb that queued it has even answered. The rail says it on the
-agent's own bubble and raises it once, where the throw used to land.
+The question a start asks has THREE answers, so the patch waits for whichever
+comes. A session is live; one never opened; or none will open, because the
+entity's session is over. The last two say nothing about a session, so waiting
+on liveness alone left the ring on for the whole grace and then dropped it
+silently, with the reason nowhere. Both travel on the agent that was to hear the
+turn: `record_agent_delivery_failure` writes `Agent.start_error` beside the
+entity's `last_error` in the one mutation it already makes, and
+`record_agent_start_declined` (`DeliveryRunner::run`'s `Ok(None)` arm) writes
+`AGENT_START_DECLINED_SESSION_OVER` on `start_error` alone — the entity's
+`last_error` is left untouched, because nothing about the work failed. The
+digest ships it, and the next turn on its way to that agent forgets it — one
+write, in `take_pending_turns`, which is the one door every queued turn passes
+through before the verb that queued it has even answered. The rail says it on
+the agent's own bubble and raises it once, where the throw used to land. The
+starting state itself is one record, `startingRecord` (agentRail.js), laid by
+both verbs that ask for a session: the Resume press and the message that wakes
+a cold agent (`deliverMessage`), which is also what makes `agentIsUp` hold on
+the message path so two sends open one harness.
 
 A reply the browser stopped waiting for is not a refusal. `replyOrNothing(pending)`
 in core/session.js is the whole rule — the reply, or null when the timer ended the
 call, and a refusal still raises — beside the 12 s timer, which is unchanged. The
 predicate that reads the rejection is the module's own and is not exported: one
 rule, one answer, so no call site can re-derive it and reach a different verdict.
-Five verbs read it: `worktree.create` and `branch.dispatch` shut their form and
+Six verbs read it: `worktree.create` and `branch.dispatch` shut their form and
 let the board carry the work, `issue.implement_*` refreshes the issue rather than
 reporting a refusal the daemon never made, `thread.post` leaves the message on
 the thread and the draft box empty — the turn is durable the moment the daemon
 answers, and handing the draft back would have the human send it again and the
-agent hear it twice — and `agent.start`, on the post's wake and on Resume, leaves
-the row wearing `AGENT_STARTING` rather than reverting it, so nothing paints a
-failure over a harness the daemon is spawning. A reply that lands but names
+agent hear it twice — `run.adopt` keeps its one adoption in flight and asks again
+(`adoptUntilNamed`, §5 second half), so the action behind it neither sends a
+second adopt nor reads a refusal the daemon never made, and `agent.start`, on the
+post's wake and on Resume, leaves the row wearing `AGENT_STARTING` rather than
+reverting it, so nothing paints a failure over a harness the daemon is spawning. A reply that lands but names
 nothing is the same story told by the payload instead of by the timer, and reads
 the same way: `agent.start` takes the agent off the entity's next answer,
 `thread.post` leaves the provisional message for the next thread read to replace,

@@ -311,6 +311,25 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(entries[0].state).toBe("working");
   });
 
+  // Three verbs put `creating` on a card that is already there and already
+  // openable: a plan workspace on its issue, an implementation on the run that
+  // owns the checkout, and a restore on its run. The card is the reader's, and
+  // it keeps opening for the whole of that git.
+  it("keeps a standing card openable while a verb runs on it", () => {
+    const [entry] = listed(
+      mergePendingRows([issue()], [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })]),
+    );
+    expect(entry.facts).toBe("Creating…");
+    expect(entry.placeholder).toBe(false);
+    expect(entry.route).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
+  });
+
+  it("sends a row with nothing behind it nowhere, whatever the verb is called", () => {
+    const [entry] = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
+    expect(entry.placeholder).toBe(true);
+    expect(entry.route).toBeNull();
+  });
+
   it("reads a state it has never heard of as work in flight, not as nothing", () => {
     const entries = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
     expect(entries).toHaveLength(1);

@@ -1977,8 +1977,13 @@ entries from patching one key. So `createBranch` needs no provisional row of its
 own and the placeholder needs no `rekey`: there is one row, and the record
 replaces it in place — `apply_lifecycle` releases the row and runs the epilogue
 under one acquisition, so no snapshot ever carries both. A row with a verb in
-flight opens nowhere and offers no verbs; every one of them would race the verb
-already running.
+flight offers no verbs; every one of them would race the verb already running.
+Only a PLACEHOLDER opens nowhere, and that is a question about the row rather
+than about the verb: a merged row is a card that already exists, and a plan
+workspace being cut in an issue or a checkout being restored to a run must not
+stop the reader opening their own issue or run. The state string is never
+branched on — `pendingItem` marks the row it invents, and `entryRoute` reads
+that mark.
 
 The spec's load test, `bridge/tests/concurrency_load.rs`, is the only one that
 measures a number.

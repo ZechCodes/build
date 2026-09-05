@@ -104,12 +104,15 @@ const PENDING_LINE = {
   updating: "Updating…",
 };
 
-/** The verb that has nothing to open yet: what it is making does not exist. */
-const CREATING = "creating";
-
 /** One pending row as a feed row: a branch under the id its record will settle
  *  as, working, dated by nothing — an anchor it has not earned would put it
- *  somewhere in the list it has no claim to. */
+ *  somewhere in the list it has no claim to.
+ *
+ *  `placeholder` is what tells this row apart from a card the same verb is
+ *  running ON: there is nothing behind it yet, so it opens nowhere until its
+ *  record lands under the same key. A standing card keeps its own surface for
+ *  the whole of the verb — the reader's issue or run does not stop opening
+ *  because a plan workspace is being cut in it. */
 const pendingItem = (row) => ({
   kind: "branch",
   entity_id: row.entity_id,
@@ -119,6 +122,7 @@ const pendingItem = (row) => ({
   branch: row.branch || null,
   state: row.state,
   pending: row.state,
+  placeholder: true,
   working: true,
 });
 
@@ -157,9 +161,11 @@ export function mergePendingRows(items = [], pending = []) {
  *  surface. One this client is still holding has no record to decide about, so
  *  it opens nowhere. */
 export function entryRoute(item) {
-  // A card being cut opens nowhere: there is nothing on the other side of it
-  // yet. It opens itself the moment its record lands under the same key.
-  if (item.pending === CREATING) return null;
+  // A row standing in for a card that does not exist yet opens nowhere: there
+  // is nothing on the other side of it. It opens itself the moment its record
+  // lands under the same key. A card that is already there keeps its surface
+  // however busy the daemon is with it.
+  if (item.placeholder) return null;
   if (item.kind === "capture") {
     if (item.routing) {
       return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
@@ -331,6 +337,9 @@ function toEntry(item) {
     // What the daemon is doing to this row right now, if anything. A row with
     // a verb in flight is not the reader's to act on until that verb settles.
     pending: item.pending || null,
+    // Whether this row IS the verb in flight rather than a card it is running
+    // on. Only a placeholder has nothing to open.
+    placeholder: !!item.placeholder,
     // Done destroys an entity — a branch's records, an issue's plans — and it
     // is spoken in that entity's name. A row that names none has nothing to
     // finish and no way to say it, so it is never offered Done however

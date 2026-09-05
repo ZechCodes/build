@@ -371,6 +371,19 @@ fn close_is_idempotent_and_writes_after_close_fail() {
             .unwrap_err(),
         ConnectionError::Closed
     ));
+    assert!(matches!(
+        connection
+            .request(PendingOperation::Initialize)
+            .unwrap_err(),
+        ConnectionError::Closed
+    ));
+    assert_eq!(connection.pending_count(), 0);
+    assert!(matches!(
+        connection
+            .respond(ServerResponse::error(json!(1), -32601, "unsupported"))
+            .unwrap_err(),
+        ConnectionError::Closed
+    ));
 }
 
 #[test]

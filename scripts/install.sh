@@ -1,31 +1,43 @@
 #!/bin/sh
 # Install the Build bridge — the device daemon that runs coding agents on this
-# machine. Published verbatim as a release asset and served from
-# https://getbuild.ing/install.sh, so it is run as:
+# machine. Build serves this script from its own api with a short-lived
+# download token substituted into it, so it is run as the one line Build shows
+# under Settings → Downloads:
 #
-#   curl -fsSL https://getbuild.ing/install.sh | sh
+#   curl -fsSL "https://getbuild.ing/install.sh?t=dl_…" | sh
+#
+# That token is the whole of the script's authority: the release assets are not
+# public, so every download goes to the api and carries it. It is good for
+# about ten minutes and the tarball spends it, which is why the tarball is
+# fetched last and why a second run needs a freshly copied line.
 #
 # stdin is the curl pipe, so nothing here may prompt. Every message goes to
 # stderr; the single line on stdout is the path the binary landed at.
 #
 # Environment:
-#   BUILD_BRIDGE_VERSION       `latest` (default) or `X.Y.Z`
 #   BUILD_BRIDGE_INSTALL_DIR   where the binary lands (default ~/.local/bin)
-#   BUILD_RELEASES_REPO        GitHub owner/name holding the release assets
 #   BUILD_BRIDGE_SKIP_SERVICE  `1` stops after installing the binary
 #
-# Exit codes: 0 installed, 1 something failed, 2 unsupported platform.
+# Exit codes: 0 installed, 1 something failed or Build refused the download,
+# 2 cannot proceed (an unsupported platform, or no token in this install line).
 set -eu
 
-DEFAULT_REPO="ZechCodes/build-releases"
+# The api fills both slots on every serve, and they are single-quoted so that
+# whatever it substitutes stays a value and can never become shell.
+API_BASE_URL='{{api_base_url}}'
+DOWNLOAD_TOKEN='{{download_token}}'
+
 COSIGN_IDENTITY_REGEXP='^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v'
 COSIGN_ISSUER='https://token.actions.githubusercontent.com'
 ASSET_PREFIX="build-bridge-"
 CHECKSUMS="SHA256SUMS"
 BUNDLE="SHA256SUMS.sigstore.json"
 
-REPO="${BUILD_RELEASES_REPO:-$DEFAULT_REPO}"
-VERSION="${BUILD_BRIDGE_VERSION:-latest}"
+# The two refusals a user has to be able to act on, so both name the one thing
+# that fixes them: copying the line again from Build.
+NO_TOKEN_MESSAGE='no download token in this install line — copy the install line from Build (Settings → Downloads) and run it as one line'
+REFUSED_MESSAGE='Build refused the download: this install line has expired or was already used — copy a fresh one from Build'
+
 INSTALL_DIR="${BUILD_BRIDGE_INSTALL_DIR:-$HOME/.local/bin}"
 SKIP_SERVICE="${BUILD_BRIDGE_SKIP_SERVICE:-0}"
 
@@ -53,14 +65,18 @@ platform_key() {
     esac
 }
 
-# Where the assets live: a named version pins its own release, `latest` follows
-# GitHub's redirect, and both serve the same version-free asset names.
-release_url() {
-    if [ "$VERSION" = "latest" ]; then
-        printf 'https://github.com/%s/releases/latest/download\n' "$REPO"
-    else
-        printf 'https://github.com/%s/releases/download/bridge-v%s\n' "$REPO" "$VERSION"
-    fi
+# A token is as necessary as a platform this project builds for, and is asked
+# for as early, so a user holding a stale line is told to copy a fresh one
+# rather than sent to install tools that line will not need either.
+require_token() {
+    [ -n "$DOWNLOAD_TOKEN" ] || fail "$NO_TOKEN_MESSAGE" 2
+}
+
+# Every asset comes from the api's one download route. The segment is the
+# platform key for a tarball and the asset's own name for the two support
+# files, and the token rides along on each.
+download_url() {
+    printf '%s/app/downloads/%s?t=%s\n' "$API_BASE_URL" "$1" "$DOWNLOAD_TOKEN"
 }
 
 # Whether this machine has a command at all — asked of the tools the script
@@ -73,8 +89,18 @@ need() {
     has "$1" || fail "$1 is required to install build-bridge and is not on PATH"
 }
 
+# No -f: the status code is the message here. A refused install line comes back
+# as a 401 and has to be reported as the spent line it is, which `curl -f`
+# would flatten into an exit status like any other. A request that got no
+# answer at all prints 000 and lands in the last branch. --retry never retries
+# a 401, so a refusal costs one request.
 fetch() {
-    curl -fsSL --retry 3 -o "$2" "$1" || fail "could not download $1"
+    f_code="$(curl -sSL --retry 3 -o "$2" -w '%{http_code}' "$1")" || f_code="000"
+    case "$f_code" in
+        200) ;;
+        401) fail "$REFUSED_MESSAGE" 1 ;;
+        *) fail "could not download $1 (HTTP $f_code)" 1 ;;
+    esac
 }
 
 expected_sum() {
@@ -145,18 +171,21 @@ main() {
     # told exactly that, rather than being sent to find a download tool it was
     # never going to need.
     m_key="$(platform_key)"
+    require_token
     need curl
     need tar
     m_tarball="${ASSET_PREFIX}${m_key}.tar.gz"
-    m_url="$(release_url)"
     m_workdir="$(mktemp -d)"
     trap 'rm -rf "$m_workdir"' EXIT INT TERM
     cd "$m_workdir" || fail "could not use the temporary directory $m_workdir"
 
-    say "downloading $m_tarball from $m_url"
-    fetch "$m_url/$m_tarball" "$m_tarball"
-    fetch "$m_url/$CHECKSUMS" "$CHECKSUMS"
-    fetch "$m_url/$BUNDLE" "$BUNDLE"
+    say "downloading $m_tarball from $API_BASE_URL"
+    # The tarball goes last because it is the request that spends the token: a
+    # token spent before its checksums and signature arrived has bought a file
+    # this script would then refuse to verify.
+    fetch "$(download_url "$CHECKSUMS")" "$CHECKSUMS"
+    fetch "$(download_url "$BUNDLE")" "$BUNDLE"
+    fetch "$(download_url "$m_key")" "$m_tarball"
 
     verify_checksum "$m_tarball"
     verify_signature

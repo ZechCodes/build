@@ -44002,6 +44002,79 @@ mod tests {
         );
     }
 
+    /// `run.create` into a checkout a run already owns makes two commits there
+    /// — the checkpoint that keeps whatever the branch was carrying its own
+    /// legible commit, and the Issue's docs on top as the review baseline.
+    /// Both against a checkout that may be huge, so both are off the lock.
+    #[test]
+    fn run_create_into_an_existing_checkout_checkpoints_it_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "implement where the work started");
+        let target = adopted_run(&mut app, &repo, dir.path(), "already-started");
+        let elsewhere = adopted_run(&mut app, &repo, dir.path(), "somewhere-else");
+        let worktree_id = worktree_id_of_run(&app, &target);
+        let checkout = app.runs[&target].worktree.path.clone();
+        // What the branch was carrying before Build was handed it, so the
+        // checkpoint commit has something to make.
+        std::fs::write(checkout.join("half-done.txt"), "started by hand\n").unwrap();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-run",
+            "run.create",
+            json!({ "plan_id": issue_id, "worktree_id": worktree_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "run.create is holding the app mutex through its checkpoint"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": elsewhere, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the checkout is being checkpointed");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("run.create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(created["result"]["run_id"], target, "{created:?}");
+
+        let app = state.lock().unwrap();
+        let base_sha = app.runs[&target]
+            .base_sha
+            .clone()
+            .expect("the docs commit is the review baseline");
+        let log = Command::new("git")
+            .args(["-C", checkout.to_str().unwrap(), "log", "--format=%H %s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8(log.stdout).unwrap();
+        let commits: Vec<&str> = log.lines().collect();
+        let baseline = commits
+            .iter()
+            .position(|line| line.starts_with(&base_sha))
+            .expect("the baseline commit is in the checkout's history");
+        assert!(
+            commits[baseline].ends_with("plan: implement where the work started"),
+            "the baseline is not the docs commit: {log}"
+        );
+        assert!(
+            commits[baseline + 1].ends_with("Checkpoint: before Build implements an Issue here"),
+            "the branch's own work was swept into the docs commit: {log}"
+        );
+    }
+
     /// The git ran and the epilogue did not, so the checkout it cut is on disk
     /// under no run. It has to be on the board as the unbound card it is —
     /// invisible until the next full rescan is how a minted checkout gets lost.

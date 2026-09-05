@@ -123,6 +123,9 @@ fn provision() {
 }
 
 async fn serve() {
+    // Before anything opens TLS: pairing (https), the relay socket (wss) and
+    // the peer transport (DTLS) all run on the one provider this installs.
+    relay::install_crypto_provider();
     adopt_login_path();
     let runtime = match resolve_runtime_paths() {
         Ok(runtime) => runtime,

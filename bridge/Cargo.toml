@@ -34,6 +34,11 @@ uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
 semver = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+# The process crypto provider for every rustls user above (the wss relay
+# socket, reqwest, webrtc's DTLS). Two providers are unified into this build —
+# reqwest brings aws-lc-rs, webrtc's rtc brings ring — so rustls 0.23 cannot
+# pick one on its own and the daemon installs this one at startup.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }

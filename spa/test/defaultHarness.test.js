@@ -242,6 +242,6 @@ describe("the Settings page", () => {
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
     expect(at("Agent defaults")).toBeGreaterThan(-1);
     expect(at("Default agent")).toBe(at("Agent defaults") + 1);
-    expect(at("Appearance")).toBe(at("Default agent") + 1);
+    expect(at("Appearance")).toBeGreaterThan(at("Default agent"));
   }, SLOW_IMPORT_MS);
 });

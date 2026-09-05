@@ -27,6 +27,12 @@ const isolationNamed = (name) => ISOLATIONS.find((isolation) => isolation.id ===
  *  anything this client cannot name — the one rule for reading the wire. */
 const isolationNamedOrDefault = (name) => isolationNamed(name) || ISOLATIONS[0];
 
+/** What to call an isolation the bridge named — a git worktree standing for a
+ *  word this client cannot read, so a row is never labelled with nothing. */
+export function isolationLabel(name) {
+  return isolationNamedOrDefault(name).label;
+}
+
 /** The isolation a settings payload or a project row names, defaulted rather
  *  than left empty when it names none the client knows. */
 export function isolationOf(settings) {
@@ -59,21 +65,25 @@ export function isolationOptionsHtml(selected, available, { inheritLabel } = {})
   return `${inherit}${options}`;
 }
 
-/** The Settings panel, empty. `mountIsolation` fills the select from the bridge
- *  — rendering it pre-filled would show a choice nobody has confirmed is the
- *  account's — and speaks the lock, the save and a refusal through the three
- *  lines below it. */
+/** The control itself, empty: the select `mountIsolation` fills from the bridge
+ *  — rendering it pre-filled would show a choice nobody has confirmed — and the
+ *  three lines the lock, the save and a refusal speak through. Both views paint
+ *  it, so neither names the hooks the mount reaches for. */
+export function isolationFieldHtml() {
+  return `<div class="field"><label>Work isolation</label>
+        <select data-isolation="select" style="width:100%" disabled><option>loading…</option></select></div>
+      <div class="dim" data-isolation="lock" style="font-size:12px"></div>
+      <div class="dim" data-isolation="saved" style="font-size:12px;min-height:16px"></div>
+      <div class="adderr" data-isolation="error"></div>`;
+}
+
+/** The Settings panel: the control with the account's own heading and the
+ *  sentence naming what each isolation gives you. */
 export function isolationPanelHtml() {
   return `<div class="panel">
       <h3>🗂️ Work isolation</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">A copy-on-write clone starts with the project's build caches already in place and keeps its own git repository. A git worktree shares the project's repository and starts empty.</div>
-      <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">
-        <div class="field" style="flex:1;min-width:180px"><label for="isolation">Work isolation</label>
-          <select id="isolation" data-isolation="select" disabled><option>loading…</option></select></div>
-      </div>
-      <div class="dim" data-isolation="lock" style="font-size:12px"></div>
-      <div class="dim" data-isolation="saved" style="font-size:12px;min-height:16px"></div>
-      <div class="adderr" data-isolation="error"></div>
+      ${isolationFieldHtml()}
     </div>`;
 }
 
@@ -83,11 +93,10 @@ export const ACCOUNT_ISOLATION = { rpc: "settings.set", params: {}, inheritLabel
 /** A project's override, keyed on its id, naming the account default it
  *  replaces so the inherit option reads as what choosing it does. */
 export function projectIsolationTarget(project) {
-  const inherited = isolationNamedOrDefault(project && project.isolation_default);
   return {
     rpc: "project.set_isolation",
     params: { project_id: project.project_id },
-    inheritLabel: `Account default (${inherited.label})`,
+    inheritLabel: `Account default (${isolationLabel(project && project.isolation_default)})`,
   };
 }
 

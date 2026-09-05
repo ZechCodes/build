@@ -74,6 +74,95 @@ describe("openProjectSettings", () => {
     expect(document.getElementById("psremote")).toBeNull();
   });
 
+  // The one project-level choice about how work is checked out. The sheet
+  // writes no RPC name, label or isolation word of its own: it mounts the
+  // control the settings panel mounts, told to save on this project.
+  it("offers the account default first, named after what the account holds", async () => {
+    const callRpc = vi.fn().mockResolvedValue({
+      projects: [{ ...PROJECT, isolation: null, isolation_default: "cow", isolation_available: { cow: true } }],
+    });
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+    const select = document.querySelector("#sheet [data-isolation=select]");
+
+    expect([...select.options].map((option) => option.value)).toEqual(["", "worktree", "cow"]);
+    expect(select.options[0].textContent).toBe("Account default (Copy-on-write clone)");
+    expect(select.value).toBe("");
+    expect(select.disabled).toBe(false);
+  });
+
+  it("saves this project's own isolation on change, and clears it the same way", async () => {
+    const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { cow: true } };
+    const callRpc = vi.fn().mockImplementation((method, params) =>
+      method === "project.list"
+        ? Promise.resolve({ projects: [row] })
+        : Promise.resolve({ ...row, isolation: params.isolation }),
+    );
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+    const select = document.querySelector("#sheet [data-isolation=select]");
+
+    select.value = "cow";
+    select.dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "cow" });
+    expect(select.value).toBe("cow");
+
+    select.value = "";
+    select.dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null });
+    expect(document.querySelector("#sheet [data-isolation=select]").value).toBe("");
+  });
+
+  it("shows a project whose volume cannot clone why, and offers it no clone", async () => {
+    const callRpc = vi.fn().mockResolvedValue({
+      projects: [
+        {
+          ...PROJECT,
+          isolation: null,
+          isolation_default: "worktree",
+          isolation_available: { cow: false, reason: "the project is on a volume that cannot clone" },
+        },
+      ],
+    });
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+
+    expect([...document.querySelector("#sheet [data-isolation=select]").options].map((o) => o.disabled)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    expect(document.querySelector("#sheet [data-isolation=lock]").textContent).toBe(
+      "Locked to git worktrees on this device: the project is on a volume that cannot clone.",
+    );
+  });
+
+  it("keeps the remote's save separate from the isolation's refusal", async () => {
+    const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { cow: true } };
+    const callRpc = vi.fn().mockImplementation((method) =>
+      method === "project.list"
+        ? Promise.resolve({ projects: [row] })
+        : Promise.reject(new Error("copy-on-write isolation is unavailable: r; locked to worktrees")),
+    );
+    openProjectSettings("proj-1", { callRpc });
+    await flush();
+    const select = document.querySelector("#sheet [data-isolation=select]");
+
+    select.value = "cow";
+    select.dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+
+    expect(document.querySelector("#sheet [data-isolation=error]").textContent).toContain("locked to worktrees");
+    expect(document.getElementById("pserr").textContent).toBe("");
+    expect(select.value).toBe("");
+    expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
+  });
+
   it("escapes what the project record carries", async () => {
     const callRpc = vi.fn().mockResolvedValue({
       projects: [{ ...PROJECT, name: '"><img src=x>', path: "<b>p</b>" }],

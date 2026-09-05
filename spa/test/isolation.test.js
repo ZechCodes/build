@@ -10,8 +10,11 @@
 // label or a locked look.
 
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   ISOLATIONS,
+  isolationLabel,
   isolationOf,
   isolationLockReason,
   isolationOptionsHtml,
@@ -20,6 +23,8 @@ import {
   projectIsolationTarget,
   mountIsolation,
 } from "../src/core/isolation.js";
+
+const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
@@ -173,6 +178,13 @@ describe("the naming table", () => {
       { id: "cow", label: "Copy-on-write clone" },
     ]);
   });
+
+  it("gives a wire word its name, and a word it cannot read a git worktree's", () => {
+    expect(isolationLabel("cow")).toBe("Copy-on-write clone");
+    expect(isolationLabel("worktree")).toBe("Git worktree");
+    expect(isolationLabel("nope")).toBe("Git worktree");
+    expect(isolationLabel(null)).toBe("Git worktree");
+  });
 });
 
 // One control, two owners: the account's own setting and a project's override.
@@ -319,4 +331,82 @@ describe("the mounted control", () => {
     expect(error().textContent).toContain("locked to worktrees");
     expect(select().value).toBe("worktree");
   });
+});
+
+// Where the account's own choice lives: Account -> Settings, directly under the
+// agent it starts new work on, painted from the same bridge every device reads.
+describe("the Settings page", () => {
+  const renderWith = async (call) => {
+    vi.resetModules();
+    document.body.innerHTML = bodyHtml;
+    // The devices panel talks HTTP, not the bridge. Nothing here is about it,
+    // and a real request from jsdom hangs until the test's own deadline.
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("no network in tests");
+    });
+    const { App } = await import("../src/app.js");
+    const { renderSettings } = await import("../src/views/settings.js");
+    App.call = vi.fn(call);
+    await renderSettings();
+    await flush();
+    return App.call;
+  };
+
+  // Re-importing the whole app shell can outrun the default deadline on a
+  // loaded machine.
+  const SLOW_IMPORT_MS = 30000;
+
+  const settingsCall = (settings, projects = []) => async (method) => {
+    if (method === "project.list") return { projects };
+    if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude", ...settings };
+    if (method === "models.list") return { default_provider: "claude", providers: [] };
+    return {};
+  };
+
+  it("puts the isolation panel directly under the default agent, on what the account holds", async () => {
+    await renderWith(settingsCall({ isolation: "cow", isolation_available: { cow: true, reason: null } }));
+
+    const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
+    const at = (word) => headings.findIndex((heading) => heading.includes(word));
+    expect(at("Work isolation")).toBe(at("Default agent") + 1);
+    expect(document.querySelector("#root [data-isolation=select]").value).toBe("cow");
+    expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(false);
+  }, SLOW_IMPORT_MS);
+
+  it("shows the volume's lock rather than a choice this device cannot keep", async () => {
+    await renderWith(
+      settingsCall({ isolation: "worktree", isolation_available: { cow: false, reason: "no reflink support here" } }),
+    );
+
+    expect(document.querySelector("#root [data-isolation=lock]").textContent).toBe(
+      "Locked to git worktrees on this device: no reflink support here.",
+    );
+    const options = [...document.querySelector("#root [data-isolation=select]").options];
+    expect(options.map((option) => option.disabled)).toEqual([false, true]);
+  }, SLOW_IMPORT_MS);
+
+  it("saves a chosen isolation through the account's own method", async () => {
+    const call = await renderWith(settingsCall({ isolation: "worktree", isolation_available: { cow: true } }));
+    const select = document.querySelector("#root [data-isolation=select]");
+
+    select.value = "cow";
+    select.dispatchEvent(new Event("change"));
+    await flush();
+    await flush();
+
+    expect(call).toHaveBeenCalledWith("settings.set", { isolation: "cow" });
+  }, SLOW_IMPORT_MS);
+
+  it("names on every project row what that project will actually do", async () => {
+    await renderWith(
+      settingsCall({ isolation: "worktree", isolation_available: { cow: true } }, [
+        { project_id: "p1", name: "build", path: "/p/build", base_branch: "main", isolation_effective: "cow" },
+        { project_id: "p2", name: "relay", path: "/p/relay", base_branch: "main", isolation_effective: "worktree" },
+      ]),
+    );
+
+    const rows = [...document.querySelectorAll("#projlist .projrow")].map((row) => row.textContent);
+    expect(rows[0]).toContain("Copy-on-write clone");
+    expect(rows[1]).toContain("Git worktree");
+  }, SLOW_IMPORT_MS);
 });

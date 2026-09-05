@@ -9,7 +9,10 @@ use tokio::sync::broadcast;
 use super::connection::{AppServerConnection, SharedConnection};
 use super::limits::{AppServerLimits, StateLimits};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
-use super::process::{AppServerProcess, TerminalEventSink, TerminalSource, TerminalSourceEvent};
+use super::process::{
+    AppServerProcess, ProcessOutcome, StderrOutcome, TerminalEventSink, TerminalSource,
+    TerminalSourceEvent,
+};
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
     ParentThreadFilter, ParentThreadRoute, RoutedServerRequest, ServerNotification,
@@ -36,16 +39,13 @@ impl CoordinatorTerminalEvent {
             | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
                 ..
             })
-            | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled {
-                ..
-            })
+            | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled(_))
             | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::SourceExpired {
                 ..
             }) => true,
-            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled {
-                drainer_error,
-                ..
-            }) => drainer_error.is_some(),
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled(
+                outcome,
+            )) => outcome.drainer_error.is_some(),
         }
     }
 }
@@ -54,18 +54,6 @@ impl CoordinatorTerminalEvent {
 pub struct TerminalOutcome {
     pub exit_code: Option<i32>,
     pub epitaph: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ProcessOutcome {
-    exit_code: Option<i32>,
-    monitor_error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StderrOutcome {
-    retained_tail: Option<String>,
-    drainer_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,23 +75,15 @@ impl TerminalSnapshot {
             }) => {
                 next.settle_stdout(reader_error);
             }
-            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled {
-                exit_code,
-                monitor_error,
-            }) => {
-                next.process.get_or_insert(ProcessOutcome {
-                    exit_code,
-                    monitor_error,
-                });
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled(
+                outcome,
+            )) => {
+                next.process.get_or_insert(outcome);
             }
-            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled {
-                retained_tail,
-                drainer_error,
-            }) => {
-                next.settle_stderr(StderrOutcome {
-                    retained_tail,
-                    drainer_error,
-                });
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled(
+                outcome,
+            )) => {
+                next.settle_stderr(outcome);
             }
             CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::SourceExpired {
                 source,
@@ -120,10 +100,7 @@ impl TerminalSnapshot {
     fn settle_expired_source(&mut self, source: TerminalSource) -> bool {
         match source {
             TerminalSource::Stdout => self.settle_stdout(None),
-            TerminalSource::Stderr => self.settle_stderr(StderrOutcome {
-                retained_tail: None,
-                drainer_error: None,
-            }),
+            TerminalSource::Stderr => self.settle_stderr(StderrOutcome::default()),
         }
     }
 
@@ -859,14 +836,14 @@ mod tests {
     fn terminal_publication_waits_for_stdout_process_and_stderr_in_every_order() {
         let events = [
             TerminalSourceEvent::StdoutSettled { reader_error: None },
-            TerminalSourceEvent::ProcessSettled {
+            TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                 exit_code: Some(17),
                 monitor_error: None,
-            },
-            TerminalSourceEvent::StderrSettled {
+            }),
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: Some("stderr tail".to_string()),
                 drainer_error: None,
-            },
+            }),
         ];
         for order in [
             [0, 1, 2],
@@ -899,18 +876,18 @@ mod tests {
         assert!(snapshot.outcome().is_none());
         snapshot = settled(
             &snapshot,
-            TerminalSourceEvent::ProcessSettled {
+            TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                 exit_code: None,
                 monitor_error: Some("later process error".to_string()),
-            },
+            }),
         );
         assert!(snapshot.outcome().is_none());
         snapshot = settled(
             &snapshot,
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: Some("stderr fallback".to_string()),
                 drainer_error: Some("later drainer error".to_string()),
-            },
+            }),
         );
         assert_eq!(
             snapshot.outcome().unwrap().epitaph.as_deref(),
@@ -923,17 +900,17 @@ mod tests {
         );
         process_first = settled(
             &process_first,
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: Some("tail".to_string()),
                 drainer_error: Some("drainer".to_string()),
-            },
+            }),
         );
         process_first = settled(
             &process_first,
-            TerminalSourceEvent::ProcessSettled {
+            TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                 exit_code: None,
                 monitor_error: Some("process".to_string()),
-            },
+            }),
         );
         assert_eq!(
             process_first.outcome().unwrap().epitaph.as_deref(),
@@ -946,15 +923,15 @@ mod tests {
                     &TerminalSnapshot::default(),
                     TerminalSourceEvent::StdoutSettled { reader_error: None },
                 ),
-                TerminalSourceEvent::ProcessSettled {
+                TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                     exit_code: Some(0),
                     monitor_error: None,
-                },
+                }),
             ),
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: Some("tail".to_string()),
                 drainer_error: Some("drainer".to_string()),
-            },
+            }),
         );
         assert_eq!(
             drainer_first.outcome().unwrap().epitaph.as_deref(),
@@ -972,20 +949,20 @@ mod tests {
             source: TerminalSource::Stderr,
             reason: "stderr expired".to_string(),
         };
-        let process_ok = TerminalSourceEvent::ProcessSettled {
+        let process_ok = TerminalSourceEvent::ProcessSettled(ProcessOutcome {
             exit_code: Some(3),
             monitor_error: None,
-        };
+        });
 
         let stdout_expiry_alone = settled(
             &settled(
                 &settled(&TerminalSnapshot::default(), stdout_expired.clone()),
                 process_ok.clone(),
             ),
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: None,
                 drainer_error: None,
-            },
+            }),
         );
         assert_eq!(
             stdout_expiry_alone.outcome(),
@@ -1000,10 +977,10 @@ mod tests {
                 &settled(&TerminalSnapshot::default(), stdout_expired.clone()),
                 process_ok.clone(),
             ),
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: Some("boom".to_string()),
                 drainer_error: None,
-            },
+            }),
         );
         assert_eq!(
             tail_outranks_expiry.outcome().unwrap().epitaph.as_deref(),
@@ -1013,10 +990,10 @@ mod tests {
         let monitor_outranks_expiry = settled(
             &settled(
                 &settled(&TerminalSnapshot::default(), stderr_expired.clone()),
-                TerminalSourceEvent::ProcessSettled {
+                TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                     exit_code: None,
                     monitor_error: Some("monitor".to_string()),
-                },
+                }),
             ),
             TerminalSourceEvent::StdoutSettled { reader_error: None },
         );
@@ -1036,10 +1013,10 @@ mod tests {
                         &TerminalSnapshot::default(),
                         TerminalSourceEvent::StdoutSettled { reader_error: None },
                     ),
-                    TerminalSourceEvent::StderrSettled {
+                    TerminalSourceEvent::StderrSettled(StderrOutcome {
                         retained_tail: None,
                         drainer_error: None,
-                    },
+                    }),
                 ),
                 stdout_expired,
             ),
@@ -1067,17 +1044,17 @@ mod tests {
         }
         snapshot = settled(
             &snapshot,
-            TerminalSourceEvent::ProcessSettled {
+            TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                 exit_code: Some(1),
                 monitor_error: Some("process error".to_string()),
-            },
+            }),
         );
         snapshot = settled(
             &snapshot,
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: None,
                 drainer_error: None,
-            },
+            }),
         );
         assert_eq!(
             snapshot.outcome().unwrap().epitaph.as_deref(),
@@ -1089,14 +1066,14 @@ mod tests {
     fn each_terminal_source_settles_exactly_once() {
         let events = [
             TerminalSourceEvent::StdoutSettled { reader_error: None },
-            TerminalSourceEvent::ProcessSettled {
+            TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                 exit_code: Some(0),
                 monitor_error: None,
-            },
-            TerminalSourceEvent::StderrSettled {
+            }),
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: None,
                 drainer_error: None,
-            },
+            }),
         ];
         let mut snapshot = TerminalSnapshot::default();
         for event in &events[..2] {
@@ -1106,10 +1083,10 @@ mod tests {
         }
         let resettled = settled(
             &settled(&snapshot, events[2].clone()),
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: Some("late tail".to_string()),
                 drainer_error: Some("late drainer".to_string()),
-            },
+            }),
         );
         assert_eq!(resettled.outcome().unwrap().epitaph, None);
     }

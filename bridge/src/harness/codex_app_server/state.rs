@@ -7,7 +7,7 @@ use super::protocol::{
     ConnectionEvent, ErrorNotification, InitializeResult, OperationResult, PendingOperation,
     RpcError, ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult, CLIENT_NAME,
 };
-use crate::harness::{ActivityReport, AgentActivity, AgentStatus};
+use crate::harness::{ActivityReport, AgentStatus};
 use semver::Version;
 
 const MINIMUM_VERSION: &str = "0.153.0";
@@ -1230,9 +1230,7 @@ fn retained_steer_input(steer: PendingSteer) -> String {
 }
 
 fn operational_report(summary: String) -> SessionEffect {
-    SessionEffect::Report(ActivityReport::own_work(AgentActivity::TaskUpdate {
-        summary: crate::harness::adk::one_line(&summary, crate::harness::adk::TOOL_SUMMARY_LIMIT),
-    }))
+    SessionEffect::Report(ActivityReport::bounded_task_update(&summary))
 }
 
 fn leading_user_agent_version(user_agent: &str) -> Option<Version> {

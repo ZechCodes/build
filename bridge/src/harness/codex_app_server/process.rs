@@ -21,6 +21,22 @@ pub enum TerminalSource {
     Stderr,
 }
 
+/// Everything the reaped child says about itself: its exit code, and the
+/// failure of the monitor that watched for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessOutcome {
+    pub exit_code: Option<i32>,
+    pub monitor_error: Option<String>,
+}
+
+/// Everything the drained stderr pipe says about itself: the retained tail, and
+/// the failure of the drainer that read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StderrOutcome {
+    pub retained_tail: Option<String>,
+    pub drainer_error: Option<String>,
+}
+
 /// One settlement of the stdout reader, the process monitor, or the stderr drainer,
 /// or the settle-grace expiry that settles a pipe still held open after the child was reaped.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,14 +44,8 @@ pub enum TerminalSourceEvent {
     StdoutSettled {
         reader_error: Option<String>,
     },
-    ProcessSettled {
-        exit_code: Option<i32>,
-        monitor_error: Option<String>,
-    },
-    StderrSettled {
-        retained_tail: Option<String>,
-        drainer_error: Option<String>,
-    },
+    ProcessSettled(ProcessOutcome),
+    StderrSettled(StderrOutcome),
     SourceExpired {
         source: TerminalSource,
         reason: String,
@@ -264,10 +274,10 @@ fn grace_expiries(source_settle_grace: Duration) -> [TerminalSourceEvent; 2] {
 }
 
 fn settled_event(state: &ProcessState) -> TerminalSourceEvent {
-    TerminalSourceEvent::ProcessSettled {
+    TerminalSourceEvent::ProcessSettled(ProcessOutcome {
         exit_code: state.exit_code,
         monitor_error: state.process_error.clone(),
-    }
+    })
 }
 
 impl Drop for AppServerProcess {
@@ -314,10 +324,10 @@ fn drain_stderr_reader(mut reader: impl Read, mut tail: StderrTail) -> TerminalS
             Err(error) => break Some(format!("Codex stderr read failed: {error}")),
         }
     };
-    TerminalSourceEvent::StderrSettled {
+    TerminalSourceEvent::StderrSettled(StderrOutcome {
         retained_tail: tail.epitaph(),
         drainer_error,
-    }
+    })
 }
 
 struct StderrTail {
@@ -426,7 +436,7 @@ mod tests {
         assert!(process.exited_within(Duration::ZERO));
         let mut process_settlements = 0;
         while let Ok(event) = receiver.recv_timeout(Duration::from_secs(2)) {
-            if matches!(event, TerminalSourceEvent::ProcessSettled { .. }) {
+            if matches!(event, TerminalSourceEvent::ProcessSettled(_)) {
                 process_settlements += 1;
                 break;
             }
@@ -470,10 +480,10 @@ mod tests {
 
         assert!(matches!(
             receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
-            TerminalSourceEvent::ProcessSettled {
+            TerminalSourceEvent::ProcessSettled(ProcessOutcome {
                 exit_code: None,
                 monitor_error: Some(error),
-            } if error == "Codex try_wait failed: exact poll error"
+            }) if error == "Codex try_wait failed: exact poll error"
         ));
         assert!(calls.polls.load(Ordering::SeqCst) > 0);
         assert!(process.shutdown().is_err());
@@ -503,10 +513,10 @@ mod tests {
 
         assert!(matches!(
             drain_stderr_reader(FailedReader, StderrTail::new(AppServerLimits::default().process().retention)),
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: None,
                 drainer_error: Some(error),
-            } if error == "Codex stderr read failed: exact drain error"
+            }) if error == "Codex stderr read failed: exact drain error"
         ));
     }
 
@@ -514,10 +524,10 @@ mod tests {
     fn stderr_drainer_settles_with_the_retained_tail() {
         assert!(matches!(
             drain_stderr_reader(Cursor::new(b"first\nsecond\n"), StderrTail::new(AppServerLimits::default().process().retention)),
-            TerminalSourceEvent::StderrSettled {
+            TerminalSourceEvent::StderrSettled(StderrOutcome {
                 retained_tail: Some(tail),
                 drainer_error: None,
-            } if tail == "first\nsecond"
+            }) if tail == "first\nsecond"
         ));
     }
 

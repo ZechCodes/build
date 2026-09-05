@@ -1,6 +1,5 @@
 use super::protocol::{ParentThreadRoute, ServerRequest, ServerResponse};
-use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
-use crate::harness::{ActivityReport, AgentActivity};
+use crate::harness::ActivityReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AfterResponse {
@@ -93,9 +92,7 @@ fn report_decision(response: ServerResponse, summary: &str) -> ServerRequestDeci
     ServerRequestDecision {
         response,
         after_response: AfterResponse::Continue,
-        report: Some(ActivityReport::own_work(AgentActivity::TaskUpdate {
-            summary: one_line(summary, TOOL_SUMMARY_LIMIT),
-        })),
+        report: Some(ActivityReport::bounded_task_update(summary)),
     }
 }
 

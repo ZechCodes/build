@@ -1057,12 +1057,7 @@ impl ProtocolReader {
     /// work, not the agent speaking.
     fn mint_task_updates(&self, summaries: Vec<String>) {
         for summary in summaries {
-            self.report(
-                AgentActivity::TaskUpdate {
-                    summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
-                },
-                None,
-            );
+            self.send_report(ActivityReport::bounded_task_update(&summary));
         }
     }
 
@@ -1256,15 +1251,18 @@ impl ProtocolReader {
     }
 
     fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
-        let reported = match parent_call_id {
+        self.send_report(match parent_call_id {
             None => ActivityReport::own_work(activity),
             Some(spawning_call_id) => ActivityReport {
                 activity,
                 parent_call_id: Some(spawning_call_id.to_string()),
             },
-        };
+        });
+    }
+
+    fn send_report(&self, report: ActivityReport) {
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
-            let _ = sender.send(reported);
+            let _ = sender.send(report);
         }
     }
 }

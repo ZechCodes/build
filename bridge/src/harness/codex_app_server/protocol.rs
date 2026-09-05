@@ -382,17 +382,21 @@ pub enum ServerNotification {
 
 impl ServerNotification {
     pub fn decode(method: &str, params: Value) -> Result<ServerNotification, String> {
-        tag_for(NOTIFICATION_METHODS, method).map_or(Ok(ServerNotification::Unknown), |decode| {
-            decode(method, params)
+        tag_for(NOTIFICATION_METHODS, method).map_or(Ok(ServerNotification::Unknown), |row| {
+            (row.decode)(method, params)
         })
     }
 }
 
 fn thread_started_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
     Ok(ServerNotification::ThreadStarted {
-        thread_id: required_string(&params, "/thread/id", "thread/started thread id")?,
+        thread_id: required_string(
+            &params,
+            THREAD_STARTED_ID_POINTER,
+            "thread/started thread id",
+        )?,
         parent_thread_id: params
-            .pointer("/thread/parentThreadId")
+            .pointer(THREAD_STARTED_PARENT_POINTER)
             .and_then(Value::as_str)
             .map(str::to_string),
     })
@@ -400,14 +404,14 @@ fn thread_started_notification(_method: &str, params: Value) -> Result<ServerNot
 
 fn turn_started_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
     Ok(ServerNotification::TurnStarted {
-        thread_id: required_string(&params, "/threadId", "turn/started thread id")?,
+        thread_id: required_string(&params, THREAD_ID_POINTER, "turn/started thread id")?,
         turn_id: required_string(&params, "/turn/id", "turn/started turn id")?,
     })
 }
 
 fn turn_completed_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
     Ok(ServerNotification::TurnCompleted {
-        thread_id: required_string(&params, "/threadId", "turn/completed thread id")?,
+        thread_id: required_string(&params, THREAD_ID_POINTER, "turn/completed thread id")?,
         completion: TurnCompletion::from_params(&params)?,
     })
 }
@@ -440,7 +444,7 @@ fn item_notification(
         .ok_or_else(|| format!("{method} item is missing"))?;
     Ok(ServerNotification::Item(ItemNotification {
         lifecycle,
-        thread_id: required_string(&params, "/threadId", "item thread id")?,
+        thread_id: required_string(&params, THREAD_ID_POINTER, "item thread id")?,
         turn_id: required_string(&params, "/turnId", "item turn id")?,
         item,
     }))
@@ -448,18 +452,98 @@ fn item_notification(
 
 type NotificationDecoder = fn(&str, Value) -> Result<ServerNotification, String>;
 
-const NOTIFICATION_METHODS: &[(&str, NotificationDecoder)] = &[
-    ("thread/started", thread_started_notification),
-    ("turn/started", turn_started_notification),
-    ("turn/completed", turn_completed_notification),
-    ("item/started", item_started_notification),
-    ("item/completed", item_completed_notification),
-    ("error", error_notification),
-    ("item/agentMessage/delta", delta_notification),
-    ("item/commandExecution/outputDelta", delta_notification),
-    ("item/fileChange/outputDelta", delta_notification),
-    ("item/reasoning/summaryTextDelta", delta_notification),
-    ("item/reasoning/textDelta", delta_notification),
+const THREAD_ID_POINTER: &str = "/threadId";
+const THREAD_STARTED_ID_POINTER: &str = "/thread/id";
+const THREAD_STARTED_PARENT_POINTER: &str = "/thread/parentThreadId";
+
+/// The field a notification is scoped by, before any of its params are decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotificationRouting {
+    ThreadId,
+    ThreadStarted,
+}
+
+impl NotificationRouting {
+    fn route(self, params: &Value, expected_parent: Option<&str>) -> ParentThreadRoute {
+        match self {
+            NotificationRouting::ThreadId => route_id(
+                params.pointer(THREAD_ID_POINTER).and_then(Value::as_str),
+                expected_parent,
+            ),
+            NotificationRouting::ThreadStarted => {
+                if params
+                    .pointer(THREAD_STARTED_PARENT_POINTER)
+                    .is_some_and(|parent| !parent.is_null())
+                {
+                    return ParentThreadRoute::Child;
+                }
+                route_id(
+                    params
+                        .pointer(THREAD_STARTED_ID_POINTER)
+                        .and_then(Value::as_str),
+                    expected_parent,
+                )
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NotificationMethod {
+    routing: NotificationRouting,
+    decode: NotificationDecoder,
+}
+
+const fn thread_id_routed(decode: NotificationDecoder) -> NotificationMethod {
+    NotificationMethod {
+        routing: NotificationRouting::ThreadId,
+        decode,
+    }
+}
+
+const fn thread_start_routed(decode: NotificationDecoder) -> NotificationMethod {
+    NotificationMethod {
+        routing: NotificationRouting::ThreadStarted,
+        decode,
+    }
+}
+
+const NOTIFICATION_METHODS: &[(&str, NotificationMethod)] = &[
+    (
+        "thread/started",
+        thread_start_routed(thread_started_notification),
+    ),
+    ("turn/started", thread_id_routed(turn_started_notification)),
+    (
+        "turn/completed",
+        thread_id_routed(turn_completed_notification),
+    ),
+    ("item/started", thread_id_routed(item_started_notification)),
+    (
+        "item/completed",
+        thread_id_routed(item_completed_notification),
+    ),
+    ("error", thread_id_routed(error_notification)),
+    (
+        "item/agentMessage/delta",
+        thread_id_routed(delta_notification),
+    ),
+    (
+        "item/commandExecution/outputDelta",
+        thread_id_routed(delta_notification),
+    ),
+    (
+        "item/fileChange/outputDelta",
+        thread_id_routed(delta_notification),
+    ),
+    (
+        "item/reasoning/summaryTextDelta",
+        thread_id_routed(delta_notification),
+    ),
+    (
+        "item/reasoning/textDelta",
+        thread_id_routed(delta_notification),
+    ),
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -470,7 +554,7 @@ struct ServerRequestMethod {
 
 const fn thread_scoped(build: fn(Value) -> ServerRequest) -> ServerRequestMethod {
     ServerRequestMethod {
-        routing_pointer: Some("/threadId"),
+        routing_pointer: Some(THREAD_ID_POINTER),
         build,
     }
 }
@@ -551,22 +635,9 @@ impl ParentThreadFilter {
         params: &Value,
         expected_parent: Option<&str>,
     ) -> ParentThreadRoute {
-        if method == "thread/started" {
-            if params
-                .pointer("/thread/parentThreadId")
-                .is_some_and(|parent| !parent.is_null())
-            {
-                return ParentThreadRoute::Child;
-            }
-            return route_id(
-                params.pointer("/thread/id").and_then(Value::as_str),
-                expected_parent,
-            );
-        }
-        route_id(
-            params.pointer("/threadId").and_then(Value::as_str),
-            expected_parent,
-        )
+        tag_for(NOTIFICATION_METHODS, method)
+            .map_or(NotificationRouting::ThreadId, |row| row.routing)
+            .route(params, expected_parent)
     }
 
     fn server_request(

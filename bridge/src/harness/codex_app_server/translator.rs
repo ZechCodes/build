@@ -491,15 +491,15 @@ fn emit_item(
         ItemReportKind::SubAgentActivity => subagent_report(&notification.item, lifecycle)
             .into_iter()
             .collect(),
-        ItemReportKind::ContextCompaction => vec![task_update(format!(
+        ItemReportKind::ContextCompaction => vec![ActivityReport::bounded_task_update(&format!(
             "Context compaction {}",
             lifecycle_word(lifecycle)
         ))],
         ItemReportKind::EnteredReviewMode if lifecycle == ItemLifecycle::Completed => {
-            vec![task_update("Entered review mode".to_string())]
+            vec![ActivityReport::bounded_task_update("Entered review mode")]
         }
         ItemReportKind::ExitedReviewMode if lifecycle == ItemLifecycle::Completed => {
-            vec![task_update("Exited review mode".to_string())]
+            vec![ActivityReport::bounded_task_update("Exited review mode")]
         }
         _ => Vec::new(),
     }
@@ -545,7 +545,7 @@ fn subagent_report(item: &Value, lifecycle: ItemLifecycle) -> Option<ActivityRep
             .as_str()
             .unwrap_or_else(|| lifecycle_word(lifecycle))
     );
-    Some(task_update(summary))
+    Some(ActivityReport::bounded_task_update(&summary))
 }
 
 fn lifecycle_word(lifecycle: ItemLifecycle) -> &'static str {
@@ -595,10 +595,4 @@ fn tool_outcome(item: &Value) -> ToolOutcome {
     } else {
         ToolOutcome::Ok
     }
-}
-
-fn task_update(summary: String) -> ActivityReport {
-    ActivityReport::own_work(AgentActivity::TaskUpdate {
-        summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
-    })
 }

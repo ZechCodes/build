@@ -26,16 +26,17 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
-    harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext,
-    SessionIdentitySource, SessionOutput, TerminalView, Turn,
+    harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
+    SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, TerminalView,
+    Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, AdoptionScope, Agent, AgentLaunch, AgentTurn, Orchestrator,
-    OrchestratorError, ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource,
-    SessionLocatorFactory, SpawnOptions, TranscriptProbe,
+    OrchestratorError, PreparedAgentLaunch, ReportConsumed, ReportOutcome, ResumeIdProbe,
+    RunSource, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -141,6 +142,15 @@ fn shell_harness_spec(shell: &str) -> HarnessSpec {
         .arg("-i")
         .arg("-l")
         .env("TERM", "xterm-256color")
+}
+
+fn terminal_size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
 }
 
 /// A worktree-backed surface a terminal or fs call is scoped to. Scope roots are
@@ -740,10 +750,8 @@ impl Tab {
 
     /// The terminal and the grid it paints into.
     ///
-    /// One question answers for both: they are made together in
-    /// [`Tab::spawn`] and a session with no terminal has neither, so there is
-    /// no state in which a tab has a screen to hand a client and nothing
-    /// behind it.
+    /// One question answers for both: the final constructor makes them
+    /// together, and a session with no terminal has neither.
     fn require_terminal_and_screen(
         &mut self,
     ) -> Result<(&dyn TerminalView, &mut TermScreen), String> {
@@ -765,12 +773,7 @@ impl Tab {
             close_a_screen_with_no_terminal(&screen, term_id);
             return self;
         };
-        let _ = terminal.resize(PtySize {
-            rows: screen.rows,
-            cols: screen.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        let _ = terminal.resize(terminal_size(screen.cols, screen.rows));
         self.screen = Some(screen);
         self
     }
@@ -783,12 +786,7 @@ impl Tab {
             close_a_screen_with_no_terminal(&waiting, term_id);
             return self;
         };
-        let _ = terminal.resize(PtySize {
-            rows: waiting.rows,
-            cols: waiting.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        let _ = terminal.resize(terminal_size(waiting.cols, waiting.rows));
         screen.set_size(waiting.cols, waiting.rows);
         for client in &waiting.attached {
             screen.register(&client.sender);
@@ -796,62 +794,74 @@ impl Tab {
         self
     }
 
-    /// Spawn `role`'s program at `root`, returning the tab and whichever stream
-    /// its session offers, subscribed before its first word can be missed.
+    /// Open an agent's session through its provider and wrap it in a tab, with
+    /// the output subscribed before the first word can be missed.
     ///
     /// The grid is made together with the terminal, or not at all: a session
     /// with no terminal paints nothing, so there is no screen to hold and no
     /// byte pump to run — its work reaches the conversation through the
     /// activity pump instead.
-    ///
-    /// A terminal uses a launch-known identity from `spec` when available;
-    /// otherwise `locator` carries the provider's pre-spawn transcript watcher.
-    fn spawn(
-        role: TabRole,
+    fn spawn_agent(
+        owner: String,
+        agent_id: String,
+        request: SessionOpenRequest,
+    ) -> Result<(Tab, SessionOutput), String> {
+        let provider = request.choice.provider;
+        let tab_id = agent_tab_id(&agent_id);
+        let root = request.root.clone();
+        let size = request.terminal.size;
+        let opened = open_session(provider, request).map_err(|error| error.to_string())?;
+        Ok(Self::from_opened_session(
+            TabRole::Agent {
+                owner,
+                agent_id,
+                provider,
+            },
+            tab_id,
+            root,
+            size,
+            opened,
+        ))
+    }
+
+    /// The human's own shell: always a terminal, and the one session never
+    /// handed a turn, so it is not waited on — a login shell may never announce
+    /// a line editor at all and `term.create` holds the state lock across this.
+    fn spawn_shell(
         spec: &HarnessSpec,
         tab_id: String,
         root: std::path::PathBuf,
-        cols: u16,
-        rows: u16,
-        locator: Option<Box<dyn crate::harness::SessionLocator>>,
+        size: PtySize,
     ) -> Result<(Tab, SessionOutput), String> {
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        // Which carrier opens is the PROVIDER's answer, asked here and asked by
-        // the rail before there is a session — one authority, so the rail never
-        // offers a basement this spawn would refuse. The human's own shell is
-        // always a terminal, and is the one session never handed a turn: it is
-        // not waited on, because a login shell may never announce a line editor
-        // at all and `term.create` holds the state lock across this.
-        let carrier = match &role {
-            TabRole::Agent { provider, .. } if !harness_for(*provider).has_terminal() => {
-                Carrier::Protocol
-            }
-            TabRole::Agent { .. } => {
-                let identity = match &spec.known_session_id {
-                    Some(known) => Some(SessionIdentitySource::Known(known.clone())),
-                    None => locator.map(SessionIdentitySource::Located),
-                };
-                Carrier::Terminal {
-                    size,
-                    turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
-                    identity,
-                }
-            }
-            // The human's own shell is having no conversation, so there is no
-            // name for a locator to find.
-            TabRole::Shell => Carrier::Terminal {
+        let opened = open_terminal_session(
+            spec,
+            root.clone(),
+            TerminalOpenOptions {
                 size,
                 turn_ready_grace: None,
                 identity: None,
             },
-        };
-        let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
-        Ok((
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self::from_opened_session(
+            TabRole::Shell,
+            tab_id,
+            root,
+            size,
+            opened,
+        ))
+    }
+
+    fn from_opened_session(
+        role: TabRole,
+        tab_id: String,
+        root: std::path::PathBuf,
+        size: PtySize,
+        opened: crate::harness::OpenedSession,
+    ) -> (Tab, SessionOutput) {
+        let (cols, rows) = (size.cols, size.rows);
+        let session = opened.session;
+        (
             Tab {
                 tab_id,
                 root,
@@ -863,8 +873,8 @@ impl Tab {
                 call_sequences: HashMap::new(),
                 last_delivered_at: None,
             },
-            rx,
-        ))
+            opened.output,
+        )
     }
 }
 
@@ -6928,16 +6938,14 @@ impl AppState {
         }))
     }
 
-    /// Every account setting this bridge holds. `claude_mode` and `codex_mode`
-    /// are derived rather than stored — the first is what a step-13 client
-    /// calls the default harness, the second is Codex's one mode — so there is
-    /// nothing to remember and nothing to migrate.
+    /// Every account setting this bridge holds. Legacy mode fields are derived
+    /// from the concrete default harness rather than stored separately.
     fn settings_get(&self) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
-            "codex_mode": models::CODEX_ONLY_MODE,
+            "codex_mode": models::codex_mode_of_harness(self.default_harness),
         })
     }
 
@@ -6951,42 +6959,8 @@ impl AppState {
             Some(_) => Some(expand_tilde(&require_str(params, "projects_dir")?)),
             None => None,
         };
-        // A step-13 client names the same setting in an older vocabulary, so
-        // `claude_mode` is parsed into the harness it means. Both are parsed;
-        // the new key wins when a client sends both, because that is the one
-        // this bridge writes back.
-        let harness_named_as_a_claude_mode = match params.get("claude_mode") {
-            Some(named) => {
-                let named = named.as_str().unwrap_or_default();
-                Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
-                    format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
-                })?)
-            }
-            None => None,
-        };
-        let default_harness = match params.get("default_harness") {
-            Some(named) => {
-                let named = named.as_str().unwrap_or_default();
-                Some(AgentProvider::from_wire(named).ok_or_else(|| {
-                    format!(
-                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
-                         \"codex\" or \"pi\")"
-                    )
-                })?)
-            }
-            None => harness_named_as_a_claude_mode,
-        };
-        // Wired like a real field so the Account page has one idiom, hard-locked
-        // because there is no other Codex to open.
-        let codex_mode = params.get("codex_mode");
-        if let Some(named) = codex_mode {
-            if named.as_str() != Some(models::CODEX_ONLY_MODE) {
-                return Err(
-                    "codex_mode accepts only \"tui\" — Codex has no other mode yet".to_string(),
-                );
-            }
-        }
-        if projects_dir.is_none() && default_harness.is_none() && codex_mode.is_none() {
+        let default_harness = requested_default_harness(params)?;
+        if projects_dir.is_none() && default_harness.is_none() {
             return Err("settings.set: nothing to set".to_string());
         }
         let prospective_projects_dir = if let Some(dir) = projects_dir {
@@ -15643,6 +15617,35 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing required param: {key}"))
 }
 
+fn requested_default_harness(params: &Value) -> Result<Option<AgentProvider>, String> {
+    let parse_mode = |key: &str,
+                      mapping: fn(&str) -> Option<AgentProvider>|
+     -> Result<Option<AgentProvider>, String> {
+        let Some(value) = params.get(key) else {
+            return Ok(None);
+        };
+        let named = value.as_str().unwrap_or_default();
+        mapping(named)
+            .map(Some)
+            .ok_or_else(|| format!("unknown {key} {named:?} (expected \"headless\" or \"tui\")"))
+    };
+    let claude_mode = parse_mode("claude_mode", models::carrier_of_claude_mode)?;
+    let codex_mode = parse_mode("codex_mode", models::carrier_of_codex_mode)?;
+    let default_harness = params
+        .get("default_harness")
+        .map(|value| {
+            let named = value.as_str().unwrap_or_default();
+            AgentProvider::from_wire(named).ok_or_else(|| {
+                format!(
+                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
+                     \"codex\", \"codex_app_server\" or \"pi\")"
+                )
+            })
+        })
+        .transpose()?;
+    Ok(default_harness.or(codex_mode).or(claude_mode))
+}
+
 /// The detail polls' optional `thread_after_sequence` cursor. A missing or
 /// garbage (non-integer, negative) value reads as absent — the poll then gets
 /// the conversation's newest page instead of an error.
@@ -18243,14 +18246,11 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             root: root.clone(),
             tab_id: tab_id.clone(),
         };
-        let (tab, rx) = Tab::spawn(
-            TabRole::Shell,
+        let (tab, rx) = Tab::spawn_shell(
             &shell_harness_spec(&shell),
             tab_id,
             root,
-            cols,
-            rows,
-            None,
+            terminal_size(cols, rows),
         )?;
         s.tabs.insert(key.clone(), tab);
         (key, rx)
@@ -18592,18 +18592,6 @@ fn attach_to_tab(
 }
 
 /// Find-or-create the one agent tab rooted at `root`.
-///
-/// Idempotent per root: the find half and the in-flight reservation are taken
-/// under the SAME lock acquisition, so two concurrent callers produce one
-/// harness — two agents in one worktree would both report `done` for the same
-/// owner, and the second report is an illegal transition that lands on the
-/// thread as a bogus failure. A tab whose process has died is replaced (a dead
-/// agent is not an agent), and that replacement reports `Fresh` while carrying
-/// the retained screen — and its monotonic cursor — forward.
-///
-/// The create half needs an owner for the MCP `--task` argv, so it requires a
-/// bound plan/run: `owner` resolves the project whose orchestrator builds the
-/// spec (the MCP socket lives inside that closure and is unreachable from here).
 fn ensure_agent_tab(
     state: &Arc<Mutex<AppState>>,
     root: &std::path::Path,
@@ -18702,6 +18690,35 @@ fn wait_for_agent_claim(
     Ok(())
 }
 
+/// Everything a provider needs to open the agent `prepared` describes.
+///
+/// A terminal names its conversation from the launch contract when the spec
+/// fixes it, and otherwise from the provider's pre-spawn transcript watcher;
+/// a protocol carrier ignores the terminal mechanics and announces its own id.
+fn agent_open_request(
+    prepared: PreparedAgentLaunch,
+    root: std::path::PathBuf,
+    model_choice: &ModelChoice,
+    resume_session_id: Option<String>,
+    locator: Option<Box<dyn crate::harness::SessionLocator>>,
+) -> SessionOpenRequest {
+    let identity = match &prepared.spec.known_session_id {
+        Some(known) => Some(SessionIdentitySource::Known(known.clone())),
+        None => locator.map(SessionIdentitySource::Located),
+    };
+    SessionOpenRequest {
+        spec: prepared.spec,
+        root,
+        choice: model_choice.clone(),
+        terminal: TerminalOpenOptions {
+            size: prepared.pty_size,
+            turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+            identity,
+        },
+        resume_session_id,
+    }
+}
+
 fn spawn_reserved_agent_tab(
     state: &Arc<Mutex<AppState>>,
     root: std::path::PathBuf,
@@ -18727,22 +18744,20 @@ fn spawn_reserved_agent_tab(
             &root,
             model_choice,
             continue_session,
-            resume_session_id,
+            resume_session_id.clone(),
             &reservation.session_token,
         )
         .map_err(err)?;
-    let (tab, output) = Tab::spawn(
-        TabRole::Agent {
-            owner: owner.to_string(),
-            agent_id: agent_id.to_string(),
-            provider: model_choice.provider,
-        },
-        &prepared.spec,
-        key.tab_id.clone(),
-        root.clone(),
-        prepared.pty_size.cols,
-        prepared.pty_size.rows,
-        locator,
+    let (tab, output) = Tab::spawn_agent(
+        owner.to_string(),
+        agent_id.to_string(),
+        agent_open_request(
+            prepared,
+            root.clone(),
+            model_choice,
+            resume_session_id,
+            locator,
+        ),
     )?;
     let tab = tab.adopt_replaced_screen(carried, &key.tab_id);
     let wire_id = tab.wire_id();
@@ -20184,7 +20199,7 @@ mod tests {
         let settings = state.handle(req("settings.get", json!({})))["result"].clone();
         assert_eq!(settings["default_harness"], "claude_adk");
         assert_eq!(settings["claude_mode"], "headless");
-        assert_eq!(settings["codex_mode"], "tui");
+        assert_eq!(settings["codex_mode"], "headless");
     }
 
     /// The default outlives the process it was chosen in — it is an account
@@ -20290,7 +20305,7 @@ mod tests {
         assert_eq!(
             refused["error"].as_str().unwrap(),
             "unknown default_harness \"telepathy\" (expected \"claude_adk\", \"claude\", \
-             \"codex\" or \"pi\")"
+             \"codex\", \"codex_app_server\" or \"pi\")"
         );
         assert_eq!(
             state.handle(req("settings.get", json!({})))["result"],
@@ -20368,10 +20383,9 @@ mod tests {
         );
     }
 
-    /// Codex has one mode, so the field exists and accepts exactly it — the
-    /// day a second one exists the lock comes off and nothing has to migrate.
+    /// The old Codex mode field remains an alias for the concrete provider.
     #[test]
-    fn codex_mode_accepts_only_tui() {
+    fn codex_mode_selects_each_concrete_codex_carrier() {
         let (dir, repo) = init_repo();
         let mut state = AppState::new(
             repo,
@@ -20383,12 +20397,18 @@ mod tests {
         let accepted = state.handle(req("settings.set", json!({ "codex_mode": "tui" })));
         assert_eq!(accepted["ok"], true, "{accepted:?}");
         assert_eq!(accepted["result"]["codex_mode"], "tui");
+        assert_eq!(accepted["result"]["default_harness"], "codex");
 
-        let refused = state.handle(req("settings.set", json!({ "codex_mode": "headless" })));
+        let headless = state.handle(req("settings.set", json!({ "codex_mode": "headless" })));
+        assert_eq!(headless["ok"], true, "{headless:?}");
+        assert_eq!(headless["result"]["codex_mode"], "headless");
+        assert_eq!(headless["result"]["default_harness"], "codex_app_server");
+
+        let refused = state.handle(req("settings.set", json!({ "codex_mode": "future" })));
         assert_eq!(refused["ok"], false, "{refused:?}");
         assert_eq!(
             refused["error"].as_str().unwrap(),
-            "codex_mode accepts only \"tui\" — Codex has no other mode yet"
+            "unknown codex_mode \"future\" (expected \"headless\" or \"tui\")"
         );
     }
 
@@ -20464,6 +20484,7 @@ mod tests {
             ("claude", AgentProvider::Claude),
             ("claude_adk", AgentProvider::ClaudeAdk),
             ("codex", AgentProvider::Codex),
+            ("codex_app_server", AgentProvider::CodexAppServer),
             ("pi", AgentProvider::Pi),
         ] {
             assert_eq!(
@@ -20521,7 +20542,7 @@ mod tests {
             state.plans[&plan_id_of(&filed)].model_choice.provider
         };
 
-        for default in ["claude_adk", "claude", "codex", "pi"] {
+        for default in ["claude_adk", "claude", "codex", "codex_app_server", "pi"] {
             let set = state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(set["ok"], true, "{set:?}");
             assert_eq!(
@@ -20558,6 +20579,27 @@ mod tests {
             before,
             "the choice a later start and every resume read is untouched"
         );
+    }
+
+    /// Routing remains pinned to the Claude protocol carrier: adding another
+    /// headless carrier must not silently move existing router work to a
+    /// different provider or model family.
+    #[test]
+    fn the_router_pins_the_headless_carrier_under_every_default() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        assert_eq!(
+            crate::router::router_model_choice(state.router_choice.as_ref()).provider,
+            AgentProvider::ClaudeAdk
+        );
+        for default in ["claude", "codex", "claude_adk", "codex_app_server", "pi"] {
+            state.handle(req("settings.set", json!({ "default_harness": default })));
+            assert_eq!(
+                crate::router::router_model_choice(state.router_choice.as_ref()).provider,
+                AgentProvider::ClaudeAdk,
+                "the router does not follow a default of {default}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -21852,18 +21894,15 @@ mod tests {
             let root = AppState::canonical_root(&active.worktree.path);
             (agent_id, root)
         };
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.to_string(),
-                agent_id: agent_id.clone(),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&agent_id),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, rx) = Tab::spawn_agent(
+            run_id.to_string(),
+            agent_id.clone(),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
@@ -22253,14 +22292,11 @@ mod tests {
             root: shell_root.clone(),
             tab_id: "term-99".to_string(),
         };
-        let (shell_tab, _shell_rx) = Tab::spawn(
-            TabRole::Shell,
+        let (shell_tab, _shell_rx) = Tab::spawn_shell(
             &shell_harness_spec("/bin/bash"),
             "term-99".to_string(),
             shell_root,
-            80,
-            24,
-            None,
+            terminal_size(80, 24),
         )
         .expect("a shell tab spawns");
         state.lock().unwrap().tabs.insert(shell_key, shell_tab);
@@ -22546,18 +22582,20 @@ mod tests {
         std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o700)).unwrap();
         prepared.spec.binary = fake_pi.to_string_lossy().into_owned();
 
-        let (tab, _output) = Tab::spawn(
-            TabRole::Agent {
-                owner: "run-pi-identity".to_string(),
-                agent_id: agent_id.to_string(),
-                provider: AgentProvider::Pi,
-            },
-            &prepared.spec,
-            agent_tab_id(agent_id),
-            AppState::canonical_root(&worktree),
-            prepared.pty_size.cols,
-            prepared.pty_size.rows,
-            None,
+        let (tab, _output) = Tab::spawn_agent(
+            "run-pi-identity".to_string(),
+            agent_id.to_string(),
+            agent_open_request(
+                prepared,
+                AppState::canonical_root(&worktree),
+                &ModelChoice {
+                    provider: AgentProvider::Pi,
+                    model: None,
+                    effort: None,
+                },
+                None,
+                None,
+            ),
         )
         .expect("the Pi-shaped tab spawns");
 
@@ -22632,18 +22670,19 @@ mod tests {
             .unwrap()
             .choice = choice.clone();
         app.record_agent_session_start(run_id, &choice, "build");
-        let (mut tab, output) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.to_string(),
-                agent_id: agent_id.clone(),
-                provider: AgentProvider::Pi,
-            },
-            &pi_extension_child_death_spec(directory.path(), &agent_id),
-            agent_tab_id(&agent_id),
-            root,
-            120,
-            40,
-            None,
+        let (mut tab, output) = Tab::spawn_agent(
+            run_id.to_string(),
+            agent_id.clone(),
+            agent_open_request(
+                PreparedAgentLaunch {
+                    spec: pi_extension_child_death_spec(directory.path(), &agent_id),
+                    pty_size: terminal_size(120, 40),
+                },
+                root,
+                &choice,
+                None,
+                None,
+            ),
         )
         .expect("the Pi extension fixture starts through a PTY");
         assert_eq!(tab.session.session_id().as_deref(), Some(agent_id.as_str()));
@@ -22911,6 +22950,14 @@ mod tests {
         assert!(efforts.iter().any(|e| e == "xhigh"));
         let providers = res["result"]["providers"].as_array().unwrap();
         let codex = providers.iter().find(|p| p["id"] == "codex").unwrap();
+        let app_server = providers
+            .iter()
+            .find(|provider| provider["id"] == "codex_app_server")
+            .unwrap();
+        assert_eq!(codex["label"], "Codex TUI");
+        assert_eq!(app_server["label"], "Codex");
+        assert_eq!(codex["models"], app_server["models"]);
+        assert_eq!(codex["efforts"], app_server["efforts"]);
         assert!(codex["models"]
             .as_array()
             .unwrap()
@@ -31318,18 +31365,15 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (issue_id, run_id) = planned_run_in_review(&mut state, "issue-addressed post");
         let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("implementation agent tab spawns");
         let mut output = agent_terminal(&tab).subscribe();
@@ -31802,18 +31846,15 @@ mod tests {
         let (_, run_id) = planned_run_in_review(&mut state, "abandon me");
         let worktree = state.runs[&run_id].worktree.path.clone();
         let root = AppState::canonical_root(&worktree);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let agent_pid = agent_pid(&tab).expect("the agent has a pid");
@@ -32146,18 +32187,15 @@ mod tests {
         spec: HarnessSpec,
     ) -> (TabKey, broadcast::Receiver<Vec<u8>>) {
         let root = insert_run(state, repo, side_root, run_id, run_state);
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.to_string(),
-                agent_id: crate::agent::derived_agent_id(run_id),
-                provider: AgentProvider::default(),
-            },
-            &spec,
-            agent_tab_id(&crate::agent::derived_agent_id(run_id)),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, rx) = Tab::spawn_agent(
+            run_id.to_string(),
+            crate::agent::derived_agent_id(run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                spec,
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
@@ -32224,6 +32262,28 @@ mod tests {
         HarnessSpec::new("sh")
             .arg("-c")
             .arg("printf '\\033[?2004h'; cat >/dev/null")
+    }
+
+    fn test_agent_session_request(
+        provider: AgentProvider,
+        spec: HarnessSpec,
+        root: std::path::PathBuf,
+        size: PtySize,
+    ) -> SessionOpenRequest {
+        SessionOpenRequest {
+            spec,
+            root,
+            choice: ModelChoice {
+                provider,
+                ..ModelChoice::default()
+            },
+            terminal: TerminalOpenOptions {
+                size,
+                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+                identity: None,
+            },
+            resume_session_id: None,
+        }
     }
 
     /// The sweep threshold these tests speak in — the shape of the real one
@@ -33338,18 +33398,15 @@ mod tests {
         let run_id = run_id_of(&adopted);
         // Build's agent in that worktree reports `done` for THIS run.
         let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -33550,18 +33607,15 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_primary_run(&mut state);
         let root = AppState::canonical_root(&repo);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -33954,20 +34008,17 @@ mod tests {
             )
             .unwrap();
         let root = AppState::canonical_root(&active.worktree.path);
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.to_string(),
-                agent_id: crate::agent::derived_agent_id(run_id),
-                provider: AgentProvider::default(),
-            },
-            &HarnessSpec::new("sh").arg("-c").arg(
+        let (tab, rx) = Tab::spawn_agent(
+            run_id.to_string(),
+            crate::agent::derived_agent_id(run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                HarnessSpec::new("sh").arg("-c").arg(
                 "printf '\\033[?2004h'; (while :; do echo agent-beat; sleep 0.05; done) & cat >/dev/null",
             ),
-            agent_tab_id(&crate::agent::derived_agent_id(run_id)),
-            root.clone(),
-            120,
-            40,
-            None,
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
@@ -34876,18 +34927,15 @@ mod tests {
         // Once an agent runs in that worktree, the same scope reaches the tab
         // itself — one agent, one wire id, whichever shape asked for it.
         let root = AppState::canonical_root(&external.path);
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: "run-x".to_string(),
-                agent_id: crate::agent::derived_agent_id("run-x"),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id("run-x")),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, rx) = Tab::spawn_agent(
+            "run-x".to_string(),
+            crate::agent::derived_agent_id("run-x"),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let wire_id = tab.wire_id();
@@ -34932,18 +34980,15 @@ mod tests {
         );
 
         // One ran, on codex, and died. The retained screen still answers for it.
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: "run-codex".to_string(),
-                agent_id: crate::agent::derived_agent_id("run-codex"),
-                provider: AgentProvider::Codex,
-            },
-            &HarnessSpec::new("true"),
-            agent_tab_id(&crate::agent::derived_agent_id("run-codex")),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, rx) = Tab::spawn_agent(
+            "run-codex".to_string(),
+            crate::agent::derived_agent_id("run-codex"),
+            test_agent_session_request(
+                AgentProvider::Codex,
+                HarnessSpec::new("true"),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, "run-codex");
@@ -35154,10 +35199,9 @@ mod tests {
     /// Point a fixture's project at a headless provider running `spec`, and
     /// hand back the model choice that opens it.
     ///
-    /// The provider on the choice is the whole launch config — it is what
-    /// `Tab::spawn` asks which carrier to open — so a test that swaps the spec
-    /// without swapping the provider would run a stream-json child inside a
-    /// PTY and prove nothing.
+    /// The provider on the choice is the whole launch config, so a test that
+    /// swaps the spec without swapping the provider would run a stream-json
+    /// child inside a PTY and prove nothing.
     fn a_headless_provider_running(
         state: &Arc<Mutex<AppState>>,
         repo: &std::path::Path,
@@ -37332,14 +37376,11 @@ mod tests {
 
         // The human's own shell is never an agent, however busy it looks.
         let shell_root = AppState::canonical_root(&repo);
-        let (shell, _rx) = Tab::spawn(
-            TabRole::Shell,
+        let (shell, _rx) = Tab::spawn_shell(
             &shell_harness_spec("/bin/bash"),
             "term-77".to_string(),
             shell_root.clone(),
-            80,
-            24,
-            None,
+            terminal_size(80, 24),
         )
         .expect("a shell tab spawns");
         assert!(!agent_is_working(&shell));
@@ -42900,18 +42941,15 @@ mod tests {
         let path = add_external_worktree(&repo, dir.path(), "idle-agent", "idle-agent");
         let worktree_id = external_id(&mut state, &project_id, Some("idle-agent"));
         let root = AppState::canonical_root(&path);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: "idle-agent-owner".to_string(),
-                agent_id: crate::agent::derived_agent_id("idle-agent-owner"),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id("idle-agent-owner")),
-            root.clone(),
-            80,
-            24,
-            None,
+        let (tab, _rx) = Tab::spawn_agent(
+            "idle-agent-owner".to_string(),
+            crate::agent::derived_agent_id("idle-agent-owner"),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(80, 24),
+            ),
         )
         .unwrap();
         tab.session
@@ -42982,9 +43020,15 @@ mod tests {
     fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        // This half of the test is about the carrier that HAS a basement, so
-        // the account names it rather than riding the default.
-        state.default_harness = AgentProvider::Claude;
+        let terminal_provider = AgentProvider::ALL
+            .into_iter()
+            .find(|provider| harness_for(*provider).has_terminal())
+            .expect("at least one harness exposes a terminal");
+        let reporting_provider = AgentProvider::ALL
+            .into_iter()
+            .find(|provider| !harness_for(*provider).has_terminal())
+            .expect("at least one harness reports activity");
+        state.default_harness = terminal_provider;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
         let agent_id = primary_agent_id(&state, &run_id);
         let root = state
@@ -43007,13 +43051,8 @@ mod tests {
             crate::harness::harness_for(provider).has_terminal(),
             "a session-less agent's answer comes from its provider: {idle:?}"
         );
-        assert_eq!(idle["has_terminal"], true, "{idle:?}");
         assert_eq!(idle["working"], false, "{idle:?}");
 
-        // And on the headless provider the same question answers no before
-        // anything has started — which is the whole point of asking the
-        // provider: the rail stops offering the basement while there is still
-        // no session to ask, so it never offers one the spawn would refuse.
         state
             .runs
             .get_mut(&run_id)
@@ -43022,8 +43061,11 @@ mod tests {
             .resolve_mut(None)
             .expect("its agent")
             .choice
-            .provider = AgentProvider::ClaudeAdk;
-        assert_eq!(bubble(&mut state)["has_terminal"], false);
+            .provider = reporting_provider;
+        assert_eq!(
+            bubble(&mut state)["has_terminal"],
+            harness_for(reporting_provider).has_terminal()
+        );
         state
             .runs
             .get_mut(&run_id)
@@ -43032,41 +43074,42 @@ mod tests {
             .resolve_mut(None)
             .expect("its agent")
             .choice
-            .provider = AgentProvider::default();
+            .provider = terminal_provider;
 
         // A PTY session answers for itself, and answers yes: today every
         // session does.
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: agent_id.clone(),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&agent_id),
-            root.clone(),
-            120,
-            40,
-            None,
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            agent_id.clone(),
+            test_agent_session_request(
+                terminal_provider,
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
-        state.tabs.insert(TabKey::agent(&root, &agent_id), tab);
+        let terminal_key = TabKey::agent(&root, &agent_id);
+        let terminal_capability = tab.session.terminal().is_some();
+        state.tabs.insert(terminal_key.clone(), tab);
         let running = bubble(&mut state);
-        assert_eq!(running["has_terminal"], true, "{running:?}");
+        assert_eq!(running["has_terminal"], terminal_capability, "{running:?}");
 
         // And a session with no terminal answers no, while still reporting the
         // status it is in — `working` keeps its exact meaning.
+        let reporting_tab = terminal_free_agent_tab(&root, &run_id, &agent_id);
+        let reporting_capability = reporting_tab.session.terminal().is_some();
         state
             .tabs
-            .insert(
-                TabKey::agent(&root, &agent_id),
-                terminal_free_agent_tab(&root, &run_id, &agent_id),
-            )
+            .insert(terminal_key, reporting_tab)
             .expect("the PTY tab it replaces")
             .session
             .end();
         let protocol = bubble(&mut state);
-        assert_eq!(protocol["has_terminal"], false, "{protocol:?}");
+        assert_eq!(
+            protocol["has_terminal"], reporting_capability,
+            "{protocol:?}"
+        );
         assert_eq!(
             protocol["working"], true,
             "a session with no terminal still says what it is doing: {protocol:?}"

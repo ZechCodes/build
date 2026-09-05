@@ -31,6 +31,7 @@ use crate::pty::{HarnessSpec, PtySession};
 pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
+pub(crate) mod codex_app_server;
 pub(crate) mod pi;
 mod session;
 pub mod shell_tail;
@@ -158,18 +159,27 @@ pub trait Harness: Send + Sync {
         context: &HarnessContext,
     ) -> Result<HarnessSpec, HarnessError>;
 
+    /// Open this provider's running session and subscribe to its output before
+    /// startup can emit anything.
+    ///
+    /// Opaque CLI providers share this PTY implementation. Protocol providers
+    /// override it so their concrete process and session types remain private
+    /// to the provider module.
+    fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
+        open_terminal_session(&request.spec, request.root, request.terminal)
+    }
+
+    /// Whether this provider can carry a router session.
+    ///
+    /// The router speaks Build's own MCP surface. A provider that reaches
+    /// Build's tools some other way has no router surface to speak, and says
+    /// so here, so the router's configuration check asks the provider rather
+    /// than naming it.
+    fn routes_captures(&self) -> bool {
+        true
+    }
+
     /// Whether a session opened for this provider offers a terminal.
-    ///
-    /// The provider answers because it is the only authority that exists BOTH
-    /// before and after a spawn: the rail decides whether to offer an agent a
-    /// basement while that agent is still idle, and the spawn decides which
-    /// carrier to open. One authority, one answer, so the rail never offers a
-    /// TUI button the spawn would then refuse.
-    ///
-    /// True by default, and true for every provider today: a CLI wrapper is
-    /// opaque — Build sees what it launched and what the agent reported, and
-    /// nothing in between — so it needs the escape hatch. A harness that
-    /// reports its own reasoning and tool calls has nothing to escape to.
     fn has_terminal(&self) -> bool {
         true
     }
@@ -255,36 +265,34 @@ pub(crate) fn is_a_filename(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Which carrier a spawn opens, and what that carrier needs to know.
+/// Terminal mechanics supplied to a provider without deciding that provider's
+/// carrier. Protocol harnesses ignore them and own their startup mechanics.
 ///
-/// The provider decides ([`Harness::has_terminal`]) and this is the shape that
-/// decision travels in, so the two arms carry only what their own carrier has
-/// an answer for: a grid and a readiness wait belong to a terminal, and a
-/// session protocol has neither.
-pub enum Carrier {
-    /// A full PTY around an opaque CLI wrapper.
-    ///
-    /// `turn_ready_grace` is how long to wait for the harness to be able to
-    /// take a turn, and `None` is for a session Build will never hand one to
-    /// (the human's own shell): waiting on a login shell for a signal it may
-    /// never send would stall the caller for the whole grace.
-    ///
-    /// `identity` is how this carrier answers [`AgentSession::session_id`]: a
-    /// launch-known id or a provider watcher built before the child exists.
-    /// `None` is for the human's shell, which has no conversation to name.
-    Terminal {
-        size: PtySize,
-        turn_ready_grace: Option<Duration>,
-        identity: Option<SessionIdentitySource>,
-    },
-    /// A session protocol over piped stdio. There is no readiness dance: a
-    /// turn is a value, and the child says for itself when it can take one.
-    Protocol,
+/// `identity` is how a terminal answers [`AgentSession::session_id`]: a
+/// launch-known id or a provider watcher built before the child exists.
+/// `None` is for the human's shell, which has no conversation to name.
+pub struct TerminalOpenOptions {
+    pub size: PtySize,
+    pub turn_ready_grace: Option<Duration>,
+    pub identity: Option<SessionIdentitySource>,
 }
 
-/// Open a live session for `spec`, rooted at `root`, on the carrier the
-/// provider chose. Returns the session and its output, subscribed before its
-/// first word can be missed.
+/// Everything a provider needs to construct one live session.
+pub struct SessionOpenRequest {
+    pub spec: HarnessSpec,
+    pub root: PathBuf,
+    pub choice: ModelChoice,
+    pub terminal: TerminalOpenOptions,
+    pub resume_session_id: Option<String>,
+}
+
+/// A live session and the output subscribed during its construction.
+pub struct OpenedSession {
+    pub session: Arc<dyn AgentSession>,
+    pub output: SessionOutput,
+}
+
+/// Open a provider's live session through its harness implementation.
 ///
 /// The session comes back behind an [`Arc`] because the daemon keeps it inside
 /// the state it locks, and hands turns to it with that lock RELEASED — see
@@ -292,49 +300,44 @@ pub enum Carrier {
 /// session out of the registry without holding the registry open across the
 /// turn.
 ///
-/// The one place a launch description becomes a running agent, and the only
-/// place the two carriers are told apart: above here a session is a session.
-///
-/// The readiness wait is the PTY arm's alone, because readiness is how a
-/// *terminal* opens: an interactive TUI paints a banner — or a modal
-/// workspace-trust dialog — long before its line editor will accept a turn, so
-/// a prompt written on first byte lands in whatever owns the keyboard. A
-/// carrier that takes a turn as a value has nothing to wait for.
-///
-/// The subscribe happens BEFORE that wait, and the order is not incidental: a
-/// harness paints its entire startup while readiness is being waited out — and
-/// a harness that dies there paints its last words — so a stream subscribed
-/// afterwards would open blank on a live agent and lose the epitaph of a dead
-/// one. The protocol arm subscribes inside its own spawn for the same reason.
 pub fn open_session(
+    provider: AgentProvider,
+    request: SessionOpenRequest,
+) -> Result<OpenedSession, HarnessError> {
+    open_session_with_harness(harness_for(provider), request)
+}
+
+fn open_session_with_harness(
+    harness: &dyn Harness,
+    request: SessionOpenRequest,
+) -> Result<OpenedSession, HarnessError> {
+    let opened = harness.open_session(request)?;
+    refuse_a_session_nobody_can_watch(opened.session.as_ref())?;
+    Ok(opened)
+}
+
+/// Open a PTY session and subscribe before waiting for its line editor.
+///
+/// Harnesses use this as their shared default. The app also uses it directly
+/// for a human shell, which has no provider to dispatch through.
+pub(crate) fn open_terminal_session(
     spec: &HarnessSpec,
     root: PathBuf,
-    carrier: Carrier,
-) -> Result<(Arc<dyn AgentSession>, SessionOutput), HarnessError> {
-    let (session, output): (Arc<dyn AgentSession>, SessionOutput) = match carrier {
-        Carrier::Terminal {
-            size,
-            turn_ready_grace,
-            identity,
-        } => {
-            let session =
-                PtySession::spawn(spec, Some(root), size)?.with_session_identity(identity);
-            let output = match session.terminal() {
-                Some(terminal) => SessionOutput::painting(terminal.subscribe()),
-                None => SessionOutput::silent(),
-            };
-            if let Some(grace) = turn_ready_grace {
-                session.ready_within(grace);
-            }
-            (Arc::new(session), output)
-        }
-        Carrier::Protocol => {
-            let (session, activity) = adk::AdkSession::spawn(spec, Some(root))?;
-            (Arc::new(session), SessionOutput::reporting(activity))
-        }
+    options: TerminalOpenOptions,
+) -> Result<OpenedSession, HarnessError> {
+    let session =
+        PtySession::spawn(spec, Some(root), options.size)?.with_session_identity(options.identity);
+    let output = match session.terminal() {
+        Some(terminal) => SessionOutput::painting(terminal.subscribe()),
+        None => SessionOutput::silent(),
     };
-    refuse_a_session_nobody_can_watch(session.as_ref())?;
-    Ok((session, output))
+    if let Some(grace) = options.turn_ready_grace {
+        session.ready_within(grace);
+    }
+    Ok(OpenedSession {
+        session: Arc::new(session),
+        output,
+    })
 }
 
 /// Refuse a session that offers neither a terminal nor an activity stream.
@@ -363,12 +366,16 @@ pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
         AgentProvider::Claude => &claude::ClaudeHarness,
         AgentProvider::Codex => &codex::CodexHarness,
         AgentProvider::ClaudeAdk => &adk::AdkHarness,
+        AgentProvider::CodexAppServer => &codex_app_server::CodexAppServerHarness,
         AgentProvider::Pi => &pi::PiHarness,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use syn::punctuated::Punctuated;
+    use syn::visit::Visit;
+
     use super::*;
 
     /// Every provider is reachable and answers for itself — the invariant that
@@ -451,7 +458,7 @@ mod tests {
 
     /// The terminal is a capability, and exactly the opaque CLI wrappers have
     /// it: Build sees what it launched and what they reported, and nothing in
-    /// between, so the human needs the escape hatch. The headless carrier
+    /// between, so the human needs the escape hatch. A protocol carrier
     /// reports its own reasoning and tool calls, so it has nothing to escape
     /// to — and this is the answer the rail and the spawn BOTH read, which is
     /// what keeps the rail from offering a button the spawn would refuse.
@@ -464,14 +471,16 @@ mod tests {
         ] {
             assert!(harness_for(provider).has_terminal(), "{provider:?}");
         }
-        assert!(!harness_for(AgentProvider::ClaudeAdk).has_terminal());
+        for provider in [AgentProvider::ClaudeAdk, AgentProvider::CodexAppServer] {
+            assert!(!harness_for(provider).has_terminal(), "{provider:?}");
+        }
     }
 
     /// Transcript-backed terminals use locators. A protocol session announces
     /// its id, while Pi's terminal identity is fixed by its launch contract;
     /// neither needs a second transcript-derived answer.
     #[test]
-    fn transcript_backed_terminals_have_locators_and_launch_named_pi_does_not() {
+    fn transcript_backed_terminals_have_locators_and_launch_named_sessions_do_not() {
         let home = tempfile::tempdir().expect("temp home");
         let cwd = tempfile::tempdir().expect("temp worktree");
         for provider in [AgentProvider::Claude, AgentProvider::Codex] {
@@ -482,7 +491,11 @@ mod tests {
                 "{provider:?}"
             );
         }
-        for provider in [AgentProvider::ClaudeAdk, AgentProvider::Pi] {
+        for provider in [
+            AgentProvider::ClaudeAdk,
+            AgentProvider::CodexAppServer,
+            AgentProvider::Pi,
+        ] {
             assert!(
                 harness_for(provider)
                     .session_locator(home.path(), cwd.path())
@@ -499,12 +512,23 @@ mod tests {
     fn an_id_no_provider_holds_is_not_spent_by_any_of_them() {
         let home = tempfile::tempdir().expect("temp home");
         let cwd = tempfile::tempdir().expect("temp worktree");
-        for provider in AgentProvider::ALL {
+        for provider in AgentProvider::ALL
+            .into_iter()
+            .filter(|provider| *provider != AgentProvider::CodexAppServer)
+        {
             assert!(
                 !harness_for(provider).holds_conversation(home.path(), cwd.path(), "sess-1"),
                 "{provider:?}"
             );
         }
+        assert!(
+            harness_for(AgentProvider::CodexAppServer).holds_conversation(
+                home.path(),
+                cwd.path(),
+                "sess-1"
+            ),
+            "app-server conversation ids are verified by exact resume, not a transcript guess"
+        );
 
         // Both claude carriers write and read the ONE tree, so an id captured
         // under either verifies under both.
@@ -558,10 +582,10 @@ mod tests {
     fn a_session_that_will_be_handed_a_turn_opens_ready() {
         let root = tempfile::tempdir().expect("temp worktree");
         let started = std::time::Instant::now();
-        let (session, _output) = open_session(
+        let opened = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: Some(Duration::from_secs(5)),
                 identity: None,
@@ -569,7 +593,7 @@ mod tests {
         )
         .expect("the session opens");
         let waited = started.elapsed();
-        session.end();
+        opened.session.end();
         assert!(
             waited >= Duration::from_millis(300),
             "the open returned before the harness would take a turn, after {waited:?}"
@@ -586,10 +610,10 @@ mod tests {
     fn a_session_with_no_turn_coming_is_not_waited_on() {
         let root = tempfile::tempdir().expect("temp worktree");
         let started = std::time::Instant::now();
-        let (session, _output) = open_session(
+        let opened = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: None,
@@ -597,7 +621,7 @@ mod tests {
         )
         .expect("the session opens");
         let waited = started.elapsed();
-        session.end();
+        opened.session.end();
         assert!(
             waited < Duration::from_millis(200),
             "opening a session nobody will speak to waited {waited:?} for readiness"
@@ -618,10 +642,10 @@ mod tests {
         }
 
         let root = tempfile::tempdir().expect("temp worktree");
-        let (named, _output) = open_session(
+        let named = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: Some(SessionIdentitySource::Located(Box::new(Says(
@@ -630,38 +654,38 @@ mod tests {
             },
         )
         .expect("the session opens");
-        assert_eq!(named.session_id().as_deref(), Some("sess-located"));
-        named.end();
+        assert_eq!(named.session.session_id().as_deref(), Some("sess-located"));
+        named.session.end();
 
-        let (unnamed, _output) = open_session(
+        let unnamed = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: None,
             },
         )
         .expect("the session opens");
-        assert_eq!(unnamed.session_id(), None);
-        unnamed.end();
+        assert_eq!(unnamed.session.session_id(), None);
+        unnamed.session.end();
     }
 
     #[test]
     fn a_terminal_with_a_launch_known_identity_names_itself_immediately() {
         let root = tempfile::tempdir().expect("temp worktree");
-        let (named, _output) = open_session(
+        let named = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: None,
                 identity: Some(SessionIdentitySource::Known("agent-pi".to_string())),
             },
         )
         .expect("the session opens");
-        assert_eq!(named.session_id().as_deref(), Some("agent-pi"));
-        named.end();
+        assert_eq!(named.session.session_id().as_deref(), Some("agent-pi"));
+        named.session.end();
     }
 
     /// A fake stream-json harness: it announces its session, then sits with its
@@ -673,41 +697,44 @@ mod tests {
         )
     }
 
-    /// The carrier choice, made in the one place it is made: a harness with no
-    /// terminal opens a session protocol, and what comes back offers the
-    /// alternative capability instead of an empty one.
-    #[test]
-    fn a_harness_with_no_terminal_opens_a_carrier_that_reports_itself() {
-        let root = tempfile::tempdir().expect("temp worktree");
-        let (session, output) = open_session(
-            &fake_protocol_spec(),
-            root.path().to_path_buf(),
-            Carrier::Protocol,
-        )
-        .expect("the session opens");
-
-        assert!(
-            session.terminal().is_none(),
-            "a session protocol has nothing to escape to"
-        );
-        assert!(output.bytes.is_none(), "and nothing to paint into a grid");
-        assert!(
-            output.activity.is_some(),
-            "what it has instead is its own account of its work"
-        );
-        session.end();
+    fn protocol_open_request(provider: AgentProvider, root: &Path) -> SessionOpenRequest {
+        SessionOpenRequest {
+            spec: fake_protocol_spec(),
+            root: root.to_path_buf(),
+            choice: ModelChoice {
+                provider,
+                ..ModelChoice::default()
+            },
+            terminal: TerminalOpenOptions {
+                size: one_pty(),
+                turn_ready_grace: None,
+                identity: None,
+            },
+            resume_session_id: None,
+        }
     }
 
-    /// A session that offers NEITHER capability is refused rather than opened.
-    ///
-    /// Not because Build could not watch it work — because the death rites hang
-    /// off a stream closing. A session with no stream has no close to hang them
-    /// on, so its tab would keep reading as live and its conversation would
-    /// stay in session until the idle sweep explained the exit as silence,
-    /// minutes later.
     #[test]
-    fn a_session_offering_neither_capability_is_refused() {
-        struct MuteSession;
+    fn public_open_session_matches_each_harness_declared_output_capability() {
+        for provider in AgentProvider::ALL {
+            let root = tempfile::tempdir().expect("temp worktree");
+            let opened = open_session(provider, protocol_open_request(provider, root.path()))
+                .expect("the provider opens its session");
+
+            let terminal = harness_for(provider).has_terminal();
+            assert_eq!(opened.session.terminal().is_some(), terminal);
+            assert_eq!(opened.output.bytes.is_some(), terminal);
+            assert_eq!(opened.output.activity.is_some(), !terminal);
+            opened.session.end();
+        }
+    }
+
+    #[test]
+    fn public_construction_refuses_and_ends_an_invisible_session() {
+        struct MuteSession {
+            ended: Arc<std::sync::atomic::AtomicBool>,
+        }
+
         impl AgentSession for MuteSession {
             fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
                 Ok(())
@@ -721,28 +748,85 @@ mod tests {
             fn exited_within(&self, _timeout: Duration) -> bool {
                 false
             }
-            fn end(&self) {}
+            fn end(&self) {
+                self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             fn backdate_last_output(&self, _ago: Duration) {}
         }
 
-        let refusal = refuse_a_session_nobody_can_watch(&MuteSession)
-            .expect_err("a session nobody can watch is not opened");
+        struct MuteHarness {
+            ended: Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        impl Harness for MuteHarness {
+            fn provider(&self) -> AgentProvider {
+                AgentProvider::Claude
+            }
+
+            fn label(&self) -> &'static str {
+                "mute"
+            }
+
+            fn models(&self) -> Vec<ModelOption> {
+                claude::ClaudeHarness.models()
+            }
+
+            fn effort_levels(&self) -> &'static [&'static str] {
+                claude::ClaudeHarness.effort_levels()
+            }
+
+            fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
+                claude::ClaudeHarness.model_args(choice)
+            }
+
+            fn spec(
+                &self,
+                choice: &ModelChoice,
+                options: &SpawnOptions,
+                context: &HarnessContext,
+            ) -> Result<HarnessSpec, HarnessError> {
+                claude::ClaudeHarness.spec(choice, options, context)
+            }
+
+            fn open_session(
+                &self,
+                _request: SessionOpenRequest,
+            ) -> Result<OpenedSession, HarnessError> {
+                Ok(OpenedSession {
+                    session: Arc::new(MuteSession {
+                        ended: Arc::clone(&self.ended),
+                    }),
+                    output: SessionOutput::silent(),
+                })
+            }
+
+            fn has_transcript(&self, _home: &Path, _cwd: &Path) -> bool {
+                false
+            }
+        }
+
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let harness = MuteHarness {
+            ended: Arc::clone(&ended),
+        };
+        let root = tempfile::tempdir().expect("temp worktree");
+        let refusal = match open_session_with_harness(
+            &harness,
+            protocol_open_request(AgentProvider::Claude, root.path()),
+        ) {
+            Err(refusal) => refusal,
+            Ok(opened) => {
+                opened.session.end();
+                panic!("a session nobody can watch was opened")
+            }
+        };
         assert!(
             refusal
                 .to_string()
                 .contains("neither a terminal nor an activity stream"),
             "the refusal says what is missing: {refusal}"
         );
-
-        let root = tempfile::tempdir().expect("temp worktree");
-        let (session, _output) = open_session(
-            &fake_protocol_spec(),
-            root.path().to_path_buf(),
-            Carrier::Protocol,
-        )
-        .expect("a carrier that reports itself opens");
-        assert!(refuse_a_session_nobody_can_watch(session.as_ref()).is_ok());
-        session.end();
+        assert!(ended.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     /// A worktree Build has never opened has no conversation to resume, on any
@@ -756,6 +840,559 @@ mod tests {
             assert!(
                 !harness_for(provider).has_transcript(home.path(), cwd.path()),
                 "{provider:?}"
+            );
+        }
+    }
+
+    /// Whether `attributes` gate their item behind `#[cfg(test)]`, so its
+    /// whole body is test code the guards leave alone.
+    fn is_test_gated(attributes: &[syn::Attribute]) -> bool {
+        attributes.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute
+                    .parse_args::<syn::Ident>()
+                    .is_ok_and(|gate| gate == "test")
+        })
+    }
+
+    /// `items` with every `#[cfg(test)]`-gated module dropped, at any depth,
+    /// so scaffolding that drives one carrier on purpose is not read as a
+    /// production dispatch.
+    fn without_test_gated_modules(items: Vec<syn::Item>) -> Vec<syn::Item> {
+        items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Mod(module) if is_test_gated(&module.attrs) => None,
+                syn::Item::Mod(mut module) => {
+                    module.content = module
+                        .content
+                        .map(|(brace, nested)| (brace, without_test_gated_modules(nested)));
+                    Some(syn::Item::Mod(module))
+                }
+                other => Some(other),
+            })
+            .collect()
+    }
+
+    /// The syntax tree of what ships from `source`: the module as the compiler
+    /// reads it, minus its test-gated modules.
+    fn shipped_syntax_of(source: &str) -> syn::File {
+        let module = syn::parse_file(source).expect("a module the compiler accepts");
+        syn::File {
+            items: without_test_gated_modules(module.items),
+            ..module
+        }
+    }
+
+    /// The implementation types no module above `harness_for` may name: the
+    /// harnesses `harness_for` constructs, and the sessions they open. Kept
+    /// honest against its owner by
+    /// [`the_ban_list_covers_every_harness_harness_for_constructs`].
+    const CONCRETE_HARNESS_TYPES: [&str; 7] = [
+        "AdkHarness",
+        "AdkSession",
+        "ClaudeHarness",
+        "CodexHarness",
+        "CodexAppServerHarness",
+        "CodexAppServerSession",
+        "PiHarness",
+    ];
+
+    /// The harness types `harness_for` names, read out of the function itself so
+    /// the guard's ban list is checked against the registry that owns the fact
+    /// rather than against a second hand-kept copy of it.
+    fn harnesses_named_by_harness_for() -> Vec<String> {
+        const REGISTRY: &str = include_str!("mod.rs");
+        const SIGNATURE: &str = "pub fn harness_for";
+
+        let body = REGISTRY
+            .split_once(SIGNATURE)
+            .expect("harness_for is defined in this module")
+            .1
+            .split_once("\n}\n")
+            .expect("harness_for's body closes")
+            .0;
+        body.lines()
+            .filter_map(|line| line.trim().strip_suffix(','))
+            .filter(|arm| arm.contains("=> &"))
+            .map(|arm| {
+                arm.rsplit("::")
+                    .next()
+                    .expect("a dispatch arm names a type")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Collects the types a module's shipped `impl AgentSession for` blocks
+    /// name.
+    #[derive(Default)]
+    struct SessionImplementors {
+        types: Vec<String>,
+    }
+
+    impl<'ast> Visit<'ast> for SessionImplementors {
+        fn visit_item_impl(&mut self, block: &'ast syn::ItemImpl) {
+            let implements_a_session = block.trait_.as_ref().is_some_and(|(_, implemented, _)| {
+                implemented
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "AgentSession")
+            });
+            if let (true, syn::Type::Path(implementor)) = (implements_a_session, &*block.self_ty) {
+                self.types.push(
+                    implementor
+                        .path
+                        .segments
+                        .last()
+                        .expect("a type path has a segment")
+                        .ident
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    /// The session types the harness modules open, read out of every shipped
+    /// `impl AgentSession for` under `src/harness` so the guard's ban list is
+    /// checked against the modules that own those types rather than against a
+    /// second hand-kept copy. `PtySession` lives in `src/pty.rs`, outside the
+    /// walk, and stays out of the list.
+    fn sessions_opened_by_the_harness_modules() -> Vec<String> {
+        let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("harness");
+        shipped_rust_sources_under(&harness_modules)
+            .iter()
+            .flat_map(|path| {
+                let source = std::fs::read_to_string(path).expect("a readable harness module");
+                let mut implementors = SessionImplementors::default();
+                implementors.visit_file(&shipped_syntax_of(&source));
+                implementors.types
+            })
+            .collect()
+    }
+
+    fn entries(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(directory)
+            .expect("a readable source directory")
+            .map(|entry| entry.expect("a readable source entry").path())
+            .collect()
+    }
+
+    fn is_rust_source(path: &std::path::Path) -> bool {
+        path.extension().is_some_and(|extension| extension == "rs")
+    }
+
+    /// Every Rust source directly inside `directory`, without descending.
+    fn rust_sources_directly_in(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        entries(directory)
+            .into_iter()
+            .filter(|path| is_rust_source(path))
+            .collect()
+    }
+
+    /// Every Rust source that ships from `directory` and the directories under
+    /// it, leaving out the modules the directory's declaring file gates behind
+    /// `#[cfg(test)]`, whose whole bodies are test code.
+    fn shipped_rust_sources_under(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let test_only_modules = test_only_modules_declared_for(directory);
+        let (subdirectories, files): (Vec<_>, Vec<_>) = entries(directory)
+            .into_iter()
+            .partition(|path| path.is_dir());
+        files
+            .into_iter()
+            .filter(|path| is_rust_source(path))
+            .filter(|path| {
+                let module = path
+                    .file_stem()
+                    .expect("a Rust source names its module")
+                    .to_string_lossy();
+                !test_only_modules
+                    .iter()
+                    .any(|test_only| *test_only == module)
+            })
+            .chain(
+                subdirectories
+                    .iter()
+                    .flat_map(|subdirectory| shipped_rust_sources_under(subdirectory)),
+            )
+            .collect()
+    }
+
+    /// The modules that the file declaring `directory`'s children — its
+    /// `mod.rs`, or the sibling `<directory>.rs` — places behind
+    /// `#[cfg(test)]`.
+    fn test_only_modules_declared_for(directory: &std::path::Path) -> Vec<String> {
+        [directory.join("mod.rs"), directory.with_extension("rs")]
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+            .map(|declaring_file| {
+                std::fs::read_to_string(declaring_file).expect("a readable module file")
+            })
+            .map_or_else(Vec::new, |source| test_only_modules_in(&source))
+    }
+
+    /// The out-of-line modules (`mod name;`) that `source` declares behind
+    /// `#[cfg(test)]`. An inline gated module carries its own body and
+    /// declares no file.
+    fn test_only_modules_in(source: &str) -> Vec<String> {
+        syn::parse_file(source)
+            .expect("a module the compiler accepts")
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Mod(module)
+                    if module.content.is_none() && is_test_gated(&module.attrs) =>
+                {
+                    Some(module.ident.to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    const PROVIDER_ENUM: &str = "AgentProvider";
+
+    /// The variant `path` names when it reaches into `AgentProvider`, whether
+    /// written bare or through the modules above it.
+    fn provider_variant(path: &syn::Path) -> Option<String> {
+        let segments: Vec<&syn::PathSegment> = path.segments.iter().collect();
+        segments
+            .windows(2)
+            .find(|pair| pair[0].ident == PROVIDER_ENUM)
+            .map(|pair| pair[1].ident.to_string())
+    }
+
+    /// The path a pattern matches by, when it matches by one: a bare path, or
+    /// the struct or tuple variant it destructures.
+    fn pattern_path(pattern: &syn::Pat) -> Option<&syn::Path> {
+        match pattern {
+            syn::Pat::Path(path) => Some(&path.path),
+            syn::Pat::Struct(fields) => Some(&fields.path),
+            syn::Pat::TupleStruct(elements) => Some(&elements.path),
+            _ => None,
+        }
+    }
+
+    /// The arguments of a `matches!` call: the scrutinee, the pattern it is
+    /// tested against, and whatever guard and trailing comma follow.
+    struct MatchesArguments {
+        pattern: syn::Pat,
+    }
+
+    impl syn::parse::Parse for MatchesArguments {
+        fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+            let _scrutinee: syn::Expr = input.parse()?;
+            let _separator: syn::Token![,] = input.parse()?;
+            let pattern = syn::Pat::parse_multi_with_leading_vert(input)?;
+            if input.peek(syn::Token![if]) {
+                let _guard_keyword: syn::Token![if] = input.parse()?;
+                let _guard: syn::Expr = input.parse()?;
+            }
+            let _trailing_comma: Option<syn::Token![,]> = input.parse()?;
+            Ok(Self { pattern })
+        }
+    }
+
+    /// The expressions a macro is called with, for the macros that take them —
+    /// `assert!`, `format!` and their kin — so a dispatch written inside one is
+    /// still walked. A macro fed something else (`thread_local!`,
+    /// `macro_rules!`) has no expression to walk.
+    fn expression_arguments(
+        invocation: &syn::Macro,
+    ) -> Option<Punctuated<syn::Expr, syn::Token![,]>> {
+        invocation
+            .parse_body_with(Punctuated::parse_terminated)
+            .ok()
+    }
+
+    /// Walks a module's shipped items for a second provider dispatch: a pattern
+    /// naming a provider variant wherever patterns go (match arms with or
+    /// without guards, `if let`, `while let`, let-else, `matches!`), an
+    /// equality test against one, or a mention of a concrete harness or
+    /// session type. The first one found is kept.
+    #[derive(Default)]
+    struct ProviderDispatchFinder {
+        offence: Option<String>,
+    }
+
+    impl ProviderDispatchFinder {
+        fn record(&mut self, offence: String) {
+            self.offence.get_or_insert(offence);
+        }
+    }
+
+    impl<'ast> Visit<'ast> for ProviderDispatchFinder {
+        fn visit_pat(&mut self, pattern: &'ast syn::Pat) {
+            if let Some(variant) = pattern_path(pattern).and_then(provider_variant) {
+                self.record(format!("matches on {PROVIDER_ENUM}::{variant}"));
+            }
+            syn::visit::visit_pat(self, pattern);
+        }
+
+        fn visit_expr_binary(&mut self, comparison: &'ast syn::ExprBinary) {
+            let tests_equality = matches!(comparison.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_));
+            let against_a_variant = [&*comparison.left, &*comparison.right]
+                .into_iter()
+                .find_map(|operand| match operand {
+                    syn::Expr::Path(path) => provider_variant(&path.path),
+                    _ => None,
+                });
+            if let (true, Some(variant)) = (tests_equality, against_a_variant) {
+                self.record(format!("compares against {PROVIDER_ENUM}::{variant}"));
+            }
+            syn::visit::visit_expr_binary(self, comparison);
+        }
+
+        fn visit_macro(&mut self, invocation: &'ast syn::Macro) {
+            let mut inside_the_call = ProviderDispatchFinder::default();
+            if invocation.path.is_ident("matches") {
+                let tested: MatchesArguments = invocation
+                    .parse_body()
+                    .expect("matches! takes a scrutinee and a pattern");
+                inside_the_call.visit_pat(&tested.pattern);
+            } else if let Some(arguments) = expression_arguments(invocation) {
+                arguments
+                    .iter()
+                    .for_each(|argument| inside_the_call.visit_expr(argument));
+            }
+            if let Some(offence) = inside_the_call.offence {
+                self.record(offence);
+            }
+        }
+
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if let Some(harness_type) = CONCRETE_HARNESS_TYPES
+                .into_iter()
+                .find(|harness_type| ident == harness_type)
+            {
+                self.record(format!("names {harness_type}"));
+            }
+        }
+    }
+
+    /// What in `source` claims a provider dispatch of its own, if anything.
+    fn provider_dispatch_offence(source: &str) -> Option<String> {
+        let mut finder = ProviderDispatchFinder::default();
+        finder.visit_file(&shipped_syntax_of(source));
+        finder.offence
+    }
+
+    /// Every module that sits above `harness_for`: the crate's top-level
+    /// sources, minus `models.rs`, whose wire table is the one sanctioned
+    /// per-provider list. Read from disk rather than named one by one so a
+    /// module added later is guarded without anyone remembering to list it.
+    fn modules_above_harness_for() -> Vec<(String, String)> {
+        const SANCTIONED_PROVIDER_TABLE: &str = "models.rs";
+
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut modules: Vec<(String, String)> = rust_sources_directly_in(&src)
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name != SANCTIONED_PROVIDER_TABLE)
+            })
+            .map(|path| {
+                let source = std::fs::read_to_string(&path).expect("a readable src module");
+                (
+                    format!(
+                        "src/{}",
+                        path.file_name().expect("a named module").to_string_lossy()
+                    ),
+                    source,
+                )
+            })
+            .collect();
+        modules.sort();
+        modules
+    }
+
+    /// `harness_for` is the only place a provider becomes an implementation. A
+    /// caller above it that matches on `AgentProvider` or names a concrete
+    /// harness or session type has opened a second dispatch, and every provider
+    /// added after it has to be added in two places instead of one.
+    #[test]
+    fn open_session_is_the_only_provider_dispatch() {
+        let modules = modules_above_harness_for();
+        assert!(
+            modules.iter().any(|(path, _)| path == "src/app.rs"),
+            "the scan reached the crate's own modules, so a green run means something"
+        );
+
+        for (path, source) in modules {
+            if let Some(offence) = provider_dispatch_offence(&source) {
+                panic!(
+                    "{path} {offence}; only harness_for may dispatch on a provider, so a second \
+                     dispatch above it makes the next provider a two-place change"
+                );
+            }
+        }
+    }
+
+    /// The guard fires on every shape a second dispatch actually takes, so a
+    /// green [`open_session_is_the_only_provider_dispatch`] is evidence rather
+    /// than a detector that quietly stopped matching.
+    #[test]
+    fn a_second_provider_dispatch_is_caught() {
+        const SECOND_DISPATCHES: [&str; 20] = [
+            "match (provider, resume) {\n    (AgentProvider::Codex, true) => launch(),\n}",
+            "match agent {\n    Agent { provider: AgentProvider::Codex, .. } => launch(),\n}",
+            "match providers {\n    [AgentProvider::Codex, ..] => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex => launch(),\n}",
+            "match named {\n    Some(AgentProvider::Codex) => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if resume => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if attempts > 1 => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if resume.is_some() => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if !resume => launch(),\n}",
+            "match kind {\n    Kind::Default => match DEFAULT_PROVIDER {\n        \
+             AgentProvider::Codex => launch(),\n    },\n}",
+            "match provider {\n    AgentProvider::CodexAppServer\n        => launch(),\n}",
+            "if provider == AgentProvider::Codex { launch() }",
+            "if provider != AgentProvider::Claude { launch() }",
+            "if matches!(provider, AgentProvider::Codex) { launch() }",
+            "if matches!(\n    agent.choice.provider,\n    AgentProvider::CodexAppServer | \
+             AgentProvider::Codex\n) {\n    launch()\n}",
+            "if let AgentProvider::Codex = provider { launch() }",
+            "let AgentProvider::Codex = provider else { return };",
+            "while let AgentProvider::Codex = next() { launch() }",
+            "let session: AdkSession = open(root);",
+            "let session: CodexAppServerSession = open(root);",
+        ];
+
+        for source in SECOND_DISPATCHES {
+            assert!(
+                provider_dispatch_offence(&inside_a_function(source)).is_some(),
+                "a second dispatch went unnoticed: {source}"
+            );
+        }
+
+        let single_dispatch = "let provider = AgentProvider::from_wire(id)?;\nlet opened = \
+                              harness_for(provider).open_session(request)?;\nmatch named {\n    \
+                              Some(agent) if AgentProvider::from_wire(agent).is_some() => \
+                              Err(already_named()),\n}";
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(single_dispatch)),
+            None
+        );
+
+        let compared_only_by_value = "if choice.model == catalogued.model { keep() }";
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(compared_only_by_value)),
+            None
+        );
+
+        let constructed_inside_a_binding = "if let Some(found) = catalog(AgentProvider::Claude) \
+                                            { keep() }";
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(constructed_inside_a_binding)),
+            None
+        );
+
+        let checked_after_an_earlier_matches = "let quiet = matches!(status, Idle);\nlet \
+                                                opened = harness_for(AgentProvider::Codex);";
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(checked_after_an_earlier_matches)),
+            None
+        );
+
+        let constructed_in_an_arm_body = "match found {\n    Ok(_) => AgentProvider::Claude,\n    \
+                                         Err(_) => AgentProvider::Codex,\n}";
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(constructed_in_an_arm_body)),
+            None
+        );
+
+        let struct_built_in_an_arm_body = "match found {\n    Some(model) => ModelChoice { \
+                                          provider: AgentProvider::Codex, model },\n    None => \
+                                          fallback(),\n}";
+        assert_eq!(
+            provider_dispatch_offence(&inside_a_function(struct_built_in_an_arm_body)),
+            None
+        );
+
+        let dispatch_only_in_tests = format!(
+            "pub fn run() {{}}\n#[cfg(test)]\nmod tests {{\n    {}\n}}\n",
+            inside_a_function("let harness = ClaudeHarness;")
+        );
+        assert_eq!(provider_dispatch_offence(&dispatch_only_in_tests), None);
+    }
+
+    /// A statement or expression as it would sit in a shipped function, so a
+    /// fixture reads as the compiler would read it.
+    fn inside_a_function(body: &str) -> String {
+        format!("fn shipped() {{\n{body}\n}}\n")
+    }
+
+    /// Only an out-of-line module behind `#[cfg(test)]` names a file the walk
+    /// must skip; an inline gated module and an ungated declaration name none.
+    #[test]
+    fn test_only_modules_are_the_gated_out_of_line_declarations() {
+        let declaring_file =
+            "mod session;\n#[cfg(test)]\nmod tests;\n#[cfg(test)]\npub(crate) mod \
+                              stream_fixtures;\n#[cfg(test)]\nmod inline_tests {\n    fn \
+                              scaffold() {}\n}\n";
+        assert_eq!(
+            test_only_modules_in(declaring_file),
+            ["tests", "stream_fixtures"]
+        );
+    }
+
+    /// The walk that finds opened sessions reads every shipped harness module
+    /// and none of the test-only ones, so a session type is found wherever it
+    /// is implemented and test scaffolding never widens the ban list.
+    #[test]
+    fn the_session_walk_reads_shipped_modules_and_skips_test_only_ones() {
+        let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("harness");
+        let walked: Vec<String> = shipped_rust_sources_under(&harness_modules)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&harness_modules)
+                    .expect("a walked path sits under src/harness")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        for shipped in ["adk.rs", "codex_app_server/session.rs"] {
+            assert!(walked.iter().any(|path| path == shipped), "{walked:?}");
+        }
+        for test_only in [
+            "stream_fixtures.rs",
+            "codex_app_server/fixtures.rs",
+            "codex_app_server/tests.rs",
+        ] {
+            assert!(!walked.iter().any(|path| path == test_only), "{walked:?}");
+        }
+    }
+
+    /// The ban list the guard reads, the registry that constructs harnesses and
+    /// the harness modules that open sessions are one fact, so a provider added
+    /// under `harness_for` cannot leave a harness or session type the guard
+    /// would let a caller above it name.
+    #[test]
+    fn the_ban_list_covers_every_harness_harness_for_constructs() {
+        let constructed = harnesses_named_by_harness_for();
+        assert_eq!(constructed.len(), AgentProvider::ALL.len());
+        let opened = sessions_opened_by_the_harness_modules();
+        assert!(
+            !opened.is_empty(),
+            "the walk over src/harness found the sessions its modules open"
+        );
+
+        for harness_type in constructed {
+            assert!(
+                CONCRETE_HARNESS_TYPES.contains(&harness_type.as_str()),
+                "harness_for constructs {harness_type} but the guard does not ban it above \
+                 harness_for"
+            );
+        }
+        for session_type in opened {
+            assert!(
+                CONCRETE_HARNESS_TYPES.contains(&session_type.as_str()),
+                "a harness module opens {session_type} but the guard does not ban it above \
+                 harness_for"
             );
         }
     }

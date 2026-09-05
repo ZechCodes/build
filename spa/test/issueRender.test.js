@@ -180,7 +180,7 @@ describe("assignmentPanelHtml", () => {
 // to send the one it painted: a select saying "Claude Code" that creates a TUI
 // agent is the mismatch this pair exists to catch.
 describe("the assignment's agent select and the dispatch under it", () => {
-  const threeHarnesses = {
+  const fourHarnesses = {
     default_provider: "claude_adk",
     providers: [
       {
@@ -190,20 +190,21 @@ describe("the assignment's agent select and the dispatch under it", () => {
         efforts: ["high"],
       },
       { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
-      { id: "codex", label: "Codex", models: [], efforts: [] },
+      { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+      { id: "codex", label: "Codex TUI", models: [], efforts: [] },
     ],
   };
   const stale = { ...assignment, provider: "claude", model: "opus", effort: "high" };
 
   it("offers the two agents, painting a stale carrier as the one it clamps to", () => {
-    const html = assignmentPanelHtml({ assignment: stale, catalog: threeHarnesses });
+    const html = assignmentPanelHtml({ assignment: stale, catalog: fourHarnesses });
     expect(html).toContain('<option value="claude_adk" selected>Claude Code</option>');
     expect(html).toContain('<option value="codex">Codex</option>');
     expect(html).not.toContain("Claude Code TUI");
   });
 
   it("dispatches the agent the select painted, not the stale token behind it", () => {
-    expect(implementParams("issue-1", stale, { catalog: threeHarnesses })).toEqual({
+    expect(implementParams("issue-1", stale, { catalog: fourHarnesses })).toEqual({
       issue_id: "issue-1",
       provider: "claude_adk",
       model: "opus",
@@ -212,7 +213,7 @@ describe("the assignment's agent select and the dispatch under it", () => {
   });
 
   it("dispatches an untouched assignment with the agent the select displays", () => {
-    expect(implementParams("issue-1", { ...assignment, provider: "" }, { catalog: threeHarnesses })).toEqual({
+    expect(implementParams("issue-1", { ...assignment, provider: "" }, { catalog: fourHarnesses })).toEqual({
       issue_id: "issue-1",
       provider: "claude_adk",
     });

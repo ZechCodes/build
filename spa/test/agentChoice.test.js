@@ -28,18 +28,20 @@ const catalog = {
       ],
       efforts: ["low", "high"],
     },
-    { id: "codex", label: "Codex", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["medium"] },
+    { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+    { id: "codex", label: "Codex TUI", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["medium"] },
   ],
 };
 
-/** What a bridge since step 14 serves: three harnesses, under an account whose
+/** What the bridge serves: four harnesses, under an account whose
  *  default is the plain Claude Code one. */
-const threeHarnesses = {
+const fourHarnesses = {
   default_provider: "claude_adk",
   providers: [
     { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
     { id: "claude", label: "Claude Code", models: [], efforts: [] },
-    { id: "codex", label: "Codex", models: [], efforts: [] },
+    { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+    { id: "codex", label: "Codex TUI", models: [], efforts: [] },
   ],
 };
 
@@ -88,10 +90,8 @@ describe("the panel", () => {
     expect(host.querySelector("#agent-choice-effort").disabled).toBe(true);
   });
 
-  // The panel is a create/dispatch surface, so it asks which agent, never which
-  // carrier: the bridge serves three harnesses and the select offers two.
-  it("offers the two agents, out of the three the bridge serves", () => {
-    const host = mount(agentChoicePanelHtml(threeHarnesses, NO_AGENT_CHOICE, { open: true }));
+  it("offers the two agents, out of the four harnesses the bridge serves", () => {
+    const host = mount(agentChoicePanelHtml(fourHarnesses, NO_AGENT_CHOICE, { open: true }));
 
     const options = [...host.querySelectorAll("#agent-choice-provider option")];
     expect(options.map((option) => option.value)).toEqual(["claude_adk", "codex"]);
@@ -102,7 +102,7 @@ describe("the panel", () => {
   // and the offer is where it clamps: the panel paints the Claude Code entry
   // rather than painting nothing selected.
   it("paints a stored preference for the other claude carrier as Claude Code", () => {
-    const host = mount(agentChoicePanelHtml(threeHarnesses, { provider: "claude", model: "", effort: "" }, { open: true }));
+    const host = mount(agentChoicePanelHtml(fourHarnesses, { provider: "claude", model: "", effort: "" }, { open: true }));
 
     expect(host.querySelector("#agent-choice-provider").value).toBe("claude_adk");
   });
@@ -134,10 +134,10 @@ describe("the choice as params", () => {
   // What the select painted is what the send carries. A stale token cannot ride
   // out on the wire under a control that showed the reader a different name.
   it("sends the agent the panel painted, not the stale token behind it", () => {
-    expect(agentChoiceParams(threeHarnesses, { provider: "claude", model: "", effort: "" })).toEqual({
+    expect(agentChoiceParams(fourHarnesses, { provider: "claude", model: "", effort: "" })).toEqual({
       provider: "claude_adk",
     });
-    expect(agentChoiceParams(threeHarnesses, NO_AGENT_CHOICE)).toEqual({ provider: "claude_adk" });
+    expect(agentChoiceParams(fourHarnesses, NO_AGENT_CHOICE)).toEqual({ provider: "claude_adk" });
   });
 
   it("sends the agent displayed by the creation catalog when the account default is not offered", () => {

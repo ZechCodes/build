@@ -85,6 +85,10 @@ impl Harness for PiHarness {
             .env("BUILD_PI_MCP_OWNER", &options.owner_id))
     }
 
+    fn routes_captures(&self) -> bool {
+        false
+    }
+
     fn has_transcript(&self, _home: &Path, _cwd: &Path) -> bool {
         false
     }
@@ -877,7 +881,9 @@ mod tests {
 
         use portable_pty::PtySize;
 
-        use crate::harness::{open_session, AgentStatus, Carrier, SessionIdentitySource, Turn};
+        use crate::harness::{
+            open_terminal_session, AgentStatus, SessionIdentitySource, TerminalOpenOptions, Turn,
+        };
 
         let state = tempfile::tempdir().unwrap();
         let worktree = tempfile::tempdir().unwrap();
@@ -911,16 +917,17 @@ mod tests {
             pixel_height: 0,
         };
         let identity = SessionIdentitySource::Known(spec.known_session_id.clone().unwrap());
-        let (session, _output) = open_session(
+        let session = open_terminal_session(
             &spec,
             worktree.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size,
                 turn_ready_grace: Some(Duration::from_secs(3)),
                 identity: Some(identity),
             },
         )
-        .unwrap();
+        .unwrap()
+        .session;
         assert_eq!(session.session_id().as_deref(), Some("agent-fake-pi"));
         let sent_at = Instant::now();
         session

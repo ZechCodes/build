@@ -111,9 +111,7 @@ describe("the assignment overlay", () => {
     overlay.close();
   });
 
-  // Dispatching an issue creates an agent, so it asks the same question the
-  // new-agent cards ask: which of the two agents, never which carrier.
-  it("offers the two agents, out of the three the bridge serves", () => {
+  it("offers the two agents, out of the four harnesses the bridge serves", () => {
     const anchor = document.createElement("button");
     document.body.appendChild(anchor);
     const overlay = openAssignmentOverlay({
@@ -125,7 +123,8 @@ describe("the assignment overlay", () => {
         providers: [
           { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
           { id: "claude", label: "Claude Code", models: [], efforts: [] },
-          { id: "codex", label: "Codex", models: [], efforts: [] },
+          { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+          { id: "codex", label: "Codex TUI", models: [], efforts: [] },
         ],
       }),
       getWorktrees: () => [],
@@ -160,7 +159,14 @@ describe("the assignment overlay", () => {
     const worktree = document.querySelector("#assignworktree");
     worktree.value = "existing";
     worktree.dispatchEvent(new Event("change"));
-    held = { default_provider: "claude", providers: [...catalog.providers, { id: "codex", label: "Codex", models: [], efforts: [] }] };
+    held = {
+      default_provider: "claude",
+      providers: [
+        ...catalog.providers,
+        { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+        { id: "codex", label: "Codex TUI", models: [], efforts: [] },
+      ],
+    };
     overlay.update();
     expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude", "codex"]);
     expect(document.querySelector("#assignworktree").value).toBe("existing");

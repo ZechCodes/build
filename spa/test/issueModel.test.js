@@ -259,7 +259,7 @@ describe("worktreeChoices", () => {
 describe("implementParams", () => {
   const catalog = {
     default_provider: "claude_adk",
-    providers: [{ id: "codex", label: "Codex", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["high"] }],
+    providers: [{ id: "codex", label: "Codex TUI", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["high"] }],
   };
 
   it("carries the issue and the assignment's overrides to implement_all", () => {

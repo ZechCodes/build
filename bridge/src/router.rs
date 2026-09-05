@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::harness::harness_for;
 use crate::models::{AgentProvider, ModelChoice};
 
 /// What every router agent id starts with. The prefix is load-bearing, not
@@ -31,15 +32,18 @@ pub const ROUTER_EFFORT: &str = "low";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouterChoiceError {
-    #[error("Pi cannot be used as the router")]
-    PiUnsupported,
+    #[error("{0} cannot be used as the router")]
+    ProviderCannotRoute(&'static str),
     #[error("invalid router model: {0}")]
     InvalidModel(String),
 }
 
+/// Whether `choice` names something a router session can run on: a provider
+/// that carries the router surface, and a model that provider accepts.
 pub fn validate_router_choice(choice: &ModelChoice) -> Result<(), RouterChoiceError> {
-    if choice.provider == AgentProvider::Pi {
-        return Err(RouterChoiceError::PiUnsupported);
+    let harness = harness_for(choice.provider);
+    if !harness.routes_captures() {
+        return Err(RouterChoiceError::ProviderCannotRoute(harness.label()));
     }
     choice.validate().map_err(RouterChoiceError::InvalidModel)
 }

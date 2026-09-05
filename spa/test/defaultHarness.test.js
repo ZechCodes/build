@@ -23,7 +23,8 @@ const optionText = (control) => [...control.options].map((option) => option.text
 const PROVIDERS = [
   { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
   { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
-  { id: "codex", label: "Codex", models: [], efforts: [] },
+  { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+  { id: "codex", label: "Codex TUI", models: [], efforts: [] },
   { id: "pi", label: "Pi", models: [], efforts: [] },
 ];
 const CATALOG = { default_provider: "claude_adk", providers: PROVIDERS };
@@ -62,7 +63,7 @@ describe("the fallback-agent panel", () => {
     expect(callRpc).toHaveBeenCalledWith("models.list");
     expect(host.querySelectorAll("select")).toHaveLength(1);
     expect(select().value).toBe("pi");
-    expect(optionText(select())).toEqual(["Claude Code", "Claude Code TUI", "Codex", "Pi"]);
+    expect(optionText(select())).toEqual(["Claude Code", "Claude Code TUI", "Codex", "Codex TUI", "Pi"]);
     // Not one visible word about how any of them is carried.
     expect(host.textContent).not.toMatch(/headless/i);
     expect(host.textContent).not.toMatch(/carrier/i);
@@ -275,6 +276,7 @@ describe("the Settings page", () => {
       "Claude Code",
       "Claude Code TUI",
       "Codex",
+      "Codex TUI",
       "Pi",
     ]);
   }, SLOW_IMPORT_MS);

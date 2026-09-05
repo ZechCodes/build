@@ -38,7 +38,8 @@ use crate::harness::shell_tail::ShellTail;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext,
-    HarnessError, SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
+    HarnessError, OpenedSession, SessionLocator, SessionOpenRequest, SessionOutput, ToolOutcome,
+    Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -127,6 +128,14 @@ impl Harness for AdkHarness {
                 context.mcp_socket.to_string_lossy().into_owned(),
             )
             .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token))
+    }
+
+    fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
+        let (session, activity) = AdkSession::spawn(&request.spec, Some(request.root))?;
+        Ok(OpenedSession {
+            session: Arc::new(session),
+            output: SessionOutput::reporting(activity),
+        })
     }
 
     /// No terminal, and this is the first provider to say so. A session that
@@ -1051,12 +1060,7 @@ impl ProtocolReader {
     /// work, not the agent speaking.
     fn mint_task_updates(&self, summaries: Vec<String>) {
         for summary in summaries {
-            self.report(
-                AgentActivity::TaskUpdate {
-                    summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
-                },
-                None,
-            );
+            self.send_report(ActivityReport::bounded_task_update(&summary));
         }
     }
 
@@ -1250,15 +1254,18 @@ impl ProtocolReader {
     }
 
     fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
-        let reported = match parent_call_id {
+        self.send_report(match parent_call_id {
             None => ActivityReport::own_work(activity),
             Some(spawning_call_id) => ActivityReport {
                 activity,
                 parent_call_id: Some(spawning_call_id.to_string()),
             },
-        };
+        });
+    }
+
+    fn send_report(&self, report: ActivityReport) {
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
-            let _ = sender.send(reported);
+            let _ = sender.send(report);
         }
     }
 }
@@ -2785,21 +2792,13 @@ mod tests {
             AdkHarness.has_transcript(home.path(), cwd),
             "a headless session writes the transcripts the TUI does, so a resume finds them"
         );
-
-        assert!(
-            !AdkHarness.has_terminal(),
-            "and the one thing that does differ: no basement"
-        );
     }
 
-    /// The two capabilities are alternatives, and this carrier takes the second
-    /// one: it reports its own reasoning and tool calls, so there is nothing for
-    /// a human to escape to.
     #[test]
-    fn a_reporting_session_has_no_terminal_and_offers_its_activity() {
+    fn a_reporting_session_matches_its_harness_capability() {
         let session = open(&stream_json_harness(&[RESULT]));
-        assert!(session.terminal().is_none());
-        assert!(session.activity().is_some());
+        assert_eq!(session.terminal().is_some(), AdkHarness.has_terminal());
+        assert_eq!(session.activity().is_some(), !AdkHarness.has_terminal());
         session.end();
     }
 

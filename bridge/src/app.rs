@@ -2608,7 +2608,7 @@ impl AppState {
                 Ok((worktree, downgrade)) => {
                     active.worktree = worktree;
                     if let Some(reason) = downgrade {
-                        self.note_isolation_downgrade(&mut active, &reason)?;
+                        self.note_isolation_downgrade(&run_id, &mut active, &reason);
                     }
                     recovery_event = Some((
                         crate::thread::ThreadEventKind::WorktreeRecreated,
@@ -5262,9 +5262,7 @@ impl AppState {
             Ok(reported)
         })();
         if let Some(reason) = restored_isolation_downgrade {
-            if let Err(error) = self.note_isolation_downgrade(&mut active, &reason) {
-                eprintln!("recovery {run_id}: {error}");
-            }
+            self.note_isolation_downgrade(run_id, &mut active, &reason);
         }
 
         let (event, summary, recovery_id, requested_stage_id) = match verification {
@@ -8730,15 +8728,17 @@ impl AppState {
     }
 
     /// Announce on `active`'s conversation, and on the log, that the checkout
-    /// it was just given is not the isolation the settings asked for. A volume
-    /// that cannot clone is a fact to say out loud, never a create to fail.
-    fn note_isolation_downgrade(
-        &mut self,
-        active: &mut ActiveRun,
-        reason: &str,
-    ) -> Result<(), String> {
+    /// it was just given is not the isolation the settings asked for.
+    ///
+    /// Says, never fails. A volume that cannot clone is a fact to tell the
+    /// human, and by the time it is told the checkout stands, the branch is
+    /// cut and the record is written — so a telling that does not land is a
+    /// line in the log, never a create undone or a run left off the board.
+    /// Every creation site announces through here, so no caller can choose
+    /// another policy.
+    fn note_isolation_downgrade(&mut self, run_id: &str, active: &mut ActiveRun, reason: &str) {
         let note = announce_isolation_downgrade(reason);
-        self.record_on_run_conversation(active, |thread| {
+        let written = self.record_on_run_conversation(active, |thread| {
             thread.push_event(
                 crate::thread::ThreadEventKind::WorktreeCreated,
                 Some(note),
@@ -8746,7 +8746,10 @@ impl AppState {
                 None,
                 now_rfc3339(),
             );
-        })
+        });
+        if let Err(error) = written {
+            eprintln!("{run_id}: the isolation fallback went unrecorded: {error}");
+        }
     }
 
     /// Tell the Issue where its implementation got to.
@@ -10261,7 +10264,7 @@ impl AppState {
                 active.worktree = worktree;
                 active.last_error = None;
                 if let Some(reason) = downgrade {
-                    self.note_isolation_downgrade(&mut active, &reason)?;
+                    self.note_isolation_downgrade(run_id, &mut active, &reason);
                 }
                 let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
                 let persisted = self.finish_run_mutation(run_id.to_string(), active);
@@ -11036,7 +11039,7 @@ impl AppState {
             .id
             .clone();
         if let Some(reason) = downgrade {
-            self.note_isolation_downgrade(&mut active, &reason)?;
+            self.note_isolation_downgrade(&run_id, &mut active, &reason);
         }
         self.open_implementation_run(
             run_id,
@@ -13833,7 +13836,7 @@ impl AppState {
         // it has.
         let agent_id = active.agents.add(&run_id, choice, &now).id.clone();
         if let Some(reason) = downgrade {
-            self.note_isolation_downgrade(&mut active, &reason)?;
+            self.note_isolation_downgrade(&run_id, &mut active, &reason);
         }
         let branch = active.worktree.branch();
         let root = Self::canonical_root(&active.worktree.path);
@@ -20135,6 +20138,52 @@ mod tests {
                 "Created a git worktree: copy-on-write isolation is unavailable here — "
             ) && note.contains("linked worktree"),
             "the note carries the volume's own sentence: {note}"
+        );
+    }
+
+    /// The fallback is an announcement, not a term of the create. A store that
+    /// refuses the note leaves the checkout, the branch and the record exactly
+    /// as they are, and the run reaches the board it would have reached — the
+    /// alternative is a run alive on disk that the bridge has forgotten.
+    #[test]
+    fn a_fallback_that_cannot_be_recorded_still_leaves_the_run_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+
+        let plan = state.handle(req(
+            "plan.create",
+            json!({ "goal": "add a health endpoint" }),
+        ));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            let approved = state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            ));
+            assert_eq!(approved["ok"], true, "{approved:?}");
+        }
+        let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        assert_eq!(approved["ok"], true, "{approved:?}");
+
+        // The first write the dispatch makes is the note's: everything before
+        // it is git and files, so this refusal lands on the announcement alone.
+        state
+            .store
+            .as_ref()
+            .expect("the qa state has a store")
+            .fail_next_write();
+        let dispatched = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+
+        assert_eq!(
+            dispatched["ok"], true,
+            "an announcement that cannot be written never fails the create: {dispatched:?}"
+        );
+        let run_id = run_id_of(&dispatched);
+        assert!(
+            state.runs.contains_key(&run_id),
+            "and the run it made is on the board: {:?}",
+            state.runs.keys().collect::<Vec<_>>()
         );
     }
 

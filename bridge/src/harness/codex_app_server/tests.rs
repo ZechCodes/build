@@ -2170,24 +2170,37 @@ fn an_individually_oversized_completion_key_is_processed_but_not_retained() {
     bounded.completed_items = 4;
     bounded.completed_item_bytes = 4;
     let mut translator = CodexActivityTranslator::new(bounded.translator());
-    let completed = item_envelope(json!({"id":"a","type":"agentMessage","text":"once"}));
+    let retainable = item_envelope_at(
+        THREAD_ID,
+        "t",
+        json!({"id":"a","type":"agentMessage","text":"fits"}),
+    );
+    let oversized = item_envelope(json!({"id":"a","type":"agentMessage","text":"once"}));
 
     assert_eq!(
         translator
-            .translate("item/completed", &completed)
+            .translate("item/completed", &retainable)
             .unwrap()
             .len(),
         1
     );
-    assert_eq!(translator.completed_item_count(), 0);
+    assert_eq!(translator.completed_item_count(), 1);
     assert_eq!(
         translator
-            .translate("item/completed", &completed)
+            .translate("item/completed", &oversized)
             .unwrap()
             .len(),
         1
     );
-    assert_eq!(translator.completed_item_count(), 0);
+    assert_eq!(translator.completed_item_count(), 1);
+    assert_eq!(
+        translator
+            .translate("item/completed", &oversized)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(translator.completed_item_count(), 1);
 }
 
 #[test]

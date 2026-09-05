@@ -34,11 +34,10 @@ use crate::harness::{
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
 use crate::lifecycle::{
     AdoptCheckout, AdoptImplementation, AdoptionTarget, CloneRepo, CreateRepo, CreateWorktree,
-    DiscardCheckout, DiscardedCheckout, DispatchCheckout, DispatchTarget,
-    ImplementationCheckout, LifecycleEpilogue, LifecycleOutcome, OpenImplementation,
-    OpenPlanWorkspace, OpenRepo, PendingRow, PendingState, Performed,
-    RestoreImplementationCheckout, SetRemote, WorktreeChange, WorktreeLifecycleJob,
-    WorktreeMutation,
+    DiscardCheckout, DiscardedCheckout, DispatchCheckout, DispatchTarget, ImplementationCheckout,
+    LifecycleEpilogue, LifecycleOutcome, OpenImplementation, OpenPlanWorkspace, OpenRepo,
+    PendingRow, PendingState, Performed, RestoreImplementationCheckout, SetRemote, WorktreeChange,
+    WorktreeLifecycleJob, WorktreeMutation,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -13023,7 +13022,7 @@ impl AppState {
     /// Prune a merged run's worktree once its `Merged` verdict is durable.
     fn prune_merged_worktree(&self, project_id: &str, worktree: &Worktree) {
         if let Ok(orch) = self.orch_for(project_id) {
-            orch.discard_worktree(worktree);
+            orch.discard_checkout(worktree, /* keep_branch */ false);
         }
     }
 
@@ -13120,9 +13119,9 @@ impl AppState {
             title: active.run.goal.clone(),
             branch: None,
             state: PendingState::Discarding,
-            checkout_id: Some(crate::worktree::external_worktree_id(&Self::canonical_root(
-                &active.worktree.path,
-            ))),
+            checkout_id: Some(crate::worktree::external_worktree_id(
+                &Self::canonical_root(&active.worktree.path),
+            )),
             implements: None,
             since: std::time::Instant::now(),
         };
@@ -13308,9 +13307,9 @@ impl AppState {
             title,
             branch: None,
             state: PendingState::Discarding,
-            checkout_id: Some(crate::worktree::external_worktree_id(&Self::canonical_root(
-                &worktree.path,
-            ))),
+            checkout_id: Some(crate::worktree::external_worktree_id(
+                &Self::canonical_root(&worktree.path),
+            )),
             implements: None,
             since: std::time::Instant::now(),
         };

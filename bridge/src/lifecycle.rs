@@ -814,17 +814,13 @@ impl AdoptionTarget {
     pub fn checkout_id(&self) -> String {
         match self {
             AdoptionTarget::Card { worktree_id, .. } => worktree_id.clone(),
-            AdoptionTarget::Primary { repo_path } => crate::worktree::external_worktree_id(
-                &crate::worktree::canonical_root(repo_path),
-            ),
+            AdoptionTarget::Primary { repo_path } => {
+                crate::worktree::external_worktree_id(&crate::worktree::canonical_root(repo_path))
+            }
         }
     }
 
-    fn reach(
-        &self,
-        project: &Orchestrator,
-        base_branch: &str,
-    ) -> Result<ExternalWorktree, String> {
+    fn reach(&self, project: &Orchestrator, base_branch: &str) -> Result<ExternalWorktree, String> {
         match self {
             AdoptionTarget::Card {
                 worktree_id,
@@ -1192,10 +1188,7 @@ impl WorktreeMutation for SetRemote {
                 None
             }
             (false, true) => {
-                crate::app::git_in(
-                    &self.repo_path,
-                    &["remote", "set-url", "origin", &self.url],
-                )?;
+                crate::app::git_in(&self.repo_path, &["remote", "set-url", "origin", &self.url])?;
                 Some(self.url)
             }
             (false, false) => {

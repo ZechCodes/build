@@ -1623,7 +1623,7 @@ impl Orchestrator {
         match prepared {
             Ok(base_sha) => Ok(PreparedImplementation { worktree, base_sha }),
             Err(error) => {
-                self.discard_worktree(&worktree);
+                self.discard_checkout(&worktree, /* keep_branch */ false);
                 Err(error)
             }
         }

@@ -767,7 +767,7 @@ export function mountAgentRail(host, context) {
     // in an active branch is never shown an empty frame the disk can fill.
     if (threadOwner !== selectedId) {
       const saved = threadCache.readWindow();
-      return saved ? { items: saved.items } : null;
+      return saved ? { items: saved.items, activityDigests: saved.activityDigests } : null;
     }
     if (!entity.thread) return null;
     // A payload folds through the cache once; a repaint of the same payload
@@ -775,7 +775,9 @@ export function mountAgentRail(host, context) {
     // Only a delta that never seated a window re-renders itself as it came.
     if (entity.thread === absorbedThreadPayload) {
       const held = threadCache.readWindow();
-      return held ? { ...entity.thread, items: held.items } : { ...entity.thread };
+      return held
+        ? { ...entity.thread, items: held.items, activityDigests: held.activityDigests }
+        : { ...entity.thread };
     }
     absorbedThreadPayload = entity.thread;
     const thread = threadCache.absorb(entity.thread);

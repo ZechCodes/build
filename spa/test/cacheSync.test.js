@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
 
 // Real clock, not a frozen one: the syncer partitions active-vs-Recent with
 // Date.now(), so the items' ages must be relative to the same now.
@@ -217,7 +218,7 @@ describe("keeping warmed conversations fresh", () => {
       project_id: "p1",
       branch: "build/login",
       agent_id: "ag-1",
-      thread_limit: 60,
+      thread_limit: FIRST_PAGE_ITEMS,
     });
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" });
     expect(record.value.deliveredSequence).toBe(2);
@@ -237,7 +238,7 @@ describe("keeping warmed conversations fresh", () => {
     await feed([
       { kind: "issue", project_id: "p2", issue_id: "iss-1", state: "plan_review", anchor: ago(2), last_activity: ago(2) },
     ]);
-    expect(App.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: 60 });
+    expect(App.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: FIRST_PAGE_ITEMS });
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" });
     expect(record.value.deliveredSequence).toBe(3);
   });

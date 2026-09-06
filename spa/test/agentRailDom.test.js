@@ -1185,6 +1185,94 @@ describe("reading back past the top of a paged conversation", () => {
   });
 });
 
+// The number on a folded run is the bridge's count of the whole run, and the
+// window is what carries it: a page says what each run totals, and every later
+// paint — a poll's delta, a repaint of the payload in hand, the window read
+// back after an agent switch — draws the same number rather than counting the
+// rows that happen to be on screen.
+describe("the count on a folded run of activity", () => {
+  const toolCall = (sequence, summary) => ({
+    type: "event",
+    data: { sequence, event: "tool_use", summary, created_at: "2026-09-06T18:03:11.412Z" },
+  });
+  const digest = (from, through, toolCalls, lastToolCall = null) => ({
+    from_sequence: from,
+    through_sequence: through,
+    tool_calls: toolCalls,
+    last_tool_call: lastToolCall,
+  });
+  const railBody = () => railHost().querySelector("#rail-body");
+  const foldCount = () => railBody().querySelector(".thread-activity-count").textContent;
+
+  const bigRun = (over = {}) => ({
+    sessions: [],
+    items: [toolCall(1529, "Read spa/src/core/thread.js"), toolCall(1530, "Bash(cargo test)")],
+    activity_digests: [digest(412, 1530, 1000, { sequence: 1530, summary: "Bash(cargo test)", outcome: "ok" })],
+    thread_total: 1530,
+    thread_last_sequence: 1530,
+    oldest_sequence: 1529,
+    has_more: true,
+    ...over,
+  });
+
+  const conversationOf = (thread) => {
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") {
+        return branchRow({
+          run: {
+            run_id: "run-3",
+            thread: params.thread_after_sequence
+              ? { sessions: [], items: [], thread_total: 1530, thread_last_sequence: 1530 }
+              : thread,
+          },
+        });
+      }
+      if (method === "thread.page") {
+        return {
+          items: [toolCall(400, "Read bridge/src/thread.rs")],
+          activity_digests: [digest(300, 411, 40, { sequence: 400, summary: "Read bridge/src/thread.rs" })],
+          thread_total: 1530,
+          thread_last_sequence: 1530,
+          oldest_sequence: 400,
+          has_more: false,
+        };
+      }
+      return {};
+    });
+  };
+
+  it("shows what the bridge counted rather than the rows the page shipped", async () => {
+    conversationOf(bigRun());
+    await mount();
+
+    expect(foldCount()).toBe("1000");
+    expect(railBody().querySelector(".thread-activity-preview").textContent).toBe("Bash(cargo test)");
+  });
+
+  it("keeps the count through the repaints a poll and a feed snapshot make", async () => {
+    conversationOf(bigRun());
+    await mount();
+
+    await pushFeed({ items: [], projects: [] });
+    expect(foldCount()).toBe("1000");
+  });
+
+  it("takes in the digest of the run an older page reaches back to", async () => {
+    conversationOf(bigRun());
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    // One run on screen now: the page above ended in a tool call, so what the
+    // reader sees is a single fold over both bridge runs, counting both.
+    expect(railBody().querySelectorAll(".thread-activity-group")).toHaveLength(1);
+    expect(foldCount()).toBe("1040");
+  });
+});
+
 describe("focusing the composer on a freshly created branch", () => {
   // A branch fresh out of "New branch…" has no agent yet — the ghost state —
   // same as every test in this block below.
@@ -1801,6 +1889,31 @@ describe("the conversation's local cache", () => {
     const delta = callsTo("branch.get").find((call) => call.params.agent_id === "ag-1");
     expect(delta.params.thread_after_sequence).toBe(1);
     expect(delta.params.thread_limit).toBeUndefined();
+  });
+
+  // The count on a folded run comes off the window, so the window on disk
+  // carries it: a reader coming back to a long run sees the bridge's number on
+  // the seeded paint, not a count of the handful of rows the disk held.
+  it("seeds the digests with the window, so the fold's count survives the visit", async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+      {
+        items: [{
+          id: "e-1530",
+          type: "event",
+          data: { sequence: 1530, event: "tool_use", summary: "Bash(cargo test)", created_at: "2026-08-30T12:00:00Z" },
+        }],
+        olderItemsRemain: true,
+        deliveredSequence: 1530,
+        knownTotalItems: 1530,
+        activityDigests: [{ from_sequence: 412, through_sequence: 1530, tool_calls: 1000, last_tool_call: null }],
+      },
+    );
+    feedSnapshot = { items: feedItems, projects: [] };
+    await mount();
+    await flush();
+
+    expect(railHost().querySelector(".thread-activity-count").textContent).toBe("1000");
   });
 
   it("writes the conversation's window through for the next visit", async () => {

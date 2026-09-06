@@ -3,6 +3,7 @@ import { renderMarkdown } from "./markdown.js";
 import { patchElement } from "./domPatch.js";
 import { paintKeepingPlace, pinToBottom } from "./paintKeepingPlace.js";
 import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
+import { activityRunSummary, firstLine, mergeActivityDigests } from "./activityDigest.js";
 import {
   INTERRUPT_SEND_OPTION,
   autoGrow,
@@ -84,7 +85,7 @@ function timeHtml(createdAt) {
 // hears, so this is a request rather than a promise — but it has to be made:
 // a poll that names no bound gets the conversation whole, which is the only
 // answer a client written before paging could reconcile.
-export const FIRST_PAGE_ITEMS = 60;
+export const FIRST_PAGE_ITEMS = 20;
 
 export const THREAD_RECORD_KIND = "thread";
 
@@ -109,6 +110,11 @@ export const threadItemKey = (item) => String(item?.data?.sequence ?? "");
 
 export function createThreadCache() {
   let accumulatedItems = [];
+  // What each activity run that touches the window totals, keyed by the run's
+  // first sequence. A page ships a bounded slice of a run and says here what
+  // the whole of it came to; a forward delta says nothing about a run, which is
+  // why these are held rather than recomputed from what is in hand.
+  let activityDigests = [];
   // Whether the daemon said there is conversation above the window. Only a
   // paged answer knows; a forward delta says nothing about the far end.
   let olderItemsRemain = false;
@@ -180,6 +186,7 @@ export function createThreadCache() {
   /// newest items, which is where a conversation is opened.
   const forgetTheWindow = () => {
     accumulatedItems = [];
+    activityDigests = [];
     olderItemsRemain = false;
     deliveredSequence = 0;
     knownTotalItems = null;
@@ -292,6 +299,11 @@ export function createThreadCache() {
     return threadPayload.thread_total >= knownTotalItems + createdSince(arrivedItems, delivered);
   };
 
+  /// The thread a caller renders: the payload, the items the window holds, and
+  /// what the daemon said each activity run over them totals. One shape for
+  /// every answer, so items and digests can never be handed out out of step.
+  const threadOver = (threadPayload, items, digests) => ({ ...threadPayload, items, activityDigests: digests });
+
   return {
     // Extra params for the next plan.get / run.get: the last sequence held, or
     // — with no window open (first load, or after a reset) — how much of the
@@ -331,6 +343,8 @@ export function createThreadCache() {
         return threadPayload;
       }
       const arrivedItems = threadPayload.items || [];
+      const digests = mergeActivityDigests(activityDigests, threadPayload);
+      activityDigests = digests;
       // `has_more` is what a page carries and a forward delta does not, so it
       // is also what tells the two kinds of answer apart.
       const arrivedAsAPage = threadPayload.has_more != null;
@@ -346,7 +360,7 @@ export function createThreadCache() {
         accumulatedItems = [...arrivedItems];
         deliveredSequence = highestCursorSequence(accumulatedItems);
         knownTotalItems = null;
-        return { ...threadPayload, items: accumulatedItems };
+        return threadOver(threadPayload, accumulatedItems, digests);
       }
       // A window is opened by a PAGE and only by a page. A forward delta
       // carries what is newer than the cursor it was asked with, which says
@@ -363,7 +377,7 @@ export function createThreadCache() {
       // this reachable are ordinary: pressing a bubble, or leaving the chat and
       // coming back, folds the payload in hand through the cache again.
       if (!accumulatedItems.length && !arrivedAsAPage) {
-        return { ...threadPayload, items: arrivedItems };
+        return threadOver(threadPayload, arrivedItems, digests);
       }
       const merged = mergeArrivals(theWindowMayTake(arrivedItems));
       // Everything the delta carried is delivered, whether the window took it
@@ -381,12 +395,12 @@ export function createThreadCache() {
         // next poll refetches a window this tall from the newest item down and
         // self-heals under a reader who never sees it happen.
         forgetTheBrokenWindowButNotItsHeight();
-        return { ...threadPayload, items: merged };
+        return threadOver(threadPayload, merged, digests);
       }
       accumulatedItems = merged;
       deliveredSequence = delivered;
       knownTotalItems = threadPayload.thread_total;
-      return { ...threadPayload, items: accumulatedItems };
+      return threadOver(threadPayload, accumulatedItems, digests);
     },
     // Widen the window upwards with a `thread.page` answer and return the whole
     // of it, or nothing when the page no longer belongs above the window.
@@ -411,7 +425,8 @@ export function createThreadCache() {
       if (!seek || seek.before_sequence !== accumulatedItems[0].data?.sequence) return null;
       if (pagePayload.has_more != null) olderItemsRemain = pagePayload.has_more === true;
       accumulatedItems = mergeArrivals(pagePayload.items || []);
-      return { ...pagePayload, items: accumulatedItems };
+      activityDigests = mergeActivityDigests(activityDigests, pagePayload);
+      return threadOver(pagePayload, accumulatedItems, activityDigests);
     },
     reset() {
       forgetTheWindow();
@@ -420,7 +435,7 @@ export function createThreadCache() {
     // while none is open. What seedWindow takes back.
     readWindow() {
       if (!accumulatedItems.length) return null;
-      return { items: accumulatedItems, olderItemsRemain, deliveredSequence, knownTotalItems };
+      return { items: accumulatedItems, olderItemsRemain, deliveredSequence, knownTotalItems, activityDigests };
     },
     // Open a saved window in an empty cache. Only an empty one: a conversation
     // already live outranks anything the disk remembers. After a seed the
@@ -433,6 +448,7 @@ export function createThreadCache() {
       olderItemsRemain = !!saved.olderItemsRemain;
       deliveredSequence = saved.deliveredSequence || highestCursorSequence(accumulatedItems);
       knownTotalItems = saved.knownTotalItems ?? null;
+      activityDigests = saved.activityDigests || [];
       return true;
     },
   };
@@ -454,6 +470,7 @@ export function windowFromThreadPayload(threadPayload) {
     olderItemsRemain: threadPayload.has_more === true,
     deliveredSequence,
     knownTotalItems: threadPayload.thread_total ?? null,
+    activityDigests: mergeActivityDigests([], threadPayload),
   };
 }
 
@@ -706,15 +723,6 @@ function completionReportHtml(report) {
     .join("")}</div>`;
 }
 
-/// The first line of a summary, which is what the fold's head shows.
-///
-/// A row that says only "Agent called a tool" is a row nobody can scan; what
-/// the agent actually did is the line under it, and that is the half worth
-/// having outside the fold.
-function firstLine(summary) {
-  return summary.split("\n").find((line) => line.trim()) || "";
-}
-
 /// What a tool call's answer reported, as a mark on the call's own row.
 ///
 /// The call and the answer are one row, so the row has three states to say and
@@ -825,15 +833,14 @@ function activityMeat(event, meta, agentLabel) {
 /// Keyed by the run's FIRST item, so a run that grows under a reader watching it
 /// keeps its identity — and with it, the scroll position inside the box they
 /// opened.
-function activityRunHtml(run) {
-  const latest = run.at(-1).activity;
+function activityRunHtml(run, summary) {
   return `<details class="thread-activity-group" data-activity-run="${esc(String(run[0].key))}">
     <summary class="thread-activity-head thread-activity-group-head">
-      <span class="thread-event-icon" aria-hidden="true">${esc(latest.icon)}</span>
-      <span class="thread-activity-count">${run.length}</span>
-      <span class="thread-activity-preview">${esc(latest.meat)}</span>
-      ${toolOutcomeHtml(latest.outcome)}
-      ${timeHtml(latest.createdAt)}
+      <span class="thread-event-icon" aria-hidden="true">${esc(run.at(-1).activity.icon)}</span>
+      <span class="thread-activity-count">${summary.count}</span>
+      <span class="thread-activity-preview">${esc(summary.meat)}</span>
+      ${toolOutcomeHtml(summary.outcome)}
+      ${timeHtml(summary.createdAt)}
     </summary>
     <div class="thread-activity-group-list">${run.map((entry) => entry.html).join("")}</div>
   </details>`;
@@ -841,12 +848,12 @@ function activityRunHtml(run) {
 
 /// Fold every maximal run of consecutive activity into one row apiece, and
 /// leave everything else exactly where it was.
-function foldActivityRuns(entries) {
+function foldActivityRuns(entries, digests) {
   const rows = [];
   let run = [];
   const closeRun = () => {
     if (!run.length) return;
-    rows.push(activityRunHtml(run));
+    rows.push(activityRunHtml(run, activityRunSummary(digests, run)));
     run = [];
   };
   for (const entry of entries) {
@@ -927,7 +934,7 @@ export function revealThreadSequence(scroller, sequence) {
 /// rendered from — which is not the same number any more: a run of activity is
 /// many items and one row, and the count on the conversation's title counts
 /// what was said and done rather than how it fell into runs.
-function timelineHtml(sourceItems, agentLabel, threadId) {
+function timelineHtml(sourceItems, agentLabel, threadId, digests) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
   const { foldedItems, foldedChildrenHtmlOf } = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !foldedItems.has(item));
@@ -951,6 +958,8 @@ function timelineHtml(sourceItems, agentLabel, threadId) {
         key: event.sequence ?? `at-${index}`,
         activity: {
           icon: meta.icon,
+          kind: event.event,
+          sequence: event.sequence,
           meat: activityMeat(event, meta, agentLabel),
           outcome: event.outcome,
           createdAt: event.created_at,
@@ -967,7 +976,7 @@ function timelineHtml(sourceItems, agentLabel, threadId) {
     const live = index === lastSpoken && !sendingChoices.has(key);
     return [{ html: messageHtml(message, agentLabel, live, key) }];
   });
-  return { rows: foldActivityRuns(entries), itemCount: entries.length };
+  return { rows: foldActivityRuns(entries, digests), itemCount: entries.length };
 }
 
 // The plan composer's historical ids/copy, kept as the `composer: true`
@@ -1006,6 +1015,11 @@ function threadActionsHtml(actionsId) {
   return actionsId ? `<div class="thread-actions" id="${esc(actionsId)}"></div>` : "";
 }
 
+/// What the daemon said each activity run over this window totals. A thread
+/// rendered straight off the wire (a first paint, a test) carries none, and a
+/// run with no digest counts what is in hand.
+const digestsOf = (thread) => (thread && thread.activityDigests) || [];
+
 // eslint-disable-next-line complexity -- ratchet: threadHtml is at 11, cap 10 — reduce it, then drop this line
 export function threadHtml(thread, options = {}) {
   const agentLabel = harnessLabel(thread, options.agentLabel);
@@ -1017,7 +1031,7 @@ export function threadHtml(thread, options = {}) {
   const items = initialMessage && !hasInitialMessage
     ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
     : sourceItems;
-  const { rows, itemCount } = timelineHtml(items, agentLabel, thread && thread.id);
+  const { rows, itemCount } = timelineHtml(items, agentLabel, thread && thread.id, digestsOf(thread));
   // The timeline draws the avatar spine, and the messages sit in the gutter it
   // runs down. With nothing on the record there is neither, so the empty case
   // says so and the CSS drops both rather than ruling a line beside a sentence.

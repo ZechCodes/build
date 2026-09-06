@@ -850,7 +850,77 @@ describe("the conversation panel", () => {
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-1" });
   });
 
-  it("marks the agent live the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
+  // The daemon answers a start before the harness exists, so the reply cannot
+  // say whether one came up. The bubble wears `starting` from the press until
+  // the entity's own answer says the session is live.
+  it("wears starting from the press until the entity says the session is live", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+
+    await mountAgentTab.mock.calls[0][2].onStart();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+    expect(bubbles()[0].title).toContain("starting…");
+
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(false);
+  });
+
+  // The other answer to a start. A spawn that never came up says nothing about
+  // a session, so waiting on `live` alone left the ring on for the overlay's
+  // whole 30 s grace and then dropped it silently, with the reason nowhere.
+  it("takes the ring off and says why when the entity reports the start failed", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+
+    await mountAgentTab.mock.calls[0][2].onStart();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+
+    payload = branchRow({
+      agents: [agent({ state: "idle", start_error: "could not reach the agent: no such worktree" })],
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(false);
+    expect(bubbles()[0].title).toContain("could not reach the agent");
+    expect(notifyError).toHaveBeenCalledWith(
+      "Could not start the agent",
+      "could not reach the agent: no such worktree",
+    );
+  });
+
+  // A start that names no agent is still a start: the entity names the agent it
+  // opened on its next answer, and the rail reads it there.
+  it("carries on when the start answers without naming the agent it opened", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        return {};
+      }
+      return answering(method, params);
+    });
+
+    await mountAgentTab.mock.calls[0][2].onStart();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(bubbles()[0].dataset.agent).toBe("ag-1");
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+  });
+
+  it("marks the agent starting the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
@@ -874,6 +944,88 @@ describe("the conversation panel", () => {
 
     expect(callsTo("thread.post")).toHaveLength(1);
     expect(callsTo("agent.start")).toHaveLength(1);
+  });
+
+  // The common way a cold agent is started is a message, not the Resume press:
+  // the post wakes the agent behind it. That row wears the same starting state
+  // from the send, which is also what keeps a second send behind it from
+  // opening a second harness.
+  it("marks the agent starting from a message that wakes it, so a second message starts nothing twice", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
+      return answering(method, params);
+    });
+
+    panel().querySelector("#railinput").value = "wake up";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+
+    panel().querySelector("#railinput").value = "and carry on";
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("thread.post")).toHaveLength(2);
+    expect(callsTo("agent.start")).toHaveLength(1);
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+  });
+
+  // The third answer to a start: the entity's session is over, so there is no
+  // agent to open. The daemon says so on the agent, and the ring comes off the
+  // way it does for a spawn that failed.
+  it("takes the ring off a message-started agent when the entity says no session will open", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+
+    panel().querySelector("#railinput").value = "wake up";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
+
+    payload = branchRow({
+      agents: [agent({ state: "exited", start_error: "no session to open: this entity's session is over" })],
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0].classList.contains("starting")).toBe(false);
+    expect(bubbles()[0].title).toContain("no session to open");
+    expect(notifyError).toHaveBeenCalledWith(
+      "Could not start the agent",
+      "no session to open: this entity's session is over",
+    );
+  });
+
+  // A start the browser stopped waiting for is not a refusal: the daemon is
+  // spawning the harness behind the answer it already gave. Painting "could not
+  // start the agent" over a session that is coming up is the same confusion the
+  // other verbs were fixed for.
+  it("leaves the bubble starting and says nothing when the start outlives the timer", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    tuiToggle().click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        const timedOut = new Error("agent.start timed out");
+        timedOut.timedOut = true;
+        throw timedOut;
+      }
+      return answering(method, params);
+    });
+
+    await expect(mountAgentTab.mock.calls[0][2].onStart()).resolves.toBeNull();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(bubbles()[0].classList.contains("starting")).toBe(true);
   });
 
   it("puts the agent back where it was and says why when the start is refused", async () => {
@@ -2448,6 +2600,51 @@ describe("sending to an agent that is already there", () => {
     expect(copiesOf("look at the login flow")).toBe(1);
     expect(composer().value).toBe("");
     expect(notifyError).toHaveBeenCalledTimes(1);
+  });
+
+  // The post landed. A start behind it that outlives the timer says nothing
+  // about the post, so raising "Message failed" would be an error about a
+  // message that is on the thread.
+  it("keeps a delivered message, and raises nothing, when only the wake outlives the timer", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "agent.start") return answer(method, params);
+      calls.push({ method, params });
+      const timedOut = new Error("agent.start timed out");
+      timedOut.timedOut = true;
+      throw timedOut;
+    });
+
+    await press("look at the login flow");
+
+    expect(callsTo("thread.post")).toHaveLength(1);
+    expect(copiesOf("look at the login flow")).toBe(1);
+    expect(composer().value).toBe("");
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  // The turn is durable the moment the daemon takes it; the answer can outlive
+  // the browser's timer behind a cold spawn. Handing the draft back would have
+  // the human send the same turn twice and the agent hear it twice.
+  it("keeps the message on the thread when the post itself outlives the timer", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      const timedOut = new Error("thread.post timed out");
+      timedOut.timedOut = true;
+      throw timedOut;
+    });
+
+    await press("look at the login flow");
+
+    expect(copiesOf("look at the login flow")).toBe(1);
+    expect(composer().value).toBe("");
+    expect(notifyError).not.toHaveBeenCalled();
   });
 
   it("puts the words back in the box and says why when thread.post is refused", async () => {

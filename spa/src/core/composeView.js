@@ -33,6 +33,7 @@ import {
   saveCaptureQueue,
   withoutQueued,
 } from "./compose.js";
+import { replyOrNothing } from "./session.js";
 import { esc } from "./text.js";
 import "../styles/shell.css";
 
@@ -413,14 +414,19 @@ async function submitManual() {
     agentParams: agentChoiceParams(catalog(), box.choice),
   });
   try {
-    const created = await App.call(method, params);
-    const destination = manualRouteDestination(box.kind, created, box.projectId);
-    closeCompose();
-    refreshFeed();
-    go(destination);
+    const created = await replyOrNothing(App.call(method, params));
+    settleManualRoute(manualRouteDestination(box.kind, created, box.projectId));
   } catch (error) {
     fail(messageOf(error));
   }
+}
+
+/** The box is done with: shut it, re-read the board, and open what was made
+ *  wherever the reply named it. */
+function settleManualRoute(destination) {
+  closeCompose();
+  refreshFeed();
+  if (destination) go(destination);
 }
 
 // ---- mounting -----------------------------------------------------------------

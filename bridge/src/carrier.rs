@@ -561,7 +561,7 @@ impl FrameIntake {
 /// Handles a decrypted request frame. Receives a [`SessionSender`] (so it can
 /// register the session for server-initiated pushes) and returns the response
 /// payload to send back.
-pub type FrameHandler = Arc<dyn Fn(SessionSender, Frame) -> Value + Send + Sync>;
+pub use dispatch::FrameHandler;
 
 #[cfg(test)]
 mod sender_tests {
@@ -1143,9 +1143,9 @@ mod intake_tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
         let (report, mut frames) = reporting_handler();
-        let handler: FrameHandler = Arc::new(move |sender, frame| {
+        let handler = FrameHandler::new(Arc::clone(&report.clock), move |sender, frame, timer| {
             let holds_its_lane = frame.payload["method"] == "term.input";
-            let response = report(sender, frame);
+            let response = (report.dispatch)(sender, frame, timer);
             if holds_its_lane {
                 let _ = release_rx.lock().unwrap().recv();
             }

@@ -130,7 +130,10 @@ async fn wss_connects_to_tls_server_with_injected_root() {
 
     let identity = device_identity();
     let url = format!("wss://localhost:{port}/ws/device");
-    let handler: FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
+    let handler: FrameHandler = FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
+        |_sender, frame, _timer| json!({"echo": frame.payload}),
+    );
 
     let intake = test_intake(handler);
     let outcome = tokio::time::timeout(
@@ -159,7 +162,10 @@ async fn wss_scheme_is_supported_without_injected_connector() {
     };
     let identity = device_identity();
     let url = format!("wss://127.0.0.1:{unused_port}/ws/device");
-    let handler: FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
+    let handler: FrameHandler = FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
+        |_sender, frame, _timer| json!({"echo": frame.payload}),
+    );
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),

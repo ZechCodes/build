@@ -19,6 +19,10 @@
  */
 export function entityIdOf(row) {
   if (!row) return null;
+  // A row that names its entity outright is that entity: the board's rows for
+  // lifecycle verbs in flight (`board.list`'s `pending`) carry the id their
+  // record will settle under, before any of the fields below exist.
+  if (row.entity_id) return row.entity_id;
   // A capture is not an entity: it holds no conversation, keeps no read cursor,
   // and names the issue it was routed to — which belongs to the issue's own row.
   if (row.kind === "capture") return null;

@@ -60,6 +60,8 @@ pub const HEARTBEAT_INTERVAL_S: u64 = 30;
 /// A socket for a mock relay, and the URL the device reaches it on.
 pub async fn bind_relay() -> (TcpListener, String) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // Loopback-only mock relay: this fixture deliberately exercises plaintext transport.
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
     (listener, url)
 }

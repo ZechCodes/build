@@ -16,10 +16,34 @@
 // migration policy, 6).
 
 import { createRelayLink } from "./relayLink.js";
-import { createSessionRpc } from "./sessionRpc.js";
+import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 
-const DEFAULT_RPC_TIMEOUT_MS = 12000;
+export { DEFAULT_RPC_TIMEOUT_MS };
+
+/** Whether this rejection is that timer rather than a refusal — the difference
+ *  between "the daemon said no" and "the daemon has not said yet". This
+ *  module's own, deliberately: `replyOrNothing` below is the one answer callers
+ *  get, so no call site can re-derive the rule and reach a different verdict. */
+const rpcTimedOut = (error) => Boolean(error && error.timedOut);
+
+/**
+ * The reply, or nothing when the browser stopped waiting for it.
+ *
+ * The daemon answers a mutation as soon as its own state change is durable and
+ * runs the git behind that answer, so a mutation can land after this timer has
+ * fired. The record is on the board either way and the push brings it, so a
+ * caller that has nothing left to do with the reply carries on with null. A
+ * refusal is the daemon saying no and still raises.
+ */
+export async function replyOrNothing(pending) {
+  try {
+    return await pending;
+  } catch (error) {
+    if (rpcTimedOut(error)) return null;
+    throw error;
+  }
+}
 
 export async function openRelaySession({
   relayUrl,

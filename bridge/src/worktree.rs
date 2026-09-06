@@ -13,6 +13,14 @@ use std::path::{Path, PathBuf};
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
 
+/// The ref a slug becomes in Build's namespace. The one place the formula is
+/// written: what a caller reserves a branch under has to be the ref
+/// [`WorktreeManager::create`] then cuts, and two spellings of one rule drift
+/// apart silently.
+pub fn branch_name_for(slug: &str) -> String {
+    format!("{BRANCH_PREFIX}/{slug}")
+}
+
 /// Things that can go wrong managing a worktree.
 #[derive(Debug, thiserror::Error)]
 pub enum WorktreeError {
@@ -308,6 +316,7 @@ pub enum UnregisteredRestore {
 }
 
 /// Owns worktree creation and teardown for a single project repository.
+#[derive(Clone)]
 pub struct WorktreeManager {
     repo_path: PathBuf,
     worktrees_root: PathBuf,
@@ -633,9 +642,16 @@ impl WorktreeManager {
             .is_ok()
     }
 
+    /// Where the checkout for `name` goes. The name a caller asks for is the
+    /// name it gets unless [`create`](Self::create) has to suffix it, so this
+    /// is where a checkout is expected rather than where one is.
+    pub fn path_for(&self, name: &str) -> PathBuf {
+        self.worktrees_root.join(name)
+    }
+
     /// Build the branch name for a slug in Build's namespace.
     fn branch_name(&self, slug: &str) -> String {
-        format!("{BRANCH_PREFIX}/{slug}")
+        branch_name_for(slug)
     }
 
     /// Recreate a Build-owned checkout at its original path and branch, with
@@ -885,6 +901,88 @@ impl WorktreeManager {
     }
 }
 
+/// Run a git subcommand in `dir`, mapping a non-zero exit to a readable error.
+pub(crate) fn git_in(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// The `origin` remote URL of a repo, if it has one.
+pub(crate) fn git_remote_origin(dir: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
+/// Whether two clone URLs point at the same repo, ignoring a trailing `/` or
+/// `.git`. A loose check — enough to catch "already cloned" without surprises.
+pub(crate) fn remotes_match(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.trim()
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .to_string()
+    };
+    norm(a) == norm(b)
+}
+
+/// The checked-out branch name of a freshly cloned repo (its default branch).
+pub(crate) fn git_default_branch(dir: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!branch.is_empty() && branch != "HEAD").then_some(branch)
+}
+
+/// Run a git subcommand in `dir` and hand back its stdout; a non-zero exit
+/// becomes an error carrying whatever git said on either stream.
+pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| format!("could not run git: {error}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!("git {args:?}: {detail}"))
+}
+
 fn recorded_ref(worktree: &Worktree) -> String {
     format!("refs/heads/{}", worktree.recorded_branch)
 }
@@ -1016,6 +1114,44 @@ pub fn rfc3339_from_unix(seconds: i64) -> Option<String> {
         .ok()
 }
 
+const CHECKOUT_ID_PREFIX: &str = "wt-";
+const CHECKOUT_ID_DIGITS: usize = 12;
+
+/// The canonical form of a checkout root — the spelling every id, registry key
+/// and cache entry is minted from. Falls back to the path as given when the
+/// directory cannot answer (it is gone, or it does not exist yet), so a
+/// vanished checkout and one still to be cut both key consistently.
+pub fn canonical_root(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The canonical spelling a path WILL have once it exists: the deepest ancestor
+/// that does exist, canonicalized, with the missing segments joined back on.
+///
+/// A checkout's id is minted from its canonical path, so the row that stands
+/// for one before `git worktree add` has run has to carry the id the finished
+/// checkout will — and on macOS the directory a checkout is about to be made in
+/// has two literal spellings.
+pub fn canonical_planned_path(path: &Path) -> PathBuf {
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut ancestor = path;
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(ancestor) {
+            return missing
+                .iter()
+                .rev()
+                .fold(canonical, |resolved, segment| resolved.join(segment));
+        }
+        match (ancestor.parent(), ancestor.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name);
+                ancestor = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 /// The stable external-worktree id for a canonical absolute path.
 pub fn external_worktree_id(path: &Path) -> String {
     use sha2::{Digest, Sha256};
@@ -1023,7 +1159,16 @@ pub fn external_worktree_id(path: &Path) -> String {
     hasher.update(path.display().to_string().as_bytes());
     let digest = hasher.finalize();
     let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("wt-{}", &hex[..12])
+    format!("{CHECKOUT_ID_PREFIX}{}", &hex[..CHECKOUT_ID_DIGITS])
+}
+
+/// Whether `id` was minted by [`external_worktree_id`]. The one id shape whose
+/// only liveness test is the scan, so the one a caller has to be able to tell
+/// apart from a run, a plan or a row.
+pub fn is_checkout_id(id: &str) -> bool {
+    id.strip_prefix(CHECKOUT_ID_PREFIX).is_some_and(|hex| {
+        hex.len() == CHECKOUT_ID_DIGITS && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 /// Branch stems that carry no meaningful goal on their own — adoption falls
@@ -1071,8 +1216,10 @@ fn strip_trailing_digit_run(segment: &str) -> String {
 }
 
 /// Enumerate every git worktree of `repo_path` that is neither the primary
-/// checkout nor in `excluded_paths` (canonical paths of Build-bound worktrees —
-/// runs, which must never surface as adoptable),
+/// checkout nor in `excluded_paths` (Build-bound worktrees — runs, which must
+/// never surface as adoptable — in whatever spelling the caller holds them:
+/// the scan canonicalizes them here, with no lock held, so the decide phase
+/// that collects them makes no filesystem call),
 /// with a review summary per worktree. Read-only. A worktree whose summary
 /// cannot be computed (corrupt checkout, no merge base with the base branch)
 /// is skipped with an eprintln! — one broken stray must not fail the scan.
@@ -1082,17 +1229,49 @@ pub fn discover_external_worktrees(
     excluded_paths: &HashSet<PathBuf>,
 ) -> Result<Vec<ExternalWorktree>, WorktreeError> {
     let primary_canonical = std::fs::canonicalize(repo_path)?;
+    let excluded_canonical: HashSet<PathBuf> = excluded_paths
+        .iter()
+        .map(|path| canonical_root(path))
+        .collect();
     let target = ScanTarget::External {
         primary: &primary_canonical,
-        excluded: excluded_paths,
+        excluded: &excluded_canonical,
     };
     let mut found = describe_checkouts(repo_path, base_branch, &target)?;
-    found.sort_by(|a, b| {
+    sort_checkouts(&mut found);
+    Ok(found)
+}
+
+/// The order a checkout list is served in: freshest commit first, canonical
+/// path as the tie-break. Shared, because a list amended in place has to stay
+/// in the order the scan that filled it used.
+pub fn sort_checkouts(checkouts: &mut [ExternalWorktree]) {
+    checkouts.sort_by(|a, b| {
         a.head_age_seconds
             .cmp(&b.head_age_seconds)
             .then_with(|| a.path.cmp(&b.path))
     });
-    Ok(found)
+}
+
+/// One checkout described exactly as [`discover_external_worktrees`] would have
+/// described it. A caller that has just created a worktree knows which one it
+/// wants and pays for that one, rather than rescanning the repository to learn
+/// what it already did.
+pub fn describe_checkout(
+    repo_path: &Path,
+    base_branch: &str,
+    path: &Path,
+) -> Result<ExternalWorktree, WorktreeError> {
+    let canonical = std::fs::canonicalize(path)?;
+    let target = ScanTarget::Only { path: &canonical };
+    describe_checkouts(repo_path, base_branch, &target)?
+        .pop()
+        .ok_or_else(|| {
+            WorktreeError::Command(format!(
+                "{} is not a checkout of this repository",
+                canonical.display()
+            ))
+        })
 }
 
 /// The primary checkout described in the shape adoption takes for an external
@@ -1151,6 +1330,10 @@ enum ScanTarget<'a> {
     Primary {
         primary: &'a Path,
     },
+    /// One named checkout, whichever of the repository's it turns out to be.
+    Only {
+        path: &'a Path,
+    },
 }
 
 impl ScanTarget<'_> {
@@ -1160,6 +1343,7 @@ impl ScanTarget<'_> {
                 canonical_path != *primary && !excluded.contains(canonical_path)
             }
             ScanTarget::Primary { primary } => canonical_path == *primary,
+            ScanTarget::Only { path } => canonical_path == *path,
         }
     }
 
@@ -1680,7 +1864,7 @@ mod tests {
     fn create_on_existing_branch_surfaces_a_fetch_that_no_longer_carries_the_branch() {
         let (dir, repo) = init_repo();
         let origin = push_feature_x_from_another_clone(&dir, &repo);
-        git_in(&origin, &["branch", "-D", "feature-x"]);
+        run_git(&origin, &["branch", "-D", "feature-x"]);
         let mgr = manager(&dir, &repo);
 
         let error = mgr
@@ -1846,24 +2030,24 @@ mod tests {
     fn push_feature_x_from_another_clone(dir: &tempfile::TempDir, repo: &Path) -> PathBuf {
         let origin = bare_origin_of(dir, repo);
         let other = dir.path().join("other");
-        git_in(
+        run_git(
             dir.path(),
             &["clone", origin.to_str().unwrap(), other.to_str().unwrap()],
         );
-        git_in(&other, &["config", "user.email", "o@build.ing"]);
-        git_in(&other, &["config", "user.name", "O"]);
-        git_in(&other, &["checkout", "-b", "feature-x"]);
+        run_git(&other, &["config", "user.email", "o@build.ing"]);
+        run_git(&other, &["config", "user.name", "O"]);
+        run_git(&other, &["checkout", "-b", "feature-x"]);
         std::fs::write(other.join("theirs.txt"), "their work\n").unwrap();
-        git_in(&other, &["add", "."]);
-        git_in(&other, &["commit", "-m", "their work"]);
-        git_in(&other, &["push", "origin", "feature-x"]);
-        git_in(repo, &["fetch", "origin"]);
+        run_git(&other, &["add", "."]);
+        run_git(&other, &["commit", "-m", "their work"]);
+        run_git(&other, &["push", "origin", "feature-x"]);
+        run_git(repo, &["fetch", "origin"]);
         origin
     }
 
     fn bare_origin_of(dir: &tempfile::TempDir, repo: &Path) -> PathBuf {
         let origin = dir.path().join("origin.git");
-        git_in(
+        run_git(
             dir.path(),
             &[
                 "clone",
@@ -1872,7 +2056,7 @@ mod tests {
                 origin.to_str().unwrap(),
             ],
         );
-        git_in(repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run_git(repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
         origin
     }
 
@@ -1903,7 +2087,7 @@ mod tests {
     fn an_unmarked_checkout_leaves_its_branch_to_the_action_chosen() {
         let (dir, repo) = init_repo();
         let by_hand = dir.path().join("by-hand");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -2071,15 +2255,15 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let wt = mgr.create("recover-local", "main").unwrap().worktree;
         std::fs::write(wt.path.join("stage.txt"), "kept\n").unwrap();
-        git_in(&wt.path, &["add", "stage.txt"]);
-        git_in(&wt.path, &["commit", "-m", "stage"]);
+        run_git(&wt.path, &["add", "stage.txt"]);
+        run_git(&wt.path, &["commit", "-m", "stage"]);
         let head = git2::Repository::open(&wt.path)
             .unwrap()
             .head()
             .unwrap()
             .target()
             .unwrap();
-        git_in(
+        run_git(
             &repo,
             &["worktree", "remove", "--force", wt.path.to_str().unwrap()],
         );
@@ -2141,15 +2325,15 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let wt = mgr.create("recover-remote", "main").unwrap().worktree;
         std::fs::write(wt.path.join("remote-stage.txt"), "remote\n").unwrap();
-        git_in(&wt.path, &["add", "remote-stage.txt"]);
-        git_in(&wt.path, &["commit", "-m", "remote stage"]);
-        git_in(&wt.path, &["push", "-u", "origin", &wt.recorded_branch]);
-        git_in(
+        run_git(&wt.path, &["add", "remote-stage.txt"]);
+        run_git(&wt.path, &["commit", "-m", "remote stage"]);
+        run_git(&wt.path, &["push", "-u", "origin", &wt.recorded_branch]);
+        run_git(
             &repo,
             &["worktree", "remove", "--force", wt.path.to_str().unwrap()],
         );
-        git_in(&repo, &["branch", "-D", &wt.recorded_branch]);
-        git_in(
+        run_git(&repo, &["branch", "-D", &wt.recorded_branch]);
+        run_git(
             &repo,
             &[
                 "update-ref",
@@ -2235,7 +2419,7 @@ mod tests {
             .unwrap()
             .worktree;
         std::fs::remove_dir_all(&wt.path).unwrap();
-        git_in(&repo, &["update-ref", "-d", "refs/heads/theirs"]);
+        run_git(&repo, &["update-ref", "-d", "refs/heads/theirs"]);
         std::fs::remove_file(repo.join(".git/worktrees/theirs/gitdir")).unwrap();
 
         let error = mgr
@@ -2271,7 +2455,7 @@ mod tests {
         );
     }
 
-    fn git_in(dir: &Path, args: &[&str]) {
+    fn run_git(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
             .current_dir(dir)
@@ -2329,7 +2513,7 @@ mod tests {
     #[test]
     fn primary_checkout_holder_is_none_when_head_is_detached() {
         let (_dir, repo) = init_repo();
-        git_in(&repo, &["checkout", "--detach"]);
+        run_git(&repo, &["checkout", "--detach"]);
 
         assert_eq!(primary_checkout_holder(&repo).unwrap(), None);
     }
@@ -2347,7 +2531,7 @@ mod tests {
     fn discovery_lists_a_user_worktree_and_skips_the_primary() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-a");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -2375,17 +2559,53 @@ mod tests {
     }
 
     #[test]
+    fn one_checkout_describes_itself_the_way_the_scan_describes_it() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-one");
+        run_git(
+            &repo,
+            &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
+        );
+        std::fs::write(wt_path.join("dirty.txt"), "dirty\n").unwrap();
+
+        let scanned = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
+        let described = describe_checkout(&repo, "main", &wt_path).unwrap();
+
+        // `head_age_seconds` is a reading of the clock, not a property of the
+        // checkout: two reads straddling a second boundary differ by one.
+        let described = ExternalWorktree {
+            head_age_seconds: scanned[0].head_age_seconds,
+            ..described
+        };
+        assert_eq!(
+            described, scanned[0],
+            "a checkout described on its own must be the entry a scan would have found"
+        );
+    }
+
+    #[test]
+    fn a_checkout_outside_the_repository_cannot_be_described() {
+        let (dir, repo) = init_repo();
+        let stranger = dir.path().join("not-a-worktree");
+        std::fs::create_dir_all(&stranger).unwrap();
+
+        let described = describe_checkout(&repo, "main", &stranger);
+
+        assert!(described.is_err(), "{described:?}");
+    }
+
+    #[test]
     fn discovery_separates_what_is_uncommitted_from_what_the_branch_carries() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-mixed");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "mixed"],
         );
         // One committed line, then two uncommitted ones on top of it.
         std::fs::write(wt_path.join("committed.txt"), "one\n").unwrap();
-        git_in(&wt_path, &["add", "committed.txt"]);
-        git_in(&wt_path, &["commit", "-m", "committed work"]);
+        run_git(&wt_path, &["add", "committed.txt"]);
+        run_git(&wt_path, &["commit", "-m", "committed work"]);
         std::fs::write(wt_path.join("dirty.txt"), "two\nthree\n").unwrap();
 
         let found = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
@@ -2401,8 +2621,8 @@ mod tests {
     /// Commit `name` in `dir` as a new file of the same name.
     fn commit_file(dir: &Path, name: &str) {
         std::fs::write(dir.join(format!("{name}.txt")), "x\n").unwrap();
-        git_in(dir, &["add", "."]);
-        git_in(dir, &["commit", "-m", name]);
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", name]);
     }
 
     /// A tracked branch compares both directions with its upstream. Movement on
@@ -2411,14 +2631,14 @@ mod tests {
     fn a_tracking_branch_compares_both_directions_with_its_upstream() {
         let (dir, repo) = init_repo();
         let remote = dir.path().join("origin.git");
-        git_in(&repo, &["init", "--bare", remote.to_str().unwrap()]);
-        git_in(
+        run_git(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        run_git(
             &repo,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
 
         let wt_path = dir.path().join("wt-tracked");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -2428,9 +2648,9 @@ mod tests {
                 "tracked",
             ],
         );
-        git_in(&wt_path, &["push", "-u", "origin", "tracked"]);
+        run_git(&wt_path, &["push", "-u", "origin", "tracked"]);
         let other = dir.path().join("other");
-        git_in(
+        run_git(
             dir.path(),
             &[
                 "clone",
@@ -2440,16 +2660,16 @@ mod tests {
                 other.to_str().unwrap(),
             ],
         );
-        git_in(&other, &["config", "user.email", "other@build.ing"]);
-        git_in(&other, &["config", "user.name", "Other"]);
+        run_git(&other, &["config", "user.email", "other@build.ing"]);
+        run_git(&other, &["config", "user.name", "Other"]);
 
         // Two local commits past the shared tip, and one remote commit the local
         // branch does not have.
         commit_file(&wt_path, "a");
         commit_file(&wt_path, "b");
         commit_file(&other, "remote");
-        git_in(&other, &["push", "origin", "tracked"]);
-        git_in(&repo, &["fetch", "origin"]);
+        run_git(&other, &["push", "origin", "tracked"]);
+        run_git(&repo, &["fetch", "origin"]);
         // Main moves twice to prove it is not the selected comparison ref.
         commit_file(&repo, "on-main");
         commit_file(&repo, "on-main-again");
@@ -2473,7 +2693,7 @@ mod tests {
     fn an_untracked_branch_has_all_of_its_work_unpushed() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-untracked");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
         );
@@ -2495,7 +2715,7 @@ mod tests {
     fn a_level_worktree_is_neither_stale_nor_unpushed() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-level");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "level"],
         );
@@ -2513,7 +2733,7 @@ mod tests {
     fn discovery_excludes_bound_paths() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-bound");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -2532,10 +2752,37 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_path_excludes_its_checkout_in_whatever_spelling_it_arrives() {
+        let (dir, repo) = init_repo();
+        let wt_path = dir.path().join("wt-bound");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "bound/spelled-otherwise",
+            ],
+        );
+        let another_spelling = dir.path().join("wt-bound-link");
+        std::os::unix::fs::symlink(&wt_path, &another_spelling).unwrap();
+
+        let mut excluded = std::collections::HashSet::new();
+        excluded.insert(another_spelling);
+        let found = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+
+        assert!(
+            found.is_empty(),
+            "the scan canonicalizes what it is told to exclude, so no caller has to: {found:?}"
+        );
+    }
+
+    #[test]
     fn discovery_reports_detached_head() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-d");
-        git_in(
+        run_git(
             &repo,
             &["worktree", "add", "--detach", wt_path.to_str().unwrap()],
         );
@@ -2554,7 +2801,7 @@ mod tests {
         // invalidation relies on.
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-c");
-        git_in(
+        run_git(
             &repo,
             &[
                 "worktree",
@@ -2569,8 +2816,8 @@ mod tests {
         let sha_before = before[0].head_sha.clone();
 
         std::fs::write(wt_path.join("more.txt"), "more\n").unwrap();
-        git_in(&wt_path, &["add", "more.txt"]);
-        git_in(&wt_path, &["commit", "-m", "more work"]);
+        run_git(&wt_path, &["add", "more.txt"]);
+        run_git(&wt_path, &["commit", "-m", "more work"]);
 
         let after = discover_external_worktrees(&repo, "main", &excluded).unwrap();
         assert_ne!(before[0].head_sha, after[0].head_sha);

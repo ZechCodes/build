@@ -1,5 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
-import { createAdopters, createAdoptingCall, createPrimaryAdoptingCall } from "../src/core/adoption.js";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import {
+  ADOPT_REASK_LIMIT,
+  ADOPT_REASK_MS,
+  createAdopters,
+  createAdoptingCall,
+  createPrimaryAdoptingCall,
+} from "../src/core/adoption.js";
 
 describe("createAdoptingCall", () => {
   it("adopts on the first runCall, then issues the method with the minted run_id", async () => {
@@ -68,6 +74,109 @@ describe("createAdoptingCall", () => {
       model: "gpt-5.6-sol",
       effort: "high",
     });
+  });
+});
+
+// The daemon answers an adopt after its git — a scan, a checkpoint commit, a
+// scaffold — so the reply can outlive the browser's timer while the adoption
+// succeeds behind it. That is not a refusal, and the next action must not read
+// it as one: the checkout is being claimed, and the one adoption stays in
+// flight until the daemon names its run.
+describe("an adoption the browser stopped waiting for", () => {
+  const timedOut = () => {
+    const error = new Error("run.adopt timed out");
+    error.timedOut = true;
+    return error;
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps the one adoption alive and asks again, so a second action sends no second adopt and raises nothing", async () => {
+    let asks = 0;
+    const call = vi.fn(async (method) => {
+      if (method === "run.adopt") {
+        asks += 1;
+        if (asks === 1) throw timedOut();
+        return { run_id: "run-late", adopted: true };
+      }
+      return { ok: true };
+    });
+    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+
+    const first = adopting.runCall("agent.start", {});
+    await vi.advanceTimersByTimeAsync(0);
+    const second = adopting.runCall("run.request_changes", { comments: "fix it" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(asks).toBe(1);
+    expect(adopting.adoptedRunId()).toBe(null);
+
+    await vi.advanceTimersByTimeAsync(ADOPT_REASK_MS);
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ ok: true });
+    expect(asks).toBe(2);
+    expect(call).toHaveBeenCalledWith("agent.start", { run_id: "run-late" });
+    expect(call).toHaveBeenCalledWith("run.request_changes", { run_id: "run-late", comments: "fix it" });
+  });
+
+  // The daemon's own word for the same thing: an adopt that arrives while the
+  // checkout is being claimed is told so, and handed no run — none is durable
+  // yet. It reads exactly as the timer does.
+  it("reads a reply that names no run as the adoption still running", async () => {
+    let asks = 0;
+    const call = vi.fn(async (method) => {
+      if (method === "run.adopt") {
+        asks += 1;
+        return asks === 1 ? { adopting: true } : { run_id: "run-owner" };
+      }
+      return { ok: true };
+    });
+    const adopting = createAdoptingCall(call, "p", "wt-x");
+
+    const action = adopting.runCall("run.abandon", {});
+    await vi.advanceTimersByTimeAsync(ADOPT_REASK_MS);
+
+    await expect(action).resolves.toEqual({ ok: true });
+    expect(adopting.adoptedRunId()).toBe("run-owner");
+  });
+
+  it("raises a real refusal on the re-ask and lets the next action adopt afresh", async () => {
+    let asks = 0;
+    const call = vi.fn(async (method) => {
+      if (method === "run.adopt") {
+        asks += 1;
+        if (asks === 1) throw timedOut();
+        if (asks === 2) throw new Error("cannot adopt: HEAD is detached");
+        return { run_id: "run-3" };
+      }
+      return { ok: true };
+    });
+    const adopting = createAdoptingCall(call, "p", "wt-x");
+
+    const action = adopting.runCall("run.abandon", {});
+    action.catch(() => {});
+    await vi.advanceTimersByTimeAsync(ADOPT_REASK_MS);
+    await expect(action).rejects.toThrow("HEAD is detached");
+    expect(adopting.adoptedRunId()).toBe(null);
+
+    await expect(adopting.runCall("run.abandon", {})).resolves.toEqual({ ok: true });
+    expect(asks).toBe(3);
+  });
+
+  it("stops asking after the bound and says so, rather than polling forever", async () => {
+    const call = vi.fn(async (method) => {
+      if (method === "run.adopt") throw timedOut();
+      return { ok: true };
+    });
+    const adopting = createPrimaryAdoptingCall(call, "proj-1");
+
+    const action = adopting.runCall("agent.start", {});
+    action.catch(() => {});
+    await vi.advanceTimersByTimeAsync(ADOPT_REASK_MS * (ADOPT_REASK_LIMIT + 1));
+
+    await expect(action).rejects.toThrow("never answered");
+    expect(call.mock.calls.filter((c) => c[0] === "run.adopt")).toHaveLength(ADOPT_REASK_LIMIT + 1);
+    expect(adopting.adoptedRunId()).toBe(null);
   });
 });
 

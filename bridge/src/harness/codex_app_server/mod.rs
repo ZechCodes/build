@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::harness::codex::{self, CodexHarness, CodexMcpConfig, EFFORT_LEVELS};
 use crate::harness::{
-    Harness, HarnessContext, HarnessError, OpenedSession, SessionOpenRequest, SessionOutput,
-    INHERITED_AGENT_MARKERS,
+    AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionOpenRequest,
+    SessionOutput, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -109,9 +109,10 @@ impl Harness for CodexAppServerHarness {
             request.resume_session_id,
             limits::AppServerLimits::default(),
         )?;
+        let surfaces = session.surfaces_changed();
         Ok(OpenedSession {
             session: Arc::new(session),
-            output: SessionOutput::reporting(activity),
+            output: SessionOutput::reporting(activity, surfaces),
         })
     }
 

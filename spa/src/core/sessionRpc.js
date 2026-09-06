@@ -10,7 +10,13 @@
 // timeout, and the rule that tells a reply from a push.
 
 /** How long a call waits for its answer before it is not coming. */
-const DEFAULT_RPC_TIMEOUT_MS = 12000;
+export const DEFAULT_RPC_TIMEOUT_MS = 12000;
+
+function timedOutError(method) {
+  const error = new Error(`${method} timed out`);
+  error.timedOut = true;
+  return error;
+}
 
 /**
  * @param transport the injected crypto layer (`@build/secure-transport`).
@@ -133,7 +139,7 @@ export function createSessionRpc({
       // timed out must not leave an entry for a later loss to reject at nobody.
       return Promise.race([
         delivered.then(() => answer),
-        new Promise((_, reject) => setTimeout(() => reject(new Error(`${method} timed out`)), timeoutMs)),
+        new Promise((_, reject) => setTimeout(() => reject(timedOutError(method)), timeoutMs)),
       ]).finally(() => pending.delete(id));
     },
 

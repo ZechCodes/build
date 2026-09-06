@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { openRelaySession } from "../src/core/session.js";
+import { DEFAULT_RPC_TIMEOUT_MS, openRelaySession, replyOrNothing } from "../src/core/session.js";
 
 // ---- fakes -------------------------------------------------------------------
 
@@ -36,7 +36,7 @@ async function startOpen(overrides = {}) {
   FakeWebSocket.instances.length = 0;
   const events = { deviceKeys: [], offlineDevices: [], lost: 0 };
   const promise = openRelaySession({
-    relayUrl: "ws://relay.test",
+    relayUrl: "wss://relay.test",
     transport: fakeTransport,
     WebSocketImpl: FakeWebSocket,
     fetchToken: async () => "tok-1",
@@ -70,7 +70,7 @@ async function completeHandshake(ws, deviceId = "dev-a") {
 describe("openRelaySession", () => {
   it("authenticates first, targets the first online device, and routes RPCs", async () => {
     const { promise, ws, events } = await startOpen();
-    expect(ws.url).toBe("ws://relay.test/ws/client");
+    expect(ws.url).toBe("wss://relay.test/ws/client");
     expect(ws.sent[0]).toEqual({ type: "authenticate", token: "tok-1" });
 
     const init = await completeHandshake(ws, "dev-a");
@@ -258,7 +258,7 @@ describe("openRelaySession", () => {
   it("requires a pinned-key source instead of silently trusting the relay", async () => {
     await expect(
       openRelaySession({
-        relayUrl: "ws://relay.test",
+        relayUrl: "wss://relay.test",
         transport: fakeTransport,
         WebSocketImpl: FakeWebSocket,
         fetchToken: async () => "tok",
@@ -290,7 +290,7 @@ describe("openRelaySession", () => {
     try {
       FakeWebSocket.instances.length = 0;
       const promise = openRelaySession({
-        relayUrl: "ws://relay.test",
+        relayUrl: "wss://relay.test",
         transport: fakeTransport,
         WebSocketImpl: FakeWebSocket,
         fetchToken: async () => "tok",
@@ -310,9 +310,38 @@ describe("openRelaySession", () => {
       reply.catch(() => {});
       await vi.advanceTimersByTimeAsync(1500);
       await expect(reply).rejects.toThrow("timed out");
+      // A reply that never came is not a refusal: the daemon answers a mutation
+      // when its own state change is durable, and the work behind it can outlast
+      // the timer. The rejection carries which of the two this is, and
+      // `replyOrNothing` is the one place that reads it.
+      await expect(replyOrNothing(reply)).resolves.toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("says the timer is the browser's own, at twelve seconds", () => {
+    expect(DEFAULT_RPC_TIMEOUT_MS).toBe(12000);
+  });
+});
+
+// ---- carrying on without a reply ---------------------------------------------
+// The one rule every mutation that outlives the timer follows, in the module
+// that owns the timer: a reply the browser stopped waiting for is not a refusal.
+
+describe("a reply the browser stopped waiting for", () => {
+  const timedOut = () => Object.assign(new Error("worktree.create timed out"), { timedOut: true });
+
+  it("answers nothing, so the caller carries on with what the board already has", async () => {
+    await expect(replyOrNothing(Promise.reject(timedOut()))).resolves.toBeNull();
+  });
+
+  it("still raises a refusal, which is the daemon saying no", async () => {
+    await expect(replyOrNothing(Promise.reject(new Error("branch exists")))).rejects.toThrow("branch exists");
+  });
+
+  it("hands a reply that did arrive straight through", async () => {
+    await expect(replyOrNothing(Promise.resolve({ branch: "build/x" }))).resolves.toEqual({ branch: "build/x" });
   });
 });
 

@@ -52,8 +52,10 @@ async fn main() {
     {
         let device_url = format!("{url}/ws/device");
         tokio::spawn(async move {
-            let handler: FrameHandler =
-                Arc::new(|_sender, frame| json!({ "echo": frame.payload, "from": "bridge" }));
+            let handler: FrameHandler = FrameHandler::new(
+                build_bridge::timing::FrameClock::new(),
+                |_sender, frame, _timer| json!({ "echo": frame.payload, "from": "bridge" }),
+            );
             let intake = FrameIntake::new(handler, transport::generate_transport_keypair());
             if let Err(e) = relay::run(&device_url, &identity, intake).await {
                 eprintln!("device exited: {e}");

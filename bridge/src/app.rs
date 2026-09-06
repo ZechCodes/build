@@ -26,18 +26,28 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
+use crate::delivery::{AgentSpawnPlan, ReadyToSpawn, SessionProbes};
 use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
-    SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, TerminalView,
-    Turn,
+    SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, Turn,
+};
+use crate::lifecycle::holders::{BranchHolder, ProjectCheckouts};
+#[cfg(test)]
+use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
+use crate::lifecycle::{
+    AdoptCheckout, AdoptImplementation, AdoptionTarget, CloneRepo, CreateRepo, CreateWorktree,
+    DiscardCheckout, DiscardedCheckout, DispatchCheckout, DispatchTarget, ImplementationCheckout,
+    LifecycleEpilogue, LifecycleOutcome, OpenImplementation, OpenPlanWorkspace, OpenRepo,
+    PendingRow, PendingState, Performed, RestoreImplementationCheckout, SetRemote, WorktreeChange,
+    WorktreeLifecycleJob, WorktreeMutation,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, AdoptionScope, Agent, AgentLaunch, AgentTurn, Orchestrator,
-    OrchestratorError, PreparedAgentLaunch, ReportConsumed, ReportOutcome, ResumeIdProbe,
-    RunSource, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
+    ActivePlan, ActiveRun, AdoptableCheckout, AdoptionScope, Agent, AgentTurn, ImplementableIssue,
+    Orchestrator, OrchestratorError, PreparedAgentLaunch, PreparedImplementation, ReportConsumed,
+    ReportOutcome, ResumeIdProbe, RunSource, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -45,22 +55,25 @@ use crate::plan::{
     StageDocState,
 };
 use crate::pty::HarnessSpec;
+use crate::reaper::Retirement;
 use crate::rtc::{NoPeerFactory, SessionPeerFactory, SessionPeers};
 use crate::run::ValidationReport;
 use crate::run::{
-    PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,
-    StagePublication,
+    run_transition, PublicationAttempt, RunEvent, RunId, RunState, StageProgress,
+    StageProgressState, StagePublication,
 };
+use crate::screen::{AttachSnapshot, ScreenHandle, TerminalHandle, TERM_FLUSH_MS};
 use crate::store::{
     now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store,
     WorktreeFinishAction, WorktreeFinishStatus,
 };
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::thread::ThreadDetail;
+use crate::timing::{FrameClock, FrameTimer};
 use crate::transport::{self, Frame};
 use crate::worktree::{
-    bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees, ExternalWorktree,
-    Worktree,
+    bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees,
+    git_remote_origin, git_stdout, ExternalWorktree, Worktree,
 };
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
@@ -236,96 +249,6 @@ impl TermScope {
     }
 }
 
-/// Authoritative server-side screen: vt100 model + attach list + coalescing
-/// buffer + the monotonic byte cursor. Snapshot resync, not byte replay. One
-/// model for every tab — a shell and an agent reconnect the same way.
-struct TermScreen {
-    parser: vt100::Parser,
-    attached: Vec<AttachedClient>,
-    /// Output coalescing buffer: PTY bytes accumulate here and flush on a timer,
-    /// so a repaint becomes one frame instead of ten.
-    pending: Vec<u8>,
-    /// Total output bytes processed — the live-tail cursor.
-    total: u64,
-    /// When the last flood-collapse snapshot went out, or `None` if this screen
-    /// has never collapsed one. Rate-limits the collapse; a per-client attach
-    /// snapshot is a different thing and does not touch it.
-    last_flood_snapshot_at: Option<std::time::Instant>,
-    /// How long one flood collapse holds off the next. Always
-    /// [`TERM_SNAPSHOT_MIN_INTERVAL_MS`] in production; a test widens it so that
-    /// real time cannot slip past the window while the test is doing the work
-    /// the window is supposed to suppress.
-    snapshot_min_interval: Duration,
-    /// Set when a flush dropped its backlog without sending anything. Until the
-    /// rate-limit window reopens and the snapshot ships, this screen owes the
-    /// client a resync and must not send raw output — the bytes it would carry
-    /// are no longer contiguous.
-    snapshot_due: bool,
-    cols: u16,
-    rows: u16,
-}
-
-/// One client attached to a screen, and how far behind it is running.
-///
-/// The bridge cannot see the browser's receive queue, so the client tells it:
-/// every applied frame is acknowledged with the cursor it reached
-/// (`term.ack`), and the gap between that and the live cursor is the only
-/// measure of a client that is not draining.
-struct AttachedClient {
-    sender: SessionSender,
-    /// The highest cursor this client has reported applying. Seeded at attach
-    /// with the cursor the attach snapshot carries.
-    acked_cursor: u64,
-    /// The highest cursor actually pushed to this client. While it is paused
-    /// the live cursor runs ahead of this, and this — not the live cursor — is
-    /// the most its acks can ever reach, so the resume is measured against it.
-    sent_cursor: u64,
-    /// Whether this client has ever acknowledged anything. A client that has
-    /// not is exempt from flow control — an older SPA sends no acks, and
-    /// measuring it by a cursor it never reports would stall it forever.
-    sent_ack: bool,
-    /// Set once the client fell past [`TERM_UNACKED_BUDGET_BYTES`]. It receives
-    /// nothing until it has acked everything it was sent (`sent_cursor`), and
-    /// comes back on a snapshot because the frames it missed left a hole in
-    /// its byte stream.
-    paused: bool,
-}
-
-impl AttachedClient {
-    /// Output bytes this client has been sent but not acknowledged.
-    fn lag(&self, total: u64) -> u64 {
-        total.saturating_sub(self.acked_cursor)
-    }
-
-    /// Whether this client is too far behind to keep feeding. Only a client
-    /// that acks at all can be judged this way.
-    fn falling_behind(&self, total: u64) -> bool {
-        self.sent_ack && self.lag(total) > TERM_UNACKED_BUDGET_BYTES
-    }
-}
-
-/// Flush coalesced terminal output at ~100 fps.
-const TERM_FLUSH_MS: u64 = 10;
-/// How many bytes one client may leave unacknowledged before the bridge stops
-/// feeding it.
-///
-/// Every frame for a browser tab rides ONE FIFO (bridge channel → relay queue →
-/// browser demux), so a client that cannot drain as fast as a PTY floods does
-/// not just fall behind: it becomes an unbounded queue that everything else —
-/// the liveness ping, every keystroke — waits behind. A megabyte is far more
-/// than any screen and far less than a stall, and past it chasing the client
-/// with bytes it will never catch up on is worse than resyncing it with one
-/// snapshot the moment it drains.
-const TERM_UNACKED_BUDGET_BYTES: u64 = 1024 * 1024;
-/// If a single flush exceeds this, send the current screen snapshot instead of
-/// the raw byte backlog — collapses a massive burst (scroll/flood) to one frame
-/// and bounds per-frame size. The vt100 model makes this lossless for the screen.
-const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
-/// Minimum gap between two flood-collapse snapshots on one screen. Bounds a
-/// sustained flood to ~10 screens/sec, which is all a human can perceive —
-/// without it a 10 ms flush cadence would push up to 100 full screens/sec
-/// through the relay and starve every other frame behind them.
-const TERM_SNAPSHOT_MIN_INTERVAL_MS: u64 = 100;
 /// At most this many user terminals daemon-wide, all worktrees combined. An
 /// agent tab never counts against it — there is at most one per worktree, and
 /// it must stay reachable however many shells are open.
@@ -347,204 +270,6 @@ const ATTACHMENTS_PER_MESSAGE_MAX: usize = 10;
 
 const FS_READ_MAX_BYTES: u64 = 1_048_576;
 const FS_MEDIA_READ_MAX_BYTES: u64 = 32 * 1_048_576;
-
-impl TermScreen {
-    fn new(cols: u16, rows: u16) -> TermScreen {
-        TermScreen {
-            parser: vt100::Parser::new(rows, cols, 2000),
-            attached: Vec::new(),
-            pending: Vec::new(),
-            total: 0,
-            last_flood_snapshot_at: None,
-            snapshot_min_interval: Duration::from_millis(TERM_SNAPSHOT_MIN_INTERVAL_MS),
-            snapshot_due: false,
-            cols,
-            rows,
-        }
-    }
-
-    /// Test-only: age the last flood-collapse stamp by `ago`, so a screen that
-    /// just collapsed reports the rate-limit window as reopened. The real gap is
-    /// 100 ms; sleeping it in every flood test would be paid on every run for no
-    /// added coverage — only the clock moves, the screen model is untouched.
-    #[cfg(test)]
-    fn backdate_last_flood_snapshot(&mut self, ago: Duration) {
-        self.last_flood_snapshot_at = self.last_flood_snapshot_at.map(|at| {
-            at.checked_sub(ago)
-                .expect("a stamp old enough to age by the rate-limit window")
-        });
-    }
-
-    /// The current screen serialized as escape sequences — write it to a fresh
-    /// terminal and the screen is reproduced.
-    fn snapshot(&self) -> String {
-        b64encode(&self.parser.screen().contents_formatted())
-    }
-
-    fn set_size(&mut self, cols: u16, rows: u16) {
-        self.parser.set_size(rows, cols);
-        self.cols = cols;
-        self.rows = rows;
-    }
-
-    /// Feed PTY bytes: advance the screen model, the cursor, and the pending
-    /// coalescing buffer.
-    fn process(&mut self, chunk: &[u8]) {
-        self.parser.process(chunk);
-        self.total += chunk.len() as u64;
-        self.pending.extend_from_slice(chunk);
-    }
-
-    /// Register a client for live output, dropping any prior sender with the
-    /// same session id first (a reconnect on the same id).
-    ///
-    /// The new client starts acknowledged up to the live cursor: the attach
-    /// response carries that same cursor with the screen snapshot, so it owes
-    /// nothing for anything that came before. It starts unpaused and, until its
-    /// first ack, exempt from flow control.
-    fn register(&mut self, sender: &SessionSender) {
-        self.attached
-            .retain(|client| client.sender.session_id() != sender.session_id());
-        self.attached.push(AttachedClient {
-            sender: sender.clone(),
-            acked_cursor: self.total,
-            sent_cursor: self.total,
-            sent_ack: false,
-            paused: false,
-        });
-    }
-
-    /// Record what a client has applied, and resync it once a paused client
-    /// has drained everything it was actually sent.
-    ///
-    /// A paused client missed frames, so the raw stream it left is no longer
-    /// contiguous with what it holds (the INVARIANT raw output rides on). It
-    /// comes back on one snapshot at the live cursor — a full screen, so it
-    /// replaces whatever the client was left holding — and resumes from there.
-    /// A client whose connection died while paused is dropped here, since a
-    /// paused client is not fed and a failed push is the only proof left.
-    fn ack(&mut self, term_id: &str, session_id: &str, cursor: u64) {
-        let total = self.total;
-        let Some(index) = self.index_of_session(session_id) else {
-            return;
-        };
-        let client = &mut self.attached[index];
-        client.sent_ack = true;
-        // A cursor past what the bridge has produced acknowledges nothing real;
-        // clamping keeps a confused client measurable rather than exempt.
-        client.acked_cursor = client.acked_cursor.max(cursor.min(total));
-        // A paused client is fed nothing, so the live cursor runs away from it
-        // without bound — measuring the resume against the live cursor could
-        // hold a client that drained everything it was ever sent paused
-        // forever, with no frame left that could unpause it. Its own last sent
-        // frame is the most it can ack, and acking that means its queue is
-        // empty: resync it now.
-        if !client.paused || client.acked_cursor < client.sent_cursor {
-            return;
-        }
-        // PTY bytes arrive on their own channel, so an ack can land between a
-        // `process` and the flush that would have shipped it. Those bytes are
-        // already on the screen this resync serializes, so the next flush must
-        // not hand them to the resumed client a second time as raw output.
-        // Flushing first empties `pending` — the clients that are keeping up
-        // get those bytes now, the paused one is skipped as always — and
-        // leaves the snapshot standing exactly at the live cursor.
-        self.flush(term_id);
-        // The flush drops clients whose connection is gone, so the index has to
-        // be taken again; this client is paused, so it cannot be one of them.
-        let Some(index) = self.index_of_session(session_id) else {
-            return;
-        };
-        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
-        let client = &mut self.attached[index];
-        client.paused = false;
-        client.sent_cursor = self.total;
-        // The snapshot is a fresh baseline, exactly like the attach snapshot
-        // in `register`: the client owes nothing before it. Leaving the old
-        // acked cursor standing would count the whole paused gap as unacked
-        // debt and re-pause the client on the very next flush.
-        client.acked_cursor = self.total;
-        if !client.sender.push(payload) {
-            self.attached.remove(index);
-        }
-    }
-
-    fn index_of_session(&self, session_id: &str) -> Option<usize> {
-        self.attached
-            .iter()
-            .position(|client| client.sender.session_id() == session_id)
-    }
-
-    /// Push one frame to every client that is keeping up: a client past its
-    /// unacked budget is paused and skipped (its own resync will catch it up),
-    /// a client already paused stays skipped, and a client whose connection is
-    /// gone is dropped.
-    fn push_to_keeping_up(&mut self, payload: Value) {
-        let total = self.total;
-        self.attached.retain_mut(|client| {
-            if client.falling_behind(total) {
-                client.paused = true;
-            }
-            if client.paused {
-                return true;
-            }
-            if !client.sender.push(payload.clone()) {
-                return false;
-            }
-            // Every frame this method carries stands at the live cursor.
-            client.sent_cursor = total;
-            true
-        });
-    }
-
-    /// Flush pending bytes as one keyed push to every attached client — raw
-    /// output, or a screen snapshot when the backlog crosses the collapse
-    /// threshold. Senders whose connection is gone are dropped.
-    ///
-    /// Collapsing is rate-limited to one snapshot per
-    /// [`TERM_SNAPSHOT_MIN_INTERVAL_MS`]. A flush that crosses the threshold
-    /// inside that window drops its backlog silently and records the debt in
-    /// `snapshot_due`: the vt100 model and the cursor already advanced in
-    /// [`Self::process`], so the screen the next snapshot carries is still
-    /// exactly right. While the debt stands nothing raw may go out — those bytes
-    /// would land on a client whose stream now has a hole in it.
-    fn flush(&mut self, term_id: &str) {
-        let collapsing = self.snapshot_due || self.pending.len() > TERM_SNAPSHOT_THRESHOLD;
-        if !collapsing {
-            if self.pending.is_empty() {
-                return;
-            }
-            let payload = json!({ "type": "term.output", "term_id": term_id, "data": b64encode(&self.pending), "cursor": self.total });
-            self.pending.clear();
-            self.push_to_keeping_up(payload);
-            return;
-        }
-
-        // The backlog is skipped either way — the screen model already holds it.
-        self.pending.clear();
-        let window_reopened = self
-            .last_flood_snapshot_at
-            .is_none_or(|at| at.elapsed() >= self.snapshot_min_interval);
-        if !window_reopened {
-            self.snapshot_due = true;
-            return;
-        }
-        self.snapshot_due = false;
-        self.last_flood_snapshot_at = Some(std::time::Instant::now());
-        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
-        self.push_to_keeping_up(payload);
-    }
-
-    /// Tell every attached client this terminal ended, and why. A paused client
-    /// hears it too: flow control withholds output, never the fact that there
-    /// is no more of it coming.
-    fn push_closed(&self, term_id: &str, reason: &str) {
-        let payload = json!({ "type": "term.closed", "term_id": term_id, "reason": reason });
-        for client in &self.attached {
-            client.sender.push(payload.clone());
-        }
-    }
-}
 
 /// The shell user terminals run: `BRIDGE_TERM_SHELL` override → the daemon
 /// env's `SHELL` → the account's passwd shell → bash. Terminals are windows
@@ -673,6 +398,19 @@ enum TabRole {
     },
 }
 
+impl TabRole {
+    /// The entity this tab's agent drives and the agent's own id — `None` for
+    /// the human's own shell, which drives nothing.
+    fn agent(&self) -> Option<(&str, &str)> {
+        match self {
+            TabRole::Agent {
+                owner, agent_id, ..
+            } => Some((owner, agent_id)),
+            TabRole::Shell => None,
+        }
+    }
+}
+
 /// A live tab: one agent session rooted in a worktree, plus the authoritative
 /// screen model that makes reconnect a snapshot (current screen + cursor)
 /// rather than a byte replay.
@@ -695,7 +433,7 @@ struct Tab {
     /// capability, not a guarantee, and a screen kept for a session that has
     /// none would be a second answer to a question with one:
     /// [`AgentSession::terminal`](crate::harness::AgentSession::terminal).
-    screen: Option<TermScreen>,
+    screen: Option<ScreenHandle>,
     /// False once the PTY stream has ended. An agent tab is RETAINED after its
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
@@ -742,57 +480,47 @@ impl Tab {
         self.live && !matches!(self.session.status(), AgentStatus::Ended { .. })
     }
 
-    /// The terminal this tab's session offers, or the reason it has none.
-    fn require_terminal(&self) -> Result<&dyn TerminalView, String> {
-        self.session
-            .terminal()
+    /// The terminal and the grid it paints into, owned rather than borrowed:
+    /// the caller takes it out of the registry and writes to it with the app
+    /// mutex released, which is what keeps a child that stopped draining its
+    /// PTY from wedging the daemon.
+    ///
+    /// One question answers for both halves: they are made together in
+    /// [`Tab::spawn`] and a session with no terminal has neither, so there is
+    /// no state in which a tab has a screen to hand a client and nothing
+    /// behind it.
+    fn terminal_handle(&self) -> Result<TerminalHandle, String> {
+        TerminalHandle::of(&self.session, &self.screen)
             .ok_or_else(|| no_terminal_here(&self.wire_id()))
     }
 
-    /// The terminal and the grid it paints into.
+    /// Paint this session onto the grid its predecessor left behind.
     ///
-    /// One question answers for both: the final constructor makes them
-    /// together, and a session with no terminal has neither.
-    fn require_terminal_and_screen(
-        &mut self,
-    ) -> Result<(&dyn TerminalView, &mut TermScreen), String> {
-        let refusal = no_terminal_here(&self.wire_id());
-        let Tab {
-            session, screen, ..
-        } = self;
-        match (session.terminal(), screen.as_mut()) {
-            (Some(terminal), Some(screen)) => Ok((terminal, screen)),
-            _ => Err(refusal),
-        }
-    }
-
-    fn adopt_replaced_screen(mut self, carried: Option<TermScreen>, term_id: &str) -> Self {
-        let Some(screen) = carried else {
-            return self;
-        };
-        let Some(terminal) = self.session.terminal() else {
-            close_a_screen_with_no_terminal(&screen, term_id);
-            return self;
-        };
-        let _ = terminal.resize(terminal_size(screen.cols, screen.rows));
+    /// Reconnect is snapshot + cursor: a replacement process must never rewind
+    /// that cursor, and clients already attached stay attached. The new PTY
+    /// takes the retained grid so the two agree — and a replacement that paints
+    /// nothing has no grid to become, so the clients on it are told rather than
+    /// left there (see [`NO_TERMINAL_LEFT`]).
+    fn adopt_screen(&mut self, screen: ScreenHandle) {
         self.screen = Some(screen);
-        self
+        let Ok(terminal) = self.terminal_handle() else {
+            if let Some(orphan) = self.screen.take() {
+                orphan.close(NO_TERMINAL_LEFT);
+            }
+            return;
+        };
+        terminal.fit_child_to_screen();
     }
 
-    fn adopt_waiting_screen(mut self, waiting: Option<TermScreen>, term_id: &str) -> Self {
-        let Some(waiting) = waiting else {
-            return self;
-        };
-        let Ok((terminal, screen)) = self.require_terminal_and_screen() else {
-            close_a_screen_with_no_terminal(&waiting, term_id);
-            return self;
-        };
-        let _ = terminal.resize(terminal_size(waiting.cols, waiting.rows));
-        screen.set_size(waiting.cols, waiting.rows);
-        for client in &waiting.attached {
-            screen.register(&client.sender);
+    /// Everything a tab's pumps need, taken before the tab is handed to the
+    /// registry: they run for the tab's whole life and must not have to ask
+    /// the registry for the handles they hold.
+    fn pumps(&self, output: SessionOutput) -> TabPumps {
+        TabPumps {
+            session: Arc::clone(&self.session),
+            screen: self.screen.clone(),
+            output,
         }
-        self
     }
 
     /// Open an agent's session through its provider and wrap it in a tab, with
@@ -862,13 +590,16 @@ impl Tab {
     ) -> (Tab, SessionOutput) {
         let (cols, rows) = (size.cols, size.rows);
         let session = opened.session;
+        let screen = session
+            .terminal()
+            .map(|_| ScreenHandle::new(&tab_id, cols, rows));
         (
             Tab {
                 tab_id,
                 root,
                 role,
                 created_at: now_rfc3339(),
-                screen: session.terminal().map(|_| TermScreen::new(cols, rows)),
+                screen,
                 session,
                 live: true,
                 call_sequences: HashMap::new(),
@@ -877,6 +608,19 @@ impl Tab {
             opened.output,
         )
     }
+}
+
+/// What a tab's pumps run on: the session they watch, the screen they paint
+/// into, and the streams they read.
+///
+/// Taken off the tab before it is handed to the registry, so a pump holds
+/// everything it needs for the tab's whole life and never asks the app mutex
+/// for it. The session travels because the EOF a pump sees belongs to the
+/// session it was started for and to no replacement that took the tab since.
+struct TabPumps {
+    session: Arc<dyn AgentSession>,
+    screen: Option<ScreenHandle>,
+    output: SessionOutput,
 }
 
 /// Whether [`ensure_agent_tab`] found the tab or created it — the ONE input to
@@ -899,77 +643,19 @@ enum Spawned {
 /// winner holds the reservation across it.
 const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
 
-struct AgentSpawnReservation {
-    state: Arc<Mutex<AppState>>,
-    key: TabKey,
+/// The agent a verb's parameters name, resolved whole.
+///
+/// Five readings that only make sense together and are only ever taken
+/// together: which entity, which of its agents, the checkout that agent works
+/// in, the harness it runs, and whether its thread holds anything it has not
+/// been told about. A verb that has one of these has everything it needs to
+/// queue a turn and to answer.
+struct AddressedAgent {
+    entity_id: String,
     agent_id: String,
-    session_token: String,
-    active: bool,
-}
-
-impl AgentSpawnReservation {
-    fn claim(
-        state: &Arc<Mutex<AppState>>,
-        app: &mut AppState,
-        key: TabKey,
-        agent_id: &str,
-    ) -> Self {
-        let session_token = uuid::Uuid::new_v4().to_string();
-        app.mcp_session_tokens
-            .insert(agent_id.to_string(), session_token.clone());
-        app.agent_spawns_in_flight.insert(key.clone());
-        Self {
-            state: Arc::clone(state),
-            key,
-            agent_id: agent_id.to_string(),
-            session_token,
-            active: true,
-        }
-    }
-}
-
-impl Drop for AgentSpawnReservation {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        let mut app = self.state.lock().unwrap();
-        app.agent_spawns_in_flight.remove(&self.key);
-        if app
-            .mcp_session_tokens
-            .get(&self.agent_id)
-            .is_some_and(|current| constant_time_token_eq(current, &self.session_token))
-        {
-            app.mcp_session_tokens.remove(&self.agent_id);
-        }
-    }
-}
-
-struct ReservedAgentTab {
-    reservation: AgentSpawnReservation,
-    launch: AgentLaunch,
-    continue_session: bool,
-    resume_session_id: Option<String>,
-    phase: &'static str,
-    carried: Option<TermScreen>,
-    locator_factory: SessionLocatorFactory,
-}
-
-struct AgentTabPublication {
     root: std::path::PathBuf,
-    key: TabKey,
-    owner: String,
-    agent_id: String,
     model_choice: ModelChoice,
-    phase: &'static str,
-    tab: Tab,
-    reservation: AgentSpawnReservation,
-}
-
-enum AgentTabClaim {
-    Warm(String),
-    Waiting,
-    Reserved(Box<ReservedAgentTab>),
+    has_unread: bool,
 }
 
 /// Who is on the other end of an authenticated MCP control frame.
@@ -996,7 +682,10 @@ enum AddressedSession {
 /// [`dispatch_frame`] — which holds the `Arc` and no guard — sends it the moment
 /// the verb returns.
 struct PendingAgentTurn {
-    /// The worktree the agent that hears this turn works in.
+    /// The worktree the agent that hears this turn works in. Canonical at
+    /// construction — every site that builds a turn passes it through
+    /// `AppState::canonical_root` — so [`Self::tab_key`] is a field read and
+    /// makes no filesystem call under the app mutex.
     root: std::path::PathBuf,
     /// The plan/run whose lifecycle this turn moves.
     owner: String,
@@ -1004,10 +693,13 @@ struct PendingAgentTurn {
     /// agent; a verb the rail addressed names the agent whose bubble was open.
     agent_id: String,
     model_choice: ModelChoice,
-    /// For a tab that had to be spawned: the full run context.
-    cold: String,
-    /// For a tab already in the conversation: the bare instruction.
-    warm: String,
+    /// What to say once the tab is open — `None` for a turn that only wants
+    /// the agent there.
+    ///
+    /// "Start this agent" and "tell this agent something" are one job with one
+    /// queue: the tab has to exist either way, and the spawn is the same spawn.
+    /// The difference is whether anything is written into it afterwards.
+    say: Option<TurnText>,
     /// The phase recorded on the conversation's session lineage if the turn
     /// turns out to be cold — a cold delivery is a new agent process.
     phase: &'static str,
@@ -1019,6 +711,27 @@ struct PendingAgentTurn {
     /// the router's: a router is one decision long, works no conversation, and
     /// its prompt deliberately carries none.
     wants_catch_up: bool,
+    /// Whether this turn outlives a refusal of the request that queued it.
+    ///
+    /// False for almost everything: a turn speaks for a mutation, and a request
+    /// that failed wrote no mutation to speak for. A recovery is the exception
+    /// — it is written down and started, and the verb then refuses its caller
+    /// to say exactly that, so the agent handed the recovery must still hear
+    /// it.
+    survives_refusal: bool,
+}
+
+/// The two halves of one turn's text: which one travels is decided by whether
+/// the tab had to be spawned to hear it.
+///
+/// `cold` carries the full run context, because an agent that was just started
+/// has none to read the words into; `warm` is the bare instruction, because a
+/// live agent is already in the conversation and everything said to it is
+/// already durable on the thread for `read_unread_messages` to pull.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TurnText {
+    cold: String,
+    warm: String,
 }
 
 /// The live implementation an Issue's conversation actually speaks to: the
@@ -1033,6 +746,26 @@ struct ImplementationTarget {
 }
 
 impl PendingAgentTurn {
+    /// What this turn says, for a test that queued one that says something.
+    #[cfg(test)]
+    fn said(&self) -> &TurnText {
+        self.say.as_ref().expect("this turn carries text")
+    }
+
+    /// Whether the agent is TOLD anything once the tab is open. A turn that
+    /// says nothing opens a harness and sends it nothing, so it promises the
+    /// agent nothing to read.
+    fn says_something(&self) -> bool {
+        self.say.is_some()
+    }
+
+    /// The registry entry this turn is on its way to. The same key
+    /// [`ensure_agent_tab`] will reserve, so a turn in the queue, a turn
+    /// mid-delivery and a spawn in flight are all one agent's under one name.
+    fn tab_key(&self) -> TabKey {
+        TabKey::agent(&self.root, &self.agent_id)
+    }
+
     /// Address a run's turn to the run's worktree. Canonical, because the same
     /// worktree reaches the tab registry under several scope shapes.
     ///
@@ -1060,10 +793,13 @@ impl PendingAgentTurn {
             owner: owner.to_string(),
             agent_id: agent_id.to_string(),
             model_choice: active.agents.turn_choice(agent_id, &active.model_choice),
-            cold: turn.cold,
-            warm: turn.warm,
+            say: Some(TurnText {
+                cold: turn.cold,
+                warm: turn.warm,
+            }),
             phase: turn.phase,
             wants_catch_up: true,
+            survives_refusal: false,
         }
     }
 
@@ -1079,10 +815,13 @@ impl PendingAgentTurn {
             owner: owner.to_string(),
             model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
             agent_id,
-            cold: turn.cold,
-            warm: turn.warm,
+            say: Some(TurnText {
+                cold: turn.cold,
+                warm: turn.warm,
+            }),
             phase: turn.phase,
             wants_catch_up: true,
+            survives_refusal: false,
         })
     }
 
@@ -1112,10 +851,13 @@ impl PendingAgentTurn {
             owner: owner.to_string(),
             model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
             agent_id,
-            cold: primed.clone(),
-            warm: primed,
+            say: Some(TurnText {
+                cold: primed.clone(),
+                warm: primed,
+            }),
             phase: "recover",
             wants_catch_up: true,
+            survives_refusal: true,
         })
     }
 }
@@ -1130,8 +872,15 @@ struct Project {
     base_branch: String,
     orch: Orchestrator,
     /// Cached external-worktree scan, refreshed at most every
-    /// `EXTERNAL_SCAN_INTERVAL` (or on demand via `force`).
+    /// `EXTERNAL_SCAN_INTERVAL`. `None` until the first scan lands: a read
+    /// answers `scanning` rather than taking one.
     external_scan: Option<ExternalScanCache>,
+    /// When the last scan that could not read this repository gave up. A broken
+    /// repo settles on this — the board stops saying it is scanning and the
+    /// interval keeps every poll from claiming another walk — while the list of
+    /// checkouts stays whatever the last readable scan left, because a failure
+    /// is no evidence that they are gone.
+    external_scan_failed_at: Option<std::time::Instant>,
     /// Cached `task.list.primary_changes` entry for this project, refreshed at
     /// most every `PRIMARY_SUMMARY_TTL` (spec §5.3) — same discipline as
     /// `external_scan` / the task-stat cache.
@@ -1347,32 +1096,6 @@ enum FinishRequirement {
     Unconditional,
 }
 
-/// Everything one `branch.dispatch` brought into existence, so a failure part
-/// way through can put the world back.
-///
-/// A checkout the dispatch merely FOUND is never recorded here. That is the
-/// whole distinction cleanup turns on: what Build cut, Build removes; what was
-/// already there is handed back with its files untouched.
-#[derive(Default)]
-struct BranchDispatchCreations {
-    /// The checkout `branch.dispatch` cut for itself, when the branch it was
-    /// asked for did not exist yet.
-    minted_worktree: Option<crate::worktree::Worktree>,
-    /// The run `branch.dispatch` adopted the checkout into, minted or found.
-    adopted_run: Option<String>,
-}
-
-/// Tests only: where to fail a `branch.dispatch`, so the cleanup that has to
-/// undo what the call created can be exercised at each seam it opens.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BranchDispatchStep {
-    /// After the checkout is resolved or cut, before a run owns it.
-    Adopt,
-    /// After the branch has a run, before its new agent and first message land.
-    Post,
-}
-
 /// The verbs that count as the human acting on an entity, and the param naming
 /// it. Deliberately asymmetric: opening a stage doc counts, because an issue is
 /// a queue you triage by reading and reading one IS engaging with it — while a
@@ -1447,6 +1170,39 @@ struct ExternalScanCache {
     worktrees: Vec<ExternalWorktree>,
 }
 
+/// The board's checkout rows, and whether every project behind them has been
+/// scanned at least once. A board that has not finished looking says so rather
+/// than shipping an empty rail as the answer.
+#[derive(Default)]
+struct ExternalWorktreeRows {
+    rows: Vec<Value>,
+    scanning: bool,
+}
+
+/// What a reader gets back from a project's checkout scan: the last list, and
+/// whether any scan attempt has settled — one that landed a list, or one that
+/// found a repository this daemon could not read. An empty list with nothing
+/// behind it is a board still waiting, not a project with no worktrees, and the
+/// two render differently.
+#[derive(Default)]
+struct ScanRead {
+    worktrees: Vec<ExternalWorktree>,
+    settled: bool,
+}
+
+/// Why a checkout a caller named might not be in the last scan — the one
+/// sentence every such refusal ends with, so "nothing has looked yet" and
+/// "there is no such checkout" stop being the same answer. Both resolve on the
+/// scan the missed read has already claimed.
+fn scan_may_yet_show_it(settled: bool) -> &'static str {
+    if settled {
+        "a checkout made outside Build since the last scan is resolvable once the scan now \
+         running lands"
+    } else {
+        "no scan of this project's checkouts has landed yet, and the scan now running settles it"
+    }
+}
+
 /// One entry of the diff caches the poll surfaces read: a run's diffstat, a
 /// project's external-worktree scan, a project's primary-checkout summary.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1492,6 +1248,11 @@ enum DiffCacheEntry {
         project_id: String,
         worktrees: Vec<ExternalWorktree>,
     },
+    /// The scan ran and could not read the repository. Stored so a project
+    /// whose repo is gone settles instead of being walked again by every poll.
+    ExternalScanUnreadable {
+        project_id: String,
+    },
     PrimarySummary {
         project_id: String,
         summary: Value,
@@ -1510,7 +1271,7 @@ type DiffComputeObserver = Arc<dyn Fn(&DiffCacheKey) + Send + Sync>;
 /// while it sits there. `None` in production — nothing outside tests sets it.
 #[cfg(test)]
 #[derive(Clone)]
-struct OffLockGate {
+pub struct OffLockGate {
     arrived: std::sync::mpsc::Sender<()>,
     /// One permit per arrival. Shared because the job clones the gate.
     permits: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
@@ -1538,7 +1299,7 @@ impl OffLockGate {
     }
 
     /// Announce that the lock-free phase has begun, then wait to be let go.
-    fn arrive(&self) {
+    pub fn arrive(&self) {
         let _ = self.arrived.send(());
         let _ = self.permits.lock().unwrap().recv();
     }
@@ -1558,66 +1319,6 @@ impl OffLockGateHandle {
         self.permits.send(()).expect("the gate is still open");
     }
 }
-
-/// Which diff-cache entries a verb is about to read.
-enum DiffCacheScope {
-    /// Everything the feed shows: every live run's diffstat, and every
-    /// project's worktree scan and primary-checkout summary.
-    Feed,
-    /// One run's diffstat, and nothing else.
-    Run(String),
-    /// The run behind a branch, if one owns it.
-    Branch { project_id: String, branch: String },
-}
-
-/// The diff caches a verb reads, if it reads any. Only these verbs warm them,
-/// so no other frame pays for a scan it will never look at.
-fn diff_caches_read_by(method: &str, params: &Value) -> Option<DiffCacheScope> {
-    match method {
-        "board.list" | "branch.get" => Some(DiffCacheScope::Feed),
-        "run.finish" => params
-            .get("run_id")
-            .and_then(Value::as_str)
-            .map(|run_id| DiffCacheScope::Run(run_id.to_string())),
-        "branch.finish" => {
-            let project_id = params.get("project_id").and_then(Value::as_str)?;
-            let branch = params.get("branch").and_then(Value::as_str)?;
-            Some(DiffCacheScope::Branch {
-                project_id: project_id.to_string(),
-                branch: branch.to_string(),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// A claimed refresh, and how its claimant means to run it.
-struct ClaimedRefresh {
-    refresh: DiffCacheRefresh,
-    /// True when the caller must wait for the answer: either nothing is cached
-    /// to serve in its place, or the verb decides something from the number
-    /// (Done refuses uncommitted work) and a stale one could decide it wrongly.
-    /// The wait happens with the app mutex released, never under it.
-    blocking: bool,
-}
-
-/// What one frame has to do about one aged-out cache entry.
-enum DiffCacheWork {
-    /// This frame holds the sole claim: it runs the compute (here or behind the
-    /// answer), and publishes for every reader that asked meanwhile.
-    Claimed(ClaimedRefresh),
-    /// Another frame is already computing an entry this one has nothing to
-    /// serve in place of. Wait for that value rather than start a second scan —
-    /// and rather than fall through to the compute of last resort further down,
-    /// which runs under the app mutex.
-    AwaitFirstValue(DiffCacheKey),
-}
-
-/// How long a frame waits for another frame's first-ever compute of an entry it
-/// needs. Generous: waiting is what keeps the mutex free, and the frame that
-/// waits is one worker of several, not the read loop. Past it the frame answers
-/// with what it can rather than hang.
-const FIRST_COMPUTE_WAIT: Duration = Duration::from_secs(5);
 
 impl DiffCacheRefresh {
     fn key(&self) -> DiffCacheKey {
@@ -1657,7 +1358,9 @@ impl DiffCacheRefresh {
                 }),
                 Err(e) => {
                     eprintln!("external_worktrees {project_id}: {e}");
-                    None
+                    Some(DiffCacheEntry::ExternalScanUnreadable {
+                        project_id: project_id.clone(),
+                    })
                 }
             },
             Self::PrimarySummary {
@@ -1801,86 +1504,69 @@ fn primary_changes_summary(
     }
 }
 
-/// Run a claimed refresh on the runtime, off every lock.
+/// One unit of work split the way the rule splits everything: `decide` runs
+/// with the state lock released, `apply` under it. The caller has already
+/// taken this job's single-flight claim; `claim` names it, so a decide phase
+/// that never returns — a panic on the blocking pool — can still hand it back
+/// through `abandon`, or that claim would never be taken again.
+trait OffLockJob: Send + 'static {
+    type Claim: Send + 'static;
+    type Decided: Send + 'static;
+    fn claim(&self) -> Self::Claim;
+    /// MUST run with the state lock released.
+    fn decide(self) -> Self::Decided;
+    fn apply(state: &mut AppState, claim: Self::Claim, decided: Self::Decided);
+    fn abandon(state: &mut AppState, claim: Self::Claim);
+}
+
+/// Run a claimed job on the runtime, off every lock, and apply it under the
+/// lock when it has decided.
 ///
-/// `spawn_blocking` on purpose: this is libgit2 walking a worktree, and it must
-/// not sit on a runtime worker the relay's read loop needs. Returns the refresh
-/// back to the caller when there is no runtime to spawn onto (the synchronous
-/// unit tests), so the caller can compute it itself.
-fn spawn_diff_refresh(
-    state: Arc<Mutex<AppState>>,
-    refresh: DiffCacheRefresh,
-    observer: Option<DiffComputeObserver>,
-) -> Result<(), DiffCacheRefresh> {
+/// `spawn_blocking` on purpose: the decide phase is libgit2 walking a worktree
+/// or a bounded fetch, and it must not sit on a runtime worker the relay's read
+/// loop needs. Returns the job back when there is no runtime to spawn onto
+/// (the synchronous unit tests), so the caller can decide what to do with it.
+fn spawn_off_lock<J: OffLockJob>(state: Arc<Mutex<AppState>>, job: J) -> Result<(), J> {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        return Err(refresh);
+        return Err(job);
     };
     runtime.spawn(async move {
-        let key = refresh.key();
-        let computed =
-            tokio::task::spawn_blocking(move || refresh.compute(observer.as_ref())).await;
+        let claim = job.claim();
+        let decided = tokio::task::spawn_blocking(move || job.decide()).await;
         let mut app = state.lock().unwrap();
-        match computed {
-            Ok(entry) => app.publish_diff_refresh(&key, entry),
-            // The compute panicked. Publish nothing, but let the claim go or
-            // this key would never refresh again.
-            Err(_) => app.release_diff_refresh(&key),
+        match decided {
+            Ok(decided) => J::apply(&mut app, claim, decided),
+            Err(_) => J::abandon(&mut app, claim),
         }
     });
     Ok(())
 }
 
-/// Refresh the diff caches a verb is about to read, with the app mutex free.
-///
-/// This is the dispatch path's half of stale-while-revalidate. A stale entry
-/// refreshes behind the answer — the verb serves the last value it has. An
-/// entry nobody has ever computed is computed here, on the worker this frame
-/// already owns, because there is no number to serve in its place; the frame
-/// waits, the daemon does not. Either way the git work runs with the lock
-/// released, so a slow worktree can no longer stop every other frame.
-fn warm_diff_caches(state: &Arc<Mutex<AppState>>, method: &str, params: &Value) {
-    let Some(scope) = diff_caches_read_by(method, params) else {
-        return;
-    };
-    let (work, observer) = {
-        let mut app = state.lock().unwrap();
-        let work = app.claim_stale_diff_refreshes(&scope);
-        (work, app.diff_compute_observer.clone())
-    };
-    for item in work {
-        let claim = match item {
-            DiffCacheWork::Claimed(claim) => claim,
-            DiffCacheWork::AwaitFirstValue(key) => {
-                wait_for_first_diff_value(state, &key, FIRST_COMPUTE_WAIT);
-                continue;
-            }
-        };
-        let key = claim.refresh.key();
-        let waited_for = if claim.blocking {
-            claim.refresh
-        } else {
-            match spawn_diff_refresh(Arc::clone(state), claim.refresh, observer.clone()) {
-                Ok(()) => continue,
-                // No runtime to refresh on: compute it here instead — still off
-                // the lock.
-                Err(refresh) => refresh,
-            }
-        };
-        let entry = waited_for.compute(observer.as_ref());
-        state.lock().unwrap().publish_diff_refresh(&key, entry);
-    }
+/// A claimed diff-cache refresh on its way to the blocking pool: the git work
+/// and the test seam that watches it start.
+struct DiffRefreshJob {
+    refresh: DiffCacheRefresh,
+    observer: Option<DiffComputeObserver>,
 }
 
-/// Wait for another frame's first-ever compute of `key` to publish. This frame
-/// waits; the app mutex does not — it is taken only to look, and dropped again
-/// between looks.
-fn wait_for_first_diff_value(state: &Arc<Mutex<AppState>>, key: &DiffCacheKey, budget: Duration) {
-    let deadline = std::time::Instant::now() + budget;
-    while std::time::Instant::now() < deadline {
-        if !state.lock().unwrap().diff_refresh_is_running(key) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+impl OffLockJob for DiffRefreshJob {
+    type Claim = DiffCacheKey;
+    type Decided = Option<DiffCacheEntry>;
+
+    fn claim(&self) -> DiffCacheKey {
+        self.refresh.key()
+    }
+
+    fn decide(self) -> Option<DiffCacheEntry> {
+        self.refresh.compute(self.observer.as_ref())
+    }
+
+    fn apply(state: &mut AppState, key: DiffCacheKey, entry: Option<DiffCacheEntry>) {
+        state.publish_diff_refresh(&key, entry);
+    }
+
+    fn abandon(state: &mut AppState, key: DiffCacheKey) {
+        state.release_diff_refresh(&key);
     }
 }
 
@@ -2048,13 +1734,20 @@ pub struct AppState {
     run_files_changed_at: HashMap<String, String>,
     /// Diff-cache entries with a refresh running right now. Single-flight: a
     /// poll that finds one of these stale serves the value it has and adds no
-    /// second worktree scan to the disk. The claim is also the right to publish
-    /// — a mutation that invalidates an entry drops the claim with it, so a
-    /// compute that started before the mutation is discarded instead of putting
-    /// pre-mutation numbers back on the board.
+    /// second worktree scan to the disk.
     diff_refreshes_in_flight: std::collections::HashSet<DiffCacheKey>,
+    /// Of those, the ones a mutation has overtaken — see
+    /// [`supersede_diff_refresh`](AppState::supersede_diff_refresh). The claim
+    /// is also the right to publish, and these have lost it: what they compute
+    /// describes the tree as it was before the mutation, and is dropped rather
+    /// than put back on the board.
+    diff_refreshes_superseded: std::collections::HashSet<DiffCacheKey>,
     /// Test seam: see [`DiffComputeObserver`]. `None` in production.
     diff_compute_observer: Option<DiffComputeObserver>,
+    /// Whether a [`sweep_vanished_runs`](AppState::sweep_vanished_runs) is
+    /// deciding right now. Single-flight, for the same reason a diff refresh
+    /// is: the board polls faster than a fetch per stage returns.
+    vanished_run_sweep_in_flight: bool,
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
@@ -2072,6 +1765,12 @@ pub struct AppState {
     /// seconds; every other frame, every terminal pump and the relay's own
     /// read loop need this mutex while they run.
     deferred_work: Option<DeferredWork>,
+    /// Rows a lifecycle verb has claimed and not yet settled: the board's
+    /// carrier for a checkout being cut or discarded right now, and the claim
+    /// that keeps a second verb off the same name, branch or checkout while its
+    /// git runs. Never persisted — everything one leaves behind on a crash is
+    /// re-derived by the scan (see `Bridge Concurrency Primitives.md` §5).
+    pending_rows: Vec<Arc<crate::lifecycle::PendingRow>>,
     /// Checkouts whose finish is running right now with the mutex released.
     /// A finish is the one verb whose git work outlives its lock hold, so the
     /// checkout it acts on is claimed here for the duration: a second finish
@@ -2098,6 +1797,12 @@ pub struct AppState {
     /// same lock acquisition that observed the tab's absence — is what keeps a
     /// second delivery from starting a second harness in one worktree.
     agent_spawns_in_flight: std::collections::HashSet<TabKey>,
+    /// Signalled whenever a spawn releases its claim above. A caller that lost
+    /// the race waits here with the app mutex given back, which is what makes
+    /// losing the race free: the winner needs this mutex to publish its tab,
+    /// and a loser polling for it every 25 ms was taking the mutex away from
+    /// the spawn it was waiting for.
+    agent_spawn_finished: Arc<std::sync::Condvar>,
     /// Canonical worktree root → the screen its Agent tab shows before any
     /// agent has ever run there.
     ///
@@ -2108,7 +1813,7 @@ pub struct AppState {
     /// session's first frames reach a client that mounted the tab long before
     /// it: the alternative is a screen that stays blank until the human
     /// unmounts and remounts. An entry lives only until that first spawn.
-    agent_screens_awaiting_spawn: HashMap<TabKey, TermScreen>,
+    agent_screens_awaiting_spawn: HashMap<TabKey, ScreenHandle>,
     /// Turns queued by the verbs running under the state lock, drained by
     /// [`dispatch_frame`] once that lock is free. The synchronous test entry
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
@@ -2119,23 +1824,21 @@ pub struct AppState {
     /// and waits seconds on its readiness, and every terminal pump needs the
     /// same lock to make progress, so delivering inline deadlocks the daemon
     /// for as long as the spawn takes. The split is the contract: under the
-    /// lock a verb RECORDS what to say (a `PendingAgentTurn`), and the drain
-    /// sites — [`dispatch_frame`] and the done-socket — SAY it with the lock
-    /// free. Everything that has to look agentless-versus-in-flight
-    /// ([`AppState::agent_turns_in_flight`], the idle sweep) exists to cover
+    /// lock a verb RECORDS what to say (a `PendingAgentTurn`), and
+    /// [`DeliveryRunner`] SAYS it on a thread of its own, after the frame that
+    /// queued it has answered. Everything that has to look agentless-versus-in-flight
+    /// ([`AppState::turns_in_flight`], the idle sweep) exists to cover
     /// the gap this split opens; none of it is optional.
     pending_agent_turns: Vec<PendingAgentTurn>,
-    /// Owners whose turn has left [`AppState::pending_agent_turns`] and is
-    /// being delivered right now, counted because one drain can carry several
-    /// turns for the same owner. Between a verb's transition and the tab its
-    /// turn spawns, a working entity legitimately has no agent tab yet — the
-    /// queue and this counter are what tell the idle sweep the difference
-    /// between an agent on its way and an agent that never arrived.
-    agent_turns_in_flight: HashMap<String, usize>,
-    /// Current unlogged MCP capability, keyed by agent id for that agent's
-    /// current session. Knowing an Issue or implementation id is intentionally
-    /// insufficient to forge local control frames; replacing an agent tab
-    /// rotates that agent's token.
+    /// The turns that have left [`AppState::pending_agent_turns`] and are being
+    /// delivered right now. Between a verb's transition and the tab its turn
+    /// spawns, a working entity legitimately has no agent tab yet — the queue
+    /// and this are what tell the daemon the difference between an agent on its
+    /// way and an agent that never arrived.
+    turns_in_flight: TurnsInFlight,
+    /// Current unlogged MCP capability per lifecycle owner. Knowing an Issue or
+    /// implementation id is intentionally insufficient to forge local control
+    /// frames; replacing an agent tab rotates this token.
     mcp_session_tokens: HashMap<String, String>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
     next_term: u64,
@@ -2185,6 +1888,17 @@ pub struct AppState {
     /// changes holding this state's mutex, and the flusher SENDS them holding
     /// no lock at all. See [`crate::changes`].
     changes: Arc<ChangeBus>,
+    /// What every frame's four durations are recorded against.
+    ///
+    /// It lives on the state rather than beside it because the state is what
+    /// every path that takes this mutex can already reach: the relay's frame
+    /// handler, the MCP done socket, and the delivery path both of them share.
+    /// A clock built per handler would leave the socket's frames, which have
+    /// no handler behind them, counted nowhere.
+    /// Answering `bridge.stats` never goes through here — a frame parked on
+    /// this mutex is exactly when the counters are needed, so the frame reads
+    /// them off the clock its own timer holds.
+    frame_clock: Arc<FrameClock>,
 }
 
 struct StoredTasks {
@@ -2275,6 +1989,11 @@ fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
     difference == 0
 }
 
+/// What a frame off the daemon's control socket — an agent's `done` report or
+/// one of its MCP actions — is timed under. It is not a relay method, so it
+/// gets a name of its own rather than borrowing one from the wire.
+const MCP_CONTROL_METHOD: &str = "mcp.control";
+
 /// Resolve a control frame only when it carries the current per-session
 /// capability, returning the AGENT that sent it. The token is never included in
 /// errors or logs.
@@ -2293,6 +2012,23 @@ fn authenticated_mcp_owner<'a>(
 }
 
 #[cfg(unix)]
+/// Run the git a socket line handed back — with the guard released, on a
+/// blocking thread so several harnesses at once park no runtime worker — and
+/// write it down under the same timer. The socket's twin of the drain in
+/// [`dispatch_frame`], for a router's tool and a coding agent's report alike.
+async fn apply_off_the_socket(
+    state: &Arc<Mutex<AppState>>,
+    timer: &FrameTimer,
+    deferred: DeferredWork,
+) -> Result<Value, String> {
+    let done = tokio::task::spawn_blocking(move || deferred.run())
+        .await
+        .expect("the lifecycle job panicked");
+    timer
+        .lock(state)
+        .apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+}
+
 fn bind_done_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixListener> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -2305,13 +2041,18 @@ fn bind_done_listener(path: &std::path::Path) -> std::io::Result<tokio::net::Uni
 
 #[cfg(unix)]
 async fn serve_done_listener(state: Arc<Mutex<AppState>>, listener: tokio::net::UnixListener) {
+    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
     let mut accept_backoff =
         crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
                 accept_backoff.reset();
-                tokio::spawn(handle_done_stream(Arc::clone(&state), stream));
+                tokio::spawn(handle_done_stream(
+                    Arc::clone(&state),
+                    stream,
+                    Arc::clone(&clock),
+                ));
             }
             Err(error) => {
                 let wait = accept_backoff.current();
@@ -2324,14 +2065,19 @@ async fn serve_done_listener(state: Arc<Mutex<AppState>>, listener: tokio::net::
 }
 
 #[cfg(unix)]
-async fn handle_done_stream(state: Arc<Mutex<AppState>>, stream: tokio::net::UnixStream) {
+async fn handle_done_stream(
+    state: Arc<Mutex<AppState>>,
+    stream: tokio::net::UnixStream,
+    clock: Arc<FrameClock>,
+) {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = tokio::io::BufReader::new(read_half).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        if let Some(response) = handle_authenticated_mcp_frame(&state, &frame) {
+        let timer = clock.frame(MCP_CONTROL_METHOD);
+        if let Some(response) = handle_authenticated_mcp_frame(&state, &frame, &timer).await {
             let _ = write_half.write_all(response.to_string().as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
             let _ = write_half.flush().await;
@@ -2339,68 +2085,79 @@ async fn handle_done_stream(state: Arc<Mutex<AppState>>, stream: tokio::net::Uni
     }
 }
 
-fn handle_authenticated_mcp_frame(state: &Arc<Mutex<AppState>>, frame: &Value) -> Option<Value> {
+async fn handle_authenticated_mcp_frame(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    timer: &FrameTimer,
+) -> Option<Value> {
     let addressed = {
-        let app = state.lock().unwrap();
+        let app = timer.lock(state);
         authenticated_mcp_owner(frame, &app.mcp_session_tokens)
             .map(str::to_string)
             .and_then(|agent_id| app.addressed_session(agent_id))
     };
     match addressed {
         Some(AddressedSession::Router { capture_id, .. }) => {
-            handle_router_mcp_frame(state, frame, &capture_id)
+            handle_router_mcp_frame(state, frame, &capture_id, timer).await
         }
         Some(AddressedSession::Coding {
             entity_id,
             agent_id,
-        }) => handle_coding_mcp_frame(state, frame, &entity_id, &agent_id),
+        }) => handle_coding_mcp_frame(state, frame, &entity_id, &agent_id, timer).await,
         None => Some(json!({ "ok": false, "error": "unauthorized MCP session" })),
     }
 }
 
-fn handle_router_mcp_frame(
+async fn handle_router_mcp_frame(
     state: &Arc<Mutex<AppState>>,
     frame: &Value,
     capture_id: &str,
+    timer: &FrameTimer,
 ) -> Option<Value> {
     if let Ok(report) =
         serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
     {
-        state.lock().unwrap().on_router_done(capture_id, report);
+        timer.lock(state).on_router_done(capture_id, report);
         return None;
     }
     let action = serde_json::from_value::<BridgeAction>(
         frame.get("request").cloned().unwrap_or(Value::Null),
     )
     .ok()?;
-    let result = state
-        .lock()
-        .unwrap()
-        .on_router_mcp_action(capture_id, action);
-    deliver_pending_agent_turns(state);
+    let (answered, deferred) = timer.lock(state).router_deferring(capture_id, action);
+    let result = match deferred {
+        Some(deferred) => apply_off_the_socket(state, timer, deferred).await,
+        None => answered,
+    };
+    DeliveryRunner::drain(state, timer);
     Some(mcp_action_response(result))
 }
 
-fn handle_coding_mcp_frame(
+async fn handle_coding_mcp_frame(
     state: &Arc<Mutex<AppState>>,
     frame: &Value,
     entity_id: &str,
     agent_id: &str,
+    timer: &FrameTimer,
 ) -> Option<Value> {
     if let Ok(report) =
         serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
     {
-        state.lock().unwrap().on_agent_done(entity_id, report);
-        deliver_pending_agent_turns(state);
+        let deferred = timer.lock(state).done_deferring(entity_id, report);
+        if let Some(deferred) = deferred {
+            if let Err(error) = apply_off_the_socket(state, timer, deferred).await {
+                eprintln!("done report {entity_id}: {error}");
+            }
+        }
+        DeliveryRunner::drain(state, timer);
         return None;
     }
     let action = serde_json::from_value::<BridgeAction>(
         frame.get("request").cloned().unwrap_or(Value::Null),
     )
     .ok()?;
-    let result = state
-        .lock()
-        .unwrap()
+    let result = timer
+        .lock(state)
         .on_agent_mcp_action(entity_id, agent_id, action);
     Some(mcp_action_response(result))
 }
@@ -2498,10 +2255,13 @@ impl AppState {
             run_stat_cache: HashMap::new(),
             run_files_changed_at: HashMap::new(),
             diff_refreshes_in_flight: std::collections::HashSet::new(),
+            diff_refreshes_superseded: std::collections::HashSet::new(),
+            vanished_run_sweep_in_flight: false,
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
             deferred_work: None,
+            pending_rows: Vec::new(),
             finishing_worktrees: std::collections::HashSet::new(),
             #[cfg(test)]
             force_stale_diff_caches: false,
@@ -2511,9 +2271,10 @@ impl AppState {
             streams: HashMap::new(),
             tabs: HashMap::new(),
             agent_spawns_in_flight: std::collections::HashSet::new(),
+            agent_spawn_finished: Arc::new(std::sync::Condvar::new()),
             agent_screens_awaiting_spawn: HashMap::new(),
             pending_agent_turns: Vec::new(),
-            agent_turns_in_flight: HashMap::new(),
+            turns_in_flight: TurnsInFlight::default(),
             mcp_session_tokens: HashMap::new(),
             next_term: 1,
             self_handle: None,
@@ -2527,6 +2288,7 @@ impl AppState {
             notify_throttle: NotifyThrottle::default(),
             peers: SessionPeers::with_factory(Arc::new(NoPeerFactory)),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
+            frame_clock: FrameClock::new(),
         };
         if let Some(repo_path) = repo_path {
             state.add_project(repo_path, base_branch);
@@ -2732,7 +2494,7 @@ impl AppState {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for issue_id in issue_ids {
-            self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))?;
+            self.advance_issue_scheduler_here(&issue_id, &json!({ "issue_id": issue_id }))?;
         }
         Ok(())
     }
@@ -2940,18 +2702,8 @@ impl AppState {
                                 match &issue.plan.implementation_intent {
                                     ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
                                     ImplementationIntent::All => {
-                                        issue.stages.iter().find_map(|doc| {
-                                            active
-                                                .stage_progress(&doc.id)
-                                                .is_none_or(|progress| {
-                                                    progress.state
-                                                        != StageProgressState::Validated {
-                                                            passed: true,
-                                                        }
-                                                        || progress.invalidation_reason.is_some()
-                                                })
-                                                .then(|| doc.id.clone())
-                                        })
+                                        next_unsettled_stage(&issue.stages, Some(&active))
+                                            .map(|doc| doc.id.clone())
                                     }
                                     ImplementationIntent::None => active.current_stage_id.clone(),
                                 }
@@ -3005,7 +2757,8 @@ impl AppState {
                     state_changed = true;
                 }
                 Err(error) => {
-                    let affected = self.reconcile_missing_run_worktree(&run_id, &mut active);
+                    let published = self.classify_stages_now(&run_id, &active);
+                    let affected = reconcile_missing_run_worktree(&mut active, &published);
                     active
                         .run
                         .apply(RunEvent::Abandon)
@@ -3559,6 +3312,16 @@ impl AppState {
         })
     }
 
+    /// The three transcript-tree reads a spawn makes, taken together so the
+    /// disk work can be handed over in one piece.
+    fn session_probes(&self) -> SessionProbes {
+        SessionProbes {
+            transcript: Arc::clone(&self.transcript_probe),
+            resume_id: Arc::clone(&self.resume_id_probe),
+            locator: Arc::clone(&self.session_locator_factory),
+        }
+    }
+
     /// The name the agent's record says its conversation has — `None` for one
     /// no session of its has ever announced.
     fn recorded_resume_id(&self, owner: &str, agent_id: &str) -> Option<String> {
@@ -3589,6 +3352,26 @@ impl AppState {
             .by_id(agent_id)?
             .active_model
             .clone()
+    }
+
+    /// A turn is on its way to this agent, so why the LAST one never arrived is
+    /// history: the row the client is about to wear a "starting" state on must
+    /// not be answered by the failure before it.
+    ///
+    /// Written only when there is one to forget, so an ordinary delivery costs
+    /// no store write.
+    fn forget_agent_start_error(&mut self, owner: &str, agent_id: &str) {
+        let recorded = self
+            .entity_agents(owner)
+            .ok()
+            .and_then(|roster| roster.by_id(agent_id))
+            .and_then(|agent| agent.start_error.as_ref());
+        if recorded.is_none() {
+            return;
+        }
+        self.edit_agent_record("forget_agent_start_error", owner, agent_id, |agent| {
+            agent.start_error = None;
+        });
     }
 
     fn record_agent_active_model(&mut self, owner: &str, agent_id: &str, running: Option<String>) {
@@ -3740,9 +3523,9 @@ impl AppState {
         Err(format!("unknown conversation owner: {entity_id}"))
     }
 
-    /// A turn never reached an agent: record why on the entity and persist it,
-    /// so the surface says what happened instead of showing a working task with
-    /// nobody working.
+    /// A turn never reached an agent: record why on the entity and on the agent
+    /// itself, and persist it, so the surface says what happened instead of
+    /// showing a working task with nobody working and a row still starting.
     ///
     /// The state is deliberately left alone. The transition that queued this
     /// turn is already durable, and demotion belongs to one place — the idle
@@ -3758,11 +3541,18 @@ impl AppState {
             return;
         }
         let reason = format!("could not reach the agent: {error}");
+        // Both facts land in the one mutation. The entity's `last_error` is
+        // the surface's line about the work; the agent's `start_error` is its
+        // own word about the session it was asked to open, which is what the
+        // client laid a "starting" state over the row waiting for.
         // Plan and run ids are disjoint, so the owner lookup is the router.
         if self.plans.contains_key(&turn.owner) {
             let Ok(mut active) = self.take_plan(&turn.owner) else {
                 return;
             };
+            if let Some(agent) = active.agents.by_id_mut(&turn.agent_id) {
+                agent.start_error = Some(reason.clone());
+            }
             active.last_error = Some(reason);
             let persisted = self.finish_plan_mutation(turn.owner.clone(), active);
             if let Err(error) = persisted {
@@ -3773,11 +3563,27 @@ impl AppState {
         let Ok(mut active) = self.take_run(&turn.owner) else {
             return;
         };
+        if let Some(agent) = active.agents.by_id_mut(&turn.agent_id) {
+            agent.start_error = Some(reason.clone());
+        }
         active.last_error = Some(reason);
         let persisted = self.finish_run_mutation(turn.owner.clone(), active);
         if let Err(error) = persisted {
             eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
         }
+    }
+
+    /// A turn found no session to open: the entity's session is over, so no
+    /// agent is spawned for it. Not a failure of the work — the entity's
+    /// `last_error` is left alone — but the client laid a "starting" state
+    /// over the agent it addressed, and only the agent's own word takes it off.
+    fn record_agent_start_declined(&mut self, turn: &PendingAgentTurn) {
+        self.edit_agent_record(
+            "record_agent_start_declined",
+            &turn.owner,
+            &turn.agent_id,
+            |agent| agent.start_error = Some(AGENT_START_DECLINED_SESSION_OVER.to_string()),
+        );
     }
 
     /// Is this entity's agent merely on its way — a turn still queued, or one
@@ -3787,11 +3593,42 @@ impl AppState {
     /// perfectly healthy. Everywhere else, a working entity without one is an
     /// anomaly.
     fn agent_turn_is_undelivered(&self, owner: &str) -> bool {
-        self.agent_turns_in_flight.contains_key(owner)
+        self.turns_in_flight.holds_owner(owner)
             || self
                 .pending_agent_turns
                 .iter()
                 .any(|turn| turn.owner == owner)
+    }
+
+    /// Is a turn that will TELL this agent to read its thread already coming?
+    ///
+    /// Asked by every verb that would otherwise queue a SECOND turn for it: two
+    /// harnesses in one checkout both report `done` for the same owner, and
+    /// even where the spawn claim prevents that, the second turn survives as a
+    /// duplicate `read_unread_messages` nudge. Keyed per (root, agent), so a
+    /// branch's second agent is never suppressed by its first agent's turn.
+    ///
+    /// Only a turn with words counts. The verb that asks is about to leave a
+    /// message durable on the thread, and a harness that opens on a cold
+    /// prompt is told to call `read_unread_messages` — so that turn reads the
+    /// message, and a second turn is a duplicate. A turn that says nothing
+    /// (`agent.start` with nothing unread) opens a harness and sends it
+    /// nothing: it promises the agent nothing to read, so the message has to
+    /// queue its own turn, which lands Warm on the tab the start opened. The
+    /// spawn claim is not consulted: a textful delivery gives its mark back
+    /// only after settling the claim it became, so the mark already covers the
+    /// claim's whole lifetime, and a claim with no textful mark behind it is a
+    /// textless spawn.
+    ///
+    /// Two states, then, and a turn with words is never in neither: queued,
+    /// and taken off the queue and mid-delivery.
+    fn agent_is_on_its_way(&self, root: &std::path::Path, agent_id: &str) -> bool {
+        let key = TabKey::agent(&Self::canonical_root(root), agent_id);
+        self.turns_in_flight.holds_agent(&key)
+            || self
+                .pending_agent_turns
+                .iter()
+                .any(|queued| queued.says_something() && queued.tab_key() == key)
     }
 
     /// Move `entity_state_changed_at` only when the entity's wire state
@@ -4094,6 +3931,7 @@ impl AppState {
             base_branch,
             orch,
             external_scan: None,
+            external_scan_failed_at: None,
             primary_summary: None,
         }
     }
@@ -4108,56 +3946,17 @@ impl AppState {
         id
     }
 
-    /// Persist a prospective project before making it visible in memory. When
-    /// the caller created the checkout, remove only that checkout if persistence
-    /// fails; an existing user repository is never cleanup-owned here.
-    fn register_project_transaction(
-        &mut self,
-        repo_path: std::path::PathBuf,
-        base_branch: String,
-        created_checkout: Option<std::path::PathBuf>,
-    ) -> Result<Value, String> {
-        let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
-        if let Some(existing) = self.projects.iter().find(|p| p.repo_path == repo_path) {
-            return Ok(project_json(existing));
-        }
-        let project = self.project_candidate(repo_path, base_branch);
-        let prospective = self.config_value_with_project(
-            &self.projects_dir,
-            self.default_harness,
-            Some(&project),
-        );
-        if let Err(persist_error) = self.persist_config(&prospective) {
-            return Err(match created_checkout {
-                Some(path) => match std::fs::remove_dir_all(&path) {
-                    Ok(()) => persist_error,
-                    Err(cleanup_error) => format!(
-                        "{persist_error}; cannot remove created project {}: {cleanup_error}",
-                        path.display()
-                    ),
-                },
-                None => persist_error,
-            });
-        }
-        self.insert_project(project);
-        Ok(project_json(
-            self.projects.last().expect("inserted project"),
-        ))
-    }
-
-    /// Canonical paths of every Build-bound worktree — one per run: they are
-    /// Build's, never external. `fs::canonicalize` with the raw path as
-    /// fallback.
+    /// The path of every Build-bound worktree — one per run: they are Build's,
+    /// never external. As recorded, not canonicalized: this is read under the
+    /// app mutex by every decide phase that hands a scan its exclusions, and
+    /// `discover_external_worktrees` canonicalizes them off the lock.
     fn bound_worktree_paths(&self) -> std::collections::HashSet<std::path::PathBuf> {
-        let canonical = |path: &std::path::Path| {
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-        };
         // Run worktrees are Build's. Issues own no worktree at all — their
         // agents run in the primary checkout — so there is nothing to add here
         // for them.
         self.runs
             .values()
-            .map(|active| canonical(&active.worktree.path))
+            .map(|active| active.worktree.path.clone())
             .collect()
     }
 
@@ -4168,7 +3967,7 @@ impl AppState {
     /// literal spellings. Falls back to the raw path when the directory is
     /// gone, so a vanished worktree still keys consistently for the reaper.
     fn canonical_root(path: &std::path::Path) -> std::path::PathBuf {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        crate::worktree::canonical_root(path)
     }
 
     /// How many of the human's own shells the tab registry holds. The
@@ -4203,13 +4002,21 @@ impl AppState {
     }
 
     /// Whether a queued turn still has a session to reach. An issue that holds
-    /// no workspace has none: its agent ended with the gate that closed it.
-    /// Everything else — runs, routers, recoveries — is deliverable.
+    /// no workspace has none: its agent ended with the gate that closed it. A
+    /// capture has one only while a router session stands for it: the cancel
+    /// or the reroute that took the session away took the turn's destination
+    /// with it. Everything else — runs, recoveries — is deliverable.
     fn owner_still_has_a_session(&self, owner: &str) -> bool {
-        match self.plans.get(owner) {
-            Some(issue) => issue.workspace.is_some(),
-            None => true,
+        if let Some(issue) = self.plans.get(owner) {
+            return issue.workspace.is_some();
         }
+        if let Some(run) = self.runs.get(owner) {
+            return !run.run.state.is_terminal();
+        }
+        if crate::capture::is_capture_id(owner) {
+            return self.router_sessions.contains_key(owner);
+        }
+        true
     }
 
     /// An entity's agents, whichever kind of entity it is.
@@ -4288,6 +4095,52 @@ impl AppState {
             .clone();
         self.finish_run_mutation(entity_id.to_string(), active)?;
         Ok(agent_id)
+    }
+
+    /// Resolve the agent a verb's parameters address, minting one where asking
+    /// for an agent is what the verb means.
+    ///
+    /// The order is the rule. The provider picker rides the parameters, so it
+    /// is parsed and written FIRST: an unrunnable provider refuses before
+    /// anything has been opened, and the agent resolved after it is resolved on
+    /// the choice the human just made. Then the entity's own agent — named, or
+    /// the primary, which a branch the human emptied is given — then the
+    /// checkout it works in and the harness it runs, which is the AGENT's and
+    /// not the entity's: the several agents on a branch need not share one.
+    fn addressed_agent(&mut self, params: &Value) -> Result<AddressedAgent, String> {
+        // `run_id` is the adopting caller's spelling: a worktree surface with no
+        // run yet mints one and forwards the verb, and that helper names the id
+        // it just minted. Same entity either way.
+        let entity_id = params
+            .get("id")
+            .or_else(|| params.get("run_id"))
+            .or_else(|| params.get("plan_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or("missing id")?
+            .to_string();
+        if has_agent_choice(params) {
+            let chosen = model_choice_from(params, self.default_harness)?;
+            self.set_entity_model_choice(&entity_id, chosen)?;
+        }
+        let named = named_agent_id(params);
+        let agent_id = match named.as_deref() {
+            None => self.ensure_primary_agent(&entity_id)?,
+            named => self.resolve_agent(&entity_id, named)?.id,
+        };
+        let root = self.entity_agent_root(&entity_id)?;
+        let entity_choice = self.entity_model_choice(&entity_id)?;
+        let roster = self.entity_agents(&entity_id)?;
+        let agent = roster
+            .by_id(&agent_id)
+            .expect("the agent was just resolved on this roster");
+        Ok(AddressedAgent {
+            has_unread: agent.thread.has_unread(),
+            model_choice: roster.turn_choice(&agent_id, &entity_choice),
+            entity_id,
+            agent_id,
+            root,
+        })
     }
 
     /// The agent an entity dispatches with. A start with no turn behind it still
@@ -4384,7 +4237,29 @@ impl AppState {
     /// (un-adopt) and delete — close them here, all of them, because a branch
     /// may carry several. A worktree that vanishes takes its agents with it
     /// through the reaper instead.
-    fn close_agent_tab(&mut self, root: &std::path::Path) {
+    /// A merge that prunes its checkout takes the run's agents with it: the
+    /// directory they live in is about to go, so their sessions end here,
+    /// recorded on the thread, rather than lingering live until the reaper
+    /// notices the root is gone.
+    fn retire_agents_of_pruned_worktree(&mut self, root: &std::path::Path) {
+        let root = Self::canonical_root(root);
+        let ended: Vec<(String, String)> = self
+            .tabs
+            .iter()
+            .filter(|(key, _)| key.is_agent() && key.root == root)
+            .filter_map(|(_, tab)| {
+                tab.role
+                    .agent()
+                    .map(|(owner, agent_id)| (owner.to_string(), agent_id.to_string()))
+            })
+            .collect();
+        let _retiring = self.retire_agent_tabs(&root);
+        for (owner, agent_id) in ended {
+            self.record_agent_session_end(&owner, &agent_id);
+        }
+    }
+
+    fn retire_agent_tabs(&mut self, root: &std::path::Path) -> Vec<Retirement> {
         let root = Self::canonical_root(root);
         let keys: Vec<TabKey> = self
             .tabs
@@ -4392,16 +4267,37 @@ impl AppState {
             .filter(|key| key.is_agent() && key.root == root)
             .cloned()
             .collect();
-        for key in keys {
-            let Some(tab) = self.tabs.remove(&key) else {
-                continue;
-            };
-            let wire_id = tab.wire_id();
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "closed");
-            }
+        keys.iter()
+            .filter_map(|key| self.retire_tab(key, "closed"))
+            .collect()
+    }
+
+    /// Remove one tab, tell its clients `reason`, and retire its process.
+    ///
+    /// The kill and the reap leave for a thread of their own
+    /// ([`Retirement`]); the close push stays here, under the app mutex,
+    /// because it is bounded — the screen's own lock and one channel send per
+    /// client, exactly what it has always been.
+    fn retire_tab(&mut self, key: &TabKey, reason: &str) -> Option<Retirement> {
+        let tab = self.tabs.remove(key)?;
+        if let Some(screen) = &tab.screen {
+            screen.close(reason);
         }
+        Some(Retirement::begin(tab.session))
+    }
+
+    /// Remove one tab and retire its process, keeping its screen for the
+    /// session that replaces it.
+    ///
+    /// The clients are told nothing and stay attached, which is what keeps a
+    /// browser's terminal where the human left it across an agent restart.
+    /// [`ensure_agent_tab`]'s dead-tab replacement, and nothing else.
+    fn retire_tab_keeping_screen(
+        &mut self,
+        key: &TabKey,
+    ) -> Option<(Retirement, Option<ScreenHandle>)> {
+        let tab = self.tabs.remove(key)?;
+        Some((Retirement::begin(tab.session), tab.screen))
     }
 
     /// The registry key a wire id addresses — `term-<n>` for a shell,
@@ -4450,7 +4346,7 @@ impl AppState {
 
     /// The refresh that rescans one project's external worktrees.
     fn external_scan_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let project = self.project(project_id)?;
         Some(DiffCacheRefresh::ExternalScan {
             project_id: project.id.clone(),
             repo_path: project.repo_path.clone(),
@@ -4461,7 +4357,7 @@ impl AppState {
 
     /// The refresh that recomputes one project's primary-checkout summary.
     fn primary_summary_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let project = self.project(project_id)?;
         Some(DiffCacheRefresh::PrimarySummary {
             project_id: project.id.clone(),
             repo_path: project.repo_path.clone(),
@@ -4469,165 +4365,90 @@ impl AppState {
         })
     }
 
-    /// Take the sole right to refresh this entry. `None` means another refresh
-    /// already holds it — single-flight, and whoever holds it publishes for
-    /// every reader that asked.
-    fn claim_diff_refresh(
-        &mut self,
-        refresh: DiffCacheRefresh,
-        blocking: bool,
-    ) -> Option<ClaimedRefresh> {
-        self.diff_refreshes_in_flight
-            .insert(refresh.key())
-            .then_some(ClaimedRefresh { refresh, blocking })
+    /// This daemon, held the way a background job has to hold it — see
+    /// [`SettlingHandle`].
+    fn settling_handle(&self) -> SettlingHandle {
+        SettlingHandle(self.self_handle.clone())
     }
 
-    /// Claim every entry a verb is about to read and finds aged out. Fresh
-    /// entries are left alone; the verb reads them out of memory.
-    fn claim_stale_diff_refreshes(&mut self, scope: &DiffCacheScope) -> Vec<DiffCacheWork> {
-        match scope {
-            DiffCacheScope::Feed => {
-                let run_ids: Vec<String> = self
-                    .runs
-                    .iter()
-                    .filter(|(_, active)| active.run.state != RunState::Archived)
-                    .map(|(run_id, _)| run_id.clone())
-                    .collect();
-                let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
-                let mut work: Vec<DiffCacheWork> = run_ids
-                    .iter()
-                    .filter_map(|run_id| self.stale_run_stat_work(run_id, false))
-                    .collect();
-                for project_id in project_ids {
-                    work.extend(self.stale_external_scan_work(&project_id));
-                    work.extend(self.stale_primary_summary_work(&project_id));
-                }
-                work
-            }
-            // Done decides from the numbers, so it waits for the truth rather
-            // than reading one the last poll left behind.
-            DiffCacheScope::Run(run_id) => {
-                self.stale_run_stat_work(run_id, true).into_iter().collect()
-            }
-            // A branch verb reads whichever of the two stores the branch: the
-            // run's diffstat when a run has it, and the project's checkout scan
-            // — which is how a branch with no run behind it is found at all.
-            // Both are refreshed here so neither is paid for under the lock.
-            DiffCacheScope::Branch { project_id, branch } => {
-                let mut work: Vec<DiffCacheWork> = self
-                    .run_on_branch(project_id, branch)
-                    .and_then(|run_id| self.stale_run_stat_work(&run_id, true))
-                    .into_iter()
-                    .collect();
-                let project_id = project_id.clone();
-                work.extend(self.stale_external_scan_work(&project_id));
-                work
-            }
-        }
-    }
-
-    /// What a frame has to do about one aged-out entry: nothing if it is still
-    /// fresh, otherwise claim the refresh, or — when there is no value to serve
-    /// and someone else already holds the claim — wait for theirs.
-    fn diff_cache_work(
-        &mut self,
-        refresh: DiffCacheRefresh,
-        stale: bool,
-        has_value: bool,
-        blocking: bool,
-    ) -> Option<DiffCacheWork> {
-        if !stale {
-            return None;
-        }
-        let key = refresh.key();
-        match self.claim_diff_refresh(refresh, blocking || !has_value) {
-            Some(claim) => Some(DiffCacheWork::Claimed(claim)),
-            None if !has_value => Some(DiffCacheWork::AwaitFirstValue(key)),
-            // Someone else is recomputing it and there is a value to serve
-            // meanwhile: that is exactly what stale-while-revalidate is for.
-            None => None,
-        }
-    }
-
-    /// One run's diffstat. `blocking` makes the caller wait for the answer even
-    /// when there is a value to serve (Done decides from the numbers).
-    fn stale_run_stat_work(&mut self, run_id: &str, blocking: bool) -> Option<DiffCacheWork> {
-        let refresh = self.run_stat_refresh(run_id)?;
-        let cached = self
-            .run_stat_cache
-            .get(run_id)
-            .map(|(computed_at, _)| *computed_at);
-        let stale = match cached {
-            Some(computed_at) => self.diff_cache_is_stale(computed_at, TASK_STAT_TTL),
-            None => true,
-        };
-        self.diff_cache_work(refresh, stale, cached.is_some(), blocking)
-    }
-
-    /// One project's external-worktree scan.
-    fn stale_external_scan_work(&mut self, project_id: &str) -> Option<DiffCacheWork> {
-        let refresh = self.external_scan_refresh(project_id)?;
-        let scanned_at = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .and_then(|p| p.external_scan.as_ref())
-            .map(|cache| cache.scanned_at);
-        let stale = match scanned_at {
-            Some(scanned_at) => self.diff_cache_is_stale(scanned_at, EXTERNAL_SCAN_INTERVAL),
-            None => true,
-        };
-        self.diff_cache_work(refresh, stale, scanned_at.is_some(), false)
-    }
-
-    /// One project's primary-checkout summary.
-    fn stale_primary_summary_work(&mut self, project_id: &str) -> Option<DiffCacheWork> {
-        let refresh = self.primary_summary_refresh(project_id)?;
-        let computed_at = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .and_then(|p| p.primary_summary.as_ref())
-            .map(|(computed_at, _)| *computed_at);
-        let stale = match computed_at {
-            Some(computed_at) => self.diff_cache_is_stale(computed_at, PRIMARY_SUMMARY_TTL),
-            None => true,
-        };
-        self.diff_cache_work(refresh, stale, computed_at.is_some(), false)
-    }
-
-    /// Whether a refresh of this entry is running right now.
+    /// Whether a refresh of this entry is running right now. Nothing in the
+    /// daemon asks — a claim is taken and released where it is made — but a
+    /// test that holds a compute open has no other way to see it.
+    #[cfg(test)]
     fn diff_refresh_is_running(&self, key: &DiffCacheKey) -> bool {
         self.diff_refreshes_in_flight.contains(key)
     }
 
-    /// Start a background refresh of an entry a reader just found stale, unless
-    /// one is already running. The reader keeps the value it has.
-    fn trigger_diff_refresh(&mut self, refresh: DiffCacheRefresh) {
-        let Some(claim) = self.claim_diff_refresh(refresh, false) else {
+    /// Recompute this entry behind whatever the caller is about to answer with.
+    ///
+    /// Single-flight and non-blocking: a refresh already running absorbs this
+    /// call, and one that starts here runs on a thread that holds nothing. No
+    /// age test — the caller has already decided it wants the git work done.
+    fn refresh_now(&mut self, refresh: DiffCacheRefresh) {
+        if !self.diff_refreshes_in_flight.insert(refresh.key()) {
             return;
+        }
+        self.run_off_lock(DiffRefreshJob {
+            refresh,
+            observer: self.diff_compute_observer.clone(),
+        });
+    }
+
+    /// Run a job whose claim the caller has just taken: on the runtime with
+    /// the lock released, or — with no runtime and no shared handle to apply
+    /// through — as [`decide_without_a_runtime`](Self::decide_without_a_runtime)
+    /// has it. The one place "decide off the lock, apply under it" is written.
+    fn run_off_lock<J: OffLockJob>(&mut self, job: J) {
+        let spawned = match self.self_handle.as_ref().and_then(std::sync::Weak::upgrade) {
+            Some(shared) => spawn_off_lock(shared, job),
+            // No shared handle: nothing could apply what a thread decided.
+            None => Err(job),
         };
-        let key = claim.refresh.key();
-        let shared = self.self_handle.as_ref().and_then(std::sync::Weak::upgrade);
-        let Some(shared) = shared else {
-            // No shared handle (the synchronous test entry point): nothing can
-            // publish, so the claim goes straight back.
-            self.release_diff_refresh(&key);
-            return;
-        };
-        let observer = self.diff_compute_observer.clone();
-        if spawn_diff_refresh(shared, claim.refresh, observer).is_err() {
-            // No runtime to refresh on: the entry keeps its value and the next
-            // reader tries again.
-            self.release_diff_refresh(&key);
+        if let Err(unspawned) = spawned {
+            self.decide_without_a_runtime(unspawned);
         }
     }
 
-    /// Store what a refresh computed and let its claim go. A claim that is no
-    /// longer held means the entry was invalidated while the compute ran, so
-    /// the value in hand describes a tree that has since changed: it is dropped.
+    /// [`AppState::refresh_now`] unless what it would replace is younger than
+    /// `ttl`. The stamp comes from the caller because the caller has just read
+    /// it: nothing here looks a timestamp up by which cache it belongs to.
+    fn refresh_if_stale(
+        &mut self,
+        computed_at: Option<std::time::Instant>,
+        ttl: Duration,
+        refresh: DiffCacheRefresh,
+    ) {
+        let stale = computed_at.is_none_or(|at| self.diff_cache_is_stale(at, ttl));
+        if stale {
+            self.refresh_now(refresh);
+        }
+    }
+
+    /// What a claimed job does when there is no runtime to carry it.
+    ///
+    /// In production that means the daemon is shutting down or was built
+    /// unrooted: the claim goes straight back and the next caller tries again.
+    /// The synchronous tests have no runtime and no mutex — nobody is waiting
+    /// on this thread — so there the job decides here, and the read that
+    /// claimed it is answered from what it found.
+    fn decide_without_a_runtime<J: OffLockJob>(&mut self, job: J) {
+        let claim = job.claim();
+        #[cfg(test)]
+        J::apply(self, claim, job.decide());
+        #[cfg(not(test))]
+        {
+            let _ = job;
+            J::abandon(self, claim);
+        }
+    }
+
+    /// Store what a refresh computed and let its claim go. A refresh that was
+    /// superseded while it ran describes a tree the daemon has since changed
+    /// on purpose, so what it computed is dropped and only the claim goes back.
     fn publish_diff_refresh(&mut self, key: &DiffCacheKey, entry: Option<DiffCacheEntry>) {
-        if !self.diff_refreshes_in_flight.remove(key) {
+        let claimed = self.diff_refreshes_in_flight.remove(key);
+        let superseded = self.diff_refreshes_superseded.remove(key);
+        if !claimed || superseded {
             return;
         }
         if let Some(entry) = entry {
@@ -4638,67 +4459,138 @@ impl AppState {
     /// Let a claim go without publishing anything.
     fn release_diff_refresh(&mut self, key: &DiffCacheKey) {
         self.diff_refreshes_in_flight.remove(key);
+        self.diff_refreshes_superseded.remove(key);
     }
 
-    /// Write a computed entry into the cache it belongs to. An entry whose run
-    /// or project has since gone is simply dropped.
+    /// Overtake whatever refresh of this entry is running: the caller has just
+    /// written something newer than that refresh can possibly know about, so
+    /// its result is dropped when it lands.
+    ///
+    /// The claim is deliberately kept until then. Releasing it instead — which
+    /// is what the caches did before — lets the very next read start a second
+    /// compute of the same thing behind the first, and then lets the first,
+    /// pre-edit one land on top of the edit and discard the second's answer.
+    fn supersede_diff_refresh(&mut self, key: &DiffCacheKey) {
+        if self.diff_refreshes_in_flight.contains(key) {
+            self.diff_refreshes_superseded.insert(key.clone());
+        }
+    }
+
+    /// Write a computed entry into the cache it belongs to. The one place a
+    /// kind of entry names the cache it settles in; each arm below is that
+    /// cache's own write, and an entry whose run or project has since gone is
+    /// dropped by it.
     fn store_diff_entry(&mut self, entry: DiffCacheEntry) {
         let now = std::time::Instant::now();
         match entry {
-            DiffCacheEntry::RunStat { run_id, stat } => {
-                // Two computes that disagree are files that changed. Only when
-                // there was something to disagree with: an invalidated entry
-                // recomputes from nothing, and that is a mutation, not a
-                // filesystem event.
-                let changed = self
-                    .run_stat_cache
-                    .get(&run_id)
-                    .is_some_and(|(_, previous)| previous != &stat);
-                if changed {
-                    self.run_files_changed_at
-                        .insert(run_id.clone(), now_rfc3339());
-                    // This cache IS the git watcher: two computes that disagree
-                    // are files that landed in the checkout, which is exactly
-                    // what an entity's diff surface is showing.
-                    self.note_entity_changed(&run_id);
-                }
-                self.run_stat_cache.insert(run_id, (now, stat));
-            }
+            DiffCacheEntry::RunStat { run_id, stat } => self.store_run_stat(run_id, stat, now),
             DiffCacheEntry::ExternalScan {
                 project_id,
                 worktrees,
-            } => {
-                if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
-                    project.external_scan = Some(ExternalScanCache {
-                        scanned_at: now,
-                        worktrees,
-                    });
-                }
+            } => self.store_external_scan(&project_id, worktrees, now),
+            DiffCacheEntry::ExternalScanUnreadable { project_id } => {
+                self.store_scan_failure(&project_id, now)
             }
             DiffCacheEntry::PrimarySummary {
                 project_id,
                 summary,
-            } => {
-                if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
-                    project.primary_summary = Some((now, summary));
-                }
-            }
+            } => self.store_primary_summary(&project_id, summary, now),
+        }
+    }
+
+    /// A run's diffstat, as of `now`.
+    fn store_run_stat(&mut self, run_id: String, stat: Value, now: std::time::Instant) {
+        // Two computes that disagree are files that changed. Only when there
+        // was something to disagree with: an invalidated entry recomputes from
+        // nothing, and that is a mutation, not a filesystem event.
+        let (first, changed) = match self.run_stat_cache.get(&run_id) {
+            Some((_, previous)) => (false, previous != &stat),
+            None => (true, false),
+        };
+        if changed {
+            self.run_files_changed_at
+                .insert(run_id.clone(), now_rfc3339());
+            // This cache IS the git watcher: two computes that disagree are
+            // files that landed in the checkout, which is exactly what an
+            // entity's diff surface is showing.
+            self.note_entity_changed(&run_id);
+        }
+        self.run_stat_cache.insert(run_id, (now, stat));
+        // A board answered `stat: null` for this run and claimed this refresh;
+        // nothing else will ever tell it the number arrived.
+        if first {
+            self.note_board_changed();
+        }
+    }
+
+    /// A project's checkouts, as one walk of its repository found them.
+    fn store_external_scan(
+        &mut self,
+        project_id: &str,
+        worktrees: Vec<ExternalWorktree>,
+        now: std::time::Instant,
+    ) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        // A board answered "still scanning", or answered from a list this one
+        // disagrees with. Either way the rows the browser is holding are not
+        // the rows this daemon would send now, so it is told to ask again.
+        let changed = project
+            .external_scan
+            .as_ref()
+            .is_none_or(|cache| cache.worktrees != worktrees);
+        project.external_scan = Some(ExternalScanCache {
+            scanned_at: now,
+            worktrees,
+        });
+        project.external_scan_failed_at = None;
+        if changed {
+            self.note_board_changed();
+        }
+    }
+
+    /// A repository this daemon could not read, so the interval is measured
+    /// from the attempt rather than from a list that never arrived.
+    fn store_scan_failure(&mut self, project_id: &str, now: std::time::Instant) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        let settling = project.external_scan_failed_at.is_none();
+        project.external_scan_failed_at = Some(now);
+        if settling {
+            self.note_board_changed();
+        }
+    }
+
+    /// A project's primary-checkout summary, as of `now`.
+    fn store_primary_summary(&mut self, project_id: &str, summary: Value, now: std::time::Instant) {
+        let Some(project) = self.project_mut(project_id) else {
+            return;
+        };
+        let changed = project
+            .primary_summary
+            .as_ref()
+            .is_none_or(|(_, previous)| previous != &summary);
+        project.primary_summary = Some((now, summary));
+        if changed {
+            self.note_board_changed();
         }
     }
 
     /// Drop a run's cached diffstat — the mutation that calls this just changed
-    /// the tree it described. Any refresh in flight loses its claim with it.
+    /// the tree it described. Any refresh in flight is superseded with it.
     fn invalidate_run_stat(&mut self, run_id: &str) {
         self.run_stat_cache.remove(run_id);
-        self.release_diff_refresh(&DiffCacheKey::RunStat(run_id.to_string()));
+        self.supersede_diff_refresh(&DiffCacheKey::RunStat(run_id.to_string()));
     }
 
     /// Drop a project's cached primary-checkout summary, same reasoning.
     fn invalidate_primary_summary(&mut self, project_id: &str) {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
+        if let Some(project) = self.project_mut(project_id) {
             project.primary_summary = None;
         }
-        self.release_diff_refresh(&DiffCacheKey::PrimarySummary(project_id.to_string()));
+        self.supersede_diff_refresh(&DiffCacheKey::PrimarySummary(project_id.to_string()));
     }
 
     /// The runs of a project that have not finished, with the id each is
@@ -4721,42 +4613,74 @@ impl AppState {
             .map(|(run_id, _)| run_id.clone())
     }
 
-    /// The project's external worktrees. Serves the last scan whatever its age
-    /// and rescans behind the answer once it is older than
-    /// `EXTERNAL_SCAN_INTERVAL`; `force` scans here and now (adoption-time
-    /// resolution, which needs the truth rather than a summary). A scan error
-    /// logs and returns the last-known list (or empty) — `task.list` must stay
-    /// alive. Errors are only surfaced when `force` is set.
-    fn external_worktrees(
+    /// The project's external worktrees, as the last scan left them, plus
+    /// whether a scan has ever landed. A read never scans: it serves what it
+    /// has and claims the rescan it needs, which runs off every lock and
+    /// invalidates the browser when it lands.
+    fn external_worktrees(&mut self, project_id: &str) -> ScanRead {
+        if let Some(refresh) = self.external_scan_refresh(project_id) {
+            let settled_at = self.scan_settled_at(project_id);
+            self.refresh_if_stale(settled_at, EXTERNAL_SCAN_INTERVAL, refresh);
+        }
+        ScanRead {
+            worktrees: self
+                .external_scan_of(project_id)
+                .map(|cache| cache.worktrees.clone())
+                .unwrap_or_default(),
+            settled: self.scan_settled_at(project_id).is_some(),
+        }
+    }
+
+    /// When this project's last scan attempt settled, whether it landed a list
+    /// or gave up on a repository it could not read. What the interval is
+    /// measured from, so a broken repo is not walked again by every poll.
+    fn scan_settled_at(&self, project_id: &str) -> Option<std::time::Instant> {
+        let project = self.project(project_id)?;
+        project
+            .external_scan
+            .as_ref()
+            .map(|cache| cache.scanned_at)
+            .max(project.external_scan_failed_at)
+    }
+
+    /// One registered project, to be read. The shared-borrow half of
+    /// [`Self::project_mut`]: every read of a project's caches or repository
+    /// resolves it through here.
+    fn project(&self, project_id: &str) -> Option<&Project> {
+        self.projects.iter().find(|p| p.id == project_id)
+    }
+
+    /// One registered project, to be written to. Every edit of a project's
+    /// caches resolves it through here; a project that has since been removed
+    /// is `None`, and the write that found it so is dropped.
+    fn project_mut(&mut self, project_id: &str) -> Option<&mut Project> {
+        self.projects.iter_mut().find(|p| p.id == project_id)
+    }
+
+    /// The last scan of a project's checkouts, if one has ever landed.
+    fn external_scan_of(&self, project_id: &str) -> Option<&ExternalScanCache> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)?
+            .external_scan
+            .as_ref()
+    }
+
+    /// Scan one project's checkouts here and now, with the app mutex in hand.
+    ///
+    /// Tests only, and nothing else: every verb that has to decide against the
+    /// checkouts that exist — a dispatch, an adoption, an implementation handed
+    /// a card — asks for them in the lock-free run phase of a
+    /// [`WorktreeLifecycleJob`]. What is left here is the tests' way to settle
+    /// the cache before they read an id out of it.
+    #[cfg(test)]
+    fn scan_external_worktrees_now(
         &mut self,
         project_id: &str,
-        force: bool,
     ) -> Result<Vec<ExternalWorktree>, String> {
         let excluded = self.bound_worktree_paths();
         let base = self.base_for(project_id)?;
         let repo_path = self.repo_path_for(project_id)?;
-        let cached = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .and_then(|p| p.external_scan.as_ref())
-            .map(|cache| (cache.scanned_at, cache.worktrees.clone()));
-        if !force {
-            if let Some((scanned_at, worktrees)) = cached.clone() {
-                // Stale-while-revalidate: answer with the last scan and rescan
-                // behind the answer. A scan walks every checkout of the repo,
-                // and doing that under the app mutex is what wedged the daemon.
-                if self.diff_cache_is_stale(scanned_at, EXTERNAL_SCAN_INTERVAL) {
-                    if let Some(refresh) = self.external_scan_refresh(project_id) {
-                        self.trigger_diff_refresh(refresh);
-                    }
-                }
-                return Ok(worktrees);
-            }
-        }
-        // Never scanned, or the caller demands the truth now (adoption resolves
-        // an id against it). On the dispatch path `warm_diff_caches` has already
-        // filled this in with the lock free.
         match discover_external_worktrees(&repo_path, &base, &excluded) {
             Ok(worktrees) => {
                 self.store_diff_entry(DiffCacheEntry::ExternalScan {
@@ -4767,44 +4691,113 @@ impl AppState {
             }
             Err(e) => {
                 eprintln!("external_worktrees {project_id}: {e}");
-                if force {
-                    Err(e.to_string())
-                } else {
-                    Ok(cached.map(|(_, worktrees)| worktrees).unwrap_or_default())
-                }
+                Err(e.to_string())
             }
         }
     }
 
-    /// Drop one project's cache so the next poll rescans (adopt/release just
-    /// changed what is bound).
-    fn invalidate_external_scan(&mut self, project_id: &str) {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) {
-            project.external_scan = None;
+    /// Rescan a project's checkouts behind whatever the board is serving: Build
+    /// just changed something about this repository that the cached list cannot
+    /// be amended for.
+    fn rescan_external_worktrees(&mut self, project_id: &str) {
+        if let Some(refresh) = self.external_scan_refresh(project_id) {
+            self.refresh_now(refresh);
         }
-        self.release_diff_refresh(&DiffCacheKey::ExternalScan(project_id.to_string()));
+    }
+
+    /// A checkout Build just put on disk, or handed back: it joins the last
+    /// scan rather than emptying it, so the very next board poll shows it.
+    fn note_worktree_appeared(&mut self, project_id: &str, worktree: ExternalWorktree) {
+        self.amend_external_scan(project_id, |worktrees| {
+            let replaced = worktrees
+                .iter()
+                .position(|known| known.path == worktree.path)
+                .map(|index| worktrees.remove(index));
+            let changed = replaced.as_ref() != Some(&worktree);
+            worktrees.push(worktree);
+            crate::worktree::sort_checkouts(worktrees);
+            changed
+        });
+    }
+
+    /// A checkout that is gone, or that a run has taken ownership of: it leaves
+    /// the last scan, which is what the rail lists as unbound. A checkout bound
+    /// to a run was never in the list, so this is routinely a no-op.
+    fn note_worktree_gone(&mut self, project_id: &str, path: &std::path::Path) {
+        let canonical = Self::canonical_root(path);
+        self.amend_external_scan(project_id, |worktrees| {
+            let before = worktrees.len();
+            worktrees.retain(|known| known.path != canonical);
+            before != worktrees.len()
+        });
+    }
+
+    /// Edit a project's last scan in place. A scan in flight described the
+    /// repository as it was before this change, so the edit supersedes it and
+    /// whatever it finds is dropped — the amended list is the newer truth. A
+    /// project that has never been scanned is left alone, and so is the scan it
+    /// has running: there is nothing here that scan is out of date about, and
+    /// its first list is what shows the checkout.
+    ///
+    /// `amend` answers whether it changed the list. An amendment that changed
+    /// nothing is not an edit: it neither overtakes the running scan nor
+    /// tells the browser about a board that is as it was.
+    fn amend_external_scan(
+        &mut self,
+        project_id: &str,
+        amend: impl FnOnce(&mut Vec<ExternalWorktree>) -> bool,
+    ) {
+        let amended = self
+            .project_mut(project_id)
+            .and_then(|project| project.external_scan.as_mut())
+            // The stamp is not touched: this edit knows about one checkout, and
+            // the rest of the list is exactly as old as it was.
+            .is_some_and(|cache| amend(&mut cache.worktrees));
+        if !amended {
+            return;
+        }
+        self.supersede_diff_refresh(&DiffCacheKey::ExternalScan(project_id.to_string()));
+        self.note_board_changed();
+    }
+
+    /// The one checkout of a project that `is_it` names, or the refusal that
+    /// says why there is none.
+    ///
+    /// A miss claims a scan and the refusal promises it, because both ways to
+    /// miss are worth retrying: a checkout made outside Build since the last
+    /// scan, and a project whose checkouts nothing has looked at yet. `refusal`
+    /// is what the caller was asking for, in its own words; how the scan bears
+    /// on it is [`scan_may_yet_show_it`], which is the same sentence wherever a
+    /// checkout is missed.
+    fn find_checkout(
+        &mut self,
+        project_id: &str,
+        refusal: &str,
+        is_it: impl Fn(&ExternalWorktree) -> bool,
+    ) -> Result<ExternalWorktree, String> {
+        let scan = self.external_worktrees(project_id);
+        if let Some(checkout) = scan.worktrees.into_iter().find(|c| is_it(c)) {
+            return Ok(checkout);
+        }
+        self.rescan_external_worktrees(project_id);
+        Err(format!(
+            "{refusal} ({})",
+            scan_may_yet_show_it(scan.settled)
+        ))
     }
 
     /// Resolve a client-supplied `worktree_id` against the discovered list
-    /// only — a raw path is never accepted. Cache-first; a miss forces one
-    /// fresh scan before failing, so a just-appeared worktree resolves without
-    /// waiting out the cache.
+    /// only — a raw path is never accepted.
     fn resolve_external_worktree(
         &mut self,
         project_id: &str,
         worktree_id: &str,
     ) -> Result<ExternalWorktree, String> {
-        if let Some(w) = self
-            .external_worktrees(project_id, false)?
-            .into_iter()
-            .find(|w| w.id == worktree_id)
-        {
-            return Ok(w);
-        }
-        self.external_worktrees(project_id, true)?
-            .into_iter()
-            .find(|w| w.id == worktree_id)
-            .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))
+        self.find_checkout(
+            project_id,
+            &format!("unknown worktree_id: {worktree_id}"),
+            |checkout| checkout.id == worktree_id,
+        )
     }
 
     /// Share this state so the relay handler and the done-socket listener both
@@ -4855,8 +4848,15 @@ impl AppState {
     /// The relay's frame handler over a shared state. `stream.start`/`term.attach`
     /// need the shared handle (background producers/pumps), so it dispatches
     /// through [`dispatch_frame`].
+    ///
+    /// The clock comes off the state, not the handler: the MCP done socket takes
+    /// this mutex with no handler behind it, and both must record against one
+    /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        Arc::new(move |sender, frame| dispatch_frame(&state, sender, frame))
+        let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+        FrameHandler::new(clock, move |sender, frame, timer| {
+            dispatch_frame(&state, sender, frame, timer)
+        })
     }
 
     /// Convenience for tests: own the state and build a handler in one step.
@@ -4899,14 +4899,32 @@ impl AppState {
     }
 
     /// Route an agent's `done` to its owner's lifecycle transition, by owner
-    /// lookup (plans map, then runs map).
-    fn on_agent_done(&mut self, entity_id: &str, report: DoneReport) {
+    /// lookup (plans map, then runs map), without draining: a report that
+    /// carries an Issue's scheduler on to its next stage hands that git back
+    /// HERE, to the socket that can release the guard before running it. The
+    /// `done` twin of [`AppState::dispatch_deferring`].
+    fn done_deferring(&mut self, entity_id: &str, report: DoneReport) -> Option<DeferredWork> {
         if self.plans.contains_key(entity_id) {
             self.on_plan_agent_done(entity_id, report);
         } else if self.runs.contains_key(entity_id) {
             self.on_run_agent_done(entity_id, report);
         } else {
             eprintln!("on_agent_done: unknown entity {entity_id}");
+        }
+        self.deferred_work.take()
+    }
+
+    /// One agent's `done`, drained — the synchronous twin of
+    /// [`AppState::done_deferring`], for the tests that own the state directly
+    /// and have no guard to release. Running it is what the MCP control socket
+    /// does with the guard released.
+    #[cfg(test)]
+    fn on_agent_done(&mut self, entity_id: &str, report: DoneReport) {
+        if let Some(deferred) = self.done_deferring(entity_id, report) {
+            let done = deferred.run();
+            if let Err(error) = self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done) {
+                eprintln!("on_agent_done {entity_id}: {error}");
+            }
         }
     }
 
@@ -5633,10 +5651,14 @@ impl AppState {
                 }
             }
             if succeeded {
+                // The stage this recovery was for is next, and reaching it
+                // cuts or puts back a checkout. The socket that carried this
+                // report runs that git with the guard released, as a frame
+                // does; a refusal is already written onto the Issue here.
                 if let Err(error) =
-                    self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))
+                    self.defer_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }), None)
                 {
-                    self.block_issue_scheduler(&issue_id, None, &error);
+                    eprintln!("recovery {run_id}: scheduler blocked: {error}");
                 }
             } else if let Err(error) = self.refresh_issue_scheduler_activity(&issue_id) {
                 eprintln!("recovery {run_id}: scheduler refresh failed: {error}");
@@ -5918,7 +5940,7 @@ impl AppState {
         entity_id: &str,
         params: &Value,
     ) -> Result<Option<Value>, String> {
-        let addressed = addressed_agent(params);
+        let addressed = named_agent_id(params);
         let cursor = thread_cursor(params);
         if addressed.is_none() && cursor.is_none() {
             return Ok(None);
@@ -6113,8 +6135,20 @@ impl AppState {
     }
 
     /// Worktree ids worth keeping attention for: every one the scan can still
-    /// see. Their records live nowhere else, so the scan IS the liveness test.
+    /// see. Their records live nowhere else, so the scan IS the liveness test —
+    /// and a project whose scan has never landed is no evidence that its
+    /// checkouts are gone. Until every project has a list, every key that names
+    /// a checkout is kept and the write after the first scan prunes; a key of
+    /// any other shape answers to the map that owns it either way.
     fn attention_worktree_ids(&self) -> Vec<String> {
+        if self.projects.iter().any(|p| p.external_scan.is_none()) {
+            return self
+                .attention
+                .keys()
+                .filter(|key| crate::worktree::is_checkout_id(key))
+                .cloned()
+                .collect();
+        }
         self.projects
             .iter()
             .filter_map(|p| p.external_scan.as_ref())
@@ -6142,6 +6176,39 @@ impl AppState {
         }
     }
 
+    /// One router tool, drained — the synchronous twin of
+    /// [`AppState::dispatch`], for the tests that speak to the daemon directly
+    /// and have no mutex to release. Running it is what the MCP control socket
+    /// does with the guard released.
+    #[cfg(test)]
+    fn router_action(&mut self, capture_id: &str, action: BridgeAction) -> Result<Value, String> {
+        let (answered, deferred) = self.router_deferring(capture_id, action);
+        match deferred {
+            Some(deferred) => {
+                let done = deferred.run();
+                self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+            }
+            None => answered,
+        }
+    }
+
+    /// One router tool, without draining: the router's twin of
+    /// [`AppState::dispatch_deferring`]. A tool whose git must not run under
+    /// the app mutex hands that work back the same way a verb does, and a tool
+    /// that refused leaves the same nothing behind it.
+    fn router_deferring(
+        &mut self,
+        capture_id: &str,
+        action: BridgeAction,
+    ) -> (Result<Value, String>, Option<DeferredWork>) {
+        let queued_before = self.pending_agent_turns.len();
+        let answered = self.on_router_mcp_action(capture_id, action);
+        if answered.is_err() {
+            self.drop_turns_queued_since(queued_before);
+        }
+        (answered, self.deferred_work.take())
+    }
+
     /// Dispatch without draining: a verb that handed its git work to
     /// [`AppState::deferred_work`] hands it back out HERE, to a caller that
     /// can release the app mutex before running it. The `Ok` returned
@@ -6151,7 +6218,11 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> (Result<Value, String>, Option<DeferredWork>) {
+        let queued_before = self.pending_agent_turns.len();
         let outcome = self.route(method, params);
+        if outcome.is_err() {
+            self.drop_turns_queued_since(queued_before);
+        }
         match self.deferred_work.take() {
             // Nothing is settled until the git work returns, so the stamp waits
             // for `apply_deferred` too.
@@ -6179,11 +6250,14 @@ impl AppState {
         // nothing about it is worth telling a browser; a mutating git verb
         // moved the tree every diff surface is showing.
         let mutating = match &done {
+            DeferredOutcome::Lifecycle(_) => true,
             DeferredOutcome::Finish { .. } => true,
             DeferredOutcome::Git { git, .. } => git.invalidates,
             DeferredOutcome::Read(_) => false,
         };
+        let queued_before = self.pending_agent_turns.len();
         let applied = match done {
+            DeferredOutcome::Lifecycle(outcome) => self.apply_lifecycle(*outcome),
             DeferredOutcome::Finish { epilogue, finished } => {
                 self.apply_finish(*epilogue, *finished)
             }
@@ -6191,19 +6265,47 @@ impl AppState {
             // A read writes nothing back: its answer is the whole result.
             DeferredOutcome::Read(result) => result,
         };
-        if let Ok(result) = &applied {
-            self.stamp_interaction_for(method, params, result);
-            // HERE, not before the drain: the decide half only claimed the
-            // checkout, and a browser told to refetch then would have read the
-            // state this write-back is about to replace.
-            if mutating {
-                for entity_id in entity_ids_of(params, result) {
-                    self.note_entity_changed(&entity_id);
+        match &applied {
+            Ok(result) => {
+                self.stamp_interaction_for(method, params, result);
+                // HERE, not before the drain: the decide half only claimed the
+                // checkout, and a browser told to refetch then would have read
+                // the state this write-back is about to replace.
+                if mutating {
+                    for entity_id in entity_ids_of(params, result) {
+                        self.note_entity_changed(&entity_id);
+                    }
+                    self.note_board_changed();
                 }
-                self.note_board_changed();
             }
+            Err(_) => self.drop_turns_queued_since(queued_before),
         }
         applied
+    }
+
+    /// Forget what a failed request queued for an agent. A turn is not
+    /// deliverable until the mutation that queued it is durable, and only this
+    /// request's turns are dropped: a later harmless verb's drain would
+    /// otherwise deliver work that nothing was ever written down for. What was
+    /// written down before the refusal stays — see
+    /// [`PendingAgentTurn::survives_refusal`].
+    ///
+    /// The two halves of a request both end here — [`dispatch_deferring`] for
+    /// what refused before the git ran, [`apply_deferred`] for what failed
+    /// writing the git down — so every drain in the daemon, frame, MCP control
+    /// socket and test twin alike, inherits the rule.
+    ///
+    /// The queue can be SHORTER than it was measured: a request that retires
+    /// an agent drops that agent's turns however early they were queued, and
+    /// a refusal after that must find nothing of its own left, not a panic.
+    ///
+    /// [`dispatch_deferring`]: AppState::dispatch_deferring
+    /// [`apply_deferred`]: AppState::apply_deferred
+    fn drop_turns_queued_since(&mut self, queued_before: usize) {
+        let queued_by_others = queued_before.min(self.pending_agent_turns.len());
+        let mut queued_by_this_request = self.pending_agent_turns.split_off(queued_by_others);
+        queued_by_this_request.retain(|turn| turn.survives_refusal);
+        self.pending_agent_turns.append(&mut queued_by_this_request);
     }
 
     fn route(&mut self, method: &str, params: &Value) -> Result<Value, String> {
@@ -6351,8 +6453,6 @@ impl AppState {
             "stream.state" => self.stream_state(params),
             "term.list" => self.term_list(params),
             "term.close" => self.term_close(params),
-            "term.input" => self.term_input(params),
-            "term.resize" => self.term_resize(params),
             other => Err(format!("unknown method: {other}")),
         }
     }
@@ -6376,14 +6476,14 @@ impl AppState {
             .filter_map(|(key, tab)| {
                 // A shell IS its terminal, so the filter above already excluded
                 // the only role that can be without one.
-                let screen = tab.screen.as_ref()?;
+                let (cols, rows) = tab.screen.as_ref()?.size();
                 Some((
                     term_id_suffix(&key.tab_id),
                     json!({
                         "term_id": tab.tab_id,
                         "kind": SHELL_TAB_KIND,
-                        "cols": screen.cols,
-                        "rows": screen.rows,
+                        "cols": cols,
+                        "rows": rows,
                         "created_at": tab.created_at,
                     }),
                 ))
@@ -6404,62 +6504,28 @@ impl AppState {
             // always reachable, and its life is bound to the worktree.
             return Err("cannot close an agent terminal".to_string());
         }
-        let tab = self.tabs.remove(&key).ok_or("unknown term_id")?;
-        tab.session.end();
-        if let Some(screen) = &tab.screen {
-            screen.push_closed(&term_id, "closed");
-        }
+        self.retire_tab(&key, "closed").ok_or("unknown term_id")?;
         Ok(json!({ "ok": true }))
     }
 
-    /// Write client keystrokes (base64) to a tab's PTY, by id. Input to the
-    /// agent tab is allowed by design — its PTY is a full terminal on the
-    /// user's machine and the terminal is the basement — and an agent whose
-    /// process has ended surfaces "no active agent session" rather than
-    /// swallowing the keystrokes.
-    ///
-    /// An agent with no terminal has no basement to type into, and hears about
-    /// it ([`no_terminal_here`]) before its state is consulted: that is a
-    /// property of the session, not of whether it happens to be running.
-    fn term_input(&mut self, params: &Value) -> Result<Value, String> {
-        let term_id = require_str(params, "term_id")?;
-        let data = b64decode(&require_str(params, "data")?)?;
-        let key = self.tab_key_of_wire_id(&term_id)?;
-        let tab = self.tabs.get(&key).ok_or("unknown term_id")?;
-        let terminal = tab.require_terminal()?;
-        if !tab.session_is_live() {
-            return Err("no active agent session".to_string());
-        }
-        terminal.write_input(&data).map_err(|e| e.to_string())?;
-        Ok(json!({ "ok": true }))
-    }
-
-    /// Resize a tab's PTY and screen model, by id. The resize only applies
-    /// while the session is live; a dead resize is a no-op `live: false` so a
-    /// retained last screen is never garbled.
-    ///
-    /// A session with no terminal refuses instead, live or not: a viewport
-    /// means nothing to a session with no grid, so `live: false` there would be
-    /// a quiet "nothing to do" in place of a reason.
-    fn term_resize(&mut self, params: &Value) -> Result<Value, String> {
-        let term_id = require_str(params, "term_id")?;
-        let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
-        let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        let key = self.tab_key_of_wire_id(&term_id)?;
-        let tab = self.tabs.get_mut(&key).ok_or("unknown term_id")?;
-        let live = tab.session_is_live();
-        let (terminal, screen) = tab.require_terminal_and_screen()?;
-        if live {
-            terminal.resize(size).map_err(|e| e.to_string())?;
-            screen.set_size(cols, rows);
-        }
-        Ok(json!({ "ok": true, "live": live }))
+    /// What one tab hands a client that attaches to it, taken out of the
+    /// registry so the attach itself runs with the app mutex released.
+    fn attachment(&self, key: &TabKey) -> Result<TabAttachment, String> {
+        let tab = self.tabs.get(key).ok_or("unknown term_id")?;
+        Ok(TabAttachment {
+            facts: TabFacts {
+                term_id: tab.wire_id(),
+                live: tab.live,
+                // Which harness is behind this screen. Null for a shell, and
+                // null for a worktree nothing has ever run in — the client
+                // leads its start offer with its own default there instead.
+                provider: match tab.role {
+                    TabRole::Agent { provider, .. } => Some(provider),
+                    TabRole::Shell => None,
+                },
+            },
+            terminal: tab.terminal_handle()?,
+        })
     }
 
     /// The sessions' peer connections, for a caller that must not hold the app
@@ -6478,24 +6544,24 @@ impl AppState {
     /// A screen waiting for its first spawn is a tab one step early and follows
     /// the same rule: [`ensure_agent_tab`] carries its clients onto the real
     /// screen, so a session left behind here would be pushed to for the life of
-    /// that tab. Such a screen exists only to hold clients and the viewport
-    /// they render at — with the last one gone there is nothing to hold, and
-    /// the spawn is sized the way an unwatched spawn always was.
+    /// that tab. The screen itself stays in the registry however empty it is:
+    /// an attach clones it under the app mutex and registers on it with the
+    /// mutex released, so the client arriving as the last one leaves must
+    /// still find it where the spawn will look. Emptied, it carries no
+    /// viewport — the spawn is sized the way an unwatched spawn always was —
+    /// and the next attach's viewport resizes it. It is bounded at one per
+    /// agent key and leaves with the spawn that inherits it, the agent's
+    /// retirement, or the reaper.
     fn drop_session(&mut self, session_id: &str) {
         self.peers.end_session(session_id);
-        for tab in self.tabs.values_mut() {
-            if let Some(screen) = &mut tab.screen {
-                screen
-                    .attached
-                    .retain(|client| client.sender.session_id() != session_id);
-            }
+        for screen in self
+            .tabs
+            .values()
+            .filter_map(|tab| tab.screen.as_ref())
+            .chain(self.agent_screens_awaiting_spawn.values())
+        {
+            screen.detach(session_id);
         }
-        self.agent_screens_awaiting_spawn.retain(|_, screen| {
-            screen
-                .attached
-                .retain(|client| client.sender.session_id() != session_id);
-            !screen.attached.is_empty()
-        });
     }
 
     /// Close every tab whose worktree is gone from disk (spec §2.6.3), killing
@@ -6510,7 +6576,7 @@ impl AppState {
     /// `cleanup=keep` keeps its directory and everything open in it, and
     /// releasing or deleting an adopted run leaves the human's worktree exactly
     /// where it was. The two verbs that remove a run while keeping its worktree
-    /// close Build's agent themselves ([`AppState::close_agent_tab`]), because
+    /// close Build's agent themselves ([`AppState::retire_agent_tabs`]), because
     /// an agent whose owner is gone reports `done` into the unknown-entity log
     /// forever.
     fn reap_orphaned_terminals(&mut self) -> Vec<String> {
@@ -6523,7 +6589,7 @@ impl AppState {
         let mut reaped = Vec::new();
         let mut killed_agents: Vec<(String, String)> = Vec::new();
         for key in vanished {
-            let Some(tab) = self.tabs.remove(&key) else {
+            let Some(tab) = self.tabs.get(&key) else {
                 continue;
             };
             let wire_id = tab.wire_id();
@@ -6533,10 +6599,7 @@ impl AppState {
             {
                 killed_agents.push((owner.clone(), agent_id.clone()));
             }
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "reaped");
-            }
+            self.retire_tab(&key, "reaped");
             reaped.push(wire_id);
         }
         // The kill above is one the pump can never report: the tab left the
@@ -6565,7 +6628,7 @@ impl AppState {
             let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) else {
                 continue;
             };
-            screen.push_closed(&key.tab_id, "reaped");
+            screen.close("reaped");
             reaped.push(key.tab_id);
         }
         reaped
@@ -6626,7 +6689,7 @@ impl AppState {
                     epitaph: tab
                         .screen
                         .as_ref()
-                        .and_then(screen_epitaph)
+                        .and_then(ScreenHandle::epitaph)
                         .or_else(|| tab.session.epitaph()),
                 }));
             }
@@ -6823,7 +6886,11 @@ impl AppState {
 
     /// All registered projects, for the New-task picker and Settings.
     fn project_list(&self) -> Value {
-        let projects: Vec<Value> = self.projects.iter().map(project_json).collect();
+        let projects: Vec<Value> = self
+            .projects
+            .iter()
+            .map(|project| project_json(project, git_remote_origin(&project.repo_path)))
+            .collect();
         json!({ "projects": projects })
     }
 
@@ -6832,20 +6899,35 @@ impl AppState {
     /// than at first dispatch.
     fn project_add(&mut self, params: &Value) -> Result<Value, String> {
         let path = require_str(params, "path")?;
-        let repo_path = expand_tilde(&path);
-        let repo =
-            git2::Repository::open(&repo_path).map_err(|e| format!("not a git repository: {e}"))?;
-        // Use the requested branch, or fall back to the repo's checked-out default —
-        // so browsing to a repo and adding it "just works" without naming a branch.
-        let base_branch = params
-            .get("base_branch")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| git_default_branch(&repo_path))
-            .unwrap_or_else(|| "main".to_string());
-        repo.revparse_single(&base_branch)
-            .map_err(|_| format!("base branch '{base_branch}' not found in repo"))?;
-        self.register_project_transaction(repo_path, base_branch, None)
+        let path = expand_tilde(&path);
+        self.defer_project(
+            path.clone(),
+            path.display().to_string(),
+            PendingState::Creating,
+            Box::new(OpenRepo {
+                requested_base: requested_base_branch(params),
+                path,
+            }),
+        )
+    }
+
+    /// Reserve the directory a project verb is about to read or write and hand
+    /// its git to the drain. The directory is the row's identity: there is no
+    /// project id until the git lands, and what two project verbs collide over
+    /// is the folder, not a name.
+    fn defer_project(
+        &mut self,
+        dest: std::path::PathBuf,
+        title: String,
+        state: PendingState,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> Result<Value, String> {
+        let row = PendingRow::on_directory(
+            crate::worktree::external_worktree_id(&crate::worktree::canonical_planned_path(&dest)),
+            title,
+            state,
+        );
+        self.defer_lifecycle(row, mutation)
     }
 
     /// Browse host directories so the user can pick a repo without typing a path.
@@ -7022,62 +7104,23 @@ impl AppState {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            Some(n) => n.to_string(),
+            Some(named) => named.to_string(),
             None => repo_name_from_url(&url),
         };
-        if name.is_empty() || name.contains('/') || name.contains("..") {
-            return Err(format!("invalid project name: {name:?}"));
-        }
-        std::fs::create_dir_all(&self.projects_dir)
-            .map_err(|e| format!("cannot create projects folder: {e}"))?;
+        let name = usable_project_name(name)?;
         let dest = self.projects_dir.join(&name);
-        if dest.exists() {
-            // Already in the projects folder — register the existing checkout instead
-            // of cloning again, as long as it's the same repo (matching remote).
-            if !dest.join(".git").exists() {
-                return Err(format!(
-                    "'{name}' already exists in the projects folder and is not a git repo"
-                ));
-            }
-            if let Some(origin) = git_remote_origin(&dest) {
-                if !remotes_match(&origin, &url) {
-                    return Err(format!(
-                        "'{name}' already exists with a different remote ({origin})"
-                    ));
-                }
-            }
-            return self.register_clone(params, dest, None);
-        }
-        let out = std::process::Command::new("git")
-            .arg("clone")
-            .arg(&url)
-            .arg(&dest)
-            .output()
-            .map_err(|e| format!("could not run git: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "git clone failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        self.register_clone(params, dest.clone(), Some(dest))
-    }
-
-    /// Register a freshly cloned (or already-present) checkout as a project,
-    /// defaulting the base branch to its checked-out branch.
-    fn register_clone(
-        &mut self,
-        params: &Value,
-        dest: std::path::PathBuf,
-        created_checkout: Option<std::path::PathBuf>,
-    ) -> Result<Value, String> {
-        let base = params
-            .get("base_branch")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| git_default_branch(&dest))
-            .unwrap_or_else(|| "main".to_string());
-        self.register_project_transaction(dest, base, created_checkout)
+        self.defer_project(
+            dest.clone(),
+            name.clone(),
+            PendingState::Creating,
+            Box::new(CloneRepo {
+                url,
+                name,
+                dest,
+                projects_dir: self.projects_dir.clone(),
+                requested_base: requested_base_branch(params),
+            }),
+        )
     }
 
     /// Create a brand-new git repo (with an initial commit so its base branch
@@ -7085,86 +7128,67 @@ impl AppState {
     /// or the projects folder by default — and register it. An optional `remote`
     /// is wired as `origin` at creation.
     fn project_create(&mut self, params: &Value) -> Result<Value, String> {
-        let name = require_str(params, "name")?;
-        let name = name.trim();
-        if name.is_empty() || name.contains('/') || name.contains("..") {
-            return Err(format!("invalid project name: {name:?}"));
-        }
+        let name = usable_project_name(require_str(params, "name")?)?;
         let base_branch = params
             .get("base_branch")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .filter(|branch| !branch.is_empty())
             .unwrap_or("main")
             .to_string();
         let parent = match params
             .get("parent")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .filter(|parent| !parent.is_empty())
         {
-            Some(p) => expand_tilde(p),
+            Some(parent) => expand_tilde(parent),
             None => self.projects_dir.clone(),
         };
-        std::fs::create_dir_all(&parent)
-            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-        let dest = parent.join(name);
-        if dest.exists() {
-            return Err(format!("'{name}' already exists in {}", parent.display()));
-        }
-        std::fs::create_dir_all(&dest).map_err(|e| format!("cannot create {name}: {e}"))?;
-        git_in(&dest, &["init", "-b", &base_branch])?;
-        std::fs::write(dest.join("README.md"), format!("# {name}\n"))
-            .map_err(|e| format!("cannot write README: {e}"))?;
-        git_in(&dest, &["add", "."])?;
-        // Commit with an explicit identity so it never depends on host git config.
-        git_in(
-            &dest,
-            &[
-                "-c",
-                "user.email=build@build.ing",
-                "-c",
-                "user.name=Build",
-                "commit",
-                "-m",
-                "Initial commit",
-            ],
-        )?;
-        if let Some(remote) = params
-            .get("remote")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            git_in(&dest, &["remote", "add", "origin", remote])?;
-        }
-        self.register_project_transaction(dest.clone(), base_branch, Some(dest))
+        let dest = parent.join(&name);
+        self.defer_project(
+            dest.clone(),
+            name.clone(),
+            PendingState::Creating,
+            Box::new(CreateRepo {
+                name,
+                dest,
+                base_branch,
+                remote: params
+                    .get("remote")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|remote| !remote.is_empty())
+                    .map(str::to_string),
+            }),
+        )
     }
 
     /// Set (or clear, with an empty url) a project's `origin` remote.
     fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
-        let url = url.trim();
-        let repo_path = self.project_for(&project_id)?.repo_path.clone();
-        if url.is_empty() {
-            // Clearing: removing a missing origin is not an error.
-            let _ = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(["remote", "remove", "origin"])
-                .output();
-        } else if git_remote_origin(&repo_path).is_some() {
-            git_in(&repo_path, &["remote", "set-url", "origin", url])?;
-        } else {
-            git_in(&repo_path, &["remote", "add", "origin", url])?;
-        }
         let project = self
             .projects
             .iter()
-            .find(|p| p.id == project_id)
-            .expect("exists");
-        Ok(project_json(project))
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let repo_path = project.repo_path.clone();
+        let title = project.name.clone();
+        // The repository is the row's identity here as it is for every other
+        // project verb: what a second `set_remote` collides with is the config
+        // file it would be rewriting, and nothing about the project's record
+        // is being minted or taken away.
+        self.defer_project(
+            repo_path.clone(),
+            title,
+            PendingState::Updating,
+            Box::new(SetRemote {
+                project_id,
+                repo_path,
+                url: url.trim().to_string(),
+            }),
+        )
     }
 
     /// The registered project a client names by id, or the one refusal every
@@ -7251,7 +7275,7 @@ impl AppState {
     /// (spec §5.3): scan order per project, projects concatenated in
     /// registration order. A per-project scan failure is already logged inside
     /// `external_worktrees`; it just contributes nothing here.
-    fn external_worktrees_json(&mut self) -> Vec<Value> {
+    fn external_worktrees_json(&mut self) -> ExternalWorktreeRows {
         // Resolved up front: the loop below holds a &mut borrow of the scan
         // cache, and attention_json needs &self.
         let attention_of: std::collections::HashMap<String, Value> = self
@@ -7279,16 +7303,15 @@ impl AppState {
             .iter()
             .map(|p| (p.id.clone(), p.name.clone(), p.base_branch.clone()))
             .collect();
-        let mut entries = Vec::new();
+        let mut rows = ExternalWorktreeRows::default();
         for (project_id, project_name, base_branch) in projects {
-            let Ok(worktrees) = self.external_worktrees(&project_id, false) else {
-                continue;
-            };
-            for w in worktrees {
+            let scan = self.external_worktrees(&project_id);
+            rows.scanning |= !scan.settled;
+            for w in scan.worktrees {
                 let adoptable = w.branch.as_deref().is_some_and(|b| b != base_branch);
                 let (agent_working, can_finish) =
                     agent_signals.get(&w.id).copied().unwrap_or((false, false));
-                entries.push(json!({
+                rows.rows.push(json!({
                     "worktree_id": w.id,
                     "project_id": project_id,
                     "project": project_name,
@@ -7325,7 +7348,7 @@ impl AppState {
                 }));
             }
         }
-        entries
+        rows
     }
 
     /// Every project's primary-checkout changes summary, held per project for
@@ -7356,44 +7379,34 @@ impl AppState {
         };
 
         let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
-        let mut entries = Vec::new();
-        for project_id in project_ids {
-            let cached = self
-                .projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .and_then(|p| p.primary_summary.clone());
-            if let Some((computed_at, summary)) = cached {
-                // Stale-while-revalidate, as for a run's diffstat: the sidebar
-                // gets the last summary now, and the walk of the primary
-                // checkout that produces the next one runs behind it.
-                if self.diff_cache_is_stale(computed_at, PRIMARY_SUMMARY_TTL) {
-                    if let Some(refresh) = self.primary_summary_refresh(&project_id) {
-                        self.trigger_diff_refresh(refresh);
-                    }
-                }
-                entries.push(with_owner(summary, &project_id));
-                continue;
-            }
-            // Never computed. See `run_stat`: the dispatch path warms this off
-            // the mutex, so only a caller that does not warm gets here.
-            let Some(refresh) = self.primary_summary_refresh(&project_id) else {
-                continue;
-            };
-            if let Some(entry) = refresh.compute(self.diff_compute_observer.as_ref()) {
-                self.store_diff_entry(entry);
-            }
-            let summary = self
-                .projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .and_then(|p| p.primary_summary.as_ref())
-                .map(|(_, summary)| summary.clone());
-            if let Some(summary) = summary {
-                entries.push(with_owner(summary, &project_id));
-            }
+        project_ids
+            .into_iter()
+            .filter_map(|project_id| {
+                let summary = self.primary_summary(&project_id)?;
+                Some(with_owner(summary, &project_id))
+            })
+            .collect()
+    }
+
+    /// One project's primary-checkout summary as the last walk left it, or
+    /// `None` until the first one lands. Claims the walk it needs; never takes
+    /// one itself.
+    fn primary_summary(&mut self, project_id: &str) -> Option<Value> {
+        if let Some(refresh) = self.primary_summary_refresh(project_id) {
+            let computed_at = self.primary_summary_of(project_id).map(|(at, _)| *at);
+            self.refresh_if_stale(computed_at, PRIMARY_SUMMARY_TTL, refresh);
         }
-        entries
+        self.primary_summary_of(project_id)
+            .map(|(_, summary)| summary.clone())
+    }
+
+    /// The last walk of a project's primary checkout, if one has ever landed.
+    fn primary_summary_of(&self, project_id: &str) -> Option<&(std::time::Instant, Value)> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)?
+            .primary_summary
+            .as_ref()
     }
 
     /// The primary checkout's uncommitted-changes review surface (spec §5.2):
@@ -7523,7 +7536,7 @@ impl AppState {
         work: fn(&BranchListingScope, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let checkout = self.resolve_branch_scope(params)?;
-        let checkouts = self.project_checkouts(&checkout.project_id, false)?;
+        let checkouts = self.project_checkouts(&checkout.project_id)?;
         let scope = BranchListingScope {
             checkout,
             checkouts,
@@ -7587,7 +7600,7 @@ impl AppState {
             return;
         }
         if scope.external_worktree {
-            self.invalidate_external_scan(&scope.project_id);
+            self.rescan_external_worktrees(&scope.project_id);
         } else {
             self.invalidate_primary_summary(&scope.project_id);
         }
@@ -7691,7 +7704,7 @@ impl AppState {
         }
         if let Some(worktree) = &scope.worktree {
             let project_id = worktree.project_id.clone();
-            self.invalidate_external_scan(&project_id);
+            self.rescan_external_worktrees(&project_id);
         }
     }
 
@@ -7729,31 +7742,41 @@ impl AppState {
     /// checkout, and the primary. Which branch each one holds is git's to
     /// answer, and [`ProjectCheckouts::holders`] asks it.
     ///
-    /// Two callers pay disk cost on the lock knowingly. `force` rescans the
-    /// external worktrees here and now, for a verb about to act on the answer
-    /// rather than describe it; and `worktree.create {branch}` follows this
-    /// call with `holders` on the lock too, because a one-shot user action
-    /// that git would otherwise refuse is worth the wait. Every other caller
-    /// takes the cached scan and asks `holders` in the deferred half.
-    fn project_checkouts(
-        &mut self,
-        project_id: &str,
-        force: bool,
-    ) -> Result<ProjectCheckouts, String> {
-        let external_branches = self
-            .external_worktrees(project_id, force)?
-            .into_iter()
-            .filter_map(|worktree| Some((worktree.branch?, worktree.id)))
-            .collect();
-        let run_checkouts = self
-            .live_runs_of(project_id)
-            .map(|(run_id, active)| (run_id.clone(), active.worktree.clone()))
-            .collect();
+    /// Only owned inputs are captured here. Every caller asks `holders` in
+    /// its off-lock phase, including one-shot creates and dispatches.
+    fn project_checkouts(&self, project_id: &str) -> Result<ProjectCheckouts, String> {
         Ok(ProjectCheckouts {
+            project: self.orch_for(project_id)?.clone(),
             primary_repo_path: self.repo_path_for(project_id)?,
-            external_branches,
-            run_checkouts,
+            base_branch: self.base_for(project_id)?,
+            excluded: self.bound_worktree_paths(),
+            run_checkouts: self
+                .live_runs_of(project_id)
+                .map(|(id, run)| (id.clone(), run.worktree.clone()))
+                .collect(),
         })
+    }
+
+    /// Recheck the records the off-lock holder reading was based on.
+    fn validate_checkout_snapshot(
+        &self,
+        project_id: &str,
+        snapshot: &ProjectCheckouts,
+    ) -> Result<(), String> {
+        let project = self.project_for(project_id)?;
+        let runs = self.live_runs_of(project_id).collect::<Vec<_>>();
+        let unchanged = project.repo_path == snapshot.primary_repo_path
+            && project.base_branch == snapshot.base_branch
+            && runs.len() == snapshot.run_checkouts.len()
+            && snapshot.run_checkouts.iter().all(|(id, checkout)| {
+                runs.iter()
+                    .any(|(current_id, active)| *current_id == id && active.worktree == *checkout)
+            });
+        if unchanged {
+            Ok(())
+        } else {
+            Err("the project's branch holders changed while Git ran; retry the action".to_string())
+        }
     }
 
     /// `git.fetch` — `git fetch --prune`, then the fresh status payload.
@@ -7869,103 +7892,42 @@ impl AppState {
     /// branch after, and no branch of that spelling is consulted.
     fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let checkout = match (
+        let (title, existing_branch, branch) = match (
             params.get("branch").and_then(Value::as_str),
             params.get("name").and_then(Value::as_str),
         ) {
-            (Some(branch), None) => self.checkout_worktree_on_branch(&project_id, branch)?,
-            (None, Some(name)) => self.create_bare_worktree_for(&project_id, name)?,
-            _ => {
-                return Err(
-                    "worktree.create takes exactly one of branch (a branch that \
-                            already exists) and name (words to cut a new branch after)"
-                        .to_string(),
-                )
+            (Some(branch), None) => {
+                if !crate::worktree::is_ref_name(branch) {
+                    return Err(format!("{branch:?} is not a branch name"));
+                }
+                (branch.to_string(), Some(branch.to_string()), branch.to_string())
             }
+            (None, Some(name)) => {
+                if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
+                    return Err("a worktree name needs at least one letter or number".to_string());
+                }
+                (name.to_string(), None, crate::worktree::branch_name_for(&crate::worktree::slugify(name)))
+            }
+            _ => return Err("worktree.create takes exactly one of branch (a branch that already exists) and name (words to cut a new branch after)".to_string()),
         };
-        let canonical = self.register_created_checkout(&project_id, &checkout.worktree);
-        Ok(created_worktree_json(&project_id, &checkout, &canonical))
-    }
-
-    /// Cut `build/<slug>` off the project's base and add a worktree for it —
-    /// the one way Build cuts a branch for itself, for every caller that has
-    /// words rather than a branch.
-    ///
-    /// `name` is what the human (or the router) typed. It is UNTRUSTED text on
-    /// its way to a path and a `git` argv, so it goes through the same
-    /// slugifier every branch name does: ASCII alphanumerics and single
-    /// hyphens, nothing else, so no separator, dot-segment or leading dash can
-    /// survive it. A name that would slugify away to nothing is refused rather
-    /// than silently replaced — being handed a worktree you did not name is
-    /// worse than being told the name will not do.
-    fn create_bare_worktree_for(
-        &mut self,
-        project_id: &str,
-        name: &str,
-    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
-        if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
-            return Err("a worktree name needs at least one letter or number".to_string());
-        }
-        let base = self.base_for(project_id)?;
-        self.orch_for(project_id)?
-            .create_bare_worktree(&crate::worktree::slugify(name), &base)
-            .map_err(err)
-    }
-
-    /// Add a worktree for a branch that already exists, so the human can work
-    /// on it without losing what it carries: a local branch is checked out as
-    /// it stands, and one only a remote has is fetched and made local with its
-    /// upstream set.
-    ///
-    /// Git refuses to check one branch out twice, and its refusal names
-    /// nothing the client can act on, so the checkout already holding the
-    /// branch is named here instead — the run to open, the worktree to adopt,
-    /// or the repository's own checkout. The listing the picker reads carries
-    /// the same three stamps and is where a user should learn this; the guard
-    /// is for what changed between the listing and the press.
-    fn checkout_worktree_on_branch(
-        &mut self,
-        project_id: &str,
-        branch: &str,
-    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
-        if !crate::worktree::is_ref_name(branch) {
-            return Err(format!("{branch:?} is not a branch name"));
-        }
-        if let Some(refusal) = self.branch_holder_now(project_id, branch)?.refusal(branch) {
-            return Err(refusal);
-        }
-        let base = self.base_for(project_id)?;
-        self.orch_for(project_id)?
-            .create_worktree_on_existing_branch(branch, &base)
-            .map_err(err)
-    }
-
-    /// Which of the project's checkouts holds `branch` right now — decided
-    /// against a forced rescan, because the caller is about to act on the
-    /// answer rather than describe it. `worktree.create {branch}` and
-    /// `branch.dispatch` both ask here, so the two verbs never disagree about
-    /// who has a branch.
-    fn branch_holder_now(
-        &mut self,
-        project_id: &str,
-        branch: &str,
-    ) -> Result<BranchHolder, String> {
-        let ownership = self.project_checkouts(project_id, true)?.holders()?;
-        Ok(BranchHolder::of(&ownership, branch))
-    }
-
-    /// Make a checkout that was just created visible to the very next board
-    /// poll rather than up to a scan interval later, and answer with the path
-    /// the scan keys it by: its canonical one.
-    ///
-    /// Every creator ends here, so post-creation invalidation is spelled once.
-    fn register_created_checkout(
-        &mut self,
-        project_id: &str,
-        worktree: &crate::worktree::Worktree,
-    ) -> std::path::PathBuf {
-        self.invalidate_external_scan(project_id);
-        Self::canonical_root(&worktree.path)
+        let slug = crate::worktree::slugify(&title);
+        let placeholder_id = if existing_branch.is_some() {
+            format!("pending-worktree-{}", uuid::Uuid::new_v4())
+        } else {
+            self.planned_checkout_id(&project_id, &slug)?
+        };
+        let checkouts = self.project_checkouts(&project_id)?;
+        let mutation = CreateWorktree {
+            project: self.orch_for(&project_id)?.clone(),
+            base_branch: self.base_for(&project_id)?,
+            project_id: project_id.clone(),
+            slug,
+            existing_branch,
+            checkouts,
+            placeholder_id: placeholder_id.clone(),
+        };
+        let row = PendingRow::creating(placeholder_id, Some(project_id), title).on_branch(branch);
+        self.defer_lifecycle(row, Box::new(mutation))
     }
 
     /// Finish an external worktree selected only by server-resolved ids.
@@ -8051,6 +8013,236 @@ impl AppState {
         Value::Null
     }
 
+    /// Put a placeholder on the board for a verb that is about to run git, and
+    /// refuse a second verb claiming the same thing while it stands. The row is
+    /// visible to every reader from this acquisition until the epilogue
+    /// replaces it with the real record.
+    ///
+    /// Reached only through [`AppState::defer_lifecycle`], which is what makes
+    /// the row's release certain: only a job can release one, so a row is never
+    /// reserved without one.
+    fn reserve_row(&mut self, row: PendingRow) -> Result<Arc<PendingRow>, String> {
+        if let Some(held) = self.row_claiming(&row) {
+            return Err(format!(
+                "{:?} is already {} — wait for that to finish",
+                held.title,
+                held.state.as_str()
+            ));
+        }
+        let row = Arc::new(row);
+        self.pending_rows.push(Arc::clone(&row));
+        self.note_board_changed();
+        Ok(row)
+    }
+
+    /// The standing row that already claims what `row` would: the same record,
+    /// branch, checkout or issue in the same project. One rule for what two
+    /// lifecycle verbs collide on.
+    fn row_claiming(&self, row: &PendingRow) -> Option<&Arc<PendingRow>> {
+        self.pending_rows.iter().find(|held| {
+            held.project_id == row.project_id
+                && (held.entity_id == row.entity_id
+                    || (held.branch.is_some() && held.branch == row.branch)
+                    || (held.checkout_id.is_some() && held.checkout_id == row.checkout_id)
+                    || (held.implements.is_some() && held.implements == row.implements))
+        })
+    }
+
+    /// Retire a placeholder, whichever way its verb went. The real record — or
+    /// nothing at all, on a failure — stands where it was.
+    fn release_row(&mut self, entity_id: &str) {
+        self.pending_rows.retain(|row| row.entity_id != entity_id);
+        self.note_board_changed();
+    }
+
+    /// Whether a lifecycle verb is holding this entity's checkout open right
+    /// now. Nothing may touch that directory while its git runs — see
+    /// [`AppState::take_pending_turns`], which is what would.
+    fn checkout_is_in_flight(&self, entity_id: &str) -> bool {
+        self.pending_rows
+            .iter()
+            .any(|row| row.entity_id == entity_id)
+    }
+
+    /// The lifecycle verbs in flight, as rows the board shows beside the
+    /// checkouts that already exist.
+    ///
+    /// Only the rows that stand for a card: a project verb reserves the folder
+    /// it is reaching for, and a folder is not something the board lists, so
+    /// nothing about it belongs in a list of cards.
+    fn pending_rows_json(&self) -> Vec<Value> {
+        self.pending_rows
+            .iter()
+            .filter_map(|row| {
+                let project_id = row.project_id.as_ref()?;
+                Some(json!({
+                    "entity_id": row.entity_id,
+                    "project_id": project_id,
+                    "project": self.project_name_by_id(project_id),
+                    "title": row.title,
+                    "branch": row.branch,
+                    "state": row.state.as_str(),
+                    "checkout_id": row.checkout_id,
+                    // The project's own checkout is listed under no id of its
+                    // own, so a row standing on it is matched by this instead.
+                    "primary": row.primary,
+                    "implements": row.implements,
+                    // How long this row has stood. A row older than a scan
+                    // interval reads as stuck rather than as work in flight.
+                    "pending_seconds": row.since.elapsed().as_secs(),
+                }))
+            })
+            .collect()
+    }
+
+    /// The id the board carries for a checkout that does not exist yet: the id
+    /// its path will hash to once `git worktree add` has made it.
+    /// [`WorktreeManager::create`] suffixes a slug something is already using,
+    /// which the decide phase cannot know, so this is what the epilogue settles
+    /// under unless it had to.
+    ///
+    /// [`WorktreeManager::create`]: crate::worktree::WorktreeManager::create
+    fn planned_checkout_id(&self, project_id: &str, slug: &str) -> Result<String, String> {
+        let planned = self.orch_for(project_id)?.planned_checkout_path(slug);
+        Ok(crate::worktree::external_worktree_id(
+            &crate::worktree::canonical_planned_path(&planned),
+        ))
+    }
+
+    /// Reserve one lifecycle verb's row and hand its git to the drain, in one
+    /// call. Reserving and deferring are the same step so that nothing fallible
+    /// can run between them: a row put on the board with no job behind it would
+    /// stand there forever, refusing every later verb that claims its name.
+    ///
+    /// The `Ok` returned here is the placeholder [`AppState::deferred_work`]
+    /// documents: whichever drain runs the job replaces it with what
+    /// [`AppState::apply_lifecycle`] answers.
+    fn defer_lifecycle(
+        &mut self,
+        row: PendingRow,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> Result<Value, String> {
+        let job = self.reserve_lifecycle(row, mutation)?;
+        Ok(self.defer_job(job))
+    }
+
+    /// The same reservation, handed back rather than deferred — for a caller
+    /// that has to decide where the git runs. Consume it with
+    /// [`AppState::defer_job`] or [`AppState::run_lifecycle_here`]: a job
+    /// dropped instead leaves its row on the board forever.
+    fn reserve_lifecycle(
+        &mut self,
+        row: PendingRow,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> Result<WorktreeLifecycleJob, String> {
+        let row = self.reserve_row(row)?;
+        Ok(self.lifecycle_job(row, mutation))
+    }
+
+    /// Reserve a verb's row, take out of the registry whatever it has to hold
+    /// while its git runs, and hand that git to the drain — one call, so the
+    /// row is claimed before anything is torn down and nothing fallible runs
+    /// between the row and the job that releases it.
+    ///
+    /// `take` runs with the row already on the board and cannot refuse: every
+    /// refusal a verb has belongs before this call.
+    fn defer_lifecycle_holding(
+        &mut self,
+        row: PendingRow,
+        take: impl FnOnce(&mut AppState) -> Box<dyn WorktreeMutation>,
+    ) -> Result<Value, String> {
+        let row = self.reserve_row(row)?;
+        let mutation = take(self);
+        let job = self.lifecycle_job(row, mutation);
+        Ok(self.defer_job(job))
+    }
+
+    /// One reserved row's job, held open for the tests in one place so no verb
+    /// has to remember to offer them a seam.
+    fn lifecycle_job(
+        &self,
+        row: Arc<PendingRow>,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> WorktreeLifecycleJob {
+        let job = WorktreeLifecycleJob::reserving(row, mutation);
+        #[cfg(test)]
+        let job = {
+            let mut job = job;
+            job.hold_at(self.off_lock_gate.clone());
+            job
+        };
+        job
+    }
+
+    /// Hand one reserved job to the drain, which runs it with the app mutex
+    /// released. The `Value` is the placeholder [`AppState::deferred_work`]
+    /// documents: whichever drain runs the job replaces it with what
+    /// [`AppState::apply_lifecycle`] answers.
+    fn defer_job(&mut self, job: WorktreeLifecycleJob) -> Value {
+        self.deferred_work = Some(DeferredWork::Lifecycle(Box::new(job)));
+        Value::Null
+    }
+
+    /// Run one reserved job right here instead, with no mutex to release —
+    /// boot and an agent's own report have no frame to hand git to, and ran it
+    /// under the app mutex before this split too.
+    fn run_lifecycle_here(&mut self, job: WorktreeLifecycleJob) -> Result<Value, String> {
+        let outcome = job.run();
+        self.apply_lifecycle(outcome)
+    }
+
+    /// Write back what one lifecycle verb's git did: retire the placeholder,
+    /// amend the project's checkout list with what moved, and then let the
+    /// verb's own epilogue settle the record. A failure rolls the reservation
+    /// back instead, and answers with the error the git gave.
+    ///
+    /// An epilogue that fails is the harder half: the git already ran, so what
+    /// it made is on disk whatever the records say. The amendment is re-applied
+    /// over whatever the epilogue got through before it failed, which puts the
+    /// checkout back on the board as the unowned card it is — invisible until
+    /// the next full rescan is how a minted checkout gets lost.
+    fn apply_lifecycle(&mut self, outcome: LifecycleOutcome) -> Result<Value, String> {
+        let LifecycleOutcome {
+            reservation,
+            result,
+        } = outcome;
+        let project_id = reservation.row().project_id.clone();
+        self.release_row(&reservation.row().entity_id);
+        let Performed { change, epilogue } = match result {
+            Ok(performed) => performed,
+            Err(error) => {
+                reservation.roll_back(self);
+                return Err(error);
+            }
+        };
+        self.amend_checkouts(project_id.as_deref(), &change);
+        epilogue.apply(self).inspect_err(|_| {
+            self.amend_checkouts(project_id.as_deref(), &change);
+            reservation.roll_back(self);
+        })
+    }
+
+    /// Move what one mutation did to the checkouts on disk into the list the
+    /// board reads: what appeared, what went, and — when the mutation touched a
+    /// checkout it could not describe — the rescan that finds it.
+    ///
+    /// A project verb has no project to amend and moves no checkout, so there
+    /// is nothing here for it to do.
+    fn amend_checkouts(&mut self, project_id: Option<&str>, change: &WorktreeChange) {
+        let Some(project_id) = project_id else {
+            return;
+        };
+        for worktree in &change.appeared {
+            self.note_worktree_appeared(project_id, worktree.clone());
+        }
+        for path in &change.gone {
+            self.note_worktree_gone(project_id, path);
+        }
+        if change.rescan {
+            self.rescan_external_worktrees(project_id);
+        }
+    }
+
     /// Write back what the lock-free git work found: release the claim, take
     /// the scan it paid for and the record it left, and then run whatever
     /// bookkeeping the verb that deferred it still owes.
@@ -8070,13 +8262,21 @@ impl AppState {
         }
         // Memory mirrors the store: Archived after a completed finish, Pending
         // after a failed destructive step (which is the resume point).
+        let finished_path = outcome
+            .record
+            .as_ref()
+            .map(|record| std::path::PathBuf::from(&record.worktree_path));
         if let Some(record) = outcome.record {
             self.archived_worktrees
                 .insert(record.worktree_id.clone(), record);
         }
         let archived = outcome.result.inspect(|_| {
             self.reap_orphaned_terminals();
-            self.invalidate_external_scan(&epilogue.project_id);
+            // The checkout is archived, so it leaves the scan the preflight
+            // above just stored — which was taken while it still stood.
+            if let Some(path) = &finished_path {
+                self.note_worktree_gone(&epilogue.project_id, path);
+            }
             self.persist_attention();
         });
         match epilogue.kind {
@@ -8251,7 +8451,7 @@ impl AppState {
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            return Ok(self.primary_row(&project_id));
+            return self.primary_row(&project_id);
         }
         let branch = params
             .get("branch")
@@ -8269,59 +8469,53 @@ impl AppState {
                  is drawn in its conversation"
             ));
         }
-        let checkout = self
-            .external_worktrees(&project_id, false)?
-            .into_iter()
-            .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()));
-        if let Some(checkout) = checkout {
-            return Ok(EntitylessRow {
-                key: crate::attention::branch_row_key(&project_id, &branch),
-                head: Some(checkout.head_sha),
-                project_id,
-                branch: Some(branch),
-                primary: false,
-            });
-        }
+        let refusal = match self.find_checkout(
+            &project_id,
+            &format!("entity.dismiss: {project_id} has no row for {branch}"),
+            |checkout| checkout.branch.as_deref() == Some(branch.as_str()),
+        ) {
+            Ok(checkout) => {
+                return Ok(EntitylessRow {
+                    key: crate::attention::branch_row_key(&project_id, &branch),
+                    head: Some(checkout.head_sha),
+                    project_id,
+                    branch: Some(branch),
+                    primary: false,
+                })
+            }
+            Err(refusal) => refusal,
+        };
         // The one row left that a branch name can mean: the project's own
         // checkout, named the way it appears on the feed rather than by the
         // `primary` flag beside it.
-        let primary = self.primary_row(&project_id);
+        let primary = self.primary_row(&project_id)?;
         if primary.branch.as_deref() == Some(branch.as_str()) {
             return Ok(primary);
         }
-        Err(format!(
-            "entity.dismiss: {project_id} has no row for {branch}"
-        ))
+        Err(refusal)
     }
 
     /// A project's primary-checkout row, read off the same summary the feed
     /// builds that row from — the row and its dismissal have to agree about
     /// which commit the checkout is on.
-    fn primary_row(&self, project_id: &str) -> EntitylessRow {
-        let summary = self.primary_row_summary(project_id);
-        EntitylessRow {
+    ///
+    /// Refused until that summary has landed: a dismissal written against no
+    /// head is one the walk's own first result revokes, so the client is told
+    /// to ask again rather than answered with a click that did nothing.
+    fn primary_row(&mut self, project_id: &str) -> Result<EntitylessRow, String> {
+        let summary = self.primary_summary(project_id).ok_or_else(|| {
+            format!(
+                "entity.dismiss: the primary checkout of {project_id} has not been read yet, and \
+                 the walk now running settles it"
+            )
+        })?;
+        Ok(EntitylessRow {
             key: crate::attention::primary_row_key(project_id),
-            head: summary
-                .as_ref()
-                .and_then(|entry| entry["head_sha"].as_str())
-                .map(str::to_string),
+            head: summary["head_sha"].as_str().map(str::to_string),
             project_id: project_id.to_string(),
-            branch: summary
-                .as_ref()
-                .and_then(|entry| entry["branch"].as_str())
-                .map(str::to_string),
+            branch: summary["branch"].as_str().map(str::to_string),
             primary: true,
-        }
-    }
-
-    /// The primary-changes summary the feed last served for a project, computed
-    /// on the spot when the poll has never run.
-    fn primary_row_summary(&self, project_id: &str) -> Option<Value> {
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
-        match &project.primary_summary {
-            Some((_, summary)) => Some(summary.clone()),
-            None => primary_changes_summary(project_id, &project.repo_path, &project.base_branch),
-        }
+        })
     }
 
     /// The entity-less row an external worktree's id names, or `None` when the
@@ -8330,12 +8524,9 @@ impl AppState {
     fn checkout_row(&mut self, worktree_id: &str) -> Option<EntitylessRow> {
         let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
         for project_id in project_ids {
-            // A project whose scan failed contributes nothing and stops
-            // nothing: the id may still belong to the next one.
-            let Ok(worktrees) = self.external_worktrees(&project_id, false) else {
-                continue;
-            };
-            let Some(checkout) = worktrees
+            let Some(checkout) = self
+                .external_worktrees(&project_id)
+                .worktrees
                 .into_iter()
                 .find(|worktree| worktree.id == worktree_id)
             else {
@@ -8677,7 +8868,7 @@ impl AppState {
     /// A removed agent's harness must not outlive it. An agent with no roster
     /// entry keeps working in the checkout and reports `done` for an identity
     /// nothing can route to — the same hazard
-    /// [`close_agent_tab`](Self::close_agent_tab) exists for — so its session is
+    /// [`retire_agent_tabs`](Self::retire_agent_tabs) exists for — so its session is
     /// killed and reaped and everything that could reach it goes too.
     fn agent_remove(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
@@ -8735,19 +8926,13 @@ impl AppState {
     /// frames with, the screen a client is waiting on a first spawn for, and
     /// any turn still queued to be said to it.
     ///
-    /// The per-agent twin of [`close_agent_tab`](Self::close_agent_tab), which
+    /// The per-agent twin of [`retire_agent_tabs`](Self::retire_agent_tabs), which
     /// takes every agent in a worktree because its owner is going away.
     fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
-        if let Some(tab) = self.tabs.remove(&key) {
-            let wire_id = tab.wire_id();
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "closed");
-            }
-        }
+        self.retire_tab(&key, "closed");
         if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
-            screen.push_closed(&key.tab_id, "closed");
+            screen.close("closed");
         }
         self.mcp_session_tokens.remove(agent_id);
         self.pending_agent_turns
@@ -8853,6 +9038,11 @@ impl AppState {
             // decided by the argv, so the same provider answers differently on
             // two versions of the same CLI. No session, no turn to stop.
             "can_interrupt": tab.is_some_and(|tab| tab.session.can_interrupt()),
+            // Why the last turn queued for this agent never reached a harness.
+            // The client's "starting" state is laid on before there is any
+            // session to report, and this is what takes it off when none ever
+            // opened — the only word a start that failed ever gets to say.
+            "start_error": agent.start_error,
             "created_at": agent.created_at,
         });
         if let Some(surfaces) = digest_surfaces(tab, scope) {
@@ -8878,8 +9068,8 @@ impl AppState {
     // ---- Store accessor + take/finish plumbing --------------------------------
 
     /// The durable store, or a clean error. Plans and runs both require one:
-    /// plan docs are canonical in the store, and `dispatch_run` writes/reads
-    /// through it. Only unit tests that never create a plan/run skip it.
+    /// plan docs are canonical in the store, and `prepare_run_checkout`
+    /// writes/reads through it. Only unit tests that never create a plan/run skip it.
     fn require_store(&self) -> Result<&Store, String> {
         self.store
             .as_ref()
@@ -9269,13 +9459,31 @@ impl AppState {
         let text = self.captures[&capture_id].text.clone();
         let rationale = Some("rerouted by the user".to_string());
         match kind.as_str() {
-            "issue" => self.route_to_issue(&capture_id, &project_id, &text, rationale),
-            "branch" => self.route_to_branch(&capture_id, &project_id, branch, &text, rationale),
+            // The planning session's disk runs through the drain, so the
+            // capture this answers with is read once the session is real — in
+            // the apply phase, which is where the route is written down.
+            "issue" => self.route_to_issue(
+                &capture_id,
+                &project_id,
+                &text,
+                rationale,
+                capture_after_routing,
+            ),
+            // The dispatch's git runs through the drain, so the row this answers
+            // with is read once the branch is real — in the apply phase, which
+            // is where the route is written down.
+            "branch" => self.route_to_branch(
+                &capture_id,
+                &project_id,
+                branch,
+                &text,
+                rationale,
+                capture_after_routing,
+            ),
             other => Err(format!(
                 "capture.reroute: {other:?} is not a destination — branch and issue are the work"
             )),
-        }?;
-        self.capture_get(&json!({ "capture_id": capture_id }))
+        }
     }
 
     fn capture_list(&self) -> Value {
@@ -9465,17 +9673,20 @@ impl AppState {
         self.entity_project
             .insert(capture_id.to_string(), project_id);
         self.pending_agent_turns.push(PendingAgentTurn {
-            root: session.scratch_dir().to_path_buf(),
+            root: Self::canonical_root(session.scratch_dir()),
             owner: capture_id.to_string(),
             agent_id: session.agent_id().to_string(),
             model_choice: session.choice().clone(),
             // A router is one decision long, so there is no warm half: every
             // turn it ever hears is the whole job — and no conversation, so no
             // catch-up packet either.
-            cold: prompt.clone(),
-            warm: prompt,
+            say: Some(TurnText {
+                cold: prompt.clone(),
+                warm: prompt,
+            }),
             phase: "route",
             wants_catch_up: false,
+            survives_refusal: false,
         });
         self.router_sessions.insert(capture_id.to_string(), session);
         Ok(())
@@ -9528,7 +9739,13 @@ impl AppState {
                 project_id,
                 goal,
                 rationale,
-            } => self.route_to_issue(capture_id, &project_id, &goal, rationale),
+            } => self.route_to_issue(
+                capture_id,
+                &project_id,
+                &goal,
+                rationale,
+                the_dispatch_itself,
+            ),
             BridgeAction::DispatchBranch {
                 project_id,
                 branch,
@@ -9540,6 +9757,7 @@ impl AppState {
                 branch.as_deref(),
                 &instruction,
                 rationale,
+                the_dispatch_itself,
             ),
             BridgeAction::AskUser { question, options } => {
                 self.router_ask_user(capture_id, &question, &options)
@@ -9647,6 +9865,54 @@ impl AppState {
         )
     }
 
+    /// Take everything the verbs that just ran queued, and mark it in flight in
+    /// the same breath.
+    ///
+    /// One acquisition for both halves, because between them a turn on its way
+    /// would be in neither the queue nor the marks: the idle sweep reading that
+    /// demotes a run whose agent is coming, and a second message reading it
+    /// queues a duplicate turn behind the one already on its way.
+    ///
+    /// A turn for an entity whose checkout is being cut, put back or removed
+    /// right now stays in the queue — the same acquisition reads the rows the
+    /// lifecycle verbs reserved. Spawning that entity's agent scaffolds its
+    /// checkout directory, and `git worktree add` refuses a path that has
+    /// reappeared under it, which a restore reads as a lost branch and answers
+    /// by handing a healthy run to the recovery agent.
+    fn take_pending_turns(&mut self) -> PendingTurns {
+        let (held, mut queued): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_turns)
+            .into_iter()
+            .partition(|turn| self.checkout_is_in_flight(&turn.owner));
+        // Back in the queue, in the order they were made: the drain that runs
+        // after the job's epilogue takes them, and every frame drains.
+        self.pending_agent_turns = held;
+        for turn in &mut queued {
+            self.forget_agent_start_error(&turn.owner, &turn.agent_id);
+            // The one door every cold prompt passes: the conversation is read and
+            // closed onto the prompt HERE, so the packet carries what the store
+            // holds under the tail and what was said while the turn waited.
+            if !turn.wants_catch_up {
+                continue;
+            }
+            if let Some(say) = turn.say.as_mut() {
+                say.cold = self.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &say.cold);
+            }
+        }
+        let state = self.settling_handle();
+        let turns = queued
+            .into_iter()
+            .map(|turn| {
+                let mark = self.turns_in_flight.take(&turn, state.clone());
+                (turn, mark)
+            })
+            .collect();
+        PendingTurns {
+            turns,
+            state,
+            clock: Arc::clone(&self.frame_clock),
+        }
+    }
+
     /// The default destination: an issue on the best-guess project, with its
     /// planning agent started — no branch, no worktree, no code touched.
     ///
@@ -9661,6 +9927,7 @@ impl AppState {
         project_id: &str,
         goal: &str,
         rationale: Option<String>,
+        answer: fn(&crate::capture::Capture, Value) -> Value,
     ) -> Result<Value, String> {
         let issue = self.plan_create(&json!({
             "project_id": project_id,
@@ -9680,73 +9947,31 @@ impl AppState {
                 routed_at: now_rfc3339(),
                 rationale,
             },
+            &issue_id,
         )?;
-        let planning = self.start_routed_issue_agent(&issue_id);
-        Ok(json!({
-            "issue_id": issue_id,
-            "project_id": project_id,
-            // No branch was cut: that is what a router means by dispatched.
-            "dispatched": false,
-            // An agent IS reading the capture, on the primary checkout.
-            "planning": planning,
-        }))
-    }
-
-    /// Start the planning session for an issue a capture was just routed to,
-    /// and say whether one is now running for it.
-    ///
-    /// The same machinery the first `thread.post` to an inert issue uses
-    /// ([`start_inert_plan`]), for the same reason: the words are on the
-    /// conversation and somebody has to read them. The agent works in the
-    /// primary checkout — issues plan on main, they do not own a worktree.
-    ///
-    /// Never fatal to the route. The capture is already recorded as routed and
-    /// the issue already holds the text, so a session that could not start
-    /// leaves an inert, re-startable issue rather than losing the destination —
-    /// exactly what `thread.post` leaves behind when a dispatch fails.
-    ///
-    /// [`start_inert_plan`]: AppState::start_inert_plan
-    fn start_routed_issue_agent(&mut self, issue_id: &str) -> bool {
-        let Some(active) = self.plans.get(issue_id) else {
-            eprintln!("route: {issue_id} vanished before its agent could start");
-            return false;
+        // The planning agent works in the primary checkout — issues plan on
+        // main, they do not own a worktree — and the workspace it needs there
+        // is disk, so it goes to the drain like every other verb's.
+        //
+        // Never fatal to the route: the capture is recorded and the issue holds
+        // the text, so a session that could not start leaves an inert,
+        // re-startable issue rather than losing the destination.
+        let routed = RoutedIssueDrafting {
+            issue_id: issue_id.clone(),
+            project_id: project_id.to_string(),
+            capture_id: capture_id.to_string(),
+            answer,
         };
-        // Already has a session: this is a first turn, not a nudge, and a
-        // second harness in the same checkout would report `done` twice.
-        if active.workspace.is_some() {
-            return true;
-        }
-        let agent_id = active.agents.sole().id.clone();
-        let Ok(checkout) = self.primary_checkout_of(issue_id) else {
-            eprintln!("route: {issue_id} belongs to no project with a checkout");
-            return false;
-        };
-        let root = Self::canonical_root(&checkout);
-        let key = TabKey::agent(&root, &agent_id);
-        let already_starting = self.agent_spawns_in_flight.contains(&key)
-            || self
-                .pending_agent_turns
-                .iter()
-                .any(|queued| queued.root == root && queued.agent_id == agent_id);
-        if already_starting {
-            return true;
-        }
-        let mut active = match self.take_plan(issue_id) {
-            Ok(active) => active,
+        match self.reserve_plan_drafting(&issue_id, Box::new(routed.clone())) {
+            Ok(Some(job)) => Ok(self.defer_job(job)),
+            // Nothing to start: a session is already open for this issue, or
+            // one is already on its way to the same checkout.
+            Ok(None) => routed.reply(self, true),
             Err(error) => {
-                eprintln!("route: could not open {issue_id} to start it: {error}");
-                return false;
+                eprintln!("route: {issue_id} could not start planning: {error}");
+                routed.reply(self, false)
             }
-        };
-        let started = self.start_inert_plan(issue_id, &mut active);
-        let persisted = self.finish_plan_mutation(issue_id.to_string(), active);
-        if let Err(error) = &started {
-            eprintln!("route: {issue_id} could not start planning: {error}");
         }
-        if let Err(error) = persisted {
-            eprintln!("route: could not record {issue_id}: {error}");
-        }
-        started.is_ok()
     }
 
     /// The confident destination: an agent on a branch, working. One call, and
@@ -9759,27 +9984,20 @@ impl AppState {
         branch: Option<&str>,
         instruction: &str,
         rationale: Option<String>,
+        answer: fn(&crate::capture::Capture, Value) -> Value,
     ) -> Result<Value, String> {
-        let dispatched = self.branch_dispatch(&json!({
-            "project_id": project_id,
-            "branch": branch,
-            "instruction": instruction,
-        }))?;
-        let branch = dispatched["branch"]
-            .as_str()
-            .ok_or("the dispatch named no branch")?
-            .to_string();
-        self.record_routing(
-            capture_id,
-            crate::capture::CaptureRouting {
-                project_id: project_id.to_string(),
-                kind: crate::capture::CaptureTarget::Branch,
-                target_id: branch,
-                routed_at: now_rfc3339(),
+        self.dispatch_branch(
+            &json!({
+                "project_id": project_id,
+                "branch": branch,
+                "instruction": instruction,
+            }),
+            Some(RoutedCapture {
+                capture_id: capture_id.to_string(),
                 rationale,
-            },
-        )?;
-        Ok(dispatched)
+                answer,
+            }),
+        )
     }
 
     /// The router asks the one question that would let it decide. The capture
@@ -9831,6 +10049,11 @@ impl AppState {
     }
 
     /// Record where a capture went, and settle what it was routed to before.
+    /// `entity_id` is the work it became — the issue filed, or the run the
+    /// branch is dispatched into — which the caller knows and the map need not
+    /// hold yet: a dispatch records its route ahead of the write that opens
+    /// the run, so the anchor it inherits is held in memory until that write
+    /// lands and persists it.
     ///
     /// An issue no human has touched is archived and its planning agent stopped
     /// — it was never anything but a guess, and leaving it would put a second
@@ -9842,34 +10065,57 @@ impl AppState {
         &mut self,
         capture_id: &str,
         routing: crate::capture::CaptureRouting,
-    ) -> Result<(), String> {
+        entity_id: &str,
+    ) -> Result<crate::capture::Capture, String> {
         let capture = self
             .captures
             .get(capture_id)
             .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
         let previous = capture.routing.clone();
         let routed = capture.routed_to(routing);
-        let destination = routed.routing.clone();
-        self.save_capture(routed)?;
+        self.save_capture(routed.clone())?;
         // The work keeps the capture's place in the inbox. Said on Monday and
         // routed on Tuesday, it is still Monday's business — and it is ONE
         // entry, so the capture's row leaving and the work's row arriving must
         // not read as the list gaining something new.
-        if let Some(destination) = destination {
-            let entity_id = match destination.kind {
-                crate::capture::CaptureTarget::Issue => Some(destination.target_id.clone()),
-                crate::capture::CaptureTarget::Branch => {
-                    self.run_on_branch(&destination.project_id, &destination.target_id)
-                }
-            };
-            if let Some(entity_id) = entity_id {
-                self.inherit_capture_anchor(&entity_id, capture_id);
-            }
-        }
+        self.inherit_capture_anchor(entity_id, capture_id);
         if let Some(previous) = previous {
             self.release_misrouted_artifact(&previous);
         }
-        Ok(())
+        Ok(routed)
+    }
+
+    /// Write down the route a dispatch is the destination of, against the run
+    /// it opens. Ahead of the write that settles the run, never after it: the
+    /// app mutex was free while the git ran, so the capture may be gone by
+    /// now, and a refusal has to come before anything is durable — a run that
+    /// exists and a caller told it does not is the one outcome nothing can
+    /// reconcile.
+    fn record_dispatch_route(
+        &mut self,
+        routed: Option<RoutedCapture>,
+        project_id: &str,
+        run_id: &str,
+        branch: &str,
+    ) -> Result<Option<RouteRecorded>, String> {
+        let Some(routed) = routed else {
+            return Ok(None);
+        };
+        let capture = self.record_routing(
+            &routed.capture_id,
+            crate::capture::CaptureRouting {
+                project_id: project_id.to_string(),
+                kind: crate::capture::CaptureTarget::Branch,
+                target_id: branch.to_string(),
+                routed_at: now_rfc3339(),
+                rationale: routed.rationale,
+            },
+            run_id,
+        )?;
+        Ok(Some(RouteRecorded {
+            capture,
+            answered_with: routed.answer,
+        }))
     }
 
     /// Take back what a misroute created, when there is anything to take back.
@@ -9966,25 +10212,23 @@ impl AppState {
             return;
         };
         let root = Self::canonical_root(session.scratch_dir());
-        if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, session.agent_id())) {
-            let wire_id = tab.wire_id();
-            tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "agent_session_ended");
-            }
-        }
+        let writers = self
+            .retire_tab(
+                &TabKey::agent(&root, session.agent_id()),
+                "agent_session_ended",
+            )
+            .into_iter()
+            .collect();
         self.mcp_session_tokens.remove(session.agent_id());
         self.entity_project.remove(capture_id);
         // Bridge-owned, per capture, and holding nothing but what the harness
         // wrote for itself — so it goes with the session that made it.
-        if let Err(error) = std::fs::remove_dir_all(session.scratch_dir()) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!(
-                    "router {capture_id}: could not wipe {}: {error}",
-                    session.scratch_dir().display()
-                );
-            }
-        }
+        crate::reaper::remove_dir_once_reaped(
+            writers,
+            session.scratch_dir().to_path_buf(),
+            crate::orchestrator::CHECKOUT_REAP_WAIT,
+            format!("router {capture_id}"),
+        );
     }
 
     /// Settle every router whose harness has stopped without reporting.
@@ -10049,9 +10293,49 @@ impl AppState {
             persisted?;
             return Ok(view);
         }
-        let (mut active, turn) = self
-            .orch_for(&project_id)?
-            .dispatch_plan(PlanId::new(&plan_id), goal, &base, model_choice)
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            project_id.clone(),
+            goal.clone(),
+            Box::new(IssueOpened {
+                project_id,
+                plan_id: plan_id.clone(),
+                goal,
+                base_branch: base,
+                model_choice,
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
+    }
+
+    /// `plan.create`'s apply half: the Issue's record, its first turn, and the
+    /// view the caller asked for. The workspace its agent works in is on disk
+    /// by now, which is why nothing here can fail on a directory.
+    ///
+    /// What a failure here leaves is the workspace: a scratch docs dir for an
+    /// Issue that never opened, and the `.build/` config the next plan this
+    /// project drafts overwrites. Removing either is filesystem work, which an
+    /// epilogue may not do; neither is a checkout or a branch, so no board is
+    /// missing anything.
+    fn open_planned_issue(
+        &mut self,
+        opened: IssueOpened,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let IssueOpened {
+            project_id,
+            plan_id,
+            goal,
+            base_branch,
+            model_choice,
+            detail,
+        } = opened;
+        let project = self.orch_for(&project_id)?.clone();
+        let mut active =
+            project.create_plan(PlanId::new(&plan_id), goal, &base_branch, model_choice);
+        let turn = project
+            .open_plan_drafting(&mut active, workspace)
             .map_err(err)?;
         self.entity_project
             .insert(plan_id.clone(), project_id.clone());
@@ -10059,28 +10343,121 @@ impl AppState {
         if self.qa_agent {
             self.qa_simulate_plan(&project_id, &mut active)?;
         }
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, detail);
         persisted?;
         Ok(view)
     }
 
-    /// Start the planning session an inert issue has never had.
+    /// Reserve the workspace an inert Issue's first planning session needs.
     ///
-    /// Errors come back rather than being raised, so the caller can still
-    /// persist the record it is holding: a dispatch that could not start leaves
-    /// the issue inert and re-startable, with the message that tried on its
-    /// thread.
-    fn start_inert_plan(&mut self, issue_id: &str, active: &mut ActivePlan) -> Result<(), String> {
-        let project_id = self.project_of(issue_id)?;
-        let turn = self
-            .orch_for(&project_id)?
-            .start_plan_drafting(active)
-            .map_err(err)?;
-        self.queue_plan_turn(issue_id, active, turn);
-        if self.qa_agent {
-            self.qa_simulate_plan(&project_id, active)?;
+    /// `Ok(None)` is "there is nothing to start": the session is already
+    /// running, or another caller's spawn is already on its way to the same
+    /// checkout. `Err` is "no session can start here at all" — the caller
+    /// decides whether that is fatal, because a routed capture keeps its
+    /// destination either way.
+    ///
+    /// The Issue must be in its map: this reads the record it is about to
+    /// reserve a row for.
+    fn reserve_plan_drafting(
+        &mut self,
+        issue_id: &str,
+        opening: Box<dyn PlanSessionOpening>,
+    ) -> Result<Option<WorktreeLifecycleJob>, String> {
+        let active = self
+            .plans
+            .get(issue_id)
+            .ok_or_else(|| format!("unknown issue_id: {issue_id}"))?;
+        // Already has a session: this is a first turn, not a nudge, and a
+        // second harness in the same checkout would report `done` twice.
+        if active.workspace.is_some() {
+            return Ok(None);
         }
-        Ok(())
+        crate::plan::plan_transition(&active.plan.state, crate::plan::PlanEvent::Dispatch)
+            .map_err(|error| error.to_string())?;
+        let title = active.plan.goal.clone();
+        let agent_id = active.agents.sole().id.clone();
+        let checkout = self.primary_checkout_of(issue_id)?;
+        if self.agent_is_on_its_way(&checkout, &agent_id) {
+            return Ok(None);
+        }
+        let project_id = self.project_of(issue_id)?;
+        self.reserve_plan_workspace(issue_id, project_id, title, opening)
+            .map(Some)
+    }
+
+    /// Reserve the workspace one door to an Issue's planning agent needs, and
+    /// build the job that writes it. The row stands on the Issue itself: what
+    /// it holds is the one workspace every door writes into, so a second door
+    /// waits rather than racing this one's `.build/` config.
+    ///
+    /// The project comes from the caller: an Issue being created is not in
+    /// `entity_project` until its epilogue runs, and `plan.create` reserves
+    /// through here like every other door.
+    fn reserve_plan_workspace(
+        &mut self,
+        issue_id: &str,
+        project_id: String,
+        title: String,
+        opening: Box<dyn PlanSessionOpening>,
+    ) -> Result<WorktreeLifecycleJob, String> {
+        let project = self.orch_for(&project_id)?.clone();
+        let store = self.require_store()?.clone();
+        // A plan cuts no branch and claims no checkout: it is written against
+        // the primary one, so nothing else can collide with it.
+        let row = PendingRow::creating(issue_id.to_string(), Some(project_id), title);
+        self.reserve_lifecycle(
+            row,
+            Box::new(OpenPlanWorkspace {
+                project,
+                plan_id: issue_id.to_string(),
+                store,
+                opening,
+            }),
+        )
+    }
+
+    /// Start the planning session an inert Issue has never had, now that its
+    /// workspace is on disk: the dispatch reads everything said to it so far,
+    /// and the turn that spawns the session is queued.
+    fn open_inert_plan_drafting(
+        &mut self,
+        issue_id: &str,
+        workspace: crate::orchestrator::PlanWorkspace,
+        detail: ThreadDetail,
+    ) -> Result<Value, String> {
+        let project_id = self.project_of(issue_id)?;
+        self.settle_plan_session(issue_id, detail, |state, active| {
+            let turn = state
+                .orch_for(&project_id)?
+                .open_plan_drafting(active, workspace)
+                .map_err(err)?;
+            state.queue_plan_turn(issue_id, active, turn);
+            if state.qa_agent {
+                state.qa_simulate_plan(&project_id, active)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The tail every door to a planning agent shares: take the Issue's record
+    /// out, open the session its workspace was written for, put the record back
+    /// and answer with it. What differs is the middle, which is the door's own.
+    ///
+    /// The record is persisted either way — a session that could not open
+    /// leaves the Issue as it was, with what was said still on its thread, and
+    /// the error is what the caller hears.
+    fn settle_plan_session(
+        &mut self,
+        plan_id: &str,
+        detail: ThreadDetail,
+        open: impl FnOnce(&mut AppState, &mut ActivePlan) -> Result<(), String>,
+    ) -> Result<Value, String> {
+        let mut active = self.take_plan(plan_id)?;
+        let opened = open(self, &mut active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id.to_string(), active, detail);
+        opened?;
+        persisted?;
+        Ok(view)
     }
 
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -10213,11 +10590,48 @@ impl AppState {
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         self.arm_issue_scheduler(&issue_id, ImplementationIntent::All)?;
-        if let Err(error) = self.advance_issue_scheduler(&issue_id, params) {
-            self.block_issue_scheduler(&issue_id, None, &error);
-            return Err(error);
+        self.implement_issue(&issue_id, params, None)
+    }
+
+    /// Advance one Issue's scheduler for a frame: either it is settled here and
+    /// the Issue is the answer, or it is waiting on git, which goes to the
+    /// drain and answers for it. A refusal before any git blocks the scheduler,
+    /// the same way the job's own refusal does.
+    fn implement_issue(
+        &mut self,
+        issue_id: &str,
+        params: &Value,
+        blocked_stage: Option<String>,
+    ) -> Result<Value, String> {
+        match self.defer_issue_scheduler(issue_id, params, blocked_stage)? {
+            Some(placeholder) => Ok(placeholder),
+            None => self.issue_view_full(issue_id, thread_detail(params)),
         }
-        self.issue_view_full(&issue_id, thread_detail(params))
+    }
+
+    /// Advance one Issue's scheduler and hand whatever git it owes to the
+    /// drain. `Some` is the placeholder the drain replaces with the job's own
+    /// answer; `None` means the pass settled here and the caller answers.
+    ///
+    /// Every caller that HAS a drain comes through here — a frame asking for
+    /// an implementation, a stage approval that wakes a parked scheduler, an
+    /// agent's own recovery report — so no request cuts a checkout under the
+    /// app mutex. A refusal before any git blocks the scheduler, the same way
+    /// the job's own refusal does.
+    fn defer_issue_scheduler(
+        &mut self,
+        issue_id: &str,
+        request: &Value,
+        blocked_stage: Option<String>,
+    ) -> Result<Option<Value>, String> {
+        match self.advance_issue_scheduler(issue_id, request) {
+            Ok(Some(job)) => Ok(Some(self.defer_job(job))),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.block_issue_scheduler(issue_id, blocked_stage, &error);
+                Err(error)
+            }
+        }
     }
 
     fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
@@ -10238,11 +10652,7 @@ impl AppState {
             ));
         }
         self.arm_issue_scheduler(&issue_id, ImplementationIntent::Stage(stage_id.clone()))?;
-        if let Err(error) = self.advance_issue_scheduler(&issue_id, params) {
-            self.block_issue_scheduler(&issue_id, Some(stage_id), &error);
-            return Err(error);
-        }
-        self.issue_view_full(&issue_id, thread_detail(params))
+        self.implement_issue(&issue_id, params, Some(stage_id))
     }
 
     /// Persist scheduler intent before any worktree/git/agent side effect. The
@@ -10298,10 +10708,35 @@ impl AppState {
         }
     }
 
+    /// Reconcile one Issue's durable intent with its implementation lineage,
+    /// and run whatever git that owes right here — for boot, which reconciles
+    /// every armed Issue before the first frame is served and has no drain to
+    /// hand git to. Everything with one uses
+    /// [`AppState::defer_issue_scheduler`] instead.
+    fn advance_issue_scheduler_here(
+        &mut self,
+        issue_id: &str,
+        request: &Value,
+    ) -> Result<(), String> {
+        match self.advance_issue_scheduler(issue_id, request)? {
+            Some(job) => self.run_lifecycle_here(job).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
     /// Reconcile one Issue's durable intent with its implementation lineage.
     /// This is deliberately idempotent: boot, approval, and completion may all
     /// call it, but the single-active-writer gate prevents duplicate checkouts.
-    fn advance_issue_scheduler(&mut self, issue_id: &str, request: &Value) -> Result<(), String> {
+    ///
+    /// What comes back is the git the next step needs — cutting the checkout,
+    /// or putting back one that was deleted — reserved but not yet run. The
+    /// job's own epilogue carries on from where this stopped, so the caller
+    /// decides only where the git runs, never what happens after it.
+    fn advance_issue_scheduler(
+        &mut self,
+        issue_id: &str,
+        request: &Value,
+    ) -> Result<Option<WorktreeLifecycleJob>, String> {
         let intent = self
             .plans
             .get(issue_id)
@@ -10310,31 +10745,26 @@ impl AppState {
             .implementation_intent
             .clone();
         if intent == ImplementationIntent::None {
-            return Ok(());
+            return Ok(None);
         }
 
         let target_stage = match &intent {
             ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
-            ImplementationIntent::All => self.plans[issue_id]
-                .stages
-                .iter()
-                .find(|doc| {
-                    self.current_issue_implementation(issue_id)
-                        .and_then(|run| run.stage_progress(&doc.id))
-                        .is_none_or(|progress| {
-                            progress.state != StageProgressState::Validated { passed: true }
-                                || progress.invalidation_reason.is_some()
-                        })
-                })
-                .map(|doc| doc.id.clone()),
+            ImplementationIntent::All => next_unsettled_stage(
+                &self.plans[issue_id].stages,
+                self.current_issue_implementation(issue_id),
+            )
+            .map(|doc| doc.id.clone()),
             ImplementationIntent::None => None,
         };
         let Some(target_stage) = target_stage else {
-            return self.set_issue_scheduler_activity(
-                issue_id,
-                Some(ImplementationIntent::None),
-                ImplementationActivity::Idle,
-            );
+            return self
+                .set_issue_scheduler_activity(
+                    issue_id,
+                    Some(ImplementationIntent::None),
+                    ImplementationActivity::Idle,
+                )
+                .map(|()| None);
         };
         let approved = self.plans[issue_id]
             .stages
@@ -10342,31 +10772,23 @@ impl AppState {
             .find(|stage| stage.id == target_stage)
             .is_some_and(|stage| stage.state == StageDocState::Approved);
         if !approved {
-            return self.set_issue_scheduler_activity(
-                issue_id,
-                None,
-                ImplementationActivity::WaitingApproval(target_stage),
-            );
-        }
-
-        let (run_id, worktree_just_created) = match self.current_issue_implementation_id(issue_id) {
-            Some(run_id) => (run_id, false),
-            None => {
-                self.set_issue_scheduler_activity(
+            return self
+                .set_issue_scheduler_activity(
                     issue_id,
                     None,
-                    ImplementationActivity::Preparing,
-                )?;
-                let created = self.run_create(&alias_param(request, "issue_id", "plan_id"))?;
-                (
-                    created
-                        .get("run_id")
-                        .and_then(Value::as_str)
-                        .ok_or("run.create returned no run_id")?
-                        .to_string(),
-                    true,
+                    ImplementationActivity::WaitingApproval(target_stage),
                 )
-            }
+                .map(|()| None);
+        }
+
+        // No implementation yet: cutting its checkout is the next step, and
+        // the job's epilogue resumes this scheduler on the run it opened.
+        let Some(run_id) = self.current_issue_implementation_id(issue_id) else {
+            self.set_issue_scheduler_activity(issue_id, None, ImplementationActivity::Preparing)?;
+            let waiting = self.issue_scheduler_waiting_on(issue_id, request, &intent);
+            return self
+                .open_implementation(issue_id, request, waiting)
+                .map(Some);
         };
 
         if let Some(attempt) = self.runs[&run_id]
@@ -10374,26 +10796,74 @@ impl AppState {
             .as_ref()
             .filter(|attempt| attempt.state == crate::run::RecoveryState::Started)
         {
-            return self.set_issue_scheduler_activity(
-                issue_id,
-                None,
-                ImplementationActivity::Blocked {
-                    stage_id: attempt.requested_stage_id.clone(),
-                    reason: self.runs[&run_id]
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| format!("verified recovery {} is running", attempt.id)),
-                },
-            );
+            return self
+                .set_issue_scheduler_activity(
+                    issue_id,
+                    None,
+                    ImplementationActivity::Blocked {
+                        stage_id: attempt.requested_stage_id.clone(),
+                        reason: self.runs[&run_id].last_error.clone().unwrap_or_else(|| {
+                            format!("verified recovery {} is running", attempt.id)
+                        }),
+                    },
+                )
+                .map(|()| None);
         }
 
-        if !worktree_just_created {
-            self.ensure_issue_implementation_worktree(issue_id, &run_id)?;
+        let waiting = self.issue_scheduler_waiting_on(issue_id, request, &intent);
+        if let Some(job) = self.ensure_issue_implementation_worktree(issue_id, &run_id, waiting)? {
+            return Ok(Some(job));
         }
+        self.dispatch_ready_stage(issue_id, &run_id, request)
+            .map(|()| None)
+    }
 
+    /// Who the scheduler is: what it hears when the checkout it is waiting on
+    /// exists, and which stage it marks blocked if that checkout never comes.
+    fn issue_scheduler_waiting_on(
+        &self,
+        issue_id: &str,
+        request: &Value,
+        intent: &ImplementationIntent,
+    ) -> Box<dyn ImplementationCaller> {
+        Box::new(IssueSchedulerWaiting {
+            issue_id: issue_id.to_string(),
+            request: request.clone(),
+            blocked_stage: match intent {
+                ImplementationIntent::Stage(stage_id) => Some(stage_id.clone()),
+                ImplementationIntent::All | ImplementationIntent::None => None,
+            },
+        })
+    }
+
+    /// The rest of one scheduler pass, once the implementation's checkout is on
+    /// disk: dispatch the stage the intent named, or arm run-all and let the
+    /// run chain through the stages itself.
+    ///
+    /// This is where a pass that had to stop for git resumes — the job's
+    /// epilogue calls it with the run the git settled.
+    fn dispatch_ready_stage(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        request: &Value,
+    ) -> Result<(), String> {
+        let intent = self
+            .plans
+            .get(issue_id)
+            .ok_or("unknown issue_id")?
+            .plan
+            .implementation_intent
+            .clone();
+        let run_id = run_id.to_string();
         match intent {
             ImplementationIntent::Stage(stage_id) => {
-                let already_started = self.runs[&run_id].stage_progress(&stage_id).is_some();
+                let already_started = self
+                    .runs
+                    .get(&run_id)
+                    .ok_or("unknown run_id")?
+                    .stage_progress(&stage_id)
+                    .is_some();
                 if !already_started {
                     let mut params = request.clone();
                     let object = params
@@ -10423,163 +10893,243 @@ impl AppState {
         }
     }
 
+    /// Make sure the implementation's checkout is where its run says it is.
+    /// `None` means it already was; a job means it is being put back with
+    /// `git worktree add` — and, when the branch is only on a remote, a fetch —
+    /// and the scheduler carries on from that job's epilogue.
     fn ensure_issue_implementation_worktree(
         &mut self,
         issue_id: &str,
         run_id: &str,
-    ) -> Result<(), String> {
-        let worktree_existed = self
-            .runs
-            .get(run_id)
-            .is_some_and(|run| run.worktree.path.exists());
-        let adopted = self.runs.get(run_id).is_some_and(|run| run.adopted);
-        if adopted && worktree_existed {
-            return Ok(());
+        caller: Box<dyn ImplementationCaller>,
+    ) -> Result<Option<WorktreeLifecycleJob>, String> {
+        let (adopted, checkout_stood, worktree, title) = {
+            let active = self
+                .runs
+                .get(run_id)
+                .ok_or_else(|| format!("unknown run_id: {run_id}"))?;
+            (
+                active.adopted,
+                active.worktree.path.exists(),
+                active.worktree.clone(),
+                active.run.goal.clone(),
+            )
+        };
+        // An adopted checkout is somebody else's directory: Build never cut it,
+        // so it cannot cut it again. Standing is all this can ask of one — and
+        // when it is gone there is no git to run, only the recovery agent to
+        // start and the Issue to tell.
+        if adopted {
+            if checkout_stood {
+                return Ok(None);
+            }
+            return Err(self.start_checkout_recovery(
+                issue_id,
+                run_id,
+                "adopted worktree is missing; its original checkout cannot be recreated safely",
+            )?);
         }
         let project_id = self.project_of(run_id)?;
-        let mut active = self.take_run(run_id)?;
-        let restored = if active.adopted {
-            Err(
-                "adopted worktree is missing; its original checkout cannot be recreated safely"
-                    .to_string(),
-            )
-        } else {
-            self.orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
-                .map_err(err)
-        };
-        match restored {
-            Ok(worktree) => {
-                active.worktree = worktree;
-                active.last_error = None;
-                let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
-                let persisted = self.finish_run_mutation(run_id.to_string(), active);
-                persisted?;
-                let mut issue = self.take_plan(issue_id)?;
-                issue.agents.sole_thread_mut().push_event_with_links(
-                    if worktree_existed {
-                        crate::thread::ThreadEventKind::WorktreeReused
-                    } else {
-                        crate::thread::ThreadEventKind::WorktreeRecreated
-                    },
-                    Some(if worktree_existed {
-                        "Verified and reused the original Issue worktree".to_string()
-                    } else {
-                        "Recreated the Issue worktree from its original branch".to_string()
-                    }),
-                    None,
-                    None,
-                    vec![
-                        crate::thread::ThreadLink::Implementation {
-                            issue_id: issue_id.to_string(),
-                            implementation_id: run_id.to_string(),
-                        },
-                        crate::thread::ThreadLink::Worktree { worktree_id },
-                    ],
-                    now_rfc3339(),
-                );
-                self.finish_plan_mutation(issue_id.to_string(), issue)
-            }
+        let project = self.orch_for(&project_id)?.clone();
+        let row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
+            .on_checkout(crate::worktree::external_worktree_id(&worktree.path))
+            .implementing(issue_id.to_string());
+        self.reserve_lifecycle(
+            row,
+            Box::new(RestoreImplementationCheckout {
+                project,
+                issue_id: issue_id.to_string(),
+                run_id: run_id.to_string(),
+                worktree,
+                checkout_stood,
+                caller,
+            }),
+        )
+        .map(Some)
+    }
+
+    /// Write down what the restore found: the checkout is back (or was never
+    /// really gone), and the Issue's conversation says which. A restore that
+    /// failed hands the run to the verified recovery agent instead — the run's
+    /// exact lineage is what is at stake, and only an agent can confirm it.
+    fn settle_restored_checkout(&mut self, restored: RestoredCheckout) -> Result<Value, String> {
+        let RestoredCheckout {
+            issue_id,
+            run_id,
+            checkout_stood,
+            restored,
+            caller,
+        } = restored;
+        let worktree = match restored {
+            Ok(worktree) => worktree,
             Err(error) => {
-                if active
-                    .recovery
-                    .as_ref()
-                    .is_some_and(|attempt| attempt.state == crate::run::RecoveryState::Started)
-                {
-                    self.runs.insert(run_id.to_string(), active);
-                    return Err("verified Issue recovery is already running".to_string());
-                }
-                let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-                let requested_stage_id = match &issue.plan.implementation_intent {
-                    ImplementationIntent::Stage(stage_id) => stage_id.clone(),
-                    ImplementationIntent::All => issue
-                        .stages
-                        .iter()
-                        .find(|doc| {
-                            active.stage_progress(&doc.id).is_none_or(|progress| {
-                                progress.state != StageProgressState::Validated { passed: true }
-                                    || progress.invalidation_reason.is_some()
-                            })
-                        })
-                        .map(|doc| doc.id.clone())
-                        .unwrap_or_default(),
-                    ImplementationIntent::None => {
-                        active.current_stage_id.clone().unwrap_or_default()
-                    }
-                };
-                let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
-                let started_at = now_rfc3339();
-                active.recovery = Some(crate::run::RecoveryAttempt {
-                    id: recovery_id.clone(),
-                    requested_stage_id: requested_stage_id.clone(),
-                    branch: active.worktree.recorded_branch.clone(),
-                    state: crate::run::RecoveryState::Started,
-                    report: None,
-                    started_at: started_at.clone(),
-                    completed_at: None,
-                });
-                active.last_error = Some(format!(
-                    "automatic branch restoration failed: {error}; verified recovery agent started"
-                ));
-                let project_root = self
-                    .projects
-                    .iter()
-                    .find(|project| project.id == project_id)
-                    .map(|project| project.repo_path.clone())
-                    .ok_or("unknown project_id")?;
-                let prompt = recovery_agent_prompt(
-                    &recovery_id,
-                    issue_id,
-                    run_id,
-                    &requested_stage_id,
-                    &active.worktree,
-                    &error,
-                    &issue.stages,
-                );
-                match PendingAgentTurn::for_recovery(run_id, &active, &project_root, prompt) {
-                    Some(turn) => self.pending_agent_turns.push(turn),
-                    None => eprintln!("recover {run_id}: no agent to hand the recovery to"),
-                }
-                let persisted = self.finish_run_mutation(run_id.to_string(), active);
-                persisted?;
-                let mut issue = self.take_plan(issue_id)?;
-                let mut links = vec![
-                    crate::thread::ThreadLink::Implementation {
-                        issue_id: issue_id.to_string(),
-                        implementation_id: run_id.to_string(),
-                    },
-                    crate::thread::ThreadLink::Recovery {
-                        recovery_id: recovery_id.clone(),
-                    },
-                ];
-                if let Some(stage) = issue
-                    .stages
-                    .iter()
-                    .find(|stage| stage.id == requested_stage_id)
-                {
-                    links.push(crate::thread::ThreadLink::IssueStage {
-                        issue_id: issue_id.to_string(),
-                        stage_id: stage.id.clone(),
-                        path: stage.path.clone(),
-                    });
-                }
-                issue.agents.sole_thread_mut().push_event_with_links(
-                    crate::thread::ThreadEventKind::RecoveryStarted,
-                    Some(format!(
-                        "Verified recovery started after automatic restore failed: {error}"
-                    )),
-                    None,
-                    None,
-                    links,
-                    started_at,
-                );
-                let issue_persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
-                issue_persisted?;
-                Err(format!(
-                    "automatic restore failed; verified recovery {recovery_id} started"
-                ))
+                let recovering = self
+                    .start_checkout_recovery(&issue_id, &run_id, &error)
+                    .unwrap_or_else(|persist_failure| persist_failure);
+                return caller.settle(self, Err(recovering));
             }
+        };
+        let settled = (|| -> Result<(), String> {
+            let mut active = self.take_run(&run_id)?;
+            active.worktree = worktree;
+            active.last_error = None;
+            let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+            self.finish_run_mutation(run_id.clone(), active)?;
+            let mut issue = self.take_plan(&issue_id)?;
+            issue.agents.sole_thread_mut().push_event_with_links(
+                if checkout_stood {
+                    crate::thread::ThreadEventKind::WorktreeReused
+                } else {
+                    crate::thread::ThreadEventKind::WorktreeRecreated
+                },
+                Some(if checkout_stood {
+                    "Verified and reused the original Issue worktree".to_string()
+                } else {
+                    "Recreated the Issue worktree from its original branch".to_string()
+                }),
+                None,
+                None,
+                vec![
+                    crate::thread::ThreadLink::Implementation {
+                        issue_id: issue_id.clone(),
+                        implementation_id: run_id.clone(),
+                    },
+                    crate::thread::ThreadLink::Worktree { worktree_id },
+                ],
+                now_rfc3339(),
+            );
+            self.finish_plan_mutation(issue_id.clone(), issue)
+        })();
+        caller.settle(self, settled.map(|()| run_id.as_str()))
+    }
+
+    /// Hand a run whose checkout could not be put back to the verified recovery
+    /// agent: a nonce-bound attempt on the record, the prompt that asks the
+    /// agent to prove the exact lineage, and the Issue told what happened. What
+    /// comes back is the message the caller refuses with.
+    fn start_checkout_recovery(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        error: &str,
+    ) -> Result<String, String> {
+        let project_id = self.project_of(run_id)?;
+        let mut active = self.take_run(run_id)?;
+        if active
+            .recovery
+            .as_ref()
+            .is_some_and(|attempt| attempt.state == crate::run::RecoveryState::Started)
+        {
+            self.runs.insert(run_id.to_string(), active);
+            return Ok("verified Issue recovery is already running".to_string());
         }
+        let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
+        let requested_stage_id = recovery_target_stage(issue, &active);
+        let recovery_id = format!("recovery-{}", uuid::Uuid::new_v4());
+        let started_at = now_rfc3339();
+        let prompt = recovery_agent_prompt(
+            &recovery_id,
+            issue_id,
+            run_id,
+            &requested_stage_id,
+            &active.worktree,
+            error,
+            &issue.stages,
+        );
+        active.recovery = Some(crate::run::RecoveryAttempt {
+            id: recovery_id.clone(),
+            requested_stage_id: requested_stage_id.clone(),
+            branch: active.worktree.recorded_branch.clone(),
+            state: crate::run::RecoveryState::Started,
+            report: None,
+            started_at: started_at.clone(),
+            completed_at: None,
+        });
+        active.last_error = Some(format!(
+            "automatic branch restoration failed: {error}; verified recovery agent started"
+        ));
+        self.queue_recovery_turn(run_id, &active, &project_id, prompt)?;
+        self.finish_run_mutation(run_id.to_string(), active)?;
+        self.note_recovery_started(
+            issue_id,
+            run_id,
+            &recovery_id,
+            &requested_stage_id,
+            error,
+            started_at,
+        )?;
+        Ok(format!(
+            "automatic restore failed; verified recovery {recovery_id} started"
+        ))
+    }
+
+    /// Hand the recovery prompt to the agent that will prove the lineage. An
+    /// agentless run is logged rather than refused: the attempt is on the
+    /// record either way, and a human can start an agent against it.
+    fn queue_recovery_turn(
+        &mut self,
+        run_id: &str,
+        active: &ActiveRun,
+        project_id: &str,
+        prompt: String,
+    ) -> Result<(), String> {
+        let project_root = self
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.repo_path.clone())
+            .ok_or("unknown project_id")?;
+        match PendingAgentTurn::for_recovery(run_id, active, &project_root, prompt) {
+            Some(turn) => self.pending_agent_turns.push(turn),
+            None => eprintln!("recover {run_id}: no agent to hand the recovery to"),
+        }
+        Ok(())
+    }
+
+    /// Tell the Issue's conversation that a verified recovery is running,
+    /// linked to the implementation it is for, the attempt itself, and the
+    /// stage the agent is being asked to prove.
+    fn note_recovery_started(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        recovery_id: &str,
+        requested_stage_id: &str,
+        error: &str,
+        started_at: String,
+    ) -> Result<(), String> {
+        let mut issue = self.take_plan(issue_id)?;
+        let mut links = vec![
+            crate::thread::ThreadLink::Implementation {
+                issue_id: issue_id.to_string(),
+                implementation_id: run_id.to_string(),
+            },
+            crate::thread::ThreadLink::Recovery {
+                recovery_id: recovery_id.to_string(),
+            },
+        ];
+        if let Some(stage) = issue
+            .stages
+            .iter()
+            .find(|stage| stage.id == requested_stage_id)
+        {
+            links.push(crate::thread::ThreadLink::IssueStage {
+                issue_id: issue_id.to_string(),
+                stage_id: stage.id.clone(),
+                path: stage.path.clone(),
+            });
+        }
+        issue.agents.sole_thread_mut().push_event_with_links(
+            crate::thread::ThreadEventKind::RecoveryStarted,
+            Some(format!(
+                "Verified recovery started after automatic restore failed: {error}"
+            )),
+            None,
+            None,
+            links,
+            started_at,
+        );
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     fn refresh_issue_scheduler_activity(&mut self, issue_id: &str) -> Result<(), String> {
@@ -10624,15 +11174,7 @@ impl AppState {
                 ImplementationActivity::Idle,
             ),
             RunState::StageGate => {
-                let next = issue
-                    .stages
-                    .iter()
-                    .find(|doc| {
-                        run.stage_progress(&doc.id).is_none_or(|progress| {
-                            progress.state != StageProgressState::Validated { passed: true }
-                                || progress.invalidation_reason.is_some()
-                        })
-                    })
+                let next = next_unsettled_stage(&issue.stages, Some(run))
                     .map(|doc| (doc.id.clone(), doc.state));
                 match next {
                     Some((stage_id, StageDocState::Planned)) => {
@@ -10863,22 +11405,27 @@ impl AppState {
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
         append_user_thread_messages(active.agents.sole_thread_mut(), messages);
-        let outcome = (|| -> Result<(), String> {
-            let store = self.require_store()?;
-            let turn = self
-                .orch_for(&project_id)?
-                .send_plan_notes(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
-                .map_err(err)?;
-            self.queue_plan_turn(&plan_id, &active, turn);
-            if self.qa_agent {
-                self.qa_simulate_plan(&project_id, &mut active)?;
-            }
-            Ok(())
-        })();
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
-        outcome?;
+        // Pure legality first, before any disk is asked for — and the notes are
+        // durable either way: an illegal revise leaves what the reviewer wrote
+        // on the conversation.
+        let gated =
+            crate::plan::plan_transition(&active.plan.state, crate::plan::PlanEvent::SendNotes)
+                .map_err(|error| error.to_string());
+        let title = active.plan.goal.clone();
+        let persisted = self.finish_plan_mutation(plan_id.clone(), active);
+        gated?;
         persisted?;
-        Ok(view)
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            project_id.clone(),
+            title,
+            Box::new(PlanNotesSent {
+                plan_id: plan_id.clone(),
+                project_id,
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
     }
 
     fn plan_stage_approve(&mut self, params: &Value) -> Result<Value, String> {
@@ -10929,11 +11476,17 @@ impl AppState {
             .get(&plan_id)
             .is_some_and(|issue| issue.plan.implementation_intent != ImplementationIntent::None)
         {
-            let request = json!({ "issue_id": plan_id });
-            if let Err(error) = self.advance_issue_scheduler(&plan_id, &request) {
-                self.block_issue_scheduler(&plan_id, Some(stage_id), &error);
-                return Err(error);
-            }
+            // The approval this frame just made is what an armed Implement All
+            // was parked on, so this hop cuts the whole implementation
+            // checkout. It goes to the drain like every other frame's git —
+            // and the Issue view it answers with is the one this verb was
+            // going to answer with anyway, read after the hop rather than
+            // before it.
+            return self.implement_issue(
+                &plan_id,
+                &scheduler_request(&plan_id, params),
+                Some(stage_id),
+            );
         }
         Ok(view)
     }
@@ -10944,23 +11497,23 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let project_id = self.project_of(&plan_id)?;
-        let mut active = self.take_plan(&plan_id)?;
-        let outcome = (|| -> Result<(), String> {
-            let store = self.require_store()?;
-            let turn = self
-                .orch_for(&project_id)?
-                .send_plan_stage_notes(&mut active, store, &stage_id)
-                .map_err(err)?;
-            self.queue_plan_turn(&plan_id, &active, turn);
-            if self.qa_agent {
-                self.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
-            }
-            Ok(())
-        })();
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
-        outcome?;
-        persisted?;
-        Ok(view)
+        let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
+        // Pure legality first — nothing is scaffolded for a revise that will be
+        // refused, and this changes nothing to have to put back.
+        crate::orchestrator::gate_plan_stage_notes(active, &stage_id).map_err(err)?;
+        let title = active.plan.goal.clone();
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            project_id.clone(),
+            title,
+            Box::new(StageNotesSent {
+                plan_id: plan_id.clone(),
+                project_id,
+                stage_id,
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
     }
 
     /// A freeform human message to the plan's agent.
@@ -10976,26 +11529,25 @@ impl AppState {
             .agents
             .sole_thread_mut()
             .post_user(&message, None, now_rfc3339());
-        let outcome = (|| -> Result<(), String> {
-            let store = self.require_store()?;
-            let turn = self
-                .orch_for(&project_id)?
-                .message_plan(&mut active, store, NEW_THREAD_MESSAGES_PROMPT)
-                .map_err(err)?;
-            self.queue_plan_turn(&plan_id, &active, turn);
-            if self.qa_agent && active.plan.state == PlanState::Drafting {
-                if active.revising_stage_id.is_some() {
-                    self.qa_simulate_plan_stage_revise(&project_id, &mut active)?;
-                } else {
-                    self.qa_simulate_plan(&project_id, &mut active)?;
-                }
-            }
-            Ok(())
-        })();
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
-        outcome?;
+        // Pure legality first, and the message is durable either way: a plan
+        // that refuses the freeform channel still heard what was said.
+        let gated = crate::orchestrator::gate_plan_message(&active, NEW_THREAD_MESSAGES_PROMPT)
+            .map_err(err);
+        let title = active.plan.goal.clone();
+        let persisted = self.finish_plan_mutation(plan_id.clone(), active);
+        gated?;
         persisted?;
-        Ok(view)
+        let job = self.reserve_plan_workspace(
+            &plan_id,
+            project_id.clone(),
+            title,
+            Box::new(PlanMessaged {
+                plan_id: plan_id.clone(),
+                project_id,
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
     }
 
     fn plan_abandon(&mut self, params: &Value) -> Result<Value, String> {
@@ -11164,6 +11716,29 @@ impl AppState {
     /// driven by the human who opened it.
     fn run_create(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
+        let job = self.open_implementation(
+            &plan_id,
+            params,
+            Box::new(RunOpenedView {
+                detail: thread_detail(params),
+            }),
+        )?;
+        Ok(self.defer_job(job))
+    }
+
+    /// Settle everything an Issue's implementation needs before any git runs —
+    /// the run's id, the checkout it works in, the model its agent runs on —
+    /// and hand the git itself to the drain.
+    ///
+    /// Shared by `run.create` and by the Issue scheduler, which differ only in
+    /// `caller`: who is waiting for the run, and what a failure leaves written
+    /// on the Issue.
+    fn open_implementation(
+        &mut self,
+        issue_id: &str,
+        params: &Value,
+        caller: Box<dyn ImplementationCaller>,
+    ) -> Result<WorktreeLifecycleJob, String> {
         // Targeting: an Issue can be implemented into a checkout that already
         // exists instead of one cut for it (Decisions §Issue view — the stage
         // column's assignment control).
@@ -11173,65 +11748,57 @@ impl AppState {
             .filter(|id| !id.is_empty())
         {
             let worktree_id = worktree_id.to_string();
-            return self.run_create_in_worktree(&plan_id, &worktree_id, params);
+            return self.adopt_implementation_checkout(issue_id, &worktree_id, params, caller);
         }
-        let source_plan_id = plan_id.clone();
+        if !self.plans.contains_key(issue_id) {
+            return Err("unknown plan_id".to_string());
+        }
+        let project_id = self.project_of(issue_id)?;
         let requested_choice = model_choice_from(params, self.default_harness)?;
-        let base_override = params
+        let base = params
             .get("base_branch")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let run_id = format!("run-{}", uuid::Uuid::new_v4());
-
-        let (project_id, active, turn) = {
-            if !self.plans.contains_key(&plan_id) {
-                return Err("unknown plan_id".to_string());
-            }
-            let project_id = self.project_of(&plan_id)?;
-            let base = base_override.unwrap_or_else(|| self.plans[&plan_id].base_branch.clone());
-            let has_active_run = self.runs.values().any(|r| {
-                r.run.plan_id.as_ref().map(|p| &p.0) == Some(&plan_id) && !r.run.state.is_terminal()
-            });
-            let store = self.require_store()?;
-            let plan = &self.plans[&plan_id];
-            let model_choice = if has_agent_choice(params) {
-                requested_choice
-            } else {
-                plan.model_choice.clone()
-            };
-            let (active, turn) = self
-                .orch_for(&project_id)?
-                .dispatch_run(
-                    RunId::new(&run_id),
-                    RunSource {
-                        plan,
-                        has_active_run,
-                    },
-                    &base,
-                    model_choice,
-                    store,
-                )
-                .map_err(err)?;
-            (project_id, active, turn)
+            .map(str::to_string)
+            .unwrap_or_else(|| self.plans[issue_id].base_branch.clone());
+        let has_active_run = self.runs.values().any(|r| {
+            r.run.plan_id.as_ref().map(|p| p.0.as_str()) == Some(issue_id)
+                && !r.run.state.is_terminal()
+        });
+        let store = self.require_store()?.clone();
+        let plan = &self.plans[issue_id];
+        let model_choice = if has_agent_choice(params) {
+            requested_choice
+        } else {
+            plan.model_choice.clone()
         };
-
-        let agent_id = active
-            .agents
-            .primary()
-            .expect("a dispatched run opens with its agent")
-            .id
-            .clone();
-        self.open_implementation_run(
-            run_id,
-            project_id,
-            source_plan_id,
-            active,
-            turn,
-            &agent_id,
-            crate::thread::ThreadEventKind::WorktreeCreated,
-            |run_id| format!("Created the Issue implementation worktree for {run_id}"),
-            thread_detail(params),
+        let title = plan.plan.goal.clone();
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run,
+        })
+        .map_err(err)?;
+        let project = self.orch_for(&project_id)?.clone();
+        let run_id = format!("run-{}", uuid::Uuid::new_v4());
+        // The ref this implementation is about to cut is on the row, so a
+        // create or a dispatch claiming the same one collides here rather than
+        // in git.
+        let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
+            .on_branch(crate::worktree::branch_name_for(issue.slug()))
+            .implementing(issue_id.to_string());
+        self.reserve_lifecycle(
+            row,
+            Box::new(OpenImplementation {
+                project,
+                project_id,
+                issue_id: issue_id.to_string(),
+                issue,
+                base_branch: base,
+                run_id,
+                store,
+                model_choice,
+                caller,
+            }),
         )
     }
 
@@ -11242,18 +11809,19 @@ impl AppState {
     /// checkout Build has never seen is adopted first, and a branch already
     /// implementing a DIFFERENT Issue is refused: two Issues writing one branch
     /// would make neither one's diff readable.
-    fn run_create_in_worktree(
+    fn adopt_implementation_checkout(
         &mut self,
         issue_id: &str,
         worktree_id: &str,
         params: &Value,
-    ) -> Result<Value, String> {
+        caller: Box<dyn ImplementationCaller>,
+    ) -> Result<WorktreeLifecycleJob, String> {
         if !self.plans.contains_key(issue_id) {
             return Err("unknown plan_id".to_string());
         }
         let project_id = self.project_of(issue_id)?;
         let requested_choice = model_choice_from(params, self.default_harness)?;
-        let run_id = match self.run_on_worktree(&project_id, worktree_id) {
+        let (run_id, checkout) = match self.run_owning_worktree_id(&project_id, worktree_id) {
             Some(run_id) => {
                 // The primary checkout is the repository, not a worktree to
                 // hand an Issue: committing stage docs there lands them on the
@@ -11278,19 +11846,23 @@ impl AppState {
                         other.0
                     ));
                 }
-                run_id
+                let checkout = self.runs[&run_id].worktree.path.clone();
+                (run_id, ImplementationCheckout::Owned(checkout))
             }
-            None => {
-                let adopted = self.run_adopt(&json!({
-                    "project_id": project_id,
-                    "worktree_id": worktree_id,
-                }))?;
-                adopted
-                    .get("run_id")
-                    .and_then(Value::as_str)
-                    .ok_or("run.adopt returned no run_id")?
-                    .to_string()
-            }
+            // Nobody owns it yet, so this implementation's git takes it over
+            // first — the scan that resolves the card and the checkpoint commit
+            // that writes Build's ownership into it, both off the lock, and the
+            // run they mint is the one the implementation is written onto.
+            None => (
+                format!("run-{}", uuid::Uuid::new_v4()),
+                ImplementationCheckout::Unowned {
+                    target: AdoptionTarget::Card {
+                        worktree_id: worktree_id.to_string(),
+                        excluded: self.bound_worktree_paths(),
+                    },
+                    base_branch: self.base_for(&project_id)?,
+                },
+            ),
         };
 
         let has_active_run = self.runs.iter().any(|(id, run)| {
@@ -11303,91 +11875,172 @@ impl AppState {
         } else {
             self.plans[issue_id].model_choice.clone()
         };
-        let mut active = self.take_run(&run_id)?;
-        let adopted = {
-            let store = self.require_store()?;
-            let plan = &self.plans[issue_id];
-            self.orch_for(&project_id)?
-                .adopt_implementation(
-                    &mut active,
-                    RunSource {
-                        plan,
-                        has_active_run,
-                    },
-                    model_choice,
-                    store,
-                )
-                .map_err(err)
-        };
-        let (turn, agent_id) = match adopted {
-            Ok(opened) => opened,
-            Err(error) => {
-                // Nothing was handed over: the branch keeps the run it had.
-                self.runs.insert(run_id, active);
-                return Err(error);
-            }
-        };
-        let branch = active.worktree.branch();
-        self.open_implementation_run(
-            run_id,
-            project_id,
-            issue_id.to_string(),
-            active,
-            turn,
-            &agent_id,
-            crate::thread::ThreadEventKind::WorktreeReused,
-            move |_| format!("Implementing into the existing checkout on {branch}"),
-            thread_detail(params),
+        let store = self.require_store()?.clone();
+        let plan = &self.plans[issue_id];
+        let title = plan.plan.goal.clone();
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run,
+        })
+        .map_err(err)?;
+        let project = self.orch_for(&project_id)?.clone();
+        // The run stays on the board while its checkout is checkpointed: it is
+        // the same run either way, and a run that vanished from every poll for
+        // the length of two commits would read as one that had been abandoned.
+        // What the row holds is the checkout, which nothing else may claim
+        // until this hand-over is written down.
+        let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
+            .on_checkout(worktree_id.to_string())
+            .implementing(issue_id.to_string());
+        self.reserve_lifecycle(
+            row,
+            Box::new(AdoptImplementation {
+                project,
+                project_id,
+                issue_id: issue_id.to_string(),
+                issue,
+                run_id,
+                checkout,
+                store,
+                model_choice,
+                caller,
+            }),
         )
     }
 
-    /// The live run that owns a checkout, matched by the same path hash the
-    /// feed's rows carry. A terminal run has let its worktree go, so it never
-    /// answers here — the checkout is adoptable again.
-    fn run_on_worktree(&self, project_id: &str, worktree_id: &str) -> Option<String> {
-        self.runs
-            .iter()
-            .filter(|(run_id, active)| {
-                !active.run.state.is_terminal()
-                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+    /// `run.create`'s apply half on a checkout that was cut for it: open the
+    /// run around what the git prepared, and answer whoever asked.
+    fn open_prepared_implementation(
+        &mut self,
+        opened: ImplementationOpened,
+    ) -> Result<Value, String> {
+        let ImplementationOpened {
+            project_id,
+            issue_id,
+            run_id,
+            prepared,
+            model_choice,
+            caller,
+        } = opened;
+        let opened = (|| -> Result<OpenedImplementation, String> {
+            let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
+            let (active, turn) = self
+                .orch_for(&project_id)?
+                .open_prepared_run(RunId::new(&run_id), plan, prepared, model_choice)
+                .map_err(err)?;
+            let agent_id = active
+                .agents
+                .primary()
+                .expect("a dispatched run opens with its agent")
+                .id
+                .clone();
+            Ok(OpenedImplementation {
+                checkout_summary: format!("Created the Issue implementation worktree for {run_id}"),
+                run_id: run_id.clone(),
+                project_id,
+                issue_id,
+                active,
+                turn,
+                agent_id,
+                checkout_event: crate::thread::ThreadEventKind::WorktreeCreated,
             })
-            .find(|(_, active)| {
-                crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path))
-                    == worktree_id
+        })()
+        .and_then(|opened| self.open_implementation_run(opened));
+        caller.settle(self, opened.map(|()| run_id.as_str()))
+    }
+
+    /// The same, on a checkout an existing run already owns: the run is taken
+    /// out, handed the implementation the git prepared it for, and put back.
+    fn open_adopted_implementation(
+        &mut self,
+        opened: ImplementationAdopted,
+    ) -> Result<Value, String> {
+        let ImplementationAdopted {
+            project_id,
+            issue_id,
+            run_id,
+            base_sha,
+            adopted,
+            model_choice,
+            caller,
+        } = opened;
+        let opened = (|| -> Result<(), String> {
+            // The run this is written onto: the one the branch already had, or
+            // the one the adoption in this job's git phase just earned.
+            let mut active = match &adopted {
+                Some(adopted) => adopted.open_run(self)?,
+                None => self.take_run(&run_id)?,
+            };
+            let handed_over = (|| -> Result<(AgentTurn, String), String> {
+                let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
+                self.orch_for(&project_id)?
+                    .open_adopted_implementation(&mut active, plan, base_sha, model_choice)
+                    .map_err(err)
+            })();
+            let (turn, agent_id) = match handed_over {
+                Ok(opened) => opened,
+                Err(error) => {
+                    // Nothing was handed over. The branch keeps the run it had
+                    // — or, when this job earned it one, keeps the plain
+                    // adopted run its checkout is now Build's under.
+                    let put_back = self.finish_run_mutation(run_id.clone(), active);
+                    return Err(match put_back {
+                        Ok(()) => error,
+                        Err(store) => format!("{error}; and the run could not be saved: {store}"),
+                    });
+                }
+            };
+            let branch = active.worktree.branch();
+            self.open_implementation_run(OpenedImplementation {
+                checkout_summary: format!("Implementing into the existing checkout on {branch}"),
+                run_id: run_id.clone(),
+                project_id,
+                issue_id,
+                active,
+                turn,
+                agent_id,
+                checkout_event: crate::thread::ThreadEventKind::WorktreeReused,
             })
-            .map(|(run_id, _)| run_id.clone())
+        })();
+        caller.settle(self, opened.map(|()| run_id.as_str()))
     }
 
     /// The tail every implementation dispatch shares: address the first turn to
     /// the agent that will hear it, drive it under QA, persist the run, and
     /// record on the Issue's conversation which checkout the work went into.
-    #[allow(clippy::too_many_arguments)]
-    fn open_implementation_run(
-        &mut self,
-        run_id: String,
-        project_id: String,
-        issue_id: String,
-        mut active: ActiveRun,
-        turn: crate::orchestrator::AgentTurn,
-        agent_id: &str,
-        checkout_event: crate::thread::ThreadEventKind,
-        checkout_summary: impl Fn(&str) -> String,
-        thread_detail: ThreadDetail,
-    ) -> Result<Value, String> {
+    ///
+    /// The answer is not built here — who asked is what decides that, and by
+    /// this point they are as far apart as `run.create` and a scheduled stage.
+    fn open_implementation_run(&mut self, opened: OpenedImplementation) -> Result<(), String> {
+        let OpenedImplementation {
+            run_id,
+            project_id,
+            issue_id,
+            mut active,
+            turn,
+            agent_id,
+            checkout_event,
+            checkout_summary,
+        } = opened;
         let plan_docs = self.owning_plan_stage_docs(&active);
 
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
         self.pending_agent_turns
             .push(PendingAgentTurn::for_run_agent(
-                &run_id, agent_id, &active, turn,
+                &run_id, &agent_id, &active, turn,
             ));
         if self.qa_agent {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+        // The checkout belongs to a run from here on, so it leaves the unbound
+        // list its mutation named it on. A checkout that was already bound was
+        // never in that list, so this is routinely a no-op.
+        let checkout = active.worktree.path.clone();
         let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
+        self.note_worktree_gone(&project_id, &checkout);
         let mut plan = self.take_plan(&issue_id)?;
         let implementation_link = crate::thread::ThreadLink::Implementation {
             issue_id: issue_id.clone(),
@@ -11395,7 +12048,7 @@ impl AppState {
         };
         plan.agents.sole_thread_mut().push_event_with_links(
             checkout_event,
-            Some(checkout_summary(&run_id)),
+            Some(checkout_summary),
             None,
             None,
             vec![
@@ -11418,8 +12071,7 @@ impl AppState {
         let plan_persisted = self.finish_plan_mutation(issue_id, plan);
         plan_persisted?;
         self.auto_advance_run(&run_id);
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail, DigestScope::Detail))
+        Ok(())
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -11488,7 +12140,7 @@ impl AppState {
     /// way it merges the page it opened on.
     fn thread_page(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
-        let thread = self.agent_conversation(&entity_id, addressed_agent(params).as_deref())?;
+        let thread = self.agent_conversation(&entity_id, named_agent_id(params).as_deref())?;
         let before = params.get("before_sequence").and_then(Value::as_u64);
         let limit = thread_page_limit(params);
         // A conversation is loaded as its tail, so a walk far enough up one
@@ -11684,11 +12336,12 @@ impl AppState {
             let mut parked_implementation = None;
             // An inert issue has no session at all: this message is what starts
             // one. The dispatch reads everything said so far, so the planning
-            // agent opens on the goal AND on what the user just added.
-            let mut started_planning = Ok(());
-            if active.plan.state == PlanState::Created && active.workspace.is_none() {
-                started_planning = self.start_inert_plan(&entity_id, &mut active);
-            } else if let Some(implementation) = implementation_target {
+            // agent opens on the goal AND on what the user just added — but its
+            // workspace is disk, so it is reserved below, once the record this
+            // frame is holding is back in its map.
+            let inert = active.plan.state == PlanState::Created && active.workspace.is_none();
+            let awake = implementation_target.filter(|_| !inert);
+            if let Some(implementation) = awake {
                 // The Issue owns the conversation, but its live implementation
                 // owns the checkout/PTY. Addressing thread.post to the Issue
                 // must therefore wake that implementation agent — and the same
@@ -11715,7 +12368,7 @@ impl AppState {
                         )
                     })
                     .map(|_| run_id);
-            } else if let Some(workspace) = &active.workspace {
+            } else if let Some(workspace) = active.workspace.as_ref().filter(|_| !inert) {
                 active.agents.resolve(Some(&agent_id))?;
                 self.tell_the_agent_a_message_is_waiting(
                     &workspace.checkout,
@@ -11726,11 +12379,26 @@ impl AppState {
                 );
             }
             let (view, persisted) =
-                self.answer_plan_mutation(entity_id, active, thread_detail(params));
+                self.answer_plan_mutation(entity_id.clone(), active, thread_detail(params));
+            persisted?;
             // The message is durable either way: a dispatch that could not start
             // leaves the issue inert, with what was said still on its thread.
-            started_planning?;
-            persisted?;
+            if inert {
+                let started = self.reserve_plan_drafting(
+                    &entity_id,
+                    Box::new(PlanDraftingStarted {
+                        issue_id: entity_id.clone(),
+                        detail: thread_detail(params),
+                        posted_sequence,
+                    }),
+                )?;
+                if let Some(job) = started {
+                    // The Issue's own view comes back from the apply phase, so
+                    // the composer hears about the session that is starting
+                    // rather than about the one that was not there yet.
+                    return Ok(self.defer_job(job));
+                }
+            }
             if let Some(run_id) = parked_implementation {
                 let mut run = self.take_run(&run_id)?;
                 run.run
@@ -11863,9 +12531,9 @@ impl AppState {
     /// A live tab is nudged where it stands ([`nudge_live_agent_tab`]). A tab
     /// whose process has ended — or one that was never opened — is not a reason
     /// for the message to go unheard: the SAME agent starts again, in the SAME
-    /// checkout, through the queue [`deliver_pending_agent_turns`] drains once
-    /// the state lock is free (a spawn blocks for seconds on the harness's
-    /// readiness wait, and every terminal pump needs that lock). Continuation
+    /// checkout, through the queue [`DeliveryRunner`] drains on a thread of its
+    /// own (a spawn blocks for seconds on the harness's readiness wait, and
+    /// every terminal pump — and this reply — needs that lock). Continuation
     /// comes with it for free: [`ensure_agent_tab`] probes the provider's own
     /// transcript for the checkout, so a revived claude/codex agent picks the
     /// session it was in back up rather than opening a blank one.
@@ -11895,16 +12563,13 @@ impl AppState {
         }
         // Two harnesses in one checkout would both report `done` for the same
         // owner, and the second report is an illegal transition that lands on
-        // the conversation as a bogus failure. A harness already on its way is
-        // the one that reads this message: it opens on the cold prompt, which
-        // tells it to call `read_unread_messages`, and the message is durable
-        // on the thread before it can ask.
-        let already_starting = self.agent_spawns_in_flight.contains(&key)
-            || self
-                .pending_agent_turns
-                .iter()
-                .any(|queued| queued.root == root && queued.agent_id == agent_id);
-        if already_starting {
+        // the conversation as a bogus failure. A harness already on its way
+        // WITH WORDS for it is the one that reads this message: it opens on
+        // the cold prompt, which tells it to call `read_unread_messages`, and
+        // the message is durable on the thread before it can ask. A start
+        // that says nothing promises no such read, so this turn is queued
+        // behind it and lands Warm on the tab it opens.
+        if self.agent_is_on_its_way(&root, agent_id) {
             return;
         }
         self.pending_agent_turns.push(PendingAgentTurn {
@@ -11916,10 +12581,13 @@ impl AppState {
             // already durable on the thread, so the harness is told to read
             // them — wrapped, when it is a new process, in the catch-up packet
             // it has no other way to reconstruct.
-            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-            warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            say: Some(TurnText {
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            }),
             phase: "revive",
             wants_catch_up: true,
+            survives_refusal: false,
         });
     }
 
@@ -12229,7 +12897,7 @@ impl AppState {
         // or the branch's first agent — the one every surface that predates the
         // rail meant. Resolved on the run's OWN roster, before the swap below
         // can hand it the Issue's.
-        let addressed = addressed_agent(params);
+        let addressed = named_agent_id(params);
         let run_agent_id = active.agents.resolve(addressed.as_deref())?.id.clone();
         let addresses_primary_agent = active.agents.is_primary(&run_agent_id);
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
@@ -12656,7 +13324,7 @@ impl AppState {
     /// Prune a merged run's worktree once its `Merged` verdict is durable.
     fn prune_merged_worktree(&self, project_id: &str, worktree: &Worktree) {
         if let Ok(orch) = self.orch_for(project_id) {
-            orch.discard_checkout(worktree);
+            orch.discard_checkout(worktree, /* keep_branch */ false);
         }
     }
 
@@ -12669,7 +13337,10 @@ impl AppState {
         cleanup: MergeCleanup,
     ) {
         match cleanup {
-            MergeCleanup::Prune => self.prune_merged_worktree(project_id, worktree),
+            MergeCleanup::Prune => {
+                self.retire_agents_of_pruned_worktree(&worktree.path);
+                self.prune_merged_worktree(project_id, worktree);
+            }
             MergeCleanup::Keep => {}
             MergeCleanup::Release => {
                 if let Some(store) = &self.store {
@@ -12686,7 +13357,7 @@ impl AppState {
                 self.entity_last_state.remove(run_id);
                 self.run_files_changed_at.remove(run_id);
                 self.invalidate_run_stat(run_id);
-                self.invalidate_external_scan(project_id);
+                self.rescan_external_worktrees(project_id);
             }
         }
     }
@@ -12728,112 +13399,196 @@ impl AppState {
         Ok(view)
     }
 
+    /// Abandon a run: end it, take its agents down, and take back the checkout
+    /// it was working in — the directory, never the branch, because a run's
+    /// work outlives the run so it can be re-attempted.
+    ///
+    /// Every refusal is spent here, before anything is torn down. What the
+    /// drain runs is git that cannot fail the verb: the stage publications the
+    /// removal is about to make unreadable, the wait for the agents to die, and
+    /// the removal itself.
     fn run_abandon(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let project_id = self.project_of(&run_id)?;
-        let mut active = self.take_run(&run_id)?;
-        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
-        let branch = active.worktree.branch();
-        // Reconcile publication while the checkout and refs are still
-        // inspectable. Every Build-owned removal path must decide completion
-        // before deleting the evidence it needs to decide it.
-        let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
-        let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        // Judged before a single agent is killed: an abandon that is not legal
+        // must leave the run exactly as it found it.
+        run_transition(&active.run.state, RunEvent::Abandon)
+            .map_err(|illegal| illegal.to_string())?;
         // Abandoning removes the run's worktree — which for a primary run is
         // the repository. That run ends by letting go of the checkout instead.
-        let keeps_checkout = self.owns_primary_checkout(&run_id, &active);
-        let result = self.orch_for(&project_id).and_then(|orch| {
-            if keeps_checkout {
-                orch.abandon_run_keeping_checkout(&mut active).map_err(err)
-            } else {
-                orch.abandon_run(&mut active).map_err(err)
-            }
+        let keeps_checkout = self.owns_primary_checkout(&run_id, active);
+        let title = active.run.goal.clone();
+        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let stages = self.stage_publication_query(&run_id, active);
+        let project = self.orch_for(&project_id)?.clone();
+        let settlement = Box::new(RunAbandoned {
+            run_id: run_id.clone(),
+            project_id: project_id.clone(),
+            issue_id,
+            detail: thread_detail(params),
+            stages,
+            published: StagePublications::default(),
         });
-        if result.is_ok() {
-            // The worktree removal inside `abandon_run` is best-effort, so the
-            // orphan reaper — which only sweeps tabs whose root is GONE —
-            // cannot be trusted to take the agent with it. A human who
-            // abandoned a run must not keep paying for the agent that was
-            // working on it, so the kill is explicit, the way release and
-            // delete kill theirs.
-            self.close_agent_tab(&active.worktree.path);
-            // The run is out of the map, so its lineage closes on the thread
-            // this call holds rather than through the owner lookup.
-            let now = now_rfc3339();
-            if let Some(primary) = active.agents.primary_mut() {
-                finish_open_session(&mut primary.thread, &now);
-                primary.thread.push_event(
-                    crate::thread::ThreadEventKind::Abandoned,
-                    Some("Run abandoned".to_string()),
-                    None,
-                    None,
-                    now,
-                );
-            }
-            // A branch may carry several agents and the kill above took every
-            // one of them. `Abandoned` closed the first agent's turn (and, for
-            // a planned implementation, its Issue's — see
-            // `mirror_run_outcome_to_issue`); the agents beside it were told
-            // nothing, so each one that died mid-turn is closed on its own
-            // conversation. Every other teardown path removes the run from the
-            // board entirely, so there is no row left to read as working.
-            let now = now_rfc3339();
-            for agent in active.agents.iter_mut() {
-                if agent.thread.working_since().is_some() {
-                    record_session_death_in_thread(&mut agent.thread, &now);
-                }
-            }
+        self.discard_run(
+            run_id,
+            Some(project_id),
+            title,
+            move |worktree| match keeps_checkout {
+                true => DiscardedCheckout::Kept,
+                false => DiscardedCheckout::Removed {
+                    project,
+                    worktree: worktree.clone(),
+                },
+            },
+            settlement,
+        )
+    }
+
+    /// Take one run off the board and let go of the checkout it was working in.
+    ///
+    /// `run.abandon` and `run.delete` differ in three things: what happens to
+    /// the directory, what is still owed the records once it is gone, and what
+    /// the row standing in the run's place is called. Everything around
+    /// them — the row, the run coming out of the map, the stat the board
+    /// cached, the agents that were writing into the directory — is the same
+    /// decide phase, and it is this one.
+    ///
+    /// The caller's refusals are all spent before it gets here: `take` runs
+    /// with the row already on the board and cannot fail.
+    fn discard_run(
+        &mut self,
+        run_id: String,
+        project_id: Option<String>,
+        title: String,
+        checkout: impl FnOnce(&crate::worktree::Worktree) -> DiscardedCheckout,
+        settlement: Box<dyn DiscardSettlement>,
+    ) -> Result<Value, String> {
+        let worktree_path = self
+            .runs
+            .get(&run_id)
+            .ok_or("unknown run_id")?
+            .worktree
+            .path
+            .clone();
+        let row = PendingRow::discarding(run_id.clone(), project_id, title).on_checkout(
+            crate::worktree::external_worktree_id(&Self::canonical_root(&worktree_path)),
+        );
+        self.defer_lifecycle_holding(row, move |state| {
+            let active = state
+                .runs
+                .remove(&run_id)
+                .expect("the run was read out of the map above");
+            state.invalidate_run_stat(&run_id);
+            // A human who took a run off the board must not keep paying for the
+            // agent that was working on it, so the kill is explicit — and the
+            // removal waits it out rather than walking a directory a live child
+            // is still writing into.
+            let retirements = state.retire_agent_tabs(&active.worktree.path);
+            Box::new(DiscardCheckout {
+                checkout: checkout(&active.worktree),
+                retirements,
+                settlement,
+                active: Box::new(active),
+                run_id,
+            })
+        })
+    }
+
+    /// Write down an abandon whose git has returned: the run's verdict, the
+    /// stages the removal made unverifiable, and the Issue's lineage.
+    ///
+    /// The run comes back on the board here whichever way the rest goes —
+    /// `answer_run_mutation` is what puts it back — so nothing below can strand
+    /// it.
+    fn settle_abandoned_run(
+        &mut self,
+        abandoned: RunAbandoned,
+        mut active: ActiveRun,
+    ) -> Result<Value, String> {
+        let RunAbandoned {
+            run_id,
+            project_id,
+            issue_id,
+            detail,
+            published,
+            ..
+        } = abandoned;
+        let branch = active.worktree.branch();
+        let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+        let verdict = self
+            .orch_for(&project_id)
+            .and_then(|orch| orch.abandon_run_keeping_checkout(&mut active).map_err(err));
+        let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
+        if verdict.is_ok() {
+            close_abandoned_run_conversations(&mut active);
         }
-        let (view, persisted) =
-            self.answer_run_mutation(run_id.clone(), active, thread_detail(params));
-        result?;
+        let (view, persisted) = self.answer_run_mutation(run_id.clone(), active, detail);
+        verdict?;
         persisted?;
-        if let Some(issue_id) = &issue_id {
-            // Abandoning is deleting the branch with nothing merged out of it,
-            // so the issue this was implementing comes back to the inbox — and
-            // its conversation says which branch it lost and why.
-            self.mirror_run_outcome_to_issue(
+        if let Some(issue_id) = issue_id {
+            self.record_abandon_on_issue(
+                &issue_id,
                 &run_id,
-                issue_id,
-                crate::thread::ThreadEventKind::Abandoned,
-                abandoned_branch_summary(&branch, "abandoned"),
+                &branch,
+                worktree_id,
+                &affected_stages,
             )?;
         }
-        if let Some(issue_id) = issue_id {
-            let mut issue = self.take_plan(&issue_id)?;
-            let mut links = vec![
-                crate::thread::ThreadLink::Implementation {
-                    issue_id: issue_id.clone(),
-                    implementation_id: run_id.clone(),
-                },
-                crate::thread::ThreadLink::Worktree { worktree_id },
-            ];
-            links.extend(
-                issue
-                    .stages
-                    .iter()
-                    .filter(|stage| affected_stages.contains(&stage.id))
-                    .map(|stage| crate::thread::ThreadLink::IssueStage {
-                        issue_id: issue_id.clone(),
-                        stage_id: stage.id.clone(),
-                        path: stage.path.clone(),
-                    }),
-            );
-            issue.agents.sole_thread_mut().push_event_with_links(
-                crate::thread::ThreadEventKind::WorktreeDeleted,
-                Some(format!(
-                    "Issue worktree deleted; {} unpublished stage(s) are incomplete",
-                    affected_stages.len()
-                )),
-                None,
-                None,
-                links,
-                now_rfc3339(),
-            );
-            let issue_persisted = self.finish_plan_mutation(issue_id, issue);
-            issue_persisted?;
-        }
         Ok(view)
+    }
+
+    /// Tell the Issue this run was implementing what it lost: the branch it was
+    /// on, and the stages whose commits the removal made unverifiable.
+    fn record_abandon_on_issue(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        branch: &str,
+        worktree_id: String,
+        affected_stages: &[String],
+    ) -> Result<(), String> {
+        // Abandoning is deleting the branch with nothing merged out of it, so
+        // the issue this was implementing comes back to the inbox — and its
+        // conversation says which branch it lost and why.
+        self.mirror_run_outcome_to_issue(
+            run_id,
+            issue_id,
+            crate::thread::ThreadEventKind::Abandoned,
+            abandoned_branch_summary(branch, "abandoned"),
+        )?;
+        let mut issue = self.take_plan(issue_id)?;
+        let mut links = vec![
+            crate::thread::ThreadLink::Implementation {
+                issue_id: issue_id.to_string(),
+                implementation_id: run_id.to_string(),
+            },
+            crate::thread::ThreadLink::Worktree { worktree_id },
+        ];
+        links.extend(
+            issue
+                .stages
+                .iter()
+                .filter(|stage| affected_stages.contains(&stage.id))
+                .map(|stage| crate::thread::ThreadLink::IssueStage {
+                    issue_id: issue_id.to_string(),
+                    stage_id: stage.id.clone(),
+                    path: stage.path.clone(),
+                }),
+        );
+        issue.agents.sole_thread_mut().push_event_with_links(
+            crate::thread::ThreadEventKind::WorktreeDeleted,
+            Some(format!(
+                "Issue worktree deleted; {} unpublished stage(s) are incomplete",
+                affected_stages.len()
+            )),
+            None,
+            None,
+            links,
+            now_rfc3339(),
+        );
+        self.finish_plan_mutation(issue_id.to_string(), issue)?;
+        Ok(())
     }
 
     /// Delete a terminal run from the board: prune any leftover worktree,
@@ -12860,51 +13615,53 @@ impl AppState {
         if active.run.plan_id.is_some() {
             return Ok(json!({ "ok": true, "retained_as_issue_lineage": true }));
         }
-        let worktree = active.worktree.clone();
-        let adopted = active.adopted;
-        let project_id = self.entity_project.get(&run_id).cloned();
-
-        if let Some(store) = &self.store {
-            store
-                .delete_run(&run_id)
-                .map_err(|e| format!("run store: {e}"))?;
-        }
-
-        let active = self.runs.remove(&run_id).expect("checked above");
-        // The run is gone, so its agent's `done` reports would have no owner to
-        // route to. Close the worktree's agent — the worktree itself survives
-        // (deleting an adopted run's card must never touch the user's files),
-        // and reopening the Agent tab there re-adopts.
-        self.close_agent_tab(&active.worktree.path);
-
+        let checkout_path = active.worktree.path.clone();
         // A failed run still holds its worktree; deleting an adopted run's card
         // must never delete the user's files (delete removes the card, not the
         // worktree it was minted around).
-        if worktree.path.exists() && !adopted {
-            if let Some(orch) = project_id
-                .as_deref()
-                .and_then(|pid| self.orch_for(pid).ok())
-            {
-                orch.discard_checkout(&worktree);
-            }
-        }
+        let prunes_checkout = checkout_path.exists() && !active.adopted;
+        let title = active.run.goal.clone();
+        // A run recovered after its repository was moved or deleted has no
+        // project mapping at all, and that stale card is exactly what a delete
+        // is for. There is then no orchestrator to prune with, so the delete
+        // clears the card and leaves whatever is on disk alone.
+        let project_id = self.entity_project.get(&run_id).cloned();
+        let project = project_id
+            .as_deref()
+            .and_then(|id| self.orch_for(id).ok())
+            .cloned();
 
-        self.entity_project.remove(&run_id);
-        self.entity_project_path.remove(&run_id);
-        self.entity_created_at.remove(&run_id);
-        self.entity_updated_at.remove(&run_id);
-        self.entity_state_changed_at.remove(&run_id);
-        self.entity_last_state.remove(&run_id);
-        self.run_files_changed_at.remove(&run_id);
-        self.invalidate_run_stat(&run_id);
+        let settlement = Box::new(RunDeleted {
+            run_id: run_id.clone(),
+            project_id: project_id.clone(),
+            checkout: checkout_path,
+        });
+        self.discard_run(
+            run_id,
+            project_id,
+            title,
+            move |worktree| match (prunes_checkout, project) {
+                (true, Some(project)) => DiscardedCheckout::Pruned {
+                    project,
+                    worktree: worktree.clone(),
+                },
+                _ => DiscardedCheckout::Kept,
+            },
+            settlement,
+        )
+    }
 
-        if worktree.path.exists() {
-            if let Some(pid) = project_id {
-                self.invalidate_external_scan(&pid);
-            }
-        }
-        self.reap_orphaned_terminals();
-        Ok(json!({ "ok": true }))
+    /// Forget every trace of a run whose record has been deleted. The map entry
+    /// itself went in the decide phase; this is the bookkeeping beside it.
+    fn forget_run(&mut self, run_id: &str) {
+        self.entity_project.remove(run_id);
+        self.entity_project_path.remove(run_id);
+        self.entity_created_at.remove(run_id);
+        self.entity_updated_at.remove(run_id);
+        self.entity_state_changed_at.remove(run_id);
+        self.entity_last_state.remove(run_id);
+        self.run_files_changed_at.remove(run_id);
+        self.invalidate_run_stat(run_id);
     }
 
     /// Mint a plan-less run around an existing checkout (`plan_id` None): one of
@@ -12924,64 +13681,78 @@ impl AppState {
             .get("primary")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let (checkout, scope) = if adopting_primary {
+        let target = if adopting_primary {
             if let Some(run_id) = self.primary_run_of(&project_id) {
-                let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(
-                    &run_id,
-                    active,
-                    thread_detail(params),
-                    DigestScope::Detail,
-                ));
+                return Ok(self.owning_run_view(&run_id, params));
             }
-            let repo_path = self.repo_path_for(&project_id)?;
-            (
-                crate::worktree::find_primary_checkout(&repo_path, &base)
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| {
-                        format!(
-                            "the primary checkout at {} has no working tree to adopt",
-                            repo_path.display()
-                        )
-                    })?,
-                AdoptionScope::PrimaryCheckout,
-            )
+            AdoptionTarget::Primary {
+                repo_path: self.repo_path_for(&project_id)?,
+            }
         } else {
             let worktree_id = require_str(params, "worktree_id")?;
             if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
-                let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(
-                    &run_id,
-                    active,
-                    thread_detail(params),
-                    DigestScope::Detail,
-                ));
+                return Ok(self.owning_run_view(&run_id, params));
             }
-            // Force a fresh scan: adoption must never act on a stale card.
-            (
-                self.external_worktrees(&project_id, true)?
-                    .into_iter()
-                    .find(|w| w.id == worktree_id)
-                    .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?,
-                AdoptionScope::ExternalWorktree,
-            )
+            AdoptionTarget::Card {
+                worktree_id,
+                excluded: self.bound_worktree_paths(),
+            }
         };
+        let checkout_id = target.checkout_id();
+        // The repo root is reachable from every reload and every second
+        // browser, and a card is adoptable from more than one surface. An asker
+        // who arrives while the checkout is being taken over is told so, and
+        // is handed no run id: the run that will carry it is not in the map
+        // until the adoption's epilogue lands, and an adoption that fails never
+        // mints it at all. The asker asks again — the same thing it does when
+        // its own adopt outlived its timer — and by then the owner is real and
+        // `primary_run_of` / `run_owning_worktree_id` above answer with it.
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
+        let row = target.reserve(
+            run_id.clone(),
+            &project_id,
+            self.checkout_title(&project_id, &checkout_id),
+        );
+        if self.row_claiming(&row).is_some() {
+            return Ok(json!({ "adopting": true }));
+        }
+        let project = self.orch_for(&project_id)?.clone();
+        self.defer_lifecycle(
+            row,
+            Box::new(AdoptCheckout {
+                project,
+                project_id,
+                base_branch: base,
+                run_id,
+                target,
+                model_choice,
+                detail: thread_detail(params),
+            }),
+        )
+    }
+
+    /// The view an adopting caller gets when the checkout it named already has
+    /// an owner: that run, in full.
+    fn owning_run_view(&self, run_id: &str, params: &Value) -> Value {
         let active = self
-            .orch_for(&project_id)?
-            .adopt_run(RunId::new(&run_id), &checkout, &base, model_choice, scope)
-            .map_err(err)?;
-        self.entity_project
-            .insert(run_id.clone(), project_id.clone());
-        // The row this checkout showed as belongs to a run from here on, and a
-        // run is cleared through its conversation: whatever was dismissed
-        // against the entity-less row is spent, and must not come back with the
-        // bare row if the run is ever released.
-        self.forget_row_dismissals(&project_id, checkout.branch.as_deref(), adopting_primary);
-        self.invalidate_external_scan(&project_id);
-        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
-        persisted?;
-        Ok(view)
+            .runs
+            .get(run_id)
+            .expect("the caller found this run by scanning the map");
+        self.run_view(run_id, active, thread_detail(params), DigestScope::Detail)
+    }
+
+    /// What to call a checkout on the row standing in for it: the branch the
+    /// last scan saw it on, or the project it belongs to when no card does.
+    fn checkout_title(&self, project_id: &str, checkout_id: &str) -> String {
+        self.external_scan_of(project_id)
+            .and_then(|cache| {
+                cache
+                    .worktrees
+                    .iter()
+                    .find(|checkout| checkout.id == checkout_id)
+            })
+            .and_then(|checkout| checkout.branch.clone())
+            .unwrap_or_else(|| self.project_name_by_id(project_id))
     }
 
     /// Finish a completed run through the same durable worktree archive path as
@@ -13054,8 +13825,8 @@ impl AppState {
         let worktree_id = crate::worktree::external_worktree_id(&root);
         let active = self.runs.remove(&run_id).expect("checked above");
         self.invalidate_run_stat(&run_id);
-        self.close_agent_tab(&root);
-        self.invalidate_external_scan(&project_id);
+        self.retire_agent_tabs(&root);
+        self.rescan_external_worktrees(&project_id);
         let epilogue = RunFinishEpilogue {
             run_id,
             project_id: project_id.clone(),
@@ -13105,7 +13876,7 @@ impl AppState {
             Err(error) => {
                 if root.exists() {
                     self.runs.insert(run_id.clone(), active);
-                    self.invalidate_external_scan(&project_id);
+                    self.note_worktree_gone(&project_id, &root);
                 } else {
                     eprintln!("run.finish {run_id}: worktree vanished after failure: {error}");
                 }
@@ -13166,21 +13937,19 @@ impl AppState {
                 .delete_run(&run_id)
                 .map_err(|e| format!("run store: {e}"))?;
         }
+        let project_id = self.entity_project.get(&run_id).cloned();
         let active = self.runs.remove(&run_id).expect("checked above");
         // Un-adopting hands the worktree back to the human; Build's agent in it
         // reported `done` to a run that no longer exists, so it goes with the
-        // run. Reopening the Agent tab there adopts again.
-        self.close_agent_tab(&active.worktree.path);
-        let project_id = self.entity_project.remove(&run_id);
-        self.entity_project_path.remove(&run_id);
-        self.entity_created_at.remove(&run_id);
-        self.entity_updated_at.remove(&run_id);
-        self.entity_state_changed_at.remove(&run_id);
-        self.entity_last_state.remove(&run_id);
-        self.run_files_changed_at.remove(&run_id);
-        self.invalidate_run_stat(&run_id);
-        if let Some(pid) = project_id {
-            self.invalidate_external_scan(&pid);
+        // run. Reopening the Agent tab there adopts again. The receipts are
+        // dropped: the tabs left the registry, which is what makes the agents
+        // unaddressable, and nothing here is waiting to delete a directory.
+        self.retire_agent_tabs(&active.worktree.path);
+        self.forget_run(&run_id);
+        // Build touches no disk here, so the checkout it hands back is
+        // described by the scan this claims rather than by an amendment.
+        if let Some(project_id) = project_id {
+            self.rescan_external_worktrees(&project_id);
         }
         self.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
@@ -13192,7 +13961,7 @@ impl AppState {
     /// ride-along external-worktree and primary-changes summaries. Sweeps runs
     /// whose worktree was deleted out of band into `archived` first.
     fn board_list(&mut self) -> Value {
-        self.archive_runs_with_deleted_worktrees();
+        self.sweep_vanished_runs();
         let plans: Vec<Value> = {
             let ids: Vec<String> = self.plans.keys().cloned().collect();
             ids.into_iter()
@@ -13212,7 +13981,7 @@ impl AppState {
                 .collect();
             ids.into_iter()
                 .map(|id| {
-                    let stat = self.run_stat(&id);
+                    let stat = self.run_stat(&id).unwrap_or(Value::Null);
                     let active = self.runs.get(&id).expect("listed above");
                     let mut view =
                         self.run_view(&id, active, ThreadDetail::Digest, DigestScope::List);
@@ -13223,7 +13992,7 @@ impl AppState {
                 })
                 .collect()
         };
-        let external_worktrees = self.external_worktrees_json();
+        let checkouts = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
         // The inbox is in-flight work the user started in Build, nothing else:
         // a branch Build never cut or adopted (no run behind it, and it is not
@@ -13235,7 +14004,7 @@ impl AppState {
         // `branch.get` still resolves it directly (deep-linking); this filter
         // is the feed list's alone.
         let items: Vec<Value> = self
-            .work_items(&external_worktrees, &primary_changes)
+            .work_items(&checkouts.rows, &primary_changes)
             .into_iter()
             .filter(|row| {
                 row["kind"] != crate::branch::WorkItemKind::Branch.as_str()
@@ -13251,7 +14020,16 @@ impl AppState {
             "issues": plans,
             "plans": plans,
             "runs": runs,
-            "external_worktrees": external_worktrees,
+            "external_worktrees": checkouts.rows,
+            // Lifecycle verbs whose git is running right now. A checkout being
+            // cut is on the board from the moment it is asked for, under the id
+            // it will settle as.
+            "pending": self.pending_rows_json(),
+            // The rail has not finished looking. An empty list under this flag
+            // is a board still working, not a project with no checkouts, and
+            // the scan that lands invalidates the board so the client asks
+            // again.
+            "scanning": checkouts.scanning,
             "primary_changes": primary_changes,
         })
     }
@@ -13289,7 +14067,7 @@ impl AppState {
         // Diffstats first: they are the one part of a row that needs `&mut`.
         let stats: HashMap<String, Value> = run_ids
             .iter()
-            .map(|run_id| (run_id.clone(), self.run_stat(run_id)))
+            .filter_map(|run_id| Some((run_id.clone(), self.run_stat(run_id)?)))
             .collect();
         let mut candidates: Vec<crate::branch::WorkItemCandidate> = run_ids
             .iter()
@@ -13412,7 +14190,7 @@ impl AppState {
     ) -> Option<crate::branch::WorkItemCandidate> {
         let project_id = entry["project_id"].as_str()?.to_string();
         let branch = entry["branch"].as_str()?.to_string();
-        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        let project = self.project(&project_id)?;
         let repo_path = project.repo_path.display().to_string();
         let sync = WorkItemStat::from_primary_entry(entry);
         let row = json!({
@@ -13712,19 +14490,27 @@ impl AppState {
         if !self.projects.iter().any(|p| p.id == project_id) {
             return Err(format!("unknown project_id: {project_id}"));
         }
-        let external_worktrees = self.external_worktrees_json();
+        let checkouts = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
-        let mut row = self
-            .work_items(&external_worktrees, &primary_changes)
+        let found = self
+            .work_items(&checkouts.rows, &primary_changes)
             .into_iter()
             .find(|row| {
                 row["kind"] == crate::branch::WorkItemKind::Branch.as_str()
                     && row["project_id"] == json!(project_id)
                     && row["branch"] == json!(branch)
-            })
-            .ok_or_else(|| {
-                format!("branch.get: no branch {branch} is checked out in this project")
-            })?;
+            });
+        let Some(mut row) = found else {
+            // This project's own scan, not the rail's board-wide flag: what a
+            // neighbour has or has not been scanned for says nothing about the
+            // branch that was asked for here.
+            let settled = self.scan_settled_at(&project_id).is_some();
+            self.rescan_external_worktrees(&project_id);
+            return Err(format!(
+                "branch.get: no checkout of this project is on branch {branch} ({})",
+                scan_may_yet_show_it(settled)
+            ));
+        };
         let run = match row["run_id"].as_str().map(str::to_string) {
             Some(run_id) => {
                 let active = self.runs.get(&run_id).expect("the row named a live run");
@@ -13744,7 +14530,7 @@ impl AppState {
                 view
             }
             // A checkout Build owns no run in has no agent to name.
-            None => match addressed_agent(params) {
+            None => match named_agent_id(params) {
                 Some(agent_id) => return Err(format!("unknown agent_id: {agent_id}")),
                 None => Value::Null,
             },
@@ -13788,18 +14574,15 @@ impl AppState {
             // No run behind the branch: it is a bare checkout, and the durable
             // archive path is the same one `run.finish` delegates to.
             //
-            // The scan `warm_diff_caches` refreshed for this frame with the
-            // mutex free is what maps the branch to a checkout id. Resolving it
-            // is not the authority for what gets deleted — the job rescans and
-            // re-resolves the id itself — so a stale hit fails closed there
+            // The last scan is what maps the branch to a checkout id. Resolving
+            // it is not the authority for what gets deleted — the job rescans
+            // and re-resolves the id itself — so a stale hit fails closed there
             // rather than costing every other frame a scan under this lock.
-            let worktree = self
-                .external_worktrees(&project_id, false)?
-                .into_iter()
-                .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()))
-                .ok_or_else(|| {
-                    format!("branch.finish: no branch {branch} is checked out in this project")
-                })?;
+            let worktree = self.find_checkout(
+                &project_id,
+                &format!("branch.finish: no checkout of this project is on branch {branch}"),
+                |checkout| checkout.branch.as_deref() == Some(branch.as_str()),
+            )?;
             let planned = self.plan_worktree_finish(&json!({
                 "project_id": project_id,
                 "worktree_id": worktree.id,
@@ -13926,6 +14709,17 @@ impl AppState {
     /// branch it cuts. The agent is always brand new: an instruction is never
     /// dropped into a conversation someone else is having.
     fn branch_dispatch(&mut self, params: &Value) -> Result<Value, String> {
+        self.dispatch_branch(params, None)
+    }
+
+    /// `branch.dispatch`, and the capture it is the destination of when a route
+    /// is what asked for it. Every dispatch runs its git through the drain: a
+    /// router reaching a branch is the same verb as a browser dispatching one.
+    fn dispatch_branch(
+        &mut self,
+        params: &Value,
+        routed: Option<RoutedCapture>,
+    ) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         if !self.projects.iter().any(|project| project.id == project_id) {
             return Err(format!("branch.dispatch: unknown project_id: {project_id}"));
@@ -13944,179 +14738,158 @@ impl AppState {
             .map(str::to_string);
         // The provider is parsed before anything is created, so an unrunnable
         // one refuses instead of leaving a branch nothing can work on.
-        if has_agent_choice(params) {
-            model_choice_from(params, self.default_harness)?;
-        }
+        let requested_choice = model_choice_from(params, self.default_harness)?;
+        // The ref, before anything is reserved or cut: it is what one dispatch
+        // reserves against another, and deriving it in the git phase left two
+        // calls on one instruction racing into `git worktree add`.
+        let target = DispatchTarget::of(branch.as_deref(), &instruction)?;
 
-        let mut created = BranchDispatchCreations::default();
-        match self.dispatch_branch_work(&project_id, branch, &instruction, params, &mut created) {
-            Ok(dispatched) => Ok(dispatched),
-            Err(error) => {
-                self.undo_branch_dispatch(&project_id, created);
-                Err(error)
-            }
-        }
+        let mutation = DispatchCheckout {
+            project: self.orch_for(&project_id)?.clone(),
+            base_branch: self.base_for(&project_id)?,
+            checkouts: self.project_checkouts(&project_id)?,
+            project_id: project_id.clone(),
+            run_id: format!("run-{}", uuid::Uuid::new_v4()),
+            target,
+            instruction: instruction.clone(),
+            model_choice: requested_choice,
+            explicit_choice: has_agent_choice(params),
+            routed,
+            #[cfg(test)]
+            fault: self.dispatch_fault,
+        };
+        let row = PendingRow::creating(
+            mutation.run_id.clone(),
+            Some(project_id),
+            branch.unwrap_or(instruction),
+        )
+        .on_branch(mutation.target.branch().to_string());
+        self.defer_lifecycle(row, Box::new(mutation))
     }
 
-    /// The steps [`branch_dispatch`](Self::branch_dispatch) unwinds on failure,
-    /// recording what each one brought into existence as it goes.
-    fn dispatch_branch_work(
-        &mut self,
-        project_id: &str,
-        branch: Option<String>,
-        instruction: &str,
-        params: &Value,
-        created: &mut BranchDispatchCreations,
-    ) -> Result<Value, String> {
-        // A dispatch that named no branch has nothing to look for: it always
-        // cuts a new branch rather than adopting whatever is lying around.
-        let holder = match branch.as_deref() {
-            Some(branch) => self.branch_holder_now(project_id, branch)?,
-            None => BranchHolder::nobody(),
-        };
-        let run_id = match holder.held_by(crate::branch::BranchSource::Run) {
-            // Build already runs this branch: the dispatch joins the checkout
-            // that is there, and creates no checkout of its own.
-            Some(run_id) => run_id.to_string(),
-            None => {
-                let worktree_id =
-                    match holder.held_by(crate::branch::BranchSource::ExternalWorktree) {
-                        Some(worktree_id) => worktree_id.to_string(),
-                        None => {
-                            if let Some(refusal) =
-                                branch.as_deref().and_then(|branch| holder.refusal(branch))
-                            {
-                                return Err(refusal);
-                            }
-                            let minted = self.cut_branch_for_dispatch(
-                                project_id,
-                                branch.as_deref(),
-                                instruction,
-                            )?;
-                            let worktree_id = crate::worktree::external_worktree_id(
-                                &self.register_created_checkout(project_id, &minted.worktree),
-                            );
-                            created.minted_worktree = Some(minted.worktree);
-                            worktree_id
-                        }
-                    };
-                #[cfg(test)]
-                self.fail_dispatch_at(BranchDispatchStep::Adopt)?;
-                let adopted = self.run_adopt(&adoption_params(project_id, &worktree_id, params))?;
-                let run_id = adopted["run_id"]
-                    .as_str()
-                    .ok_or("branch.dispatch: adoption named no run")?
-                    .to_string();
-                created.adopted_run = Some(run_id.clone());
-                run_id
-            }
-        };
+    /// Open the run `branch.dispatch` just checkpointed a checkout for, and put
+    /// its agent to work — the apply half of [`BranchDispatched`], and the only
+    /// half that touches state.
+    ///
+    /// One store write, made after every decision: the git has already cut a
+    /// branch, checked the repository out into it and written a checkpoint
+    /// commit, so a second fallible step here would be a way to strand all of
+    /// that under no run at all. The route a capture took to get here is one
+    /// of those decisions, and is written first: nothing that can refuse sits
+    /// on the far side of the write.
+    fn open_dispatched_run(&mut self, dispatched: BranchDispatched) -> Result<Value, String> {
+        let BranchDispatched {
+            adopted,
+            instruction,
+            routed,
+            checkouts,
+        } = dispatched;
+        self.validate_checkout_snapshot(&adopted.project_id, &checkouts)?;
         #[cfg(test)]
-        self.fail_dispatch_at(BranchDispatchStep::Post)?;
+        fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Open)?;
+        let project_id = adopted.project_id.clone();
+        let run_id = adopted.run_id.clone();
+        let choice = adopted.model_choice.clone();
+        let route =
+            self.record_dispatch_route(routed, &project_id, &run_id, &adopted.checkout.branch)?;
+        let mut active = adopted.open_run(self)?;
+        let agent = self.dispatch_to_run(
+            &run_id,
+            &mut active,
+            &instruction,
+            choice,
+            &adopted.checkout.branch,
+            adopted.checkout.path.clone(),
+        );
+        #[cfg(test)]
+        fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
+        self.finish_run_mutation(run_id.clone(), active)?;
+        self.touch_attention(&run_id);
+        Ok(RouteRecorded::answer(
+            route,
+            agent.json(&project_id, &run_id),
+        ))
+    }
 
-        // Parsed before the run leaves the map, so a choice that cannot run
-        // never strands a run outside it.
-        let choice = if has_agent_choice(params) {
-            model_choice_from(params, self.default_harness)?
-        } else {
-            self.entity_model_choice(&run_id)?
-        };
-        let now = now_rfc3339();
+    /// `branch.dispatch` onto a branch Build already runs: the run is there,
+    /// its checkout is there, and no git runs at all — so the run is taken,
+    /// told, and put back under this one acquisition. The route is written
+    /// before the run is taken, so a refused route leaves the run in its map.
+    fn join_dispatched_run(
+        &mut self,
+        joined: BranchJoined,
+        choice: ModelChoice,
+    ) -> Result<Value, String> {
+        let BranchJoined {
+            project_id,
+            run_id,
+            branch,
+            instruction,
+            root,
+            routed,
+            ..
+        } = joined;
+        let route = self.record_dispatch_route(routed, &project_id, &run_id, &branch)?;
         let mut active = self.take_run(&run_id)?;
+        let agent = self.dispatch_to_run(&run_id, &mut active, &instruction, choice, &branch, root);
+        #[cfg(test)]
+        fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
+        self.finish_run_mutation(run_id.to_string(), active)?;
+        self.touch_attention(&run_id);
+        Ok(RouteRecorded::answer(
+            route,
+            agent.json(&project_id, &run_id),
+        ))
+    }
+
+    /// Add the agent a dispatch speaks through to a run that has a checkout,
+    /// and hand it the words. The half every dispatch shares — the branch Build
+    /// already ran, and the one it has just taken ownership of.
+    ///
+    /// The run is mutated where its owner is holding it, and handed back
+    /// unwritten: whoever took it out of the map is the one that puts it back,
+    /// in the single write that settles the dispatch.
+    fn dispatch_to_run(
+        &mut self,
+        run_id: &str,
+        active: &mut ActiveRun,
+        instruction: &str,
+        choice: ModelChoice,
+        branch: &str,
+        root: std::path::PathBuf,
+    ) -> DispatchedAgent {
+        let now = now_rfc3339();
         // A dispatch always adds the agent it is about to speak to — an
         // adoption mints none, and a branch Build already runs keeps the agents
         // it has.
-        let agent_id = active.agents.add(&run_id, choice, &now).id.clone();
-        let branch = active.worktree.branch();
-        let root = Self::canonical_root(&active.worktree.path);
+        let agent_id = active.agents.add(run_id, choice, &now).id.clone();
+        let branch = branch.to_string();
         let agent = active
             .agents
             .resolve_mut(Some(&agent_id))
             .expect("the agent was just put on this roster");
-        // The agent's own provider, not the branch's: several agents share a
-        // branch and a dispatch may have asked for one the branch does not run.
         let model_choice = agent.choice.clone();
         agent.thread.post_user(instruction, None, &now);
         // Told the same way `agent.start` tells an agent what is waiting for
         // it: the instruction is already durable on the thread, so a warm
         // harness gets the read-your-messages nudge `thread.post` writes, and a
         // cold one gets that nudge wrapped in the packet it has no other way to
-        // reconstruct. The spawn itself happens in `deliver_pending_agent_turns`,
-        // with the state lock free.
+        // reconstruct. The spawn itself happens in `DeliveryRunner`, with the
+        // state lock free and this frame already answered.
         self.pending_agent_turns.push(PendingAgentTurn {
             root,
-            owner: run_id.clone(),
+            owner: run_id.to_string(),
             agent_id: agent_id.clone(),
             model_choice,
-            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-            warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            say: Some(TurnText {
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            }),
             phase: "dispatch",
             wants_catch_up: true,
+            survives_refusal: false,
         });
-        let persisted = self.finish_run_mutation(run_id.clone(), active);
-        persisted?;
-        self.touch_attention(&run_id);
-        Ok(json!({
-            "project_id": project_id,
-            "branch": branch,
-            "run_id": run_id,
-            "agent_id": agent_id,
-        }))
-    }
-
-    /// Cut the branch a dispatch has nowhere else to put its work.
-    ///
-    /// A `branch` that is already a branch name is used exactly as it stands —
-    /// the caller named a ref, and re-deriving one from it is how
-    /// `build/csv-export` became `build/build-csv-export`. Anything else is
-    /// words about the work (the router's guess, or the instruction itself when
-    /// no branch was named), and words are slugified into Build's namespace.
-    fn cut_branch_for_dispatch(
-        &mut self,
-        project_id: &str,
-        branch: Option<&str>,
-        instruction: &str,
-    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
-        match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
-            Some(name) => {
-                let base = self.base_for(project_id)?;
-                self.orch_for(project_id)?
-                    .create_worktree_cutting_named_branch(name, &base)
-                    .map_err(err)
-            }
-            None => self.create_bare_worktree_for(project_id, branch.unwrap_or(instruction)),
-        }
-    }
-
-    /// Put back what a failed `branch.dispatch` created, newest first.
-    ///
-    /// Best-effort and quiet: the call has already failed, and the caller is
-    /// told about that failure, not about the tidying. A checkout the dispatch
-    /// only adopted is un-adopted and left on disk with every file intact —
-    /// only one Build cut for itself is removed, and its branch goes with it
-    /// only if Build cut that too.
-    fn undo_branch_dispatch(&mut self, project_id: &str, created: BranchDispatchCreations) {
-        if let Some(run_id) = created.adopted_run {
-            if let Err(error) = self.run_release(&json!({ "run_id": run_id })) {
-                eprintln!("branch.dispatch cleanup: releasing {run_id}: {error}");
-            }
-        }
-        if let Some(worktree) = created.minted_worktree {
-            match self.orch_for(project_id) {
-                Ok(orch) => orch.discard_checkout(&worktree),
-                Err(error) => eprintln!("branch.dispatch cleanup: {error}"),
-            }
-            self.invalidate_external_scan(project_id);
-        }
-    }
-
-    /// Fail this dispatch when a test asked for a failure at `step`.
-    #[cfg(test)]
-    fn fail_dispatch_at(&self, step: BranchDispatchStep) -> Result<(), String> {
-        if self.dispatch_fault == Some(step) {
-            return Err(format!("branch.dispatch: injected failure at {step:?}"));
-        }
-        Ok(())
+        DispatchedAgent { branch, agent_id }
     }
 
     /// Archived plans and external worktrees for one project, grouped by kind.
@@ -14284,49 +15057,55 @@ impl AppState {
         })
     }
 
-    /// A run the user deletes must disappear from Build. Any live run whose
-    /// worktree vanished retires to Archived: session ended, git's stale
-    /// worktree record pruned — the record stays as quiet history. `Created` is
-    /// exempt (its worktree may legitimately not exist yet).
-    fn reconcile_missing_run_worktree(&self, run_id: &str, active: &mut ActiveRun) -> Vec<String> {
-        let repo_path = self
-            .entity_project
-            .get(run_id)
-            .and_then(|project_id| {
-                self.projects
-                    .iter()
-                    .find(|project| &project.id == project_id)
-            })
-            .map(|project| project.repo_path.clone());
-        let mut affected = Vec::new();
-        for progress in &mut active.stages {
-            let publication = match (&repo_path, progress.completion_sha.as_deref()) {
-                (Some(repo_path), Some(completion_sha)) => classify_stage_publication(
-                    repo_path,
-                    &active.worktree.branch(),
-                    &active.worktree.base_branch,
-                    completion_sha,
-                ),
-                _ => StagePublication::Local,
-            };
-            progress.publication = publication;
-            let in_flight = !matches!(
-                progress.state,
-                StageProgressState::Validated { passed: true }
-            );
-            if publication == StagePublication::Local || in_flight {
-                progress.invalidation_reason = Some(
-                    "Issue worktree disappeared before this stage's commits were verified pushed or merged"
-                        .to_string(),
-                );
-                affected.push(progress.stage_id.clone());
-            }
+    /// What one run's stages have to be judged against, taken under the lock so
+    /// [`StagePublicationQuery::classify`] can ask git without it.
+    fn stage_publication_query(&self, run_id: &str, active: &ActiveRun) -> StagePublicationQuery {
+        StagePublicationQuery {
+            run_id: run_id.to_string(),
+            repo_path: self
+                .entity_project
+                .get(run_id)
+                .and_then(|project_id| {
+                    self.projects
+                        .iter()
+                        .find(|project| &project.id == project_id)
+                })
+                .map(|project| project.repo_path.clone()),
+            branch: active.worktree.branch(),
+            base_branch: active.worktree.base_branch.clone(),
+            completions: active
+                .stages
+                .iter()
+                .filter_map(|progress| {
+                    Some((progress.stage_id.clone(), progress.completion_sha.clone()?))
+                })
+                .collect(),
         }
-        affected
     }
 
-    fn archive_runs_with_deleted_worktrees(&mut self) {
-        let doomed: Vec<String> = self
+    /// Ask git about this run's stages here and now, with the state lock in
+    /// hand. Boot's failed-recovery arm alone: it decides against refs that are
+    /// about to be deleted, and runs before the first frame is served, so
+    /// nothing waits on the mutex it holds. Every other caller — `run.abandon`,
+    /// the vanished-run sweep — asks through [`StagePublicationQuery::classify`]
+    /// in a lock-free run phase.
+    fn classify_stages_now(&self, run_id: &str, active: &ActiveRun) -> StagePublications {
+        self.stage_publication_query(run_id, active).classify()
+    }
+
+    /// Runs whose checkout vanished, on their way to Archived, decided off the
+    /// state lock.
+    ///
+    /// Whether a stage's commits ever left this machine is a fetch and two
+    /// graph walks per stage, and every board read used to pay for it inline.
+    /// Now the board answers with the runs it still has and the sweep archives
+    /// them behind it — the same bargain the scan and the diffstats make.
+    /// Single-flight: a sweep already running absorbs the next poll's.
+    fn sweep_vanished_runs(&mut self) {
+        if self.vanished_run_sweep_in_flight {
+            return;
+        }
+        let queries: Vec<StagePublicationQuery> = self
             .runs
             .iter()
             .filter(|(_, active)| {
@@ -14335,15 +15114,41 @@ impl AppState {
                     && active.recovery.is_none()
                     && !active.worktree.path.exists()
             })
-            .map(|(id, _)| id.clone())
+            .map(|(run_id, active)| self.stage_publication_query(run_id, active))
             .collect();
-        for run_id in doomed {
+        if queries.is_empty() {
+            return;
+        }
+        self.vanished_run_sweep_in_flight = true;
+        self.run_off_lock(VanishedRunSweep {
+            queries,
+            #[cfg(test)]
+            gate: self.off_lock_gate.clone(),
+        });
+    }
+
+    /// A run the user deletes must disappear from Build. Any live run whose
+    /// worktree vanished retires to Archived: session ended, git's stale
+    /// worktree record pruned — the record stays as quiet history. `Created` is
+    /// exempt (its worktree may legitimately not exist yet).
+    fn archive_vanished_runs(&mut self, decided: Vec<DecidedVanishedRun>) {
+        self.vanished_run_sweep_in_flight = false;
+        for DecidedVanishedRun { run_id, published } in decided {
+            // The checkout may have come back, or the run may have been
+            // abandoned outright, while the sweep was asking git.
+            if self
+                .runs
+                .get(&run_id)
+                .is_none_or(|active| active.worktree.path.exists())
+            {
+                continue;
+            }
             let Ok(mut active) = self.take_run(&run_id) else {
                 continue;
             };
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let branch = active.worktree.branch();
-            let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
+            let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             match active.run.apply(RunEvent::Archive) {
                 Ok(_) => {
@@ -14894,34 +15699,17 @@ impl AppState {
     }
 
     /// A run's diffstat for the `board.list` poll surface, held for
-    /// [`TASK_STAT_TTL`] and then served stale while it refreshes. Terminal runs
-    /// (worktree pruned or about to be) report null.
-    fn run_stat(&mut self, run_id: &str) -> Value {
-        let Some(refresh) = self.run_stat_refresh(run_id) else {
-            return Value::Null;
-        };
-        if let Some((computed_at, stat)) = self.run_stat_cache.get(run_id) {
-            let (computed_at, stat) = (*computed_at, stat.clone());
-            // Stale-while-revalidate: the poll is answered with the numbers we
-            // have, and the diff that produces the next ones runs behind it.
-            if self.diff_cache_is_stale(computed_at, TASK_STAT_TTL) {
-                self.trigger_diff_refresh(refresh);
-            }
-            return stat;
-        }
-        // Nothing has ever been computed for this run. The dispatch path warms
-        // the cache off the mutex before the verb runs, so reaching here means a
-        // caller that does not warm — the synchronous test entry point, or a
-        // read that follows the mutation which invalidated the entry. Compute it
-        // rather than answer with a number nobody has.
-        let entry = refresh.compute(self.diff_compute_observer.as_ref());
-        if let Some(entry) = entry {
-            self.store_diff_entry(entry);
+    /// [`TASK_STAT_TTL`] and then served stale while it refreshes. `None` until
+    /// the first refresh lands, and for a terminal run (worktree pruned or
+    /// about to be) forever.
+    fn run_stat(&mut self, run_id: &str) -> Option<Value> {
+        if let Some(refresh) = self.run_stat_refresh(run_id) {
+            let computed_at = self.run_stat_cache.get(run_id).map(|(at, _)| *at);
+            self.refresh_if_stale(computed_at, TASK_STAT_TTL, refresh);
         }
         self.run_stat_cache
             .get(run_id)
             .map(|(_, stat)| stat.clone())
-            .unwrap_or(Value::Null)
     }
 
     // ---- the scripted QA agent ------------------------------------------------
@@ -15338,6 +16126,43 @@ fn parse_anchor_line(anchor: &Value, field: &str) -> Result<Option<u32>, String>
     }
 }
 
+/// The first stage an Issue still owes work on: the earliest one this run has
+/// recorded no progress against, or whose progress is not a passed validation,
+/// or whose pass a later change invalidated. `None` once every stage of the
+/// manifest has settled. A run that does not exist yet has settled nothing, so
+/// the first stage is the answer.
+///
+/// One predicate, four readers — boot's activity reconstruction, the
+/// scheduler's target stage, a recovery's requested stage, and the Issue's
+/// rendered activity — because what counts as settled has to move for all of
+/// them at once.
+fn next_unsettled_stage<'a>(
+    stages: &'a [StageDoc],
+    run: Option<&ActiveRun>,
+) -> Option<&'a StageDoc> {
+    stages.iter().find(|doc| {
+        run.and_then(|run| run.stage_progress(&doc.id))
+            .is_none_or(|progress| {
+                progress.state != StageProgressState::Validated { passed: true }
+                    || progress.invalidation_reason.is_some()
+            })
+    })
+}
+
+/// The stage a verified recovery is being asked to prove: the one the Issue's
+/// durable intent names, the first stage it still owes work on when the intent
+/// is the whole Issue, or — with nothing armed — whatever the run was last
+/// building.
+fn recovery_target_stage(issue: &ActivePlan, active: &ActiveRun) -> String {
+    match &issue.plan.implementation_intent {
+        ImplementationIntent::Stage(stage_id) => stage_id.clone(),
+        ImplementationIntent::All => next_unsettled_stage(&issue.stages, Some(active))
+            .map(|doc| doc.id.clone())
+            .unwrap_or_default(),
+        ImplementationIntent::None => active.current_stage_id.clone().unwrap_or_default(),
+    }
+}
+
 /// The first stage `run.stage_dispatch` would currently accept for a run: the
 /// earliest stage not yet validated-passed — provided its plan doc is
 /// `Approved` and every earlier stage already passed validation on this run.
@@ -15435,32 +16260,39 @@ fn write_in_dir(dir: &std::path::Path, rel: &str, contents: &str) -> Result<(), 
     }
     std::fs::write(path, contents).map_err(|e| e.to_string())
 }
-fn project_json(p: &Project) -> Value {
+/// One project's wire view. The remote is passed in rather than read here: a
+/// verb that just wrote it knows what it wrote, and every read of it is a git
+/// subprocess that has to be made somewhere the caller can see.
+fn project_json(p: &Project, remote: Option<String>) -> Value {
     json!({
         "project_id": p.id,
         "name": p.name,
         "path": p.repo_path.display().to_string(),
         "base_branch": p.base_branch,
-        "remote": git_remote_origin(&p.repo_path),
+        "remote": remote,
     })
 }
 
-/// Run a git subcommand in `dir`, mapping a non-zero exit to a readable error.
-fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+/// A project name that can be a directory: not empty, one path segment, and
+/// nothing that climbs out of the folder it is going into.
+fn usable_project_name(name: impl AsRef<str>) -> Result<String, String> {
+    let name = name.as_ref().trim();
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        return Err(format!("invalid project name: {name:?}"));
     }
-    Ok(())
+    Ok(name.to_string())
+}
+
+/// The base branch a project verb was told to use, if it was told one. With
+/// none, the repository's own checked-out default answers — read off the disk
+/// where the rest of the repository is read.
+fn requested_base_branch(params: &Value) -> Option<String> {
+    params
+        .get("base_branch")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
 }
 
 /// Expand a leading `~` / `~/` to the user's home directory; otherwise return the
@@ -15499,48 +16331,6 @@ fn repo_name_from_url(url: &str) -> String {
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 
-/// The `origin` remote URL of a repo, if it has one.
-fn git_remote_origin(dir: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!url.is_empty()).then_some(url)
-}
-
-/// Whether two clone URLs point at the same repo, ignoring a trailing `/` or
-/// `.git`. A loose check — enough to catch "already cloned" without surprises.
-fn remotes_match(a: &str, b: &str) -> bool {
-    let norm = |s: &str| {
-        s.trim()
-            .trim_end_matches('/')
-            .trim_end_matches(".git")
-            .to_string()
-    };
-    norm(a) == norm(b)
-}
-
-/// The checked-out branch name of a freshly cloned repo (its default branch).
-fn git_default_branch(dir: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!branch.is_empty() && branch != "HEAD").then_some(branch)
-}
-
 /// Parse and validate the optional provider/model/effort params of a request,
 /// falling back to `default` — the account's default harness — when the caller
 /// names no provider.
@@ -15570,22 +16360,6 @@ fn model_choice_from(params: &Value, default: AgentProvider) -> Result<ModelChoi
     };
     choice.validate()?;
     Ok(choice)
-}
-
-/// `run.adopt`'s parameters for a dispatch: the checkout to take ownership of,
-/// carrying whatever agent choice the caller made, so the run and the agent it
-/// opens with agree on what they run.
-fn adoption_params(project_id: &str, worktree_id: &str, params: &Value) -> Value {
-    let mut adoption = json!({ "project_id": project_id, "worktree_id": worktree_id });
-    let object = adoption
-        .as_object_mut()
-        .expect("just built from an object literal");
-    for key in ["provider", "model", "effort"] {
-        if let Some(value) = params.get(key) {
-            object.insert(key.to_string(), value.clone());
-        }
-    }
-    adoption
 }
 
 fn has_agent_choice(params: &Value) -> bool {
@@ -15704,6 +16478,13 @@ fn thread_cursor(params: &Value) -> Option<u64> {
     params.get("thread_after_sequence").and_then(Value::as_u64)
 }
 
+/// What an Issue's scheduler is asked with when the frame that woke it was
+/// about something else: the Issue to advance, and the thread paging that
+/// frame's own answer is cut to.
+fn scheduler_request(issue_id: &str, params: &Value) -> Value {
+    json!({ "issue_id": issue_id, "thread_limit": params.get("thread_limit") })
+}
+
 /// How much conversation a call can hold — a detail poll's answer or a
 /// mutation's: a page of the size its `thread_limit` names, or the
 /// conversation whole when it names none.
@@ -15808,7 +16589,7 @@ fn conversation_owner_param(params: &Value) -> Result<String, String> {
 /// The optional `agent_id` a verb was addressed to. Empty reads as absent: a
 /// client with no bubble open yet means the entity's own conversation, which is
 /// its first agent's.
-fn addressed_agent(params: &Value) -> Option<String> {
+fn named_agent_id(params: &Value) -> Option<String> {
     params
         .get("agent_id")
         .and_then(Value::as_str)
@@ -15862,163 +16643,11 @@ struct BranchScope {
     external_worktree: bool,
 }
 
-/// A project's checkouts as the app mutex knows them, snapshotted for the
-/// drain: the on-lock half of a branch listing's ownership. A listing builds
-/// it from the scan the board already holds; `worktree.create {branch}` and
-/// `branch.dispatch` force a rescan into it on the lock knowingly (see
-/// [`AppState::project_checkouts`]). A run's checkout is the record the run
-/// already carries.
-struct ProjectCheckouts {
-    /// The repository's own checkout, which the external scan deliberately
-    /// leaves out — so without it the branch the repo root is on would look
-    /// free to check out a second time, which git refuses.
-    primary_repo_path: std::path::PathBuf,
-    /// Branch name → worktree id, for every OTHER worktree of this project
-    /// Build has not adopted, from the scan the board already holds.
-    external_branches: std::collections::HashMap<String, String>,
-    /// Every live run of this project and the checkout it works in.
-    run_checkouts: Vec<(String, crate::worktree::Worktree)>,
-}
-
-impl ProjectCheckouts {
-    /// Ask git which branch each checkout holds.
-    ///
-    /// A branch listing asks this in its deferred half, with the lock free.
-    /// `worktree.create {branch}` asks it on the lock, knowingly: it is about
-    /// to add a checkout git would refuse if another one already held the
-    /// branch, and a one-shot user action is worth that wait.
-    ///
-    /// A primary checkout holding no branch (detached HEAD, bare repository)
-    /// costs the rows a primary-checkout holder and nothing else.
-    /// Every other failure is returned, because a repository that cannot be
-    /// read must say so rather than quietly answer "nothing holds this
-    /// branch" — the answer that sends the user into a checkout git refuses.
-    fn holders(&self) -> Result<BranchOwnershipIndex, String> {
-        let run_branches = self
-            .run_checkouts
-            .iter()
-            .map(|(run_id, worktree)| (worktree.branch(), run_id.clone()))
-            .collect();
-        let primary = crate::worktree::primary_checkout_holder(&self.primary_repo_path)
-            .map_err(|e| e.to_string())?;
-        Ok(BranchOwnershipIndex {
-            external_branches: self.external_branches.clone(),
-            run_branches,
-            primary,
-        })
-    }
-}
-
-/// Which of a project's checkouts holds each of its branches — the three
-/// lookups a branch listing stamps its rows from.
-struct BranchOwnershipIndex {
-    /// Branch name → worktree id, for every OTHER worktree of this project
-    /// Build has not adopted. The switcher reads this to offer "adopt and
-    /// open" in place of a checkout git would refuse (a branch already
-    /// checked out elsewhere).
-    external_branches: std::collections::HashMap<String, String>,
-    /// Branch name → the live run of this project holding it. A branch a run
-    /// owns is not a checkout to make; it is a run to open.
-    run_branches: std::collections::HashMap<String, String>,
-    /// The primary checkout's worktree id and the branch it holds, or `None`
-    /// when it holds no branch.
-    primary: Option<(String, String)>,
-}
-
 /// A branch verb that answers with the project's branches: the checkout it
 /// was scoped to, plus the checkouts the rows are stamped from.
 struct BranchListingScope {
     checkout: BranchScope,
     checkouts: ProjectCheckouts,
-}
-
-/// What the app layer knows about a branch beyond git's own facts: which of
-/// the project's checkouts holds it, as one holder rather than three parallel
-/// answers. More than one source can describe the same branch — a run adopted
-/// over the primary checkout is both — and
-/// [`crate::branch::BranchSource`]'s own order says which of them speaks for
-/// it, so a row names exactly one thing to press. `None` is a branch nothing
-/// holds, free to check out somewhere new.
-struct BranchHolder {
-    holder: Option<(crate::branch::BranchSource, String)>,
-}
-
-impl BranchHolder {
-    /// A branch nothing holds — the answer for a caller that named no branch
-    /// at all, so it never has to ask.
-    fn nobody() -> Self {
-        Self { holder: None }
-    }
-
-    fn of(ownership: &BranchOwnershipIndex, branch: &str) -> Self {
-        let holders = [
-            (
-                crate::branch::BranchSource::Run,
-                ownership.run_branches.get(branch).cloned(),
-            ),
-            (
-                crate::branch::BranchSource::PrimaryCheckout,
-                ownership
-                    .primary
-                    .as_ref()
-                    .filter(|(_, held)| held == branch)
-                    .map(|(worktree_id, _)| worktree_id.clone()),
-            ),
-            (
-                crate::branch::BranchSource::ExternalWorktree,
-                ownership.external_branches.get(branch).cloned(),
-            ),
-        ];
-        Self {
-            holder: holders
-                .into_iter()
-                .filter_map(|(source, id)| Some((source, id?)))
-                .min_by_key(|(source, _)| *source),
-        }
-    }
-
-    fn held_by(&self, source: crate::branch::BranchSource) -> Option<&str> {
-        self.holder
-            .as_ref()
-            .filter(|(holder, _)| *holder == source)
-            .map(|(_, id)| id.as_str())
-    }
-
-    /// Why a branch this one holds cannot be checked out somewhere new, naming
-    /// what holds it so the client can offer the verb that does apply.
-    fn refusal(&self, branch: &str) -> Option<String> {
-        self.holder.as_ref().map(|(source, id)| {
-            format!(
-                "branch {branch:?} is already checked out by {} {id}",
-                source.holder_noun()
-            )
-        })
-    }
-
-    /// The holder as one wire fact — `{ "kind", "id" }` or null — so the rule
-    /// that picks it lives here alone and no reader re-applies it.
-    fn into_json(self) -> Value {
-        json!(self
-            .holder
-            .map(|(source, id)| json!({ "kind": source.as_str(), "id": id })))
-    }
-}
-
-/// The answer every `worktree.create` gives, over the checkout it made and the
-/// canonical path the scan will find it at.
-fn created_worktree_json(
-    project_id: &str,
-    checkout: &crate::worktree::NamedBranchCheckout,
-    canonical: &std::path::Path,
-) -> Value {
-    json!({
-        "project_id": project_id,
-        "worktree_id": crate::worktree::external_worktree_id(canonical),
-        "branch": checkout.worktree.branch(),
-        "name": checkout.worktree.name,
-        "path": canonical.display().to_string(),
-        "branch_was_cut": checkout.teardown.deletes_branch(),
-    })
 }
 
 /// What a run can prove about its own checkout when git's registration for it
@@ -16307,6 +16936,9 @@ struct WorktreeFinishOutcome {
 
 /// Work a verb handed to the drain, to run with the app mutex released.
 enum DeferredWork {
+    /// One lifecycle verb's git — `git worktree add`, a checkpoint, a scan —
+    /// and the row reserved on the board until it returns.
+    Lifecycle(Box<WorktreeLifecycleJob>),
     /// A claimed finish and the bookkeeping still owed once its git returns.
     Finish {
         job: Box<WorktreeFinishJob>,
@@ -16320,6 +16952,7 @@ enum DeferredWork {
 
 /// What the lock-free phase brought back, for the app mutex to write down.
 enum DeferredOutcome {
+    Lifecycle(Box<LifecycleOutcome>),
     Finish {
         epilogue: Box<FinishEpilogue>,
         finished: Box<WorktreeFinishOutcome>,
@@ -16335,6 +16968,7 @@ impl DeferredWork {
     /// The lock-free phase. Consumes the work so nothing can run it twice.
     fn run(self) -> DeferredOutcome {
         match self {
+            Self::Lifecycle(job) => DeferredOutcome::Lifecycle(Box::new(job.run())),
             Self::Finish { job, epilogue } => DeferredOutcome::Finish {
                 epilogue: Box::new(epilogue),
                 finished: Box::new(job.run()),
@@ -16584,6 +17218,766 @@ impl<S: GitCallScope> DeferredGitWork for ScopedGitCall<S> {
 impl DeferredGit {
     fn run(&self) -> Result<Value, String> {
         self.call.run(&self.params)
+    }
+}
+
+/// `worktree.create`'s apply half. The checkout is on disk and already in the
+/// project's scan list — every write this verb owes is the shared half of
+/// [`AppState::apply_lifecycle`] — so all that is left is the answer.
+pub struct WorktreeCreated {
+    pub project_id: String,
+    /// The id the board carried while the git ran.
+    pub placeholder_id: String,
+    pub worktree_id: String,
+    pub branch: String,
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub branch_was_cut: bool,
+    pub checkouts: ProjectCheckouts,
+}
+
+impl LifecycleEpilogue for WorktreeCreated {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.validate_checkout_snapshot(&self.project_id, &self.checkouts)?;
+        Ok(json!({
+            "project_id": self.project_id,
+            "worktree_id": self.worktree_id,
+            // Both ids, because `WorktreeManager::create` suffixes a slug
+            // something was already using and the placeholder cannot know: a
+            // client showing the pending row replaces that row rather than
+            // adding a second one beside it.
+            "pending_worktree_id": self.placeholder_id,
+            "branch_was_cut": self.branch_was_cut,
+            "branch": self.branch,
+            "name": self.name,
+            "path": self.path.display().to_string(),
+        }))
+    }
+}
+
+/// A run opened around a checkout that is ready for it: the record, the agent
+/// its first turn is addressed to, and what the Issue's conversation says about
+/// where the work went.
+struct OpenedImplementation {
+    run_id: String,
+    project_id: String,
+    issue_id: String,
+    active: ActiveRun,
+    turn: AgentTurn,
+    agent_id: String,
+    checkout_event: crate::thread::ThreadEventKind,
+    checkout_summary: String,
+}
+
+/// Who asked for an implementation: what they hear once the run behind it is
+/// open, and what is left written down when the git that would have opened it
+/// failed.
+///
+/// It travels with the job, so one object answers both ways — a verb asking
+/// for a run hears the run; a scheduler asking for one carries on to the stage
+/// it was cutting the checkout for, and marks the Issue blocked if it cannot.
+pub trait ImplementationCaller: Send {
+    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String>;
+    /// The message the frame gets, after whatever the decide phase armed on the
+    /// strength of this implementation has been settled.
+    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> String;
+
+    /// Hand the implementation back: the run it opened, or the error that
+    /// stopped it. This is how the two halves above are used — every one of
+    /// them, so a fourth implementation mutation cannot pair them a fifth way.
+    fn settle(
+        self: Box<Self>,
+        state: &mut AppState,
+        opened: Result<&str, String>,
+    ) -> Result<Value, String> {
+        match opened {
+            Ok(run_id) => self.opened(state, run_id),
+            Err(error) => Err(self.refused(state, error)),
+        }
+    }
+}
+
+/// `run.create` asked: it hears the run it opened, and a failure is its own
+/// answer — nothing was armed on the way in.
+struct RunOpenedView {
+    detail: ThreadDetail,
+}
+
+impl ImplementationCaller for RunOpenedView {
+    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String> {
+        let active = state.runs.get(run_id).ok_or("unknown run_id")?;
+        Ok(state.run_view(run_id, active, self.detail, DigestScope::Detail))
+    }
+
+    fn refused(self: Box<Self>, _state: &mut AppState, error: String) -> String {
+        error
+    }
+}
+
+/// An Issue's scheduler asked, on its way to a stage: it carries on from where
+/// the git stopped it, and answers with the Issue rather than the run — the
+/// scheduler is what the frame called, and the run is an implementation detail
+/// of the stage it was after.
+struct IssueSchedulerWaiting {
+    issue_id: String,
+    request: Value,
+    /// The stage a failure is recorded against. `None` for run-all, which
+    /// blocks on whichever stage the Issue is standing at.
+    blocked_stage: Option<String>,
+}
+
+impl ImplementationCaller for IssueSchedulerWaiting {
+    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String> {
+        match state.dispatch_ready_stage(&self.issue_id, run_id, &self.request) {
+            Ok(()) => state.issue_view_full(&self.issue_id, thread_detail(&self.request)),
+            Err(error) => Err(self.refused(state, error)),
+        }
+    }
+
+    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> String {
+        // The Issue said it was preparing something. Nothing is preparing it
+        // now, and a spinner nothing will ever clear is worse than the failure.
+        state.block_issue_scheduler(&self.issue_id, self.blocked_stage, &error);
+        error
+    }
+}
+
+/// A run's checkout, as the restore left it, on its way back under the app
+/// mutex. `Err` is not a failure of the job — it is the finding that the branch
+/// is gone, which the recovery agent is started for.
+pub struct RestoredCheckout {
+    pub issue_id: String,
+    pub run_id: String,
+    /// Whether the directory was still standing when the decide phase looked:
+    /// what the Issue's conversation says happened, reused or recreated.
+    pub checkout_stood: bool,
+    pub restored: Result<crate::worktree::Worktree, String>,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for RestoredCheckout {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.settle_restored_checkout(*self)
+    }
+}
+
+/// `run.create`'s apply half on a checkout cut for it: the git left a prepared
+/// checkout, and the run that stands for it is opened here, where the maps are.
+pub struct ImplementationOpened {
+    pub project_id: String,
+    pub issue_id: String,
+    pub run_id: String,
+    pub prepared: PreparedImplementation,
+    pub model_choice: ModelChoice,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for ImplementationOpened {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.open_prepared_implementation(*self)
+    }
+}
+
+/// The same, on a checkout an existing run already owns: the git left a
+/// checkpoint and a baseline commit, and the run is reset onto them.
+pub struct ImplementationAdopted {
+    pub project_id: String,
+    pub issue_id: String,
+    pub run_id: String,
+    pub base_sha: String,
+    /// The adoption this job's git phase ran on the way in, when the checkout
+    /// had no owner. The run it minted is opened here rather than taken off the
+    /// board, and nothing else about the implementation differs.
+    pub adopted: Option<RunAdopted>,
+    pub model_choice: ModelChoice,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for ImplementationAdopted {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.open_adopted_implementation(*self)
+    }
+}
+
+/// The git that would have opened an implementation failed. It comes back as an
+/// epilogue rather than as an error because what a refusal leaves behind is
+/// state — an Issue that says it is preparing something nobody is preparing any
+/// more — and state is written under the app mutex.
+pub struct ImplementationRefused {
+    pub error: String,
+    pub caller: Box<dyn ImplementationCaller>,
+}
+
+impl LifecycleEpilogue for ImplementationRefused {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        self.caller.settle(state, Err(self.error))
+    }
+}
+
+/// One door to an Issue's planning agent, waiting on the workspace it works
+/// in: `plan.create`'s first dispatch, the first message to an inert Issue, a
+/// batch of notes, one stage's comments, a freeform message.
+///
+/// Every door is gated before any disk work and settled here, after it — so
+/// the plan event, the prompt and the queued turn are the only things a door
+/// writes for itself. The disk is [`OpenPlanWorkspace`]'s, once.
+///
+/// [`OpenPlanWorkspace`]: crate::lifecycle::OpenPlanWorkspace
+pub trait PlanSessionOpening: Send {
+    /// The workspace is on disk: apply the event this door was gated on,
+    /// render the prompt, queue the turn, and answer whoever asked.
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String>;
+
+    /// The workspace could not be written. A refusal is the caller's error for
+    /// every door that asked for a session; a door that had already reached its
+    /// destination (a routed capture) says so instead and overrides this.
+    fn refused(self: Box<Self>, _state: &mut AppState, error: String) -> Result<Value, String> {
+        Err(error)
+    }
+}
+
+/// The planning workspace is written; what is left is the door that asked for
+/// it.
+pub struct PlanWorkspaceOpened {
+    pub workspace: crate::orchestrator::PlanWorkspace,
+    pub opening: Box<dyn PlanSessionOpening>,
+}
+
+impl LifecycleEpilogue for PlanWorkspaceOpened {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        self.opening.open(state, self.workspace)
+    }
+}
+
+/// The planning workspace could not be written. What that leaves behind is the
+/// door's own business, so it comes back as an epilogue rather than an error.
+pub struct PlanWorkspaceRefused {
+    pub error: String,
+    pub opening: Box<dyn PlanSessionOpening>,
+}
+
+impl LifecycleEpilogue for PlanWorkspaceRefused {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        self.opening.refused(state, self.error)
+    }
+}
+
+/// `plan.create` asked: the Issue's record, its first turn, and the view the
+/// caller wanted.
+struct IssueOpened {
+    project_id: String,
+    plan_id: String,
+    goal: String,
+    base_branch: String,
+    model_choice: ModelChoice,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for IssueOpened {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        state.open_planned_issue(*self, workspace)
+    }
+}
+
+/// The first message to an inert Issue asked: the session it never had, and the
+/// Issue's own view — with the sequence the message landed at, which is what
+/// the composer is waiting for.
+struct PlanDraftingStarted {
+    issue_id: String,
+    detail: ThreadDetail,
+    posted_sequence: Option<u64>,
+}
+
+impl PlanSessionOpening for PlanDraftingStarted {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let view = state.open_inert_plan_drafting(&self.issue_id, workspace, self.detail)?;
+        Ok(with_posted_sequence(view, self.posted_sequence))
+    }
+}
+
+/// A router or a reroute asked, on its way to a destination it has already
+/// reached: the capture is routed and the Issue holds the text whatever happens
+/// here, so a session that could not start says so and never fails the route.
+#[derive(Clone)]
+struct RoutedIssueDrafting {
+    issue_id: String,
+    project_id: String,
+    capture_id: String,
+    answer: fn(&crate::capture::Capture, Value) -> Value,
+}
+
+impl RoutedIssueDrafting {
+    /// What the route answers with: the capture as it now stands, or the
+    /// destination itself, and whether an agent is reading it.
+    fn reply(&self, state: &AppState, planning: bool) -> Result<Value, String> {
+        let capture = state
+            .captures
+            .get(&self.capture_id)
+            .ok_or("the capture went while its issue was being opened")?;
+        Ok((self.answer)(
+            capture,
+            json!({
+                "issue_id": self.issue_id,
+                "project_id": self.project_id,
+                // No branch was cut: that is what a router means by dispatched.
+                "dispatched": false,
+                // An agent IS reading the capture, on the primary checkout.
+                "planning": planning,
+            }),
+        ))
+    }
+}
+
+impl PlanSessionOpening for RoutedIssueDrafting {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        let started =
+            state.open_inert_plan_drafting(&self.issue_id, workspace, ThreadDetail::Digest);
+        if let Err(error) = &started {
+            eprintln!("route: {} could not start planning: {error}", self.issue_id);
+        }
+        self.reply(state, started.is_ok())
+    }
+
+    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> Result<Value, String> {
+        eprintln!("route: {} could not start planning: {error}", self.issue_id);
+        self.reply(state, false)
+    }
+}
+
+/// A batch of plan notes asked: the revision session they go to.
+struct PlanNotesSent {
+    plan_id: String,
+    project_id: String,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for PlanNotesSent {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        state.settle_plan_session(&self.plan_id, self.detail, |state, active| {
+            let turn = state
+                .orch_for(&self.project_id)?
+                .open_plan_notes(active, workspace, NEW_THREAD_MESSAGES_PROMPT)
+                .map_err(err)?;
+            state.queue_plan_turn(&self.plan_id, active, turn);
+            if state.qa_agent {
+                state.qa_simulate_plan(&self.project_id, active)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// One stage's open comments asked: the revision session they are rendered
+/// into.
+struct StageNotesSent {
+    plan_id: String,
+    project_id: String,
+    stage_id: String,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for StageNotesSent {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        state.settle_plan_session(&self.plan_id, self.detail, |state, active| {
+            let turn = state
+                .orch_for(&self.project_id)?
+                .open_plan_stage_notes(active, workspace, &self.stage_id)
+                .map_err(err)?;
+            state.queue_plan_turn(&self.plan_id, active, turn);
+            if state.qa_agent {
+                state.qa_simulate_plan_stage_revise(&self.project_id, active)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// A freeform message asked: the session that hears it, drafting or resumed.
+struct PlanMessaged {
+    plan_id: String,
+    project_id: String,
+    detail: ThreadDetail,
+}
+
+impl PlanSessionOpening for PlanMessaged {
+    fn open(
+        self: Box<Self>,
+        state: &mut AppState,
+        workspace: crate::orchestrator::PlanWorkspace,
+    ) -> Result<Value, String> {
+        state.settle_plan_session(&self.plan_id, self.detail, |state, active| {
+            let turn = state
+                .orch_for(&self.project_id)?
+                .open_plan_message(active, workspace, NEW_THREAD_MESSAGES_PROMPT)
+                .map_err(err)?;
+            state.queue_plan_turn(&self.plan_id, active, turn);
+            if state.qa_agent && active.plan.state == PlanState::Drafting {
+                if active.revising_stage_id.is_some() {
+                    state.qa_simulate_plan_stage_revise(&self.project_id, active)?;
+                } else {
+                    state.qa_simulate_plan(&self.project_id, active)?;
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The capture a dispatch is the destination of. Recorded once the branch it
+/// went to is real, which is why it rides the dispatch rather than its caller:
+/// a router reaching a branch and a user rerouting one both answer from the
+/// apply phase, with no git under the app mutex on the way.
+pub struct RoutedCapture {
+    pub capture_id: String,
+    pub rationale: Option<String>,
+    /// What the caller answers with, given the capture as its route was
+    /// written — the capture's own record for the user's reroute, which
+    /// redraws the row; where the work went for the router's tool, which is
+    /// told what it did. Nothing here can refuse: every refusal a dispatch can
+    /// make came before the write that made its run real.
+    pub answer: fn(&crate::capture::Capture, Value) -> Value,
+}
+
+/// A capture's route, written down ahead of the run it names being durable,
+/// and what its caller hears once it is.
+struct RouteRecorded {
+    capture: crate::capture::Capture,
+    answered_with: fn(&crate::capture::Capture, Value) -> Value,
+}
+
+impl RouteRecorded {
+    /// The caller's answer over the dispatch — or the dispatch itself, when no
+    /// capture routed it.
+    fn answer(route: Option<Self>, dispatched: Value) -> Value {
+        match route {
+            Some(route) => (route.answered_with)(&route.capture, dispatched),
+            None => dispatched,
+        }
+    }
+}
+
+/// The reroute's answer: the capture as its row now reads.
+fn capture_after_routing(capture: &crate::capture::Capture, _dispatched: Value) -> Value {
+    capture_json(capture)
+}
+
+/// The router tool's answer: where the work went.
+fn the_dispatch_itself(_capture: &crate::capture::Capture, dispatched: Value) -> Value {
+    dispatched
+}
+
+/// The agent one dispatch put on a branch, and the branch it is working.
+struct DispatchedAgent {
+    branch: String,
+    agent_id: String,
+}
+
+impl DispatchedAgent {
+    /// What every dispatch answers with, whichever way it reached its run.
+    fn json(&self, project_id: &str, run_id: &str) -> Value {
+        json!({
+            "project_id": project_id,
+            "branch": self.branch,
+            "run_id": run_id,
+            "agent_id": self.agent_id,
+        })
+    }
+}
+
+/// A checkout Build has taken ownership of on disk, and the run that is about
+/// to stand for it. The apply half of every adoption, and the one place the
+/// order of those writes is spelled.
+///
+/// What is deliberately NOT here is the write that settles the run: it comes
+/// back out of [`RunAdopted::open_run`] un-persisted so its caller can add what
+/// it still owes — a dispatch's agent and first turn — and write once, leaving
+/// no window where a run exists that a later failure would strand.
+pub struct RunAdopted {
+    pub project_id: String,
+    pub run_id: String,
+    pub base_branch: String,
+    pub checkout: AdoptableCheckout,
+    pub scope: AdoptionScope,
+    pub model_choice: ModelChoice,
+}
+
+impl RunAdopted {
+    /// Open the run around the checkout, and move the board's bookkeeping onto
+    /// it. Nothing here can fail once the run record is minted.
+    fn open_run(&self, state: &mut AppState) -> Result<ActiveRun, String> {
+        let active = state
+            .orch_for(&self.project_id)?
+            .adopt_run(
+                RunId::new(&self.run_id),
+                &self.checkout,
+                &self.base_branch,
+                self.model_choice.clone(),
+            )
+            .map_err(err)?;
+        state
+            .entity_project
+            .insert(self.run_id.clone(), self.project_id.clone());
+        // The row this checkout showed as belongs to a run from here on, and a
+        // run is cleared through its conversation: whatever was dismissed
+        // against the entity-less row is spent, and must not come back with the
+        // bare row if the run is ever released.
+        state.forget_row_dismissals(
+            &self.project_id,
+            Some(&self.checkout.branch),
+            self.scope == AdoptionScope::PrimaryCheckout,
+        );
+        state.note_worktree_gone(&self.project_id, &self.checkout.path);
+        Ok(active)
+    }
+}
+
+/// `run.adopt`'s apply half: the checkout is Build's on disk, and the run that
+/// stands for it is opened, persisted and answered with here. Nothing is owed
+/// on top of the adoption, so this is [`RunAdopted`] and the reply alone.
+pub struct RunAdoptionSettled {
+    pub adopted: RunAdopted,
+    pub detail: crate::thread::ThreadDetail,
+}
+
+impl LifecycleEpilogue for RunAdoptionSettled {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        let active = self.adopted.open_run(state)?;
+        let (view, persisted) =
+            state.answer_run_mutation(self.adopted.run_id.clone(), active, self.detail);
+        persisted?;
+        Ok(view)
+    }
+}
+
+/// Every project door's apply half: a repository is on disk, read, and ready to
+/// be registered. `project.add`, `project.clone` and `project.create` differ
+/// only in how the directory got there.
+pub struct ProjectAdded {
+    pub path: std::path::PathBuf,
+    pub base: String,
+    pub remote: Option<String>,
+    pub created_checkout: Option<std::path::PathBuf>,
+}
+
+impl LifecycleEpilogue for ProjectAdded {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        // Idempotent, as it has always been: a repository already registered
+        // under this canonical path answers with the project it already is.
+        if let Some(existing) = state
+            .projects
+            .iter()
+            .find(|project| project.repo_path == self.path)
+        {
+            return Ok(project_json(existing, self.remote));
+        }
+        let project = state.project_candidate(self.path, self.base);
+        let config = state.config_value_with_project(
+            &state.projects_dir,
+            state.default_harness,
+            Some(&project),
+        );
+        if let Err(error) = state.persist_config(&config) {
+            if let Some(path) = self.created_checkout {
+                state.run_off_lock(RemoveUnregisteredProject { path });
+            }
+            return Err(error);
+        }
+        let reply = project_json(&project, self.remote);
+        state.insert_project(project);
+        Ok(reply)
+    }
+}
+
+/// A failed registration owns only the checkout its own run phase created.
+struct RemoveUnregisteredProject {
+    path: std::path::PathBuf,
+}
+
+impl OffLockJob for RemoveUnregisteredProject {
+    type Claim = ();
+    type Decided = ();
+    fn claim(&self) {}
+    fn decide(self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.path) {
+            eprintln!(
+                "cannot remove unregistered project {}: {error}",
+                self.path.display()
+            );
+        }
+    }
+    fn apply(_state: &mut AppState, (): (), (): ()) {}
+    fn abandon(_state: &mut AppState, (): ()) {}
+}
+
+/// `project.set_remote`'s apply half: Git owns the remote configuration; the
+/// app's persisted project configuration has not changed.
+pub struct ProjectRemoteSet {
+    pub project_id: String,
+    pub remote: Option<String>,
+}
+
+impl LifecycleEpilogue for ProjectRemoteSet {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == self.project_id)
+            .ok_or_else(|| format!("unknown project: {}", self.project_id))?;
+        Ok(project_json(project, self.remote))
+    }
+}
+
+/// What a run whose checkout has just been let go of still owes the records.
+/// `run.abandon` writes a verdict onto it; `run.delete` clears its card away.
+///
+/// The run arrives as an argument because the git phase carried it: it rides
+/// through the removal so that no failure can strand it off the board.
+pub trait DiscardSettlement: Send {
+    /// Ask git whatever this settlement has to know before the checkout is let
+    /// go of — the refs an answer depends on are readable only until then. Runs
+    /// inside [`DiscardCheckout::perform`], with the app mutex released.
+    ///
+    /// Most settlements have nothing to ask, and a question nobody asked costs
+    /// nothing: it is the abandon that judges a run's stages, and saying so
+    /// here is what keeps a delete from paying for the verdict.
+    fn judge_before_removal(&mut self) {}
+
+    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String>;
+}
+
+/// `run.abandon`'s apply half: the agents are dead, the checkout is gone, and
+/// what is left is the verdict — on the run, on the stages the removal made
+/// unverifiable, and on the Issue the run was implementing.
+struct RunAbandoned {
+    run_id: String,
+    project_id: String,
+    /// The Issue this run was implementing, told what it lost.
+    issue_id: Option<String>,
+    detail: crate::thread::ThreadDetail,
+    /// What the run's stages are judged against, and git's answer once
+    /// [`DiscardSettlement::judge_before_removal`] has asked. An abandon is the
+    /// only verb that asks, so it is the only one that carries the query.
+    stages: StagePublicationQuery,
+    published: StagePublications,
+}
+
+impl DiscardSettlement for RunAbandoned {
+    fn judge_before_removal(&mut self) {
+        self.published = self.stages.classify();
+    }
+
+    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String> {
+        state.settle_abandoned_run(*self, active)
+    }
+}
+
+/// `run.delete`'s apply half: the durable record goes, and every trace of the
+/// run in memory goes with it.
+///
+/// The record is deleted here and not in the decide phase because the decide
+/// phase can still be refused — the checkout's row may already be claimed by
+/// another verb — and a refusal must leave the card whole. Getting here is what
+/// says the delete is happening: the removal cannot fail. A crash in between
+/// leaves the record for boot to reload and the vanished-run sweep to archive,
+/// the same story every other reservation has.
+///
+/// A store that refuses the delete puts the run back where the decide phase
+/// took it from: the record still stands, so the card must too, and the delete
+/// is retried like any other failed write.
+struct RunDeleted {
+    run_id: String,
+    /// The project whose board loses the card, when the run still has one: a
+    /// run recovered after its repository moved has no project mapping, and
+    /// clearing that stale card is exactly what a delete is for.
+    project_id: Option<String>,
+    /// The directory the run worked in, consulted to tell a checkout that
+    /// survived the delete — the user's own files — from one that was pruned.
+    checkout: std::path::PathBuf,
+}
+
+impl DiscardSettlement for RunDeleted {
+    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String> {
+        if let Some(store) = &state.store {
+            if let Err(error) = store.delete_run(&self.run_id) {
+                state.runs.insert(self.run_id.clone(), active);
+                return Err(format!("run store: {error}"));
+            }
+        }
+        state.forget_run(&self.run_id);
+        if let Some(project_id) = self.project_id.filter(|_| self.checkout.exists()) {
+            // The checkout outlived its card — it was the user's — so it goes
+            // back to the board as the bare one it is.
+            state.rescan_external_worktrees(&project_id);
+        }
+        state.reap_orphaned_terminals();
+        Ok(json!({ "ok": true }))
+    }
+}
+
+/// `branch.dispatch`'s apply half: the checkout is checkpointed and scaffolded,
+/// and the run that owns it — with the agent that will hear the instruction —
+/// is opened here, under the mutex, where the records live.
+pub struct BranchDispatched {
+    pub adopted: RunAdopted,
+    pub instruction: String,
+    pub routed: Option<RoutedCapture>,
+    pub checkouts: ProjectCheckouts,
+}
+
+/// The holder read found an existing run; validate that snapshot before joining.
+pub struct BranchJoined {
+    pub project_id: String,
+    pub run_id: String,
+    pub branch: String,
+    pub root: std::path::PathBuf,
+    pub instruction: String,
+    pub model_choice: ModelChoice,
+    pub explicit_choice: bool,
+    pub routed: Option<RoutedCapture>,
+    pub checkouts: ProjectCheckouts,
+}
+
+impl LifecycleEpilogue for BranchJoined {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.validate_checkout_snapshot(&self.project_id, &self.checkouts)?;
+        #[cfg(test)]
+        fail_dispatch_at(state.dispatch_fault, BranchDispatchStep::Post)?;
+        let choice = if self.explicit_choice {
+            self.model_choice.clone()
+        } else {
+            state.entity_model_choice(&self.run_id)?
+        };
+        state.join_dispatched_run(*self, choice)
+    }
+}
+
+impl LifecycleEpilogue for BranchDispatched {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.open_dispatched_run(*self)
     }
 }
 
@@ -17138,6 +18532,136 @@ fn remove_registered_worktree(
     git_stdout(project_path, &args).map(|_| ())
 }
 
+/// Everything one run's stage publications have to be decided against, taken
+/// under the state lock so the deciding needs none.
+struct StagePublicationQuery {
+    run_id: String,
+    repo_path: Option<std::path::PathBuf>,
+    branch: String,
+    base_branch: String,
+    /// One entry per stage that reached a completion commit. A stage without
+    /// one published nothing by definition and costs no git at all.
+    completions: Vec<(String, String)>,
+}
+
+/// What git says about each of a run's completed stages.
+#[derive(Default)]
+struct StagePublications(HashMap<String, StagePublication>);
+
+/// One vanished run, with git's verdict on its stages already in hand.
+struct DecidedVanishedRun {
+    run_id: String,
+    published: StagePublications,
+}
+
+/// The vanished runs one board read found, on their way to a verdict.
+struct VanishedRunSweep {
+    queries: Vec<StagePublicationQuery>,
+    #[cfg(test)]
+    gate: Option<OffLockGate>,
+}
+
+impl OffLockJob for VanishedRunSweep {
+    type Claim = ();
+    type Decided = Vec<DecidedVanishedRun>;
+
+    fn claim(&self) {}
+
+    /// The git half — a bounded fetch and two graph walks per completed stage,
+    /// per run.
+    fn decide(self) -> Vec<DecidedVanishedRun> {
+        #[cfg(test)]
+        if let Some(gate) = self.gate {
+            gate.arrive();
+        }
+        self.queries
+            .into_iter()
+            .map(DecidedVanishedRun::decide)
+            .collect()
+    }
+
+    fn apply(state: &mut AppState, (): (), decided: Vec<DecidedVanishedRun>) {
+        state.archive_vanished_runs(decided);
+    }
+
+    fn abandon(state: &mut AppState, (): ()) {
+        state.vanished_run_sweep_in_flight = false;
+    }
+}
+
+impl StagePublicationQuery {
+    /// The git half: a bounded fetch and two graph walks per completed stage.
+    /// MUST run with the state lock released.
+    fn classify(&self) -> StagePublications {
+        let Some(repo_path) = self.repo_path.as_ref() else {
+            return StagePublications::default();
+        };
+        StagePublications(
+            self.completions
+                .iter()
+                .map(|(stage_id, completion_sha)| {
+                    (
+                        stage_id.clone(),
+                        classify_stage_publication(
+                            repo_path,
+                            &self.branch,
+                            &self.base_branch,
+                            completion_sha,
+                        ),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+impl DecidedVanishedRun {
+    fn decide(query: StagePublicationQuery) -> DecidedVanishedRun {
+        DecidedVanishedRun {
+            published: query.classify(),
+            run_id: query.run_id,
+        }
+    }
+}
+
+impl StagePublications {
+    /// A stage nobody asked git about published nothing: no completion commit,
+    /// or no repository left to open.
+    fn of(&self, stage_id: &str) -> StagePublication {
+        self.0
+            .get(stage_id)
+            .copied()
+            .unwrap_or(StagePublication::Local)
+    }
+}
+
+/// Write git's verdict onto a vanished run's stages: one whose commits never
+/// left this machine, or that was never validated, is marked incomplete.
+/// Returns the stages that were. Pure bookkeeping — the git it judges by is
+/// [`StagePublicationQuery::classify`].
+fn reconcile_missing_run_worktree(
+    active: &mut ActiveRun,
+    published: &StagePublications,
+) -> Vec<String> {
+    let mut affected = Vec::new();
+    for progress in &mut active.stages {
+        let publication = published.of(&progress.stage_id);
+        progress.publication = publication;
+        let in_flight = !matches!(
+            progress.state,
+            StageProgressState::Validated { passed: true }
+        );
+        if publication == StagePublication::Local || in_flight {
+            progress.invalidation_reason = Some(
+                "Issue worktree disappeared before this stage's commits were verified pushed or merged"
+                    .to_string(),
+            );
+            affected.push(progress.stage_id.clone());
+        }
+    }
+    affected
+}
+
 fn classify_stage_publication(
     repo_path: &std::path::Path,
     branch: &str,
@@ -17182,26 +18706,6 @@ fn classify_stage_publication(
     } else {
         StagePublication::Local
     }
-}
-
-fn git_stdout(dir: &std::path::Path, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|error| format!("could not run git: {error}"))?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = [stderr.trim(), stdout.trim()]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Err(format!("git {args:?}: {detail}"))
 }
 
 /// What the checkout's archive record adds to an archived row: how it was
@@ -17816,6 +19320,34 @@ fn open_session_id(thread: &crate::thread::Thread) -> Option<String> {
         .map(|session| session.id.clone())
 }
 
+/// Close every conversation an abandoned run was holding open. The run is out
+/// of the map by now, so its lineage closes on the record this call holds
+/// rather than through the owner lookup.
+fn close_abandoned_run_conversations(active: &mut ActiveRun) {
+    let now = now_rfc3339();
+    if let Some(primary) = active.agents.primary_mut() {
+        finish_open_session(&mut primary.thread, &now);
+        primary.thread.push_event(
+            crate::thread::ThreadEventKind::Abandoned,
+            Some("Run abandoned".to_string()),
+            None,
+            None,
+            now.clone(),
+        );
+    }
+    // A branch may carry several agents and the decide phase took every one of
+    // them. `Abandoned` closed the first agent's turn (and, for a planned
+    // implementation, its Issue's — see `mirror_run_outcome_to_issue`); the
+    // agents beside it were told nothing, so each one that died mid-turn is
+    // closed on its own conversation. Every other teardown path removes the run
+    // from the board entirely, so there is no row left to read as working.
+    for agent in active.agents.iter_mut() {
+        if agent.thread.working_since().is_some() {
+            record_session_death_in_thread(&mut agent.thread, &now);
+        }
+    }
+}
+
 /// What an issue's conversation says when the branch implementing it is gone
 /// and nothing was merged out of it. `how` is the way it went: abandoned by the
 /// user, deleted outside Build, finished off the board.
@@ -18012,28 +19544,6 @@ impl HarnessExit {
     }
 }
 
-/// The last words on a retained screen: its final non-empty lines, trimmed and
-/// bounded. `None` for a harness that painted nothing worth repeating.
-fn screen_epitaph(screen: &TermScreen) -> Option<String> {
-    const MAX_LINES: usize = 3;
-    const MAX_CHARS: usize = 240;
-    let contents = screen.parser.screen().contents();
-    let mut lines: Vec<&str> = contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if lines.is_empty() {
-        return None;
-    }
-    let tail = lines.split_off(lines.len().saturating_sub(MAX_LINES));
-    let mut said = tail.join(" · ");
-    if said.chars().count() > MAX_CHARS {
-        said = said.chars().take(MAX_CHARS).collect::<String>() + "…";
-    }
-    Some(said)
-}
-
 /// An entity went quiet (or its agent exited) without reporting: record the
 /// reason. The session lineage is deliberately left alone — a quiet agent is
 /// still an agent, and one that exited has already had its session closed by
@@ -18123,13 +19633,18 @@ fn merge_cleanup_from(params: &Value, adopted: bool) -> Result<MergeCleanup, Str
 /// handled here because they need the shared `Arc` (background producer/pump) and
 /// the `SessionSender` (to push live output to this client); everything else runs
 /// under a short-held lock.
-fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Frame) -> Value {
-    // The session ended — its client's `close` frame, or its last carrier gone,
-    // which is the teardown rule `carrier.rs` owns — so release what it held and
-    // the bridge stops encrypting terminal output into a session nobody reads.
+fn dispatch_frame(
+    state: &Arc<Mutex<AppState>>,
+    sender: SessionSender,
+    frame: Frame,
+    timer: FrameTimer,
+) -> Value {
+    // A session ended (client `close` frame, or the relay's session_closed on
+    // browser disconnect): release its attachments so the bridge stops encrypting
+    // terminal output into a session nobody will ever read.
     if frame.frame_type == transport::CLOSE_FRAME_TYPE {
         let changes = {
-            let mut app = state.lock().unwrap();
+            let mut app = timer.lock(state);
             app.drop_session(sender.session_id());
             app.changes()
         };
@@ -18154,62 +19669,49 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         // capabilities that need somewhere to send to — the subscription
         // itself. Needs the caller's own `SessionSender`, which is why it is
         // here and not in `route`.
-        "session.hello" => session_hello(state, &sender),
-        // Signaling for the peer carrier. Pinned to the carrier the client sent
-        // it on (spec §Signaling), so each of these needs the caller's own
-        // `SessionSender` too: the bridge's answer and its trickled candidates
-        // go back over the wire that is live now, never over the channels they
-        // negotiate.
-        "rtc.offer" => rtc_offer(state, &sender, &params),
-        "rtc.ice" => rtc_ice(state, sender.session_id(), &params),
-        "rtc.close" => rtc_close(state, sender.session_id()),
-        "stream.start" => stream_start(state, &params),
+        "session.hello" => session_hello(state, &sender, &timer),
+        // Answered from the frame clock alone, never from `AppState`: the frame
+        // that asks what is wedging the daemon must not queue behind the wedge.
+        "bridge.stats" => Ok(timer.clock().stats()),
+        "stream.start" => stream_start(state, &params, &timer),
+        "rtc.offer" => rtc_offer(state, &sender, &params, &timer),
+        "rtc.ice" => rtc_ice(state, sender.session_id(), &params, &timer),
+        "rtc.close" => rtc_close(state, sender.session_id(), &timer),
         // Opening a terminal or an agent in a worktree IS interacting with it in
         // Build — it is the reason a hand-made worktree graduates out of the
         // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
-            let created = term_create(state, &params);
+            let created = term_create(state, &params, &timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
                     .get("run_id")
                     .or_else(|| params.get("worktree_id"))
                     .and_then(Value::as_str)
                 {
-                    state.lock().unwrap().touch_attention(scope_id);
+                    timer.lock(state).touch_attention(scope_id);
                 }
             }
             created
         }
-        "term.attach" => term_attach(state, &sender, &params),
+        "term.attach" => term_attach(state, &sender, &params, &timer),
+        // A write to a child's pty blocks while the child is not draining, so
+        // both of these take the handle under the lock and write with it
+        // released.
+        "term.input" => term_input(state, &params, &timer),
+        "term.resize" => term_resize(state, &params, &timer),
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
-        "term.ack" => term_ack(state, &sender, &params),
-        "agent.attach" => agent_attach(state, &sender, &params),
-        // Bypasses `dispatch` for the same reason `deliver` does: opening a
-        // harness blocks for seconds on its readiness wait, and every terminal
-        // pump needs the state lock free while it does.
-        "agent.start" => agent_start(state, &params),
+        "term.ack" => term_ack(state, &sender, &params, &timer),
+        "agent.attach" => agent_attach(state, &sender, &params, &timer),
+        // Bypasses `dispatch` because it hands its queued turn to
+        // `DeliveryRunner`, which needs the shared handle `dispatch` does not
+        // have.
+        "agent.start" => agent_start(state, &params, &timer),
         _ => {
-            // Whatever this verb reads out of the diff caches is brought up to
-            // date here, with the lock free. After it, the verb only reads
-            // memory: no frame ever holds the app mutex through a worktree diff.
-            warm_diff_caches(state, &method, &params);
             // A verb whose git work must not run under the lock hands that
             // work back rather than doing it here; the drain below runs it with
             // the mutex released. See `AppState::deferred_work`.
-            let (dispatched, deferred) = {
-                let mut app = state.lock().unwrap();
-                let queued_before = app.pending_agent_turns.len();
-                let (result, deferred) = app.dispatch_deferring(&method, &params);
-                if result.is_err() {
-                    // A turn is not deliverable until the mutation that queued
-                    // it is durable. Drop only this request's turns on failure;
-                    // otherwise a later harmless RPC would deliver work the
-                    // failed request never committed.
-                    app.pending_agent_turns.truncate(queued_before);
-                }
-                (result, deferred)
-            };
+            let (dispatched, deferred) = timer.lock(state).dispatch_deferring(&method, &params);
             let dispatched = match deferred {
                 Some(deferred) => {
                     // THE POINT OF ALL THIS: seconds to minutes of git — a
@@ -18218,21 +19720,16 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
                     // terminal pump and the relay's own read loop free to make
                     // progress meanwhile.
                     let done = deferred.run();
-                    let mut app = state.lock().unwrap();
-                    let queued_before = app.pending_agent_turns.len();
-                    let applied = app.apply_deferred(&method, &params, done);
-                    if applied.is_err() {
-                        app.pending_agent_turns.truncate(queued_before);
-                    }
-                    applied
+                    timer.lock(state).apply_deferred(&method, &params, done)
                 }
                 None => dispatched,
             };
-            // A verb speaks to a worktree's agent by queuing a turn: it runs
-            // under the state lock and `deliver` needs that lock free (a cold
-            // spawn blocks for seconds on the harness's readiness wait).
+            // A verb speaks to a worktree's agent by queuing a turn, and the
+            // frame's own answer never waits for it to arrive: the mutation is
+            // durable, and a cold spawn blocks for seconds on the harness's
+            // readiness wait while the browser gives up at twelve.
             if dispatched.is_ok() {
-                deliver_pending_agent_turns(state);
+                DeliveryRunner::drain(state, &timer);
             }
             dispatched
         }
@@ -18253,10 +19750,17 @@ fn rtc_offer(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     let sdp = require_str(params, "sdp")?;
     let ice_servers = require_array(params, "ice_servers")?;
-    let peers = state.lock().unwrap().peers();
+    let peers = timer.lock(state).peers();
+    #[cfg(test)]
+    let gate = timer.lock(state).off_lock_gate.clone();
+    #[cfg(test)]
+    if let Some(gate) = gate {
+        gate.arrive();
+    }
     let answer = peers
         .offer(sender.session_id(), &sdp, &ice_servers, sender.clone())
         .map_err(|e| e.to_string())?;
@@ -18267,9 +19771,10 @@ fn rtc_ice(
     state: &Arc<Mutex<AppState>>,
     session_id: &str,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     let candidate = require_value(params, "candidate")?;
-    let peers = state.lock().unwrap().peers();
+    let peers = timer.lock(state).peers();
     peers
         .candidate(session_id, candidate)
         .map_err(|e| e.to_string())?;
@@ -18278,8 +19783,12 @@ fn rtc_ice(
 
 /// The browser gave up on the peer carrier: tear this session's peer down and
 /// leave the session working over the relay.
-fn rtc_close(state: &Arc<Mutex<AppState>>, session_id: &str) -> Result<Value, String> {
-    let peers = state.lock().unwrap().peers();
+fn rtc_close(
+    state: &Arc<Mutex<AppState>>,
+    session_id: &str,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let peers = timer.lock(state).peers();
     peers.close(session_id).map_err(|e| e.to_string())?;
     Ok(json!({}))
 }
@@ -18294,11 +19803,15 @@ fn rtc_close(state: &Arc<Mutex<AppState>>, session_id: &str) -> Result<Value, St
 ///
 /// Idempotent: a client may greet again after a reconnect, and the bus keeps
 /// one subscription per session id.
-fn session_hello(state: &Arc<Mutex<AppState>>, sender: &SessionSender) -> Result<Value, String> {
+fn session_hello(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
     // The subscribe happens with the app mutex released — it takes the bus's
     // own leaf lock, and nothing in this daemon may nest one lock inside
     // another it did not have to.
-    let changes = state.lock().unwrap().changes();
+    let changes = timer.lock(state).changes();
     changes.subscribe(sender);
     Ok(json!({
         "push_events": true,
@@ -18322,14 +19835,18 @@ fn term_id_suffix(term_id: &str) -> u64 {
 ///
 /// Only a shell. A worktree's agent is not created here; it is
 /// [`ensure_agent_tab`]'s, and it is the only agent the worktree gets.
-fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+fn term_create(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
     let scope = TermScope::parse(params)?;
     require_shell_kind(params)?;
 
-    let (key, rx) = {
-        let mut s = state.lock().unwrap();
+    let (key, pumps) = {
+        let mut s = timer.lock(state);
         let root = scope.resolve_root(&mut s)?;
         // The cap counts the human's shells and never an agent: sixteen open
         // terminals must not be able to crowd a worktree's agent out of a
@@ -18352,10 +19869,11 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             root,
             terminal_size(cols, rows),
         )?;
+        let pumps = tab.pumps(rx);
         s.tabs.insert(key.clone(), tab);
-        (key, rx)
+        (key, pumps)
     };
-    spawn_tab_pumps(state, key.clone(), rx);
+    spawn_tab_pumps(state, key.clone(), pumps);
     Ok(json!({
         "term_id": key.tab_id,
         "kind": SHELL_TAB_KIND,
@@ -18375,17 +19893,82 @@ fn term_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     let term_id = require_str(params, "term_id")?;
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
 
-    // Snapshot the screen and register this client atomically under the lock, so
-    // the pump pushes only bytes *after* the cursor to the new sender — no gap, no
-    // dupe across a reconnect.
-    let mut s = state.lock().unwrap();
-    let key = s.tab_key_of_wire_id(&term_id)?;
-    attach_to_tab(&mut s, &key, sender, cols, rows)
+    let attachment = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        s.attachment(&key)?
+    };
+    Ok(attach_to_tab(attachment, sender, cols, rows))
+}
+
+/// Write client keystrokes (base64) to a tab's PTY, by id. Input to the agent
+/// tab is allowed by design — its PTY is a full terminal on the user's machine
+/// and the terminal is the basement — and an agent whose process has ended
+/// surfaces "no active agent session" rather than swallowing the keystrokes.
+///
+/// An agent with no terminal has no basement to type into, and hears about it
+/// ([`no_terminal_here`]) before its state is consulted: that is a property of
+/// the session, not of whether it happens to be running.
+///
+/// The handle is taken under the lock and written to with it RELEASED. A child
+/// that has stopped draining its pty blocks the write for as long as it likes;
+/// under the mutex that one child wedges the whole daemon, and off it, one
+/// worker.
+fn term_input(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let term_id = require_str(params, "term_id")?;
+    let data = b64decode(&require_str(params, "data")?)?;
+    let terminal = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
+        let terminal = tab.terminal_handle()?;
+        if !tab.session_is_live() {
+            return Err("no active agent session".to_string());
+        }
+        terminal
+    };
+    terminal.write_input(&data)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// Resize a tab's PTY and screen model, by id. The resize only applies while
+/// the session is live; a dead resize is a no-op `live: false` so a retained
+/// last screen is never garbled.
+///
+/// A session with no terminal refuses instead, live or not: a viewport means
+/// nothing to a session with no grid, so `live: false` there would be a quiet
+/// "nothing to do" in place of a reason.
+///
+/// Off the lock for the same reason as [`term_input`]: the ioctl goes to a
+/// child that may not answer.
+fn term_resize(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let term_id = require_str(params, "term_id")?;
+    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+    let (live, terminal) = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
+        (tab.session_is_live(), tab.terminal_handle()?)
+    };
+    if live {
+        terminal.resize(cols, rows)?;
+    }
+    Ok(json!({ "ok": true, "live": live }))
 }
 
 /// Report how far this client has applied a tab's output — the client half of
@@ -18399,20 +19982,25 @@ fn term_ack(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     let term_id = require_str(params, "term_id")?;
     let cursor = params
         .get("cursor")
         .and_then(Value::as_u64)
         .ok_or("missing cursor")?;
-    let mut s = state.lock().unwrap();
-    let key = s.tab_key_of_wire_id(&term_id)?;
-    let tab = s.tabs.get_mut(&key).ok_or("unknown term_id")?;
-    // A client that was never allowed to attach has nothing to acknowledge, so
-    // it hears the same refusal rather than acking into a screen that is not
-    // there.
-    let (_, screen) = tab.require_terminal_and_screen()?;
-    screen.ack(&term_id, sender.session_id(), cursor);
+    let screen = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
+        // A client that was never allowed to attach has nothing to acknowledge,
+        // so it hears the same refusal rather than acking into a screen that is
+        // not there.
+        tab.terminal_handle()?.screen().clone()
+    };
+    // The ack may push one resync snapshot to the caller, so it happens with the
+    // app mutex released like every other write to a screen.
+    screen.ack(sender.session_id(), cursor);
     Ok(json!({ "ok": true }))
 }
 
@@ -18446,17 +20034,15 @@ fn agent_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     // Grid defaults = the orchestrator's agent PTY size (40 rows × 120 cols).
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
 
-    let requested_agent = params
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty());
+    let requested_agent = named_agent_id(params);
 
-    let mut guard = state.lock().unwrap();
+    let mut guard = timer.lock(state);
     let s = &mut *guard;
     // The id is opaque (plan-… / run-…); what it resolves to is a worktree,
     // because that is what an agent works in. Without one, the scope params
@@ -18474,7 +20060,7 @@ fn agent_attach(
     // surface that predates the rail still attaches to the agent it always did.
     // A scope-addressed attach with no entity can only mean the agent already
     // running there.
-    let agent_id = match (&entity_id, requested_agent) {
+    let agent_id = match (&entity_id, requested_agent.as_deref()) {
         (Some(entity_id), requested) => s.resolve_agent(entity_id, requested)?.id,
         (None, Some(requested)) => requested.to_string(),
         // A worktree Build owns nothing in yet — an unadopted checkout, the
@@ -18494,27 +20080,33 @@ fn agent_attach(
         // worktree's agent will be born onto — because it must go live where it
         // stands when that delivery comes, not sit blank until the human
         // unmounts and remounts the tab.
+        //
+        // The handle is cloned under the lock and registered on with it
+        // released, so a spawn can carry this screen's clients away in between;
+        // the register follows them, because a carried screen points at the one
+        // its clients went to.
+        let term_id = agent_tab_id(&agent_id);
         let screen = s
             .agent_screens_awaiting_spawn
             .entry(key.clone())
-            .or_insert_with(|| TermScreen::new(cols, rows));
-        if screen.cols != cols || screen.rows != rows {
-            screen.set_size(cols, rows);
-        }
-        screen.register(sender);
-        return Ok(json!({
-            "term_id": agent_tab_id(&agent_id),
-            "live": false,
-            "snapshot": screen.snapshot(),
-            "cursor": screen.total,
-            "cols": screen.cols,
-            "rows": screen.rows,
-            // Explicit, not omitted: the contract says provider is null where
-            // no agent has ever run, and attach_to_tab always emits the key.
-            "provider": Value::Null,
-        }));
+            .or_insert_with(|| ScreenHandle::new(&term_id, cols, rows))
+            .clone();
+        drop(guard);
+        let reading = screen.attach(sender, Some((cols, rows)));
+        // A screen with no session behind it is dead by definition, and names
+        // no harness: nothing has ever run here to name one.
+        return Ok(attach_view(
+            TabFacts {
+                term_id,
+                live: false,
+                provider: None,
+            },
+            reading,
+        ));
     }
-    attach_to_tab(s, &key, sender, cols, rows)
+    let attachment = s.attachment(&key)?;
+    drop(guard);
+    Ok(attach_to_tab(attachment, sender, cols, rows))
 }
 
 /// Open a worktree's agent with nothing to say to it — the surface's "Start
@@ -18524,272 +20116,343 @@ fn agent_attach(
 /// Every other way to get an agent is a turn: you say something and the agent
 /// is spawned to hear it. That leaves no way to simply have one running, and no
 /// way back after an exit short of inventing a message. This verb is that way,
-/// and it is the only spawn path with no prompt behind it.
+/// and it is the only spawn with no prompt behind it — which is why the turn it
+/// queues carries no text.
 ///
-/// It carries no turn, so it needs no queue: `ensure_agent_tab` is idempotent on
-/// a live tab (`Warm`, same process) and replaces a dead one (`Fresh`, screen
-/// carried), which is exactly start-vs-restart. The owner must be an entity that
-/// owns a worktree — `.build/mcp.json` routes `done` per owner, so an agent with
-/// nobody to report to is worse than none.
-fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
-    // `run_id` is the adopting caller's spelling: a worktree surface with no run
-    // yet mints one and forwards the verb, and that helper names the id it just
-    // minted. Same entity either way.
-    let entity_id = params
-        .get("id")
-        .or_else(|| params.get("run_id"))
-        .or_else(|| params.get("plan_id"))
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .ok_or("missing id")?;
-    let requested_agent = params
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string);
-    let (turn, waiting) = {
-        let mut s = state.lock().unwrap();
-        // The Agent tab's provider picker rides the start itself. Parsed under
-        // the lock — what "claude" opens is the account's setting to answer —
-        // but still before anything is touched, so an unrunnable provider
-        // refuses instead of opening an agent on the old one.
-        let requested_choice = has_agent_choice(params)
-            .then(|| model_choice_from(params, s.default_harness))
-            .transpose()?;
-        if let Some(choice) = requested_choice {
-            s.set_entity_model_choice(&entity_id, choice)?;
-        }
-        // A start with no agent named on a branch that has none is the human
-        // asking for one: the same door a post takes, on the entity's own
-        // choice — which the provider they just named, if they named one, has
-        // already been written to.
-        let agent_id = match requested_agent.as_deref() {
-            None => s.ensure_primary_agent(&entity_id)?,
-            named => s.resolve_agent(&entity_id, named)?.id,
-        };
-        let roster = s.entity_agents(&entity_id)?;
-        let thread = &roster
-            .by_id(&agent_id)
-            .expect("the agent was just resolved on this roster")
-            .thread;
-        // The agent's own harness, not the entity's: the Resume the TUI pane
-        // offers names no provider precisely because the agent is locked to
-        // one, and a branch's several agents need not share it.
-        let model_choice = roster.turn_choice(&agent_id, &s.entity_model_choice(&entity_id)?);
-        (
-            PendingAgentTurn {
-                root: s.entity_agent_root(&entity_id)?,
-                owner: entity_id.clone(),
-                agent_id: agent_id.clone(),
-                model_choice,
-                // Only sent when something is actually waiting (below). A hand-
-                // started agent has no context, so it gets the cold form: the
-                // conversation protocol and the catch-up packet around the nudge.
+/// It takes the same queue every other turn does, so the reply is the entity's
+/// state and never the harness's: the tab id it answers with is the one the
+/// agent's own identity mints, reserved here and filled in when the session
+/// opens. The owner must be an entity that owns a worktree — `.build/mcp.json`
+/// routes `done` per owner, so an agent with nobody to report to is worse than
+/// none.
+fn agent_start(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let agent = {
+        let mut s = timer.lock(state);
+        let agent = s.addressed_agent(params)?;
+        s.pending_agent_turns.push(PendingAgentTurn {
+            root: agent.root.clone(),
+            owner: agent.entity_id.clone(),
+            agent_id: agent.agent_id.clone(),
+            model_choice: agent.model_choice.clone(),
+            // The button means "give me an agent", not "go do something" — so a
+            // start with nothing waiting says nothing, and the human drives from
+            // there. But the reviewer's words are durable on the thread and an
+            // agent only learns of them by being TOLD to call
+            // `read_unread_messages`; a fresh harness has no reason to.
+            // Restarting after a crash with messages outstanding would silently
+            // ignore every one of them. A hand-started agent has no context, so
+            // what waits for it gets the cold form: the conversation protocol
+            // and the catch-up packet around the nudge.
+            say: agent.has_unread.then(|| TurnText {
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                phase: "start",
-                wants_catch_up: true,
-            },
-            thread.has_unread(),
-        )
+            }),
+            phase: "start",
+            wants_catch_up: true,
+            survives_refusal: false,
+        });
+        s.touch_attention(&agent.entity_id);
+        agent
     };
+    DeliveryRunner::drain(state, timer);
 
-    // The button means "give me an agent", not "go do something" — so a start
-    // with nothing waiting says nothing, and the human drives from there.
-    // But the reviewer's words are durable on the thread and an agent only
-    // learns of them by being TOLD to call `read_unread_messages`; a fresh
-    // harness has no reason to. Restarting after a crash with messages
-    // outstanding would silently ignore every one of them.
-    let (term_id, spawned) = if waiting {
-        deliver(
-            state,
-            &turn.root,
-            &turn.owner,
-            &turn.agent_id,
-            &turn.model_choice,
-            turn.phase,
-            &turn.cold,
-            &turn.warm,
-        )?
-    } else {
-        ensure_agent_tab(
-            state,
-            &turn.root,
-            &turn.owner,
-            &turn.agent_id,
-            &turn.model_choice,
-            turn.phase,
-        )?
-    };
-
-    let mut s = state.lock().unwrap();
-    s.touch_attention(&entity_id);
     Ok(json!({
-        "term_id": term_id,
-        "agent_id": turn.agent_id,
-        "live": true,
-        "spawned": match spawned {
-            Spawned::Fresh => "fresh",
-            Spawned::Warm => "warm",
-        },
-        "notified": waiting,
+        "term_id": agent_tab_id(&agent.agent_id),
+        "agent_id": agent.agent_id,
+        "notified": agent.has_unread,
     }))
+}
+
+/// What a client is told about the tab it just attached to.
+struct TabFacts {
+    term_id: String,
+    live: bool,
+    provider: Option<AgentProvider>,
+}
+
+/// One tab's client-facing surface, taken out of the registry together: what
+/// the reply says about the tab, and the terminal the client attaches to.
+struct TabAttachment {
+    facts: TabFacts,
+    terminal: TerminalHandle,
+}
+
+/// The attach reply, written in one place so both verbs answer in one shape.
+fn attach_view(facts: TabFacts, screen: AttachSnapshot) -> Value {
+    json!({
+        "term_id": facts.term_id,
+        "live": facts.live,
+        "provider": facts.provider,
+        "snapshot": screen.snapshot,
+        "cursor": screen.cursor,
+        "cols": screen.cols,
+        "rows": screen.rows,
+    })
 }
 
 /// Register `sender` on a tab's screen and describe what it should render.
 ///
-/// The one attach body both verbs run: match the PTY and screen model to this
-/// client's viewport (a TUI draws to the size it was told, so a mismatch
-/// garbles), then hand back the snapshot and the monotonic cursor the pump
-/// will push from. A DEAD tab is never resized — its retained screen is the
-/// last thing its agent painted and must stay legible.
+/// The one attach body both verbs run: match the PTY to this client's viewport
+/// (a TUI draws to the size it was told, so a mismatch garbles), then hand back
+/// the snapshot and the monotonic cursor the pump will push from. A DEAD tab is
+/// never resized — its retained screen is the last thing its agent painted and
+/// must stay legible.
 ///
-/// The caller holds the state lock across this, which is what makes the
-/// snapshot and the registration atomic: no bytes land between them.
-fn attach_to_tab(
-    state: &mut AppState,
-    key: &TabKey,
-    sender: &SessionSender,
-    cols: u16,
-    rows: u16,
-) -> Result<Value, String> {
-    let tab = state
-        .tabs
-        .get_mut(key)
-        .expect("the key came from the registry");
-    let live = tab.live;
-    let wire_id = tab.wire_id();
-    // Which harness is behind this screen. Null for a shell, and null from the
-    // no-tab-yet branch above — a worktree nothing has run in has no answer, and
-    // the client leads its start offer with its own default there instead.
-    let provider = match tab.role {
-        TabRole::Agent { provider, .. } => Some(provider),
-        TabRole::Shell => None,
-    };
-    // Both verbs refuse here, because both end here: a session with no terminal
-    // has no snapshot to hand back and no viewport to be told about.
-    let (terminal, screen) = tab.require_terminal_and_screen()?;
-    if live && (screen.cols != cols || screen.rows != rows) {
-        let _ = terminal.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-        screen.set_size(cols, rows);
-    }
-    screen.register(sender);
-    Ok(json!({
-        "term_id": wire_id,
-        "live": live,
-        "provider": provider,
-        "snapshot": screen.snapshot(),
-        "cursor": screen.total,
-        "cols": screen.cols,
-        "rows": screen.rows,
-    }))
+/// Called with the app mutex RELEASED. What makes the snapshot and the
+/// registration atomic is the screen's OWN lock, which the pump feeds through:
+/// no byte can land between them.
+fn attach_to_tab(attachment: TabAttachment, sender: &SessionSender, cols: u16, rows: u16) -> Value {
+    let viewport = attachment.facts.live.then_some((cols, rows));
+    let reading = attachment.terminal.attach(sender, viewport);
+    attach_view(attachment.facts, reading)
 }
 
 /// Find-or-create the one agent tab rooted at `root`.
+///
+/// Three phases, one call each. **Reserve** decides under the lock: hand back a
+/// live tab, wait out the spawn somebody else is already making, or take the
+/// reservation. **Open** does the disk work and starts the child with the lock
+/// released. **Publish** puts the tab in the registry.
+///
+/// Idempotent per root: the find half and the in-flight reservation are taken
+/// under the SAME lock acquisition, so two concurrent callers produce one
+/// harness — two agents in one worktree would both report `done` for the same
+/// owner, and the second report is an illegal transition that lands on the
+/// thread as a bogus failure. A tab whose process has died is replaced (a dead
+/// agent is not an agent), and that replacement reports `Fresh` while carrying
+/// the retained screen — and its monotonic cursor — forward.
+///
+/// The create half needs an owner for the MCP `--task` argv, so it requires a
+/// bound plan/run: `owner` resolves the project whose orchestrator builds the
+/// spec (the MCP socket lives inside that closure and is unreachable from here).
 fn ensure_agent_tab(
     state: &Arc<Mutex<AppState>>,
     root: &std::path::Path,
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
-    phase: &'static str,
-) -> Result<(String, Spawned), String> {
-    let root = AppState::canonical_root(root);
-    let key = TabKey::agent(&root, agent_id);
-    let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
-    loop {
-        match claim_agent_tab(state, &root, &key, owner, agent_id, model_choice, phase)? {
-            AgentTabClaim::Warm(wire_id) => return Ok((wire_id, Spawned::Warm)),
-            AgentTabClaim::Waiting => wait_for_agent_claim(&root, deadline)?,
-            AgentTabClaim::Reserved(reserved) => {
-                return spawn_reserved_agent_tab(
-                    state,
-                    root,
-                    key,
-                    owner,
-                    agent_id,
-                    model_choice,
-                    *reserved,
-                )
-            }
-        }
-    }
+    phase: &str,
+    timer: &FrameTimer,
+) -> Result<Option<(String, Spawned)>, String> {
+    let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
+    let reserved = match claim_agent_spawn(state, &key, owner, agent_id, model_choice, timer)? {
+        SpawnDecision::Live(wire_id) => return Ok(Some((wire_id, Spawned::Warm))),
+        SpawnDecision::NoSession => return Ok(None),
+        SpawnDecision::Reserved(reserved) => *reserved,
+    };
+    let Some(opened) = open_agent_session(state, reserved, &key, timer)? else {
+        return Ok(None);
+    };
+    Ok(
+        publish_agent_tab(state, &key, opened, model_choice, phase, timer)
+            .map(|wire_id| (wire_id, Spawned::Fresh)),
+    )
 }
 
-fn claim_agent_tab(
+/// What the lock-held half of a spawn decided.
+enum SpawnDecision {
+    /// A live tab of this owner's — found on arrival, or waited out.
+    Live(String),
+    /// The entity's session is over, so there is no agent to open.
+    NoSession,
+    /// Nobody else is opening this tab, so this caller is. Boxed because a
+    /// whole spawn plan dwarfs a wire id, and every decision would pay for it.
+    Reserved(Box<ReservedSpawn>),
+}
+
+/// Decide, under the lock, what this caller is to do about the tab.
+///
+/// The wait gives the mutex back for its whole duration and wakes on the
+/// winner's claim being released, so a caller that lost the race costs the
+/// daemon nothing while it waits.
+fn claim_agent_spawn(
     state: &Arc<Mutex<AppState>>,
-    root: &std::path::Path,
     key: &TabKey,
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
-    phase: &'static str,
-) -> Result<AgentTabClaim, String> {
-    let mut app = state.lock().unwrap();
-    if let Some(wire_id) = live_agent_wire_id(&app, key, owner) {
-        return Ok(AgentTabClaim::Warm(wire_id));
-    }
-    if app.agent_spawns_in_flight.contains(key) {
-        return Ok(AgentTabClaim::Waiting);
-    }
-    let carried = app.remove_replaced_agent(key);
-    app.close_stale_agents(root, owner);
-    let project_id = project_for_agent(&app, owner, agent_id)?;
-    let (continue_session, resume_session_id) =
-        app.agent_resume_options(root, owner, agent_id, model_choice.provider);
-    let launch = app.orch_for(&project_id)?.agent_launch();
-    let locator_factory = Arc::clone(&app.session_locator_factory);
-    let reservation = AgentSpawnReservation::claim(state, &mut app, key.clone(), agent_id);
-    Ok(AgentTabClaim::Reserved(Box::new(ReservedAgentTab {
-        reservation,
-        launch,
-        continue_session,
-        resume_session_id,
-        phase,
-        carried,
-        locator_factory,
-    })))
-}
-
-fn live_agent_wire_id(app: &AppState, key: &TabKey, owner: &str) -> Option<String> {
-    let tab = app.tabs.get(key)?;
-    let same_owner = matches!(
-        &tab.role,
-        TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
-    );
-    (same_owner && tab.session_is_live()).then(|| tab.wire_id())
-}
-
-fn project_for_agent(app: &AppState, owner: &str, agent_id: &str) -> Result<String, String> {
-    match app.project_of(owner) {
-        Ok(project_id) => Ok(project_id),
-        Err(unknown) if crate::router::is_router_agent(agent_id) => {
-            app.default_project().map_err(|_| unknown)
+    timer: &FrameTimer,
+) -> Result<SpawnDecision, String> {
+    let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
+    let mut s = timer.lock(state);
+    loop {
+        if !s.owner_still_has_a_session(owner) {
+            return Ok(SpawnDecision::NoSession);
         }
-        Err(unknown) => Err(unknown),
+        if let Some(tab) = s.tabs.get(key) {
+            let same_owner = tab.role.agent().is_some_and(|(had, _)| had == owner);
+            if same_owner && tab.session_is_live() {
+                return Ok(SpawnDecision::Live(tab.wire_id()));
+            }
+        }
+        if !s.agent_spawns_in_flight.contains(key) {
+            return reserve_agent_spawn(&mut s, key, owner, agent_id, model_choice)
+                .map(|reserved| SpawnDecision::Reserved(Box::new(reserved)));
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(format!(
+                "timed out waiting for the agent starting in {}",
+                key.root.display()
+            ));
+        }
+        let finished = Arc::clone(&s.agent_spawn_finished);
+        s = s.wait_until(&finished, left, |state| {
+            !state.agent_spawns_in_flight.contains(key)
+        });
     }
 }
 
-fn wait_for_agent_claim(
-    root: &std::path::Path,
-    deadline: std::time::Instant,
-) -> Result<(), String> {
-    if std::time::Instant::now() >= deadline {
-        return Err(format!(
-            "timed out waiting for the agent starting in {}",
-            root.display()
-        ));
-    }
-    std::thread::sleep(Duration::from_millis(25));
-    Ok(())
+/// What the lock-held half of a spawn hands to the lock-free half.
+struct ReservedSpawn {
+    plan: AgentSpawnPlan,
+    role: TabRole,
+    holding: SpawnHolding,
 }
 
+/// What a reservation is holding on the registry's behalf until the tab opens.
+///
+/// Three things the registry gave up when the reservation was taken, and all
+/// three go back together if the spawn never opens.
+struct SpawnHolding {
+    claim: SpawnClaim,
+    /// The grid of the dead session this spawn replaces, kept for the session
+    /// about to paint it.
+    carried: Option<ScreenHandle>,
+    /// The agent whose MCP token was registered before its child existed.
+    agent_id: String,
+    session_token: String,
+}
+
+impl SpawnHolding {
+    /// Give everything back, and hand the caller the reason the spawn never
+    /// opened.
+    ///
+    /// The reservation took the dead session's tab out of the registry and kept
+    /// its grid, telling the clients on it NOTHING, because they were about to
+    /// be handed to the session replacing it. There is no such session now, and
+    /// the grid is in no registry for a reaper or a close to reach: they are
+    /// told here or they are told never.
+    fn abandon(self, state: &Arc<Mutex<AppState>>, error: String, timer: &FrameTimer) -> String {
+        if let Some(screen) = &self.carried {
+            screen.close(SPAWN_NEVER_OPENED);
+        }
+        let mut s = timer.lock(state);
+        if s.mcp_session_tokens
+            .get(&self.agent_id)
+            .is_some_and(|current| constant_time_token_eq(current, &self.session_token))
+        {
+            s.mcp_session_tokens.remove(&self.agent_id);
+        }
+        self.claim.settle(&mut s);
+        error
+    }
+}
+
+/// Take the spawn reservation and read everything the disk work will need.
+///
+/// Every field of the plan is owned — the project's orchestrator is cloned, the
+/// probes are `Arc`s — so nothing it does afterwards can reach back into the
+/// registry this read it out of.
+///
+/// Every read that can fail runs FIRST, with the registry untouched. Retiring
+/// the dead tab and registering the MCP token are the reservation giving
+/// things up on the registry's behalf, and [`SpawnHolding::abandon`] is the one
+/// primitive that gives them back — a failure between the take and the holding
+/// would bypass it, leaving browsers on a grid no registry can reach and a
+/// token no child holds. So the only failure arm here fails before anything is
+/// taken.
+fn reserve_agent_spawn(
+    s: &mut AppState,
+    key: &TabKey,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+) -> Result<ReservedSpawn, String> {
+    // A router session belongs to no project — deciding which one
+    // the capture belongs to is its job. Any project's
+    // orchestrator builds the same harness spec for it, since the
+    // spec is made from the cwd and the owner id alone.
+    let project_id = match s.project_of(owner) {
+        Ok(project_id) => project_id,
+        Err(unknown) if crate::router::is_router_agent(agent_id) => {
+            s.default_project().map_err(|_| unknown)?
+        }
+        Err(unknown) => return Err(unknown),
+    };
+    let project = s.orch_for(&project_id)?.clone();
+    let carried = s
+        .retire_tab_keeping_screen(key)
+        .and_then(|(_reaping, screen)| screen);
+    // A checkout outlives the entity that owned it — a planning
+    // worktree is torn down and a run cuts a new one at the same
+    // path, an adopted worktree is released and re-adopted. Agents
+    // of the entity that USED to own this directory are stale: they
+    // would keep working in it and report `done` for an owner that
+    // no longer holds it. Several agents of the CURRENT owner are
+    // exactly what a branch is allowed to have, so only the others
+    // go.
+    let stale: Vec<TabKey> = s
+        .tabs
+        .iter()
+        .filter(|(other, tab)| {
+            other.root == key.root && tab.role.agent().is_some_and(|(had, _)| had != owner)
+        })
+        .map(|(other, _)| other.clone())
+        .collect();
+    for other in stale {
+        s.retire_tab(&other, "closed");
+    }
+    let session_token = uuid::Uuid::new_v4().to_string();
+    // Before the child exists, because the child dials the done socket as soon
+    // as it is up and an unregistered token is an unauthorized report.
+    s.mcp_session_tokens
+        .insert(agent_id.to_string(), session_token.clone());
+    Ok(ReservedSpawn {
+        plan: AgentSpawnPlan {
+            project,
+            root: key.root.clone(),
+            agent_id: agent_id.to_string(),
+            model_choice: model_choice.clone(),
+            recorded_resume_id: s.recorded_resume_id(owner, agent_id),
+            may_pick_up_a_conversation: s.may_pick_up_a_conversation(owner, agent_id),
+            probes: s.session_probes(),
+            session_token: session_token.clone(),
+        },
+        role: TabRole::Agent {
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            provider: model_choice.provider,
+        },
+        holding: SpawnHolding {
+            claim: SpawnClaim::take(s, key),
+            carried,
+            agent_id: agent_id.to_string(),
+            session_token,
+        },
+    })
+}
+
+/// The child a spawn opened, and the one thing publishing it has to write down.
+struct OpenedSession {
+    tab: Tab,
+    output: SessionOutput,
+    /// The provider no longer holds the conversation name this agent's record
+    /// carries, so the record has to forget it.
+    recorded_name_is_gone: bool,
+    claim: SpawnClaim,
+}
+
+/// Open the child, with the app mutex RELEASED.
+///
+/// The three transcript reads, the `.build/` scaffold and the harness spawn
+/// itself: between them they walk a tree the daemon does not own and wait on a
+/// harness's readiness, and every terminal pump needs the app mutex while they
+/// do. Either step failing gives the whole reservation back before it answers.
 /// Everything a provider needs to open the agent `prepared` describes.
 ///
 /// A terminal names its conversation from the launch contract when the spec
@@ -18819,164 +20482,268 @@ fn agent_open_request(
     }
 }
 
-fn spawn_reserved_agent_tab(
+/// `Ok(None)`: the owner's session ended while the spawn was reserved (a merge
+/// pruned the checkout, an issue was approved). The reservation is released
+/// and nothing is written to disk, so the pruned directory is not resurrected
+/// by the scaffold a spawn would otherwise lay down.
+fn open_agent_session(
     state: &Arc<Mutex<AppState>>,
-    root: std::path::PathBuf,
-    key: TabKey,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
-    reserved: ReservedAgentTab,
-) -> Result<(String, Spawned), String> {
-    let ReservedAgentTab {
-        reservation,
-        launch,
-        continue_session,
-        resume_session_id,
-        phase,
-        carried,
-        locator_factory,
+    reserved: ReservedSpawn,
+    key: &TabKey,
+    timer: &FrameTimer,
+) -> Result<Option<OpenedSession>, String> {
+    let ReservedSpawn {
+        plan,
+        role,
+        holding,
     } = reserved;
-    let locator = locator_factory(&root, model_choice.provider);
-    let prepared = launch
-        .prepare(
-            agent_id,
-            &root,
-            model_choice,
-            continue_session,
-            resume_session_id.clone(),
-            &reservation.session_token,
-        )
-        .map_err(err)?;
-    let (tab, output) = Tab::spawn_agent(
-        owner.to_string(),
-        agent_id.to_string(),
-        agent_open_request(
-            prepared,
-            root.clone(),
-            model_choice,
-            resume_session_id,
-            locator,
-        ),
-    )?;
-    let tab = tab.adopt_replaced_screen(carried, &key.tab_id);
-    let wire_id = tab.wire_id();
-    {
-        let mut app = state.lock().unwrap();
-        app.publish_agent_tab(AgentTabPublication {
-            root,
-            key: key.clone(),
-            owner: owner.to_string(),
-            agent_id: agent_id.to_string(),
-            model_choice: model_choice.clone(),
-            phase,
-            tab,
-            reservation,
-        });
+    let session_is_over = match &role {
+        TabRole::Agent { owner, .. } => !timer.lock(state).owner_still_has_a_session(owner),
+        TabRole::Shell => false,
+    };
+    if session_is_over {
+        holding.abandon(state, String::new(), timer);
+        return Ok(None);
     }
-    spawn_tab_pumps(state, key, output);
-    Ok((wire_id, Spawned::Fresh))
+    let choice = plan.model_choice.clone();
+    let opened = plan.probe_and_scaffold().and_then(|ready| {
+        let ReadyToSpawn {
+            spec,
+            size,
+            locator,
+            resume_session_id,
+            recorded_name_is_gone,
+        } = ready;
+        let TabRole::Agent {
+            owner, agent_id, ..
+        } = role
+        else {
+            unreachable!("an agent reservation always names an agent")
+        };
+        Tab::spawn_agent(
+            owner,
+            agent_id,
+            agent_open_request(
+                PreparedAgentLaunch {
+                    spec,
+                    pty_size: size,
+                },
+                key.root.clone(),
+                &choice,
+                resume_session_id,
+                locator,
+            ),
+        )
+        .map(|(tab, output)| (tab, output, recorded_name_is_gone))
+    });
+    match opened {
+        Ok((mut tab, output, recorded_name_is_gone)) => {
+            if let Some(screen) = holding.carried {
+                tab.adopt_screen(screen);
+            }
+            Ok(Some(OpenedSession {
+                tab,
+                output,
+                recorded_name_is_gone,
+                claim: holding.claim,
+            }))
+        }
+        Err(error) => Err(holding.abandon(state, error, timer)),
+    }
 }
 
-impl AppState {
-    fn remove_replaced_agent(&mut self, key: &TabKey) -> Option<TermScreen> {
-        self.tabs.remove(key).and_then(|dead| {
-            dead.session.end();
-            dead.screen
-        })
+/// Put the opened tab in the registry and start its pumps.
+///
+/// `None` means the tab was stranded: the entity lost its session while this
+/// harness was starting — an issue approved under its own planning agent. The
+/// insert is the instant the agent becomes addressable, so it is the instant
+/// the gate that closed has to reach it, and no earlier check is atomic with
+/// it.
+fn publish_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    opened: OpenedSession,
+    model_choice: &ModelChoice,
+    phase: &str,
+    timer: &FrameTimer,
+) -> Option<String> {
+    let OpenedSession {
+        tab,
+        output,
+        recorded_name_is_gone,
+        claim,
+    } = opened;
+    let (owner, agent_id) = tab
+        .role
+        .agent()
+        .map(|(owner, agent_id)| (owner.to_string(), agent_id.to_string()))
+        .expect("an agent spawn opens an agent tab");
+    let wire_id = tab.wire_id();
+    let pumps;
+    let inherited;
+    let stranded;
+    {
+        let mut s = timer.lock(state);
+        // The probe read the recorded name and the provider no longer holds it.
+        // Forgetting it is a state write, so it happens here rather than in the
+        // probe that found out.
+        if recorded_name_is_gone {
+            s.record_agent_resume_id(&owner, &agent_id, None);
+        }
+        inherited = inherit_waiting_clients(&mut s, key, &tab);
+        let running = tab
+            .session
+            .active_model()
+            .or_else(|| model_choice.model.clone());
+        pumps = tab.pumps(output);
+        s.tabs.insert(key.clone(), tab);
+        claim.settle(&mut s);
+        s.record_agent_active_model(&owner, &agent_id, running);
+        stranded = !s.owner_still_has_a_session(&owner);
+        if stranded {
+            s.retire_tab(key, "closed");
+        } else {
+            s.record_agent_session_start(&owner, model_choice, phase);
+        }
     }
+    if stranded {
+        return None;
+    }
+    if let Some(inherited) = inherited {
+        inherited.fit_child_to_screen();
+    }
+    spawn_tab_pumps(state, key.clone(), pumps);
+    Some(wire_id)
+}
 
-    fn close_stale_agents(&mut self, root: &std::path::Path, owner: &str) {
-        let stale = self
-            .tabs
-            .iter()
-            .filter(|(other, tab)| {
-                other.root == root
-                    && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
-            })
-            .map(|(other, _)| other.clone())
-            .collect::<Vec<_>>();
-        for key in stale {
-            if let Some(tab) = self.tabs.remove(&key) {
-                let wire_id = tab.wire_id();
-                tab.session.end();
-                if let Some(screen) = &tab.screen {
-                    screen.push_closed(&wire_id, "closed");
-                }
-            }
+/// The daemon itself, held the way a background job has to hold it.
+///
+/// Weakly, because a job that outlives the daemon has nothing to give back to,
+/// and through a poisoned mutex deliberately, because a job that ended by
+/// panicking still has to settle and a destructor that panics during an unwind
+/// aborts the process. Every background job that took something out of the
+/// registry before it left gives it back through one of these.
+#[derive(Clone)]
+struct SettlingHandle(Option<std::sync::Weak<Mutex<AppState>>>);
+
+impl SettlingHandle {
+    /// Run `settle` under the app mutex, or not at all if the daemon is gone.
+    fn settle(&self, settle: impl FnOnce(&mut AppState)) {
+        let Some(state) = self.0.as_ref().and_then(std::sync::Weak::upgrade) else {
+            return;
+        };
+        settle(
+            &mut state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+}
+
+/// One worktree's agent spawn, reserved.
+///
+/// Held from the acquisition that found no live tab to the acquisition that
+/// publishes the new one, so two callers of one tab produce one harness — two
+/// agents in one worktree would both report `done` for the same owner, and the
+/// second report is an illegal transition that lands on the thread as a bogus
+/// failure. Every way out of a spawn releases it: [`SpawnClaim::settle`] under
+/// a lock the caller already holds, and [`Drop`] on any path that never got
+/// there, a panic included.
+struct SpawnClaim {
+    key: TabKey,
+    state: SettlingHandle,
+    finished: Arc<std::sync::Condvar>,
+    settled: bool,
+}
+
+impl SpawnClaim {
+    fn take(s: &mut AppState, key: &TabKey) -> SpawnClaim {
+        s.agent_spawns_in_flight.insert(key.clone());
+        SpawnClaim {
+            key: key.clone(),
+            state: s.settling_handle(),
+            finished: Arc::clone(&s.agent_spawn_finished),
+            settled: false,
         }
     }
 
-    fn agent_resume_options(
-        &mut self,
-        root: &std::path::Path,
-        owner: &str,
-        agent_id: &str,
-        provider: AgentProvider,
-    ) -> (bool, Option<String>) {
-        let resume_session_id = match self.recorded_resume_id(owner, agent_id) {
-            Some(named) if (self.resume_id_probe)(root, provider, &named) => Some(named),
-            Some(_) => {
-                self.record_agent_resume_id(owner, agent_id, None);
-                None
-            }
-            None => None,
-        };
-        let continue_session = resume_session_id.is_none()
-            && self.may_pick_up_a_conversation(owner, agent_id)
-            && (self.transcript_probe)(root, provider);
-        (continue_session, resume_session_id)
+    /// Release the claim under a lock the caller is already holding, and wake
+    /// everyone waiting behind it.
+    fn settle(mut self, s: &mut AppState) {
+        s.agent_spawns_in_flight.remove(&self.key);
+        self.settled = true;
+        self.finished.notify_all();
     }
+}
 
-    fn take_waiting_screen(&mut self, root: &std::path::Path, key: &TabKey) -> Option<TermScreen> {
-        let first_here = !self
-            .tabs
-            .keys()
-            .any(|other| other.is_agent() && other.root == root);
-        self.agent_screens_awaiting_spawn.remove(key).or_else(|| {
-            first_here.then(|| {
-                self.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-                    root,
-                    &crate::worktree::external_worktree_id(root),
-                ))
-            })?
-        })
+impl Drop for SpawnClaim {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let key = &self.key;
+        self.state.settle(|s| {
+            s.agent_spawns_in_flight.remove(key);
+        });
+        self.finished.notify_all();
     }
-
-    fn publish_agent_tab(&mut self, mut publication: AgentTabPublication) {
-        let waiting = self.take_waiting_screen(&publication.root, &publication.key);
-        publication.tab = publication
-            .tab
-            .adopt_waiting_screen(waiting, &publication.key.tab_id);
-        let running = publication
-            .tab
-            .session
-            .active_model()
-            .or_else(|| publication.model_choice.model.clone());
-        self.tabs.insert(publication.key.clone(), publication.tab);
-        self.complete_spawn_reservation(publication.reservation);
-        self.record_agent_active_model(&publication.owner, &publication.agent_id, running);
-        // The caller starts the output pumps only after this publication lock is
-        // released, so EOF cannot close the session before its start is visible.
-        self.record_agent_session_start(
-            &publication.owner,
-            &publication.model_choice,
-            publication.phase,
-        );
-    }
-
-    fn complete_spawn_reservation(&mut self, mut reservation: AgentSpawnReservation) {
-        self.agent_spawns_in_flight.remove(&reservation.key);
-        reservation.active = false;
+}
+/// Move the clients that were waiting for `tab`'s agent onto the screen it will
+/// paint, and hand back the child's half of the move.
+///
+/// Clients that mounted the Agent tab before this worktree had one are attached
+/// to a screen with no PTY. They are carried — with the viewport they render
+/// at, the same rule an attach to a live tab follows — onto the real screen.
+/// The carry is what makes the waiting screen point at this one, so a client
+/// attaching during the spawn is on one screen or the other and never between
+/// them however the two acquisitions fall. The waiting screen's cursor is not
+/// carried: it painted nothing, while a retained screen's cursor is the one
+/// that must never rewind.
+///
+/// The screen half is bounded and belongs under the app mutex, beside the
+/// insert that publishes the tab. The child half is an ioctl to a process that
+/// may not answer, so what comes back is the terminal that inherited them, for
+/// the caller to fit to its screen with the lock down.
+fn inherit_waiting_clients(s: &mut AppState, key: &TabKey, tab: &Tab) -> Option<TerminalHandle> {
+    let first_here = !s
+        .tabs
+        .keys()
+        .any(|other| other.is_agent() && other.root == key.root);
+    let waiting = s.agent_screens_awaiting_spawn.remove(key).or_else(|| {
+        // Clients that mounted the tab before this worktree had an agent
+        // addressed it by the WORKTREE; the first agent born here is the one
+        // they were waiting for.
+        first_here.then(|| {
+            s.agent_screens_awaiting_spawn.remove(&TabKey::agent(
+                &key.root,
+                &crate::worktree::external_worktree_id(&key.root),
+            ))
+        })?
+    })?;
+    match tab.terminal_handle() {
+        Ok(terminal) => terminal
+            .screen()
+            .carry_clients_from(&waiting)
+            .then_some(terminal),
+        // There is no real screen to carry them onto — see
+        // [`NO_TERMINAL_LEFT`].
+        Err(_) => {
+            waiting.close(NO_TERMINAL_LEFT);
+            None
+        }
     }
 }
 
 /// What a delivery reports when the tab it just ensured is already gone.
 const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn could be delivered";
+/// What a start says on its agent when the entity's session is over and no
+/// harness is opened for it — the third answer to a start, beside "live" and
+/// a spawn that failed.
+const AGENT_START_DECLINED_SESSION_OVER: &str = "no session to open: this entity's session is over";
 
-/// End a screen the spawn that was supposed to fill it can never fill.
+/// Why a screen the spawn was supposed to fill is closed instead.
 ///
-/// Both screens `ensure_agent_tab` may be holding — the retained grid of the
+/// Both screens [`ensure_agent_tab`] may be holding — the retained grid of the
 /// session being replaced, and the one clients that mounted the Agent tab early
 /// are waiting on — exist to be carried onto the new session's screen. A
 /// session with no terminal has none, so there is nothing to carry them to and
@@ -18987,37 +20754,52 @@ const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn coul
 /// tell one. The rail reads `has_terminal: false` off the digest by then and
 /// stops offering the terminal; this is what closes the door for a client that
 /// was already through it.
-fn close_a_screen_with_no_terminal(screen: &TermScreen, term_id: &str) {
-    screen.push_closed(term_id, "no_terminal");
-}
+const NO_TERMINAL_LEFT: &str = "no_terminal";
+
+/// Why a screen a spawn was holding is closed when that spawn never opened.
+///
+/// The reservation takes the dead session's tab out of the registry and keeps
+/// its grid, telling the clients on it NOTHING, because they are about to be
+/// handed to the session replacing it. A spawn that fails has nobody to hand
+/// them to, and the grid it is holding is in no registry for a reaper or a
+/// close to reach: they are told here or they are told never.
+const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
 /// The one pipe from Build to a worktree's agent.
 ///
-/// Ensures the tab exists, then hands the agent exactly one turn — a value the
-/// session decides how to say, which for a PTY is the harness's own submit key
-/// and bracketed paste framing and never a raw write with a hardcoded `\r`.
-/// Which text travels
-/// is decided by whether the tab had to be spawned: `cold` for an agent with no
-/// context to read messages into, `warm` for one already in the conversation,
-/// whose messages are already durable in the thread for `read_unread_messages`
-/// to pull. Returns the tab's wire id and which half travelled — a `Fresh`
-/// delivery is a new agent process, which the conversation records as the start
-/// of a session.
-#[allow(clippy::too_many_arguments)]
+/// Ensures the tab exists, then hands the agent the turn it was queued with —
+/// a value the carrier decides how to say, which for a PTY is the harness's own
+/// submit key and bracketed paste framing and never a raw write with a
+/// hardcoded `\r`. Which half of the text travels is decided by whether the tab
+/// had to be spawned; a turn that says nothing at all is a start, and the tab
+/// existing is the whole of it. Returns the tab's wire id and which half
+/// travelled — a `Fresh` delivery is a new agent process, which the
+/// conversation records as the start of a session.
 fn deliver(
     state: &Arc<Mutex<AppState>>,
-    root: &std::path::Path,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
-    phase: &'static str,
-    cold: &str,
-    warm: &str,
-) -> Result<(String, Spawned), String> {
-    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice, phase)?;
+    turn: &PendingAgentTurn,
+    timer: &FrameTimer,
+) -> Result<Option<(String, Spawned)>, String> {
+    let PendingAgentTurn {
+        root,
+        owner,
+        agent_id,
+        model_choice,
+        phase,
+        say,
+        ..
+    } = turn;
+    let Some((wire_id, spawned)) =
+        ensure_agent_tab(state, root, owner, agent_id, model_choice, phase, timer)?
+    else {
+        return Ok(None);
+    };
+    let Some(say) = say else {
+        return Ok(Some((wire_id, spawned)));
+    };
     let prompt = match spawned {
-        Spawned::Fresh => cold,
-        Spawned::Warm => warm,
+        Spawned::Fresh => &say.cold,
+        Spawned::Warm => &say.warm,
     };
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
     // The handle comes out of the registry so the turn travels with the
@@ -19026,7 +20808,7 @@ fn deliver(
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
     let session = {
-        let s = state.lock().unwrap();
+        let s = timer.lock(state);
         let tab = s.tabs.get(&key).ok_or(TAB_CLOSED_UNDER_A_TURN)?;
         Arc::clone(&tab.session)
     };
@@ -19044,84 +20826,258 @@ fn deliver(
     // before, it now has something to answer for. A tab that closed while the
     // turn was in flight has no clock left to restart — and the turn still
     // travelled, so that is not a delivery failure to report.
-    if let Some(tab) = state.lock().unwrap().tabs.get_mut(&key) {
+    if let Some(tab) = timer.lock(state).tabs.get_mut(&key) {
         tab.last_delivered_at = Some(std::time::Instant::now());
     }
-    Ok((wire_id, spawned))
+    Ok(Some((wire_id, spawned)))
 }
 
-/// Send every turn the verbs that just ran queued, now that the state lock is
-/// free.
+/// The turns one lock acquisition took off the queue, on their way to their
+/// agents.
 ///
-/// A cold delivery starts a new harness process, whose publication has already
-/// opened the conversation's session lineage. A warm delivery continues the
-/// session already open.
-fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
-    // Taking the queue and marking those owners in flight happen under ONE lock
-    // acquisition, so there is no instant in which a queued turn is invisible to
-    // the idle sweep and its entity looks agentless.
-    let queued = {
-        let mut s = state.lock().unwrap();
-        let taken = std::mem::take(&mut s.pending_agent_turns);
-        // An issue whose session is over (approved, abandoned) holds no
-        // workspace — and its checkout is the project's primary one, which is
-        // emphatically not a place to spawn a replacement for work nobody is
-        // doing. A turn queued before that gate closed is dropped here.
-        let (queued, closed): (Vec<PendingAgentTurn>, Vec<PendingAgentTurn>) = taken
-            .into_iter()
-            .partition(|turn| s.owner_still_has_a_session(&turn.owner));
-        for turn in &closed {
-            eprintln!(
-                "deliver to {}: the entity's session is over; the turn stays on its thread",
-                turn.owner
-            );
+/// A frame answers the moment its own state change is durable, so the queue is
+/// taken here and delivered somewhere else. The owners are marked in flight
+/// under the SAME acquisition that empties the queue, so there is no instant in
+/// which a queued turn is invisible to the idle sweep and its entity looks
+/// agentless.
+/// The batch OWES those marks back. Each turn settles its own as it lands, and
+/// [`Drop`] settles whatever is left, because an owner still marked in flight is
+/// spared by the idle sweep forever — a run left Working with no agent and
+/// nothing in the daemon able to demote it.
+///
+/// A mark travels with the turn it was taken for, so the turn that landed is
+/// the only one whose mark can be given back. Found by owner instead, a batch
+/// carrying two turns for one owner on two agents could settle the OTHER
+/// agent's mark and leave its undelivered turn reading as absent.
+struct PendingTurns {
+    turns: std::collections::VecDeque<(PendingAgentTurn, TurnMark)>,
+    state: SettlingHandle,
+    /// The clock the delivery times itself by, taken under the acquisition
+    /// that took the turns so the runner never takes the app mutex just to
+    /// find it.
+    clock: Arc<FrameClock>,
+}
+
+/// The turns that have left [`AppState::pending_agent_turns`] and have not yet
+/// reached an agent.
+///
+/// Counted under two keys, because two questions are asked of the same fact and
+/// neither answers the other. The idle sweep asks about an OWNER: between a
+/// verb's transition and the tab its turn spawns, a working entity legitimately
+/// has no agent tab. The verbs that would queue a second turn ask about an
+/// AGENT TAB: a harness already on its way with words for it is the one that
+/// reads the next message, and a turn queued behind it is a duplicate nudge.
+/// Every turn counts under its owner; only a turn that says something counts
+/// under its agent, because only that turn tells the agent to read.
+///
+/// Counted rather than flagged, because one batch can carry several turns for
+/// one owner and several for one agent.
+#[derive(Default)]
+struct TurnsInFlight {
+    owners: HashMap<String, usize>,
+    agents: HashMap<TabKey, usize>,
+}
+
+/// One turn's pair of marks, owed back by whoever took them.
+///
+/// Given back by [`TurnMark::settle`] under a lock the caller holds once the
+/// turn has landed, and by [`Drop`] on any path that never got there — a
+/// delivery that panicked after the turn left its batch and before it was
+/// settled. The same guard [`SpawnClaim`] is, one phase earlier: a mark that
+/// outlived its delivery would spare its owner from the idle sweep forever.
+struct TurnMark {
+    owner: String,
+    /// The agent this turn will tell to read its thread — `None` for a turn
+    /// that says nothing.
+    told_agent: Option<TabKey>,
+    state: SettlingHandle,
+    settled: bool,
+}
+
+impl TurnMark {
+    /// Give this turn's marks back, under a lock the caller holds. Consumes the
+    /// mark, so one turn settles once.
+    fn settle(mut self, s: &mut AppState) {
+        s.turns_in_flight.give_back(&self);
+        self.settled = true;
+    }
+}
+
+impl Drop for TurnMark {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
         }
-        for turn in &queued {
-            *s.agent_turns_in_flight
-                .entry(turn.owner.clone())
-                .or_default() += 1;
-        }
-        // The one door every cold prompt passes: the conversation is read and
-        // closed onto the prompt HERE, so the packet carries what the store
-        // holds under the tail and what was said while the turn waited.
-        let mut queued = queued;
-        for turn in &mut queued {
-            if turn.wants_catch_up {
-                turn.cold = s.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &turn.cold);
-            }
-        }
-        queued
-    };
-    for turn in queued {
-        let delivered = deliver(
+        self.state.settle(|s| s.turns_in_flight.give_back(self));
+    }
+}
+
+impl TurnsInFlight {
+    fn take(&mut self, turn: &PendingAgentTurn, state: SettlingHandle) -> TurnMark {
+        let mark = TurnMark {
+            owner: turn.owner.clone(),
+            told_agent: turn.says_something().then(|| turn.tab_key()),
             state,
-            &turn.root,
-            &turn.owner,
-            &turn.agent_id,
-            &turn.model_choice,
-            turn.phase,
-            &turn.cold,
-            &turn.warm,
-        );
-        let mut s = state.lock().unwrap();
-        if let Err(error) = delivered {
-            // The turn stays durable on the thread — the agent picks it up with
-            // `read_unread_messages` the next time a tab opens — but nothing is
-            // reading that thread right now, so the entity itself has to carry
-            // the reason. The idle sweep finishes the job: an entity left
-            // working with no agent tab is demoted on the next pass.
-            eprintln!("deliver to {}: {error}", turn.owner);
-            s.record_agent_delivery_failure(&turn, &error);
+            settled: false,
+        };
+        *self.owners.entry(mark.owner.clone()).or_default() += 1;
+        if let Some(agent) = &mark.told_agent {
+            *self.agents.entry(agent.clone()).or_default() += 1;
         }
-        // Off the queue and out of flight: from here the entity's agent tab is
-        // the whole truth about whether an agent is there.
-        if let std::collections::hash_map::Entry::Occupied(mut in_flight) =
-            s.agent_turns_in_flight.entry(turn.owner.clone())
-        {
-            *in_flight.get_mut() -= 1;
-            if *in_flight.get() == 0 {
-                in_flight.remove();
+        mark
+    }
+
+    fn give_back(&mut self, mark: &TurnMark) {
+        Self::drop_one(&mut self.owners, &mark.owner);
+        if let Some(agent) = &mark.told_agent {
+            Self::drop_one(&mut self.agents, agent);
+        }
+    }
+
+    fn holds_owner(&self, owner: &str) -> bool {
+        self.owners.contains_key(owner)
+    }
+
+    fn holds_agent(&self, key: &TabKey) -> bool {
+        self.agents.contains_key(key)
+    }
+
+    /// Nothing is being delivered, for a test waiting out the deliveries a verb
+    /// it called triggered.
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty() && self.agents.is_empty()
+    }
+
+    fn drop_one<K: std::hash::Hash + Eq>(counts: &mut HashMap<K, usize>, key: &K) {
+        let Some(count) = counts.get_mut(key) else {
+            return;
+        };
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(key);
+        }
+    }
+}
+
+impl PendingTurns {
+    fn is_empty(&self) -> bool {
+        self.turns.is_empty()
+    }
+
+    /// The next turn to deliver, with the mark to settle once it has landed.
+    fn next_turn(&mut self) -> Option<(PendingAgentTurn, TurnMark)> {
+        self.turns.pop_front()
+    }
+}
+
+impl Drop for PendingTurns {
+    fn drop(&mut self) {
+        let undelivered = std::mem::take(&mut self.turns);
+        if undelivered.is_empty() {
+            return;
+        }
+        self.state.settle(|s| {
+            for (_, mark) in undelivered {
+                mark.settle(s);
             }
+        });
+    }
+}
+
+/// Where a delivery's own time is charged. A spawn is not the frame that asked
+/// for it, and counting it there would make every verb that speaks to an agent
+/// look like the daemon's slowest.
+const AGENT_DELIVERY_METHOD: &str = "agent.deliver";
+
+/// Sending the queued turns, off the frame that queued them.
+///
+/// DELIBERATE, and the whole of spec step 2: a cold delivery spawns a harness
+/// and waits on its readiness for up to [`HARNESS_READY_GRACE`], and the
+/// browser gives up at twelve seconds. The verb's own state change is durable
+/// before the queue is even taken, so nothing about the reply depends on the
+/// agent being up. What the delivery does reaches the browser the way every
+/// other background outcome does: the entity's own record
+/// ([`AppState::record_agent_session_start`],
+/// [`AppState::record_agent_delivery_failure`]) and a push invalidation.
+///
+/// [`HARNESS_READY_GRACE`]: crate::orchestrator::HARNESS_READY_GRACE
+struct DeliveryRunner;
+
+impl DeliveryRunner {
+    /// Take whatever the verbs that just ran queued, under one acquisition
+    /// charged to `timer`, and deliver it off this thread. The one call every
+    /// path that queues a turn makes once its own state change is durable.
+    fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
+        let turns = timer.lock(state).take_pending_turns();
+        DeliveryRunner::spawn(state, turns);
+    }
+
+    /// Deliver `turns` on a thread of the runtime's, and return at once.
+    ///
+    /// With no runtime under it — the synchronous unit tests — there is no
+    /// thread to hand the work to and it runs here, which is the same
+    /// delivery, made on the caller's time.
+    ///
+    /// The delivery is JOINED by a task of its own rather than detached, so a
+    /// delivery that panicked, or one a shutting-down runtime never ran, says
+    /// so on the log instead of vanishing. Either way the batch's in-flight
+    /// marks come back with it: [`PendingTurns`] settles what it owes on drop.
+    ///
+    /// The blocking half is submitted BEFORE the joiner, and not from inside
+    /// it: a single-threaded runtime runs a spawned task only when something
+    /// awaits, and a delivery that waited for its caller to await would be a
+    /// delivery that never left the frame.
+    fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns) {
+        if turns.is_empty() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            DeliveryRunner::run(state, turns);
+            return;
+        };
+        let state = Arc::clone(state);
+        let delivering = runtime.spawn_blocking(move || DeliveryRunner::run(&state, turns));
+        runtime.spawn(async move {
+            if let Err(joined) = delivering.await {
+                eprintln!("agent delivery failed: {joined}");
+            }
+        });
+    }
+
+    /// Send every turn, one at a time, and write down what each one did.
+    ///
+    /// A cold delivery starts a new harness process, so it opens the
+    /// conversation's session lineage — the record the thread reads back as
+    /// "the revise agent started here". A warm delivery continues the session
+    /// already open.
+    fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
+        let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
+        while let Some((turn, mark)) = turns.next_turn() {
+            let delivered = deliver(state, &turn, &timer);
+            let mut s = timer.lock(state);
+            match delivered {
+                // An issue whose session is over (approved, abandoned) holds no
+                // workspace — and its checkout is the project's primary one,
+                // which is emphatically not a place to spawn a replacement for
+                // work nobody is doing. The turn stays on its thread; the
+                // agent says why nothing opened.
+                Ok(None) => s.record_agent_start_declined(&turn),
+                Ok(Some(_)) => {}
+                // The turn stays durable on the thread — the agent picks it up
+                // with `read_unread_messages` the next time a tab opens — but
+                // nothing is reading that thread right now, so the entity
+                // itself has to carry the reason. The idle sweep finishes the
+                // job: an entity left working with no agent tab is demoted on
+                // the next pass.
+                Err(error) => {
+                    eprintln!("deliver to {}: {error}", turn.owner);
+                    s.record_agent_delivery_failure(&turn, &error);
+                }
+            }
+            // Off the queue and out of flight: from here the entity's agent tab
+            // is the whole truth about whether an agent is there.
+            mark.settle(&mut s);
         }
     }
 }
@@ -19132,33 +21088,55 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
 /// One or the other and never both, because the two capabilities are
 /// alternatives — and never neither, because the death rites hang off a stream
 /// closing ([`open_session`] refuses a session with no stream at all).
-fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, output: SessionOutput) {
-    spawn_tab_pump(state, key.clone(), output.bytes);
-    spawn_activity_pump(state, key, output.activity);
+fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
+    let TabPumps {
+        session,
+        screen,
+        output,
+    } = pumps;
+    spawn_tab_pump(
+        state,
+        key.clone(),
+        Arc::clone(&session),
+        screen,
+        output.bytes,
+    );
+    spawn_activity_pump(state, key, session, output.activity, output.surfaces);
 }
 
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
 /// flushing one keyed frame to every attached client.
 ///
+/// **It never takes the app mutex to paint.** The screen is its own lock, held
+/// by this task for the microseconds a chunk takes to parse, so three agents
+/// flooding at once contend with each other's readers and with nothing else in
+/// the daemon. The app mutex is taken exactly twice, at EOF, to write down that
+/// the session ended.
+///
 /// Start of session: the parser is reset to a blank screen of the current grid
 /// and `term.reset` is pushed (clients wipe; a replacement process starts
-/// clean) — `screen.total` is NEVER reset, because client dedupe rides the
-/// monotonic cursor. On EOF a Shell tab is removed, reaped, and pushed
-/// `term.closed{exited}`; an Agent tab is RETAINED with `live = false` and
-/// pushed `term.closed{agent_session_ended}`, because the tab must still show
-/// the last screen.
+/// clean) — the cursor is NEVER reset, because client dedupe rides it. On EOF a
+/// Shell tab is removed, reaped, and pushed `term.closed{exited}`; an Agent tab
+/// is RETAINED with `live = false` and pushed `term.closed{agent_session_ended}`,
+/// because the tab must still show the last screen.
 ///
-/// One pump per tab for the tab's whole life: with one PTY per worktree there
-/// is no phase boundary to generation-guard against — a missing tab is the
-/// only stop condition.
+/// One pump per tab for the tab's whole life, and it pumps the session it was
+/// started for: a kill is asynchronous now, so a replaced session's EOF can
+/// arrive after its replacement is already in the registry. The tab is only
+/// ended by the pump that holds that tab's own session.
+///
+/// A closed screen ends the pump without the registry: a retired tab's child
+/// may keep producing until its kill lands, and nobody is watching.
 fn spawn_tab_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
+    session: Arc<dyn AgentSession>,
+    screen: Option<ScreenHandle>,
     rx: Option<broadcast::Receiver<Vec<u8>>>,
 ) {
     // No terminal, no bytes: the pump exists to paint a stream into a grid, and
     // a session that offers none has nothing for it to do.
-    let Some(mut rx) = rx else {
+    let (Some(mut rx), Some(screen)) = (rx, screen) else {
         return;
     };
     if tokio::runtime::Handle::try_current().is_err() {
@@ -19168,96 +21146,113 @@ fn spawn_tab_pump(
     }
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        let term_id = {
-            let mut s = state.lock().unwrap();
-            let Some(tab) = s.tabs.get_mut(&key) else {
-                return;
-            };
-            let term_id = tab.wire_id();
-            // A session with no terminal produces no bytes, so there is nothing
-            // to pump: the pump is only ever spawned beside a PTY.
-            let Some(screen) = tab.screen.as_mut() else {
-                return;
-            };
-            screen.parser = vt100::Parser::new(screen.rows, screen.cols, 2000);
-            screen.pending.clear();
-            // This reset resyncs every attached client, so a snapshot a previous
-            // session's flood left owing is already paid.
-            screen.snapshot_due = false;
-            let payload = json!({
-                "type": "term.reset",
-                "term_id": term_id,
-                "data": screen.snapshot(),
-                "cursor": screen.total,
-            });
-            screen.push_to_keeping_up(payload);
-            term_id
-        };
+        screen.restart();
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
+            let still_open = tokio::select! {
                 recv = rx.recv() => match recv {
-                    Ok(chunk) => {
-                        let mut s = state.lock().unwrap();
-                        let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        let Some(screen) = tab.screen.as_mut() else { return; };
-                        screen.process(&chunk);
-                    }
+                    Ok(chunk) => screen.feed(&chunk),
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        let mut s = state.lock().unwrap();
-                        let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        let ended_agent = match &tab.role {
-                            TabRole::Agent { owner, agent_id, .. } => {
-                                Some((owner.clone(), agent_id.clone()))
-                            }
-                            TabRole::Shell => None,
-                        };
-                        match ended_agent {
-                            Some((owner, agent_id)) => {
-                                tab.live = false;
-                                if let Some(screen) = tab.screen.as_mut() {
-                                    screen.flush(&term_id);
-                                    screen.push_closed(&term_id, "agent_session_ended");
-                                }
-                                // One final reading, so a session shorter than
-                                // a sweep tick is still named — and the respawn
-                                // that needs the name is the very next thing
-                                // after a close. It RECORDS; it never clears: a
-                                // terminal resumed in place writes no new
-                                // transcript, so a locator finding nothing is
-                                // its normal answer here, and clearing on that
-                                // would throw a good name away at every
-                                // restart. A name that no longer resolves is
-                                // caught at the reservation instead.
-                                note_session_self_report(&mut s, &key, &owner, &agent_id);
-                                // The process is what a session IS, so this is
-                                // where the conversation's lineage closes — and
-                                // where a turn the dead process was holding is
-                                // closed, so the row stops reading as working.
-                                s.record_agent_session_end(&owner, &agent_id);
-                            }
-                            None => {
-                                let Some(tab) = s.tabs.remove(&key) else { return; };
-                                tab.session.end();
-                                if let Some(screen) = &tab.screen {
-                                    screen.push_closed(&term_id, "exited");
-                                }
-                            }
-                        }
+                        end_of_session(&state, &key, &session, &screen);
                         return;
                     }
                 },
-                _ = flush.tick() => {
-                    let mut s = state.lock().unwrap();
-                    let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                    let Some(screen) = tab.screen.as_mut() else { return; };
-                    screen.flush(&term_id);
-                }
+                _ = flush.tick() => screen.flush(),
+            };
+            if !still_open {
+                return;
             }
         }
     });
+}
+
+/// Whether the tab at `key` is still the one `session` was pumped for.
+///
+/// A retirement kills and reaps on a thread of its own, so a replaced session's
+/// stream can end after its replacement is already in the registry — and a
+/// pump's death rites take the app mutex more than once, with a filesystem read
+/// between, so the tab can turn over mid-rite. Every acquisition asks, not just
+/// the first: writing a dead session's findings onto a live one closes the
+/// replacement's turn and records the wrong conversation against it.
+fn still_pumping(s: &AppState, key: &TabKey, session: &Arc<dyn AgentSession>) -> bool {
+    s.tabs
+        .get(key)
+        .is_some_and(|tab| Arc::ptr_eq(&tab.session, session))
+}
+
+/// The death rites of the session a byte pump was watching.
+///
+/// The app mutex is taken twice, with the reading a dying session owes between
+/// them: what the tab becomes and what its clients are told are one bounded
+/// step and are taken together, while the reading is a filesystem walk that
+/// belongs under no lock at all. Both acquisitions are guarded by
+/// [`still_pumping`], because that walk is the gap between them.
+fn end_of_session(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    session: &Arc<dyn AgentSession>,
+    screen: &ScreenHandle,
+) {
+    let ended_agent = {
+        let mut s = state.lock().unwrap();
+        if !still_pumping(&s, key, session) {
+            return;
+        }
+        let tab = s
+            .tabs
+            .get_mut(key)
+            .expect("the tab this pump holds was just found");
+        match tab.role.agent() {
+            Some((owner, agent_id)) => {
+                let ended = (owner.to_string(), agent_id.to_string());
+                tab.live = false;
+                // Told in the same acquisition that marks the tab, because a
+                // marked tab is a REPLACEABLE one: the next spawn takes this
+                // screen, clients and all, onto its own session without a
+                // word. A close pushed after the release would land on
+                // browsers already watching the replacement, in among its
+                // opening reset. The screen's lock and one send per client is
+                // bounded work, which is what makes it allowed here.
+                screen.flush();
+                // The clients hear the session ended and STAY: the grid they
+                // are watching is the last thing this agent painted, and the
+                // session that replaces it paints onto the same screen, with
+                // the same clients still on it.
+                screen.session_ended("agent_session_ended");
+                Some(ended)
+            }
+            None => {
+                s.retire_tab(key, "exited");
+                None
+            }
+        }
+    };
+    let Some((owner, agent_id)) = ended_agent else {
+        return;
+    };
+    // One final reading, so a session shorter than a sweep tick is still named
+    // — and the respawn that needs the name is the very next thing after a
+    // close. It RECORDS; it never clears: a terminal resumed in place writes no
+    // new transcript, so a locator finding nothing is its normal answer here,
+    // and clearing on that would throw a good name away at every restart. A
+    // name that no longer resolves is caught at the reservation instead. The
+    // reading itself is a filesystem walk, so it happens here, between the two
+    // acquisitions, and not inside either.
+    let report = SelfReport::read(session);
+    let mut s = state.lock().unwrap();
+    // A replacement can have taken the tab over while that walk ran. Its turn
+    // is in flight and its conversation is its own; this session's findings
+    // would close the one and overwrite the other.
+    if !still_pumping(&s, key, session) {
+        return;
+    }
+    s.note_self_report(&owner, &agent_id, report);
+    // The process is what a session IS, so this is where the conversation's
+    // lineage closes — and where a turn the dead process was holding is closed,
+    // so the row stops reading as working.
+    s.record_agent_session_end(&owner, &agent_id);
 }
 
 /// Pump one session's reported activity into the conversation it speaks in.
@@ -19274,10 +21269,16 @@ fn spawn_tab_pump(
 /// already keep every client off one — and the tab is RETAINED for the same
 /// reason the byte pump retains an agent's, so the rail still shows the agent
 /// that was here.
+///
+/// It carries the session it pumps for the same reason the byte pump does, and
+/// asks [`still_pumping`] at every acquisition: what it writes belongs to that
+/// session, and a tab holding a different one is somebody else's.
 fn spawn_activity_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
+    session: Arc<dyn AgentSession>,
     rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
+    mut surfaces_changed: Option<tokio::sync::watch::Receiver<u64>>,
 ) {
     let Some(mut rx) = rx else {
         return;
@@ -19287,12 +21288,6 @@ fn spawn_activity_pump(
         // nothing to spawn the pump onto.
         return;
     }
-    let mut surfaces_changed = state
-        .lock()
-        .unwrap()
-        .tabs
-        .get(&key)
-        .and_then(|tab| tab.session.surfaces_changed());
     let state = Arc::clone(state);
     tokio::spawn(async move {
         loop {
@@ -19309,7 +21304,7 @@ fn spawn_activity_pump(
             let reported = match woke {
                 PumpWake::SurfacesMoved => {
                     let s = state.lock().unwrap();
-                    let Some((owner, _)) = agent_of_tab(&s, &key) else {
+                    let Some((owner, _)) = pumped_agent_of_tab(&s, &key, &session) else {
                         return;
                     };
                     s.note_entity_changed(&owner);
@@ -19323,11 +21318,18 @@ fn spawn_activity_pump(
             };
             match reported {
                 Ok(report) => {
-                    let mut s = state.lock().unwrap();
-                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                    let Some((owner, agent_id)) = ({
+                        let s = state.lock().unwrap();
+                        pumped_agent_of_tab(&s, &key, &session)
+                    }) else {
                         return;
                     };
-                    note_session_self_report(&mut s, &key, &owner, &agent_id);
+                    let said = SelfReport::read(&session);
+                    let mut s = state.lock().unwrap();
+                    if !still_pumping(&s, &key, &session) {
+                        return;
+                    }
+                    s.note_self_report(&owner, &agent_id, said);
                     record_activity(&mut s, &key, &owner, &agent_id, &report);
                 }
                 // A turn that called forty tools while the lock was busy is a
@@ -19335,17 +21337,29 @@ fn spawn_activity_pump(
                 // lost, and the events after it still belong in the timeline.
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
+                    let Some((owner, agent_id)) = ({
+                        let s = state.lock().unwrap();
+                        pumped_agent_of_tab(&s, &key, &session)
+                    }) else {
+                        return;
+                    };
+                    let said = SelfReport::read(&session);
                     let mut s = state.lock().unwrap();
-                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                    // The reading is a filesystem walk, and a replacement can
+                    // have taken the tab over while it ran: what follows ends a
+                    // session, and ending the live one would mark it dead,
+                    // harvest its open tool calls and close its turn.
+                    if !still_pumping(&s, &key, &session) {
                         return;
-                    };
-                    let Some(tab) = s.tabs.get_mut(&key) else {
-                        return;
-                    };
+                    }
+                    let tab = s
+                        .tabs
+                        .get_mut(&key)
+                        .expect("the tab this pump holds was just found");
                     tab.live = false;
                     let unanswered_call_sequences = take_unanswered_call_sequences(tab);
-                    match named_conversation(&s, &key) {
-                        Some(_) => note_session_self_report(&mut s, &key, &owner, &agent_id),
+                    match said.named {
+                        Some(_) => s.note_self_report(&owner, &agent_id, said),
                         // A session that ended having never announced a
                         // conversation of its own is the shape of one spawned
                         // with an id that no longer resolves: the child exits
@@ -19388,45 +21402,63 @@ enum PumpWake {
     SurfacesUnwatchable,
 }
 
-/// The name the session in `key`'s tab has given its conversation, or `None`
-/// for a session that names none and for one that has not named one yet.
-fn named_conversation(state: &AppState, key: &TabKey) -> Option<String> {
-    state.tabs.get(key)?.session.session_id()
+/// What a session says about itself: the conversation it is having, and the
+/// model it is running.
+///
+/// Read from the session, never through the registry. For a terminal the name
+/// comes from a locator listing the harness's transcript tree — a filesystem
+/// walk that grows with every conversation the human has ever had — so the
+/// caller holds an `Arc` and asks with the app mutex released.
+struct SelfReport {
+    named: Option<String>,
+    model: Option<String>,
 }
 
-/// Keep the agent's record naming the conversation its session is having.
-///
-/// Compared before it is written, so a session that names its conversation once
-/// costs one write however long it lives. A name that has not arrived leaves
-/// the record alone: what it carries is the last session's, which is exactly
-/// what a resume should use if this one dies before naming its own.
-///
-/// Terminal and protocol capture points come through here, so a name a child announced
-/// and a name a locator found are the same record written by the same hand.
-fn note_named_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    let Some(named) = named_conversation(state, key) else {
-        return;
-    };
-    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(named.as_str()) {
-        return;
+impl SelfReport {
+    fn read(session: &Arc<dyn AgentSession>) -> SelfReport {
+        SelfReport {
+            named: session.session_id(),
+            model: session.active_model(),
+        }
     }
-    state.record_agent_resume_id(owner, agent_id, Some(named));
 }
 
-fn announced_model(state: &AppState, key: &TabKey) -> Option<String> {
-    state.tabs.get(key)?.session.active_model()
+impl AppState {
+    /// Write down what a session said about itself.
+    ///
+    /// Compared before it is written, so a session that names its conversation
+    /// once costs one write however long it lives. A name that has not arrived
+    /// leaves the record alone: what it carries is the last session's, which is
+    /// exactly what a resume should use if this one dies before naming its own.
+    ///
+    /// Both carriers' capture points come through here, so a name a child
+    /// announced and a name a locator found are the same record written by the
+    /// same hand.
+    fn note_self_report(&mut self, owner: &str, agent_id: &str, report: SelfReport) {
+        if let Some(named) = report.named {
+            if self.recorded_resume_id(owner, agent_id).as_deref() != Some(named.as_str()) {
+                self.record_agent_resume_id(owner, agent_id, Some(named));
+            }
+        }
+        if let Some(running) = report.model {
+            self.record_agent_active_model(owner, agent_id, Some(running));
+        }
+    }
 }
 
-fn note_announced_model(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    let Some(running) = announced_model(state, key) else {
-        return;
-    };
-    state.record_agent_active_model(owner, agent_id, Some(running));
-}
-
-fn note_session_self_report(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    note_named_conversation(state, key, owner, agent_id);
-    note_announced_model(state, key, owner, agent_id);
+/// Who the tab at `key` speaks for, if `session` is still the session behind it.
+///
+/// The pump's own reader: an agent's owner and id, refused outright once the
+/// tab has turned over, so nothing a dead session says is written under a live
+/// one's name.
+fn pumped_agent_of_tab(
+    s: &AppState,
+    key: &TabKey,
+    session: &Arc<dyn AgentSession>,
+) -> Option<(String, String)> {
+    still_pumping(s, key, session)
+        .then(|| agent_of_tab(s, key))
+        .flatten()
 }
 
 /// The terminal's capture point: ask every live agent session for the
@@ -19447,7 +21479,6 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     /// One live agent, taken out of the registry so the name can be asked for
     /// with the lock released, and put back by `key` once it is known.
     struct LiveAgent {
-        key: TabKey,
         owner: String,
         agent_id: String,
         session: Arc<dyn AgentSession>,
@@ -19458,39 +21489,35 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     let live: Vec<LiveAgent> = {
         let s = state.lock().unwrap();
         s.tabs
-            .iter()
-            .filter(|(_, tab)| tab.live)
-            .filter_map(|(key, tab)| match &tab.role {
-                TabRole::Agent {
-                    owner, agent_id, ..
-                } => Some(LiveAgent {
-                    key: key.clone(),
-                    owner: owner.clone(),
-                    agent_id: agent_id.clone(),
+            .values()
+            .filter(|tab| tab.live)
+            .filter_map(|tab| {
+                let (owner, agent_id) = tab.role.agent()?;
+                Some(LiveAgent {
+                    owner: owner.to_string(),
+                    agent_id: agent_id.to_string(),
                     session: Arc::clone(&tab.session),
                     recorded: s.recorded_resume_id(owner, agent_id),
                     recorded_model: s.recorded_active_model(owner, agent_id),
-                }),
-                TabRole::Shell => None,
+                })
             })
             .collect()
     };
-    let moved: Vec<(TabKey, String, String)> = live
+    let moved: Vec<(String, String, SelfReport)> = live
         .into_iter()
         .filter_map(|agent| {
-            let named = agent.session.session_id();
-            let running = agent.session.active_model();
-            let name_moved = named.is_some() && agent.recorded != named;
-            let model_moved = running.is_some() && agent.recorded_model != running;
-            (name_moved || model_moved).then_some((agent.key, agent.owner, agent.agent_id))
+            let said = SelfReport::read(&agent.session);
+            let name_moved = said.named.is_some() && agent.recorded != said.named;
+            let model_moved = said.model.is_some() && agent.recorded_model != said.model;
+            (name_moved || model_moved).then_some((agent.owner, agent.agent_id, said))
         })
         .collect();
     if moved.is_empty() {
         return;
     }
     let mut s = state.lock().unwrap();
-    for (key, owner, agent_id) in moved {
-        note_session_self_report(&mut s, &key, &owner, &agent_id);
+    for (owner, agent_id, said) in moved {
+        s.note_self_report(&owner, &agent_id, said);
     }
 }
 
@@ -19506,12 +21533,8 @@ fn digest_surfaces(tab: Option<&Tab>, scope: DigestScope) -> Option<Value> {
 /// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
 /// the tab is gone or was never an agent's.
 fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
-    match &state.tabs.get(key)?.role {
-        TabRole::Agent {
-            owner, agent_id, ..
-        } => Some((owner.clone(), agent_id.clone())),
-        TabRole::Shell => None,
-    }
+    let (owner, agent_id) = state.tabs.get(key)?.role.agent()?;
+    Some((owner.to_string(), agent_id.to_string()))
 }
 
 /// The conversation event one reported activity becomes. The five kinds are the
@@ -19632,7 +21655,11 @@ fn tool_call_outcome(outcome: crate::harness::ToolOutcome) -> crate::thread::Too
 /// Start a deterministic agent output stream: register it, then spawn a background
 /// producer that appends `count` ordered output events (one per `interval_ms`) and
 /// a terminal `done` event into the authoritative log.
-fn stream_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+fn stream_start(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
     let count = params.get("count").and_then(Value::as_u64).unwrap_or(20);
     let interval_ms = params
         .get("interval_ms")
@@ -19641,7 +21668,7 @@ fn stream_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, S
         .clamp(0, 1000);
 
     let stream_id = {
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(state);
         let id = format!("stream-{}", s.next_stream);
         s.next_stream += 1;
         s.streams.insert(
@@ -19714,7 +21741,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     s
 }
 
-fn b64encode(bytes: &[u8]) -> String {
+pub(crate) fn b64encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
@@ -19726,9 +21753,12 @@ fn b64decode(s: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    include!("app_merge_regressions.rs");
     use super::*;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+
+    use crate::worktree::git_in;
 
     use crate::harness::claude;
     use crate::harness::stream_fixtures::{
@@ -19737,6 +21767,118 @@ mod tests {
     use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
     use crate::harness::{AgentSession, HarnessError, Turn};
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
+    use crate::timing::{recording_clock, SLOW_FRAME};
+
+    /// The frame path as a test that is not measuring a frame calls it.
+    ///
+    /// Every acquisition the delivery path makes belongs to the frame that
+    /// asked for it, so it takes that frame's timer. A test calling it directly
+    /// has no frame, so it gets one of its own and these shadow the real
+    /// functions for the rest of the module. A test that IS about the timing
+    /// calls `super::` and passes the timer it means.
+    ///
+    /// The activity pump makes no acquisition at all: it is handed its session's
+    /// revision channel with the rest of the session output. A test that put a
+    /// dictated tab in the registry has no session output, so its shadow reads
+    /// the channel back off the tab — under a bare lock, which no frame holds
+    /// here because no frame is running.
+    mod untimed {
+        use super::*;
+
+        fn a_frame(state: &Arc<Mutex<AppState>>) -> FrameTimer {
+            Arc::clone(&state.lock().unwrap().frame_clock).frame("test")
+        }
+
+        /// Start a tab's pumps the way a verb does, for a test that put the
+        /// tab in the registry by hand: the real function is handed what the
+        /// tab holds, which a verb takes off the tab before it hands it over.
+        pub(super) fn spawn_tab_pumps(
+            state: &Arc<Mutex<AppState>>,
+            key: TabKey,
+            output: SessionOutput,
+        ) {
+            let pumps = state.lock().unwrap().tabs[&key].pumps(output);
+            super::super::spawn_tab_pumps(state, key, pumps)
+        }
+
+        pub(super) fn spawn_activity_pump(
+            state: &Arc<Mutex<AppState>>,
+            key: TabKey,
+            rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
+        ) {
+            let Some((session, surfaces_changed)) = state
+                .lock()
+                .unwrap()
+                .tabs
+                .get(&key)
+                .map(|tab| (Arc::clone(&tab.session), tab.session.surfaces_changed()))
+            else {
+                return;
+            };
+            super::super::spawn_activity_pump(state, key, session, rx, surfaces_changed)
+        }
+
+        pub(super) fn ensure_agent_tab(
+            state: &Arc<Mutex<AppState>>,
+            root: &std::path::Path,
+            owner: &str,
+            agent_id: &str,
+            model_choice: &ModelChoice,
+            phase: &str,
+        ) -> Result<(String, Spawned), String> {
+            super::super::ensure_agent_tab(
+                state,
+                root,
+                owner,
+                agent_id,
+                model_choice,
+                phase,
+                &a_frame(state),
+            )
+            .map(|opened| opened.expect("the owner still has a session"))
+        }
+
+        pub(super) fn deliver(
+            state: &Arc<Mutex<AppState>>,
+            root: &std::path::Path,
+            owner: &str,
+            agent_id: &str,
+            model_choice: &ModelChoice,
+            phase: &'static str,
+            [cold, warm]: [&str; 2],
+        ) -> Result<(String, Spawned), String> {
+            let say = TurnText {
+                cold: cold.to_string(),
+                warm: warm.to_string(),
+            };
+            super::super::deliver(
+                state,
+                &PendingAgentTurn {
+                    root: root.to_path_buf(),
+                    owner: owner.to_string(),
+                    agent_id: agent_id.to_string(),
+                    model_choice: model_choice.clone(),
+                    phase,
+                    say: Some(say),
+                    wants_catch_up: false,
+                    survives_refusal: false,
+                },
+                &a_frame(state),
+            )
+            .map(|delivered| delivered.expect("the owner still has a session"))
+        }
+
+        /// Take the queue and deliver it here and now, the way a test with no
+        /// runtime under it has to.
+        pub(super) fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
+            let turns = state.lock().unwrap().take_pending_turns();
+            DeliveryRunner::run(state, turns)
+        }
+    }
+    use untimed::{
+        deliver, deliver_pending_agent_turns, ensure_agent_tab, spawn_activity_pump,
+        spawn_tab_pumps,
+    };
 
     fn test_build_agent(mcp_socket: impl Into<std::path::PathBuf>) -> Agent {
         build_agent(
@@ -19838,16 +21980,9 @@ mod tests {
     /// The grid a tab's terminal paints into. Every tab a test spawns has one:
     /// only a hand-built terminal-free session does not, and no test that
     /// speaks about a screen owns one of those.
-    fn screen_of(tab: &Tab) -> &TermScreen {
+    fn screen_of(tab: &Tab) -> &ScreenHandle {
         tab.screen
             .as_ref()
-            .expect("a tab spawned in a PTY has a screen")
-    }
-
-    /// The same grid, for a test that attaches a client to it.
-    fn screen_of_mut(tab: &mut Tab) -> &mut TermScreen {
-        tab.screen
-            .as_mut()
             .expect("a tab spawned in a PTY has a screen")
     }
 
@@ -19903,6 +22038,321 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    /// Registering a project opens the repository, shells out for its default
+    /// branch and resolves it — three disk reads on a directory the daemon has
+    /// never seen, none of which may hold the app mutex.
+    #[test]
+    fn project_add_reads_the_default_branch_with_the_state_lock_free() {
+        let (dir_a, repo_a) = init_repo();
+        let (_dir_b, repo_b) = init_repo();
+        let mut app = AppState::new(
+            repo_a,
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let added = frame_on_a_thread(
+            &state,
+            "s-add",
+            "project.add",
+            json!({ "path": repo_b.to_str().unwrap() }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the add is holding the app mutex through its git"
+        );
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a repository is being read");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let added = added
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the add answers once its git is done");
+        assert_eq!(added["ok"], true, "{added:?}");
+        assert_eq!(added["result"]["base_branch"], "main", "{added:?}");
+        assert_eq!(
+            state.lock().unwrap().projects.len(),
+            2,
+            "the project is registered by the epilogue"
+        );
+    }
+
+    /// The clone lands somewhere the decide phase never saw, so what the reply
+    /// says about the project is read out of the directory git left.
+    #[test]
+    fn project_clone_registers_its_project_from_the_landed_path() {
+        let (dir_src, repo_src) = init_repo();
+        let mut app = AppState::new(
+            repo_src.clone(),
+            dir_src.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        app.projects_dir = dir_src.path().join("projects");
+        let projects_dir = app.projects_dir.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let cloned = frame_on_a_thread(
+            &state,
+            "s-clone",
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap(), "name": "landed" }),
+        );
+        gate_handle.wait_for_arrival();
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a repository is being cloned");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let cloned = cloned
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the clone answers once its git is done");
+        assert_eq!(cloned["ok"], true, "{cloned:?}");
+        let landed = std::path::PathBuf::from(cloned["result"]["path"].as_str().unwrap());
+        assert_eq!(
+            landed,
+            crate::worktree::canonical_root(&projects_dir.join("landed")),
+            "{cloned:?}"
+        );
+        assert!(landed.join("README.md").exists(), "the clone is on disk");
+        assert_eq!(
+            cloned["result"]["remote"].as_str().map(str::to_string),
+            git_remote_origin(&landed),
+            "the reply carries the origin the clone wired"
+        );
+    }
+
+    /// Setting a remote is three git subprocesses at worst, and a project's
+    /// wire view is read for every one of them.
+    #[test]
+    fn project_set_remote_writes_its_config_with_the_state_lock_free() {
+        let (dir_a, repo_a) = init_repo();
+        let mut app = AppState::new(
+            repo_a.clone(),
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let wired = frame_on_a_thread(
+            &state,
+            "s-remote",
+            "project.set_remote",
+            json!({ "project_id": project_id, "url": "https://example.invalid/one.git" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the remote write is holding the app mutex"
+        );
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a remote is being written");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let wired = wired
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the remote write answers once its git is done");
+        assert_eq!(wired["ok"], true, "{wired:?}");
+        assert_eq!(
+            wired["result"]["remote"], "https://example.invalid/one.git",
+            "{wired:?}"
+        );
+        assert_eq!(
+            git_remote_origin(&repo_a).as_deref(),
+            Some("https://example.invalid/one.git")
+        );
+    }
+
+    /// Making a project is four subprocesses — `init`, `add`, `commit` and the
+    /// optional `remote add` — on a directory that did not exist when the verb
+    /// was asked for.
+    #[test]
+    fn project_create_writes_its_repository_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let parent = dir.path().join("made-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "project.create",
+            json!({
+                "name": "fresh",
+                "parent": parent.to_str().unwrap(),
+                "remote": "https://example.invalid/fresh.git",
+            }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the create is holding the app mutex through its git"
+        );
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a repository is being created");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        let landed = std::path::PathBuf::from(created["result"]["path"].as_str().unwrap());
+        assert!(landed.join(".git").exists(), "the repository is on disk");
+        assert_eq!(
+            created["result"]["remote"], "https://example.invalid/fresh.git",
+            "{created:?}"
+        );
+        assert_eq!(
+            state.lock().unwrap().projects.len(),
+            2,
+            "the project is registered by the epilogue"
+        );
+    }
+
+    /// The row a create reserves stands for the directory the create writes:
+    /// one destination, settled in the decide phase and carried into the git.
+    /// A second asker for that directory is refused by the row guarding it, and
+    /// the repository lands exactly where the row said it would.
+    #[test]
+    fn a_second_create_of_one_directory_is_refused_by_the_row_guarding_it() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let parent = dir.path().join("made-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+        let asked = json!({ "name": "fresh", "parent": parent.to_str().unwrap() });
+
+        let created = frame_on_a_thread(&state, "s-create", "project.create", asked.clone());
+        gate_handle.wait_for_arrival();
+        let second = frame_on_a_thread(&state, "s-again", "project.create", asked)
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the second create is answered while the first one's git runs");
+        assert_eq!(
+            second["ok"], false,
+            "two creates wrote one directory: {second:?}"
+        );
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(
+            std::path::PathBuf::from(created["result"]["path"].as_str().unwrap()),
+            std::fs::canonicalize(parent.join("fresh")).expect("the repository is on disk"),
+            "the repository landed somewhere other than the reserved directory: {created:?}"
+        );
+    }
+
+    /// A clone whose git failed leaves nothing at all: no project, no row on
+    /// the board, and a destination the retry finds as empty as this one did.
+    #[test]
+    fn a_clone_that_fails_rolls_its_reservation_back_and_leaves_no_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        state.projects_dir = dir.path().join("projects");
+        let destination = state.projects_dir.join("doomed");
+
+        let failed = state.handle(req(
+            "project.clone",
+            json!({
+                "url": dir.path().join("not-a-repository").to_str().unwrap(),
+                "name": "doomed",
+            }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert_eq!(
+            state.projects.len(),
+            1,
+            "the failed clone registered a project"
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the failed clone left its row on the board"
+        );
+        let board = state.handle(req("board.list", json!({})));
+        assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
+        assert!(
+            !destination.exists(),
+            "the half-written destination outlived the clone that failed"
+        );
+    }
+
+    /// A project verb reserves the folder it is reaching for — two clones into
+    /// one directory are one clone — but a folder is not a card, so the board's
+    /// list of cards is never handed a row for it.
+    #[test]
+    fn a_project_verb_reserves_its_directory_without_a_row_on_the_board() {
+        let (dir_src, repo_src) = init_repo();
+        let mut app = qa_state(&repo_src, dir_src.path());
+        app.projects_dir = dir_src.path().join("projects");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let cloning = frame_on_a_thread(
+            &state,
+            "s-clone",
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap(), "name": "landing" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while a repository is being cloned");
+        assert!(
+            pending_on_the_board(&board).is_empty(),
+            "the board was handed a row standing for a folder: {board:?}"
+        );
+        // The reservation is still what serializes the folder: a second clone
+        // into it is refused rather than run into the first one's directory.
+        let second = frame_on_a_thread(
+            &state,
+            "s-second",
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap(), "name": "landing" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second clone is answered");
+        assert_eq!(second["ok"], false, "{second:?}");
+
+        gate_handle.release();
+        let cloned = cloning
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the clone answers once its git is done");
+        assert_eq!(cloned["ok"], true, "{cloned:?}");
+        assert!(
+            state.lock().unwrap().pending_rows.is_empty(),
+            "the reservation outlived the verb that took it"
         );
     }
 
@@ -20714,7 +23164,7 @@ mod tests {
         )
         .into_handler();
         let call = |method: &str, params: Value| {
-            handler(SessionSender::detached("s"), req(method, params))
+            handler.call(SessionSender::detached("s"), req(method, params))
         };
 
         let started = call("stream.start", json!({ "count": 50, "interval_ms": 0 }));
@@ -20781,6 +23231,16 @@ mod tests {
         repo: &std::path::Path,
         dir: &std::path::Path,
     ) -> (Arc<Mutex<AppState>>, FrameHandler) {
+        state_and_handler_timed_by(FrameClock::new(), repo, dir)
+    }
+
+    /// The same, on a clock the test chose — the one whose slow-frame lines it
+    /// means to read back.
+    fn state_and_handler_timed_by(
+        clock: Arc<FrameClock>,
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> (Arc<Mutex<AppState>>, FrameHandler) {
         let mut app = AppState::new(
             repo.to_path_buf(),
             dir.join("wt"),
@@ -20791,9 +23251,1374 @@ mod tests {
         // Deterministic terminals for tests: plain bash regardless of the dev
         // machine's login shell (production resolves the user's own shell).
         app.term_shell = "/bin/bash".into();
+        app.frame_clock = clock;
         let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
         (state, handler)
+    }
+
+    /// The verb that says what the daemon is doing must not wait on the daemon
+    /// doing it. `bridge.stats` reads the frame clock and never the state, so
+    /// the moment it is needed — a frame parked on the app mutex — is the
+    /// moment it still answers, naming the method that is holding it.
+    #[test]
+    fn bridge_stats_answers_while_another_frame_holds_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+
+        let (held, is_held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let timer = clock.frame("board.list");
+            let _guard = timer.lock(&state);
+            held.send(()).expect("the test is watching");
+            released.recv().expect("the test releases the lock");
+        });
+        is_held
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the frame took the app mutex");
+
+        let (answered, answers) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stats = handler.call(
+                SessionSender::detached("s-stats"),
+                req("bridge.stats", json!({})),
+            );
+            let _ = answered.send(stats);
+        });
+        let stats = answers
+            .recv_timeout(Duration::from_secs(5))
+            .expect("bridge.stats answers with the app mutex held by another frame");
+
+        assert_eq!(stats["ok"], true, "{stats:?}");
+        assert_eq!(
+            stats["result"]["lock_holder"], "board.list",
+            "the stats name the frame that is holding the lock: {stats:?}"
+        );
+        release.send(()).expect("the holder is still waiting");
+        holder.join().expect("the holding frame ends");
+    }
+
+    /// Frames are counted under the method they answered, so the stats say which
+    /// verb is slow rather than only that something is.
+    #[test]
+    fn bridge_stats_count_every_frame_under_its_own_method() {
+        let (dir, repo) = init_repo();
+        let (_state, handler) = shared_state_and_handler(&repo, dir.path());
+        let sender = SessionSender::detached("s-counting");
+        handler.call(sender.clone(), req("project.list", json!({})));
+        handler.call(sender.clone(), req("board.list", json!({})));
+        handler.call(sender.clone(), req("board.list", json!({})));
+
+        let stats = handler.call(sender, req("bridge.stats", json!({})))["result"].clone();
+        assert_eq!(stats["methods"]["board.list"]["served"], 2, "{stats:?}");
+        assert_eq!(stats["methods"]["project.list"]["served"], 1, "{stats:?}");
+        assert_eq!(stats["queue_depth"], 0);
+        assert_eq!(stats["lock_holder"], Value::Null);
+        // Three, not four: a frame is published when it ends, and the frame
+        // asking is still running.
+        assert_eq!(stats["frames_served"], 3, "{stats:?}");
+    }
+
+    /// One of the four durations a slow-frame line reports, in milliseconds.
+    fn slow_frame_millis(line: &str, field: &str) -> f64 {
+        line.split_whitespace()
+            .find_map(|entry| entry.strip_prefix(field))
+            .and_then(|duration| duration.strip_suffix("ms"))
+            .and_then(|duration| duration.parse().ok())
+            .unwrap_or_else(|| panic!("no {field} in {line}"))
+    }
+
+    /// A delivery is not the frame that asked for it.
+    ///
+    /// Its spawn probes a transcript tree and waits out a harness's readiness,
+    /// and charging that to `agent.start` would make every verb that speaks to
+    /// an agent read as the daemon's slowest while saying nothing about where
+    /// the time actually went. The delivery is timed under a method of its own,
+    /// and the frame that queued it answers before any of it has happened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_delivery_is_timed_under_its_own_method_and_never_the_frames() {
+        let (dir, repo) = init_repo();
+        let (clock, lines) = recording_clock();
+        let (state, handler) = state_and_handler_timed_by(Arc::clone(&clock), &repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-timed");
+
+        // The spawn's session locator runs with the app mutex released, so a
+        // factory that takes its time is time the delivery spends and the frame
+        // that queued it does not.
+        state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
+            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
+            None
+        });
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-timed" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+
+        let line = wait_for(Duration::from_secs(20), || {
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|line| line.starts_with("slow frame agent.deliver "))
+                .cloned()
+        })
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the delivery logged no slow frame of its own: {:?}",
+                lines.lock().unwrap()
+            )
+        });
+        assert!(
+            slow_frame_millis(&line, "total=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
+            "the spawn's seconds are the delivery's own: {line}"
+        );
+        let lines = lines.lock().unwrap();
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("slow frame agent.start ")),
+            "the start answered before the harness it asked for was up: {lines:?}"
+        );
+    }
+
+    /// A session locator that stops where the test says. It is the first thing
+    /// a spawn's lock-free phase does, so a spawn parked here is a delivery in
+    /// flight and nothing else about the daemon is holding still.
+    fn spawns_parked_at(state: &Arc<Mutex<AppState>>) -> OffLockGateHandle {
+        let (gate, handle) = OffLockGate::new();
+        state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
+            gate.arrive();
+            None
+        });
+        handle
+    }
+
+    /// The whole of spec step 2, in one frame: a message is answered when the
+    /// message is durable, and never when the agent is up.
+    ///
+    /// A cold spawn waits on the harness's readiness for up to
+    /// `HARNESS_READY_GRACE` and the browser gives up at twelve seconds, so a
+    /// reply that waited for the spawn was the reply the human never saw. The
+    /// rest of the daemon is free while it happens.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_message_is_answered_before_its_agent_has_spawned() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-answered");
+        let spawning = spawns_parked_at(&state);
+
+        let asked_at = std::time::Instant::now();
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-answered", "body": "start on this" }),
+        );
+        let answered_in = asked_at.elapsed();
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            answered_in < Duration::from_millis(100),
+            "the post waited for the spawn it triggered: {answered_in:?}"
+        );
+
+        spawning.wait_for_arrival();
+        let board = call(&handler, "board.list", json!({}));
+        assert_eq!(
+            board["ok"], true,
+            "the daemon reads while a cold spawn is in flight: {board:?}"
+        );
+        spawning.release();
+
+        wait_for_agent_tab(&state, &derived_agent_key(&root, "run-answered")).await;
+    }
+
+    /// The same rule for the verb that exists only to open an agent. Its reply
+    /// carries the tab id the agent's own identity mints — reserved under the
+    /// lock, addressable before the harness behind it exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn agent_start_answers_with_the_reserved_tab_before_the_harness_is_up() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-reserved");
+        let spawning = spawns_parked_at(&state);
+
+        let asked_at = std::time::Instant::now();
+        let started = call(&handler, "agent.start", json!({ "id": "run-reserved" }));
+        let answered_in = asked_at.elapsed();
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert!(
+            answered_in < Duration::from_millis(100),
+            "the start waited for its harness: {answered_in:?}"
+        );
+        let key = derived_agent_key(&root, "run-reserved");
+        assert_eq!(
+            started["result"]["term_id"], key.tab_id,
+            "the reply addresses the tab the spawn is about to fill: {started:?}"
+        );
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "and it answered before that tab existed"
+        );
+
+        spawning.wait_for_arrival();
+        spawning.release();
+        wait_for_agent_tab(&state, &key).await;
+    }
+
+    /// A delivery that never reached an agent is made on a thread of its own,
+    /// so the reply cannot carry the failure. It reaches the browser the way
+    /// every background outcome does: written onto the entity, and announced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_delivery_that_fails_in_the_background_lands_on_its_entity() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-unreachable");
+        {
+            // The checkout its agent would work in is not a directory, so the
+            // scaffold every spawn makes fails and no agent can be reached.
+            let mut s = state.lock().unwrap();
+            s.runs
+                .get_mut("run-unreachable")
+                .expect("the run")
+                .worktree
+                .path = std::path::PathBuf::from("/dev/null/there-is-no-worktree-here");
+        }
+        settled_pushes(&mut rx, &key).await;
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-unreachable", "body": "are you there" }),
+        );
+        assert_eq!(
+            posted["ok"], true,
+            "the message is durable whatever the delivery does: {posted:?}"
+        );
+        wait_for_deliveries(&state).await;
+
+        let got = call(&handler, "run.get", json!({ "run_id": "run-unreachable" }));
+        assert!(
+            got["result"]["last_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("could not reach the agent"),
+            "the failure is legible on the run: {got:?}"
+        );
+        let events = change_events(&settled_pushes(&mut rx, &key).await);
+        assert!(
+            events.contains(&json!({ "type": "entity.changed", "id": "run-unreachable" })),
+            "and the browser is told to look: {events:?}"
+        );
+    }
+
+    /// A caller that lost the spawn race waits on the winner, and waits holding
+    /// nothing.
+    ///
+    /// The winner needs the app mutex to publish its tab, so a loser that
+    /// polled for it — the 25 ms sleep loop this replaces — was taking the
+    /// mutex away from the spawn it was waiting for. One harness comes out of
+    /// it either way; a daemon that answers meanwhile does not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_callers_of_one_tab_spawn_one_harness_without_spinning() {
+        let (dir, repo) = init_repo();
+        let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-queued");
+        let spawning = spawns_parked_at(&state);
+        let asking = || {
+            let state = Arc::clone(&state);
+            let root = root.clone();
+            tokio::task::spawn_blocking(move || {
+                ensure_agent_tab(
+                    &state,
+                    &root,
+                    "run-queued",
+                    &crate::agent::derived_agent_id("run-queued"),
+                    &ModelChoice::default(),
+                    "test",
+                )
+            })
+        };
+
+        let winner = asking();
+        spawning.wait_for_arrival();
+        let loser = asking();
+        // Long enough for the second caller to have reached the wait, so the
+        // read below is answered from behind it and not in front of it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let board = call(&handler, "board.list", json!({}));
+        assert_eq!(
+            board["ok"], true,
+            "the daemon reads while a caller waits out another's spawn: {board:?}"
+        );
+        spawning.release();
+
+        let (won_id, won) = winner.await.unwrap().expect("the winner spawns");
+        let (lost_id, lost) = loser.await.unwrap().expect("the loser gets the tab");
+        assert_eq!(won, Spawned::Fresh);
+        assert_eq!(
+            lost,
+            Spawned::Warm,
+            "the loser is handed the winner's tab, never a second harness"
+        );
+        assert_eq!(won_id, lost_id, "both callers address one tab");
+        let s = state.lock().unwrap();
+        assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+        assert!(s.agent_spawns_in_flight.is_empty(), "the claim went back");
+    }
+
+    /// A spawn that unwinds gives its claim back too.
+    ///
+    /// `agent_spawns_in_flight` is removed from in exactly two places — the
+    /// settle a published tab makes and the settle an abandoned reservation
+    /// makes — so a claim a panic walked past would be held for the life of the
+    /// daemon: every later delivery to that tab waits out `AGENT_SPAWN_WAIT`
+    /// and then fails, the entity reads as permanently starting, and
+    /// `agent.remove` refuses the agent forever. `SpawnClaim`'s `Drop` is the
+    /// only thing between a panicking probe and that.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_spawn_that_panics_gives_its_claim_back() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-panicking-spawn");
+        let agent_id = crate::agent::derived_agent_id("run-panicking-spawn");
+        let asking = || {
+            let state = Arc::clone(&state);
+            let root = root.clone();
+            let agent_id = agent_id.clone();
+            tokio::task::spawn_blocking(move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    ensure_agent_tab(
+                        &state,
+                        &root,
+                        "run-panicking-spawn",
+                        &agent_id,
+                        &ModelChoice::default(),
+                        "test",
+                    )
+                }))
+            })
+        };
+
+        // The first thing the lock-free phase touches, so the unwind happens
+        // with the claim taken and the app mutex NOT held.
+        state.lock().unwrap().session_locator_factory =
+            Arc::new(|_, _| panic!("the transcript tree the spawn was reading blew up"));
+        assert!(
+            asking().await.unwrap().is_err(),
+            "the probe's panic unwinds the spawn"
+        );
+        assert!(
+            state.lock().unwrap().agent_spawns_in_flight.is_empty(),
+            "the claim went back with the unwinding spawn"
+        );
+
+        // What a leak would actually cost: the next caller waits out
+        // `AGENT_SPAWN_WAIT` behind a claim nobody holds and then fails.
+        state.lock().unwrap().session_locator_factory = Arc::new(|_, _| None);
+        let asked_at = std::time::Instant::now();
+        let (_wire_id, spawned) = asking()
+            .await
+            .unwrap()
+            .expect("the next spawn does not panic")
+            .expect("it opens the tab the panicking one did not");
+        assert_eq!(spawned, Spawned::Fresh);
+        assert!(
+            asked_at.elapsed() < AGENT_SPAWN_WAIT,
+            "the spawn queued behind a leaked claim: {:?}",
+            asked_at.elapsed()
+        );
+    }
+
+    /// And it gives it back from inside the acquisition that publishes.
+    ///
+    /// `publish_agent_tab` holds the app mutex and the claim at once. The claim
+    /// is declared outside the block the guard lives in and locals drop in
+    /// reverse, so an unwind drops the guard first and `Drop` finds the mutex
+    /// free. Get that order wrong and the daemon does not leak, it deadlocks on
+    /// itself — which is why this is asserted against a deadline rather than by
+    /// joining.
+    #[test]
+    fn a_claim_dropped_by_a_panic_under_the_app_mutex_does_not_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
+        let (unwound, settled) = std::sync::mpsc::channel();
+        let publishing = Arc::clone(&state);
+        let published = derived_agent_key(dir.path(), "run-published");
+        std::thread::spawn(move || {
+            let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _claim = SpawnClaim::take(&mut publishing.lock().unwrap(), &published);
+                let _guard = publishing.lock().unwrap();
+                panic!("the frame publishing the tab died holding the app mutex");
+            }));
+            let _ = unwound.send(died.is_err());
+        });
+        assert_eq!(
+            settled.recv_timeout(Duration::from_secs(5)),
+            Ok(true),
+            "the claim's Drop re-entered the mutex it was unwinding out of"
+        );
+
+        let s = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            s.agent_spawns_in_flight.is_empty(),
+            "a panic under the publishing lock kept the claim"
+        );
+    }
+
+    /// A frame that inserts a tab starts its pumps one statement after its own
+    /// lock block releases, on the frame's thread. An acquisition there is the
+    /// frame's — charged to nothing and named as nobody's if it is bare — so
+    /// the pumps take what they need from the tab they are handed and touch no
+    /// lock at all: they start while another frame holds it.
+    #[tokio::test]
+    async fn a_tabs_pumps_start_while_another_frame_holds_the_app_mutex() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
+        let key = derived_agent_key(dir.path(), "run-pumped");
+        let (tab, output) = Tab::spawn_shell(
+            &HarnessSpec::new("cat"),
+            key.tab_id.clone(),
+            dir.path().to_path_buf(),
+            terminal_size(80, 24),
+        )
+        .expect("the tab spawns");
+        let pumps = tab.pumps(output);
+        let held = state.lock().unwrap();
+
+        let runtime = tokio::runtime::Handle::current();
+        let starting = Arc::clone(&state);
+        let (started, start) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _in_runtime = runtime.enter();
+            super::spawn_tab_pumps(&starting, key, pumps);
+            let _ = started.send(());
+        });
+        start
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the pumps started with the app mutex held by another frame");
+        drop(held);
+        tab.session.end();
+    }
+
+    /// The convoy this step exists to prevent, from the pump's side: an agent
+    /// painting a full-speed TUI parses every chunk under its OWN screen lock,
+    /// so a frame holding the app mutex — a board read, a commit, anything —
+    /// does not stop the paint, and the paint does not stop it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_streaming_pty_never_takes_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        let (tab, output) = Tab::spawn_shell(
+            &HarnessSpec::new("yes"),
+            key.tab_id.clone(),
+            root,
+            terminal_size(80, 24),
+        )
+        .expect("the flooding tab spawns");
+        let screen = screen_of(&tab).clone();
+        let session = Arc::clone(&tab.session);
+        let pumps = tab.pumps(output);
+        state.lock().unwrap().tabs.insert(key.clone(), tab);
+        super::spawn_tab_pumps(&state, key, pumps);
+
+        // The app mutex is held for the whole of this, the way a slow frame
+        // holds it. The screen must keep filling underneath.
+        let held = state.lock().unwrap();
+        let painted = painted_bytes_within(&screen, Duration::from_secs(10));
+        drop(held);
+
+        assert!(
+            painted > 0,
+            "a flooding PTY painted nothing while a frame held the app mutex"
+        );
+        session.end();
+    }
+
+    /// How far a screen's cursor gets inside `budget`, polled without ever
+    /// awaiting — the caller is holding a lock the runtime must not park.
+    fn painted_bytes_within(screen: &ScreenHandle, budget: Duration) -> u64 {
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            let painted = screen.cursor();
+            if painted > 0 {
+                return painted;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        0
+    }
+
+    /// The other half of the same rule: a screen that is busy — parsing a
+    /// flood, serializing a snapshot, pushing to a slow client — holds nothing
+    /// but itself, so every other frame in the daemon answers straight through
+    /// it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_frame_answers_while_a_screen_lock_is_held() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let created = handler.call(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let key = state
+            .lock()
+            .unwrap()
+            .tab_key_of_wire_id("term-1")
+            .expect("the shell is registered");
+        let screen = screen_of(&state.lock().unwrap().tabs[&key]).clone();
+
+        let held = screen.hold();
+        assert!(
+            state.try_lock().is_ok(),
+            "a screen lock is not the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        let answered = read
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an unrelated read is answered while a screen is busy");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        drop(held);
+
+        state.lock().unwrap().tabs[&key].session.end();
+    }
+
+    /// A harness that has stopped draining its pty blocks the write to it for
+    /// as long as it likes. Under the app mutex that one child wedged the whole
+    /// daemon; off it, it costs one worker and nothing else.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn term_input_to_a_pty_that_is_not_draining_leaves_the_app_mutex_free() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-wedged";
+        let key = TabKey::agent(&root, agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                gated_agent_role(agent_id),
+                GatedHarness::new().refusing_input_until(gate),
+            ),
+        );
+
+        let typed = frame_on_a_thread(
+            &state,
+            "s-typed",
+            "term.input",
+            json!({ "term_id": agent_tab_id(agent_id), "data": b64encode(b"ls\r") }),
+        );
+        gate_handle.wait_for_arrival();
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the pty write is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        let answered = read
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an unrelated read is answered while a pty write is stuck");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+
+        gate_handle.release();
+        let typed = typed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the write answers once the child takes it");
+        assert_eq!(typed["ok"], true, "{typed:?}");
+    }
+
+    /// A tab in `root` carrying `harness`, with a grid of its own — the shape
+    /// a test needs to hold one step of a tab's life open and watch the rest of
+    /// the daemon carry on.
+    fn gated_tab(root: &std::path::Path, role: TabRole, harness: GatedHarness) -> Tab {
+        let tab_id = match &role {
+            TabRole::Agent { agent_id, .. } => agent_tab_id(agent_id),
+            TabRole::Shell => "term-1".to_string(),
+        };
+        Tab {
+            screen: Some(ScreenHandle::new(&tab_id, 80, 24)),
+            tab_id,
+            root: root.to_path_buf(),
+            role,
+            created_at: now_rfc3339(),
+            session: Arc::new(harness),
+            live: true,
+            call_sequences: HashMap::new(),
+            last_delivered_at: None,
+        }
+    }
+
+    fn gated_agent_role(agent_id: &str) -> TabRole {
+        TabRole::Agent {
+            owner: "run-wedged".to_string(),
+            agent_id: agent_id.to_string(),
+            provider: AgentProvider::default(),
+        }
+    }
+
+    /// A session with a terminal whose every blocking step the test decides
+    /// when to release: the write to its pty, and its own death.
+    struct GatedHarness {
+        output: broadcast::Sender<Vec<u8>>,
+        on_write: Option<OffLockGate>,
+        on_resize: Option<OffLockGate>,
+        on_end: Option<OffLockGate>,
+        on_self_report: Option<OffLockGate>,
+        named: Option<String>,
+    }
+
+    impl GatedHarness {
+        fn new() -> GatedHarness {
+            let (output, _) = broadcast::channel(4);
+            GatedHarness {
+                output,
+                on_write: None,
+                on_resize: None,
+                on_end: None,
+                on_self_report: None,
+                named: None,
+            }
+        }
+
+        /// A harness that has stopped draining its pty.
+        fn refusing_input_until(mut self, gate: OffLockGate) -> GatedHarness {
+            self.on_write = Some(gate);
+            self
+        }
+
+        /// A harness that has stopped answering the window-change ioctl.
+        fn refusing_resize_until(mut self, gate: OffLockGate) -> GatedHarness {
+            self.on_resize = Some(gate);
+            self
+        }
+
+        /// A harness wedged in uninterruptible I/O: SIGKILL lands, the reap
+        /// does not return.
+        fn refusing_to_die_until(mut self, gate: OffLockGate) -> GatedHarness {
+            self.on_end = Some(gate);
+            self
+        }
+
+        /// A harness that answers `named` when asked what conversation it is
+        /// having — slowly, the way a locator listing a transcript tree does.
+        fn naming_its_conversation_through(
+            mut self,
+            gate: OffLockGate,
+            named: &str,
+        ) -> GatedHarness {
+            self.on_self_report = Some(gate);
+            self.named = Some(named.to_string());
+            self
+        }
+    }
+
+    impl AgentSession for GatedHarness {
+        fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+            Ok(())
+        }
+        fn status(&self) -> AgentStatus {
+            AgentStatus::Waiting
+        }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            false
+        }
+        fn end(&self) {
+            if let Some(gate) = &self.on_end {
+                gate.arrive();
+            }
+        }
+        fn backdate_last_output(&self, _ago: Duration) {}
+        fn session_id(&self) -> Option<String> {
+            if let Some(gate) = &self.on_self_report {
+                gate.arrive();
+            }
+            self.named.clone()
+        }
+        fn terminal(&self) -> Option<&dyn crate::harness::TerminalView> {
+            Some(self)
+        }
+    }
+
+    impl crate::harness::TerminalView for GatedHarness {
+        fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+            self.output.subscribe()
+        }
+        fn write_input(&self, _bytes: &[u8]) -> Result<(), HarnessError> {
+            if let Some(gate) = &self.on_write {
+                gate.arrive();
+            }
+            Ok(())
+        }
+        fn resize(&self, _size: PtySize) -> Result<(), HarnessError> {
+            if let Some(gate) = &self.on_resize {
+                gate.arrive();
+            }
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    /// `AgentSession::end` is kill THEN reap, and SIGKILL does not land on a
+    /// child wedged in uninterruptible I/O until that I/O returns. Every verb
+    /// that closes a tab used to wait for that under the app mutex, so one
+    /// stuck harness stopped the daemon. The wait goes to a thread of its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn killing_a_wedged_harness_never_holds_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                TabRole::Shell,
+                GatedHarness::new().refusing_to_die_until(gate),
+            ),
+        );
+
+        let closed = frame_on_a_thread(
+            &state,
+            "s-close",
+            "term.close",
+            json!({ "term_id": "term-1" }),
+        );
+        gate_handle.wait_for_arrival();
+        let closed = closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the close answers without waiting for the reap");
+        assert_eq!(closed["ok"], true, "{closed:?}");
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the reap is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        let answered = read
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an unrelated read is answered while a harness will not die");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "the tab is out of the registry the moment the verb answers"
+        );
+
+        gate_handle.release();
+    }
+
+    /// The tab's clients are told it is gone whatever the process does about
+    /// it: the close push is bounded work on the screen's own lock and stays
+    /// where it always was, while only the kill leaves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_close_after_a_wedged_kill_still_reaches_its_clients() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                TabRole::Shell,
+                GatedHarness::new().refusing_to_die_until(gate),
+            ),
+        );
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+
+        let closed = frame_on_a_thread(
+            &state,
+            "s-close",
+            "term.close",
+            json!({ "term_id": "term-1" }),
+        );
+        gate_handle.wait_for_arrival();
+        let closed = closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the close answers without waiting for the reap");
+        assert_eq!(closed["ok"], true, "{closed:?}");
+
+        let seen = wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed" && push["term_id"] == "term-1"
+        })
+        .await;
+        assert!(!seen.is_empty(), "{seen:?}");
+
+        gate_handle.release();
+    }
+
+    /// A closed screen means nobody is watching and nothing is painting. The
+    /// kill is asynchronous, so between the close reply and the child's death
+    /// the PTY can keep producing — for a harness wedged in uninterruptible
+    /// I/O, without end. The pump used to stop the instant its tab left the
+    /// registry; now that it never consults the registry, the screen's own
+    /// closed state is what stops it, or it would parse and push `term.output`
+    /// forever to the clients it just told `term.closed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_closed_tab_stops_painting_before_its_harness_dies() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        let harness = GatedHarness::new().refusing_to_die_until(gate);
+        let pty = harness.output.clone();
+        state
+            .lock()
+            .unwrap()
+            .tabs
+            .insert(key.clone(), gated_tab(&root, TabRole::Shell, harness));
+        spawn_tab_pumps(
+            &state,
+            key.clone(),
+            SessionOutput::painting(pty.subscribe()),
+        );
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+
+        let closed = frame_on_a_thread(
+            &state,
+            "s-close",
+            "term.close",
+            json!({ "term_id": "term-1" }),
+        );
+        gate_handle.wait_for_arrival();
+        let closed = closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the close answers without waiting for the reap");
+        assert_eq!(closed["ok"], true, "{closed:?}");
+        wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed" && push["term_id"] == "term-1"
+        })
+        .await;
+
+        // The child, still alive, keeps painting into a tab nothing addresses.
+        let _ = pty.send(b"AFTER-CLOSE".to_vec());
+        wait_for(Duration::from_secs(5), || {
+            (pty.receiver_count() == 0).then_some(())
+        })
+        .await
+        .expect("the pump ends the moment its tab is retired, not when the child dies");
+        tokio::time::sleep(Duration::from_millis(TERM_FLUSH_MS * 5)).await;
+        let after_close = wait_for_pushes(&mut pushes, &session_key, |_| true).await;
+        assert!(
+            after_close.iter().all(|push| push["type"] != "term.output"),
+            "a client told its terminal closed was painted to afterwards: {after_close:?}"
+        );
+
+        gate_handle.release();
+    }
+
+    /// With the kill asynchronous, a replaced session's EOF can arrive after
+    /// its replacement is already in the registry. The pump ends the tab it was
+    /// started for and no other: it carries the session it pumps, and a tab
+    /// holding a different one is somebody else's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let key = derived_agent_key(&root, "run-replaced");
+        let agent_id = crate::agent::derived_agent_id("run-replaced");
+
+        let spawn_one = || {
+            Tab::spawn_agent(
+                "run-replaced".to_string(),
+                agent_id.clone(),
+                agent_open_request(
+                    PreparedAgentLaunch {
+                        spec: HarnessSpec::new("cat"),
+                        pty_size: terminal_size(80, 24),
+                    },
+                    root.clone(),
+                    &ModelChoice::default(),
+                    None,
+                    None,
+                ),
+            )
+            .expect("the agent tab spawns")
+        };
+
+        let (replaced, output) = spawn_one();
+        let dying = Arc::clone(&replaced.session);
+        let pumps = replaced.pumps(output);
+        state.lock().unwrap().tabs.insert(key.clone(), replaced);
+        super::spawn_tab_pumps(&state, key.clone(), pumps);
+
+        // The replacement takes the tab over while the first session is still
+        // being reaped, which is what an asynchronous kill allows.
+        let (replacement, output) = spawn_one();
+        let living = Arc::clone(&replacement.session);
+        let pumps = replacement.pumps(output);
+        state.lock().unwrap().tabs.insert(key.clone(), replacement);
+        super::spawn_tab_pumps(&state, key.clone(), pumps);
+
+        dying.end();
+        wait_for(Duration::from_secs(10), || {
+            matches!(dying.status(), AgentStatus::Ended { .. }).then_some(())
+        })
+        .await
+        .expect("the replaced session dies");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(
+            state.lock().unwrap().tabs[&key].live,
+            "a dead session's EOF closed the tab that replaced it"
+        );
+        living.end();
+    }
+
+    /// The rites of a dying session take the app mutex twice, with a
+    /// filesystem walk between them, so the tab can turn over mid-rite: a post
+    /// arrives, the dead tab is replaced, and the replacement is already
+    /// working. What the dead session then reports is its own — writing it down
+    /// against the live agent closes the turn in flight and records the wrong
+    /// conversation to resume.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_self_report_never_lands_on_the_session_that_replaced_it() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-late-report",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let role = TabRole::Agent {
+            owner: run_id.clone(),
+            agent_id: agent_id.clone(),
+            provider: AgentProvider::default(),
+        };
+        let key = TabKey::agent(&root, &agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let dying = gated_tab(
+            &root,
+            role.clone(),
+            GatedHarness::new().naming_its_conversation_through(gate, "the-dead-conversation"),
+        );
+        let session = Arc::clone(&dying.session);
+        let screen = screen_of(&dying).clone();
+        state.lock().unwrap().tabs.insert(key.clone(), dying);
+
+        let rites = {
+            let state = Arc::clone(&state);
+            let key = key.clone();
+            let session = Arc::clone(&session);
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                end_of_session(&state, &key, &session, &screen);
+                let _ = done.send(());
+            });
+            finished
+        };
+        gate_handle.wait_for_arrival();
+
+        // A post lands in the window: the dead tab is replaced, the replacement
+        // names its own conversation, and it is holding a turn.
+        {
+            let mut s = state.lock().unwrap();
+            s.tabs
+                .insert(key.clone(), gated_tab(&root, role, GatedHarness::new()));
+            s.record_agent_resume_id(
+                &run_id,
+                &agent_id,
+                Some("the-live-conversation".to_string()),
+            );
+        }
+        open_a_turn(&state, &run_id);
+
+        gate_handle.release();
+        rites
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the dying session finishes its rites");
+
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&key].live,
+            "the dead session's rites marked its replacement dead"
+        );
+        assert_eq!(
+            s.recorded_resume_id(&run_id, &agent_id).as_deref(),
+            Some("the-live-conversation"),
+            "the dead session's name was written over the live one's"
+        );
+        assert!(
+            primary_thread(&s.runs[&run_id].agents)
+                .working_since()
+                .is_some(),
+            "the dead session's rites closed the turn its replacement is holding"
+        );
+    }
+    /// The close a dying session owes its clients and the `live = false` that
+    /// makes its tab replaceable are ONE acquisition.
+    ///
+    /// A tab reads as replaceable the moment `live` goes false, and
+    /// [`ensure_agent_tab`] replaces it by taking its screen — clients and all
+    /// — over to the new session without a word. So a close pushed after that
+    /// acquisition released would reach browsers that are watching the LIVE
+    /// replacement, interleaved with its opening reset; and the post that
+    /// triggers the replacement is the ordinary case, a human answering an
+    /// agent that just exited. The close is bounded — the screen's own lock
+    /// and one send per client — so it belongs inside the acquisition that
+    /// marks the tab, where nothing can come between them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_replacement_cannot_slip_between_a_session_ending_and_its_close() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-atomic-close",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let key = TabKey::agent(&root, &agent_id);
+        let dying = gated_tab(
+            &root,
+            TabRole::Agent {
+                owner: run_id.clone(),
+                agent_id: agent_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            GatedHarness::new(),
+        );
+        let session = Arc::clone(&dying.session);
+        let screen = screen_of(&dying).clone();
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        screen.attach(&sender, None);
+        state.lock().unwrap().tabs.insert(key.clone(), dying);
+
+        // The screen is busy the way a flooding pump makes it busy, so the
+        // rites park inside the close they owe.
+        let held = screen.hold();
+        let rites = {
+            let state = Arc::clone(&state);
+            let key = key.clone();
+            let session = Arc::clone(&session);
+            let screen = screen.clone();
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                end_of_session(&state, &key, &session, &screen);
+                let _ = done.send(());
+            });
+            finished
+        };
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut replaceable = false;
+        while !replaceable && std::time::Instant::now() < deadline {
+            if let Ok(s) = state.try_lock() {
+                replaceable = !s.tabs[&key].live;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !replaceable,
+            "a spawn could have read this tab as dead and carried its screen \
+             onto a new session before the old one's clients heard it end"
+        );
+
+        drop(held);
+        rites
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the rites finish once the screen frees up");
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter().any(|push| push["type"] == "term.closed")
+        })
+        .await;
+        let closed: Vec<&Value> = seen
+            .iter()
+            .filter(|push| push["type"] == "term.closed")
+            .collect();
+        assert_eq!(closed.len(), 1, "told once, and once only: {seen:?}");
+        assert_eq!(closed[0]["reason"], "agent_session_ended", "{closed:?}");
+        assert_eq!(
+            screen.attached(),
+            1,
+            "and the client stays on the retained grid, for the session that \
+             paints here next"
+        );
+    }
+
+    /// The same rite, on the carrier with no bytes. Its stream closing ends a
+    /// session too — not live, open tool calls harvested as unanswered, the
+    /// turn closed — and none of that belongs to the session that took the tab
+    /// over while it was reading.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_replaced_sessions_late_activity_close_leaves_the_replacement_alone() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-late-activity",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let role = TabRole::Agent {
+            owner: run_id.clone(),
+            agent_id: agent_id.clone(),
+            provider: AgentProvider::default(),
+        };
+        let key = TabKey::agent(&root, &agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let reporting = gated_tab(
+            &root,
+            role.clone(),
+            GatedHarness::new().naming_its_conversation_through(gate, "the-dead-conversation"),
+        );
+        let session = Arc::clone(&reporting.session);
+        state.lock().unwrap().tabs.insert(key.clone(), reporting);
+        let (activity, subscribed) = broadcast::channel(4);
+        super::spawn_activity_pump(&state, key.clone(), session, Some(subscribed), None);
+        // The stream closes: the session behind this tab is over.
+        drop(activity);
+        gate_handle.wait_for_arrival();
+
+        {
+            let mut s = state.lock().unwrap();
+            s.tabs
+                .insert(key.clone(), gated_tab(&root, role, GatedHarness::new()));
+            s.record_agent_resume_id(
+                &run_id,
+                &agent_id,
+                Some("the-live-conversation".to_string()),
+            );
+        }
+        open_a_turn(&state, &run_id);
+
+        gate_handle.release();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&key].live,
+            "a closed stream marked the tab that replaced it dead"
+        );
+        assert_eq!(
+            s.recorded_resume_id(&run_id, &agent_id).as_deref(),
+            Some("the-live-conversation"),
+            "the dead session's name was written over the live one's"
+        );
+        assert!(
+            primary_thread(&s.runs[&run_id].agents)
+                .working_since()
+                .is_some(),
+            "the dead session's close ended the turn its replacement is holding"
+        );
+    }
+
+    /// An attach clones the tab's handle under the app mutex and registers with
+    /// it released, so a close can take the tab out in between. The screen's own
+    /// lock decides which happened first, because the app mutex no longer can:
+    /// the late client hears `term.closed` rather than sitting on a live-looking
+    /// grid nothing will ever paint or close.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_client_attaching_to_a_tab_that_just_closed_is_told_so() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(&root, TabRole::Shell, GatedHarness::new()),
+        );
+        // What an attach already in flight is holding.
+        let screen = screen_of(&state.lock().unwrap().tabs[&key]).clone();
+
+        let closed = handler.call(
+            SessionSender::detached("s-close"),
+            req("term.close", json!({ "term_id": "term-1" })),
+        );
+        assert_eq!(closed["ok"], true, "{closed:?}");
+
+        let (sender, mut pushes, session_key) = SessionSender::observable("late");
+        screen.attach(&sender, Some((80, 24)));
+
+        let seen = wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed" && push["term_id"] == "term-1"
+        })
+        .await;
+        assert!(!seen.is_empty(), "{seen:?}");
+        assert_eq!(
+            screen.attached(),
+            0,
+            "a screen nothing will close again took a client anyway"
+        );
+    }
+
+    /// A spawn that inherits waiting clients owes their child a window-change
+    /// ioctl, and an ioctl goes to a process that may not answer. The clients
+    /// move under the app mutex, beside the insert that publishes the tab,
+    /// because that half is bounded; the child is told with the lock down, so a
+    /// harness that will not take the resize wedges one worker rather than the
+    /// daemon.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn telling_an_inherited_child_its_size_never_holds_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-inheriting";
+        let key = TabKey::agent(&root, agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let born = gated_tab(
+            &root,
+            gated_agent_role(agent_id),
+            GatedHarness::new().refusing_resize_until(gate),
+        );
+
+        // A client mounted the Agent tab before this worktree had an agent.
+        let (sender, _pushes, _session_key) = SessionSender::observable("waiting-client");
+        let waiting = ScreenHandle::new(&agent_tab_id(agent_id), 90, 25);
+        waiting.attach(&sender, Some((90, 25)));
+        state
+            .lock()
+            .unwrap()
+            .agent_screens_awaiting_spawn
+            .insert(key.clone(), waiting);
+
+        let told = {
+            let state = Arc::clone(&state);
+            let key = key.clone();
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let inherited = {
+                    let mut s = state.lock().unwrap();
+                    let inherited = inherit_waiting_clients(&mut s, &key, &born);
+                    s.tabs.insert(key, born);
+                    inherited
+                };
+                inherited
+                    .expect("the waiting clients are carried onto the new screen")
+                    .fit_child_to_screen();
+                let _ = done.send(());
+            });
+            finished
+        };
+        gate_handle.wait_for_arrival();
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the window-change ioctl is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        assert_eq!(
+            read.recv_timeout(Duration::from_secs(5))
+                .expect("an unrelated read is answered while a child will not resize")["ok"],
+            true
+        );
+        assert_eq!(
+            screen_of(&state.lock().unwrap().tabs[&key]).attached_sessions(),
+            vec!["waiting-client".to_string()],
+            "the client that was waiting is on the new screen the moment the tab is published"
+        );
+
+        gate_handle.release();
+        told.recv_timeout(Duration::from_secs(5))
+            .expect("the ioctl returns once the child takes it");
+    }
+
+    /// A terminal names its conversation by listing the harness's transcript
+    /// tree — a filesystem walk that grows with every conversation the human
+    /// has ever had. The sweep already took the session out of the registry to
+    /// ask, and then asked a SECOND time through the registry to write the
+    /// answer down, under the lock. There is one reading now, and it is off the
+    /// lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_agent_tabs_last_reading_leaves_the_app_mutex_free() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-named",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey::agent(&root, &agent_id);
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                TabRole::Agent {
+                    owner: run_id.clone(),
+                    agent_id: agent_id.clone(),
+                    provider: AgentProvider::default(),
+                },
+                GatedHarness::new().naming_its_conversation_through(gate, "conversation-7"),
+            ),
+        );
+
+        let captured = {
+            let capturing = Arc::clone(&state);
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                capture_conversation_names(&capturing);
+                let _ = done.send(());
+            });
+            finished
+        };
+        gate_handle.wait_for_arrival();
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the reading is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        assert_eq!(
+            read.recv_timeout(Duration::from_secs(5))
+                .expect("an unrelated read is answered while a session is being read")["ok"],
+            true
+        );
+
+        gate_handle.release();
+        captured
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the sweep reads a session once, not twice");
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id(&run_id, &agent_id)
+                .as_deref(),
+            Some("conversation-7"),
+            "and writes down what it read"
+        );
     }
 
     /// Poll an observable sender's captured pushes until the decrypted history
@@ -20849,12 +24674,32 @@ mod tests {
 
     /// True once `pid` is fully gone from the process table (killed AND reaped —
     /// a zombie still shows up in `ps` with state Z).
+    ///
+    /// Waited out rather than asked once: the kill and the reap run on a
+    /// [`Retirement`]'s own thread, so a verb answers before its harness is
+    /// gone. What the assertion means is unchanged — the process IS reaped —
+    /// only when it can first be observed.
     fn process_reaped(pid: u32) -> bool {
-        let out = Command::new("ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .output()
-            .unwrap();
-        !out.status.success() || String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        settles(|| {
+            let out = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            !out.status.success() || String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        })
+    }
+
+    /// Poll `settled` until it answers true, or give up after 10 s. For the
+    /// facts a background thread makes true shortly after the frame answers.
+    fn settles(settled: impl Fn() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if settled() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
     }
 
     #[tokio::test]
@@ -20865,7 +24710,7 @@ mod tests {
 
         // Create in the primary scope: bash starts in the repo root and the
         // pump runs before any attach.
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -20878,7 +24723,7 @@ mod tests {
         assert_eq!(created["result"]["rows"], 24);
 
         // Listed under its scope, with metadata.
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "project_id": project_id })),
         );
@@ -20892,7 +24737,7 @@ mod tests {
         // Attach with an observable sender, then type a command: the echo comes
         // back as keyed term.output pushes.
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let attached = handler(
+        let attached = handler.call(
             sender,
             req(
                 "term.attach",
@@ -20905,7 +24750,7 @@ mod tests {
         assert!(attached["result"]["cursor"].is_u64());
 
         let input = b64encode(b"echo keyed-term-ok\r");
-        let wrote = handler(
+        let wrote = handler.call(
             SessionSender::detached("s1"),
             req("term.input", json!({ "term_id": "term-1", "data": input })),
         );
@@ -20918,7 +24763,7 @@ mod tests {
         // Close: the PTY is killed AND reaped, the entry is gone, and every
         // attached client hears term.closed{reason:"closed"}.
         let pid = tab_pid(&state, "term-1").expect("the shell is registered");
-        let closed = handler(
+        let closed = handler.call(
             SessionSender::detached("s1"),
             req("term.close", json!({ "term_id": "term-1" })),
         );
@@ -20931,7 +24776,7 @@ mod tests {
         assert_eq!(state.lock().unwrap().shell_tab_count(), 0);
         assert!(process_reaped(pid), "the shell must be killed and reaped");
 
-        let relisted = handler(
+        let relisted = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "project_id": project_id })),
         );
@@ -20949,23 +24794,23 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
         let (sender, _pushes, _key) = SessionSender::observable("s1");
-        let attached = handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
         assert_eq!(attached["ok"], true, "{attached:?}");
         let cursor = attached["result"]["cursor"].as_u64().unwrap();
 
-        let acked = handler(
+        let acked = handler.call(
             SessionSender::detached("s1"),
             req("term.ack", json!({ "term_id": "term-1", "cursor": cursor })),
         );
         assert_eq!(acked["ok"], true, "{acked:?}");
         assert_eq!(acked["result"]["ok"], true, "{acked:?}");
 
-        let unknown = handler(
+        let unknown = handler.call(
             SessionSender::detached("s1"),
             req("term.ack", json!({ "term_id": "term-404", "cursor": 1 })),
         );
@@ -20979,12 +24824,12 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
         let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
-        let a = handler(
+        let a = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.attach",
@@ -20996,7 +24841,7 @@ mod tests {
 
         // Send a command (the PTY echoes it and runs it).
         let input = b64encode(b"echo build-terminal-ok\n");
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req("term.input", json!({ "term_id": term_id, "data": input })),
         );
@@ -21004,7 +24849,7 @@ mod tests {
 
         // Reconnect = a fresh attach. The screen snapshot (vt100 model) must reflect
         // the prior output — that's snapshot-based resync, not byte replay.
-        let b = handler(
+        let b = handler.call(
             SessionSender::detached("s2"),
             req(
                 "term.attach",
@@ -21038,14 +24883,14 @@ mod tests {
         let worktree_id = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
             .expect("the external worktree is discoverable")
             .id;
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -21056,7 +24901,7 @@ mod tests {
         let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
         let shell_pid = tab_pid(&state, &term_id).expect("the shell is registered");
 
-        let adopted = handler(
+        let adopted = handler.call(
             SessionSender::detached("s1"),
             req(
                 "run.adopt",
@@ -21066,7 +24911,7 @@ mod tests {
         assert_eq!(adopted["ok"], true, "{adopted:?}");
         let run_id = run_id_of(&adopted);
 
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "run_id": run_id })),
         );
@@ -21196,7 +25041,7 @@ mod tests {
         )
         .unwrap();
 
-        let attached = handler(
+        let attached = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.attach",
@@ -21215,7 +25060,7 @@ mod tests {
         // A well-formed agent id for a worktree with no tab is still "unknown
         // term_id", so a stale client drops the tab instead of hanging on one
         // that swallows every keystroke.
-        let stale = handler(
+        let stale = handler.call(
             SessionSender::detached("s1"),
             req("term.attach", json!({ "term_id": "agent:nope" })),
         );
@@ -21244,7 +25089,7 @@ mod tests {
         )
         .unwrap();
 
-        let refused = handler(
+        let refused = handler.call(
             SessionSender::detached("s1"),
             req("term.close", json!({ "term_id": agent_wire_id })),
         );
@@ -21308,7 +25153,7 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -21318,7 +25163,7 @@ mod tests {
         assert_eq!(created["ok"], true, "{created:?}");
         assert_eq!(created["result"]["kind"], "shell");
 
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "project_id": project_id })),
         );
@@ -21327,7 +25172,7 @@ mod tests {
         assert_eq!(terminals[0]["kind"], "shell");
 
         // An unknown kind is refused BEFORE anything is spawned.
-        let bogus = handler(
+        let bogus = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -21352,13 +25197,13 @@ mod tests {
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
         for _ in 0..MAX_USER_TERMINALS {
-            let created = handler(
+            let created = handler.call(
                 SessionSender::detached("s1"),
                 req("term.create", json!({ "project_id": project_id })),
             );
             assert_eq!(created["ok"], true, "{created:?}");
         }
-        let over = handler(
+        let over = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
@@ -21375,16 +25220,16 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
         let pid = tab_pid(&state, "term-1").expect("the shell is registered");
 
         // The user types `exit`: the shell ends on its own (PTY EOF).
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.input",
@@ -21431,7 +25276,8 @@ mod tests {
         else {
             return String::new();
         };
-        String::from_utf8_lossy(&b64decode(&screen_of(tab).snapshot()).unwrap()).into_owned()
+        String::from_utf8_lossy(&b64decode(&screen_of(tab).snapshot().snapshot).unwrap())
+            .into_owned()
     }
 
     /// Poll the agent tab's screen until it shows `needle` (the pump feeds it),
@@ -21620,8 +25466,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-deliver"),
             &choice,
             "build",
-            "COLD-CONTEXT-PROMPT",
-            "WARM-NUDGE-PROMPT",
+            ["COLD-CONTEXT-PROMPT", "WARM-NUDGE-PROMPT"],
         )
         .expect("a cold delivery spawns and submits");
         assert_eq!(cold_spawned, Spawned::Fresh);
@@ -21642,8 +25487,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-deliver"),
             &choice,
             "build",
-            "COLD-CONTEXT-PROMPT",
-            "WARM-NUDGE-PROMPT",
+            ["COLD-CONTEXT-PROMPT", "WARM-NUDGE-PROMPT"],
         )
         .expect("a warm delivery reuses the tab");
         assert_eq!(warm_spawned, Spawned::Warm);
@@ -21723,8 +25567,7 @@ mod tests {
             &agent_id,
             &ModelChoice::default(),
             "build",
-            "COLD-CONTEXT-PROMPT",
-            "WARM-NUDGE-PROMPT",
+            ["COLD-CONTEXT-PROMPT", "WARM-NUDGE-PROMPT"],
         )
         .expect("the live tab takes the turn");
 
@@ -21777,10 +25620,13 @@ mod tests {
                     owner: "run-lineage".into(),
                     agent_id: crate::agent::derived_agent_id("run-lineage"),
                     model_choice: ModelChoice::default(),
-                    cold: "COLD-TURN".into(),
-                    warm: "WARM-TURN".into(),
+                    say: Some(TurnText {
+                        cold: "COLD-TURN".into(),
+                        warm: "WARM-TURN".into(),
+                    }),
                     phase: "build",
                     wants_catch_up: false,
+                    survives_refusal: false,
                 });
         };
 
@@ -22229,8 +26075,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-paste"),
             &ModelChoice::default(),
             "build",
-            "Paste framing marker\nsecond line",
-            "warm",
+            ["Paste framing marker\nsecond line", "warm"],
         )
         .expect("the delivery reaches a silent harness");
 
@@ -22280,10 +26125,13 @@ mod tests {
                 owner: "run-exits".into(),
                 agent_id: agent_id.clone(),
                 model_choice: ModelChoice::default(),
-                cold: "cold".into(),
-                warm: "warm".into(),
+                say: Some(TurnText {
+                    cold: "cold".into(),
+                    warm: "warm".into(),
+                }),
                 phase: "build",
                 wants_catch_up: false,
+                survives_refusal: false,
             });
         }
 
@@ -22404,14 +26252,14 @@ mod tests {
         // The agent takes none of the sixteen, so fifteen more shells fit
         // beside the one shell tab...
         for n in 1..MAX_USER_TERMINALS {
-            let created = handler(
+            let created = handler.call(
                 SessionSender::detached("s1"),
                 req("term.create", json!({ "project_id": project_id })),
             );
             assert_eq!(created["ok"], true, "shell {n} of the cap: {created:?}");
         }
         // ...and the sixteenth does not: the shell tab is one of them.
-        let over = handler(
+        let over = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
@@ -22476,9 +26324,25 @@ mod tests {
         let (stale_reservation, current_reservation, stale_token, current_token) = {
             let mut app = state.lock().unwrap();
             let key = TabKey::agent(directory.path(), &agent_id);
-            let stale = AgentSpawnReservation::claim(&state, &mut app, key.clone(), &agent_id);
+            let stale = reserve_agent_spawn(
+                &mut app,
+                &key,
+                &entity_id,
+                &agent_id,
+                &ModelChoice::default(),
+            )
+            .unwrap()
+            .holding;
             let stale_token = stale.session_token.clone();
-            let current = AgentSpawnReservation::claim(&state, &mut app, key, &agent_id);
+            let current = reserve_agent_spawn(
+                &mut app,
+                &key,
+                &entity_id,
+                &agent_id,
+                &ModelChoice::default(),
+            )
+            .unwrap()
+            .holding;
             let current_token = current.session_token.clone();
             (stale, current, stale_token, current_token)
         };
@@ -22770,7 +26634,7 @@ mod tests {
             .unwrap()
             .choice = choice.clone();
         app.record_agent_session_start(run_id, &choice, "build");
-        let (mut tab, output) = Tab::spawn_agent(
+        let (tab, output) = Tab::spawn_agent(
             run_id.to_string(),
             agent_id.clone(),
             agent_open_request(
@@ -22787,7 +26651,7 @@ mod tests {
         .expect("the Pi extension fixture starts through a PTY");
         assert_eq!(tab.session.session_id().as_deref(), Some(agent_id.as_str()));
         let (sender, mut pushes, session_key) = SessionSender::observable("pi-death-observer");
-        screen_of_mut(&mut tab).register(&sender);
+        screen_of(&tab).attach(&sender, None);
         app.tabs.insert(key.clone(), tab);
         let state = app.shared();
         spawn_tab_pumps(&state, key.clone(), output);
@@ -22982,16 +26846,16 @@ mod tests {
             "start",
         )
         .unwrap();
-        handler(
+        handler.call(
             SessionSender::detached("s-live"),
             req("term.create", json!({ "project_id": project_id })),
         );
         for session_id in ["s-live", "s-dead"] {
-            handler(
+            handler.call(
                 SessionSender::detached(session_id),
                 req("term.attach", json!({ "term_id": "term-1" })),
             );
-            handler(
+            handler.call(
                 SessionSender::detached(session_id),
                 req("term.attach", json!({ "term_id": agent_wire_id.clone() })),
             );
@@ -23005,7 +26869,12 @@ mod tests {
             created_at: String::new(),
             payload: Value::Null,
         };
-        let response = dispatch_frame(&state, SessionSender::detached("s-dead"), close);
+        let response = dispatch_frame(
+            &state,
+            SessionSender::detached("s-dead"),
+            close,
+            FrameClock::new().frame("close"),
+        );
         assert_eq!(response["ok"], true);
 
         let s = state.lock().unwrap();
@@ -23015,10 +26884,7 @@ mod tests {
                 .find(|tab| tab.wire_id() == wire_id)
                 .map(screen_of)
                 .expect("the tab is still registered")
-                .attached
-                .iter()
-                .map(|client| client.sender.session_id().to_string())
-                .collect()
+                .attached_sessions()
         };
         assert_eq!(
             attached_to("term-1"),
@@ -24710,7 +28576,7 @@ mod tests {
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-elsewhere"))
@@ -25246,16 +29112,28 @@ mod tests {
         repo: &std::path::Path,
         dir: &std::path::Path,
     ) -> (Arc<Mutex<AppState>>, FrameHandler) {
-        let mut app = qa_state(repo, dir);
-        app.term_shell = "/bin/bash".into();
-        let state = app.shared();
+        let state = qa_state_timed_by(FrameClock::new(), repo, dir);
         let handler = AppState::handler(Arc::clone(&state));
         (state, handler)
     }
 
+    /// The same daemon, timed by the clock the test means to read back — the
+    /// one entry point the MCP control socket has, since it answers with no
+    /// frame handler behind it.
+    fn qa_state_timed_by(
+        clock: Arc<FrameClock>,
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> Arc<Mutex<AppState>> {
+        let mut app = qa_state(repo, dir);
+        app.term_shell = "/bin/bash".into();
+        app.frame_clock = clock;
+        app.shared()
+    }
+
     /// One RPC over the frame handler.
     fn call(handler: &FrameHandler, method: &str, params: Value) -> Value {
-        handler(SessionSender::detached("qa"), req(method, params))
+        handler.call(SessionSender::detached("qa"), req(method, params))
     }
 
     /// The tab key of the agent whose id is DERIVED from its owner — the one
@@ -25269,7 +29147,7 @@ mod tests {
     /// The terminal a tab's session offers. Tests are the only place that
     /// reaches for one without a client asking: the daemon goes through
     /// [`Tab::require_terminal`], which says why when there is none.
-    fn agent_terminal(tab: &Tab) -> &dyn TerminalView {
+    fn agent_terminal(tab: &Tab) -> &dyn crate::harness::TerminalView {
         tab.session
             .terminal()
             .expect("a PTY session offers a terminal")
@@ -25278,7 +29156,9 @@ mod tests {
     /// The OS process behind a tab, asked through the terminal that owns it —
     /// a process id is the basement's, and no other kind of session has one to give.
     fn agent_pid(tab: &Tab) -> Option<u32> {
-        tab.session.terminal().and_then(TerminalView::pid)
+        tab.session
+            .terminal()
+            .and_then(crate::harness::TerminalView::pid)
     }
 
     /// [`planned_run_in_review`] over the frame handler — the entry point that
@@ -25305,6 +29185,17 @@ mod tests {
         );
         assert_eq!(last_stage["result"]["state"], "review", "{last_stage:?}");
         (plan_id, run_id)
+    }
+
+    /// The one row a list surface carries for `id`. Every list is a
+    /// `HashMap`'s values in whatever order this process's hash seed put them,
+    /// so a test that means one entity has to name it.
+    fn row_with<'a>(rows: &'a Value, key: &str, id: &str) -> &'a Value {
+        rows.as_array()
+            .unwrap_or_else(|| panic!("not a list: {rows:?}"))
+            .iter()
+            .find(|row| row[key] == json!(id))
+            .unwrap_or_else(|| panic!("no {key} {id}: {rows:?}"))
     }
 
     fn plan_id_of(res: &Value) -> String {
@@ -25361,7 +29252,7 @@ mod tests {
         add_external_worktree(repo, dir, branch, branch);
         let project_id = state.projects[0].id.clone();
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some(branch))
@@ -25584,7 +29475,7 @@ mod tests {
         let queued = &state.pending_agent_turns[0];
         assert_eq!(queued.owner, issue_id);
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Start with the endpoint."),
             "the message that started the session is in the prompt it is handed: {delivered}"
@@ -26264,7 +30155,7 @@ mod tests {
         add_external_worktree(&repo, dir.path(), "feature-unadopted", "feature-unadopted");
         let project_id = state.projects[0].id.clone();
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-unadopted"))
@@ -26456,38 +30347,43 @@ mod tests {
             .find(|turn| turn.owner == run_id && turn.phase == "recover")
             .expect("recovery turn is queued");
         assert!(
-            recovery_turn.cold.contains(&recovery.id),
+            recovery_turn.said().cold.contains(&recovery.id),
             "{}",
-            recovery_turn.cold
+            recovery_turn.said().cold
         );
         assert!(
-            recovery_turn.cold.contains("Build conversation protocol"),
+            recovery_turn
+                .said()
+                .cold
+                .contains("Build conversation protocol"),
             "{}",
-            recovery_turn.cold
+            recovery_turn.said().cold
         );
-        assert!(recovery_turn.cold.contains("read_unread_messages"));
+        assert!(recovery_turn.said().cold.contains("read_unread_messages"));
         assert!(recovery_turn
+            .said()
             .cold
             .contains("Ordered Issue stage-plan catalog"));
         let catalog = recovery_turn
+            .said()
             .cold
             .split("Ordered Issue stage-plan catalog (authoritative order):")
             .nth(1)
             .unwrap();
         assert!(catalog.find("first-half") < catalog.find("second-half"));
-        assert!(recovery_turn.warm.contains("read_unread_messages"));
+        assert!(recovery_turn.said().warm.contains("read_unread_messages"));
         // A warm recovery is a live process that lived this conversation, and
         // the protocol block it keeps tells it to read what it missed — so the
         // packet is the cold half's alone, and is composed at delivery.
         assert!(
-            !recovery_turn.warm.contains("Catch-up packet"),
+            !recovery_turn.said().warm.contains("Catch-up packet"),
             "{}",
-            recovery_turn.warm
+            recovery_turn.said().warm
         );
         assert!(
-            !recovery_turn.cold.contains("Catch-up packet"),
+            !recovery_turn.said().cold.contains("Catch-up packet"),
             "{}",
-            recovery_turn.cold
+            recovery_turn.said().cold
         );
         assert!(issue_view["result"]["thread"]["items"]
             .as_array()
@@ -26653,17 +30549,24 @@ mod tests {
             .find(|turn| turn.owner == run_id && turn.phase == "recover")
             .expect("restart requeues the recovery agent");
         assert!(
-            turn.cold.contains("Build conversation protocol"),
+            turn.said().cold.contains("Build conversation protocol"),
             "{}",
-            turn.cold
+            turn.said().cold
         );
-        assert!(turn.cold.contains("read_unread_messages"), "{}", turn.cold);
         assert!(
-            turn.cold.contains("Ordered Issue stage-plan catalog"),
+            turn.said().cold.contains("read_unread_messages"),
             "{}",
-            turn.cold
+            turn.said().cold
+        );
+        assert!(
+            turn.said()
+                .cold
+                .contains("Ordered Issue stage-plan catalog"),
+            "{}",
+            turn.said().cold
         );
         let catalog = turn
+            .said()
             .cold
             .split("Ordered Issue stage-plan catalog (authoritative order):")
             .nth(1)
@@ -26868,6 +30771,14 @@ mod tests {
             json!({ "goal": "digest the board" }),
         );
         let plan_id = plan_id_of(&plan);
+        // A plan whose only event would be its agent's session start carries
+        // whatever that background spawn managed; this one is driven here.
+        let approved = call(
+            &handler,
+            "plan.stage_approve",
+            json!({ "plan_id": plan_id, "stage_id": "first-half" }),
+        );
+        assert!(approved["error"].is_null(), "{approved:?}");
         let (_, run_id) = planned_run_in_review_delivered(&handler, "a run to digest");
         // Seed a real user message into each conversation so the assertions
         // below prove bodies are omitted, not merely absent.
@@ -26889,10 +30800,9 @@ mod tests {
         );
 
         let board = call(&handler, "board.list", json!({}));
-        for thread in [
-            &board["result"]["plans"][0]["thread"],
-            &board["result"]["runs"][0]["thread"],
-        ] {
+        let listed_plan = row_with(&board["result"]["plans"], "plan_id", &plan_id);
+        let listed_run = row_with(&board["result"]["runs"], "run_id", &run_id);
+        for thread in [&listed_plan["thread"], &listed_run["thread"]] {
             assert!(thread.get("items").is_none(), "{thread:?}");
             assert!(thread["item_count"].as_u64().unwrap() > 0, "{thread:?}");
             assert!(thread["last_sequence"].as_u64().unwrap() > 0, "{thread:?}");
@@ -26903,12 +30813,8 @@ mod tests {
         assert!(!serialized_board.contains("run-only-body-marker"));
 
         let listed = call(&handler, "plan.list", json!({}));
-        assert!(
-            listed["result"]["plans"][0]["thread"]
-                .get("items")
-                .is_none(),
-            "{listed:?}"
-        );
+        let listed_plan = row_with(&listed["result"]["plans"], "plan_id", &plan_id);
+        assert!(listed_plan["thread"].get("items").is_none(), "{listed:?}");
 
         // The detail surfaces must not regress: full threads, bodies intact.
         let plan_view = call(&handler, "plan.get", json!({ "plan_id": plan_id }));
@@ -27650,11 +31556,12 @@ mod tests {
             "the turn is addressed to the worktree, not to the run"
         );
         assert_eq!(
-            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            queued.said().warm,
+            NEW_THREAD_MESSAGES_PROMPT,
             "an agent already in the conversation is only told to read the thread"
         );
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains(NEW_THREAD_MESSAGES_PROMPT)
                 && delivered.contains("rename the symbol")
@@ -27731,14 +31638,15 @@ mod tests {
             "the turn is addressed to the worktree, not to the run"
         );
         assert_eq!(
-            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            queued.said().warm,
+            NEW_THREAD_MESSAGES_PROMPT,
             "an agent already in the conversation is only told to read the thread"
         );
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent gets the run context and the conversation protocol: {}",
-            queued.cold
+            queued.said().cold
         );
         let posted = primary_thread(&state.runs["run-message"].agents)
             .items
@@ -27789,20 +31697,20 @@ mod tests {
         assert_eq!(queued.owner, run_id);
         assert_eq!(queued.root, root);
         assert!(
-            queued.warm.contains("Second half"),
+            queued.said().warm.contains("Second half"),
             "the stage instruction travels whether the agent is warm or cold: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "a warm agent is not re-taught the protocol it is already following: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent gets the same instruction plus the conversation it missed: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -27900,21 +31808,21 @@ mod tests {
         );
         assert_eq!(queued.phase, "build");
         assert!(
-            queued.warm.contains("add the migration")
-                && queued.warm.contains("the migration is missing"),
+            queued.said().warm.contains("add the migration")
+                && queued.said().warm.contains("the migration is missing"),
             "the reviewer's note and the failed findings both travel: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "the agent that just failed validation is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a replacement agent gets the same fix plus the conversation it missed: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -27973,23 +31881,26 @@ mod tests {
         );
         assert_eq!(queued.phase, "revise");
         assert!(
-            queued.warm.contains("read_unread_messages"),
+            queued.said().warm.contains("read_unread_messages"),
             "the comments travel through MCP; the turn only points at them: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "an agent already in the run is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.contains("02-second-half.md")
-                && queued.cold.contains("Build conversation protocol")
-                && queued.cold.contains("Ordered Issue stage-plan catalog")
-                && queued.cold.find("\n- first-half").unwrap()
-                    < queued.cold.find("\n- second-half").unwrap(),
+            queued.said().cold.contains("02-second-half.md")
+                && queued.said().cold.contains("Build conversation protocol")
+                && queued
+                    .said()
+                    .cold
+                    .contains("Ordered Issue stage-plan catalog")
+                && queued.said().cold.find("\n- first-half").unwrap()
+                    < queued.said().cold.find("\n- second-half").unwrap(),
             "a cold agent is primed with the ordered catalog and stage doc it must revise: {}",
-            queued.cold
+            queued.said().cold
         );
         let comments = primary_thread(&state.plans[&plan_id].agents).doc_comments();
         assert_eq!(
@@ -28045,20 +31956,20 @@ mod tests {
         );
         assert_eq!(queued.phase, "build");
         assert!(
-            queued.warm.contains("Second half"),
+            queued.said().warm.contains("Second half"),
             "the next stage's instruction travels warm or cold: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "the agent that built stage one is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a replacement agent gets the same instruction plus the conversation: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -28079,6 +31990,7 @@ mod tests {
         // handler is the thing that delivers, and delivering opens the agent.
         let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert_eq!(opened["ok"], true, "{opened:?}");
+        wait_for_deliveries(&state).await;
         let key = derived_agent_key(&root, &run_id);
         let first_stage_pid = {
             let s = state.lock().unwrap();
@@ -28145,6 +32057,7 @@ mod tests {
                 &run_id,
             )
         };
+        wait_for_deliveries(&state).await;
         let first_pid = {
             let s = state.lock().unwrap();
             let tab = s
@@ -28161,6 +32074,7 @@ mod tests {
             json!({ "run_id": run_id, "stage_id": "second-half" }),
         );
         assert_eq!(next["ok"], true, "{next:?}");
+        wait_for_deliveries(&state).await;
         let s = state.lock().unwrap();
         assert_eq!(
             s.tabs.get(&key).and_then(agent_pid),
@@ -28179,7 +32093,11 @@ mod tests {
         assert_eq!(
             s.tabs.len(),
             1,
-            "no harness may be spawned beside the tab's agent"
+            "no harness may be spawned beside the tab's agent {:?}",
+            s.tabs
+                .iter()
+                .map(|(k, t)| (k.clone(), t.role.clone()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -28209,6 +32127,7 @@ mod tests {
             }),
         );
         assert_eq!(first["ok"], true, "{first:?}");
+        wait_for_deliveries(&state).await;
         let first_pid = {
             let s = state.lock().unwrap();
             let tab = s
@@ -28227,6 +32146,7 @@ mod tests {
             }),
         );
         assert_eq!(second["ok"], true, "{second:?}");
+        wait_for_deliveries(&state).await;
         let s = state.lock().unwrap();
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
         assert_eq!(
@@ -28407,20 +32327,20 @@ mod tests {
             "the stage is validated in the worktree it was built in"
         );
         assert!(
-            queued.warm.contains("VALIDATION agent"),
+            queued.said().warm.contains("VALIDATION agent"),
             "the validation instruction travels warm or cold: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "the agent that just reported is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.starts_with(&queued.warm)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.starts_with(&queued.said().warm)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a replacement agent gets the same instruction plus the conversation: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -28507,13 +32427,21 @@ mod tests {
         assert_eq!(queued.root, root, "triage reads the diff where it lives");
         let (hunk_ids, revision_sha) = diff_vocabulary(&state, &run_id);
         for hunk_id in &hunk_ids {
-            assert!(queued.warm.contains(hunk_id), "{hunk_id}: {}", queued.warm);
+            assert!(
+                queued.said().warm.contains(hunk_id),
+                "{hunk_id}: {}",
+                queued.said().warm
+            );
         }
-        assert!(queued.warm.contains(&revision_sha), "{}", queued.warm);
         assert!(
-            queued.warm.contains("crypto.rs — key derivation"),
+            queued.said().warm.contains(&revision_sha),
+            "{}",
+            queued.said().warm
+        );
+        assert!(
+            queued.said().warm.contains("crypto.rs — key derivation"),
             "the completion report seeds the pass: {}",
-            queued.warm
+            queued.said().warm
         );
     }
 
@@ -28578,7 +32506,11 @@ mod tests {
             .last()
             .expect("a new revision is triaged again");
         assert_eq!(queued.phase, "triage");
-        assert!(queued.warm.contains(&second_revision), "{}", queued.warm);
+        assert!(
+            queued.said().warm.contains(&second_revision),
+            "{}",
+            queued.said().warm
+        );
     }
 
     /// Triage asks the reviewer for nothing, so it must not ring their bell.
@@ -29049,6 +32981,7 @@ mod tests {
         let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert_eq!(opened["ok"], true, "{opened:?}");
         let key = derived_agent_key(&root, &run_id);
+        wait_for_agent_tab(&state, &key).await;
         let (build_pid, session_token) = {
             let s = state.lock().unwrap();
             let tab = s
@@ -29107,6 +33040,183 @@ mod tests {
             "the agent that built the stage is the one asked to validate it"
         );
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+    }
+
+    /// A `done` off the control socket is a frame like any other: it takes the
+    /// same mutex a browser frame does and its delivery spawns the same
+    /// harnesses, so it is timed and counted — under a method of its own, since
+    /// nothing on the wire named it. Untimed, a daemon wedged by a harness's
+    /// report would report that wedge as nobody's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_done_over_the_socket_is_timed_under_its_own_method() {
+        let (dir, repo) = init_repo();
+        let (clock, lines) = recording_clock();
+        let state = qa_state_timed_by(Arc::clone(&clock), &repo, dir.path());
+        on_the_terminal_provider(&state);
+        let (agent_id, session_token) = {
+            let mut s = state.lock().unwrap();
+            let (run_id, _root) = run_awaiting_a_real_stage_build(&mut s, "report over the socket");
+            // The capability is minted at spawn. Handing one out without a
+            // spawn is what leaves the run's agent cold, so the report's
+            // delivery is the one that opens a harness.
+            let agent_id = s.runs[&run_id].agents.primary().unwrap().id.clone();
+            let session_token = uuid::Uuid::new_v4().to_string();
+            s.mcp_session_tokens
+                .insert(agent_id.clone(), session_token.clone());
+            (agent_id, session_token)
+        };
+        // A spawn builds its session locator with the app mutex released, so a
+        // factory that takes its time is time the delivery spends and the frame
+        // that queued it does not.
+        state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
+            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
+            None
+        });
+
+        let socket_path = dir.path().join("done.sock");
+        AppState::spawn_done_socket(
+            Arc::clone(&state),
+            socket_path.to_string_lossy().into_owned(),
+        );
+        let mut socket = connect_when_bound(&socket_path).await;
+        let report = json!({
+            "task_id": agent_id,
+            "session_token": session_token,
+            "report": {
+                "phase": "build",
+                "status": "completed",
+                "summary": "stage one is built",
+                "outputs": {},
+            },
+        });
+        socket
+            .write_all(format!("{report}\n").as_bytes())
+            .await
+            .unwrap();
+        socket.flush().await.unwrap();
+
+        let line = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let logged = lines
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|line| line.starts_with("slow frame agent.deliver "))
+                    .cloned();
+                if let Some(line) = logged {
+                    return line;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the report's delivery logged nothing of its own: {:?}",
+                lines.lock().unwrap()
+            )
+        });
+
+        assert!(
+            slow_frame_millis(&line, "total=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
+            "the spawn's seconds are the delivery's own: {line}"
+        );
+        assert!(
+            !lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.starts_with("slow frame mcp.control ")),
+            "the reporting frame answered before the harness it triggered was up: {:?}",
+            lines.lock().unwrap()
+        );
+        let stats = clock.stats();
+        assert!(
+            stats["methods"]["mcp.control"]["served"]
+                .as_u64()
+                .is_some_and(|served| served >= 1),
+            "the socket's frames are counted since boot: {stats}"
+        );
+    }
+
+    /// A router reaching a branch is a whole checkout of the repository, and it
+    /// arrives over the control socket rather than over a frame. It runs the
+    /// same way every other dispatch does: the socket takes the job out under
+    /// the guard and runs it with the guard released, so a routed capture no
+    /// longer serializes the daemon for the length of a `git worktree add`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let state = qa_state_timed_by(FrameClock::new(), &repo, dir.path());
+        let (gate, gate_handle) = OffLockGate::new();
+        let (capture_id, project_id, agent_id, session_token) = {
+            let mut app = state.lock().unwrap();
+            let project_id = app.projects[0].id.clone();
+            let (capture_id, agent_id) = captured(&mut app, "finish the toast on the login branch");
+            app.pending_agent_turns.clear();
+            let session_token = uuid::Uuid::new_v4().to_string();
+            app.mcp_session_tokens
+                .insert(agent_id.clone(), session_token.clone());
+            app.off_lock_gate = Some(gate);
+            (capture_id, project_id, agent_id, session_token)
+        };
+
+        let socket_path = dir.path().join("done.sock");
+        AppState::spawn_done_socket(
+            Arc::clone(&state),
+            socket_path.to_string_lossy().into_owned(),
+        );
+        let mut socket = connect_when_bound(&socket_path).await;
+        let request = json!({
+            "task_id": agent_id,
+            "session_token": session_token,
+            "request": {
+                "action": "dispatch_branch",
+                "project_id": project_id,
+                "instruction": "finish the toast",
+                "rationale": "continues the login work",
+            },
+        });
+        socket
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        socket.flush().await.unwrap();
+
+        let gate_handle = tokio::task::spawn_blocking(move || {
+            gate_handle.wait_for_arrival();
+            gate_handle
+        })
+        .await
+        .unwrap();
+        assert!(
+            state.try_lock().is_ok(),
+            "the router's dispatch is holding the app mutex through its git"
+        );
+        gate_handle.release();
+
+        let mut lines = tokio::io::BufReader::new(socket).lines();
+        let answered = tokio::time::timeout(Duration::from_secs(30), lines.next_line())
+            .await
+            .expect("the socket answers the router")
+            .unwrap()
+            .expect("the socket answers the router");
+        let answered: Value = serde_json::from_str(&answered).unwrap();
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(
+            answered["result"]["branch"], "build/finish-the-toast",
+            "the router is told where the work went: {answered:?}"
+        );
+        let app = state.lock().unwrap();
+        let routing = app.captures[&capture_id]
+            .routing
+            .as_ref()
+            .expect("the route is written down once the branch is real");
+        assert_eq!(routing.target_id, "build/finish-the-toast");
+        assert_eq!(
+            routing.rationale.as_deref(),
+            Some("continues the login work")
+        );
     }
 
     /// A second daemon pointed at a live control socket must not steal it: the
@@ -29195,14 +33305,15 @@ mod tests {
         );
         assert_eq!(queued.phase, "revise");
         assert_eq!(
-            queued.warm, NEW_THREAD_MESSAGES_PROMPT,
+            queued.said().warm,
+            NEW_THREAD_MESSAGES_PROMPT,
             "an agent already drafting is only told to read the thread"
         );
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent gets the plan context AND the instruction: {}",
-            queued.cold
+            queued.said().cold
         );
         let durable = primary_thread(&state.plans[&notes_plan].agents)
             .items
@@ -29227,12 +33338,12 @@ mod tests {
         assert_eq!(queued.owner, notes_plan);
         assert_eq!(queued.root, notes_root);
         assert_eq!(queued.phase, "message");
-        assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
+        assert_eq!(queued.said().warm, NEW_THREAD_MESSAGES_PROMPT);
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && queued.said().cold.contains("Build conversation protocol"),
             "{}",
-            queued.cold
+            queued.said().cold
         );
         let durable = primary_thread(&state.plans[&notes_plan].agents)
             .items
@@ -29258,20 +33369,20 @@ mod tests {
         assert_eq!(queued.root, stage_root);
         assert_eq!(queued.phase, "revise");
         assert!(
-            queued.warm.contains("read_unread_messages"),
+            queued.said().warm.contains("read_unread_messages"),
             "the comments travel through MCP; the turn only points at them: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            !queued.warm.contains("Build conversation protocol"),
+            !queued.said().warm.contains("Build conversation protocol"),
             "an agent already drafting is not re-taught the protocol: {}",
-            queued.warm
+            queued.said().warm
         );
         assert!(
-            queued.cold.contains(".build/plan/01-first-half.md")
-                && queued.cold.contains("Build conversation protocol"),
+            queued.said().cold.contains(".build/plan/01-first-half.md")
+                && queued.said().cold.contains("Build conversation protocol"),
             "a cold agent is pointed at the stage doc it must revise: {}",
-            queued.cold
+            queued.said().cold
         );
     }
 
@@ -29300,6 +33411,7 @@ mod tests {
                 &plan_id,
             )
         };
+        wait_for_deliveries(&state).await;
         let drafting_pid = {
             let s = state.lock().unwrap();
             let tab = s
@@ -29325,6 +33437,7 @@ mod tests {
         ] {
             let done = call(&handler, method, params);
             assert_eq!(done["ok"], true, "{method}: {done:?}");
+            wait_for_deliveries(&state).await;
             let s = state.lock().unwrap();
             assert_eq!(
                 s.tabs.get(&key).and_then(agent_pid),
@@ -32175,10 +36288,31 @@ mod tests {
     /// orchestrator's own `approved_plan` fixture. Runs only ever implement a
     /// plan, so a test that needs a run driven by a PARTICULAR harness builds a
     /// plan on that harness's orchestrator first.
-    fn approved_side_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
-        let (mut plan, _turn) = orch
-            .dispatch_plan(PlanId::new(id), "side goal", "main", Default::default())
+    /// A run of `plan` on a side orchestrator, prepared and opened the way
+    /// `run.create` prepares and opens one — the fixture's twin of the two
+    /// halves the verb runs on either side of the app mutex.
+    fn dispatch_side_run(
+        orch: &Orchestrator,
+        store: &Store,
+        plan: &ActivePlan,
+        run_id: &str,
+    ) -> (ActiveRun, AgentTurn) {
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run: false,
+        })
+        .unwrap();
+        let prepared = orch
+            .prepare_run_checkout(&issue, "main", run_id, store)
             .unwrap();
+        orch.open_prepared_run(RunId::new(run_id), plan, prepared, Default::default())
+            .unwrap()
+    }
+
+    fn approved_side_plan(orch: &Orchestrator, store: &Store, id: &str) -> ActivePlan {
+        let mut plan = orch.create_plan(PlanId::new(id), "side goal", "main", Default::default());
+        let workspace = orch.prepare_plan_workspace(id, store).unwrap();
+        orch.open_plan_drafting(&mut plan, workspace).unwrap();
         let docs_dir = plan
             .workspace
             .as_ref()
@@ -32225,18 +36359,7 @@ mod tests {
             test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let (mut active, _turn) = side
-            .dispatch_run(
-                RunId::new(run_id),
-                RunSource {
-                    plan: &plan,
-                    has_active_run: false,
-                },
-                "main",
-                Default::default(),
-                &store,
-            )
-            .unwrap();
+        let (mut active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
         active.run.state = run_state;
         let root = AppState::canonical_root(&active.worktree.path);
         let project_id = state.projects[0].id.clone();
@@ -32336,10 +36459,8 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match rx.try_recv() {
                 Ok(chunk) => {
-                    if let Some(screen) =
-                        state.tabs.get_mut(key).and_then(|tab| tab.screen.as_mut())
-                    {
-                        screen.process(&chunk);
+                    if let Some(screen) = state.tabs.get(key).and_then(|tab| tab.screen.as_ref()) {
+                        screen.feed(&chunk);
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
@@ -32671,8 +36792,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-spoken-to"),
             &ModelChoice::default(),
             "build",
-            "get to work",
-            "there is more",
+            ["get to work", "there is more"],
         )
         .expect("the turn reaches an agent");
         assert_eq!(spawned, Spawned::Fresh, "the tab did not exist yet");
@@ -32782,10 +36902,13 @@ mod tests {
             owner: owner.to_string(),
             agent_id: crate::agent::derived_agent_id(owner),
             model_choice: ModelChoice::default(),
-            cold: "cold turn".into(),
-            warm: "warm turn".into(),
+            say: Some(TurnText {
+                cold: "cold turn".into(),
+                warm: "warm turn".into(),
+            }),
             phase: "build",
             wants_catch_up: false,
+            survives_refusal: false,
         }
     }
 
@@ -32837,6 +36960,133 @@ mod tests {
         assert!(
             record.last_error.unwrap_or_default().contains("agent"),
             "the failure must be persisted, not just held in memory"
+        );
+    }
+
+    /// The agent's own record has to carry it too.
+    ///
+    /// The client lays a "starting" state over the row it pressed Resume on and
+    /// waits for the entity's next word about the session. A start that never
+    /// came up says nothing about the SESSION, so without this the row wears
+    /// the ring until the overlay's grace runs out and then goes quietly idle,
+    /// with the reason nowhere.
+    #[test]
+    fn a_start_that_never_reached_a_harness_says_so_on_its_agent() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-no-start",
+            RunState::Building,
+        );
+        let state = app.shared();
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-no-start"));
+
+        deliver_pending_agent_turns(&state);
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("run.get", json!({ "run_id": "run-no-start" })));
+        let agent = &got["result"]["agents"][0];
+        assert!(
+            agent["start_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("could not reach the agent"),
+            "the agent says why its session never opened: {got:?}"
+        );
+    }
+
+    /// And it is the LAST start's failure, not a permanent mark: a fresh turn
+    /// on its way to the agent makes it history, so the next press wears its
+    /// own ring instead of being answered by the failure before it.
+    #[test]
+    fn a_fresh_turn_forgets_the_last_start_failure() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(&mut app, &repo, dir.path(), "run-retry", RunState::Building);
+        let state = app.shared();
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-retry"));
+        deliver_pending_agent_turns(&state);
+
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-retry"));
+        // Taken, not delivered: the point is that reaching for the agent is
+        // what forgets the last failure, before anything is known about how
+        // this one ends. The marks it holds are released when it drops.
+        let _taken = state.lock().unwrap().take_pending_turns();
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("run.get", json!({ "run_id": "run-retry" })));
+        assert!(
+            got["result"]["agents"][0]["start_error"].is_null(),
+            "the turn now on its way answers for the session, not the one before it: {got:?}"
+        );
+    }
+
+    /// The third answer to a start. An issue whose session is over holds no
+    /// workspace, so a turn for it opens nothing — and used to say so only on
+    /// stderr, leaving the client's "starting" ring on until its grace ran out.
+    /// The agent carries the reason; the issue's own `last_error` does not,
+    /// because nothing about the work failed.
+    #[test]
+    fn a_start_for_an_entity_whose_session_is_over_says_so_on_its_agent() {
+        let (dir, repo) = init_repo();
+        let app = qa_state(&repo, dir.path());
+        let state = app.shared();
+        let plan_id = "plan-session-over";
+        {
+            let side = Orchestrator::new(
+                repo.clone(),
+                dir.path().join("side-wt"),
+                Agent::Warm(HarnessSpec::new("true")),
+                Templates::default(),
+                test_bridge_exe(),
+            );
+            let active = side.create_plan(
+                PlanId::new(plan_id),
+                "a goal whose session is over",
+                "main",
+                Default::default(),
+            );
+            let mut s = state.lock().unwrap();
+            let project_id = s.projects[0].id.clone();
+            s.entity_project.insert(plan_id.to_string(), project_id);
+            s.plans.insert(plan_id.to_string(), active);
+            s.pending_agent_turns.push(unreachable_turn(plan_id));
+        }
+
+        deliver_pending_agent_turns(&state);
+
+        let got = state
+            .lock()
+            .unwrap()
+            .handle(req("issue.get", json!({ "issue_id": plan_id })));
+        let agent = &got["result"]["agents"][0];
+        assert_eq!(
+            agent["start_error"],
+            json!(AGENT_START_DECLINED_SESSION_OVER),
+            "the agent says why no session opened: {got:?}"
+        );
+        assert!(
+            got["result"]["last_error"].is_null(),
+            "a session that is over is not a failure of the work: {got:?}"
         );
     }
 
@@ -32938,6 +37188,235 @@ mod tests {
         assert!(got["result"]["last_error"].is_null(), "{got:?}");
     }
 
+    /// A delivery that unwinds has to give back what it took.
+    ///
+    /// `take_pending_turns` marks every owner in flight, and an owner marked in
+    /// flight is spared by the idle sweep for as long as the mark stands. A
+    /// batch that panicked used to keep those marks forever: the run sat in
+    /// Working with no agent tab and nothing left in the daemon could ever
+    /// demote it.
+    #[test]
+    fn a_delivery_that_panics_gives_its_in_flight_marks_back() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-panicked",
+            RunState::Building,
+        );
+        let state = app.shared();
+        state
+            .lock()
+            .unwrap()
+            .pending_agent_turns
+            .push(unreachable_turn("run-panicked"));
+        let turns = state.lock().unwrap().take_pending_turns();
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .agent_turn_is_undelivered("run-panicked"),
+            "the batch holds the mark while it delivers"
+        );
+
+        // The panic no delivery can catch: another frame died holding the app
+        // mutex, so the delivery's first acquisition unwraps a poisoned lock —
+        // after the turn and its mark have already left the batch.
+        let poisoner = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("the frame holding the app mutex died");
+        })
+        .join()
+        .expect_err("the poisoning thread panics");
+
+        let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            DeliveryRunner::run(&state, turns)
+        }));
+        assert!(delivered.is_err(), "a poisoned lock unwinds the delivery");
+
+        let mut s = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            s.turns_in_flight.is_empty(),
+            "an unwinding delivery gives its in-flight marks back"
+        );
+        assert_eq!(
+            s.mark_idle_tasks(Duration::from_secs(3600)),
+            vec!["run-panicked".to_string()],
+            "the entity it stranded is demotable again"
+        );
+    }
+
+    /// A harness already on its way is the one that reads the next message,
+    /// and the guard that says so has to see a turn in every state a turn can
+    /// be in.
+    ///
+    /// The queue is emptied under the frame's own acquisition and the spawn
+    /// claim is taken on a thread of the delivery's, so between the two there
+    /// is a stretch — a thread-pool handoff for the first turn, the whole of
+    /// every earlier turn's cold spawn for the rest — in which a turn on its
+    /// way is in neither the queue nor the claim set. A second message landing
+    /// there queues a duplicate turn: the claim still stops a second harness,
+    /// but nothing stops the duplicate `read_unread_messages` nudge.
+    #[test]
+    fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-nudged",
+            RunState::Building,
+        );
+        let state = app.shared();
+        let post = |body: &str| {
+            state.lock().unwrap().handle(req(
+                "thread.post",
+                json!({ "entity_id": "run-nudged", "body": body }),
+            ))
+        };
+
+        let first = post("start on this");
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            state.lock().unwrap().pending_agent_turns.len(),
+            1,
+            "the first message wakes the agent"
+        );
+
+        // Off the queue, no claim yet: the delivery is between its two halves.
+        let _delivering = state.lock().unwrap().take_pending_turns();
+        {
+            let s = state.lock().unwrap();
+            assert!(s.pending_agent_turns.is_empty());
+            assert!(s.agent_spawns_in_flight.is_empty());
+        }
+
+        let second = post("and this");
+        assert_eq!(
+            second["ok"], true,
+            "the message is durable on the thread either way: {second:?}"
+        );
+        assert!(
+            state.lock().unwrap().pending_agent_turns.is_empty(),
+            "a second turn was queued behind the one already coming"
+        );
+    }
+
+    /// A textless start promises the agent nothing to read, so a message
+    /// posted while it is on its way has to queue its own turn.
+    ///
+    /// The guard on a second turn assumes the harness already coming opens on
+    /// a cold prompt that tells it to call `read_unread_messages`. A start with
+    /// nothing unread carries no prompt at all: the harness opens and is sent
+    /// nothing, and a message posted between the button and the harness would
+    /// sit durable on the thread with nobody told about it. The spawn claim
+    /// still guarantees one harness; the turn queued here lands Warm on the tab
+    /// the start opened.
+    #[test]
+    fn a_message_posted_during_a_textless_start_queues_its_own_turn() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-started-bare",
+            RunState::Building,
+        );
+        let root = app.entity_agent_root("run-started-bare").unwrap();
+        let agent_id = primary_agent_id(&app, "run-started-bare");
+        app.pending_agent_turns.push(PendingAgentTurn {
+            root: root.clone(),
+            owner: "run-started-bare".into(),
+            agent_id: agent_id.clone(),
+            model_choice: ModelChoice::default(),
+            say: None,
+            phase: "start",
+            wants_catch_up: true,
+            survives_refusal: false,
+        });
+        let state = app.shared();
+
+        // Off the queue, mid-delivery: the harness is coming, with nothing to say.
+        let _delivering = state.lock().unwrap().take_pending_turns();
+        assert!(state.lock().unwrap().pending_agent_turns.is_empty());
+
+        let posted = state.lock().unwrap().handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-started-bare", "body": "read this" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.pending_agent_turns.len(),
+            1,
+            "a start that says nothing is not the turn that reads this message"
+        );
+        let queued = &s.pending_agent_turns[0];
+        assert_eq!(queued.agent_id, agent_id);
+        assert!(
+            queued.says_something(),
+            "the queued turn is the one that tells it to read"
+        );
+    }
+
+    /// One batch, one owner, two agents: settling the delivered turn gives
+    /// back that turn's mark and nobody else's.
+    ///
+    /// The mark travels with the turn it was taken for. Looked up by owner
+    /// alone, the first settle could hand back the OTHER agent's mark, and the
+    /// agent whose turn was still undelivered would read as absent — the window
+    /// the count exists to close.
+    #[test]
+    fn settling_one_agents_turn_leaves_the_other_agents_mark_in_flight() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-two-agents",
+            RunState::Building,
+        );
+        let first = unreachable_turn("run-two-agents");
+        let mut second = unreachable_turn("run-two-agents");
+        second.agent_id = "agent-second".into();
+        let root = first.root.clone();
+        let first_agent = first.agent_id.clone();
+        state.pending_agent_turns.push(first);
+        state.pending_agent_turns.push(second);
+
+        let mut delivering = state.take_pending_turns();
+        let (delivered, mark) = delivering.next_turn().expect("the first turn");
+        assert_eq!(delivered.agent_id, first_agent);
+        mark.settle(&mut state);
+
+        assert!(
+            !state.agent_is_on_its_way(&root, &first_agent),
+            "the delivered turn's agent is settled"
+        );
+        assert!(
+            state.agent_is_on_its_way(&root, "agent-second"),
+            "the undelivered turn's agent is still on its way"
+        );
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
+            "and so is the owner"
+        );
+        let (_, mark) = delivering.next_turn().expect("the second turn");
+        mark.settle(&mut state);
+        assert!(
+            !state.agent_is_on_its_way(&root, "agent-second"),
+            "both marks are back once both turns have landed"
+        );
+    }
+
     /// The tabless anomaly must not fire on the gap the queue opens: a verb
     /// transitions the run under the state lock and the turn is delivered after
     /// it, so for the seconds a cold spawn takes there is a working run whose
@@ -32962,18 +37441,16 @@ mod tests {
         );
 
         // Mid-delivery — off the queue, not yet a tab — is the same story.
-        state.pending_agent_turns.clear();
-        *state
-            .agent_turns_in_flight
-            .entry("run-dispatching".into())
-            .or_default() += 1;
+        let mut delivering = state.take_pending_turns();
+        assert!(state.pending_agent_turns.is_empty());
         assert!(
             state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
             "a turn mid-delivery means the agent is coming, not missing"
         );
 
         // Once the delivery is over and no tab appeared, it IS the anomaly.
-        state.agent_turns_in_flight.clear();
+        let (_, mark) = delivering.next_turn().expect("the one turn");
+        mark.settle(&mut state);
         assert_eq!(
             state.mark_idle_tasks(Duration::from_secs(3600)),
             vec!["run-dispatching".to_string()]
@@ -33210,7 +37687,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         add_external_worktree(&repo, dir.path(), "feature-agentless", "feature-agentless");
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-agentless"))
@@ -33328,7 +37805,7 @@ mod tests {
             json!({ "id": run_id, "agent_id": agent_id }),
         );
         assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(started["result"]["spawned"], "fresh", "{started:?}");
+        wait_for_deliveries(&state).await;
         let root = AppState::canonical_root(&state.lock().unwrap().runs[&run_id].worktree.path);
         assert_eq!(
             spawned_provider(&state, &root, &agent_id),
@@ -33366,6 +37843,7 @@ mod tests {
             json!({ "id": run_id, "agent_id": second }),
         );
         assert_eq!(started["ok"], true, "{started:?}");
+        wait_for_deliveries(&state).await;
         let root = AppState::canonical_root(&state.lock().unwrap().runs[&run_id].worktree.path);
         assert_eq!(
             spawned_provider(&state, &root, &second),
@@ -33489,7 +37967,7 @@ mod tests {
         // Resolve the scanner-minted worktree id (match by branch; the scanner
         // canonicalizes paths, which differ from the raw join on macOS).
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
@@ -33545,7 +38023,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let _ext_path = add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
@@ -33574,6 +38052,223 @@ mod tests {
             1,
             "a second adoption must not mint a second owner"
         );
+    }
+
+    /// Adoption is a whole-repository scan, a checkpoint commit and a scaffold
+    /// — the git this whole split exists to keep off the app mutex.
+    #[test]
+    fn run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let adopted = frame_on_a_thread(
+            &state,
+            "s-adopt",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the adoption is holding the app mutex through its git"
+        );
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while a checkout is being adopted");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let adopted = adopted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the adoption answers once its git is done");
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["primary"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["state"], "review", "{adopted:?}");
+    }
+
+    /// The project's primary card is the one card the board lists under no id
+    /// of its own — `worktree_id`, `run_id` and `issue_id` are all null on it.
+    /// A row that stood only on those ids would be painted as a SECOND row
+    /// beside the card it is running on, for the whole of the adoption, while
+    /// that card kept offering verbs the row refuses.
+    #[test]
+    fn a_primary_adoption_names_the_primary_card_it_is_running_on() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let adopted = frame_on_a_thread(
+            &state,
+            "s-adopt",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the primary is being adopted");
+        let rows = pending_on_the_board(&board);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["primary"], true, "{rows:?}");
+        assert_eq!(rows[0]["project_id"], json!(project_id), "{rows:?}");
+
+        gate_handle.release();
+        let adopted = adopted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the adoption answers once its git is done");
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+    }
+
+    /// The reply is built after the git, by the epilogue, so it carries what
+    /// only the checkout on disk could say — the branch the scan found it on.
+    #[test]
+    fn run_adopt_answers_from_its_epilogue_with_the_runs_own_view() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "feature-y", "feature-y");
+        let worktree_id = state
+            .scan_external_worktrees_now(&project_id)
+            .unwrap()
+            .into_iter()
+            .find(|checkout| checkout.branch.as_deref() == Some("feature-y"))
+            .expect("the external worktree is discoverable")
+            .id;
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["branch"], "feature-y", "{adopted:?}");
+        assert_eq!(adopted["result"]["adopted"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+        let fetched = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            fetched["result"]["worktree_path"], adopted["result"]["worktree_path"],
+            "the deferred reply is the run's own view: {fetched:?}"
+        );
+    }
+
+    /// The repo root is reachable from every reload and every second browser.
+    /// While one adoption's git runs the checkout has no run yet, so the second
+    /// asker is told the adoption is running and handed no id — not the id of
+    /// a run no verb would accept, and not a refusal, since it has nothing to
+    /// correct. Its next ask converges on the one owner the first minted.
+    #[test]
+    fn two_adopts_of_one_checkout_converge_on_one_run() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let first = frame_on_a_thread(
+            &state,
+            "s-one",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        gate_handle.wait_for_arrival();
+        let second = frame_on_a_thread(
+            &state,
+            "s-two",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a second browser is answered while the first adoption runs");
+        assert_eq!(second["ok"], true, "{second:?}");
+        assert_eq!(
+            second["result"]["adopting"], true,
+            "the second asker is told the adoption is running: {second:?}"
+        );
+        assert!(
+            second["result"]["run_id"].is_null(),
+            "the second asker was handed a run that does not exist yet: {second:?}"
+        );
+
+        gate_handle.release();
+        let first = first
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first adoption answers once its git is done");
+        assert_eq!(first["ok"], true, "{first:?}");
+
+        let retried = frame_on_a_thread(
+            &state,
+            "s-two",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        )
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the retry is answered");
+        assert_eq!(
+            retried["result"]["run_id"], first["result"]["run_id"],
+            "both askers name one run: {retried:?} {first:?}"
+        );
+        // And the id it names is one every other verb accepts: a reply that
+        // promises a run must promise a durable one.
+        let converged = run_id_of(&retried);
+        let fetched = frame_on_a_thread(&state, "s-two", "run.get", json!({ "run_id": converged }))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("run.get is answered");
+        assert_eq!(
+            fetched["ok"], true,
+            "the id the second asker converged on resolves: {fetched:?}"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs.len(),
+            1,
+            "the primary checkout has one owner"
+        );
+    }
+
+    /// Construction is the validation: a checkout that cannot be adopted is
+    /// refused before anything is written into it, so the work standing in it
+    /// is left exactly as it was found.
+    #[test]
+    fn run_adopt_refuses_a_detached_head_before_it_writes_a_checkpoint() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "loose", "loose");
+        assert!(Command::new("git")
+            .args(["-C", path.to_str().unwrap(), "checkout", "--detach"])
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(path.join("scratch.txt"), "unsaved\n").unwrap();
+        let worktree_id = state
+            .scan_external_worktrees_now(&project_id)
+            .unwrap()
+            .into_iter()
+            .find(|checkout| checkout.path == crate::worktree::canonical_root(&path))
+            .expect("the detached checkout is discoverable")
+            .id;
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], false, "{adopted:?}");
+        let pending = Command::new("git")
+            .args(["-C", path.to_str().unwrap(), "status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&pending.stdout).contains("scratch.txt"),
+            "the refusal wrote no checkpoint commit"
+        );
+        assert!(state.runs.is_empty(), "no run was minted");
     }
 
     // ---- the primary checkout as a super-worktree -----------------------------
@@ -33748,6 +38443,411 @@ mod tests {
         );
     }
 
+    /// Removing a checkout is `remove_dir_all` over a whole working tree, and a
+    /// run being abandoned must not stop every other frame while it runs.
+    #[test]
+    fn run_abandon_removes_its_checkout_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "going-away");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the abandon is holding the app mutex through its git"
+        );
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while a checkout is being removed");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let abandoned = abandoned
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the abandon answers once its git is done");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert_eq!(abandoned["result"]["state"], "abandoned", "{abandoned:?}");
+        assert!(!checkout.exists(), "the checkout is removed");
+    }
+
+    /// Whether a stage's commits ever left this machine is a bounded fetch and
+    /// two graph walks per stage, and it has to be asked while the refs still
+    /// stand — so it is the first thing the removal's own phase does.
+    #[test]
+    fn run_abandon_judges_its_stages_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut app, "abandon judged off the lock");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        );
+        gate_handle.wait_for_arrival();
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the stages are being judged");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let abandoned = abandoned
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the abandon answers once its git is done");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        let stages = state
+            .lock()
+            .unwrap()
+            .handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        assert!(
+            stages["result"]["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|stage| stage["execution"] == "incomplete"
+                    && stage["invalidation_reason"].as_str().is_some()),
+            "the verdict git gave off the lock is written onto the stages: {stages:?}"
+        );
+    }
+
+    /// A child still creating files in a directory fails the `remove_dir_all`
+    /// walking it, so the order is kill, reap, THEN remove — and the reap is
+    /// waited out where a wedged harness parks this job and nothing else.
+    #[test]
+    fn run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "wedged-agent");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let root = AppState::canonical_root(&checkout);
+        let (death, death_handle) = OffLockGate::new();
+        let agent_id = crate::agent::derived_agent_id(&run_id);
+        app.tabs.insert(
+            derived_agent_key(&root, &run_id),
+            gated_tab(
+                &root,
+                gated_agent_role(&agent_id),
+                GatedHarness::new().refusing_to_die_until(death),
+            ),
+        );
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        );
+        death_handle.wait_for_arrival();
+        assert!(
+            checkout.exists(),
+            "the checkout is not removed out from under a process still writing into it"
+        );
+        assert!(
+            state.try_lock().is_ok(),
+            "the wait for the agent is holding the app mutex"
+        );
+
+        death_handle.release();
+        let abandoned = abandoned
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the abandon answers once the agent is reaped");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert!(!checkout.exists(), "the checkout is removed after the reap");
+    }
+
+    /// The wait is bounded and the removal is best-effort, as it has always
+    /// been: an agent that will not die never strands a run on the board.
+    #[test]
+    fn run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "never-dies");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let root = AppState::canonical_root(&checkout);
+        let (death, death_handle) = OffLockGate::new();
+        let agent_id = crate::agent::derived_agent_id(&run_id);
+        app.tabs.insert(
+            derived_agent_key(&root, &run_id),
+            gated_tab(
+                &root,
+                gated_agent_role(&agent_id),
+                GatedHarness::new().refusing_to_die_until(death),
+            ),
+        );
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(crate::orchestrator::CHECKOUT_REAP_WAIT + Duration::from_secs(25))
+        .expect("the abandon gives up on the reap and lands anyway");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert_eq!(abandoned["result"]["state"], "abandoned", "{abandoned:?}");
+        assert!(!checkout.exists(), "the checkout is removed anyway");
+
+        death_handle.release();
+    }
+
+    /// A delete that is refused must leave the card exactly as it found it.
+    /// `run.adopt` and `run.delete` both claim the same checkout, and a
+    /// terminal run is precisely the owner an adoption walks past — so an
+    /// adoption in its git phase refuses the delete, and the run it refused is
+    /// still there, record and all, to be deleted once the adoption lands.
+    #[test]
+    fn a_delete_refused_by_a_running_adopt_keeps_the_runs_record() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "contested");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        // Only a terminal run can be deleted, and a terminal run is the one
+        // owner an adoption of its checkout walks past.
+        app.runs.get_mut(&run_id).unwrap().run.state = RunState::Abandoned;
+        let worktree_id =
+            crate::worktree::external_worktree_id(&AppState::canonical_root(&checkout));
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let adopting = frame_on_a_thread(
+            &state,
+            "s-adopt",
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        );
+        gate_handle.wait_for_arrival();
+        let deleted = frame_on_a_thread(
+            &state,
+            "s-delete",
+            "run.delete",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the delete is answered while the adoption's git runs");
+        assert_eq!(
+            deleted["ok"], false,
+            "the checkout is claimed, so the delete waits its turn: {deleted:?}"
+        );
+
+        gate_handle.release();
+        let adopted = adopting
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the adoption answers once its git is done");
+        // And it finds nothing to take over: the card the delete failed to
+        // clear still binds that checkout, which is what a delete is for.
+        assert_eq!(adopted["ok"], false, "{adopted:?}");
+
+        let mut state = state.lock().unwrap();
+        let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            got["ok"], true,
+            "the refused delete left the card standing: {got:?}"
+        );
+        let persisted = state
+            .store
+            .as_ref()
+            .expect("the QA daemon keeps a store")
+            .load_all_runs()
+            .expect("the store answers");
+        assert!(
+            persisted.iter().any(|run| run.id == run_id),
+            "nor did it destroy the durable record it refused to delete"
+        );
+    }
+
+    /// Clearing the card of a run minted around a checkout the user already had
+    /// must never touch that directory — the run goes, the files stay — and the
+    /// placeholder the verb stood up goes with it either way.
+    #[test]
+    fn run_delete_clears_an_adopted_card_and_leaves_the_checkout_standing() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "theirs-to-keep");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let branch = app.runs[&run_id].worktree.branch();
+        // Only a terminal run can be deleted.
+        app.runs.get_mut(&run_id).unwrap().run.state = RunState::Failed;
+        let state = app.shared();
+
+        let deleted = frame_on_a_thread(
+            &state,
+            "s-delete",
+            "run.delete",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the delete answers");
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+
+        let mut state = state.lock().unwrap();
+        assert!(!state.runs.contains_key(&run_id), "the card is cleared");
+        assert!(state.pending_rows.is_empty(), "the placeholder is retired");
+        assert!(
+            checkout.exists(),
+            "clearing a card must never delete the user's files"
+        );
+        assert!(
+            local_branch_exists(&repo, &branch).unwrap(),
+            "nor the branch they were working on"
+        );
+        let board = state.handle(req("board.list", json!({})));
+        assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
+    }
+
+    /// The run is off the board for the length of the removal, and the record
+    /// is the one thing the board can rebuild it from — so a delete the store
+    /// refuses puts the run back where the decide phase took it from, answers
+    /// with the refusal, and is retried like any other failed write. Dropping
+    /// the run there would clear the card with the record still standing,
+    /// and a restart would bring it back.
+    #[test]
+    fn a_delete_the_store_refuses_puts_the_run_back_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "kept-by-refusal");
+        // Only a terminal run can be deleted.
+        state.runs.get_mut(&run_id).unwrap().run.state = RunState::Failed;
+        state
+            .store
+            .as_ref()
+            .expect("the QA daemon keeps a store")
+            .fail_next_write();
+
+        let deleted = state.handle(req("run.delete", json!({ "run_id": run_id })));
+
+        assert_eq!(deleted["ok"], false, "{deleted:?}");
+        assert!(
+            deleted["error"]
+                .as_str()
+                .unwrap()
+                .contains("injected store failure"),
+            "{deleted:?}"
+        );
+        assert!(
+            state.runs.contains_key(&run_id),
+            "the run the store would not delete is back on the board"
+        );
+        let got = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            got["ok"], true,
+            "the refused delete left the card standing: {got:?}"
+        );
+        assert!(state.pending_rows.is_empty(), "the placeholder is retired");
+        let persisted = state
+            .store
+            .as_ref()
+            .unwrap()
+            .load_all_runs()
+            .expect("the store answers");
+        assert!(
+            persisted.iter().any(|run| run.id == run_id),
+            "the durable record survives the refusal"
+        );
+
+        let retried = state.handle(req("run.delete", json!({ "run_id": run_id })));
+        assert_eq!(
+            retried["ok"], true,
+            "the delete is retryable once the store answers: {retried:?}"
+        );
+        assert!(
+            !state.runs.contains_key(&run_id),
+            "the retry clears the card"
+        );
+    }
+
+    /// A run recovered after its repository moved off disk has no project
+    /// mapping at all — and that stale card is exactly what a delete is for. It
+    /// clears, and the directory it has no orchestrator to prune with is left
+    /// exactly where it stands.
+    #[test]
+    fn a_run_whose_project_is_gone_is_still_deletable() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "orphaned-card");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let run = app.runs.get_mut(&run_id).unwrap();
+        // Only a terminal run can be deleted, and a native one is the arm that
+        // would prune: the missing project is the only thing standing between
+        // this delete and a `git worktree remove`.
+        run.run.state = RunState::Failed;
+        run.adopted = false;
+        app.entity_project.remove(&run_id);
+        let state = app.shared();
+
+        let deleted = frame_on_a_thread(
+            &state,
+            "s-delete",
+            "run.delete",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the delete answers");
+        assert_eq!(
+            deleted["ok"], true,
+            "a card whose project is gone is unremovable: {deleted:?}"
+        );
+
+        let state = state.lock().unwrap();
+        assert!(!state.runs.contains_key(&run_id), "the card is cleared");
+        assert!(state.pending_rows.is_empty(), "the placeholder is retired");
+        assert!(
+            checkout.exists(),
+            "a delete with no orchestrator to prune with must leave the directory alone"
+        );
+    }
+
+    /// Both discard verbs take the run off the board, so both drop the stat the
+    /// board cached for it at the same moment — a number computed against a
+    /// checkout that is being let go of is not one to serve again.
+    #[test]
+    fn discarding_a_run_drops_the_stat_the_board_cached_for_it() {
+        for terminal in [false, true] {
+            let (dir, repo) = init_repo();
+            let mut app = qa_state(&repo, dir.path());
+            let run_id = adopted_run(&mut app, &repo, dir.path(), "counted");
+            app.run_stat_cache.insert(
+                run_id.clone(),
+                (std::time::Instant::now(), json!({ "files": 3 })),
+            );
+            let verb = match terminal {
+                false => "run.abandon",
+                true => {
+                    app.runs.get_mut(&run_id).unwrap().run.state = RunState::Failed;
+                    "run.delete"
+                }
+            };
+            let state = app.shared();
+
+            let discarded =
+                frame_on_a_thread(&state, "s-discard", verb, json!({ "run_id": run_id }))
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("the discard answers");
+            assert_eq!(discarded["ok"], true, "{verb}: {discarded:?}");
+            assert!(
+                !state.lock().unwrap().run_stat_cache.contains_key(&run_id),
+                "{verb} served the board a stat read off a checkout it let go of"
+            );
+        }
+    }
+
     /// Which checkout a run owns is read back off the run record's own paths,
     /// so a restart cannot lose it — and the one-owner rule still holds against
     /// a run this daemon never minted.
@@ -33903,9 +39003,11 @@ mod tests {
         let started = call(&handler, "agent.start", json!({ "id": run_id }));
         assert_eq!(started["ok"], true, "{started:?}");
         assert_eq!(
-            started["result"]["spawned"], "fresh",
-            "the first start opens the agent: {started:?}"
+            started["result"]["term_id"],
+            agent_tab_id(started["result"]["agent_id"].as_str().unwrap()),
+            "the reply reserves the tab id the agent's own identity mints: {started:?}"
         );
+        wait_for_deliveries(&state).await;
         let root = AppState::canonical_root(&repo);
         {
             let s = state.lock().unwrap();
@@ -33922,7 +39024,11 @@ mod tests {
             );
         }
         let again = call(&handler, "agent.start", json!({ "id": run_id }));
-        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            again["result"]["term_id"], started["result"]["term_id"],
+            "a second start addresses the agent the first one opened: {again:?}"
+        );
     }
 
     #[test]
@@ -33969,6 +39075,48 @@ mod tests {
         let archived = archive["result"]["worktrees"].as_array().unwrap();
         assert_eq!(archived.len(), 1, "{archive:?}");
         assert_eq!(archived[0]["action"], "cleanup", "{archive:?}");
+    }
+
+    /// Done decides from what its own preflight found, not from the numbers the
+    /// last poll left on the board. The blocking claim that used to make a
+    /// finish wait for a fresh diffstat under the frame's worker is gone; the
+    /// rescan inside the finish job is what it always really decided on.
+    #[test]
+    fn run_finish_refuses_uncommitted_work_found_by_its_own_preflight() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "preflight-run");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        git_in_dir(&worktree, &["add", "-A"]);
+        git_in_dir(&worktree, &["commit", "-m", "Finish adopted work"]);
+
+        // The board reads the checkout while it is clean, and caches that.
+        let board = state.handle(req("board.list", json!({})));
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        // Then work lands in it that no poll has seen.
+        std::fs::write(worktree.join("unsaved.txt"), "not committed\n").unwrap();
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "cleanup" }),
+        ));
+        assert_eq!(finished["ok"], false, "{finished:?}");
+        assert!(
+            finished["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("uncommitted"),
+            "{finished:?}"
+        );
+        assert!(
+            worktree.join("unsaved.txt").exists(),
+            "a refused finish leaves the work where it is"
+        );
+        assert!(
+            state.runs.contains_key(&run_id),
+            "a refused finish puts the run back on the board"
+        );
     }
 
     #[test]
@@ -34101,18 +39249,7 @@ mod tests {
             test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let (active, _turn) = side
-            .dispatch_run(
-                RunId::new(run_id),
-                RunSource {
-                    plan: &plan,
-                    has_active_run: false,
-                },
-                "main",
-                Default::default(),
-                &store,
-            )
-            .unwrap();
+        let (active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
         let root = AppState::canonical_root(&active.worktree.path);
         let (tab, rx) = Tab::spawn_agent(
             run_id.to_string(),
@@ -34158,18 +39295,7 @@ mod tests {
             test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
-        let (active, _turn) = side
-            .dispatch_run(
-                RunId::new(run_id),
-                RunSource {
-                    plan: &plan,
-                    has_active_run: false,
-                },
-                "main",
-                Default::default(),
-                &store,
-            )
-            .unwrap();
+        let (active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
         let root = AppState::canonical_root(&active.worktree.path);
         let mut s = state.lock().unwrap();
         let project_id = s.projects[0].id.clone();
@@ -34196,27 +39322,24 @@ mod tests {
 
         let started = call(&handler, "agent.start", json!({ "id": "run-start" }));
         assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(
-            started["result"]["spawned"], "fresh",
-            "the first start opens the agent"
-        );
-        assert_eq!(started["result"]["live"], true);
         let wire_id = started["result"]["term_id"].as_str().unwrap().to_string();
         assert!(
             wire_id.starts_with("agent:"),
             "an agent is addressed by its worktree: {wire_id}"
         );
+        wait_for_agent_tab(&state, &key).await;
         let pid = {
             let s = state.lock().unwrap();
             agent_pid(s.tabs.get(&key).expect("the agent tab exists"))
         };
 
         let again = call(&handler, "agent.start", json!({ "id": "run-start" }));
-        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(again["ok"], true, "{again:?}");
         assert_eq!(
             again["result"]["term_id"], wire_id,
             "a second start addresses the same tab"
         );
+        wait_for_deliveries(&state).await;
         assert_eq!(
             agent_pid(state.lock().unwrap().tabs.get(&key).unwrap()),
             pid,
@@ -34236,6 +39359,7 @@ mod tests {
 
         let first = call(&handler, "agent.start", json!({ "id": "run-restart" }));
         assert_eq!(first["ok"], true, "{first:?}");
+        wait_for_agent_tab(&state, &key).await;
         let first_pid = {
             let s = state.lock().unwrap();
             agent_pid(s.tabs.get(&key).unwrap())
@@ -34253,10 +39377,10 @@ mod tests {
         let restarted = call(&handler, "agent.start", json!({ "id": "run-restart" }));
         assert_eq!(restarted["ok"], true, "{restarted:?}");
         assert_eq!(
-            restarted["result"]["spawned"], "fresh",
-            "a dead agent is replaced, not reported as running"
+            restarted["result"]["term_id"], first["result"]["term_id"],
+            "a restart addresses the tab the agent already had: {restarted:?}"
         );
-        assert_eq!(restarted["result"]["live"], true);
+        wait_for_deliveries(&state).await;
         let s = state.lock().unwrap();
         let tab = s.tabs.get(&key).expect("the tab came back");
         assert!(tab.live, "the restarted agent is live");
@@ -34281,6 +39405,7 @@ mod tests {
         let key = derived_agent_key(&root, "run-revive");
         let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
         assert_eq!(started["ok"], true, "{started:?}");
+        wait_for_agent_tab(&state, &key).await;
         let dead_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
 
         // The harness dies the way a real one does, and the tab is RETAINED so
@@ -34302,6 +39427,7 @@ mod tests {
         );
 
         assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for_deliveries(&state).await;
         {
             let s = state.lock().unwrap();
             let tab = s.tabs.get(&key).expect("the agent came back");
@@ -34327,12 +39453,13 @@ mod tests {
     }
 
     /// The guard on revival: an agent whose harness is being started RIGHT NOW
-    /// must not get a second one. Two harnesses in one checkout both report
-    /// `done` for the same owner, and the second report is an illegal
-    /// transition that lands on the conversation as a bogus failure. The spawn
-    /// already in flight is the one that reads this message: it opens on the
-    /// cold prompt, which tells it to call `read_unread_messages`, and the post
-    /// made the message durable before the harness could ask.
+    /// to hear a message must not get a second one. Two harnesses in one
+    /// checkout both report `done` for the same owner, and the second report
+    /// is an illegal transition that lands on the conversation as a bogus
+    /// failure. The turn already mid-delivery is the one that reads this
+    /// message: it opens on the cold prompt, which tells it to call
+    /// `read_unread_messages`, and the post made the message durable before
+    /// the harness could ask.
     #[test]
     fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
         let (dir, repo) = init_repo();
@@ -34341,9 +39468,18 @@ mod tests {
         let root = state.entity_agent_root(&run_id).unwrap();
         let agent_id = primary_agent_id(&state, &run_id);
         state.pending_agent_turns.clear();
-        state
-            .agent_spawns_in_flight
-            .insert(TabKey::agent(&root, &agent_id));
+        let first = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "the first thing" }),
+        ));
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "the first message is what brings the agent back"
+        );
+        // Off the queue and mid-delivery: the harness is starting to hear it.
+        let mut delivering = state.take_pending_turns();
 
         let posted = state.handle(req(
             "thread.post",
@@ -34359,7 +39495,9 @@ mod tests {
 
         // …and with nothing in flight, the same message is what brings the
         // agent back.
-        state.agent_spawns_in_flight.clear();
+        while let Some((_, mark)) = delivering.next_turn() {
+            mark.settle(&mut state);
+        }
         let again = state.handle(req(
             "thread.post",
             json!({ "entity_id": run_id, "body": "still there?" }),
@@ -34378,7 +39516,7 @@ mod tests {
         // turn is handed over — so this is the prompt the revived agent opens
         // on, not the one the queue is holding.
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("still there?"),
             "the revived agent opens on what was said to it: {delivered}"
@@ -34461,6 +39599,7 @@ mod tests {
             assert_eq!(posted["ok"], true, "{posted:?}");
         }
 
+        wait_for_deliveries(&state).await;
         let built = specs_built.lock().unwrap().clone();
         let spawned_in = |root: &std::path::Path| {
             let root = AppState::canonical_root(root);
@@ -34562,14 +39701,20 @@ mod tests {
             Templates::default(),
             test_bridge_exe(),
         );
-        let (active, _turn) = side
-            .dispatch_plan(
-                PlanId::new(plan_id),
-                "side goal",
-                "main",
-                Default::default(),
-            )
-            .unwrap();
+        let mut active = side.create_plan(
+            PlanId::new(plan_id),
+            "side goal",
+            "main",
+            Default::default(),
+        );
+        let store = state
+            .lock()
+            .unwrap()
+            .require_store()
+            .expect("the daemon has a store")
+            .clone();
+        let workspace = side.prepare_plan_workspace(plan_id, &store).unwrap();
+        side.open_plan_drafting(&mut active, workspace).unwrap();
         let mut s = state.lock().unwrap();
         let project_id = s.projects[0].id.clone();
         s.entity_project.insert(plan_id.to_string(), project_id);
@@ -34598,7 +39743,7 @@ mod tests {
             json!({ "id": run_id, "provider": "codex" }),
         );
         assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(started["result"]["spawned"], "fresh", "{started:?}");
+        wait_for_deliveries(&state).await;
         let choice = state.lock().unwrap().runs[&run_id].model_choice.clone();
         assert_eq!(choice.provider, AgentProvider::Codex);
         assert_eq!(
@@ -34913,20 +40058,197 @@ mod tests {
     async fn agent_start_naming_the_live_agents_own_provider_is_idempotent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        let _ = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
-        // The live run is on the TUI provider, which is what "claude" names.
+        let (key, wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
+        let live_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
+        // The live run is on the TUI carrier, which is what "claude" names.
         let again = call(
             &handler,
             "agent.start",
             json!({ "id": "run-same", "provider": "claude" }),
         );
         assert_eq!(again["ok"], true, "{again:?}");
-        assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+        assert_eq!(again["result"]["term_id"], wire_id, "{again:?}");
+        wait_for_deliveries(&state).await;
+        assert_eq!(
+            agent_pid(&state.lock().unwrap().tabs[&key]),
+            live_pid,
+            "the live session is the one the start hands back, not a replacement"
+        );
     }
 
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works
     /// in, streams it, and — when that agent's process ends — retains the last
     /// screen with `live: false` rather than erroring or going blank.
+    /// The QA suite's last check, in-process: an Issue is planned, its first
+    /// stage implemented by the QA agent, and its run merged. Attaching to the
+    /// merged run must answer `live: false` — the agent's session is over with
+    /// its work, whatever the harness process is still doing.
+    #[tokio::test]
+    async fn agent_attach_on_a_merged_run_answers_live_false() {
+        let (dir, repo) = init_repo();
+        let canonical_dir = dir.path().canonicalize().unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let (state, handler) = shared_qa_state_and_handler(&repo, &canonical_dir);
+        let created = call(
+            &handler,
+            "issue.create",
+            json!({ "goal": "Add a greeting banner", "provider": "claude" }),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
+        wait_for_deliveries(&state).await;
+        let approved = call(&handler, "issue.approve", json!({ "issue_id": issue_id }));
+        assert_eq!(approved["ok"], true, "{approved:?}");
+        let stages = call(&handler, "issue.stages", json!({ "issue_id": issue_id }));
+        let first = stages["result"]["stages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let gate = call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        assert_eq!(gate["ok"], true, "{gate:?}");
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let run_id = implemented["result"]["current_implementation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_for_deliveries(&state).await;
+        let second = stages["result"]["stages"][1]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let gate = call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        assert_eq!(gate["ok"], true, "{gate:?}");
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let merged = call(
+            &handler,
+            "issue.git_action",
+            json!({ "issue_id": issue_id, "action": "merge" }),
+        );
+        assert_eq!(merged["ok"], true, "{merged:?}");
+        assert_eq!(
+            merged["result"]["current_implementation"]["state"], "merged",
+            "{merged:?}"
+        );
+        let attached = handler.call(
+            SessionSender::detached("s-merged"),
+            req("agent.attach", json!({ "id": run_id })),
+        );
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        assert_eq!(attached["result"]["live"], false, "{attached:?}");
+    }
+
+    /// The race the QA suite runs into: the second stage's turn is still
+    /// spawning its agent when the merge prunes the checkout. A run with no
+    /// checkout has no session, so the spawn that lands afterwards is stranded
+    /// and retired, and nothing resurrects the pruned directory.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_spawn_that_outlives_the_merge_that_pruned_its_checkout_is_stranded() {
+        let (dir, repo) = init_repo();
+        let canonical_dir = dir.path().canonicalize().unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let (state, handler) = shared_qa_state_and_handler(&repo, &canonical_dir);
+        let created = call(
+            &handler,
+            "issue.create",
+            json!({ "goal": "Add a greeting banner", "provider": "claude" }),
+        );
+        let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
+        wait_for_deliveries(&state).await;
+        call(&handler, "issue.approve", json!({ "issue_id": issue_id }));
+        let stages = call(&handler, "issue.stages", json!({ "issue_id": issue_id }));
+        let first = stages["result"]["stages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second = stages["result"]["stages"][1]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let run_id = implemented["result"]["current_implementation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_for_deliveries(&state).await;
+        let root = state.lock().unwrap().entity_agent_root(&run_id).unwrap();
+        {
+            let mut s = state.lock().unwrap();
+            let tab = s
+                .tabs
+                .values_mut()
+                .find(|tab| tab.role.agent().is_some_and(|(owner, _)| owner == run_id))
+                .expect("the first stage's agent");
+            tab.session.end();
+            tab.live = false;
+        }
+        let spawning = spawns_parked_at(&state);
+        call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        spawning.wait_for_arrival();
+        let merged = call(
+            &handler,
+            "issue.git_action",
+            json!({ "issue_id": issue_id, "action": "merge" }),
+        );
+        assert_eq!(merged["ok"], true, "{merged:?}");
+        assert!(!root.exists(), "the merge pruned the checkout");
+        spawning.release();
+        wait_for_deliveries(&state).await;
+        let spawned = state
+            .lock()
+            .unwrap()
+            .tabs
+            .values()
+            .any(|tab| tab.role.agent().is_some_and(|(owner, _)| owner == run_id));
+        assert!(!spawned, "a run whose checkout is gone keeps no agent");
+        assert!(
+            !root.exists(),
+            "the late spawn must not resurrect the pruned checkout"
+        );
+        let attached = handler.call(
+            SessionSender::detached("s-late"),
+            req("agent.attach", json!({ "id": run_id })),
+        );
+        assert_eq!(attached["result"]["live"], false, "{attached:?}");
+    }
+
     #[tokio::test]
     async fn agent_attach_streams_a_live_run_and_retains_the_last_screen() {
         let (dir, repo) = init_repo();
@@ -34934,7 +40256,7 @@ mod tests {
         let (tab_key, wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-9");
 
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let res = handler(
+        let res = handler.call(
             sender,
             req(
                 "agent.attach",
@@ -34964,7 +40286,7 @@ mod tests {
         })
         .await;
 
-        let again = handler(
+        let again = handler.call(
             SessionSender::detached("s2"),
             req("agent.attach", json!({ "id": "run-9" })),
         );
@@ -34992,7 +40314,7 @@ mod tests {
         let external = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("feature-x"))
@@ -35000,7 +40322,7 @@ mod tests {
 
         // Nothing has ever run here: the tab exists as an empty screen, never
         // as an error — mounting it must not spawn anything.
-        let empty = handler(
+        let empty = handler.call(
             SessionSender::detached("s1"),
             req(
                 "agent.attach",
@@ -35016,7 +40338,7 @@ mod tests {
 
         // The primary checkout answers to the project scope alone, the same way
         // its shells do.
-        let primary = handler(
+        let primary = handler.call(
             SessionSender::detached("s1"),
             req("agent.attach", json!({ "project_id": project_id })),
         );
@@ -35049,7 +40371,7 @@ mod tests {
         state.lock().unwrap().tabs.insert(key.clone(), tab);
         spawn_tab_pumps(&state, key.clone(), rx);
 
-        let live = handler(
+        let live = handler.call(
             SessionSender::detached("s2"),
             req(
                 "agent.attach",
@@ -35075,7 +40397,7 @@ mod tests {
         let root = AppState::canonical_root(&repo);
 
         // Nothing has run here yet: no harness to name.
-        let empty = handler(
+        let empty = handler.call(
             SessionSender::detached("s1"),
             req("agent.attach", json!({ "project_id": project_id })),
         );
@@ -35101,7 +40423,7 @@ mod tests {
         state.lock().unwrap().tabs.insert(key.clone(), tab);
         spawn_tab_pumps(&state, key.clone(), rx);
 
-        let ran = handler(
+        let ran = handler.call(
             SessionSender::detached("s2"),
             req("agent.attach", json!({ "project_id": project_id })),
         );
@@ -35112,12 +40434,12 @@ mod tests {
         );
 
         // A user's shell is not an agent, and reports no harness.
-        let shell = handler(
+        let shell = handler.call(
             SessionSender::detached("s3"),
             req("term.create", json!({ "project_id": project_id })),
         );
         assert_eq!(shell["ok"], true, "{shell:?}");
-        let attached = handler(
+        let attached = handler.call(
             SessionSender::detached("s3"),
             req(
                 "term.attach",
@@ -35149,7 +40471,7 @@ mod tests {
 
         // Nothing has ever run in the primary checkout: a blank, dead screen.
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let empty = handler(
+        let empty = handler.call(
             sender,
             req(
                 "agent.attach",
@@ -35176,8 +40498,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-waited-for"),
             &ModelChoice::default(),
             "build",
-            "COLD-PROMPT-FOR-A-WAITING-CLIENT",
-            "WARM-NUDGE",
+            ["COLD-PROMPT-FOR-A-WAITING-CLIENT", "WARM-NUDGE"],
         )
         .expect("the delivery spawns the worktree's agent");
         assert_eq!(spawned, Spawned::Fresh);
@@ -35218,7 +40539,7 @@ mod tests {
             &s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-waited-for")],
         );
         assert_eq!(
-            (screen.cols, screen.rows),
+            screen.size(),
             (100, 30),
             "the spawned agent is sized to the viewport of the client already watching it"
         );
@@ -35247,8 +40568,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-respawn-race"),
             &choice,
             "build",
-            "FIRST-SESSION",
-            "warm",
+            ["FIRST-SESSION", "warm"],
         )
         .expect("the first delivery spawns");
         wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
@@ -35258,7 +40578,7 @@ mod tests {
                 let s = state.lock().unwrap();
                 let tab = &s.tabs[&key];
                 if !tab.live {
-                    break screen_of(tab).total;
+                    break screen_of(tab).cursor();
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -35269,8 +40589,8 @@ mod tests {
         let (sender, mut pushes, session_key) = SessionSender::observable("late");
         {
             let mut s = state.lock().unwrap();
-            let mut waiting = TermScreen::new(90, 25);
-            waiting.register(&sender);
+            let waiting = ScreenHandle::new(&key.tab_id, 90, 25);
+            waiting.attach(&sender, None);
             s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
         }
 
@@ -35281,8 +40601,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-respawn-race"),
             &choice,
             "build",
-            "SECOND-SESSION",
-            "warm",
+            ["SECOND-SESSION", "warm"],
         )
         .expect("a dead agent is replaced");
         assert_eq!(spawned, Spawned::Fresh, "a dead agent is not an agent");
@@ -35302,17 +40621,13 @@ mod tests {
         );
     }
 
-    /// Point a fixture's project at a headless provider running `spec`, and
-    /// hand back the model choice that opens it.
+    /// Point a fixture's project at a provider running `spec`.
     ///
-    /// The provider on the choice is the whole launch config, so a test that
-    /// swaps the spec without swapping the provider would run a stream-json
-    /// child inside a PTY and prove nothing.
-    fn a_headless_provider_running(
-        state: &Arc<Mutex<AppState>>,
-        repo: &std::path::Path,
-        spec: HarnessSpec,
-    ) -> ModelChoice {
+    /// The program and the carrier are two halves of one launch config — the
+    /// provider on the caller's `ModelChoice` is what `Tab::spawn` asks which
+    /// carrier to open — so a caller that swaps the spec swaps the choice
+    /// beside it, or runs a stream-json child inside a PTY and proves nothing.
+    fn a_provider_running(state: &Arc<Mutex<AppState>>, repo: &std::path::Path, spec: HarnessSpec) {
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         let agent = Agent::WarmBuilder(Arc::new(
@@ -35325,6 +40640,16 @@ mod tests {
             Templates::default(),
             test_bridge_exe(),
         );
+    }
+
+    /// The same, for a carrier with no terminal, handing back the choice that
+    /// opens it.
+    fn a_headless_provider_running(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        spec: HarnessSpec,
+    ) -> ModelChoice {
+        a_provider_running(state, repo, spec);
         ModelChoice {
             provider: AgentProvider::ClaudeAdk,
             ..ModelChoice::default()
@@ -35355,8 +40680,8 @@ mod tests {
         let (sender, mut pushes, session_key) = SessionSender::observable("waiting");
         {
             let mut s = state.lock().unwrap();
-            let mut waiting = TermScreen::new(90, 25);
-            waiting.register(&sender);
+            let waiting = ScreenHandle::new(&key.tab_id, 90, 25);
+            waiting.attach(&sender, None);
             s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
         }
 
@@ -35367,8 +40692,7 @@ mod tests {
             &agent_id,
             &choice,
             "build",
-            "cold",
-            "warm",
+            ["cold", "warm"],
         )
         .expect("the headless agent spawns");
 
@@ -35421,15 +40745,14 @@ mod tests {
             &agent_id,
             &ModelChoice::default(),
             "build",
-            "FIRST-SESSION",
-            "warm",
+            ["FIRST-SESSION", "warm"],
         )
         .expect("the first delivery spawns a PTY");
         wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
         let (sender, mut pushes, session_key) = SessionSender::observable("watching");
         {
-            let mut s = state.lock().unwrap();
-            screen_of_mut(s.tabs.get_mut(&key).expect("the agent tab")).register(&sender);
+            let s = state.lock().unwrap();
+            screen_of(&s.tabs[&key]).attach(&sender, None);
         }
         state.lock().unwrap().tabs[&key].session.end();
         wait_for(Duration::from_secs(5), || {
@@ -35452,8 +40775,7 @@ mod tests {
             &agent_id,
             &choice,
             "build",
-            "SECOND-SESSION",
-            "warm",
+            ["SECOND-SESSION", "warm"],
         )
         .expect("the headless replacement spawns");
 
@@ -35472,6 +40794,166 @@ mod tests {
             "and the retained grid is not hung on a session that cannot paint it"
         );
         s.tabs[&key].session.end();
+    }
+
+    /// A spawn that never opens closes the grid it took.
+    ///
+    /// The reservation takes the dead session's tab out of the registry and
+    /// keeps its screen, deliberately telling the clients on it nothing: they
+    /// are about to be handed to the replacement. A replacement that fails to
+    /// open — the binary is gone, the harness was reconfigured wrongly — has
+    /// nobody to hand them to, and the screen is in no registry for a reaper
+    /// or a close to find. So the failure says the words itself, rather than
+    /// leaving browsers on a grid nothing will paint and nothing will close.
+    #[tokio::test]
+    async fn a_spawn_that_fails_closes_the_grid_it_took_from_the_dead_session() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-spawn-fails");
+        let agent_id = crate::agent::derived_agent_id("run-spawn-fails");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-spawn-fails");
+
+        // A terminal session, watched by a client, that then dies.
+        deliver(
+            &state,
+            &root,
+            "run-spawn-fails",
+            &agent_id,
+            &ModelChoice::default(),
+            "test",
+            ["FIRST-SESSION", "warm"],
+        )
+        .expect("the first delivery spawns a PTY");
+        wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        {
+            let s = state.lock().unwrap();
+            screen_of(&s.tabs[&key]).attach(&sender, None);
+        }
+        state.lock().unwrap().tabs[&key].session.end();
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the dead session leaves a retained screen behind");
+
+        // The harness this agent is locked to is no longer on the machine.
+        a_provider_running(
+            &state,
+            &repo,
+            HarnessSpec::new(dir.path().join("no-such-harness").display().to_string()),
+        );
+        let refused = deliver(
+            &state,
+            &root,
+            "run-spawn-fails",
+            &agent_id,
+            &ModelChoice::default(),
+            "test",
+            ["SECOND-SESSION", "warm"],
+        )
+        .expect_err("a harness that is not there cannot be opened");
+        assert!(!refused.is_empty(), "and the delivery says why");
+
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter().any(|push| push["reason"] == SPAWN_NEVER_OPENED)
+        })
+        .await;
+        let closed = seen
+            .iter()
+            .find(|push| push["reason"] == SPAWN_NEVER_OPENED)
+            .expect("the client is told, rather than left on an orphaned grid");
+        assert_eq!(closed["type"], "term.closed", "{closed:?}");
+        assert_eq!(closed["term_id"], key.tab_id, "{closed:?}");
+        assert!(
+            !state.lock().unwrap().tabs.contains_key(&key),
+            "the failed spawn leaves no tab behind either"
+        );
+    }
+
+    /// A reservation that cannot be completed takes nothing out of the registry.
+    ///
+    /// Retiring the dead tab and registering the MCP token are the reservation
+    /// giving things up on the registry's behalf, and a failure after either
+    /// bypasses the one primitive that gives them back. So every read that can
+    /// fail runs first, with the registry untouched: the dead tab keeps its
+    /// retained grid and the clients on it, the token the last session held
+    /// stands, and a later spawn can still replace both.
+    #[tokio::test]
+    async fn a_reservation_that_cannot_resolve_its_project_takes_nothing_from_the_registry() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-unresolvable");
+        let agent_id = crate::agent::derived_agent_id("run-unresolvable");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-unresolvable");
+
+        deliver(
+            &state,
+            &root,
+            "run-unresolvable",
+            &agent_id,
+            &ModelChoice::default(),
+            "test",
+            ["FIRST-SESSION", "warm"],
+        )
+        .expect("the first delivery spawns a PTY");
+        wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
+        state.lock().unwrap().tabs[&key].session.end();
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the dead session leaves a retained screen behind");
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        let token_before = {
+            let s = state.lock().unwrap();
+            screen_of(&s.tabs[&key]).attach(&sender, None);
+            s.mcp_session_tokens[&agent_id].clone()
+        };
+
+        // The owner's project binding is gone, so the reservation cannot say
+        // which orchestrator builds the harness.
+        state
+            .lock()
+            .unwrap()
+            .entity_project
+            .remove("run-unresolvable");
+        let refused = deliver(
+            &state,
+            &root,
+            "run-unresolvable",
+            &agent_id,
+            &ModelChoice::default(),
+            "test",
+            ["SECOND-SESSION", "warm"],
+        )
+        .expect_err("an owner with no project cannot be spawned for");
+        assert!(refused.contains("unknown entity id"), "{refused}");
+
+        let s = state.lock().unwrap();
+        let dead = s
+            .tabs
+            .get(&key)
+            .expect("the dead tab is still in the registry");
+        assert!(
+            dead.screen.is_some(),
+            "and still holds the grid its clients are attached to"
+        );
+        assert_eq!(
+            s.mcp_session_tokens[&agent_id], token_before,
+            "no token was registered for a child that never existed"
+        );
+        assert!(
+            s.agent_spawns_in_flight.is_empty(),
+            "no claim was left behind"
+        );
+        drop(s);
+        let mut seen = Vec::new();
+        while let Ok(message) = pushes.try_recv() {
+            seen.push(SessionSender::decrypt_push(&session_key, &message));
+        }
+        assert!(
+            !seen.iter().any(|push| push["type"] == "term.closed"),
+            "the attached client was told nothing, because nothing changed: {seen:?}"
+        );
     }
 
     /// A client can be waiting on the Agent tab of a worktree that is then
@@ -35493,8 +40975,8 @@ mod tests {
         let (sender, mut pushes, session_key) = SessionSender::observable("s1");
         {
             let mut s = state.lock().unwrap();
-            let mut waiting = TermScreen::new(80, 24);
-            waiting.register(&sender);
+            let waiting = ScreenHandle::new(&key.tab_id, 80, 24);
+            waiting.attach(&sender, None);
             s.agent_screens_awaiting_spawn.insert(key, waiting);
         }
         std::fs::remove_dir_all(&vanishing).unwrap();
@@ -35518,468 +41000,6 @@ mod tests {
         assert_eq!(closed["reason"], "reaped");
     }
 
-    /// Drain every decrypted push a test sender has captured so far.
-    fn drain_pushes(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
-        session_key: &str,
-    ) -> Vec<Value> {
-        let mut seen = Vec::new();
-        while let Ok(message) = rx.try_recv() {
-            seen.push(SessionSender::decrypt_push(session_key, &message));
-        }
-        seen
-    }
-
-    /// A screen with one observable client attached, ready to flush.
-    ///
-    /// The rate-limit window is widened far past the production 100 ms: a debug
-    /// build parsing 128 KB through vt100 on a machine running the whole suite
-    /// in parallel can itself outlast the real window, which would let a test
-    /// about suppression watch a legitimate snapshot go out. Every test that
-    /// needs the window to reopen says so with `backdate_last_flood_snapshot`.
-    const HELD_FLOOD_WINDOW: Duration = Duration::from_secs(60);
-
-    fn flooded_screen() -> (
-        TermScreen,
-        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
-        String,
-    ) {
-        let (sender, pushes, session_key) = SessionSender::observable("flood-client");
-        let mut screen = TermScreen::new(80, 24);
-        screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
-        screen.register(&sender);
-        (screen, pushes, session_key)
-    }
-
-    /// More than one flush's worth of backlog: enough to cross the collapse
-    /// threshold on its own.
-    fn flood_chunk() -> Vec<u8> {
-        vec![b'x'; TERM_SNAPSHOT_THRESHOLD + 1]
-    }
-
-    /// A flood produces an over-threshold backlog every 10 ms tick. Collapsing
-    /// each one to a full-screen snapshot is ~100 screens/sec through the relay,
-    /// which head-of-line-blocks everything behind it. The first collapse goes
-    /// out; the next one inside the rate-limit window drops its backlog and
-    /// sends nothing at all.
-    #[test]
-    fn a_second_flood_collapse_inside_the_window_sends_nothing() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        let first = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(first.len(), 1, "the first collapse goes out: {first:?}");
-        assert_eq!(first[0]["type"], "term.reset", "{first:?}");
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        let second = drain_pushes(&mut pushes, &session_key);
-        assert!(
-            second.is_empty(),
-            "a collapse inside the rate-limit window sends nothing: {second:?}"
-        );
-        assert!(
-            screen.pending.is_empty(),
-            "the dropped backlog is cleared, not carried into the next flush"
-        );
-        assert!(
-            screen.snapshot_due,
-            "dropping bytes owes the client a resync snapshot"
-        );
-    }
-
-    /// The tail of a flood is the part a human actually reads. Once the window
-    /// reopens, the owed snapshot goes out on the next flush even if barely any
-    /// bytes arrived in that tick — otherwise the last screen of a flood is the
-    /// one that never ships.
-    #[test]
-    fn the_owed_snapshot_ships_once_the_window_reopens() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        drain_pushes(&mut pushes, &session_key);
-        assert!(screen.snapshot_due);
-
-        screen.backdate_last_flood_snapshot(HELD_FLOOD_WINDOW + Duration::from_millis(10));
-        let cursor_before_tail = screen.total;
-        screen.process(b"tail");
-        screen.flush("term-1");
-
-        let tail = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(tail.len(), 1, "exactly one resync frame: {tail:?}");
-        assert_eq!(tail[0]["type"], "term.reset", "{tail:?}");
-        assert_eq!(
-            tail[0]["cursor"].as_u64().unwrap(),
-            cursor_before_tail + 4,
-            "the snapshot carries the live cursor: {tail:?}"
-        );
-        assert!(!screen.snapshot_due, "the debt is settled");
-
-        // An empty tick after the debt is settled sends nothing.
-        screen.flush("term-1");
-        assert!(drain_pushes(&mut pushes, &session_key).is_empty());
-    }
-
-    /// Raw `term.output` bytes must be contiguous — the client applies them by
-    /// cursor. Once a flood-collapse has dropped bytes, raw output would paint
-    /// a garbled screen, so nothing but the resync snapshot may go out until the
-    /// debt is settled.
-    #[test]
-    fn no_raw_output_ships_between_a_dropped_backlog_and_its_resync() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        assert!(screen.snapshot_due);
-        drain_pushes(&mut pushes, &session_key);
-
-        // Small ticks while the debt stands: each one is dropped silently.
-        for _ in 0..5 {
-            screen.process(b"garble");
-            screen.flush("term-1");
-        }
-        screen.backdate_last_flood_snapshot(HELD_FLOOD_WINDOW + Duration::from_millis(10));
-        screen.process(b"garble");
-        screen.flush("term-1");
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert!(
-            seen.iter().all(|push| push["type"] != "term.output"),
-            "no raw output crosses a gap in the byte stream: {seen:?}"
-        );
-        assert_eq!(
-            seen.iter()
-                .filter(|push| push["type"] == "term.reset")
-                .count(),
-            1,
-            "one resync closes the gap: {seen:?}"
-        );
-    }
-
-    /// The ordinary case — a prompt, a command, some output — is untouched by
-    /// the flood rate limit: raw frames with advancing cursors, no snapshots.
-    #[test]
-    fn small_steady_output_still_ships_raw_with_advancing_cursors() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        for line in ["one\r\n", "two\r\n", "three\r\n"] {
-            screen.process(line.as_bytes());
-            screen.flush("term-1");
-        }
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(seen.len(), 3, "one frame per flush: {seen:?}");
-        assert!(
-            seen.iter().all(|push| push["type"] == "term.output"),
-            "small output never collapses to a snapshot: {seen:?}"
-        );
-        let cursors: Vec<u64> = seen
-            .iter()
-            .map(|push| push["cursor"].as_u64().unwrap())
-            .collect();
-        assert_eq!(cursors, vec![5, 10, 17], "{seen:?}");
-        assert_eq!(output_text(&seen, "term-1"), "one\r\ntwo\r\nthree\r\n");
-    }
-
-    /// One chunk of output well under the flood-collapse threshold, so a flush
-    /// of it ships as raw `term.output`. Sixteen of them exceed the unacked
-    /// budget — the ack tests count in these.
-    const ACK_TEST_CHUNK: usize = 100 * 1024;
-
-    fn chunk_of(bytes: usize) -> Vec<u8> {
-        vec![b'x'; bytes]
-    }
-
-    /// One client's capture: everything the bridge pushed to it, and the
-    /// session key those pushes decrypt with.
-    type ClientCapture = (
-        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
-        String,
-    );
-
-    /// A screen with two observable clients attached, each with its own capture.
-    fn two_client_screen() -> (TermScreen, ClientCapture, ClientCapture) {
-        let (first_sender, first_pushes, first_key) = SessionSender::observable("client-one");
-        let (second_sender, second_pushes, second_key) = SessionSender::observable("client-two");
-        let mut screen = TermScreen::new(80, 24);
-        screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
-        screen.register(&first_sender);
-        screen.register(&second_sender);
-        (
-            screen,
-            (first_pushes, first_key),
-            (second_pushes, second_key),
-        )
-    }
-
-    /// Push one chunk and flush it, then have `acking` acknowledge everything
-    /// the screen has produced so far.
-    fn flush_chunk_acked_by(screen: &mut TermScreen, acking: &str) {
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", acking, screen.total);
-    }
-
-    /// A client that acknowledges what it received is keeping up by definition,
-    /// so nothing about flow control may interrupt its stream — however much
-    /// output flows through it.
-    #[test]
-    fn a_client_that_keeps_acking_keeps_receiving_raw_output() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-one");
-        }
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(seen.len(), 16, "every flush reached the client: {seen:?}");
-        assert!(
-            seen.iter().all(|push| push["type"] == "term.output"),
-            "an acking client is never resynced out of the raw stream: {seen:?}"
-        );
-        assert_eq!(
-            seen.last().unwrap()["cursor"].as_u64().unwrap(),
-            screen.total
-        );
-    }
-
-    /// A client whose acks stop is a client that is not draining: its frames are
-    /// piling up in the bridge's channel and the relay's queue, and every frame
-    /// behind them — the liveness ping, the human's keystrokes — waits on the
-    /// pile. Past the budget it stops being fed. The other client is a different
-    /// connection and must not be slowed by its neighbour.
-    #[test]
-    fn a_client_that_stops_acking_stops_being_fed_and_the_other_does_not() {
-        let (mut screen, (mut silent_pushes, silent_key), (mut acking_pushes, acking_key)) =
-            two_client_screen();
-
-        // Both acknowledge the first flush, so neither is exempt as never-acked.
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.ack("term-1", "client-two", screen.total);
-        drain_pushes(&mut silent_pushes, &silent_key);
-        drain_pushes(&mut acking_pushes, &acking_key);
-
-        // client-one goes silent while output keeps flowing past the budget.
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-
-        // It is fed until the flush that carries it PAST the budget: ten 100 KiB
-        // chunks fit inside a megabyte, the eleventh does not.
-        let fits_in_budget = (TERM_UNACKED_BUDGET_BYTES / ACK_TEST_CHUNK as u64) as usize;
-        let silent = drain_pushes(&mut silent_pushes, &silent_key);
-        assert_eq!(
-            silent.len(),
-            fits_in_budget,
-            "a client past its unacked budget stops being fed: {silent:?}"
-        );
-        let fed_bytes: u64 = silent
-            .iter()
-            .map(|push| b64decode(push["data"].as_str().unwrap()).unwrap().len() as u64)
-            .sum();
-        assert!(
-            fed_bytes <= TERM_UNACKED_BUDGET_BYTES,
-            "nothing past the budget went out: {fed_bytes}"
-        );
-
-        let acking = drain_pushes(&mut acking_pushes, &acking_key);
-        assert_eq!(
-            acking.len(),
-            16,
-            "the client that kept acking kept receiving: {acking:?}"
-        );
-    }
-
-    /// A paused client drains, acks, and comes back under budget. It missed
-    /// frames while paused, so the raw stream it left is no longer contiguous
-    /// with what it holds: exactly one snapshot resyncs it, and raw output
-    /// resumes from there.
-    #[test]
-    fn an_ack_under_budget_resyncs_the_paused_client_once_then_resumes_raw_output() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-        drain_pushes(&mut pushes, &session_key);
-
-        // It catches up on everything the bridge has produced.
-        let caught_up_at = screen.total;
-        screen.ack("term-1", "client-one", caught_up_at);
-        let resync = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(resync.len(), 1, "exactly one resync frame: {resync:?}");
-        assert_eq!(
-            resync[0]["type"], "term.reset",
-            "the resync is a snapshot, never raw bytes over a gap: {resync:?}"
-        );
-        assert_eq!(resync[0]["cursor"].as_u64().unwrap(), caught_up_at);
-
-        // A second ack at the same cursor does not resync again.
-        screen.ack("term-1", "client-one", caught_up_at);
-        assert!(drain_pushes(&mut pushes, &session_key).is_empty());
-
-        // And the stream is raw again.
-        flush_chunk_acked_by(&mut screen, "client-one");
-        let resumed = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(resumed.len(), 1, "{resumed:?}");
-        assert_eq!(resumed[0]["type"], "term.output", "{resumed:?}");
-    }
-
-    /// Walk one client's frames as that client applies them, and return where
-    /// its stream stands afterwards. A `term.reset` replaces the screen and
-    /// moves the stream to its own cursor; a `term.output` must begin exactly
-    /// where the stream stands, since raw bytes are applied on top of what the
-    /// client already holds. A raw frame that starts behind the stream would be
-    /// re-applied bytes, one that starts ahead of it a hole — both are the
-    /// contiguity break the INVARIANT forbids.
-    fn assert_stream_contiguous(frames: &[Value], start: u64) -> u64 {
-        let mut applied = start;
-        for frame in frames {
-            let cursor = frame["cursor"].as_u64().unwrap();
-            match frame["type"].as_str().unwrap() {
-                "term.reset" => applied = cursor,
-                "term.output" => {
-                    let bytes = b64decode(frame["data"].as_str().unwrap()).unwrap().len() as u64;
-                    assert_eq!(
-                        cursor - bytes,
-                        applied,
-                        "raw output must begin where the client's stream stands: {frame:?}"
-                    );
-                    applied = cursor;
-                }
-                other => panic!("unexpected frame while streaming: {other} in {frame:?}"),
-            }
-        }
-        applied
-    }
-
-    /// PTY bytes arrive on their own channel, so an ack can land between a
-    /// `process` and the flush that would have shipped it. The resync snapshot
-    /// serializes the live screen, which already holds those bytes — so the
-    /// next flush must not also hand them to the resumed client as raw output
-    /// on top of the screen it just applied.
-    #[test]
-    fn an_ack_between_a_process_and_its_flush_does_not_replay_the_snapshotted_bytes() {
-        let (mut screen, (mut resumed_pushes, resumed_key), (mut acking_pushes, acking_key)) =
-            two_client_screen();
-
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.ack("term-1", "client-two", screen.total);
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-        drain_pushes(&mut resumed_pushes, &resumed_key);
-        drain_pushes(&mut acking_pushes, &acking_key);
-        let streams_stand_at = screen.total;
-
-        // A chunk lands mid-cycle: processed, not yet flushed, when the paused
-        // client's ack arrives and resyncs it.
-        screen.process(b"mid-cycle");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.process(b"after-resync");
-        screen.flush("term-1");
-
-        let resumed = drain_pushes(&mut resumed_pushes, &resumed_key);
-        assert_eq!(
-            assert_stream_contiguous(&resumed, streams_stand_at),
-            screen.total,
-            "the resumed client ends holding everything the bridge produced: {resumed:?}"
-        );
-
-        // The client that never paused keeps its own contiguous raw stream —
-        // the mid-cycle bytes are shipped to it, not dropped on the floor.
-        let acking = drain_pushes(&mut acking_pushes, &acking_key);
-        assert_eq!(
-            assert_stream_contiguous(&acking, streams_stand_at),
-            screen.total,
-            "the client that kept up misses nothing: {acking:?}"
-        );
-        assert!(
-            output_text(&acking, "term-1").contains("mid-cycle"),
-            "{acking:?}"
-        );
-    }
-
-    /// A paused client receives nothing, so the highest cursor it can ever ack
-    /// is the last frame it was sent before pausing. A sustained flood runs the
-    /// live cursor far past that frame — measuring the resume against the live
-    /// cursor would leave the client paused forever, with no frame in existence
-    /// that could ever unpause it. Draining everything it was actually sent is
-    /// all a paused client can do, and it must be enough: the resync snapshot
-    /// covers the withheld gap by construction.
-    #[test]
-    fn a_paused_client_resumes_after_acking_all_it_was_sent_even_when_the_flood_ran_far_ahead() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.ack("term-1", "client-two", screen.total);
-
-        // client-one goes silent; the flood runs 32 chunks (~3.2 MiB) — far
-        // more than the unacked budget past anything client-one was sent.
-        for _ in 0..32 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-        let sent = drain_pushes(&mut pushes, &session_key);
-        let last_received = sent.last().unwrap()["cursor"].as_u64().unwrap();
-        assert!(
-            screen.total - last_received > TERM_UNACKED_BUDGET_BYTES,
-            "the flood must outrun the paused client by more than the budget"
-        );
-
-        // It drains its queue and acks the last frame it was given — the
-        // highest cursor it can ever report.
-        screen.ack("term-1", "client-one", last_received);
-        let resync = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(
-            resync.len(),
-            1,
-            "draining everything sent earns the resync: {resync:?}"
-        );
-        assert_eq!(resync[0]["type"], "term.reset", "{resync:?}");
-        assert_eq!(resync[0]["cursor"].as_u64().unwrap(), screen.total);
-
-        // And the raw stream is back.
-        flush_chunk_acked_by(&mut screen, "client-one");
-        let resumed = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(resumed.len(), 1, "{resumed:?}");
-        assert_eq!(resumed[0]["type"], "term.output", "{resumed:?}");
-    }
-
-    /// A client from before acks existed never sends one, and it must not be
-    /// starved for that: with no ack to measure by, there is no evidence it is
-    /// falling behind, so it keeps today's behaviour.
-    #[test]
-    fn a_client_that_never_acks_is_never_paused() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        for _ in 0..16 {
-            screen.process(&chunk_of(ACK_TEST_CHUNK));
-            screen.flush("term-1");
-        }
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(
-            seen.len(),
-            16,
-            "an ack-less client is fed exactly as it always was: {seen:?}"
-        );
-    }
-
     /// A human can close the browser while waiting on the Agent tab of a
     /// worktree whose agent has not started yet. `drop_session` detaches an
     /// ended session from every tab so the pumps stop encrypting frames into a
@@ -35995,7 +41015,7 @@ mod tests {
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
         let (sender, _pushes, _key) = SessionSender::observable("closing");
-        let waiting = handler(
+        let waiting = handler.call(
             sender,
             req(
                 "agent.attach",
@@ -36012,7 +41032,7 @@ mod tests {
                 .unwrap()
                 .agent_screens_awaiting_spawn
                 .values()
-                .all(|screen| screen.attached.is_empty()),
+                .all(|screen| screen.attached() == 0),
             "an ended session is detached from the screen it was waiting on"
         );
 
@@ -36023,8 +41043,7 @@ mod tests {
             &crate::agent::derived_agent_id("run-closed-client"),
             &ModelChoice::default(),
             "build",
-            "COLD-PROMPT",
-            "WARM-NUDGE",
+            ["COLD-PROMPT", "WARM-NUDGE"],
         )
         .expect("the delivery spawns the worktree's agent");
 
@@ -36032,14 +41051,82 @@ mod tests {
         let tab =
             &s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-closed-client")];
         assert!(
-            screen_of(tab).attached.is_empty(),
+            screen_of(tab).attached() == 0,
             "a session that ended is never carried onto the agent it waited for"
         );
         assert_eq!(
-            (screen_of(tab).cols, screen_of(tab).rows),
+            screen_of(tab).size(),
             (120, 40),
             "with nobody left waiting, the spawn keeps the size Build chose"
         );
+    }
+
+    /// An attach clones the waiting screen under the app mutex and registers
+    /// on it with the mutex released, so the last client already on that
+    /// screen can leave in between. The screen must still be the one the spawn
+    /// carries from: dropped from the registry the moment it emptied, the
+    /// client arriving on it would be on a screen nothing feeds and nothing
+    /// closes, blank for the life of the tab.
+    #[tokio::test]
+    async fn a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_the_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _) = agent_tab_fixture(&repo, dir.path(), "run-attach-race");
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+
+        let (leaving, _pushes, _key) = SessionSender::observable("leaving");
+        let waiting = handler.call(
+            leaving,
+            req(
+                "agent.attach",
+                json!({ "project_id": project_id, "cols": 90, "rows": 25 }),
+            ),
+        );
+        assert_eq!(waiting["ok"], true, "{waiting:?}");
+
+        // What a second attach, already past the app mutex, is holding.
+        let in_flight = state
+            .lock()
+            .unwrap()
+            .agent_screens_awaiting_spawn
+            .values()
+            .next()
+            .expect("the first attach left a screen waiting for the spawn")
+            .clone();
+        state.lock().unwrap().drop_session("leaving");
+        let (arriving, mut pushes, session_key) = SessionSender::observable("arriving");
+        in_flight.attach(&arriving, Some((90, 25)));
+
+        let (wire_id, _) = deliver(
+            &state,
+            &repo,
+            "run-attach-race",
+            &crate::agent::derived_agent_id("run-attach-race"),
+            &ModelChoice::default(),
+            "test",
+            ["COLD-PROMPT", "WARM-NUDGE"],
+        )
+        .expect("the delivery spawns the worktree's agent");
+
+        let key = derived_agent_key(&AppState::canonical_root(&repo), "run-attach-race");
+        {
+            let s = state.lock().unwrap();
+            let screen = screen_of(&s.tabs[&key]);
+            assert_eq!(
+                screen.attached_sessions(),
+                vec!["arriving".to_string()],
+                "the client that arrived as the last one left is on the agent's screen"
+            );
+            assert_eq!(
+                screen.size(),
+                (90, 25),
+                "at the viewport it is rendering at"
+            );
+        }
+        wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.reset" && push["term_id"] == wire_id
+        })
+        .await;
+        state.lock().unwrap().tabs[&key].session.end();
     }
 
     #[tokio::test]
@@ -36048,7 +41135,7 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         insert_live_run(&state, &repo, dir.path().join("side"), "run-7");
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "run_id": "run-7" })),
         );
@@ -36056,10 +41143,10 @@ mod tests {
         let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
 
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let attached = handler(sender, req("term.attach", json!({ "term_id": term_id })));
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": term_id })));
         assert_eq!(attached["ok"], true, "{attached:?}");
 
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.input",
@@ -36072,7 +41159,7 @@ mod tests {
         })
         .await;
 
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "run_id": "run-7" })),
         );
@@ -36173,7 +41260,7 @@ mod tests {
         assert_eq!(commits[1]["ahead_of_base"], json!(false));
 
         // And the rail sees the commit without waiting out the scan cache.
-        let listed = state.external_worktrees(&project_id, false).unwrap();
+        let listed = state.external_worktrees(&project_id).worktrees;
         let entry = listed.iter().find(|w| w.id == worktree_id).unwrap();
         assert_eq!(entry.unpushed, Some(1));
         assert_eq!(entry.uncommitted.files_changed, 0, "committed, so clean");
@@ -36235,7 +41322,7 @@ mod tests {
 
         // The scan sees it under the id the create returned, so the client can
         // navigate straight to its surface.
-        let listed = state.external_worktrees(&project_id, true).unwrap();
+        let listed = state.scan_external_worktrees_now(&project_id).unwrap();
         assert!(
             listed.iter().any(|w| w.id == worktree_id),
             "{worktree_id} missing from {listed:?}"
@@ -36349,7 +41436,7 @@ mod tests {
             "the branch itself was not moved"
         );
         assert!(state.runs.is_empty(), "a checkout is not a run");
-        let listed = state.external_worktrees(&project_id, true).unwrap();
+        let listed = state.external_worktrees(&project_id).worktrees;
         assert!(listed
             .iter()
             .any(|w| w.id == result["worktree_id"].as_str().unwrap()));
@@ -37104,13 +42191,13 @@ mod tests {
             "a cold prompt wants the conversation"
         );
         assert!(
-            !queued.cold.contains("Catch-up packet"),
+            !queued.said().cold.contains("Catch-up packet"),
             "the packet is not baked in at queue time: {}",
-            queued.cold
+            queued.said().cold
         );
 
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Catch-up packet from the durable conversation"),
             "{delivered}"
@@ -37384,9 +42471,9 @@ mod tests {
             .to_string();
 
         add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
-        state.external_worktrees(&project_id, true).unwrap();
+        state.scan_external_worktrees_now(&project_id).unwrap();
         let hand_made = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("by-hand"))
@@ -37508,9 +42595,10 @@ mod tests {
             self.turns.lock().unwrap().clone()
         }
 
-        /// Whether the daemon has ended this session.
+        /// Whether the daemon has ended this session, waiting out the
+        /// retirement thread that carries the kill.
         fn ended(&self) -> bool {
-            self.ended.load(std::sync::atomic::Ordering::Relaxed)
+            settles(|| self.ended.load(std::sync::atomic::Ordering::Relaxed))
         }
     }
 
@@ -37710,6 +42798,33 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    /// Wait for every turn the verbs just run queued to have been delivered.
+    ///
+    /// The queue is taken and its owners marked in flight under the acquisition
+    /// the verb's own reply comes out of, so a caller that has its reply and
+    /// finds neither is looking at a delivery that has finished.
+    async fn wait_for_deliveries(state: &Arc<Mutex<AppState>>) {
+        wait_for(Duration::from_secs(20), || {
+            let s = state.lock().unwrap();
+            (s.pending_agent_turns.is_empty() && s.turns_in_flight.is_empty()).then_some(())
+        })
+        .await
+        .expect("every queued turn reached its agent");
+    }
+
+    /// Wait for the tab a queued turn's delivery opens.
+    ///
+    /// A verb answers as soon as its own state change is durable and the turn
+    /// it queued is delivered on a thread of its own, so the reply is never the
+    /// moment the agent tab arrives.
+    async fn wait_for_agent_tab(state: &Arc<Mutex<AppState>>, key: &TabKey) {
+        wait_for(Duration::from_secs(10), || {
+            state.lock().unwrap().tabs.contains_key(key).then_some(())
+        })
+        .await
+        .unwrap_or_else(|| panic!("the delivery never opened {key:?}"));
     }
 
     fn activity_rows(thread: &crate::thread::Thread) -> Vec<crate::thread::ThreadEvent> {
@@ -38528,7 +43643,7 @@ mod tests {
         let repo_path = state.projects[0].repo_path.clone();
         add_external_worktree(&repo_path, dir.path(), "bare-checkout", "feature-bare");
         state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .expect("the new checkout is discoverable");
 
         let bare = state.handle(req(
@@ -39310,6 +44425,14 @@ mod tests {
             json!({ "entity_id": "run-outlived", "body": "kick off the reindex" }),
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
+        // The delivery is made off the frame that queued it, so the session
+        // opens after the reply: wait for the work it started to reach the
+        // timeline before asking whether the session that started it is over.
+        wait_for(Duration::from_secs(10), || {
+            (background_rows(&state, "run-outlived").len() == 1).then_some(())
+        })
+        .await
+        .expect("the agent started the work it was sent");
         wait_for(Duration::from_secs(10), || {
             (open_session_count(&state, "run-outlived") == 0).then_some(())
         })
@@ -39900,6 +45023,7 @@ mod tests {
             assert_eq!(posted["ok"], true, "{posted:?}");
         }
 
+        wait_for_deliveries(&state).await;
         let built = specs_built.lock().unwrap().clone();
         let spawned_in = |root: &std::path::Path| {
             let root = AppState::canonical_root(root);
@@ -40004,6 +45128,7 @@ mod tests {
             json!({ "entity_id": "run-pty", "body": "start something" }),
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for_deliveries(&state).await;
         assert_eq!(
             state
                 .lock()
@@ -40433,6 +45558,7 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
+        wait_for_deliveries(&state).await;
         let spawned = specs_built
             .lock()
             .unwrap()
@@ -40499,6 +45625,7 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
+        wait_for_deliveries(&state).await;
         let spawned = specs_built
             .lock()
             .unwrap()
@@ -40565,6 +45692,7 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
+        wait_for_deliveries(&state).await;
         let spawned = specs_built
             .lock()
             .unwrap()
@@ -40581,7 +45709,7 @@ mod tests {
                 .unwrap()
                 .recorded_resume_id("run-poisoned", &agent_id),
             None,
-            "and it is cleared where it was read, so no later spawn spends it either"
+            "and the apply phase forgets it, so no later spawn spends it either"
         );
     }
 
@@ -40657,19 +45785,20 @@ mod tests {
     #[test]
     fn the_terminal_verbs_refuse_an_agent_with_no_terminal() {
         let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = AppState::canonical_root(&repo);
         let agent_id = "agent-protocol";
-        state.tabs.insert(
+        state.lock().unwrap().tabs.insert(
             TabKey::agent(&root, agent_id),
             terminal_free_agent_tab(&root, "run-protocol", agent_id),
         );
         let term_id = agent_tab_id(agent_id);
 
-        let typed = state.handle(req(
+        let typed = call(
+            &handler,
             "term.input",
             json!({ "term_id": term_id, "data": b64encode(b"ls\r") }),
-        ));
+        );
         assert_eq!(typed["ok"], false, "{typed:?}");
         let refusal = typed["error"].as_str().unwrap().to_string();
         assert!(
@@ -40677,10 +45806,11 @@ mod tests {
             "the refusal names the agent and where its work is read: {refusal}"
         );
 
-        let resized = state.handle(req(
+        let resized = call(
+            &handler,
             "term.resize",
             json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
-        ));
+        );
         assert_eq!(
             resized["ok"], false,
             "a viewport means nothing to a session with no grid: {resized:?}"
@@ -41175,7 +46305,7 @@ mod tests {
             DictatedSession::reporting(AgentStatus::Working).recording_into(&log),
         );
 
-        state.close_agent_tab(&root);
+        state.retire_agent_tabs(&root);
 
         assert!(
             log.ended(),
@@ -41195,7 +46325,7 @@ mod tests {
         let worktree_id = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("hand-made"))
@@ -41220,7 +46350,7 @@ mod tests {
         assert_eq!(entry_of(&state)["can_finish"], false);
 
         // A shell is not an agent, so opening one must not start the pulse.
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -41290,7 +46420,7 @@ mod tests {
         let worktree_id = state
             .lock()
             .unwrap()
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("hand-made"))
@@ -41357,7 +46487,7 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "worktree.create",
@@ -41893,7 +47023,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         add_external_worktree(&repo, dir.path(), "loose", "loose");
         let worktree_id = state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some("loose"))
@@ -42248,7 +47378,7 @@ mod tests {
 
     fn external_id(state: &mut AppState, project_id: &str, branch: Option<&str>) -> String {
         state
-            .external_worktrees(project_id, true)
+            .scan_external_worktrees_now(project_id)
             .unwrap()
             .into_iter()
             .find(|worktree| worktree.branch.as_deref() == branch)
@@ -42557,6 +47687,7 @@ mod tests {
                 &state,
                 SessionSender::detached(session_id),
                 req(method, params),
+                FrameClock::new().frame(method),
             );
             let _ = answered.send(response);
         });
@@ -42597,6 +47728,1248 @@ mod tests {
         assert_eq!(finished["ok"], true, "{finished:?}");
         assert_eq!(finished["result"]["action"], "cleanup");
         assert!(!path.exists(), "the checkout was removed");
+    }
+
+    /// The pending rows one project's board is showing right now.
+    fn pending_on_the_board(board: &Value) -> Vec<Value> {
+        board["result"]["pending"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the board ships its pending rows: {board:?}"))
+            .clone()
+    }
+
+    /// A `git worktree add` is a full checkout of the repository — minutes on a
+    /// large one — and every other frame has to keep moving while it runs.
+    #[test]
+    fn worktree_create_runs_git_worktree_add_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the create is holding the app mutex through its git"
+        );
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while a checkout is being cut");
+        assert_eq!(board["ok"], true, "{board:?}");
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while a checkout is being cut");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert!(
+            std::path::Path::new(created["result"]["path"].as_str().unwrap()).is_dir(),
+            "{created:?}"
+        );
+    }
+
+    /// The board shows the checkout from the moment it is asked for, under the
+    /// id it will settle as — not once the git returns.
+    #[test]
+    fn a_creating_worktree_is_on_the_board_before_its_git_returns() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "Scratch Space" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the checkout is being cut");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(pending.len(), 1, "{board:?}");
+        assert_eq!(pending[0]["state"], "creating", "{pending:?}");
+        assert_eq!(pending[0]["title"], "Scratch Space", "{pending:?}");
+        assert_eq!(pending[0]["project_id"], json!(project_id), "{pending:?}");
+        assert_eq!(
+            pending[0]["project"],
+            json!(state.lock().unwrap().projects[0].name),
+            "a row the board renders says which project it belongs to: {pending:?}"
+        );
+        let placeholder = pending[0]["entity_id"].as_str().unwrap().to_string();
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(
+            created["result"]["worktree_id"],
+            json!(placeholder),
+            "the checkout settled under the id its row was standing in for: {created:?}"
+        );
+        let board = frame_on_a_thread(&state, "s-after", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers");
+        assert!(
+            pending_on_the_board(&board).is_empty(),
+            "the placeholder outlived the record it stood for: {board:?}"
+        );
+    }
+
+    /// A create whose git failed leaves nothing at all: no row on the board, no
+    /// claim on the name, and the error the git gave.
+    #[test]
+    fn a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        // A base branch this repository does not have: `git worktree add` has
+        // nothing to cut from.
+        state.projects[0].base_branch = "no-such-base".to_string();
+
+        let failed = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "doomed" }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(
+            state.pending_rows.is_empty(),
+            "the failed create left its row on the board"
+        );
+        let board = state.handle(req("board.list", json!({})));
+        assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
+        // And the name is free: the retry is not refused by the row of the
+        // attempt that failed.
+        state.projects[0].base_branch = "main".to_string();
+        let retried = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "doomed" }),
+        ));
+        assert_eq!(retried["ok"], true, "{retried:?}");
+    }
+
+    /// The decide phase guesses the checkout's id from the path its slug will
+    /// take, and `WorktreeManager` suffixes a slug something is already using.
+    /// The answer carries both ids so a client showing the placeholder replaces
+    /// that row rather than adding a second one beside it.
+    #[test]
+    fn a_suffixed_slug_settles_the_placeholder_under_its_real_id() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let first = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        ));
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            first["result"]["pending_worktree_id"], first["result"]["worktree_id"],
+            "an unobstructed slug settles under the id its row carried: {first:?}"
+        );
+
+        let second = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        ));
+        assert_eq!(second["ok"], true, "{second:?}");
+        assert_eq!(second["result"]["branch"], "build/scratch-2", "{second:?}");
+        assert_ne!(
+            second["result"]["pending_worktree_id"], second["result"]["worktree_id"],
+            "the suffixed checkout settled under the placeholder's id: {second:?}"
+        );
+        assert_eq!(
+            second["result"]["pending_worktree_id"], first["result"]["worktree_id"],
+            "the placeholder stood at the path the first create took: {second:?}"
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "a settled create left its row behind"
+        );
+    }
+
+    /// A second create of a name already being cut is refused rather than
+    /// racing the first one's `git worktree add`.
+    #[test]
+    fn a_second_create_of_a_name_being_cut_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let second = frame_on_a_thread(
+            &state,
+            "s-second",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second create is answered rather than queued behind the first");
+        assert_eq!(second["ok"], false, "{second:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first create answers");
+        assert_eq!(created["ok"], true, "{created:?}");
+    }
+
+    /// Two dispatches of the same words name the same branch, and the branch is
+    /// what they collide on: the ref is settled before either one runs git, so
+    /// the second is refused rather than racing the first into `git worktree
+    /// add` with the same slug.
+    #[test]
+    fn two_dispatches_of_one_instruction_cut_one_branch() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let first = frame_on_a_thread(
+            &state,
+            "s-first",
+            "branch.dispatch",
+            json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let second = frame_on_a_thread(
+            &state,
+            "s-second",
+            "branch.dispatch",
+            json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second dispatch is answered rather than queued behind the first");
+        assert_eq!(second["ok"], false, "{second:?}");
+
+        gate_handle.release();
+        let first = first
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first dispatch answers");
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            first["result"]["branch"], "build/add-a-health-endpoint",
+            "{first:?}"
+        );
+        let checkouts = state
+            .lock()
+            .unwrap()
+            .scan_external_worktrees_now(&project_id)
+            .unwrap();
+        assert!(
+            checkouts.is_empty(),
+            "one dispatch, one checkout — and the run owns it: {checkouts:?}"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs.len(),
+            1,
+            "the refused dispatch opened a run of its own"
+        );
+    }
+
+    /// A create and a dispatch claim branches out of one namespace, so they
+    /// collide with each other too: the dispatch names `build/scratch`, which
+    /// is the branch the create in flight is cutting.
+    #[test]
+    fn a_dispatch_onto_a_branch_being_created_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let dispatched = frame_on_a_thread(
+            &state,
+            "s-dispatch",
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "build/scratch",
+                "instruction": "pick this up",
+            }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the dispatch is answered rather than queued behind the create");
+        assert_eq!(dispatched["ok"], false, "{dispatched:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers");
+        assert_eq!(created["ok"], true, "{created:?}");
+    }
+
+    /// A dispatch cuts a branch, checks out the whole repository into it and
+    /// writes a checkpoint commit — all of it git, and none of it holding the
+    /// daemon still.
+    #[test]
+    fn branch_dispatch_cuts_its_branch_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let dispatched = frame_on_a_thread(
+            &state,
+            "s-dispatch",
+            "branch.dispatch",
+            json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the dispatch is holding the app mutex through its git"
+        );
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the dispatch cuts its branch");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(pending.len(), 1, "{board:?}");
+        assert_eq!(pending[0]["state"], "creating", "{pending:?}");
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the dispatch cuts its branch");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let dispatched = dispatched
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the dispatch answers once its git is done");
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        assert_eq!(
+            dispatched["result"]["branch"], "build/add-a-health-endpoint",
+            "{dispatched:?}"
+        );
+        let board = frame_on_a_thread(&state, "s-after", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers");
+        assert!(
+            pending_on_the_board(&board).is_empty(),
+            "the placeholder outlived the run it stood for: {board:?}"
+        );
+    }
+
+    /// An approved Issue with two approved stages, ready to be implemented.
+    fn approved_issue(app: &mut AppState, goal: &str) -> String {
+        let issue = app.handle(req("issue.create", json!({ "goal": goal })));
+        let issue_id = issue["result"]["issue_id"]
+            .as_str()
+            .expect("the issue was filed")
+            .to_string();
+        for stage_id in ["first-half", "second-half"] {
+            app.handle(req(
+                "issue.stage_approve",
+                json!({ "issue_id": issue_id, "stage_id": stage_id }),
+            ));
+        }
+        app.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        issue_id
+    }
+
+    /// `run.create` cuts a checkout, scaffolds it and commits the Issue's plan
+    /// docs into it — `git worktree add` plus two commits, seconds of it on a
+    /// real repository. Every other frame goes through meanwhile.
+    #[test]
+    fn run_create_opens_its_implementation_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let issue_id = approved_issue(&mut app, "implement off the lock");
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        // A board that has been looked at once, so the assertion below is
+        // about a list that exists.
+        app.scan_external_worktrees_now(&project_id).unwrap();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-run",
+            "run.create",
+            json!({ "plan_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "run.create is holding the app mutex through its git"
+        );
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the implementation checkout is being cut");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(pending.len(), 1, "{board:?}");
+        assert_eq!(pending[0]["state"], "creating", "{pending:?}");
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the implementation checkout is being cut");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("run.create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert!(
+            created["result"]["run_id"].as_str().is_some(),
+            "{created:?}"
+        );
+        let board = frame_on_a_thread(&state, "s-after", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers");
+        assert!(
+            pending_on_the_board(&board).is_empty(),
+            "the placeholder outlived the run it stood for: {board:?}"
+        );
+        let app = state.lock().unwrap();
+        let checkout = crate::worktree::canonical_root(
+            &app.runs[created["result"]["run_id"].as_str().expect("a run opened")]
+                .worktree
+                .path,
+        );
+        assert!(
+            !app.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
+            "the run's own checkout is on the board as an unbound card too"
+        );
+    }
+
+    /// `run.create` into a checkout a run already owns makes two commits there
+    /// — the checkpoint that keeps whatever the branch was carrying its own
+    /// legible commit, and the Issue's docs on top as the review baseline.
+    /// Both against a checkout that may be huge, so both are off the lock.
+    #[test]
+    fn run_create_into_an_existing_checkout_checkpoints_it_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "implement where the work started");
+        let target = adopted_run(&mut app, &repo, dir.path(), "already-started");
+        let elsewhere = adopted_run(&mut app, &repo, dir.path(), "somewhere-else");
+        let worktree_id = worktree_id_of_run(&app, &target);
+        let checkout = app.runs[&target].worktree.path.clone();
+        // What the branch was carrying before Build was handed it, so the
+        // checkpoint commit has something to make.
+        std::fs::write(checkout.join("half-done.txt"), "started by hand\n").unwrap();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-run",
+            "run.create",
+            json!({ "plan_id": issue_id, "worktree_id": worktree_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "run.create is holding the app mutex through its checkpoint"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": elsewhere, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the checkout is being checkpointed");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("run.create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        assert_eq!(created["result"]["run_id"], target, "{created:?}");
+
+        let app = state.lock().unwrap();
+        let base_sha = app.runs[&target]
+            .base_sha
+            .clone()
+            .expect("the docs commit is the review baseline");
+        let log = Command::new("git")
+            .args(["-C", checkout.to_str().unwrap(), "log", "--format=%H %s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8(log.stdout).unwrap();
+        let commits: Vec<&str> = log.lines().collect();
+        let baseline = commits
+            .iter()
+            .position(|line| line.starts_with(&base_sha))
+            .expect("the baseline commit is in the checkout's history");
+        assert!(
+            commits[baseline].ends_with("plan: implement where the work started"),
+            "the baseline is not the docs commit: {log}"
+        );
+        assert!(
+            commits[baseline + 1].ends_with("Checkpoint: before Build implements an Issue here"),
+            "the branch's own work was swept into the docs commit: {log}"
+        );
+    }
+
+    /// The single-active-writer gate on an Issue is the reservation, not the
+    /// run map: the run a `run.create` is opening is not in that map until its
+    /// git has landed, and a second `run.create` naming a checkout would pass
+    /// `ImplementableIssue::judge` meanwhile. Both rows claim the Issue, so the
+    /// second is refused where a second create of one slug is.
+    #[test]
+    fn a_second_implementation_of_an_issue_is_refused_while_the_first_is_being_cut() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "one writer per issue");
+        let target = adopted_run(&mut app, &repo, dir.path(), "already-started");
+        let worktree_id = worktree_id_of_run(&app, &target);
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let first = frame_on_a_thread(
+            &state,
+            "s-first",
+            "run.create",
+            json!({ "plan_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let second = frame_on_a_thread(
+            &state,
+            "s-second",
+            "run.create",
+            json!({ "plan_id": issue_id, "worktree_id": worktree_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the second run.create is answered while the first cuts its checkout");
+        assert_eq!(second["ok"], false, "{second:?}");
+        assert!(
+            second["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("already creating")),
+            "{second:?}"
+        );
+
+        gate_handle.release();
+        let first = first
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first run.create answers once its git is done");
+        assert_eq!(first["ok"], true, "{first:?}");
+        let app = state.lock().unwrap();
+        let implementing = app
+            .runs
+            .values()
+            .filter(|run| {
+                run.run.plan_id.as_ref().map(|p| p.0.as_str()) == Some(issue_id.as_str())
+                    && !run.run.state.is_terminal()
+            })
+            .count();
+        assert_eq!(implementing, 1, "two runs are implementing one Issue");
+        assert!(
+            app.runs[&target].run.plan_id.is_none(),
+            "the refused run.create bound the target checkout to the Issue anyway"
+        );
+    }
+
+    /// The git ran and the epilogue did not, so the checkout it cut is on disk
+    /// under no run. It has to be on the board as the unbound card it is —
+    /// invisible until the next full rescan is how a minted checkout gets lost.
+    #[test]
+    fn an_implementation_whose_apply_fails_leaves_its_checkout_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let issue_id = approved_issue(&mut app, "leave nothing hidden");
+        // A board that has been looked at once, so the amendment has a list to
+        // put the checkout back into.
+        app.scan_external_worktrees_now(&project_id).unwrap();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-run",
+            "run.create",
+            json!({ "plan_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+        // The Issue goes while the git runs: the apply has nothing left to
+        // open a run around.
+        state.lock().unwrap().plans.remove(&issue_id);
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("run.create answers once its git is done");
+        assert_eq!(created["ok"], false, "{created:?}");
+
+        let app = state.lock().unwrap();
+        assert!(app.runs.is_empty(), "the failed apply opened a run");
+        assert!(
+            app.pending_rows.is_empty(),
+            "the failed apply left its row on the board"
+        );
+        let checkout = crate::worktree::canonical_root(
+            &dir.path()
+                .join("wt")
+                .join(&project_id)
+                .join("leave-nothing-hidden"),
+        );
+        assert!(checkout.is_dir(), "the git that succeeded was undone");
+        assert!(
+            app.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
+            "the checkout it cut is invisible until the next full rescan: {:?}",
+            app.projects[0]
+                .external_scan
+                .as_ref()
+                .map(|cache| &cache.worktrees)
+        );
+    }
+
+    /// The scheduler cuts the same checkout on the way to a stage, so it waits
+    /// off the lock too — and answers with the Issue, not the run, once it has.
+    #[test]
+    fn issue_implement_all_opens_its_implementation_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "schedule off the lock");
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-implement",
+            "issue.implement_all",
+            json!({ "issue_id": issue_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the scheduler is holding the app mutex through its git"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the implementation checkout is being cut");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the scheduler answers once its git is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        assert_eq!(
+            implemented["result"]["issue_id"], issue_id,
+            "a scheduled implementation answers with the Issue it advanced: {implemented:?}"
+        );
+        assert_eq!(
+            implemented["result"]["implementation_lineage"]
+                .as_array()
+                .expect("the Issue reports its lineage")
+                .len(),
+            1,
+            "{implemented:?}"
+        );
+    }
+
+    /// The `done` socket's twin of [`frame_on_a_thread`]: the guard is taken
+    /// for the report, released for whatever git the report handed back, and
+    /// taken again to write the result down.
+    fn done_on_a_thread(
+        state: &Arc<Mutex<AppState>>,
+        entity_id: &str,
+        report: DoneReport,
+    ) -> std::sync::mpsc::Receiver<Result<Value, String>> {
+        let (answered, answers) = std::sync::mpsc::channel();
+        let state = Arc::clone(state);
+        let entity_id = entity_id.to_string();
+        std::thread::spawn(move || {
+            let deferred = state.lock().unwrap().done_deferring(&entity_id, report);
+            let settled = match deferred {
+                Some(deferred) => {
+                    let done = deferred.run();
+                    state
+                        .lock()
+                        .unwrap()
+                        .apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+                }
+                None => Ok(Value::Null),
+            };
+            let _ = answered.send(settled);
+        });
+        answers
+    }
+
+    /// A recovery agent's own report carries its Issue's scheduler on to the
+    /// stage it was recovering for, and that hop is a checkout. The socket
+    /// releases the guard for it, the way it already does for a router tool.
+    #[test]
+    fn a_recovery_report_advances_its_scheduler_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "recover, then carry on");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let branch = app.runs[&run_id].worktree.branch();
+        let worktree = app.runs[&run_id].worktree.path.clone();
+        let head_sha = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&worktree)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args(["branch", "-D", "--", &branch])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        app.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+        let recovery_id = app.runs[&run_id].recovery.as_ref().unwrap().id.clone();
+        assert!(Command::new("git")
+            .args(["branch", &branch, &head_sha])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let other_run = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let settled = done_on_a_thread(
+            &state,
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Recover,
+                status: DoneStatus::Completed,
+                summary: "exact branch recovered".into(),
+                outputs: DoneOutputs {
+                    recovery: Some(crate::mcp::RecoveryReport {
+                        recovery_id,
+                        recovered: true,
+                        branch,
+                        head_sha,
+                        findings: "local reflog proved the exact tip".into(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the recovery report is holding the app mutex through its scheduler's git"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": other_run, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the recovered Issue's git runs");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let settled = settled
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the report settles once its git is done");
+        assert!(settled.is_ok(), "{settled:?}");
+        let app = state.lock().unwrap();
+        assert_eq!(
+            app.runs[&run_id].recovery.as_ref().unwrap().state,
+            crate::run::RecoveryState::Succeeded
+        );
+        assert!(app.runs[&run_id].worktree.path.exists());
+    }
+
+    /// Approving a stage an armed Implement All is parked on is what starts
+    /// the whole implementation: the approval frame cuts the checkout, so it
+    /// hands that git to the drain like every other frame does.
+    #[test]
+    fn a_stage_approval_that_implements_cuts_its_checkout_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue = app.handle(req(
+            "issue.create",
+            json!({ "goal": "approve, then build" }),
+        ));
+        let issue_id = issue["result"]["issue_id"]
+            .as_str()
+            .expect("the issue was filed")
+            .to_string();
+        app.handle(req("issue.approve", json!({ "issue_id": issue_id })));
+        // Armed while stage one is unapproved: the scheduler parks, and the
+        // approval below is what wakes it.
+        let armed = app.handle(req("issue.implement_all", json!({ "issue_id": issue_id })));
+        assert_eq!(armed["ok"], true, "{armed:?}");
+        assert!(
+            app.current_issue_implementation_id(&issue_id).is_none(),
+            "the scheduler cut a checkout before its first stage was approved"
+        );
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let approved = frame_on_a_thread(
+            &state,
+            "s-approve",
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": "first-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the stage approval is holding the app mutex through its git"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the approval's checkout is being cut");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let approved = approved
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the approval answers once its git is done");
+        assert_eq!(approved["ok"], true, "{approved:?}");
+        assert_eq!(
+            approved["result"]["issue_id"], issue_id,
+            "a stage approval answers with the Issue it advanced: {approved:?}"
+        );
+        assert_eq!(
+            approved["result"]["implementation_lineage"]
+                .as_array()
+                .expect("the Issue reports its lineage")
+                .len(),
+            1,
+            "{approved:?}"
+        );
+    }
+
+    /// A stage whose checkout was deleted outside Build puts it back with
+    /// `git worktree add` — and, when the branch is only on a remote, a fetch.
+    #[test]
+    fn implement_stage_restores_a_missing_checkout_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "restore off the lock");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let worktree = app.runs[&run_id].worktree.path.clone();
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-stage",
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the restore is holding the app mutex through its git"
+        );
+        let got = frame_on_a_thread(
+            &state,
+            "s-get",
+            "issue.get",
+            json!({ "issue_id": issue_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the Issue answers while its checkout is being put back");
+        assert_eq!(got["ok"], true, "{got:?}");
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the stage answers once its git is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        assert!(worktree.exists(), "the checkout is back: {implemented:?}");
+    }
+
+    /// Spawning an agent scaffolds its checkout directory, and `git worktree
+    /// add` refuses a path that reappeared under it — which a restore reads as
+    /// a lost branch and answers by handing a healthy run to the recovery
+    /// agent. So a turn for a checkout being put back waits for it.
+    #[test]
+    fn a_turn_queued_for_a_restoring_checkout_never_sends_its_run_to_recovery() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let issue_id = approved_issue(&mut app, "restore under a queued turn");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        let worktree = app.runs[&run_id].worktree.path.clone();
+        assert!(
+            !app.pending_agent_turns.is_empty(),
+            "the implementation queued its agent's first turn"
+        );
+        assert!(Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.to_str().unwrap()
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-stage",
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        // This frame drains the queue while the restore is held open. The turn
+        // for the run being restored is not its to deliver.
+        let got = frame_on_a_thread(
+            &state,
+            "s-get",
+            "issue.get",
+            json!({ "issue_id": issue_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the Issue answers while its checkout is being put back");
+        assert_eq!(got["ok"], true, "{got:?}");
+        assert!(
+            !worktree.exists(),
+            "an agent was spawned into the checkout being restored: {got:?}"
+        );
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the stage answers once its git is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let app = state.lock().unwrap();
+        assert!(worktree.exists(), "the checkout is back");
+        assert!(
+            app.runs[&run_id].recovery.is_none(),
+            "a healthy run was handed to the recovery agent: {:?}",
+            app.runs[&run_id].recovery
+        );
+    }
+
+    /// `plan.create` writes the planning workspace its agent works in — a
+    /// scratch docs dir and the `.build/` config in the primary checkout.
+    #[test]
+    fn plan_create_prepares_its_workspace_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let filed = frame_on_a_thread(
+            &state,
+            "s-plan",
+            "plan.create",
+            json!({ "goal": "draft off the lock" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "plan.create is holding the app mutex through its workspace"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let filed = filed
+            .recv_timeout(Duration::from_secs(30))
+            .expect("plan.create answers once its workspace is written");
+        assert_eq!(filed["ok"], true, "{filed:?}");
+        // The QA plan agent answers as soon as it is spawned, so a dispatched
+        // plan is already at its review gate: what matters here is that it was
+        // dispatched at all, not filed inert.
+        assert_eq!(filed["result"]["state"], "plan_review", "{filed:?}");
+    }
+
+    /// Every other door to an Issue's planning agent writes the same workspace,
+    /// so every other door writes it off the lock too. A stage revision is the
+    /// one that costs most — the docs are re-materialized into the scratch dir
+    /// when the agent is not already working in it.
+    #[test]
+    fn a_stage_revision_writes_its_workspace_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let issue = app.handle(req("plan.create", json!({ "goal": "revise off the lock" })));
+        let issue_id = plan_id_of(&issue);
+        app.handle(req(
+            "plan.comment_add",
+            json!({ "plan_id": issue_id, "stage_id": "first-half", "body": "split further" }),
+        ));
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let revised = frame_on_a_thread(
+            &state,
+            "s-revise",
+            "plan.stage_send_notes",
+            json!({ "plan_id": issue_id, "stage_id": "first-half" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "plan.stage_send_notes is holding the app mutex through its workspace"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let revised = revised
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the revision answers once its workspace is written");
+        assert_eq!(revised["ok"], true, "{revised:?}");
+        // The QA plan agent answers the revision as soon as it is spawned, so
+        // the stage is back at its gate with the comment resolved.
+        assert_eq!(revised["result"]["state"], "plan_review", "{revised:?}");
+        let app = state.lock().unwrap();
+        assert!(
+            app.pending_rows.is_empty(),
+            "the revision left its row on the board"
+        );
+    }
+
+    /// The same for a batch of plan notes, whose own message is durable before
+    /// any disk is asked for.
+    #[test]
+    fn plan_notes_write_their_workspace_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let issue = app.handle(req(
+            "plan.create",
+            json!({ "goal": "take notes off the lock" }),
+        ));
+        let issue_id = plan_id_of(&issue);
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let noted = frame_on_a_thread(
+            &state,
+            "s-notes",
+            "plan.send_notes",
+            json!({ "plan_id": issue_id, "comments": "tighten step two" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "plan.send_notes is holding the app mutex through its workspace"
+        );
+        {
+            let app = state.lock().unwrap();
+            let thread = &app.plans[&issue_id].agents.sole().thread;
+            assert!(
+                thread.items.iter().any(|item| matches!(
+                    item,
+                    crate::thread::ThreadItem::Message(message)
+                        if message.body.contains("tighten step two")
+                )),
+                "the notes are durable before the workspace they are revised in"
+            );
+        }
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let noted = noted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the notes answer once their workspace is written");
+        assert_eq!(noted["ok"], true, "{noted:?}");
+        assert_eq!(noted["result"]["state"], "plan_review", "{noted:?}");
+    }
+
+    /// And for the first message to an inert Issue, which is what starts the
+    /// session it never had.
+    #[test]
+    fn an_inert_issues_first_message_starts_its_session_off_the_lock() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
+        let issue = app.handle(req(
+            "plan.create",
+            json!({ "goal": "file me inert", "dispatch": false }),
+        ));
+        let issue_id = plan_id_of(&issue);
+        assert_eq!(issue["result"]["state"], "created", "{issue:?}");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let said = frame_on_a_thread(
+            &state,
+            "s-say",
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "and here is what I meant" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "thread.post is holding the app mutex through the workspace it starts"
+        );
+        let posted = frame_on_a_thread(
+            &state,
+            "s-post",
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "carry on" }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a message is answered while the planning workspace is being written");
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        gate_handle.release();
+        let said = said
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the message answers once the session it started is open");
+        assert_eq!(said["ok"], true, "{said:?}");
+        assert_eq!(said["result"]["state"], "plan_review", "{said:?}");
+        assert!(
+            said["result"]["posted_sequence"].as_u64().is_some(),
+            "the composer is told where its message landed: {said:?}"
+        );
     }
 
     /// A git read is the other thing that costs seconds on a big checkout —
@@ -42682,6 +49055,7 @@ mod tests {
                 "git.stage",
                 json!({ "run_id": run_id, "paths": ["staged.txt"] }),
             ),
+            FrameClock::new().frame("git.stage"),
         );
         assert_eq!(staged["ok"], true, "{staged:?}");
 
@@ -42700,6 +49074,7 @@ mod tests {
             &state,
             SessionSender::detached("s-release"),
             req("run.release", json!({ "run_id": run_id })),
+            FrameClock::new().frame("run.release"),
         );
         assert_eq!(released["ok"], true, "{released:?}");
 
@@ -42735,6 +49110,7 @@ mod tests {
             &state,
             SessionSender::detached("s-second"),
             req("worktree.finish", params.clone()),
+            FrameClock::new().frame("worktree.finish"),
         );
         assert_eq!(refused["ok"], false, "{refused:?}");
         assert!(
@@ -42759,6 +49135,7 @@ mod tests {
             &state,
             SessionSender::detached("s-third"),
             req("worktree.finish", params),
+            FrameClock::new().frame("worktree.finish"),
         );
         assert_eq!(
             replayed["ok"], true,
@@ -43088,7 +49465,7 @@ mod tests {
         let worktree_id = external_id(&mut app, &project_id, Some("terminal-finish"));
         let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -43104,7 +49481,7 @@ mod tests {
             (term_key, pid)
         };
 
-        let finished = handler(
+        let finished = handler.call(
             SessionSender::detached("s1"),
             req(
                 "worktree.finish",
@@ -43401,6 +49778,56 @@ mod tests {
         assert_eq!(agents[0]["id"], primary_agent);
     }
 
+    /// A request that retires an agent takes that agent's queued turn with it,
+    /// and the turn may have been queued before the request began — another
+    /// worker answered a verb and has not drained yet. When the request then
+    /// fails, the rule that drops what IT queued must see a queue shorter than
+    /// the one it measured, and answer the refusal rather than panic under the
+    /// app mutex.
+    #[test]
+    fn a_refused_agent_remove_that_dropped_an_earlier_turn_is_answered_not_a_panic() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-refused-remove");
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "agent_id": second_agent, "body": "only you" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.agent_id == second_agent),
+            "the fixture needs a turn queued for the agent before the request starts"
+        );
+        state.store.as_ref().unwrap().fail_next_write();
+
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": second_agent }),
+        ));
+
+        assert_eq!(removed["ok"], false, "{removed:?}");
+        assert!(
+            removed["error"]
+                .as_str()
+                .unwrap()
+                .contains("injected store failure"),
+            "{removed:?}"
+        );
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .all(|turn| turn.agent_id != second_agent),
+            "the retired agent's turn outlived it"
+        );
+    }
+
     /// `agent.remove` refuses exactly what `agent.add` refuses: an unknown
     /// agent, an unknown entity, and an issue — whose one agent IS the issue's
     /// conversation. On a branch every agent may go, the primary included.
@@ -43528,6 +49955,7 @@ mod tests {
             );
             assert_eq!(started["ok"], true, "{started:?}");
         }
+        wait_for_deliveries(&state).await;
         let pid =
             agent_pid(&state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]).unwrap();
 
@@ -43717,6 +50145,7 @@ mod tests {
         );
         assert_eq!(two["ok"], true, "{two:?}");
         assert_ne!(two["result"]["term_id"], one["result"]["term_id"]);
+        wait_for_deliveries(&state).await;
 
         let s = state.lock().unwrap();
         assert!(s.tabs.contains_key(&TabKey::agent(&root, &primary_agent)));
@@ -44069,7 +50498,7 @@ mod tests {
         assert_eq!(queued.agent_id, second_agent);
         assert_ne!(queued.agent_id, primary_agent);
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("second-agent-comment"),
             "a cold spawn catches up on ITS conversation: {delivered}"
@@ -44207,7 +50636,7 @@ mod tests {
         // work.
         assert!(
             state
-                .external_worktrees(&project_id, true)
+                .scan_external_worktrees_now(&project_id)
                 .unwrap()
                 .into_iter()
                 .any(|w| w.branch.as_deref() == Some("feature-stray")),
@@ -44931,6 +51360,9 @@ mod tests {
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-routed");
         add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
         let project_id = state.projects[0].id.clone();
+        // Made behind Build's back, so it reaches the board the way anything
+        // made outside Build does: on the next scan, not on the next read.
+        state.scan_external_worktrees_now(&project_id).unwrap();
 
         let routed = state.handle(req(
             "branch.get",
@@ -45158,12 +51590,12 @@ mod tests {
         assert_eq!(queued.agent_id, agent_id);
         assert_eq!(queued.root, AppState::canonical_root(&active.worktree.path));
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Add a health endpoint"),
             "a cold agent reads the instruction out of the packet composed at delivery: {delivered}"
         );
-        assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
+        assert_eq!(queued.said().warm, NEW_THREAD_MESSAGES_PROMPT);
 
         // …and the work is on the feed as one branch row.
         let board = state.handle(req("board.list", json!({})));
@@ -45293,7 +51725,7 @@ mod tests {
             "the harness it spawns is the one this agent was dispatched on"
         );
         let delivered =
-            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
         assert!(
             delivered.contains("Also cover the empty case"),
             "{delivered}"
@@ -45305,9 +51737,12 @@ mod tests {
     #[test]
     fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
         let (dir, repo) = init_repo();
-        for step in [BranchDispatchStep::Adopt, BranchDispatchStep::Post] {
+        for step in [BranchDispatchStep::Adopt, BranchDispatchStep::Own] {
             let mut state = qa_state(&repo, dir.path());
             let project_id = state.projects[0].id.clone();
+            // A board that has been looked at once: the checkout the dispatch
+            // cuts joins that list, and the rollback has to take it back out.
+            state.scan_external_worktrees_now(&project_id).unwrap();
             state.dispatch_fault = Some(step);
 
             let failed = state.handle(req(
@@ -45318,6 +51753,10 @@ mod tests {
             assert_eq!(failed["ok"], false, "{step:?} -> {failed:?}");
             assert!(state.runs.is_empty(), "{step:?} left a run behind");
             assert!(
+                state.pending_rows.is_empty(),
+                "{step:?} left its reservation on the board"
+            );
+            assert!(
                 state.pending_agent_turns.is_empty(),
                 "{step:?} left a turn queued"
             );
@@ -45325,10 +51764,21 @@ mod tests {
                 !dir.path().join("wt").join("add-a-health-endpoint").exists(),
                 "{step:?} left the worktree it minted on disk"
             );
+            assert!(
+                state.projects[0]
+                    .external_scan
+                    .as_ref()
+                    .is_some_and(|cache| cache.worktrees.is_empty()),
+                "{step:?} left a checkout on the board that is not on disk: {:?}",
+                state.projects[0]
+                    .external_scan
+                    .as_ref()
+                    .map(|c| &c.worktrees)
+            );
             state.dispatch_fault = None;
             assert!(
                 state
-                    .external_worktrees(&project_id, true)
+                    .scan_external_worktrees_now(&project_id)
                     .unwrap()
                     .is_empty(),
                 "{step:?} left a checkout the scan can still see"
@@ -45338,6 +51788,155 @@ mod tests {
                 "{step:?} left the branch ref it cut"
             );
         }
+    }
+
+    /// The other half of the failure: the git ran, and the writes it was
+    /// supposed to lead to did not. What it made is real, so the checkout stays
+    /// on the board as the unowned card it is — and nothing pretends a run
+    /// exists.
+    #[test]
+    fn a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        // A board that has been looked at once, so the amendment has a list to
+        // put the checkout back into.
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        state.dispatch_fault = Some(BranchDispatchStep::Open);
+
+        let failed = state.handle(req(
+            "branch.dispatch",
+            json!({ "project_id": project_id, "instruction": "Add a health endpoint" }),
+        ));
+
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(state.runs.is_empty(), "the failed apply opened a run");
+        assert!(
+            state.pending_rows.is_empty(),
+            "the failed apply left its row on the board"
+        );
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the failed apply queued a turn for an agent that does not exist"
+        );
+        let checkout = crate::worktree::canonical_root(
+            &dir.path()
+                .join("wt")
+                .join(&project_id)
+                .join("add-a-health-endpoint"),
+        );
+        assert!(checkout.is_dir(), "the git that succeeded was undone");
+        assert!(
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
+            "the checkout it cut is invisible until the next full rescan: {:?}",
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .map(|c| &c.worktrees)
+        );
+        // And it is adoptable from that card: nothing about it is half-owned.
+        state.dispatch_fault = None;
+        let worktree_id = crate::worktree::external_worktree_id(&checkout);
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+    }
+
+    /// A turn is not deliverable until the mutation that queued it is durable.
+    /// A dispatch that fails after handing its agent the instruction hands that
+    /// instruction to nobody — on the arm that opens a run, on the arm that
+    /// joins one, and through the drain the MCP control socket runs.
+    #[test]
+    fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
+        fn queued_owners(state: &AppState) -> Vec<String> {
+            state
+                .pending_agent_turns
+                .iter()
+                .map(|turn| turn.owner.clone())
+                .collect()
+        }
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "finish the toast");
+        state.pending_agent_turns.clear();
+        state.dispatch_fault = Some(BranchDispatchStep::Settle);
+
+        let opened = state
+            .router_action(
+                &capture_id,
+                BridgeAction::DispatchBranch {
+                    project_id: project_id.clone(),
+                    branch: None,
+                    instruction: "finish the toast".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap_err();
+        assert!(opened.contains("Settle"), "{opened}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the router's dispatch left a turn queued for a run the store never got: {:?}",
+            queued_owners(&state)
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the failed apply left its row on the board"
+        );
+
+        // The other arm: a branch Build already runs, which touches no git at
+        // all and so answers without a deferral.
+        state.dispatch_fault = None;
+        adopted_run(&mut state, &repo, dir.path(), "feature-running");
+        state.pending_agent_turns.clear();
+        state.dispatch_fault = Some(BranchDispatchStep::Settle);
+
+        let joined = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-running",
+                "instruction": "one more thing",
+            }),
+        ));
+
+        assert_eq!(joined["ok"], false, "{joined:?}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "joining a run left a turn queued for a dispatch that failed: {:?}",
+            queued_owners(&state)
+        );
+
+        // And the same arm reached over the socket, which answers a router tool
+        // without a deferral to apply and so has to drop the turn itself.
+        state.dispatch_fault = None;
+        adopted_run(&mut state, &repo, dir.path(), "feature-elsewhere");
+        let (second_capture, _) = captured(&mut state, "and this too");
+        state.pending_agent_turns.clear();
+        state.dispatch_fault = Some(BranchDispatchStep::Settle);
+
+        let routed = state
+            .router_action(
+                &second_capture,
+                BridgeAction::DispatchBranch {
+                    project_id,
+                    branch: Some("feature-elsewhere".to_string()),
+                    instruction: "one more thing".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap_err();
+        assert!(routed.contains("Settle"), "{routed}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the router's join left a turn queued for a dispatch that failed: {:?}",
+            queued_owners(&state)
+        );
     }
 
     /// A named branch that existed before the call is checked out, not cut. So
@@ -45392,7 +51991,7 @@ mod tests {
         // cleanup un-adopts and leaves every file alone.
         let by_hand = add_external_worktree(&repo, dir.path(), "by-hand", "feature-by-hand");
         std::fs::write(by_hand.join("mine.txt"), "not Build's to delete\n").unwrap();
-        state.dispatch_fault = Some(BranchDispatchStep::Post);
+        state.dispatch_fault = Some(BranchDispatchStep::Own);
 
         let failed = state.handle(req(
             "branch.dispatch",
@@ -45411,6 +52010,7 @@ mod tests {
 
         // A branch Build already runs: cleanup leaves the run and its checkout
         // standing, with the agent roster it had before the call.
+        state.dispatch_fault = Some(BranchDispatchStep::Post);
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-running");
         let worktree = state.runs[&run_id].worktree.path.clone();
         let agents_before = state.runs[&run_id].agents.len();
@@ -45454,10 +52054,7 @@ mod tests {
         let message = refused["error"].as_str().unwrap();
         assert!(message.contains("primary checkout"), "{message}");
         assert!(state.runs.is_empty(), "nothing was created");
-        assert!(state
-            .external_worktrees(&project_id, true)
-            .unwrap()
-            .is_empty());
+        assert!(state.external_worktrees(&project_id).worktrees.is_empty());
     }
 
     /// Refusals come before anything is created: an unknown project and an
@@ -45498,7 +52095,7 @@ mod tests {
 
         assert!(state.runs.is_empty(), "nothing was created");
         assert!(state
-            .external_worktrees(&project_id, true)
+            .scan_external_worktrees_now(&project_id)
             .unwrap()
             .is_empty());
     }
@@ -45533,6 +52130,26 @@ mod tests {
         tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
             .await
             .expect("the poll does not panic");
+    }
+
+    /// Poll until the refresh a first poll claimed has published its diffstat.
+    /// No read computes any more, so this is what "the cache is seeded" means.
+    async fn seeded_run_stat(handler: &FrameHandler, run_id: &str) -> Value {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let handler = handler.clone();
+                let run_id = run_id.to_string();
+                let stat = tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
+                    .await
+                    .unwrap();
+                if !stat.is_null() {
+                    return stat;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the refresh the first poll claimed publishes a diffstat")
     }
 
     /// A shared QA daemon with one adopted run whose worktree holds one
@@ -45575,14 +52192,9 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler, run_id, worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
 
-        // The first poll has nothing to serve, so it computes.
-        let first = {
-            let handler = handler.clone();
-            let run_id = run_id.clone();
-            tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
-                .await
-                .unwrap()
-        };
+        // The first poll has nothing to serve and answers null; the refresh it
+        // claimed is what fills the cache.
+        let first = seeded_run_stat(&handler, &run_id).await;
         let before = first["uncommitted"]["files_changed"]
             .as_u64()
             .unwrap_or_else(|| panic!("the first poll counted the tree: {first:?}"));
@@ -45650,13 +52262,7 @@ mod tests {
         let (state, handler, run_id, _worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
 
         // Seed the cache: after this every poll is a stale read.
-        {
-            let handler = handler.clone();
-            let run_id = run_id.clone();
-            tokio::task::spawn_blocking(move || polled_run_stat(&handler, &run_id))
-                .await
-                .unwrap();
-        }
+        seeded_run_stat(&handler, &run_id).await;
         let computes = watch_run_stat_computes(&state, Duration::from_millis(800));
         state.lock().unwrap().force_stale_diff_caches = true;
 
@@ -45691,7 +52297,7 @@ mod tests {
         let (state, handler, run_id, _worktree) = daemon_with_a_run_to_diff(&repo, dir.path());
 
         // Seed the cache, then start a refresh and hold it open.
-        poll_board(&handler).await;
+        seeded_run_stat(&handler, &run_id).await;
         watch_run_stat_computes(&state, Duration::from_millis(600));
         state.lock().unwrap().force_stale_diff_caches = true;
         poll_board(&handler).await;
@@ -45735,7 +52341,7 @@ mod tests {
             recorded.lock().unwrap().push((key.clone(), free));
         }));
 
-        // First-ever computes (the caller waits for these) …
+        // The refreshes a first poll claims …
         poll_board(&handler).await;
         // … then background refreshes of what is now stale.
         state.lock().unwrap().force_stale_diff_caches = true;
@@ -45754,6 +52360,918 @@ mod tests {
         assert!(
             seen.iter().all(|(_, free)| *free),
             "a diff ran while the app mutex was held: {seen:?}"
+        );
+    }
+
+    // ==== a board read never computes ========================================
+    //
+    // The rule step 3 of the concurrency spec adds to stale-while-revalidate: a
+    // read with NOTHING to serve answers anyway. It says what it does not know
+    // yet, claims the scan, and the scan invalidates the browser when it lands.
+    // Nothing waits under the app mutex for a first value ever again.
+
+    /// Hold every checkout scan open at the point its git work starts, so a
+    /// test can look at the daemon while one is running.
+    fn gate_scan_computes(state: &Arc<Mutex<AppState>>) -> OffLockGateHandle {
+        gate_diff_computes(state, |key| matches!(key, DiffCacheKey::ExternalScan(_)))
+    }
+
+    /// Hold every diff compute whose key `wanted` picks open until the test
+    /// lets it go, so a read has to answer from what it has.
+    fn gate_diff_computes(
+        state: &Arc<Mutex<AppState>>,
+        wanted: impl Fn(&DiffCacheKey) -> bool + Send + Sync + 'static,
+    ) -> OffLockGateHandle {
+        let (gate, handle) = OffLockGate::new();
+        state.lock().unwrap().diff_compute_observer = Some(Arc::new(move |key| {
+            if wanted(key) {
+                gate.arrive();
+            }
+        }));
+        handle
+    }
+
+    /// Poll until the board has stopped saying it is scanning.
+    async fn settled_board(handler: &FrameHandler) -> Value {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let handler = handler.clone();
+                let board =
+                    tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                        .await
+                        .unwrap();
+                if board["result"]["scanning"] == json!(false) {
+                    return board;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the scan the board claimed lands")
+    }
+
+    /// A board with nothing cached answers at once and says so. The old
+    /// behaviour — fall through to `discover_external_worktrees` under the app
+    /// mutex because there is no number to serve — is what made the first poll
+    /// after a restart the slowest frame of the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn board_list_answers_scanning_when_nothing_has_ever_been_computed() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let gate = gate_scan_computes(&state);
+
+        let started = std::time::Instant::now();
+        let board = {
+            let handler = handler.clone();
+            tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                .await
+                .unwrap()
+        };
+        let waited = started.elapsed();
+
+        assert!(
+            waited < Duration::from_millis(100),
+            "the board waited for a scan it had claimed: {waited:?}"
+        );
+        assert_eq!(
+            board["result"]["external_worktrees"],
+            json!([]),
+            "{board:?}"
+        );
+        assert_eq!(
+            board["result"]["scanning"],
+            json!(true),
+            "an empty rail with no scan behind it is a board still looking: {board:?}"
+        );
+
+        gate.wait_for_arrival();
+        gate.release();
+        let settled = settled_board(&handler).await;
+        let listed = settled["result"]["external_worktrees"]
+            .as_array()
+            .expect("the rail ships checkouts");
+        assert!(
+            listed.iter().any(|w| w["branch"] == json!("feature-loose")),
+            "the scan that landed put the checkout on the board: {settled:?}"
+        );
+    }
+
+    /// And the scan it claimed runs with the mutex free: every other frame is
+    /// served while the very first scan of a repository is still walking it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_first_scan_never_runs_under_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let gate = gate_scan_computes(&state);
+
+        poll_board(&handler).await;
+        gate.wait_for_arrival();
+
+        // The scan is inside its git work. Every frame behind it still answers.
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            let board = {
+                let handler = handler.clone();
+                tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                    .await
+                    .unwrap()
+            };
+            assert_eq!(board["ok"], true, "{board:?}");
+            assert_eq!(
+                board["result"]["scanning"],
+                json!(true),
+                "the scan is still running, and no second one was started: {board:?}"
+            );
+        }
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_millis(300),
+            "the frames behind the scan queued on the app mutex: {waited:?}"
+        );
+
+        gate.release();
+        settled_board(&handler).await;
+    }
+
+    /// The board said "scanning" and answered. What tells the browser to ask
+    /// again is the scan landing — the same push invalidation every other
+    /// change travels on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_landed_first_scan_invalidates_the_browser() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let gate = gate_scan_computes(&state);
+
+        poll_board(&handler).await;
+        gate.wait_for_arrival();
+        // Everything the board read itself may have queued, out of the way.
+        settled_pushes(&mut rx, &key).await;
+
+        gate.release();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let events = change_events(&settled_pushes(&mut rx, &key).await);
+                if events.iter().any(|event| event["type"] == "board.changed") {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the scan that landed told the browser to ask again");
+    }
+
+    /// The board said `stat: null` and answered. What tells the browser to ask
+    /// again is that first diffstat landing — the same push invalidation a
+    /// first scan travels on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_landed_first_diffstat_invalidates_the_browser() {
+        let (dir, repo) = init_repo();
+        let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+        let run_id = {
+            let mut app = state.lock().unwrap();
+            adopted_run(&mut app, &repo, dir.path(), "stat-run")
+        };
+        // Every other first landing out of the way, so the only cache this
+        // board read is missing is the run's diffstat.
+        seeded_run_stat(&handler, &run_id).await;
+        settled_board(&handler).await;
+        state.lock().unwrap().invalidate_run_stat(&run_id);
+        settled_pushes(&mut rx, &key).await;
+
+        poll_board(&handler).await;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let events = change_events(&settled_pushes(&mut rx, &key).await);
+                if events.iter().any(|event| event["type"] == "board.changed") {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the diffstat that landed told the browser to ask again");
+    }
+
+    /// An id for a checkout made outside Build since the last scan is refused,
+    /// and the refusal starts the one scan that will resolve it — rather than
+    /// paying for that scan under the app mutex the way the old forced retry
+    /// did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_out_of_band_worktree_id_is_refused_and_claims_one_scan() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        state
+            .lock()
+            .unwrap()
+            .scan_external_worktrees_now(&project_id)
+            .unwrap();
+
+        let path = add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        let worktree_id = crate::worktree::external_worktree_id(&canonical);
+        let gate = gate_scan_computes(&state);
+
+        let refused = state
+            .lock()
+            .unwrap()
+            .resolve_external_worktree(&project_id, &worktree_id)
+            .expect_err("the cache cannot know about a worktree made behind Build's back");
+        assert!(
+            refused.contains(&worktree_id) && refused.contains("scan now running"),
+            "the refusal names the id and what will resolve it: {refused}"
+        );
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .diff_refresh_is_running(&DiffCacheKey::ExternalScan(project_id.clone())),
+            "the refusal claimed no scan, so the id would never resolve"
+        );
+
+        gate.wait_for_arrival();
+        gate.release();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let resolved = state
+                    .lock()
+                    .unwrap()
+                    .resolve_external_worktree(&project_id, &worktree_id);
+                if resolved.is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the scan the refusal claimed resolves the id");
+    }
+
+    /// A daemon that has not scanned a project yet does not know which of its
+    /// checkouts are gone — and a bare checkout's attention record lives
+    /// nowhere but the attention map. The first stamp after a restart must not
+    /// prune that map against a scan nobody has run.
+    #[test]
+    fn attention_survives_a_stamp_taken_before_the_first_scan() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let worktree_id =
+            crate::worktree::external_worktree_id(&std::fs::canonicalize(&path).unwrap());
+
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": worktree_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        assert!(state.attention.contains_key(&worktree_id));
+
+        // A restart: the map comes back from the store, the scan has not run.
+        state.projects[0].external_scan = None;
+        state.persist_attention();
+
+        let reloaded = Store::new(dir.path().join("store"))
+            .expect("store opens")
+            .load_attention();
+        assert!(
+            reloaded.contains_key(&worktree_id),
+            "the checkout's attention was pruned against a scan nobody had run: {:?}",
+            reloaded.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Delete a checkout the way a user does: with nothing of Build's own still
+    /// writing into it. A queued turn scaffolds `.build/` into the checkout on a
+    /// thread of its own, after the verb that queued it has answered — and a
+    /// directory being written into is neither one `remove_dir_all` can walk nor
+    /// one that stays deleted once it has been.
+    async fn delete_the_checkout(state: &Arc<Mutex<AppState>>, checkout: &std::path::Path) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                {
+                    let app = state.lock().unwrap();
+                    if app.pending_agent_turns.is_empty() && app.turns_in_flight.is_empty() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("every turn the run's verbs queued arrives");
+        std::fs::remove_dir_all(checkout).expect("the user deleted their checkout");
+    }
+
+    /// The board sweeps runs whose checkout vanished, and deciding whether each
+    /// stage's commits were ever published is a fetch and two graph walks per
+    /// stage. The read answers with the run it still has and the sweep archives
+    /// it behind them, with the state lock free the whole time it asks git.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_vanished_runs_stages_are_judged_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review_delivered(&handler, "a run that vanishes");
+        let worktree = state.lock().unwrap().runs[&run_id].worktree.path.clone();
+        delete_the_checkout(&state, &worktree).await;
+
+        let (gate, held) = OffLockGate::new();
+        state.lock().unwrap().off_lock_gate = Some(gate);
+
+        let started = std::time::Instant::now();
+        let board = {
+            let handler = handler.clone();
+            tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                .await
+                .unwrap()
+        };
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_secs(2),
+            "the board waited for the sweep instead of answering from what it had: {waited:?}"
+        );
+        assert!(
+            row_with(&board["result"]["runs"], "run_id", &run_id)["run_id"] == json!(run_id),
+            "the run it still has is the run it answers with: {board:?}"
+        );
+
+        held.wait_for_arrival();
+        // The sweep is inside its git right now, and the daemon is not.
+        poll_board(&handler).await;
+        held.release();
+
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if state.lock().unwrap().runs[&run_id].run.state == RunState::Archived {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the sweep archives the run whose checkout is gone");
+    }
+
+    /// A job for the off-lock primitive that reports which half ran. Its claim
+    /// is the channel, so `apply` and `abandon` — which see no job — can still
+    /// say what became of it.
+    struct ProbeJob {
+        outcomes: std::sync::mpsc::Sender<&'static str>,
+        decide_panics: bool,
+    }
+
+    impl OffLockJob for ProbeJob {
+        type Claim = std::sync::mpsc::Sender<&'static str>;
+        type Decided = &'static str;
+
+        fn claim(&self) -> Self::Claim {
+            self.outcomes.clone()
+        }
+
+        fn decide(self) -> &'static str {
+            assert!(!self.decide_panics, "this probe's decide phase panics");
+            "decided"
+        }
+
+        fn apply(_state: &mut AppState, claim: Self::Claim, decided: &'static str) {
+            claim.send(decided).unwrap();
+        }
+
+        fn abandon(_state: &mut AppState, claim: Self::Claim) {
+            claim.send("abandoned").unwrap();
+        }
+    }
+
+    /// With no runtime and no shared handle — the synchronous tests — the
+    /// primitive decides inline and applies, so a read that claimed a job is
+    /// answered from what it found.
+    #[test]
+    fn an_off_lock_job_with_no_runtime_decides_inline_and_applies() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (outcomes, seen) = std::sync::mpsc::channel();
+
+        state.run_off_lock(ProbeJob {
+            outcomes,
+            decide_panics: false,
+        });
+
+        assert_eq!(seen.try_recv(), Ok("decided"));
+    }
+
+    /// A decide phase that panics on the blocking pool gives its claim back
+    /// through `abandon`, under the lock, or the claim it held would never be
+    /// taken again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_off_lock_job_whose_decide_panics_gives_its_claim_back() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (outcomes, seen) = std::sync::mpsc::channel();
+
+        state.lock().unwrap().run_off_lock(ProbeJob {
+            outcomes,
+            decide_panics: true,
+        });
+
+        let outcome =
+            tokio::task::spawn_blocking(move || seen.recv_timeout(Duration::from_secs(5)))
+                .await
+                .unwrap();
+        assert_eq!(outcome, Ok("abandoned"));
+    }
+
+    /// The same job under a runtime runs its decide phase on the blocking
+    /// pool and applies under the lock afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_off_lock_job_under_a_runtime_applies_what_it_decided() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (outcomes, seen) = std::sync::mpsc::channel();
+
+        state.lock().unwrap().run_off_lock(ProbeJob {
+            outcomes,
+            decide_panics: false,
+        });
+
+        let outcome =
+            tokio::task::spawn_blocking(move || seen.recv_timeout(Duration::from_secs(5)))
+                .await
+                .unwrap();
+        assert_eq!(outcome, Ok("decided"));
+    }
+
+    /// "Nothing has looked yet" is not the answer "there is no such checkout",
+    /// and every read that can miss says which one it means in the same words.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_missed_checkout_says_whether_a_scan_has_ever_landed() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
+        // A second project, whose own checkouts have been scanned. Whether the
+        // scan can still show a checkout is a fact about one project, never
+        // about the board as a whole.
+        let other_repo = init_repo_named(dir.path(), "other");
+        let other_id = {
+            let mut app = state.lock().unwrap();
+            let added = app
+                .dispatch(
+                    "project.add",
+                    &json!({ "path": other_repo.to_string_lossy() }),
+                )
+                .expect("the second project registers");
+            let id = added["project_id"].as_str().unwrap().to_string();
+            app.scan_external_worktrees_now(&id)
+                .expect("its checkouts are scanned");
+            id
+        };
+        // The primary walk lands; the checkout scan is held open, so every read
+        // below is answered by a project nothing has scanned.
+        let gate = gate_scan_computes(&state);
+        landed_primary_summary(&state, &project_id).await;
+
+        let refusals: Vec<String> = {
+            let mut app = state.lock().unwrap();
+            vec![
+                app.resolve_external_worktree(&project_id, "wt-000000000000")
+                    .expect_err("no scan has landed to resolve an id against"),
+                app.dispatch(
+                    "branch.finish",
+                    &json!({
+                        "project_id": project_id,
+                        "branch": "feature-loose",
+                        "action": "cleanup"
+                    }),
+                )
+                .expect_err("no scan has landed to find the branch in"),
+                app.dispatch(
+                    "entity.dismiss",
+                    &json!({ "project_id": project_id, "branch": "feature-loose" }),
+                )
+                .expect_err("no scan has landed to find the row in"),
+            ]
+        };
+        for refusal in &refusals {
+            assert!(
+                refusal.contains("no scan of this project's checkouts has landed"),
+                "the refusal blamed the checkout for a scan nobody has run: {refusal}"
+            );
+        }
+
+        let missed = state
+            .lock()
+            .unwrap()
+            .dispatch(
+                "branch.get",
+                &json!({ "project_id": other_id, "branch": "nothing-is-on-this" }),
+            )
+            .expect_err("no checkout of the scanned project is on that branch");
+        assert!(
+            missed.contains("made outside Build since the last scan"),
+            "a scanned project's miss was answered out of an unscanned neighbour's scan: {missed}"
+        );
+
+        gate.wait_for_arrival();
+        gate.release();
+    }
+
+    /// A dismissal is written against the head its row is on. Until the primary
+    /// walk has landed there is no head, and a dismissal written at none is one
+    /// the walk's own first result revokes — so the verb is refused rather than
+    /// answered with a silent no-op.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dismissing_the_primary_row_before_its_walk_lands_is_refused() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let gate = gate_diff_computes(&state, |key| matches!(key, DiffCacheKey::PrimarySummary(_)));
+
+        let refused = call(
+            &handler,
+            "entity.dismiss",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("now running"),
+            "{refused:?}"
+        );
+        assert!(
+            !state
+                .lock()
+                .unwrap()
+                .attention
+                .contains_key(&crate::attention::primary_row_key(&project_id)),
+            "a dismissal was written against a head nothing had read yet"
+        );
+
+        gate.wait_for_arrival();
+        gate.release();
+    }
+
+    /// Poll until the primary-checkout walk this project claimed has landed.
+    async fn landed_primary_summary(state: &Arc<Mutex<AppState>>, project_id: &str) {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if state.lock().unwrap().primary_summary(project_id).is_some() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the primary summary the first read claimed lands")
+    }
+
+    /// A project whose scan has never landed has nothing to amend. The create
+    /// says so and stops: it neither cancels the first scan that is running to
+    /// find its checkout anyway, nor tells the browser about an edit it did not
+    /// make.
+    #[test]
+    fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "fresh", "feature-fresh");
+        let described =
+            crate::worktree::describe_checkout(&repo, "main", &path).expect("it is a checkout");
+        let scan = DiffCacheKey::ExternalScan(project_id.clone());
+        state.diff_refreshes_in_flight.insert(scan.clone());
+        state.changes.flush();
+
+        state.note_worktree_appeared(&project_id, described);
+
+        assert!(
+            state.diff_refreshes_in_flight.contains(&scan),
+            "the create dropped the first scan its checkout would have arrived on"
+        );
+        assert!(
+            !state.changes.has_pending(),
+            "the create pushed an invalidation for an edit it did not make"
+        );
+    }
+
+    /// A checkout bound to a run is excluded from the scan, so removing it
+    /// from the list is routinely a no-op — `run.finish`'s failure branch and
+    /// the finish epilogue both reach here with a path the list never held.
+    /// A removal that removed nothing neither overtakes the scan in flight
+    /// (whose whole fresh list would be dropped on landing) nor tells every
+    /// browser to refetch a board that did not change.
+    #[test]
+    fn a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let scan = DiffCacheKey::ExternalScan(project_id.clone());
+        state.diff_refreshes_in_flight.insert(scan.clone());
+        state.changes.flush();
+
+        state.note_worktree_gone(&project_id, &dir.path().join("never-in-the-list"));
+
+        assert!(
+            !state.diff_refreshes_superseded.contains(&scan),
+            "a removal that removed nothing superseded the running scan"
+        );
+        assert!(
+            !state.changes.has_pending(),
+            "a removal that removed nothing pushed an invalidation"
+        );
+        assert_eq!(
+            state.external_scan_of(&project_id).unwrap().worktrees.len(),
+            1,
+            "the removal touched a checkout it was not asked about"
+        );
+    }
+
+    /// The mirror for an appearance: describing the checkout the list already
+    /// holds, unchanged, is not an edit either.
+    #[test]
+    fn re_noting_an_unchanged_checkout_leaves_the_running_scan_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
+        let known = state.scan_external_worktrees_now(&project_id).unwrap()[0].clone();
+        let scan = DiffCacheKey::ExternalScan(project_id.clone());
+        state.diff_refreshes_in_flight.insert(scan.clone());
+        state.changes.flush();
+
+        state.note_worktree_appeared(&project_id, known);
+
+        assert!(
+            !state.diff_refreshes_superseded.contains(&scan),
+            "re-noting an unchanged checkout superseded the running scan"
+        );
+        assert!(
+            !state.changes.has_pending(),
+            "re-noting an unchanged checkout pushed an invalidation"
+        );
+    }
+
+    /// The scan is the liveness test for CHECKOUTS and for nothing else. A
+    /// project nobody has scanned spares their records; every other kind of key
+    /// still answers to the map that owns it.
+    #[test]
+    fn attention_for_a_dead_run_is_pruned_before_the_first_scan() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let worktree_id =
+            crate::worktree::external_worktree_id(&std::fs::canonicalize(&path).unwrap());
+        let dead_run = "run-nobody-has".to_string();
+        for entity_id in [&worktree_id, &dead_run] {
+            let seen = state.handle(req("entity.seen", json!({ "entity_id": entity_id })));
+            assert_eq!(seen["ok"], true, "{seen:?}");
+        }
+
+        state.projects[0].external_scan = None;
+        state.persist_attention();
+
+        let reloaded = Store::new(dir.path().join("store"))
+            .expect("store opens")
+            .load_attention();
+        assert!(
+            reloaded.contains_key(&worktree_id),
+            "the checkout's attention was pruned against a scan nobody had run: {:?}",
+            reloaded.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !reloaded.contains_key(&dead_run),
+            "a run no map knows about was spared because a project was unscanned: {:?}",
+            reloaded.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// A repository this daemon cannot read is an answer, not a question. The
+    /// attempt settles the board and stands until the interval is out, instead
+    /// of claiming a fresh scan on every poll and saying "scanning" forever.
+    #[test]
+    fn a_scan_that_cannot_read_its_repository_settles_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let computes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&computes);
+        state.diff_compute_observer = Some(Arc::new(move |key| {
+            if matches!(key, DiffCacheKey::ExternalScan(_)) {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+        std::fs::remove_dir_all(&repo).unwrap();
+
+        let first = state.external_worktrees(&project_id);
+        assert_eq!(computes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            first.settled,
+            "the attempt that could not read the repository settled the read"
+        );
+        assert!(first.worktrees.is_empty(), "{:?}", first.worktrees);
+
+        let again = state.external_worktrees(&project_id);
+        assert!(again.settled, "the settled answer stands");
+        assert_eq!(
+            computes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a repository that cannot be read was re-scanned by the next poll"
+        );
+    }
+
+    /// A create is not a reason to forget every other checkout. The new one
+    /// joins the last scan, so the very next board poll ships it without any
+    /// repository walk at all.
+    #[test]
+    fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let scanned_at = state.projects[0]
+            .external_scan
+            .as_ref()
+            .expect("seeded above")
+            .scanned_at;
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "scratch" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let worktree_id = created["result"]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let cache = state.projects[0]
+            .external_scan
+            .as_ref()
+            .expect("the create emptied the whole project's scan");
+        assert!(
+            cache.worktrees.iter().any(|w| w.id == worktree_id),
+            "the new checkout is in the cache the board reads: {:?}",
+            cache.worktrees
+        );
+        assert!(
+            cache
+                .worktrees
+                .iter()
+                .any(|w| w.branch.as_deref() == Some("feature-here")),
+            "the checkouts that were already there are still there: {:?}",
+            cache.worktrees
+        );
+        assert_eq!(
+            cache.scanned_at, scanned_at,
+            "an amended list is exactly as old as the scan that filled it"
+        );
+
+        // And the board ships it with no scan of its own.
+        let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&scans);
+        state.diff_compute_observer = Some(Arc::new(move |key| {
+            if matches!(key, DiffCacheKey::ExternalScan(_)) {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+        let board = state.handle(req("board.list", json!({})));
+        assert_eq!(board["result"]["scanning"], json!(false), "{board:?}");
+        assert!(
+            board["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["worktree_id"] == json!(worktree_id)),
+            "{board:?}"
+        );
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the board rescanned the repository for a checkout it had been handed"
+        );
+    }
+
+    /// Age a project's last scan past the interval, so the next read of it
+    /// claims a rescan.
+    fn age_out_scan(state: &Arc<Mutex<AppState>>, project_id: &str) {
+        let mut app = state.lock().unwrap();
+        let cache = app
+            .project_mut(project_id)
+            .and_then(|project| project.external_scan.as_mut())
+            .expect("a scan to age");
+        cache.scanned_at -= EXTERNAL_SCAN_INTERVAL + Duration::from_secs(1);
+    }
+
+    /// A create that lands while a scan of the same repository is walking it.
+    /// The walk describes the repository as it was before the create, so what
+    /// it finds is dropped — but its claim is held to the end, because letting
+    /// it go lets the very next read start a second walk behind the first and
+    /// then lets the first land on top of the amendment.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_create_during_a_scan_outlives_that_scans_landing() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
+        settled_board(&handler).await;
+        age_out_scan(&state, &project_id);
+
+        let gate = gate_scan_computes(&state);
+        poll_board(&handler).await;
+        gate.wait_for_arrival();
+
+        let created = {
+            let handler = handler.clone();
+            let project_id = project_id.clone();
+            tokio::task::spawn_blocking(move || {
+                call(
+                    &handler,
+                    "worktree.create",
+                    json!({ "project_id": project_id, "name": "scratch" }),
+                )
+            })
+            .await
+            .unwrap()
+        };
+        assert_eq!(created["ok"], true, "{created:?}");
+        let worktree_id = created["result"]["worktree_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let scan = DiffCacheKey::ExternalScan(project_id.clone());
+        assert!(
+            state.lock().unwrap().diff_refresh_is_running(&scan),
+            "the create un-claimed the scan it had already overtaken"
+        );
+        poll_board(&handler).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            gate.arrivals.try_recv().is_err(),
+            "a second walk of the same repository started behind the first"
+        );
+
+        gate.release();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if !state.lock().unwrap().diff_refresh_is_running(&scan) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the superseded scan lands and lets its claim go");
+
+        let listed = state
+            .lock()
+            .unwrap()
+            .external_scan_of(&project_id)
+            .expect("the amended scan is still there")
+            .worktrees
+            .clone();
+        assert!(
+            listed.iter().any(|w| w.id == worktree_id),
+            "the pre-create walk landed on top of the checkout the create had added: {listed:?}"
+        );
+    }
+
+    /// The same rule for the caches a mutation empties rather than amends. A
+    /// stat computed against the tree as it was before the mutation is dropped,
+    /// and the claim it held is not handed to a second compute behind it.
+    #[test]
+    fn an_invalidated_stat_discards_the_compute_it_overtook() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = "run-1".to_string();
+        let key = DiffCacheKey::RunStat(run_id.clone());
+        state.diff_refreshes_in_flight.insert(key.clone());
+
+        state.invalidate_run_stat(&run_id);
+        assert!(
+            state.diff_refresh_is_running(&key),
+            "the mutation un-claimed a compute that is still running"
+        );
+
+        state.publish_diff_refresh(
+            &key,
+            Some(DiffCacheEntry::RunStat {
+                run_id: run_id.clone(),
+                stat: json!({ "files_changed": 3 }),
+            }),
+        );
+        assert!(
+            !state.run_stat_cache.contains_key(&run_id),
+            "a stat read before the mutation was published as the run's current one"
+        );
+        assert!(
+            !state.diff_refresh_is_running(&key),
+            "the superseded compute kept its claim after landing"
         );
     }
 
@@ -46078,12 +53596,17 @@ mod tests {
             .find(|turn| turn.owner == capture_id)
             .expect("the router is given a turn");
         assert_eq!(turn.agent_id, agent_id);
-        assert_eq!(turn.root, session.scratch_dir());
-        assert_eq!(turn.phase, "route");
-        assert!(turn.cold.contains("fix the login redirect"));
-        assert!(turn.cold.contains("dispatch_branch"));
         assert_eq!(
-            turn.cold, turn.warm,
+            turn.root,
+            AppState::canonical_root(session.scratch_dir()),
+            "a queued turn's root is canonical at construction, so the key it is on its way to is a field read"
+        );
+        assert_eq!(turn.phase, "route");
+        assert!(turn.said().cold.contains("fix the login redirect"));
+        assert!(turn.said().cold.contains("dispatch_branch"));
+        assert_eq!(
+            turn.said().cold,
+            turn.said().warm,
             "a router is one decision long: there is no conversation to continue"
         );
         assert_eq!(capture_record(&mut state, &capture_id)["state"], "routing");
@@ -46121,7 +53644,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
 
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -46163,9 +53686,9 @@ mod tests {
         );
         assert_eq!(turns[0].phase, "plan");
         assert!(
-            turns[0].cold.contains("fix the login redirect"),
+            turns[0].said().cold.contains("fix the login redirect"),
             "the turn carries what the user said: {}",
-            turns[0].cold
+            turns[0].said().cold
         );
 
         let record = capture_record(&mut state, &capture_id);
@@ -46198,7 +53721,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
 
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -46208,11 +53731,12 @@ mod tests {
             )
             .unwrap();
         let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-        let agent_id = primary_agent_id(&state, &issue_id);
-        let key = TabKey::agent(&AppState::canonical_root(&repo), &agent_id);
 
         // The turn from the route is still queued.
-        state.start_routed_issue_agent(&issue_id);
+        assert!(
+            routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
+            "the issue already has its session"
+        );
         assert_eq!(
             state
                 .pending_agent_turns
@@ -46223,10 +53747,12 @@ mod tests {
             "the turn already queued is the one that reads the capture"
         );
 
-        // The queue drained and the spawn is in flight.
-        state.pending_agent_turns.clear();
-        state.agent_spawns_in_flight.insert(key.clone());
-        state.start_routed_issue_agent(&issue_id);
+        // The queue drained and the turn is mid-delivery, its harness coming.
+        let mut delivering = state.take_pending_turns();
+        assert!(
+            routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
+            "a harness already coming up is the one that reads the capture"
+        );
         assert!(
             state.pending_agent_turns.is_empty(),
             "a harness already coming up is the one that reads the capture"
@@ -46234,12 +53760,114 @@ mod tests {
 
         // And once nothing is coming, the issue that already has its session
         // is still not restarted: starting is a first turn, not a nudge.
-        state.agent_spawns_in_flight.remove(&key);
-        state.start_routed_issue_agent(&issue_id);
+        while let Some((_, mark)) = delivering.next_turn() {
+            mark.settle(&mut state);
+        }
+        assert!(
+            routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
+            "an issue with a planning session already open is not dispatched again"
+        );
         assert!(
             state.pending_agent_turns.is_empty(),
             "an issue with a planning session already open is not dispatched again"
         );
+    }
+
+    /// A planning workspace that cannot be written never fails the route: the
+    /// capture is recorded and the Issue holds the text, so the route answers
+    /// with an inert Issue that says no agent is reading it — and once the
+    /// disk is fixed, the same Issue starts. The refusal travels the whole way
+    /// through `PlanWorkspaceRefused` and `RoutedIssueDrafting::refused`,
+    /// which is the one override of the trait's `Err`.
+    #[test]
+    fn routing_to_an_issue_whose_workspace_cannot_be_written_keeps_the_route() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+        // Every Issue's scratch docs dir is cut under this root; a plain file
+        // standing there fails `create_dir_all` for any Issue.
+        let docs_root = dir.path().join("wt").join(&project_id).join(".issue-docs");
+        std::fs::create_dir_all(docs_root.parent().unwrap()).unwrap();
+        std::fs::write(&docs_root, "not a directory").unwrap();
+
+        let filed = state
+            .router_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id: project_id.clone(),
+                    goal: "fix the login redirect".to_string(),
+                    rationale: None,
+                },
+            )
+            .expect("an unwritable workspace never fails the route");
+        let issue_id = filed["issue_id"].as_str().unwrap().to_string();
+
+        assert_eq!(filed["planning"], false, "{filed:?}");
+        assert_eq!(
+            state.plans[&issue_id].plan.state,
+            PlanState::Created,
+            "the Issue is inert, not half-started"
+        );
+        assert!(
+            state.plans[&issue_id].workspace.is_none(),
+            "no workspace was written"
+        );
+        assert!(
+            !state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.owner == issue_id),
+            "no turn was queued for an agent that has nowhere to work"
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the refused workspace left its row on the board"
+        );
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["state"], "routed");
+        assert_eq!(record["routing"]["kind"], "issue");
+        assert_eq!(record["routing"]["target_id"], issue_id.as_str());
+
+        // Re-startable: with the disk fixed, the same Issue's session opens.
+        std::fs::remove_file(&docs_root).unwrap();
+        let job = routed_planning_start(&mut state, &issue_id, &capture_id)
+            .expect("an inert Issue has a session to start");
+        state
+            .run_lifecycle_here(job)
+            .expect("the session opens once the disk is fixed");
+        assert_ne!(state.plans[&issue_id].plan.state, PlanState::Created);
+        assert!(state.plans[&issue_id].workspace.is_some());
+        assert_eq!(
+            state
+                .pending_agent_turns
+                .iter()
+                .filter(|turn| turn.owner == issue_id)
+                .count(),
+            1
+        );
+    }
+
+    /// What a route finds when it asks for a planning session a second time.
+    /// `None` is "nothing to start", which is the whole answer this is asked
+    /// for: a job would mean a second harness on the same issue.
+    fn routed_planning_start(
+        state: &mut AppState,
+        issue_id: &str,
+        capture_id: &str,
+    ) -> Option<WorktreeLifecycleJob> {
+        let project_id = state.project_of(issue_id).expect("the issue has a project");
+        state
+            .reserve_plan_drafting(
+                issue_id,
+                Box::new(RoutedIssueDrafting {
+                    issue_id: issue_id.to_string(),
+                    project_id,
+                    capture_id: capture_id.to_string(),
+                    answer: capture_after_routing,
+                }),
+            )
+            .expect("the issue is on the board")
     }
 
     /// The confident destination. `dispatch_branch` is the one-call handoff, so
@@ -46253,7 +53881,7 @@ mod tests {
         state.pending_agent_turns.clear();
 
         let dispatched = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::DispatchBranch {
                     project_id: project_id.clone(),
@@ -46297,7 +53925,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "make the thing faster");
 
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
@@ -46326,7 +53954,7 @@ mod tests {
     /// client cannot see is a choice nobody can tap.
     fn asked_with_two_options(state: &mut AppState, capture_id: &str) {
         state
-            .on_router_mcp_action(
+            .router_action(
                 capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
@@ -46430,8 +54058,12 @@ mod tests {
             .iter()
             .find(|turn| turn.owner == capture_id)
             .expect("the router is re-fired with the choice in hand");
-        assert!(turn.cold.contains("proj-do"), "{}", turn.cold);
-        assert!(turn.cold.contains("New branch on Do"), "{}", turn.cold);
+        assert!(turn.said().cold.contains("proj-do"), "{}", turn.said().cold);
+        assert!(
+            turn.said().cold.contains("New branch on Do"),
+            "{}",
+            turn.said().cold
+        );
     }
 
     /// A client that tracked positions rather than ids taps the same choice.
@@ -46511,7 +54143,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, _) = captured(&mut state, "make the thing faster");
 
-        let too_many = state.on_router_mcp_action(
+        let too_many = state.router_action(
             &capture_id,
             BridgeAction::AskUser {
                 question: "which project is this about?".to_string(),
@@ -46577,7 +54209,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "ship it");
         let project_id = state.projects[0].id.clone();
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id,
@@ -46600,7 +54232,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, primary_agent) = captured(&mut state, "make the thing faster");
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
@@ -46645,8 +54277,12 @@ mod tests {
             .iter()
             .find(|turn| turn.owner == capture_id)
             .expect("the router is re-fired");
-        assert!(turn.cold.contains("the bridge"), "{}", turn.cold);
-        assert!(turn.cold.contains("make the thing faster"));
+        assert!(
+            turn.said().cold.contains("the bridge"),
+            "{}",
+            turn.said().cold
+        );
+        assert!(turn.said().cold.contains("make the thing faster"));
     }
 
     #[test]
@@ -46662,7 +54298,7 @@ mod tests {
         assert_eq!(unasked["ok"], false, "{unasked:?}");
 
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project?".to_string(),
@@ -46675,6 +54311,96 @@ mod tests {
             json!({ "capture_id": capture_id, "text": "  " }),
         ));
         assert_eq!(blank["ok"], false, "{blank:?}");
+    }
+
+    /// The router's harness is killed on a thread of its own, so the wipe of
+    /// the directory it was writing into waits for that thread: a
+    /// `remove_dir_all` a child is still creating files under fails the walk,
+    /// and the walk itself has no business under the app mutex. The cancel
+    /// answers first, the place is free at once for the router a re-fire puts
+    /// there, and the files go once the process is reaped.
+    #[test]
+    fn cancelling_a_capture_wipes_its_scratch_once_the_router_is_reaped() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let (capture_id, agent_id) = captured(&mut app, "make the thing faster");
+        // The router's first turn already reached the harness below.
+        app.pending_agent_turns.clear();
+        let scratch = app.router_sessions[&capture_id].scratch_dir().to_path_buf();
+        let root = AppState::canonical_root(&scratch);
+        let (death, death_handle) = OffLockGate::new();
+        app.tabs.insert(
+            TabKey::agent(&root, &agent_id),
+            gated_tab(
+                &root,
+                gated_agent_role(&agent_id),
+                GatedHarness::new().refusing_to_die_until(death),
+            ),
+        );
+        let state = app.shared();
+
+        let cancelled = frame_on_a_thread(
+            &state,
+            "s-cancel",
+            "capture.cancel",
+            json!({ "capture_id": capture_id }),
+        )
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the cancel answers before the router is reaped");
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+        death_handle.wait_for_arrival();
+        let retiring_dirs = || {
+            let mark = format!("{capture_id}{}", crate::reaper::RETIRING_DIR_MARK);
+            std::fs::read_dir(scratch.parent().unwrap())
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&mark))
+                .count()
+        };
+        assert!(
+            !scratch.exists(),
+            "the place is free the moment the cancel answers"
+        );
+        assert_eq!(
+            retiring_dirs(),
+            1,
+            "the files are not removed out from under a process still writing them"
+        );
+        assert!(
+            state.try_lock().is_ok(),
+            "the wait for the router is holding the app mutex"
+        );
+
+        death_handle.release();
+        assert!(
+            settles(|| retiring_dirs() == 0),
+            "the files go once the router is reaped"
+        );
+    }
+
+    /// A capture cancelled while its router's first turn is still on its way
+    /// has no session for that turn to reach: the delivery spawns nothing, and
+    /// the scratch a spawn would scaffold into is not brought back.
+    #[test]
+    fn a_capture_cancelled_before_its_router_spawns_gets_no_router() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let (capture_id, agent_id) = captured(&mut app, "make the thing faster");
+        let scratch = app.router_sessions[&capture_id].scratch_dir().to_path_buf();
+        let cancelled = app.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+        let state = app.shared();
+
+        deliver_pending_agent_turns(&state);
+
+        let s = state.lock().unwrap();
+        assert!(
+            !s.tabs
+                .values()
+                .any(|tab| tab.role.agent().is_some_and(|(_, id)| id == agent_id)),
+            "a router was spawned for a capture nobody wants routed"
+        );
+        assert!(!scratch.exists(), "the spawn scaffolded the scratch back");
     }
 
     /// A router that stops without deciding leaves the capture needing the
@@ -46720,7 +54446,7 @@ mod tests {
             .scratch_dir()
             .to_path_buf();
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id,
@@ -46789,7 +54515,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -46849,7 +54575,7 @@ mod tests {
 
         let (touched_capture, _) = captured(&mut state, "fix the login redirect");
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &touched_capture,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -46890,7 +54616,7 @@ mod tests {
 
         let (branch_capture, _) = captured(&mut state, "finish the toast");
         state
-            .on_router_mcp_action(
+            .router_action(
                 &branch_capture,
                 BridgeAction::DispatchBranch {
                     project_id: project_id.clone(),
@@ -46962,6 +54688,131 @@ mod tests {
         );
     }
 
+    /// The user's own reroute reaches a branch through the same drain: it is an
+    /// ordinary frame, and the checkout it cuts must not hold the daemon still
+    /// while it is being made.
+    #[test]
+    fn rerouting_a_capture_to_a_branch_cuts_it_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut app, "add the CSV export");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let rerouted = frame_on_a_thread(
+            &state,
+            "s-reroute",
+            "capture.reroute",
+            json!({ "capture_id": capture_id, "project_id": project_id, "kind": "branch" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the reroute is holding the app mutex through its git"
+        );
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the reroute cuts its branch");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let rerouted = rerouted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the reroute answers once its git is done");
+        assert_eq!(rerouted["ok"], true, "{rerouted:?}");
+        assert_eq!(
+            rerouted["result"]["routing"]["target_id"], "build/add-the-csv-export",
+            "the reroute still answers with the capture's own row: {rerouted:?}"
+        );
+    }
+
+    /// The app mutex is free while a dispatch cuts its branch, so the capture
+    /// it was routed from can be cancelled meanwhile. A route that cannot be
+    /// written down refuses BEFORE the run is durable: nothing is ever both
+    /// persisted and reported as a failure, and the checkout the git made
+    /// stays on the board as the unowned card it is.
+    #[test]
+    fn a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run_is_durable() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        app.scan_external_worktrees_now(&project_id).unwrap();
+        let (capture_id, _) = captured(&mut app, "add the CSV export");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let rerouted = frame_on_a_thread(
+            &state,
+            "s-reroute",
+            "capture.reroute",
+            json!({ "capture_id": capture_id, "project_id": project_id, "kind": "branch" }),
+        );
+        gate_handle.wait_for_arrival();
+        let cancelled = frame_on_a_thread(
+            &state,
+            "s-cancel",
+            "capture.cancel",
+            json!({ "capture_id": capture_id }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the cancel answers while the reroute cuts its branch");
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+
+        gate_handle.release();
+        let rerouted = rerouted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the reroute answers once its git is done");
+        assert_eq!(rerouted["ok"], false, "{rerouted:?}");
+        assert!(
+            rerouted["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown capture_id"),
+            "{rerouted:?}"
+        );
+
+        let state = state.lock().unwrap();
+        assert!(
+            state.runs.is_empty(),
+            "the refused dispatch left a run in memory"
+        );
+        let durable = state.store.as_ref().unwrap().load_all_runs().unwrap();
+        assert!(
+            durable.is_empty(),
+            "the refused dispatch left {} run(s) in the store",
+            durable.len()
+        );
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .all(|turn| !turn.owner.starts_with("run-")),
+            "the refused dispatch left a turn queued for a run that does not exist"
+        );
+        assert!(
+            state.pending_rows.is_empty(),
+            "the refused dispatch left its row on the board"
+        );
+        assert!(
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .is_some_and(|cache| {
+                    cache.worktrees.iter().any(|worktree| {
+                        worktree.branch.as_deref() == Some("build/add-the-csv-export")
+                    })
+                }),
+            "the checkout the git cut is not on the board: {:?}",
+            state.projects[0]
+                .external_scan
+                .as_ref()
+                .map(|cache| &cache.worktrees)
+        );
+    }
+
     /// A failed route's retry is the same door: no destination named, so the
     /// router decides again.
     #[test]
@@ -47000,7 +54851,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let (capture_id, _) = captured(&mut state, "ship it");
         let file = |state: &mut AppState| {
-            state.on_router_mcp_action(
+            state.router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -47036,7 +54887,7 @@ mod tests {
         );
 
         let router_reaching_in = state
-            .on_router_mcp_action(&capture_id, BridgeAction::ReadUnreadMessages)
+            .router_action(&capture_id, BridgeAction::ReadUnreadMessages)
             .unwrap_err();
         assert!(
             router_reaching_in.contains("read_unread_messages")
@@ -47056,12 +54907,12 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "ship it");
 
         let projects = state
-            .on_router_mcp_action(&capture_id, BridgeAction::ListProjects)
+            .router_action(&capture_id, BridgeAction::ListProjects)
             .unwrap();
         assert_eq!(projects["projects"].as_array().unwrap().len(), 1);
 
         let work = state
-            .on_router_mcp_action(&capture_id, BridgeAction::ListWork)
+            .router_action(&capture_id, BridgeAction::ListWork)
             .unwrap();
         let rows = work["work"].as_array().unwrap();
         assert!(
@@ -47074,7 +54925,7 @@ mod tests {
         );
 
         let conversation = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::ReadConversation {
                     entity_id: issue_id.clone(),
@@ -47089,7 +54940,7 @@ mod tests {
             .unwrap()
             .contains("add a greeting"));
 
-        let unknown = state.on_router_mcp_action(
+        let unknown = state.router_action(
             &capture_id,
             BridgeAction::ReadConversation {
                 entity_id: "run-nowhere".to_string(),
@@ -47222,7 +55073,7 @@ mod tests {
             let action = handled
                 .action
                 .unwrap_or_else(|| panic!("{tool} reached no daemon action: {:?}", handled.reply));
-            state.on_router_mcp_action(&self.capture_id, action)
+            state.router_action(&self.capture_id, action)
         }
 
         /// A read tool's answer, as the list it promises.
@@ -47638,7 +55489,7 @@ mod tests {
         let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
         let (sender, rx, key) = SessionSender::observable("browser");
-        let hello = handler(sender.clone(), req("session.hello", json!({})));
+        let hello = handler.call(sender.clone(), req("session.hello", json!({})));
         assert_eq!(hello["ok"], true, "{hello:?}");
         (state, handler, sender, rx, key)
     }
@@ -47699,7 +55550,7 @@ mod tests {
     async fn greeting_twice_leaves_one_subscription() {
         let (dir, repo) = init_repo();
         let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-        handler(sender, req("session.hello", json!({})));
+        handler.call(sender, req("session.hello", json!({})));
         settled_pushes(&mut rx, &key).await;
 
         state.lock().unwrap().note_board_changed();
@@ -47799,7 +55650,7 @@ mod tests {
 
         let created = call(&handler, "term.create", json!({ "project_id": project_id }));
         assert_eq!(created["ok"], true, "{created:?}");
-        let attached = handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
         assert_eq!(attached["ok"], true, "{attached:?}");
         settled_pushes(&mut rx, &key).await; // everything the setup itself moved
 
@@ -47873,7 +55724,12 @@ mod tests {
             payload: Value::Null,
         };
         assert_eq!(
-            dispatch_frame(&state, SessionSender::detached("browser"), close)["ok"],
+            dispatch_frame(
+                &state,
+                SessionSender::detached("browser"),
+                close,
+                FrameClock::new().frame("close")
+            )["ok"],
             true
         );
         assert_eq!(state.lock().unwrap().changes().subscriber_count(), 0);
@@ -47949,7 +55805,7 @@ mod tests {
         let handler = handler.clone();
         let sender = sender.clone();
         let frame = req(method, params);
-        tokio::task::spawn_blocking(move || handler(sender, frame))
+        tokio::task::spawn_blocking(move || handler.call(sender, frame))
             .await
             .expect("the handler finished")
     }
@@ -48148,7 +56004,7 @@ mod tests {
         };
         let closing = handler.clone();
         let closing_sender = sender.clone();
-        tokio::task::spawn_blocking(move || closing(closing_sender, close))
+        tokio::task::spawn_blocking(move || closing.call(closing_sender, close))
             .await
             .expect("the close ran");
 

@@ -434,6 +434,13 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.working::after { content:""; position:absolute; inset:-3px;
   border-radius:50%; border:1px solid var(--accent); opacity:.55;
   animation:rail-pulse 1.6s ease-in-out infinite; }
+/* A start this browser asked for and has not been answered: the daemon opens
+   the harness behind its own reply, so the ring says "on its way" until the
+   entity's push says the session is live. Fainter than working, and slower —
+   nothing is running yet. */
+.rail-bubble.starting::after { content:""; position:absolute; inset:-3px;
+  border-radius:50%; border:1px dashed var(--line3); opacity:.7;
+  animation:rail-pulse 2.4s ease-in-out infinite; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
 @keyframes rail-pulse { 0%,100% { opacity:.55; transform:scale(1); }
@@ -464,7 +471,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 /* Reduced motion drops the pulse ring. The patterns need nothing here — the
    painter reads the same preference and holds a single frame. */
 @media (prefers-reduced-motion: reduce) {
-  .rail-bubble.working::after { animation:none; }
+  .rail-bubble.working::after,
+  .rail-bubble.starting::after { animation:none; }
 }
 
 /* The panel: one conversation, or the same agent's screen.

@@ -28,6 +28,7 @@ import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { NOTHING_HIGHLIGHTED, branchPickerRows, nextHighlight, pressedRow } from "./branchPickerModel.js";
 import { modalDialogHtml, openModal } from "./modal.js";
+import { replyOrNothing } from "./session.js";
 
 /** The two things a project can hold, in the order the tabs offer them. */
 export const CREATE_KINDS = ["branch", "issue"];
@@ -337,18 +338,19 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     paint();
     let answer = null;
     try {
-      answer = action.call ? await App.call(action.call.method, action.call.params) : null;
+      answer = action.call ? await replyOrNothing(App.call(action.call.method, action.call.params)) : null;
     } catch (error) {
       state.busy = false;
       state.error = error.message || String(error);
       paint();
       return;
     }
-    const { route, focusComposer } = action.land(answer);
+    const landed = action.call && !answer ? { route: null, focusComposer: false } : action.land(answer);
     close();
     refreshFeed();
-    App.focusComposerOnMount = focusComposer;
-    navigate(route);
+    if (!landed.route) return;
+    App.focusComposerOnMount = landed.focusComposer;
+    navigate(landed.route);
   }
 
   wire((state.values[state.kind] || "").length);

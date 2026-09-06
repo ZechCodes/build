@@ -23818,6 +23818,49 @@ mod tests {
         );
     }
 
+    /// Putting a checkout back is a create like any other: the isolation it is
+    /// remade with is what the settings resolve to now — never a memory of what
+    /// the vanished one was — and a volume that cannot clone is said on the
+    /// same conversation the restore is written on.
+    #[test]
+    fn a_restore_that_cannot_clone_puts_a_worktree_back_and_says_so_on_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        let issue_id = approved_issue(&mut state, "put the checkout back");
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        std::fs::remove_dir_all(&state.runs[&run_id].worktree.path).unwrap();
+        // Chosen after the run exists, so the only fallback on this
+        // conversation is the restore's own.
+        state.isolation = Isolation::Cow;
+
+        let implemented = state.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let restored = state.runs[&run_id].worktree.path.clone();
+        assert_eq!(
+            Isolation::of(&restored),
+            Some(Isolation::Worktree),
+            "the checkout came back as the isolation this volume can make: {restored:?}"
+        );
+        let note = conversation_summaries(&state, &run_id)
+            .into_iter()
+            .find(|summary| summary.starts_with("Created a git worktree: "))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fallback is on the conversation: {:?}",
+                    conversation_summaries(&state, &run_id)
+                )
+            });
+        assert!(
+            note.contains("linked worktree"),
+            "the note carries the volume's own sentence: {note}"
+        );
+    }
+
     /// A bare worktree has no run, no agent and no conversation, so the only
     /// place the fallback can reach the human who asked for it is the answer to
     /// the ask — the same sentence the log and every thread carry.

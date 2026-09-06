@@ -114,6 +114,37 @@ pub fn local_branch_ref(branch: &str) -> String {
     format!("refs/heads/{branch}")
 }
 
+/// Git's directory for the checkout at `checkout`: the one `<checkout>/.git`
+/// points at for a linked worktree, and `<checkout>/.git` itself for a
+/// repository of its own — a clone, or a project's main checkout. A relative
+/// `gitdir:` pointer (git 2.48+ with `worktree.useRelativePaths`) is resolved
+/// against the directory holding the pointer, which is what git does with it.
+///
+/// The one owner of where a checkout keeps its git directory, so every marker
+/// beside a checkout — the clone's and the teardown's alike — is found the same
+/// way and no backend spells a marker path.
+pub fn checkout_git_dir(checkout: &Path) -> Result<PathBuf, WorktreeError> {
+    let pointer = checkout.join(".git");
+    if pointer.is_dir() {
+        return Ok(pointer);
+    }
+    let text = std::fs::read_to_string(&pointer)?;
+    let gitdir = text
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))
+        .map(str::trim)
+        .filter(|gitdir| !gitdir.is_empty())
+        .ok_or_else(|| {
+            WorktreeError::Command(format!("{} names no git directory", pointer.display()))
+        })?;
+    let gitdir = Path::new(gitdir);
+    Ok(if gitdir.is_absolute() {
+        gitdir.to_path_buf()
+    } else {
+        checkout.join(gitdir)
+    })
+}
+
 /// The file inside a clone's `.git` that says the clone is Build's and which
 /// project it was cloned from. A clone is a repository like any other, so this
 /// is the only thing that tells it apart; its contents are compared, never used
@@ -132,19 +163,113 @@ fn cow_marker_body(project: &Path) -> std::io::Result<String> {
 }
 
 /// Write the marker into `checkout`, naming `project` as where it was cloned from.
-pub fn write_cow_marker(checkout: &Path, project: &Path) -> std::io::Result<()> {
+pub fn write_cow_marker(checkout: &Path, project: &Path) -> Result<(), WorktreeError> {
     std::fs::write(
-        checkout.join(".git").join(COW_MARKER),
+        checkout_git_dir(checkout)?.join(COW_MARKER),
         cow_marker_body(project)?,
-    )
+    )?;
+    Ok(())
 }
 
 /// Whether the checkout at `checkout` carries a clone marker naming `project`.
 pub fn cow_marker_names(checkout: &Path, project: &Path) -> bool {
-    let Ok(found) = std::fs::read_to_string(checkout.join(".git").join(COW_MARKER)) else {
+    let Ok(git_dir) = checkout_git_dir(checkout) else {
+        return false;
+    };
+    let Ok(found) = std::fs::read_to_string(git_dir.join(COW_MARKER)) else {
         return false;
     };
     cow_marker_body(project).is_ok_and(|expected| found == expected)
+}
+
+/// What removing a checkout does to the branch it is on.
+///
+/// The question is decided once, when the checkout is created, by the only
+/// code that can answer it — and written down beside the checkout, because
+/// every reader of it comes much later and from somewhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchTeardown {
+    DeletesBranch,
+    KeepsBranch,
+}
+
+/// The file, in the checkout's own git directory, that records its
+/// [`BranchTeardown`]. That directory goes when the checkout does — git prunes
+/// a linked worktree's entry with it, and a clone's `.git` is inside it — so
+/// the fact cannot outlive what it describes.
+pub(crate) const BRANCH_TEARDOWN_MARKER: &str = "build-branch-teardown";
+
+impl BranchTeardown {
+    /// Whether removing the checkout this describes takes its branch with it.
+    /// The one place the tag is turned back into the question it answers.
+    pub fn deletes_branch(self) -> bool {
+        self == BranchTeardown::DeletesBranch
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            BranchTeardown::DeletesBranch => "deletes-branch",
+            BranchTeardown::KeepsBranch => "keeps-branch",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "deletes-branch" => Some(BranchTeardown::DeletesBranch),
+            "keeps-branch" => Some(BranchTeardown::KeepsBranch),
+            _ => None,
+        }
+    }
+}
+
+/// Record what teardown of the checkout at `checkout` owns. Isolation-blind:
+/// the marker lands in whatever git directory the checkout has, which for a
+/// clone is its own `.git` beside [`COW_MARKER`] and for a linked worktree is
+/// the entry git keeps for it in the project.
+pub fn record_branch_teardown(
+    checkout: &Path,
+    teardown: BranchTeardown,
+) -> Result<(), WorktreeError> {
+    let git_dir = checkout_git_dir(checkout)?;
+    std::fs::write(git_dir.join(BRANCH_TEARDOWN_MARKER), teardown.as_str())?;
+    Ok(())
+}
+
+/// What teardown of the checkout at `checkout` owns, read from the checkout
+/// itself — the answer whenever the checkout is still standing, whatever made
+/// it.
+///
+/// Exactly one reading means [`BranchTeardown::DeletesBranch`]: git's admin
+/// directory for the checkout was read and holds no marker, which is a
+/// checkout Build did not create — one made by hand and adopted — whose
+/// branch the human's chosen action speaks for. Every failure to read is
+/// returned, because the alternative to an error here is deleting a ref
+/// nobody asked Build to touch.
+pub fn branch_teardown(checkout: &Path) -> Result<BranchTeardown, WorktreeError> {
+    teardown_in_git_dir(&checkout_git_dir(checkout)?)
+}
+
+/// The same answer read out of a git directory the caller already has — the
+/// entry a backend still holds for a checkout whose own directory is gone.
+pub fn teardown_in_git_dir(git_dir: &Path) -> Result<BranchTeardown, WorktreeError> {
+    if !git_dir.is_dir() {
+        return Err(WorktreeError::Command(format!(
+            "no git admin directory at {}",
+            git_dir.display()
+        )));
+    }
+    match std::fs::read_to_string(git_dir.join(BRANCH_TEARDOWN_MARKER)) {
+        Ok(text) => BranchTeardown::parse(text.trim()).ok_or_else(|| {
+            WorktreeError::Command(format!(
+                "unreadable branch-teardown marker in {}",
+                git_dir.display()
+            ))
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(BranchTeardown::DeletesBranch)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Which isolations can be used for a project on this volume.

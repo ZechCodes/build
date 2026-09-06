@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::git_process::{git_failure, run_git, run_git_with_deadline};
 use crate::isolation::cow::CowBackend;
 use crate::isolation::{
-    checkout_name, local_branch_ref, Isolation, IsolationAvailability, IsolationBackend,
-    WorktreeBackend,
+    checkout_name, local_branch_ref, record_branch_teardown, teardown_in_git_dir, Isolation,
+    IsolationAvailability, IsolationBackend, WorktreeBackend,
 };
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
@@ -35,7 +35,7 @@ pub fn branch_name_for(slug: &str) -> String {
     format!("{BRANCH_PREFIX}/{slug}")
 }
 
-pub use crate::isolation::WorktreeError;
+pub use crate::isolation::{branch_teardown, BranchTeardown, WorktreeError};
 
 /// A task's worktree: where it lives, which branch it's on, and what it was cut
 /// from.
@@ -143,88 +143,6 @@ pub fn is_usable_branch_name(name: &str) -> bool {
     segments.iter().all(segment_is_usable) && is_ref_name(name)
 }
 
-/// What removing a checkout does to the branch it is on.
-///
-/// The question is decided once, when the checkout is created, by the only
-/// code that can answer it — and written down beside the checkout, because
-/// every reader of it comes much later and from somewhere else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BranchTeardown {
-    DeletesBranch,
-    KeepsBranch,
-}
-
-/// The file, in git's admin directory for a checkout, that records its
-/// [`BranchTeardown`]. Git prunes that directory with the worktree, so the
-/// fact cannot outlive what it describes.
-const BRANCH_TEARDOWN_MARKER: &str = "build-branch-teardown";
-
-impl BranchTeardown {
-    /// Whether removing the checkout this describes takes its branch with it.
-    /// The one place the tag is turned back into the question it answers.
-    pub fn deletes_branch(self) -> bool {
-        self == BranchTeardown::DeletesBranch
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            BranchTeardown::DeletesBranch => "deletes-branch",
-            BranchTeardown::KeepsBranch => "keeps-branch",
-        }
-    }
-
-    fn parse(text: &str) -> Option<Self> {
-        match text {
-            "deletes-branch" => Some(BranchTeardown::DeletesBranch),
-            "keeps-branch" => Some(BranchTeardown::KeepsBranch),
-            _ => None,
-        }
-    }
-}
-
-/// Record what teardown of the checkout at `worktree_path` owns.
-fn record_branch_teardown(
-    worktree_path: &Path,
-    teardown: BranchTeardown,
-) -> Result<(), WorktreeError> {
-    let admin_dir = admin_dir_of(worktree_path)?;
-    std::fs::write(admin_dir.join(BRANCH_TEARDOWN_MARKER), teardown.as_str())?;
-    Ok(())
-}
-
-/// What teardown of the checkout at `worktree_path` owns.
-///
-/// Exactly one reading means [`BranchTeardown::DeletesBranch`]: git's admin
-/// directory for the checkout was read and holds no marker, which is a
-/// checkout Build did not create — one made by hand and adopted — whose
-/// branch the human's chosen action speaks for. Every failure to read is
-/// returned, because the alternative to an error here is deleting a ref
-/// nobody asked Build to touch.
-pub fn branch_teardown(worktree_path: &Path) -> Result<BranchTeardown, WorktreeError> {
-    teardown_in_admin_dir(&admin_dir_of(worktree_path)?)
-}
-
-fn teardown_in_admin_dir(admin_dir: &Path) -> Result<BranchTeardown, WorktreeError> {
-    if !admin_dir.is_dir() {
-        return Err(WorktreeError::Command(format!(
-            "no git admin directory at {}",
-            admin_dir.display()
-        )));
-    }
-    match std::fs::read_to_string(admin_dir.join(BRANCH_TEARDOWN_MARKER)) {
-        Ok(text) => BranchTeardown::parse(text.trim()).ok_or_else(|| {
-            WorktreeError::Command(format!(
-                "unreadable branch-teardown marker in {}",
-                admin_dir.display()
-            ))
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(BranchTeardown::DeletesBranch)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
 /// Git's admin directory for a linked worktree, addressed from the repository
 /// that registered it — readable whether or not the checkout is still on disk.
 /// `Repository::path()` is the *caller's* admin directory, which is the linked
@@ -232,33 +150,6 @@ fn teardown_in_admin_dir(admin_dir: &Path) -> Result<BranchTeardown, WorktreeErr
 /// `commondir` is what holds the `worktrees/<name>` entries.
 fn admin_dir_for(repo: &git2::Repository, worktree_name: &str) -> PathBuf {
     repo.commondir().join("worktrees").join(worktree_name)
-}
-
-/// Git's admin directory for a checkout: the one `<worktree>/.git` points at
-/// for a linked worktree, and `<repo>/.git` itself for a main checkout. A
-/// relative `gitdir:` pointer (git 2.48+ with `worktree.useRelativePaths`) is
-/// resolved against the directory holding the pointer, which is what git does
-/// with it.
-fn admin_dir_of(worktree_path: &Path) -> Result<PathBuf, WorktreeError> {
-    let pointer = worktree_path.join(".git");
-    if pointer.is_dir() {
-        return Ok(pointer);
-    }
-    let text = std::fs::read_to_string(&pointer)?;
-    let gitdir = text
-        .lines()
-        .find_map(|line| line.strip_prefix("gitdir:"))
-        .map(str::trim)
-        .filter(|gitdir| !gitdir.is_empty())
-        .ok_or_else(|| {
-            WorktreeError::Command(format!("{} names no git directory", pointer.display()))
-        })?;
-    let gitdir = Path::new(gitdir);
-    Ok(if gitdir.is_absolute() {
-        gitdir.to_path_buf()
-    } else {
-        worktree_path.join(gitdir)
-    })
 }
 
 /// A branch with a local ref ready to be checked out: what teardown of the
@@ -975,7 +866,7 @@ impl WorktreeManager {
     ) -> Result<BranchTeardown, WorktreeError> {
         match repo.find_worktree(&worktree.name) {
             Ok(stale) => {
-                let recorded = teardown_in_admin_dir(&admin_dir_for(repo, &worktree.name))?;
+                let recorded = teardown_in_git_dir(&admin_dir_for(repo, &worktree.name))?;
                 let mut prune = git2::WorktreePruneOptions::new();
                 prune.valid(true).working_tree(true);
                 stale.prune(Some(&mut prune))?;
@@ -1052,7 +943,7 @@ impl WorktreeManager {
         if worktree.path.exists() {
             return branch_teardown(&worktree.path);
         }
-        teardown_in_admin_dir(&admin_dir_for(repo, &worktree.name))
+        teardown_in_git_dir(&admin_dir_for(repo, &worktree.name))
     }
 
     /// Make sure the project repo has `branch` locally, fetching exactly it
@@ -1662,6 +1553,7 @@ mod tests {
     use super::*;
     use crate::git_fixture::{git_in, init_repo, init_repo_named};
     use crate::isolation::probe::cow_or_skip;
+    use crate::isolation::BRANCH_TEARDOWN_MARKER;
     use std::path::Path;
     use std::process::Command;
 

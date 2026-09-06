@@ -155,6 +155,11 @@ pub struct PendingRow {
     /// alone names nothing a browser can match it to.
     pub primary: bool,
     pub implements: Option<String>,
+    /// How the checkout this verb is making will be isolated, resolved before
+    /// the row was reserved. A verb that makes no checkout of its own — a
+    /// discard, an adoption of one already on disk — has none: what such a
+    /// checkout is is read off the checkout itself.
+    pub isolation: Option<Isolation>,
     pub since: Instant,
 }
 
@@ -193,7 +198,18 @@ impl PendingRow {
             checkout_id: None,
             primary: false,
             implements: None,
+            isolation: None,
             since: Instant::now(),
+        }
+    }
+
+    /// How the checkout this verb is about to make is isolated — the answer the
+    /// app resolved before reserving the row, so the board reads the same fact
+    /// off the row it will read off the card.
+    pub fn isolated_as(self, isolation: Isolation) -> PendingRow {
+        PendingRow {
+            isolation: Some(isolation),
+            ..self
         }
     }
 

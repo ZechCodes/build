@@ -324,6 +324,22 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(entry.route).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
   });
 
+  // The bridge says how the checkout a verb is cutting is isolated from the
+  // moment it is asked for, so the row stands for the card in that too: a
+  // reader of a row's isolation gets the same answer before and after the git.
+  it("carries the isolation the checkout is being made as", () => {
+    const [entry] = mergePendingRows([], [creating({ isolation: "cow" })]);
+    expect(entry.isolation).toBe("cow");
+  });
+
+  // A verb that cuts nothing — a discard, an adoption of a checkout already on
+  // disk — names no isolation, and a bridge that predates the field names none
+  // either.
+  it("names no isolation for a verb that makes no checkout", () => {
+    const [entry] = mergePendingRows([], [creating({ isolation: null })]);
+    expect(entry.isolation).toBeNull();
+  });
+
   it("sends a row with nothing behind it nowhere, whatever the verb is called", () => {
     const [entry] = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
     expect(entry.placeholder).toBe(true);

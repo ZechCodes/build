@@ -8217,7 +8217,9 @@ impl AppState {
             isolation,
             downgrade,
         };
-        let row = PendingRow::creating(placeholder_id, Some(project_id), title).on_branch(branch);
+        let row = PendingRow::creating(placeholder_id, Some(project_id), title)
+            .on_branch(branch)
+            .isolated_as(mutation.isolation);
         self.defer_lifecycle(row, Box::new(mutation))
     }
 
@@ -8378,6 +8380,10 @@ impl AppState {
                     // own, so a row standing on it is matched by this instead.
                     "primary": row.primary,
                     "implements": row.implements,
+                    // How the checkout being made is isolated, said the way a
+                    // settled card says it. A verb that makes none says
+                    // nothing: what is already on disk describes itself.
+                    "isolation": row.isolation.map(crate::isolation::Isolation::wire),
                     // How long this row has stood. A row older than a scan
                     // interval reads as stuck rather than as work in flight.
                     "pending_seconds": row.since.elapsed().as_secs(),
@@ -11250,7 +11256,8 @@ impl AppState {
         let project = self.orch_for(&project_id)?.clone();
         let row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
             .on_checkout(crate::worktree::external_worktree_id(&worktree.path))
-            .implementing(issue_id.to_string());
+            .implementing(issue_id.to_string())
+            .isolated_as(isolation);
         self.reserve_lifecycle(
             row,
             Box::new(RestoreImplementationCheckout {
@@ -12109,7 +12116,8 @@ impl AppState {
         // in git.
         let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
             .on_branch(crate::worktree::branch_name_for(issue.slug()))
-            .implementing(issue_id.to_string());
+            .implementing(issue_id.to_string())
+            .isolated_as(isolation);
         self.reserve_lifecycle(
             row,
             Box::new(OpenImplementation {
@@ -15098,7 +15106,8 @@ impl AppState {
             Some(project_id),
             branch.unwrap_or(instruction),
         )
-        .on_branch(mutation.target.branch().to_string());
+        .on_branch(mutation.target.branch().to_string())
+        .isolated_as(mutation.isolation);
         self.defer_lifecycle(row, Box::new(mutation))
     }
 
@@ -23839,6 +23848,98 @@ mod tests {
             Isolation::of(&path),
             Some(Isolation::Worktree),
             "and the checkout is the one this volume can make: {path:?}"
+        );
+    }
+
+    /// The row that stands where a checkout will be says how that checkout is
+    /// being made, and what it says is the resolver's answer rather than the
+    /// account's ask: a board watching a create appear reads the same fact off
+    /// the row that it will read off the card.
+    #[test]
+    fn a_creating_row_carries_the_isolation_the_checkout_is_being_made_as() {
+        let (dir, repo) = init_repo();
+        let mut app = state_on_an_unclonable_project(dir.path(), &repo);
+        app.isolation = Isolation::Cow;
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "Scratch Space" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the checkout is being cut");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(
+            pending[0]["isolation"],
+            json!("worktree"),
+            "the row says what this volume can make, not what the account asked for: {pending:?}"
+        );
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+    }
+
+    /// And on a volume that clones, the same create is a clone from the row
+    /// onwards: what the board is told while the git runs is what the checkout
+    /// turns out to be, and a clone that was made announces no fallback.
+    #[test]
+    fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut app = qa_state(&repo, dir.path());
+        app.isolation = Isolation::Cow;
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "Scratch Space" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the clone is being made");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(
+            pending[0]["isolation"],
+            json!("cow"),
+            "the row says the checkout being made is a clone: {pending:?}"
+        );
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["isolation"], "cow", "{result:?}");
+        assert!(
+            result["isolation_note"].is_null(),
+            "a clone that was made announces no fallback: {result:?}"
+        );
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap_or_default());
+        assert_eq!(
+            Isolation::of(&path),
+            Some(Isolation::Cow),
+            "and what stands on disk is the clone: {path:?}"
         );
     }
 

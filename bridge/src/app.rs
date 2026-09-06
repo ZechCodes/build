@@ -48476,6 +48476,40 @@ mod tests {
         );
     }
 
+    /// The same finish over a copy-on-write clone. A clone is its own
+    /// repository, so its commits reach the project only through the publish
+    /// the façade does first, and git's worktree registry has never heard of
+    /// the directory: the app's own git could neither merge the work nor take
+    /// the checkout away. Going through the façade, one finish path does both.
+    #[test]
+    fn a_finish_merge_of_a_clone_lands_its_work_and_takes_its_branch() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let clone = worktrees
+            .create_cutting_branch("landed", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
+        std::fs::write(clone.path.join("landed.txt"), "shipped\n").unwrap();
+        git_in(&clone.path, &["add", "-A"]);
+        git_in(&clone.path, &["commit", "-m", "clone work"]);
+        let record = pending_merge_record(&repo, &std::fs::canonicalize(&clone.path).unwrap());
+
+        run_finish_git_steps(&worktrees, "main", &record).unwrap();
+
+        assert!(
+            repo.join("landed.txt").exists(),
+            "the clone's commit is on the base branch in the project"
+        );
+        assert!(
+            !worktrees.branch_exists("landed").unwrap(),
+            "teardown owns the branch the clone was cut onto"
+        );
+        assert!(!clone.path.exists(), "the clone itself is gone");
+    }
+
     #[test]
     fn worktree_finish_cleanup_requires_clean_and_preserves_branch() {
         let (dir, repo) = init_repo();

@@ -31,6 +31,7 @@ use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
     SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, Turn,
 };
+use crate::isolation::{Isolation, IsolationAvailability};
 use crate::lifecycle::holders::{BranchHolder, ProjectCheckouts};
 #[cfg(test)]
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
@@ -41,7 +42,6 @@ use crate::lifecycle::{
     PendingRow, PendingState, Performed, RestoreImplementationCheckout, SetRemote, WorktreeChange,
     WorktreeLifecycleJob, WorktreeMutation,
 };
-use crate::isolation::{Isolation, IsolationAvailability};
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
@@ -1726,17 +1726,19 @@ impl SettingsPatch {
             let named = value.as_str().unwrap_or_default();
             patch.default_harness = Some(AgentProvider::from_wire(named).ok_or_else(|| {
                 format!(
-                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\" \
-                     or \"codex\")"
+                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
+                     \"codex\", \"codex_app_server\" or \"pi\")"
                 )
             })?);
             Ok(())
         }),
-        ("codex_mode", |_, value, _| {
-            if value.as_str() == Some(models::CODEX_ONLY_MODE) {
-                return Ok(());
-            }
-            Err("codex_mode accepts only \"tui\" — Codex has no other mode yet".to_string())
+        ("codex_mode", |patch, value, _| {
+            let named = value.as_str().unwrap_or_default();
+            patch.default_harness =
+                Some(models::carrier_of_codex_mode(named).ok_or_else(|| {
+                    format!("unknown codex_mode {named:?} (expected \"headless\" or \"tui\")")
+                })?);
+            Ok(())
         }),
         ("isolation", |patch, value, available| {
             patch.isolation = Some(accept_isolation(
@@ -4001,8 +4003,7 @@ impl AppState {
     /// change to the account. The settings setter builds a prospective value
     /// instead, so a refused write leaves nothing applied.
     fn persist(&self) {
-        let config =
-            self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         if let Err(error) = self.persist_config(&config) {
             eprintln!("persist config: {error}");
         }
@@ -15391,7 +15392,7 @@ impl AppState {
     fn stage_publication_query(&self, run_id: &str, active: &ActiveRun) -> StagePublicationQuery {
         StagePublicationQuery {
             run_id: run_id.to_string(),
-            repo_path: self
+            worktrees: self
                 .entity_project
                 .get(run_id)
                 .and_then(|project_id| {
@@ -15399,7 +15400,8 @@ impl AppState {
                         .iter()
                         .find(|project| &project.id == project_id)
                 })
-                .map(|project| project.repo_path.clone()),
+                .map(|project| project.orch.worktrees().clone()),
+            checkout: active.worktree.path.clone(),
             branch: active.worktree.branch(),
             base_branch: active.worktree.base_branch.clone(),
             completions: active
@@ -16746,35 +16748,6 @@ fn require_array(params: &Value, key: &str) -> Result<Vec<Value>, String> {
         .as_array()
         .cloned()
         .ok_or_else(|| missing_param(key))
-}
-
-fn requested_default_harness(params: &Value) -> Result<Option<AgentProvider>, String> {
-    let parse_mode = |key: &str,
-                      mapping: fn(&str) -> Option<AgentProvider>|
-     -> Result<Option<AgentProvider>, String> {
-        let Some(value) = params.get(key) else {
-            return Ok(None);
-        };
-        let named = value.as_str().unwrap_or_default();
-        mapping(named)
-            .map(Some)
-            .ok_or_else(|| format!("unknown {key} {named:?} (expected \"headless\" or \"tui\")"))
-    };
-    let claude_mode = parse_mode("claude_mode", models::carrier_of_claude_mode)?;
-    let codex_mode = parse_mode("codex_mode", models::carrier_of_codex_mode)?;
-    let default_harness = params
-        .get("default_harness")
-        .map(|value| {
-            let named = value.as_str().unwrap_or_default();
-            AgentProvider::from_wire(named).ok_or_else(|| {
-                format!(
-                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
-                     \"codex\", \"codex_app_server\" or \"pi\")"
-                )
-            })
-        })
-        .transpose()?;
-    Ok(default_harness.or(codex_mode).or(claude_mode))
 }
 
 /// The detail polls' optional `thread_after_sequence` cursor. A missing or
@@ -18543,7 +18516,10 @@ fn delete_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
     finish_by_landing_then_removing(context, None)
 }
 
-fn merge_finished_branch_into_base(context: &FinishContext<'_>, branch: &str) -> Result<(), String> {
+fn merge_finished_branch_into_base(
+    context: &FinishContext<'_>,
+    branch: &str,
+) -> Result<(), String> {
     context
         .worktrees
         .merge_into_base(context.checkout, branch, context.base_branch)
@@ -18817,7 +18793,11 @@ fn worktrees_of_record(record: &PersistedArchivedWorktree) -> WorktreeManager {
 /// under the state lock so the deciding needs none.
 struct StagePublicationQuery {
     run_id: String,
-    repo_path: Option<std::path::PathBuf>,
+    /// The project's checkout seam, when the project is still registered. A
+    /// classification reads the project repo's refs, which the checkout's
+    /// branch has to reach through `publish` first.
+    worktrees: Option<WorktreeManager>,
+    checkout: std::path::PathBuf,
     branch: String,
     base_branch: String,
     /// One entry per stage that reached a completion commit. A stage without
@@ -18874,7 +18854,7 @@ impl StagePublicationQuery {
     /// The git half: a bounded fetch and two graph walks per completed stage.
     /// MUST run with the state lock released.
     fn classify(&self) -> StagePublications {
-        let Some(repo_path) = self.repo_path.as_ref() else {
+        let Some(worktrees) = self.worktrees.as_ref() else {
             return StagePublications::default();
         };
         StagePublications(
@@ -18884,7 +18864,8 @@ impl StagePublicationQuery {
                     (
                         stage_id.clone(),
                         classify_stage_publication(
-                            repo_path,
+                            worktrees,
+                            &self.checkout,
                             &self.branch,
                             &self.base_branch,
                             completion_sha,
@@ -22055,8 +22036,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use crate::worktree::git_in;
-
     use crate::harness::claude;
     use crate::harness::stream_fixtures::{
         recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID, WORKFLOW_TASK_ID,
@@ -23317,6 +23296,7 @@ mod tests {
                 "/tmp/test-mcp.sock",
             )
             .with_config(cfg)
+            .unwrap()
         };
         {
             let mut state = load(&cfg);
@@ -23375,7 +23355,8 @@ mod tests {
             true,
             "/tmp/test-mcp.sock",
         )
-        .with_config(&cfg);
+        .with_config(&cfg)
+        .unwrap();
         assert_eq!(state.isolation, Isolation::Worktree);
         assert_eq!(state.projects[0].isolation, None);
     }
@@ -23596,7 +23577,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (dir, repo) = init_repo();
         let cfg = tmp.path().join("config.json");
-        let mut state = qa_state(&repo, dir.path()).with_config(&cfg);
+        let mut state = qa_state(&repo, dir.path()).with_config(&cfg).unwrap();
         let project_id = state.projects[0].id.clone();
         let persisted_override = |cfg: &std::path::Path| -> Value {
             let written: Value =
@@ -29260,11 +29241,11 @@ mod tests {
     ) -> std::path::PathBuf {
         let other = dir.path().join("other");
         clone_working(origin, &other);
-        git_in_dir(&other, &["checkout", "-b", branch]);
+        git_in(&other, &["checkout", "-b", branch]);
         std::fs::write(other.join("work.rs"), "one\n").unwrap();
-        git_in_dir(&other, &["add", "."]);
-        git_in_dir(&other, &["commit", "-m", "remote work"]);
-        git_in_dir(&other, &["push", "origin", branch]);
+        git_in(&other, &["add", "."]);
+        git_in(&other, &["commit", "-m", "remote work"]);
+        git_in(&other, &["push", "origin", branch]);
         let clone = dir.path().join("clone");
         clone_working(origin, &clone);
         clone
@@ -29648,8 +29629,8 @@ mod tests {
     fn git_branches_lists_a_branch_two_remotes_carry_once_preferring_origin() {
         let (dir, _repo, origin) = init_repo_with_origin();
         let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
-        git_in_dir(&clone, &["remote", "add", "fork", origin.to_str().unwrap()]);
-        git_in_dir(&clone, &["fetch", "fork"]);
+        git_in(&clone, &["remote", "add", "fork", origin.to_str().unwrap()]);
+        git_in(&clone, &["fetch", "fork"]);
         let mut state = git_gui_state(&dir, &clone);
         let project_id = state.projects[0].id.clone();
 
@@ -29698,11 +29679,13 @@ mod tests {
     #[test]
     fn git_branches_names_the_primary_checkout_holding_a_branch() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "feature-idle"]);
+        git_in(&repo, &["branch", "feature-idle"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
-        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
-            .unwrap()
+        let primary_id = state.projects[0]
+            .orch
+            .worktrees()
+            .describe_primary("main")
             .unwrap()
             .id;
 
@@ -29756,8 +29739,8 @@ mod tests {
     #[test]
     fn git_branches_lists_every_branch_when_the_primary_holds_none() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "feature-idle"]);
-        git_in_dir(&repo, &["checkout", "--detach"]);
+        git_in(&repo, &["branch", "feature-idle"]);
+        git_in(&repo, &["checkout", "--detach"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -37254,7 +37237,7 @@ mod tests {
         })
         .unwrap();
         let prepared = orch
-            .prepare_run_checkout(&issue, "main", run_id, store)
+            .prepare_run_checkout(&issue, "main", run_id, Isolation::Worktree, store)
             .unwrap();
         orch.open_prepared_run(RunId::new(run_id), plan, prepared, Default::default())
             .unwrap()
@@ -40038,8 +40021,8 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "preflight-run");
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["add", "-A"]);
-        git_in_dir(&worktree, &["commit", "-m", "Finish adopted work"]);
+        git_in(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["commit", "-m", "Finish adopted work"]);
 
         // The board reads the checkout while it is clean, and caches that.
         let board = state.handle(req("board.list", json!({})));
@@ -42346,11 +42329,11 @@ mod tests {
     #[test]
     fn worktree_create_checks_out_an_existing_local_branch_without_cutting() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["checkout", "-q", "-b", "theirs"]);
+        git_in(&repo, &["checkout", "-q", "-b", "theirs"]);
         std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "their work"]);
-        git_in_dir(&repo, &["checkout", "-q", "main"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "their work"]);
+        git_in(&repo, &["checkout", "-q", "main"]);
         let tip = git2::Repository::open(&repo)
             .unwrap()
             .find_branch("theirs", git2::BranchType::Local)
@@ -42439,8 +42422,10 @@ mod tests {
         let run_id = adopted_run(&mut state, &repo, dir.path(), "run-owned");
         add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
         let external_worktree_id = external_id(&mut state, &project_id, Some("by-hand"));
-        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
-            .unwrap()
+        let primary_id = state.projects[0]
+            .orch
+            .worktrees()
+            .describe_primary("main")
             .unwrap()
             .id;
 
@@ -42496,7 +42481,7 @@ mod tests {
     #[test]
     fn worktree_create_takes_exactly_one_of_branch_and_name() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "theirs"]);
+        git_in(&repo, &["branch", "theirs"]);
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
 
@@ -42521,7 +42506,7 @@ mod tests {
     #[test]
     fn finishing_a_borrowed_checkout_keeps_its_branch_and_a_cut_one_does_not() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "theirs"]);
+        git_in(&repo, &["branch", "theirs"]);
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
 
@@ -42566,11 +42551,11 @@ mod tests {
     #[test]
     fn finishing_a_borrowed_checkout_with_merge_merges_and_keeps_the_branch() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["checkout", "-b", "theirs"]);
+        git_in(&repo, &["checkout", "-b", "theirs"]);
         std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "their work"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "their work"]);
+        git_in(&repo, &["checkout", "main"]);
         let r = git2::Repository::open(&repo).unwrap();
         let tip = r
             .find_branch("theirs", git2::BranchType::Local)
@@ -42678,7 +42663,7 @@ mod tests {
     #[test]
     fn recovering_an_adopted_checkout_whose_registration_is_gone_refuses() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "theirs"]);
+        git_in(&repo, &["branch", "theirs"]);
         // Adoption records the checkout's canonical path, and the managed-root
         // guard compares it to the configured root, so the test's root is the
         // canonical one a real install has.
@@ -42708,7 +42693,7 @@ mod tests {
             .unwrap()
             .id()
             .to_string();
-        git_in_dir(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -48348,6 +48333,7 @@ mod tests {
         let rows = state.external_worktrees_json();
 
         let row = rows
+            .rows
             .iter()
             .find(|row| row["branch"] == json!("labelled"))
             .expect("the scan finds the checkout");
@@ -54012,7 +53998,8 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "fresh", "feature-fresh");
         let described =
-            crate::worktree::describe_checkout(&repo, "main", &path).expect("it is a checkout");
+            crate::worktree::describe_checkout(&path, "main", crate::worktree::unix_now())
+                .expect("it is a checkout");
         let scan = DiffCacheKey::ExternalScan(project_id.clone());
         state.diff_refreshes_in_flight.insert(scan.clone());
         state.changes.flush();

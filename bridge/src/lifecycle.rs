@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::app::AppState;
+use crate::isolation::Isolation;
 use crate::models::ModelChoice;
 use crate::orchestrator::{AdoptableCheckout, AdoptionScope, ImplementableIssue, Orchestrator};
 use crate::worktree::{
@@ -300,6 +301,9 @@ pub struct CreateWorktree {
     /// The id the decide phase put on the board. The settled checkout carries
     /// it too unless the slug had to be suffixed, and the epilogue ships both.
     pub placeholder_id: String,
+    /// How the checkout is made, resolved by the app before anything was
+    /// reserved.
+    pub isolation: Isolation,
 }
 
 impl WorktreeMutation for CreateWorktree {
@@ -310,12 +314,16 @@ impl WorktreeMutation for CreateWorktree {
                 if let Some(refusal) = BranchHolder::of(&ownership, branch).refusal(branch) {
                     return Err(refusal);
                 }
-                self.project
-                    .create_worktree_on_existing_branch(branch, &self.base_branch)
+                self.project.create_worktree_on_existing_branch(
+                    branch,
+                    &self.base_branch,
+                    self.isolation,
+                )
             }
-            None => self
-                .project
-                .create_bare_worktree(&self.slug, &self.base_branch),
+            None => {
+                self.project
+                    .create_bare_worktree(&self.slug, &self.base_branch, self.isolation)
+            }
         }
         .map_err(|error| error.to_string())?;
         let worktree = minted.worktree;
@@ -370,6 +378,7 @@ pub struct OpenImplementation {
     pub store: crate::store::Store,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn crate::app::ImplementationCaller>,
+    pub isolation: Isolation,
 }
 
 impl WorktreeMutation for OpenImplementation {
@@ -378,6 +387,7 @@ impl WorktreeMutation for OpenImplementation {
             &self.issue,
             &self.base_branch,
             &self.run_id,
+            self.isolation,
             &self.store,
         );
         let prepared = match prepared {
@@ -558,6 +568,7 @@ pub struct RestoreImplementationCheckout {
     pub worktree: crate::worktree::Worktree,
     pub checkout_stood: bool,
     pub caller: Box<dyn crate::app::ImplementationCaller>,
+    pub isolation: Isolation,
 }
 
 impl WorktreeMutation for RestoreImplementationCheckout {
@@ -571,6 +582,7 @@ impl WorktreeMutation for RestoreImplementationCheckout {
                 crate::worktree::UnregisteredRestore::Write(
                     crate::worktree::BranchTeardown::DeletesBranch,
                 ),
+                self.isolation,
             )
             .map_err(|error| error.to_string());
         Ok(Performed {
@@ -733,13 +745,14 @@ impl DispatchTarget {
         &self,
         project: &Orchestrator,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<NamedBranchCheckout, String> {
         match self {
             DispatchTarget::Named(branch) => project
-                .create_worktree_cutting_named_branch(branch, base_branch)
+                .create_worktree_cutting_named_branch(branch, base_branch, isolation)
                 .map_err(|error| error.to_string()),
             DispatchTarget::Minted { slug, .. } => project
-                .create_bare_worktree(slug, base_branch)
+                .create_bare_worktree(slug, base_branch, isolation)
                 .map_err(|error| error.to_string()),
         }
     }
@@ -764,6 +777,8 @@ pub struct DispatchCheckout {
     /// asked for it. Written down by the apply phase, against the branch that
     /// is real by then.
     pub routed: Option<crate::app::RoutedCapture>,
+    /// How a checkout this dispatch has to cut is made.
+    pub isolation: Isolation,
     #[cfg(test)]
     pub fault: Option<BranchDispatchStep>,
 }
@@ -838,7 +853,8 @@ impl WorktreeMutation for DispatchCheckout {
 impl DispatchCheckout {
     /// Cut the branch this dispatch has nowhere else to put its work.
     fn cut_branch(&self) -> Result<NamedBranchCheckout, String> {
-        self.target.cut(&self.project, &self.base_branch)
+        self.target
+            .cut(&self.project, &self.base_branch, self.isolation)
     }
 
     /// Take Build's ownership of the checkout this dispatch reached, and owe the
@@ -965,16 +981,10 @@ impl AdoptionTarget {
                 .into_iter()
                 .find(|checkout| &checkout.id == worktree_id)
                 .ok_or_else(|| format!("unknown worktree_id: {worktree_id}")),
-            AdoptionTarget::Primary { repo_path } => {
-                crate::worktree::find_primary_checkout(repo_path, base_branch)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        format!(
-                            "the primary checkout at {} has no working tree to adopt",
-                            repo_path.display()
-                        )
-                    })
-            }
+            AdoptionTarget::Primary { .. } => project
+                .worktrees()
+                .describe_primary(base_branch)
+                .map_err(|error| error.to_string()),
         }
     }
 

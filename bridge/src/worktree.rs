@@ -784,17 +784,16 @@ impl WorktreeManager {
         remote: &str,
         tracking_ref: &str,
     ) -> Result<CreatedLocalRef, WorktreeError> {
-        let output = bounded_git_fetch(
+        bounded_git_fetch(
             &self.repo_path,
             remote,
             &format!("+refs/heads/{branch}:{tracking_ref}"),
-        )?;
-        if !output.status.success() {
-            return Err(WorktreeError::Command(format!(
-                "remote {remote:?} no longer carries branch {branch:?}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
+        )
+        .map_err(|error| {
+            WorktreeError::Command(format!(
+                "remote {remote:?} no longer carries branch {branch:?}: {error}"
+            ))
+        })?;
         let fetched = repo.find_reference(tracking_ref)?.peel_to_commit()?;
         let upstream = tracking_ref
             .strip_prefix("refs/remotes/")
@@ -995,12 +994,12 @@ impl WorktreeManager {
     /// gone asks nothing of the marker.
     pub fn remove(&self, worktree: &Worktree) -> Result<(), WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
-        let deletes_branch = match repo.find_branch(&worktree.recorded_branch, git2::BranchType::Local)
-        {
-            Ok(_) => self.teardown_of(&repo, worktree)?.deletes_branch(),
-            Err(error) if error.code() == git2::ErrorCode::NotFound => false,
-            Err(error) => return Err(error.into()),
-        };
+        let deletes_branch =
+            match repo.find_branch(&worktree.recorded_branch, git2::BranchType::Local) {
+                Ok(_) => self.teardown_of(&repo, worktree)?.deletes_branch(),
+                Err(error) if error.code() == git2::ErrorCode::NotFound => false,
+                Err(error) => return Err(error.into()),
+            };
         if !deletes_branch {
             self.publish_before_removal(worktree)?;
         }
@@ -1174,7 +1173,7 @@ fn shares_ancestry_with_base(
 }
 
 /// Seconds since the epoch, the clock every checkout summary is aged against.
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs() as i64)
@@ -1261,10 +1260,6 @@ pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
         .collect::<Vec<_>>()
         .join("\n");
     Err(format!("git {args:?}: {detail}"))
-}
-
-fn recorded_ref(worktree: &Worktree) -> String {
-    format!("refs/heads/{}", worktree.recorded_branch)
 }
 
 pub(crate) fn configured_remote_for_branch(
@@ -1832,7 +1827,9 @@ mod tests {
         push_feature_x_from_another_clone(&dir, &repo);
         let mgr = manager(&dir, &repo);
 
-        let added = mgr.create_on_existing_branch("feature-x", "main").unwrap();
+        let added = mgr
+            .create_on_existing_branch("feature-x", "main", Isolation::Worktree)
+            .unwrap();
 
         assert_eq!(added.teardown, BranchTeardown::KeepsBranch);
         assert_eq!(
@@ -1865,7 +1862,7 @@ mod tests {
         let mgr = manager(&dir, &repo);
 
         let refused = mgr
-            .create_on_existing_branch("nobody-cut-this", "main")
+            .create_on_existing_branch("nobody-cut-this", "main", Isolation::Worktree)
             .unwrap_err()
             .to_string();
 
@@ -1884,11 +1881,11 @@ mod tests {
     fn create_on_existing_branch_surfaces_a_fetch_that_no_longer_carries_the_branch() {
         let (dir, repo) = init_repo();
         let origin = push_feature_x_from_another_clone(&dir, &repo);
-        run_git(&origin, &["branch", "-D", "feature-x"]);
+        git_in(&origin, &["branch", "-D", "feature-x"]);
         let mgr = manager(&dir, &repo);
 
         let error = mgr
-            .create_on_existing_branch("feature-x", "main")
+            .create_on_existing_branch("feature-x", "main", Isolation::Worktree)
             .unwrap_err()
             .to_string();
 
@@ -1918,7 +1915,9 @@ mod tests {
         std::fs::create_dir_all(&worktrees).unwrap();
         std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o500)).unwrap();
 
-        let error = mgr.create_cutting_branch("fresh-cut", "main").unwrap_err();
+        let error = mgr
+            .create_cutting_branch("fresh-cut", "main", Isolation::Worktree)
+            .unwrap_err();
 
         std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o700)).unwrap();
         let r = git2::Repository::open(&repo).unwrap();
@@ -1943,7 +1942,7 @@ mod tests {
         std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o500)).unwrap();
 
         let error = mgr
-            .create_on_existing_branch("feature-x", "main")
+            .create_on_existing_branch("feature-x", "main", Isolation::Worktree)
             .unwrap_err();
 
         std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1977,7 +1976,7 @@ mod tests {
         let head = r.head().unwrap().peel_to_commit().unwrap();
         r.branch("theirs", &head, false).unwrap();
         let added = mgr
-            .create_on_existing_branch("theirs", "main")
+            .create_on_existing_branch("theirs", "main", Isolation::Worktree)
             .unwrap()
             .worktree;
         let marker = repo
@@ -2017,7 +2016,7 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let r = git2::Repository::open(&repo).unwrap();
         let added = mgr
-            .create_cutting_branch("fresh-cut", "main")
+            .create_cutting_branch("fresh-cut", "main", Isolation::Worktree)
             .unwrap()
             .worktree;
         let marker = repo
@@ -2050,24 +2049,24 @@ mod tests {
     fn push_feature_x_from_another_clone(dir: &tempfile::TempDir, repo: &Path) -> PathBuf {
         let origin = bare_origin_of(dir, repo);
         let other = dir.path().join("other");
-        run_git(
+        git_in(
             dir.path(),
             &["clone", origin.to_str().unwrap(), other.to_str().unwrap()],
         );
-        run_git(&other, &["config", "user.email", "o@build.ing"]);
-        run_git(&other, &["config", "user.name", "O"]);
-        run_git(&other, &["checkout", "-b", "feature-x"]);
+        git_in(&other, &["config", "user.email", "o@build.ing"]);
+        git_in(&other, &["config", "user.name", "O"]);
+        git_in(&other, &["checkout", "-b", "feature-x"]);
         std::fs::write(other.join("theirs.txt"), "their work\n").unwrap();
-        run_git(&other, &["add", "."]);
-        run_git(&other, &["commit", "-m", "their work"]);
-        run_git(&other, &["push", "origin", "feature-x"]);
-        run_git(repo, &["fetch", "origin"]);
+        git_in(&other, &["add", "."]);
+        git_in(&other, &["commit", "-m", "their work"]);
+        git_in(&other, &["push", "origin", "feature-x"]);
+        git_in(repo, &["fetch", "origin"]);
         origin
     }
 
     fn bare_origin_of(dir: &tempfile::TempDir, repo: &Path) -> PathBuf {
         let origin = dir.path().join("origin.git");
-        run_git(
+        git_in(
             dir.path(),
             &[
                 "clone",
@@ -2076,7 +2075,7 @@ mod tests {
                 origin.to_str().unwrap(),
             ],
         );
-        run_git(repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git_in(repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
         origin
     }
 
@@ -2087,7 +2086,10 @@ mod tests {
     fn a_checkout_build_cut_the_branch_for_says_teardown_owns_it() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("owned", "main").unwrap().worktree;
+        let wt = mgr
+            .create("owned", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
 
         assert_eq!(
             branch_teardown(&wt.path).unwrap(),
@@ -2107,7 +2109,7 @@ mod tests {
     fn an_unmarked_checkout_leaves_its_branch_to_the_action_chosen() {
         let (dir, repo) = init_repo();
         let by_hand = dir.path().join("by-hand");
-        run_git(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -2131,7 +2133,10 @@ mod tests {
     fn branch_teardown_follows_a_relative_gitdir_pointer() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("relative-pointer", "main").unwrap().worktree;
+        let wt = mgr
+            .create("relative-pointer", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         record_branch_teardown(&wt.path, BranchTeardown::KeepsBranch).unwrap();
         let admin = repo.join(".git/worktrees/relative-pointer");
         let relative = pathdiff_from(&wt.path, &admin);
@@ -2149,7 +2154,10 @@ mod tests {
     fn branch_teardown_errors_rather_than_guessing_when_it_cannot_read() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("unreadable", "main").unwrap().worktree;
+        let wt = mgr
+            .create("unreadable", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         std::fs::write(wt.path.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
         assert!(branch_teardown(&wt.path).is_err());
 
@@ -2247,9 +2255,18 @@ mod tests {
     fn create_disambiguates_on_collision() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let a = mgr.create("dup", "main", Isolation::Worktree).unwrap().worktree;
-        let b = mgr.create("dup", "main", Isolation::Worktree).unwrap().worktree;
-        let c = mgr.create("dup", "main", Isolation::Worktree).unwrap().worktree;
+        let a = mgr
+            .create("dup", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
+        let b = mgr
+            .create("dup", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
+        let c = mgr
+            .create("dup", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         assert_eq!(a.name, "dup");
         assert_eq!(b.name, "dup-2");
         assert_eq!(c.name, "dup-3");
@@ -2290,15 +2307,15 @@ mod tests {
             .unwrap()
             .worktree;
         std::fs::write(wt.path.join("stage.txt"), "kept\n").unwrap();
-        run_git(&wt.path, &["add", "stage.txt"]);
-        run_git(&wt.path, &["commit", "-m", "stage"]);
+        git_in(&wt.path, &["add", "stage.txt"]);
+        git_in(&wt.path, &["commit", "-m", "stage"]);
         let head = git2::Repository::open(&wt.path)
             .unwrap()
             .head()
             .unwrap()
             .target()
             .unwrap();
-        run_git(
+        git_in(
             &repo,
             &["worktree", "remove", "--force", wt.path.to_str().unwrap()],
         );
@@ -2351,11 +2368,18 @@ mod tests {
     fn restore_refuses_a_checkout_that_left_its_recorded_branch() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("wandered", "main", Isolation::Worktree).unwrap();
+        let wt = mgr
+            .create("wandered", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         git_in(&wt.path, &["checkout", "--detach"]);
 
         let refused = mgr
-            .restore(&wt, Isolation::Worktree)
+            .restore(
+                &wt,
+                UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
+                Isolation::Worktree,
+            )
             .unwrap_err()
             .to_string();
 
@@ -2371,7 +2395,8 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let wt = mgr
             .create("unrelated", "main", Isolation::Worktree)
-            .unwrap();
+            .unwrap()
+            .worktree;
         let empty_tree = git_output(&repo, &["hash-object", "-t", "tree", "/dev/null"]);
         let orphan = git_output(
             &repo,
@@ -2387,7 +2412,11 @@ mod tests {
         );
 
         let refused = mgr
-            .restore(&wt, Isolation::Worktree)
+            .restore(
+                &wt,
+                UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
+                Isolation::Worktree,
+            )
             .unwrap_err()
             .to_string();
 
@@ -2404,7 +2433,8 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let wt = mgr
             .create("hand-deleted", "main", Isolation::Worktree)
-            .unwrap();
+            .unwrap()
+            .worktree;
 
         std::fs::remove_dir_all(&wt.path).unwrap();
         assert!(
@@ -2415,7 +2445,13 @@ mod tests {
             "git still records the checkout somebody deleted by hand"
         );
 
-        let restored = mgr.restore(&wt, Isolation::Worktree).unwrap();
+        let restored = mgr
+            .restore(
+                &wt,
+                UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
+                Isolation::Worktree,
+            )
+            .unwrap();
 
         assert_eq!(restored, wt);
         assert!(wt.path.join("README.md").exists());
@@ -2499,15 +2535,15 @@ mod tests {
             .unwrap()
             .worktree;
         std::fs::write(wt.path.join("remote-stage.txt"), "remote\n").unwrap();
-        run_git(&wt.path, &["add", "remote-stage.txt"]);
-        run_git(&wt.path, &["commit", "-m", "remote stage"]);
-        run_git(&wt.path, &["push", "-u", "origin", &wt.recorded_branch]);
-        run_git(
+        git_in(&wt.path, &["add", "remote-stage.txt"]);
+        git_in(&wt.path, &["commit", "-m", "remote stage"]);
+        git_in(&wt.path, &["push", "-u", "origin", &wt.recorded_branch]);
+        git_in(
             &repo,
             &["worktree", "remove", "--force", wt.path.to_str().unwrap()],
         );
-        run_git(&repo, &["branch", "-D", &wt.recorded_branch]);
-        run_git(
+        git_in(&repo, &["branch", "-D", &wt.recorded_branch]);
+        git_in(
             &repo,
             &[
                 "update-ref",
@@ -2550,7 +2586,11 @@ mod tests {
         std::fs::remove_dir_all(&added.worktree.path).unwrap();
 
         let restored = mgr
-            .restore(&added.worktree, UnregisteredRestore::Refuse)
+            .restore(
+                &added.worktree,
+                UnregisteredRestore::Refuse,
+                Isolation::Worktree,
+            )
             .unwrap();
 
         assert_eq!(
@@ -2566,11 +2606,14 @@ mod tests {
     fn restore_refuses_when_no_registration_and_no_caller_can_vouch() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("unvouched", "main").unwrap().worktree;
+        let wt = mgr
+            .create("unvouched", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         mgr.remove(&wt).unwrap();
 
         let error = mgr
-            .restore(&wt, UnregisteredRestore::Refuse)
+            .restore(&wt, UnregisteredRestore::Refuse, Isolation::Worktree)
             .unwrap_err()
             .to_string();
 
@@ -2592,17 +2635,18 @@ mod tests {
         let head = r.head().unwrap().peel_to_commit().unwrap();
         r.branch("theirs", &head, false).unwrap();
         let wt = mgr
-            .create_on_existing_branch("theirs", "main")
+            .create_on_existing_branch("theirs", "main", Isolation::Worktree)
             .unwrap()
             .worktree;
         std::fs::remove_dir_all(&wt.path).unwrap();
-        run_git(&repo, &["update-ref", "-d", "refs/heads/theirs"]);
+        git_in(&repo, &["update-ref", "-d", "refs/heads/theirs"]);
         std::fs::remove_file(repo.join(".git/worktrees/theirs/gitdir")).unwrap();
 
         let error = mgr
             .restore(
                 &wt,
                 UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
+                Isolation::Worktree,
             )
             .unwrap_err();
 
@@ -2619,7 +2663,10 @@ mod tests {
     fn removing_a_checkout_build_cut_takes_its_branch() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("drop-me", "main").unwrap().worktree;
+        let wt = mgr
+            .create("drop-me", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
 
         mgr.remove(&wt).unwrap();
 
@@ -2657,7 +2704,8 @@ mod tests {
         let not_a_repo = dir.path().join("plain");
         std::fs::create_dir(&not_a_repo).unwrap();
 
-        let found = find_primary_checkout(&not_a_repo, "main");
+        let found = WorktreeManager::new(&not_a_repo, dir.path().join("worktrees"))
+            .describe_primary("main");
 
         assert!(
             found.is_err(),
@@ -2674,14 +2722,14 @@ mod tests {
 
         let holder = primary_checkout_holder(&repo).unwrap();
 
-        let described = find_primary_checkout(&repo, "main").unwrap().unwrap();
+        let described = manager(&_dir, &repo).describe_primary("main").unwrap();
         assert_eq!(holder, Some((described.id, "main".to_string())));
     }
 
     #[test]
     fn primary_checkout_holder_is_none_when_head_is_detached() {
         let (_dir, repo) = init_repo();
-        run_git(&repo, &["checkout", "--detach"]);
+        git_in(&repo, &["checkout", "--detach"]);
 
         assert_eq!(primary_checkout_holder(&repo).unwrap(), None);
     }
@@ -2699,7 +2747,7 @@ mod tests {
     fn discovery_lists_a_user_worktree_and_skips_the_primary() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-a");
-        run_git(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -2730,14 +2778,16 @@ mod tests {
     fn one_checkout_describes_itself_the_way_the_scan_describes_it() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-one");
-        run_git(
+        git_in(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
         );
         std::fs::write(wt_path.join("dirty.txt"), "dirty\n").unwrap();
 
-        let scanned = discover_external_worktrees(&repo, "main", &HashSet::new()).unwrap();
-        let described = describe_checkout(&repo, "main", &wt_path).unwrap();
+        let scanned = manager(&dir, &repo)
+            .discover("main", &HashSet::new())
+            .unwrap();
+        let described = describe_checkout(&wt_path, "main", unix_now()).unwrap();
 
         // `head_age_seconds` is a reading of the clock, not a property of the
         // checkout: two reads straddling a second boundary differ by one.
@@ -2753,27 +2803,27 @@ mod tests {
 
     #[test]
     fn a_checkout_outside_the_repository_cannot_be_described() {
-        let (dir, repo) = init_repo();
+        let (dir, _repo) = init_repo();
         let stranger = dir.path().join("not-a-worktree");
         std::fs::create_dir_all(&stranger).unwrap();
 
-        let described = describe_checkout(&repo, "main", &stranger);
+        let described = describe_checkout(&stranger, "main", unix_now());
 
-        assert!(described.is_err(), "{described:?}");
+        assert!(described.is_none(), "{described:?}");
     }
 
     #[test]
     fn discovery_separates_what_is_uncommitted_from_what_the_branch_carries() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-mixed");
-        run_git(
+        git_in(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "mixed"],
         );
         // One committed line, then two uncommitted ones on top of it.
         std::fs::write(wt_path.join("committed.txt"), "one\n").unwrap();
-        run_git(&wt_path, &["add", "committed.txt"]);
-        run_git(&wt_path, &["commit", "-m", "committed work"]);
+        git_in(&wt_path, &["add", "committed.txt"]);
+        git_in(&wt_path, &["commit", "-m", "committed work"]);
         std::fs::write(wt_path.join("dirty.txt"), "two\nthree\n").unwrap();
 
         let found = manager(&dir, &repo)
@@ -2801,8 +2851,8 @@ mod tests {
     /// Commit `name` in `dir` as a new file of the same name.
     fn commit_file(dir: &Path, name: &str) {
         std::fs::write(dir.join(format!("{name}.txt")), "x\n").unwrap();
-        run_git(dir, &["add", "."]);
-        run_git(dir, &["commit", "-m", name]);
+        git_in(dir, &["add", "."]);
+        git_in(dir, &["commit", "-m", name]);
     }
 
     /// A tracked branch compares both directions with its upstream. Movement on
@@ -2811,14 +2861,14 @@ mod tests {
     fn a_tracking_branch_compares_both_directions_with_its_upstream() {
         let (dir, repo) = init_repo();
         let remote = dir.path().join("origin.git");
-        run_git(&repo, &["init", "--bare", remote.to_str().unwrap()]);
-        run_git(
+        git_in(&repo, &["init", "--bare", remote.to_str().unwrap()]);
+        git_in(
             &repo,
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
 
         let wt_path = dir.path().join("wt-tracked");
-        run_git(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -2828,9 +2878,9 @@ mod tests {
                 "tracked",
             ],
         );
-        run_git(&wt_path, &["push", "-u", "origin", "tracked"]);
+        git_in(&wt_path, &["push", "-u", "origin", "tracked"]);
         let other = dir.path().join("other");
-        run_git(
+        git_in(
             dir.path(),
             &[
                 "clone",
@@ -2840,16 +2890,16 @@ mod tests {
                 other.to_str().unwrap(),
             ],
         );
-        run_git(&other, &["config", "user.email", "other@build.ing"]);
-        run_git(&other, &["config", "user.name", "Other"]);
+        git_in(&other, &["config", "user.email", "other@build.ing"]);
+        git_in(&other, &["config", "user.name", "Other"]);
 
         // Two local commits past the shared tip, and one remote commit the local
         // branch does not have.
         commit_file(&wt_path, "a");
         commit_file(&wt_path, "b");
         commit_file(&other, "remote");
-        run_git(&other, &["push", "origin", "tracked"]);
-        run_git(&repo, &["fetch", "origin"]);
+        git_in(&other, &["push", "origin", "tracked"]);
+        git_in(&repo, &["fetch", "origin"]);
         // Main moves twice to prove it is not the selected comparison ref.
         commit_file(&repo, "on-main");
         commit_file(&repo, "on-main-again");
@@ -2875,7 +2925,7 @@ mod tests {
     fn an_untracked_branch_has_all_of_its_work_unpushed() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-untracked");
-        run_git(
+        git_in(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "solo"],
         );
@@ -2899,7 +2949,7 @@ mod tests {
     fn a_level_worktree_is_neither_stale_nor_unpushed() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-level");
-        run_git(
+        git_in(
             &repo,
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "level"],
         );
@@ -2919,7 +2969,7 @@ mod tests {
     fn discovery_excludes_bound_paths() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-bound");
-        run_git(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -2941,7 +2991,7 @@ mod tests {
     fn a_bound_path_excludes_its_checkout_in_whatever_spelling_it_arrives() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-bound");
-        run_git(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -2956,7 +3006,7 @@ mod tests {
 
         let mut excluded = std::collections::HashSet::new();
         excluded.insert(another_spelling);
-        let found = discover_external_worktrees(&repo, "main", &excluded).unwrap();
+        let found = manager(&dir, &repo).discover("main", &excluded).unwrap();
 
         assert!(
             found.is_empty(),
@@ -2968,7 +3018,7 @@ mod tests {
     fn discovery_reports_detached_head() {
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-d");
-        run_git(
+        git_in(
             &repo,
             &["worktree", "add", "--detach", wt_path.to_str().unwrap()],
         );
@@ -2987,7 +3037,7 @@ mod tests {
         // invalidation relies on.
         let (dir, repo) = init_repo();
         let wt_path = dir.path().join("wt-c");
-        run_git(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -3002,8 +3052,8 @@ mod tests {
         let sha_before = before[0].head_sha.clone();
 
         std::fs::write(wt_path.join("more.txt"), "more\n").unwrap();
-        run_git(&wt_path, &["add", "more.txt"]);
-        run_git(&wt_path, &["commit", "-m", "more work"]);
+        git_in(&wt_path, &["add", "more.txt"]);
+        git_in(&wt_path, &["commit", "-m", "more work"]);
 
         let after = manager(&dir, &repo).discover("main", &excluded).unwrap();
         assert_ne!(before[0].head_sha, after[0].head_sha);
@@ -3075,7 +3125,10 @@ mod tests {
             return;
         }
         let mgr = manager(&dir, &repo);
-        let clone = mgr.create("cloned", "main", Isolation::Cow).unwrap();
+        let clone = mgr
+            .create("cloned", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
         let linked = dir.path().join("worktrees").join("wt-linked");
         git_in(
             &repo,
@@ -3172,10 +3225,13 @@ mod tests {
     fn removing_a_checkout_that_is_already_gone_still_clears_its_record() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("vanished", "main", Isolation::Worktree).unwrap();
+        let wt = mgr
+            .create("vanished", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         std::fs::remove_dir_all(&wt.path).unwrap();
 
-        mgr.remove(&wt, /* keep_branch */ true).unwrap();
+        mgr.remove_keeping_branch(&wt).unwrap();
 
         let r = git2::Repository::open(&repo).unwrap();
         assert!(
@@ -3196,7 +3252,10 @@ mod tests {
     fn a_checkout_renamed_after_registration_is_removed_by_its_directory() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("was-here", "main", Isolation::Worktree).unwrap();
+        let wt = mgr
+            .create("was-here", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         let renamed = dir.path().join("worktrees").join("now-here");
         std::fs::rename(&wt.path, &renamed).unwrap();
 
@@ -3235,7 +3294,8 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let wt = mgr
             .create("mergeable", "main", Isolation::Worktree)
-            .unwrap();
+            .unwrap()
+            .worktree;
         commit_file(&wt.path, "landed");
         git_in(&repo, &["checkout", "-b", "elsewhere"]);
 
@@ -3264,7 +3324,10 @@ mod tests {
     fn a_branch_is_deleted_only_while_it_still_points_where_it_was_read() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("ref-ops", "main", Isolation::Worktree).unwrap();
+        let wt = mgr
+            .create("ref-ops", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
         commit_file(&wt.path, "moved-on");
         let branch_tip = tip_of(&repo, &format!("refs/heads/{}", wt.recorded_branch));
         let base_tip = tip_of(&repo, "refs/heads/main");
@@ -3352,7 +3415,10 @@ mod tests {
         }
         let mgr = manager(&dir, &repo);
 
-        let wt = mgr.create("cloned", "main", Isolation::Cow).unwrap();
+        let wt = mgr
+            .create("cloned", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
 
         assert_eq!(wt.recorded_branch, "build/cloned");
         assert_eq!(wt.base_branch, "main");
@@ -3389,11 +3455,12 @@ mod tests {
         r.branch("build/started-by-hand", &head, false).unwrap();
 
         let added = mgr
-            .create_on_branch("build/started-by-hand", "main", Isolation::Cow)
+            .create_on_existing_branch("build/started-by-hand", "main", Isolation::Cow)
             .unwrap();
 
-        assert!(
-            !added.branch_was_cut,
+        assert_eq!(
+            added.teardown,
+            BranchTeardown::KeepsBranch,
             "the branch was already there, not cut again"
         );
         assert_eq!(Isolation::of(&added.worktree.path), Some(Isolation::Cow));
@@ -3417,12 +3484,21 @@ mod tests {
             return;
         }
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("recover-clone", "main", Isolation::Cow).unwrap();
+        let wt = mgr
+            .create("recover-clone", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
         commit_file(&wt.path, "clone-stage");
-        mgr.remove(&wt, /* keep_branch */ true).unwrap();
+        mgr.remove_keeping_branch(&wt).unwrap();
         assert!(!wt.path.exists(), "the clone was removed");
 
-        let restored = mgr.restore(&wt, Isolation::Cow).unwrap();
+        let restored = mgr
+            .restore(
+                &wt,
+                UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
+                Isolation::Cow,
+            )
+            .unwrap();
 
         assert_eq!(restored, wt);
         assert_eq!(Isolation::of(&wt.path), Some(Isolation::Cow));
@@ -3442,8 +3518,16 @@ mod tests {
         }
         let mgr = manager(&dir, &repo);
 
-        let mine = mgr.create("mine", "main", Isolation::Cow).unwrap();
-        assert_eq!(mgr.restore(&mine, Isolation::Cow).unwrap(), mine);
+        let mine = mgr.create("mine", "main", Isolation::Cow).unwrap().worktree;
+        assert_eq!(
+            mgr.restore(
+                &mine,
+                UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
+                Isolation::Cow
+            )
+            .unwrap(),
+            mine
+        );
 
         let other = init_repo_named(dir.path(), "other");
         let intruder_path = dir.path().join("worktrees").join("intruder");
@@ -3458,7 +3542,11 @@ mod tests {
         };
 
         let refused = mgr
-            .restore(&intruder, Isolation::Cow)
+            .restore(
+                &intruder,
+                UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
+                Isolation::Cow,
+            )
             .unwrap_err()
             .to_string();
         assert!(
@@ -3477,8 +3565,8 @@ mod tests {
         }
         let mgr = manager(&dir, &repo);
 
-        let first = mgr.create("dup", "main", Isolation::Cow).unwrap();
-        let second = mgr.create("dup", "main", Isolation::Cow).unwrap();
+        let first = mgr.create("dup", "main", Isolation::Cow).unwrap().worktree;
+        let second = mgr.create("dup", "main", Isolation::Cow).unwrap().worktree;
 
         assert_eq!(first.name, "dup");
         assert_eq!(
@@ -3508,11 +3596,12 @@ mod tests {
         let mgr = manager(&dir, &repo);
         let wt = mgr
             .create("half-made", "main", Isolation::Worktree)
-            .unwrap();
+            .unwrap()
+            .worktree;
         std::fs::remove_file(wt.path.join(".git")).unwrap();
         assert_eq!(Isolation::of(&wt.path), None, "no longer a checkout");
 
-        mgr.remove(&wt, /* keep_branch */ true)
+        mgr.remove_keeping_branch(&wt)
             .expect("a directory nobody can publish from is still removable");
 
         assert!(!wt.path.exists(), "the directory is gone");
@@ -3594,13 +3683,13 @@ mod vanished_worktree_removal {
     fn removing_a_checkout_that_cannot_answer_destroys_nothing() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (dir, repo) = tests::init_repo();
+        let (dir, repo) = init_repo();
         let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
         let r = git2::Repository::open(&repo).unwrap();
         let head = r.head().unwrap().peel_to_commit().unwrap();
         r.branch("theirs", &head, false).unwrap();
         let wt = manager
-            .create_on_existing_branch("theirs", "main")
+            .create_on_existing_branch("theirs", "main", Isolation::Worktree)
             .unwrap()
             .worktree;
         let admin_dir = repo.join(".git/worktrees").join(&wt.name);
@@ -3633,7 +3722,8 @@ mod vanished_worktree_removal {
         let root = dir.path().join("wts");
         let wt = WorktreeManager::new(&repo, &root)
             .create("kept-slug", "main", Isolation::Worktree)
-            .unwrap();
+            .unwrap()
+            .worktree;
         let unreachable = WorktreeManager::new(dir.path().join("not-a-repo"), &root);
 
         unreachable

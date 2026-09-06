@@ -1692,11 +1692,13 @@ impl Orchestrator {
         path: &Path,
         base_branch: &str,
     ) -> Result<ExternalWorktree, OrchestratorError> {
-        Ok(crate::worktree::describe_checkout(
-            &self.repo_path,
-            base_branch,
-            path,
-        )?)
+        crate::worktree::describe_checkout(path, base_branch, crate::worktree::unix_now())
+            .ok_or_else(|| {
+                OrchestratorError::Git(format!(
+                    "{} is not a checkout this project can describe",
+                    path.display()
+                ))
+            })
     }
 
     /// Every checkout of this repository no run owns, as they stand right now.
@@ -1708,11 +1710,7 @@ impl Orchestrator {
         base_branch: &str,
         excluded: &std::collections::HashSet<PathBuf>,
     ) -> Result<Vec<ExternalWorktree>, OrchestratorError> {
-        Ok(crate::worktree::discover_external_worktrees(
-            &self.repo_path,
-            base_branch,
-            excluded,
-        )?)
+        Ok(self.worktrees.discover(base_branch, excluded)?)
     }
 
     /// Cut the checkout an Issue's implementation works in and make it ready
@@ -3216,7 +3214,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let worktree = orch
-            .create_bare_worktree("vanished", "main")
+            .create_bare_worktree("vanished", "main", Isolation::Worktree)
             .unwrap()
             .worktree;
         std::fs::remove_dir_all(&worktree.path).unwrap();

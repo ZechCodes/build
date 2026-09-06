@@ -1767,14 +1767,18 @@ impl SettingsPatch {
     }
 }
 
-/// Say that this volume could not make the clone the settings asked for.
-///
-/// The daemon's log always hears it, and the sentence comes back for the
-/// conversation the create belongs to, so an operator reading the log and a
-/// human reading the thread are told the same thing in the same words.
+/// What a volume that could not make the clone the settings asked for is said
+/// with, spelled once so an operator reading the log and a human reading the
+/// thread are told the same thing in the same words.
+fn isolation_downgrade_note(reason: &str) -> String {
+    format!("Created a git worktree: copy-on-write isolation is unavailable here — {reason}")
+}
+
+/// Say that sentence on the daemon's log, and hand it back for whoever the
+/// create owes it to. Every announcing site goes through here, so the log
+/// hears every fallback exactly once and no caller can choose another policy.
 pub(crate) fn announce_isolation_downgrade(reason: &str) -> String {
-    let note =
-        format!("Created a git worktree: copy-on-write isolation is unavailable here — {reason}");
+    let note = isolation_downgrade_note(reason);
     eprintln!("{note}");
     note
 }
@@ -17545,6 +17549,7 @@ pub struct WorktreeCreated {
 
 impl LifecycleEpilogue for WorktreeCreated {
     fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        let note = self.downgrade.as_deref().map(announce_isolation_downgrade);
         state.validate_checkout_snapshot(&self.project_id, &self.checkouts)?;
         Ok(json!({
             "project_id": self.project_id,
@@ -17559,7 +17564,7 @@ impl LifecycleEpilogue for WorktreeCreated {
             "name": self.name,
             "path": self.path.display().to_string(),
             "isolation": self.isolation,
-            "isolation_note": self.downgrade.as_deref().map(announce_isolation_downgrade),
+            "isolation_note": note,
         }))
     }
 }

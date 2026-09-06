@@ -16,7 +16,11 @@ git-touching part of its body moves behind the seam.
   outside `isolation/` except tests; every project-repo read of a run branch is preceded by `publish`.
 - **The façade surface is the union.** Main's `create`, `create_on_existing_branch`, `create_cutting_branch`,
   `restore(worktree, UnregisteredRestore)`, `remove`, `remove_keeping_branch`, `discover_external_worktrees`,
-  `find_primary_checkout`, `primary_checkout_holder`, `unique_checkout_name` keep their names and callers. The three
+  `primary_checkout_holder`, `unique_checkout_name` keep their names and callers. Main's free
+  `find_primary_checkout` is the one name that does not: `WorktreeManager::describe_primary` already answers what it
+  answered — the project's own checkout in the shape adoption takes for any other — and it answers it from the
+  checkout alone, which is what `Work Isolation Primitives.md` names it for. The test that named the old function is
+  renamed with it. The three
   creators and `restore` gain the resolved `Isolation` as their last argument (spec §5.2: the resolver answers it,
   creation sites pass it through). Our `create_on_branch` folds into main's `create_on_existing_branch`; our
   `remove_checkout(path)`, `publish`, `sync_base`, `merge_into_base`, `prune`, `branch_exists`, `delete_branch_at`,

@@ -2579,7 +2579,7 @@ mod tests {
     /// saying so is what keeps a caller from reading "nothing holds this
     /// branch" off a repository that answered nothing.
     #[test]
-    fn find_primary_checkout_errors_on_a_directory_that_is_not_a_repository() {
+    fn describe_primary_errors_on_a_directory_that_is_not_a_repository() {
         let dir = tempfile::tempdir().unwrap();
         let not_a_repo = dir.path().join("plain");
         std::fs::create_dir(&not_a_repo).unwrap();

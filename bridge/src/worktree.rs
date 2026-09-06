@@ -1356,7 +1356,7 @@ pub fn sort_checkouts(checkouts: &mut [ExternalWorktree]) {
 
 /// The two facts a branch listing stamps a row with about the primary
 /// checkout at `repo_path`: the worktree id `run.adopt` adopts it by (the same
-/// id [`find_primary_checkout`] mints) and the branch it holds. Read straight
+/// id [`WorktreeManager::describe_primary`] mints) and the branch it holds. Read straight
 /// off the repository — no status walk, no diffstat, no subprocess — because a
 /// listing is the drain's to answer, not a description to render. `None` when
 /// the checkout holds no branch: a detached or unborn HEAD, or a bare

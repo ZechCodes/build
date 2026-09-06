@@ -10,8 +10,6 @@
 ///
 /// Nothing here touches the DOM. The renderer is handed four printed values.
 
-const TOOL_CALL_KIND = "tool_use";
-
 /// The first line of a summary, which is what a row's head shows.
 ///
 /// A row that says only "Agent called a tool" is a row nobody can scan; what
@@ -88,14 +86,18 @@ const lineOf = (source) => ({
 /// line, mark and time.
 ///
 /// The count is the sum over every digest the run reaches, plus the calls held
-/// newer than the newest of them. A run no digest reaches — one written entirely
-/// after the page, or a conversation shipped whole — counts the calls in hand.
+/// newer than the newest of them — where a row's calls are the ones it STANDS
+/// for: a call that spawned a subagent folds that subagent's calls under it, so
+/// a row can be four calls and counting rows would say one.
+///
+/// A run no digest reaches — one written entirely after the page, or a
+/// conversation shipped whole — counts the calls in hand.
 /// A run that called no tool at all keeps the old look: its latest line, and how
 /// many rows it holds.
 export function activityRunSummary(digests, runEntries) {
   const activities = runEntries.map((entry) => entry.activity).filter(Boolean);
-  const covering = digestsOver(digests || [], heldSpan(activities));
-  const toolCalls = activities.filter((activity) => activity.kind === TOOL_CALL_KIND);
+  const toolCalls = activities.flatMap((activity) => activity.toolCalls || []);
+  const covering = digestsOver(digests || [], heldSpan([...activities, ...toolCalls]));
   const counted = covering.reduce((total, digest) => total + (digest.tool_calls || 0), 0);
   const count = counted + arrivedAfterTheDigest(toolCalls, newestCovered(covering)).length;
   const latest = activities.at(-1);

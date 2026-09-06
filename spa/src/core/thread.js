@@ -800,6 +800,8 @@ function sequenceAttribute(event) {
 /// swept into one. The five kinds are a closed set the daemon and this client
 /// agree on, and a row nobody can classify is better read as something that
 /// happened than hidden inside a fold.
+const TOOL_CALL_KIND = "tool_use";
+
 const activityMetaOf = (event) => {
   const meta = EVENT_META[event.event];
   return meta && meta.activity ? meta : null;
@@ -882,6 +884,13 @@ function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   </div>`;
 }
 
+/// How a run of activity folds: which rows hide under which, and what calls a
+/// row stands for.
+///
+/// A tool call that spawns a subagent owns everything the subagent did — those
+/// rows are drawn inside its fold rather than beside it — so the row a reader
+/// sees is one row and several calls. Both readings come from the same parent
+/// map: the html of what folds under a row, and the calls that row stands for.
 function threadFolding(items, agentLabel) {
   const eventItems = items.filter((item) => item.type !== "message");
   const sequenceOf = (item) => (item.data || {}).sequence;
@@ -907,7 +916,24 @@ function threadFolding(items, agentLabel) {
       .map((child) => eventHtml(child.data || {}, agentLabel, foldedChildrenHtmlOf(sequenceOf(child), drawn)))
       .join("")}</div>`;
   };
-  return { foldedItems, foldedChildrenHtmlOf };
+  const toolCallsBeneath = (item, alreadyWalked) => {
+    const sequence = sequenceOf(item);
+    if (alreadyWalked.has(sequence)) return [];
+    const walked = new Set([...alreadyWalked, sequence]);
+    const event = item.data || {};
+    const own = event.event === TOOL_CALL_KIND
+      ? [{
+        sequence,
+        meat: activityMeat(event, EVENT_META[TOOL_CALL_KIND], agentLabel),
+        outcome: event.outcome,
+        createdAt: event.created_at,
+      }]
+      : [];
+    const children = childrenByParent.get(sequence) || [];
+    return [...own, ...children.flatMap((child) => toolCallsBeneath(child, walked))];
+  };
+  const toolCallsUnder = (item) => toolCallsBeneath(item, new Set());
+  return { foldedItems, foldedChildrenHtmlOf, toolCallsUnder };
 }
 
 export function revealThreadSequence(scroller, sequence) {
@@ -936,7 +962,7 @@ export function revealThreadSequence(scroller, sequence) {
 /// what was said and done rather than how it fell into runs.
 function timelineHtml(sourceItems, agentLabel, threadId, digests) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
-  const { foldedItems, foldedChildrenHtmlOf } = threadFolding(items, agentLabel);
+  const { foldedItems, foldedChildrenHtmlOf, toolCallsUnder } = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !foldedItems.has(item));
   // Which message may still be answered with a chip: the last one said, and
   // only that one. An event between it and now changes nothing — a commit
@@ -958,11 +984,13 @@ function timelineHtml(sourceItems, agentLabel, threadId, digests) {
         key: event.sequence ?? `at-${index}`,
         activity: {
           icon: meta.icon,
-          kind: event.event,
           sequence: event.sequence,
           meat: activityMeat(event, meta, agentLabel),
           outcome: event.outcome,
           createdAt: event.created_at,
+          // What this row stands for, which is not always itself: a call that
+          // spawned a subagent stands for every call the subagent made.
+          toolCalls: toolCallsUnder(item),
         },
       }];
     }

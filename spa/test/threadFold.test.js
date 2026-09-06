@@ -94,7 +94,9 @@ describe("rows that fold under the call that spawned them", () => {
 
     const rowsTheReaderCanSee = 2;
     expect(document.querySelector(".thread-activity-group-list").children).toHaveLength(rowsTheReaderCanSee);
-    expect(document.querySelector(".thread-activity-count").textContent).toBe(String(rowsTheReaderCanSee));
+    // Two rows, four calls: the spawning call stands for everything the
+    // subagent it started did, at every depth, and the count is calls.
+    expect(document.querySelector(".thread-activity-count").textContent).toBe("4");
   });
 
   it("draws a row once and stops when two rows name each other as parent", () => {

@@ -108,6 +108,39 @@ describe("a folded run drawn from its digest", () => {
     expect(previewOn(group)).toBe("Read b.js");
   });
 
+  // A subagent's calls fold under the call that spawned them: they are never
+  // rows of their own, so a count of rows says one where the agent made four.
+  it("counts the calls a subagent made under the call that spawned it", () => {
+    const group = paint({
+      items: [
+        toolCall(2, "Task(review the parser)"),
+        toolCall(3, "Read spa/src/core/thread.js", { parent_sequence: 2 }),
+        toolCall(4, "Grep patchList", { parent_sequence: 2 }),
+        toolCall(5, "Bash(npm test)", { parent_sequence: 2 }),
+      ],
+    });
+
+    expect(group.querySelectorAll(".thread-activity-group-list > .thread-activity")).toHaveLength(1);
+    expect(countOn(group)).toBe("4");
+    expect(previewOn(group)).toBe("Bash(npm test)");
+  });
+
+  it("tops the digest up with the subagent calls that arrived after it", () => {
+    const group = paint({
+      items: [
+        toolCall(2, "Task(review the parser)"),
+        toolCall(3, "Read spa/src/core/thread.js", { parent_sequence: 2 }),
+        toolCall(4, "Grep patchList", { parent_sequence: 2 }),
+        toolCall(5, "Bash(npm test)", { parent_sequence: 2 }),
+      ],
+      activityDigests: [
+        digest(2, 2, 1, { sequence: 2, summary: "Task(review the parser)", outcome: "ok" }),
+      ],
+    });
+
+    expect(countOn(group)).toBe("4");
+  });
+
   it("keeps the old look for a run that called no tool", () => {
     const group = paint({
       items: [reasoning(1, "Thinking."), reasoning(2, "Still thinking.")],

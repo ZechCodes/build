@@ -23,10 +23,40 @@ const lastCall = (sequence, summary, outcome = "ok", createdAt = "2026-09-06T18:
   outcome,
 });
 
+const call = (sequence, meat, extra = {}) => ({
+  sequence,
+  meat,
+  outcome: extra.outcome,
+  createdAt: extra.createdAt ?? null,
+});
+
 const entry = (sequence, kind, meat, extra = {}) => ({
   html: "",
   key: sequence,
-  activity: { icon: "▸", kind, meat, sequence, outcome: undefined, createdAt: null, ...extra },
+  activity: {
+    icon: "▸",
+    meat,
+    sequence,
+    outcome: undefined,
+    createdAt: null,
+    toolCalls: kind === "tool_use" ? [call(sequence, meat, extra)] : [],
+    ...extra,
+  },
+});
+
+/// A tool call that spawned a subagent: the calls the subagent made fold under
+/// it, so the run holds one row standing for several calls.
+const spawningEntry = (sequence, meat, nested) => ({
+  html: "",
+  key: sequence,
+  activity: {
+    icon: "▸",
+    meat,
+    sequence,
+    outcome: undefined,
+    createdAt: null,
+    toolCalls: [call(sequence, meat), ...nested],
+  },
 });
 
 describe("holding the digests a page carried", () => {
@@ -95,6 +125,34 @@ describe("what a folded run says", () => {
     expect(summary.count).toBe(100);
   });
 
+  // A subagent's calls fold under the call that spawned them, so they never
+  // become rows of their own — and a count of rows would say one where the
+  // bridge counted four.
+  it("counts the calls folded under a row, not the rows", () => {
+    const run = [
+      spawningEntry(2, "Task(review the parser)", [
+        call(3, "Read spa/src/core/thread.js"),
+        call(4, "Grep patchList"),
+        call(5, "Bash(npm test)"),
+      ]),
+    ];
+
+    expect(activityRunSummary([], run).count).toBe(4);
+    expect(activityRunSummary([], run).meat).toBe("Bash(npm test)");
+  });
+
+  it("tops a digest up with the folded calls that arrived after it", () => {
+    const run = [
+      spawningEntry(2, "Task(review the parser)", [
+        call(3, "Read spa/src/core/thread.js"),
+        call(4, "Grep patchList"),
+        call(5, "Bash(npm test)"),
+      ]),
+    ];
+
+    expect(activityRunSummary([digest(2, 2, 1, lastCall(2, "Task(review the parser)"))], run).count).toBe(4);
+  });
+
   it("counts the rows in hand when no digest reaches the run", () => {
     const run = [
       entry(10, "tool_use", "Read a.js"),
@@ -160,10 +218,10 @@ describe("what a folded run says", () => {
     expect(summary.createdAt).toBe("2026-09-06T19:00:00.000Z");
   });
 
-  it("counts a run rendered without sequences by the rows it holds", () => {
+  it("counts a run rendered without sequences by the calls it holds", () => {
     const run = [
-      { html: "", key: "at-0", activity: { icon: "▸", kind: "tool_use", meat: "Read a.js" } },
-      { html: "", key: "at-1", activity: { icon: "◌", kind: "reasoning", meat: "Thinking." } },
+      { html: "", key: "at-0", activity: { icon: "▸", meat: "Read a.js", toolCalls: [{ meat: "Read a.js" }] } },
+      { html: "", key: "at-1", activity: { icon: "◌", meat: "Thinking.", toolCalls: [] } },
     ];
 
     expect(activityRunSummary([digest(1, 9, 40)], run).count).toBe(1);

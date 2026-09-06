@@ -4234,6 +4234,28 @@ impl AppState {
     /// (un-adopt) and delete — close them here, all of them, because a branch
     /// may carry several. A worktree that vanishes takes its agents with it
     /// through the reaper instead.
+    /// A merge that prunes its checkout takes the run's agents with it: the
+    /// directory they live in is about to go, so their sessions end here,
+    /// recorded on the thread, rather than lingering live until the reaper
+    /// notices the root is gone.
+    fn retire_agents_of_pruned_worktree(&mut self, root: &std::path::Path) {
+        let root = Self::canonical_root(root);
+        let ended: Vec<(String, String)> = self
+            .tabs
+            .iter()
+            .filter(|(key, _)| key.is_agent() && key.root == root)
+            .filter_map(|(_, tab)| {
+                tab.role
+                    .agent()
+                    .map(|(owner, agent_id)| (owner.to_string(), agent_id.to_string()))
+            })
+            .collect();
+        let _retiring = self.retire_agent_tabs(&root);
+        for (owner, agent_id) in ended {
+            self.record_agent_session_end(&owner, &agent_id);
+        }
+    }
+
     fn retire_agent_tabs(&mut self, root: &std::path::Path) -> Vec<Retirement> {
         let root = Self::canonical_root(root);
         let keys: Vec<TabKey> = self
@@ -13312,7 +13334,10 @@ impl AppState {
         cleanup: MergeCleanup,
     ) {
         match cleanup {
-            MergeCleanup::Prune => self.prune_merged_worktree(project_id, worktree),
+            MergeCleanup::Prune => {
+                self.retire_agents_of_pruned_worktree(&worktree.path);
+                self.prune_merged_worktree(project_id, worktree);
+            }
             MergeCleanup::Keep => {}
             MergeCleanup::Release => {
                 if let Some(store) = &self.store {
@@ -40037,6 +40062,82 @@ mod tests {
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works
     /// in, streams it, and — when that agent's process ends — retains the last
     /// screen with `live: false` rather than erroring or going blank.
+    /// The QA suite's last check, in-process: an Issue is planned, its first
+    /// stage implemented by the QA agent, and its run merged. Attaching to the
+    /// merged run must answer `live: false` — the agent's session is over with
+    /// its work, whatever the harness process is still doing.
+    #[tokio::test]
+    async fn agent_attach_on_a_merged_run_answers_live_false() {
+        let (dir, repo) = init_repo();
+        let canonical_dir = dir.path().canonicalize().unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let (state, handler) = shared_qa_state_and_handler(&repo, &canonical_dir);
+        let created = call(
+            &handler,
+            "issue.create",
+            json!({ "goal": "Add a greeting banner", "provider": "claude" }),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
+        wait_for_deliveries(&state).await;
+        let approved = call(&handler, "issue.approve", json!({ "issue_id": issue_id }));
+        assert_eq!(approved["ok"], true, "{approved:?}");
+        let stages = call(&handler, "issue.stages", json!({ "issue_id": issue_id }));
+        let first = stages["result"]["stages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let gate = call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        assert_eq!(gate["ok"], true, "{gate:?}");
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let run_id = implemented["result"]["current_implementation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_for_deliveries(&state).await;
+        let second = stages["result"]["stages"][1]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let gate = call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        assert_eq!(gate["ok"], true, "{gate:?}");
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let merged = call(
+            &handler,
+            "issue.git_action",
+            json!({ "issue_id": issue_id, "action": "merge" }),
+        );
+        assert_eq!(merged["ok"], true, "{merged:?}");
+        assert_eq!(
+            merged["result"]["current_implementation"]["state"], "merged",
+            "{merged:?}"
+        );
+        let attached = handler.call(
+            SessionSender::detached("s-merged"),
+            req("agent.attach", json!({ "id": run_id })),
+        );
+        assert_eq!(attached["ok"], true, "{attached:?}");
+        assert_eq!(attached["result"]["live"], false, "{attached:?}");
+    }
+
     #[tokio::test]
     async fn agent_attach_streams_a_live_run_and_retains_the_last_screen() {
         let (dir, repo) = init_repo();

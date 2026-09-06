@@ -15,10 +15,6 @@ use std::time::{Duration, Instant};
 /// How long a git child may run before it is killed as timed out (spec §2).
 const GIT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// How often the deadline is checked while the child runs. The pipes are read
-/// by their own threads, so nothing but the kill waits on this.
-const POLL_INTERVAL: Duration = Duration::from_millis(5);
-
 /// Why one git child did not answer.
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -75,14 +71,13 @@ fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::
         .stderr(Stdio::piped())
         .current_dir(dir)
         .spawn()?;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    let (closed, pipe_closed) = std::sync::mpsc::channel();
+    let stdout = drain(child.stdout.take(), closed.clone());
+    let stderr = drain(child.stderr.take(), closed);
     let expiry = Instant::now() + deadline;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= expiry {
+    for _ in 0..2 {
+        let left = expiry.saturating_duration_since(Instant::now());
+        if pipe_closed.recv_timeout(left).is_err() {
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::Error::new(
@@ -90,25 +85,33 @@ fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::
                 format!("git {args:?} did not return within {}s", deadline.as_secs()),
             ));
         }
-        std::thread::sleep(POLL_INTERVAL);
-    };
+    }
     Ok(Output {
-        status,
+        status: child.wait()?,
         stdout: collected(stdout)?,
         stderr: collected(stderr)?,
     })
 }
 
 /// Read one of the child's pipes on its own thread, so both are emptied while
-/// the child is still writing. git blocks once a pipe buffer fills, so a reader
-/// that waits for the exit first would wait for a child that is waiting for it.
-fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<std::io::Result<Vec<u8>>> {
+/// the child is still writing, and say on `closed` when it ends. git blocks
+/// once a pipe buffer fills, so a reader that waits for the exit first would
+/// wait for a child that is waiting for it; and a pipe reaching its end is the
+/// child letting go of it, which is the moment the deadline is waiting for —
+/// asked for by waiting on it rather than by looking every so often, so a git
+/// costs what git costs and not what the host rounds a sleep up to.
+fn drain<R: Read + Send + 'static>(
+    pipe: Option<R>,
+    closed: std::sync::mpsc::Sender<()>,
+) -> JoinHandle<std::io::Result<Vec<u8>>> {
     std::thread::spawn(move || {
         let mut collected = Vec::new();
-        if let Some(mut pipe) = pipe {
-            pipe.read_to_end(&mut collected)?;
-        }
-        Ok(collected)
+        let read = match pipe {
+            Some(mut pipe) => pipe.read_to_end(&mut collected).map(|_| ()),
+            None => Ok(()),
+        };
+        let _ = closed.send(());
+        read.map(|()| collected)
     })
 }
 
@@ -124,6 +127,7 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
     use std::net::TcpListener;
+    use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
     /// A `git://` endpoint that completes the connection but never sends the
@@ -193,6 +197,41 @@ mod tests {
         let head = run_git(dir.path(), &["symbolic-ref", "--short", "HEAD"]).unwrap();
 
         assert_eq!(head.trim(), "main");
+    }
+
+    /// The child is answered when it exits, not when something notices it has.
+    /// A sleeping poll costs whatever the host's timers round it up to — on a
+    /// machine that rounds a 5 ms sleep to 180 ms, every git the daemon runs
+    /// pays that, and a `done` report holding the app mutex over three of them
+    /// reads as a wedged daemon. Measured against the same child run by the
+    /// standard library, so the assertion is about this module's overhead
+    /// rather than about how fast the host runs git.
+    #[test]
+    fn a_git_child_costs_what_the_child_costs() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(dir.path(), &["init", "-b", "main"]).unwrap();
+        let args = ["symbolic-ref", "--short", "HEAD"];
+
+        let started = Instant::now();
+        for _ in 0..5 {
+            Command::new("git")
+                .args(args)
+                .stdin(Stdio::null())
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+        }
+        let library = started.elapsed();
+        let started = Instant::now();
+        for _ in 0..5 {
+            run_git(dir.path(), &args).unwrap();
+        }
+        let ours = started.elapsed();
+
+        assert!(
+            ours < library * 3,
+            "the wait costs more than the child: {ours:?} against {library:?}"
+        );
     }
 
     #[test]

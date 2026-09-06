@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::git_process::{git_failure, run_git, run_git_with_deadline};
 use crate::isolation::cow::CowBackend;
 use crate::isolation::{
-    checkout_name, local_branch_ref, record_branch_teardown, teardown_in_git_dir, Isolation,
-    IsolationAvailability, IsolationBackend, WorktreeBackend,
+    checkout_name, local_branch_ref, record_branch_teardown, Isolation, IsolationAvailability,
+    IsolationBackend, WorktreeBackend,
 };
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
@@ -141,15 +141,6 @@ pub fn is_usable_branch_name(name: &str) -> bool {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     };
     segments.iter().all(segment_is_usable) && is_ref_name(name)
-}
-
-/// Git's admin directory for a linked worktree, addressed from the repository
-/// that registered it — readable whether or not the checkout is still on disk.
-/// `Repository::path()` is the *caller's* admin directory, which is the linked
-/// worktree's own when the project root is itself one, so the shared
-/// `commondir` is what holds the `worktrees/<name>` entries.
-fn admin_dir_for(repo: &git2::Repository, worktree_name: &str) -> PathBuf {
-    repo.commondir().join("worktrees").join(worktree_name)
 }
 
 /// A branch with a local ref ready to be checked out: what teardown of the
@@ -644,35 +635,19 @@ impl WorktreeManager {
         let Err(error) = record_branch_teardown(path, prepared.teardown) else {
             return Ok(());
         };
-        let mut taken_back = true;
-        if let Ok(registered) = repo.find_worktree(name) {
-            let mut prune = git2::WorktreePruneOptions::new();
-            prune.valid(true).working_tree(true);
-            if let Err(prune_error) = registered.prune(Some(&mut prune)) {
-                eprintln!(
-                    "worktree {name}: teardown marker unwritten and registration not pruned \
-                     ({prune_error}); branch {branch} may be deleted by the next teardown"
-                );
-                taken_back = false;
-            }
-        }
-        if path.exists() {
-            if let Err(remove_error) = std::fs::remove_dir_all(path) {
-                eprintln!(
-                    "worktree {name}: teardown marker unwritten and directory not removed \
-                     ({remove_error}); branch {branch} may be deleted by the next teardown"
-                );
-                taken_back = false;
-            }
-        }
+        let taken_back = self.remove_checkout(path);
         prepared.discard_created_ref(repo);
-        if taken_back {
-            return Err(error);
+        if let Err(unwind_error) = taken_back {
+            eprintln!(
+                "worktree {name}: teardown marker unwritten and the checkout not taken back \
+                 ({unwind_error}); branch {branch} may be deleted by the next teardown"
+            );
+            return Err(WorktreeError::Command(format!(
+                "could not record teardown for {name}, and the checkout could not be taken \
+                 back: {error}"
+            )));
         }
-        Err(WorktreeError::Command(format!(
-            "could not record teardown for {name}, and its registration could not be taken \
-             back: {error}"
-        )))
+        Err(error)
     }
 
     /// Bring a branch that exists only on `remote` here: fetch exactly it,
@@ -841,7 +816,7 @@ impl WorktreeManager {
             return self.verify_existing_checkout(worktree);
         }
         let repo = git2::Repository::open(&self.repo_path)?;
-        let teardown = self.teardown_across_prune(&repo, worktree, when_unregistered)?;
+        let teardown = self.teardown_across_prune(worktree, when_unregistered)?;
         self.ensure_local_branch(&repo, &worktree.recorded_branch)?;
         let path = self.checkout_path(&worktree.name)?;
         self.backend(isolation)?
@@ -850,37 +825,27 @@ impl WorktreeManager {
         self.verify_existing_checkout(worktree)
     }
 
-    /// What teardown owns, taken out of the stale record before the prune that
-    /// removes it. Only a record git says is *absent* leaves the environment
-    /// unable to answer — then the caller's `when_unregistered` speaks, or
-    /// refuses to. Every other git failure is surfaced, because a branch is
-    /// deleted on the strength of this answer.
-    // TODO-MERGE(Work Isolation Merge Brief §1): reading the record of a
-    // checkout whose directory is gone is the tenth backend primitive,
-    // `teardown_record`, not git's registry read directly.
+    /// What teardown owns, taken out of the stale record before the sweep that
+    /// clears it. A record no backend holds leaves the environment unable to
+    /// answer — then the caller's `when_unregistered` speaks, or refuses to.
+    /// Every failure to read one is surfaced, because a branch is deleted on
+    /// the strength of this answer.
     fn teardown_across_prune(
         &self,
-        repo: &git2::Repository,
         worktree: &Worktree,
         when_unregistered: UnregisteredRestore,
     ) -> Result<BranchTeardown, WorktreeError> {
-        match repo.find_worktree(&worktree.name) {
-            Ok(stale) => {
-                let recorded = teardown_in_git_dir(&admin_dir_for(repo, &worktree.name))?;
-                let mut prune = git2::WorktreePruneOptions::new();
-                prune.valid(true).working_tree(true);
-                stale.prune(Some(&mut prune))?;
-                Ok(recorded)
-            }
-            Err(error) if error.code() == git2::ErrorCode::NotFound => match when_unregistered {
-                UnregisteredRestore::Write(teardown) => Ok(teardown),
-                UnregisteredRestore::Refuse => Err(WorktreeError::Refused(format!(
-                    "cannot restore {:?}: its worktree registration is gone, so whether \
-                     teardown owns branch {:?} cannot be decided",
-                    worktree.name, worktree.recorded_branch
-                ))),
-            },
-            Err(error) => Err(error.into()),
+        if let Some(recorded) = self.teardown_record(&worktree.name)? {
+            self.prune();
+            return Ok(recorded);
+        }
+        match when_unregistered {
+            UnregisteredRestore::Write(teardown) => Ok(teardown),
+            UnregisteredRestore::Refuse => Err(WorktreeError::Refused(format!(
+                "cannot restore {:?}: its worktree registration is gone, so whether \
+                 teardown owns branch {:?} cannot be decided",
+                worktree.name, worktree.recorded_branch
+            ))),
         }
     }
 
@@ -895,7 +860,7 @@ impl WorktreeManager {
         let repo = git2::Repository::open(&self.repo_path)?;
         let deletes_branch =
             match repo.find_branch(&worktree.recorded_branch, git2::BranchType::Local) {
-                Ok(_) => self.teardown_of(&repo, worktree)?.deletes_branch(),
+                Ok(_) => self.teardown_of(worktree)?.deletes_branch(),
                 Err(error) if error.code() == git2::ErrorCode::NotFound => false,
                 Err(error) => return Err(error.into()),
             };
@@ -930,20 +895,35 @@ impl WorktreeManager {
         self.publish(&worktree.path, &worktree.recorded_branch)
     }
 
-    /// What teardown of `worktree` owns. A checkout still on disk answers for
-    /// itself, whatever made it; one that is gone is asked of the record its
-    /// backend kept.
-    // TODO-MERGE(Work Isolation Merge Brief §1): the vanished-checkout arm is
-    // the tenth backend primitive, `teardown_record`, not git's registry.
-    fn teardown_of(
-        &self,
-        repo: &git2::Repository,
-        worktree: &Worktree,
-    ) -> Result<BranchTeardown, WorktreeError> {
+    /// What teardown of `worktree` owns — the façade's one rule for a question
+    /// each isolation answers from somewhere else. A checkout still on disk
+    /// answers for itself, whatever made it; one that is gone is asked of the
+    /// records its backends keep. A checkout nothing can vouch for is refused
+    /// rather than guessed at, because a branch deleted on a guess is
+    /// somebody's work — and no git command ran to say so.
+    fn teardown_of(&self, worktree: &Worktree) -> Result<BranchTeardown, WorktreeError> {
         if worktree.path.exists() {
             return branch_teardown(&worktree.path);
         }
-        teardown_in_git_dir(&admin_dir_for(repo, &worktree.name))
+        self.teardown_record(&worktree.name)?.ok_or_else(|| {
+            WorktreeError::Refused(format!(
+                "{:?} is gone and nothing records whether teardown owns branch {:?}, so \
+                 the branch is left standing",
+                worktree.name, worktree.recorded_branch
+            ))
+        })
+    }
+
+    /// What any backend records about teardown of the checkout called `name`.
+    /// A name carries no isolation, so this is one walk and every caller asks
+    /// it here — [`record_held`](Self::record_held)'s sibling.
+    fn teardown_record(&self, name: &str) -> Result<Option<BranchTeardown>, WorktreeError> {
+        for backend in self.every_backend() {
+            if let Some(recorded) = backend.teardown_record(&self.repo_path, name)? {
+                return Ok(Some(recorded));
+            }
+        }
+        Ok(None)
     }
 
     /// Make sure the project repo has `branch` locally, fetching exactly it
@@ -3455,6 +3435,70 @@ mod tests {
         );
     }
 
+    /// A branch named in full that no ref holds is cut and cloned onto, the
+    /// third creator answering in a clone like the other two.
+    #[test]
+    fn create_cutting_branch_clones_onto_the_branch_it_cut() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+
+        let added = mgr
+            .create_cutting_branch("hotfix-login", "main", Isolation::Cow)
+            .unwrap();
+
+        assert_eq!(added.teardown, BranchTeardown::DeletesBranch);
+        assert_eq!(Isolation::of(&added.worktree.path), Some(Isolation::Cow));
+        assert_eq!(
+            git2::Repository::open(&added.worktree.path)
+                .unwrap()
+                .head()
+                .unwrap()
+                .shorthand(),
+            Some("hotfix-login"),
+            "the clone is on the branch that was cut exactly as it was named"
+        );
+    }
+
+    /// A clone keeps its own `.git`, so what teardown owns is written there
+    /// beside the marker that says the clone is Build's — and read back from
+    /// the clone itself, by the same call a linked worktree answers.
+    #[test]
+    fn a_clones_teardown_marker_round_trips_in_its_own_git_directory() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+        let r = git2::Repository::open(&repo).unwrap();
+        let head = r.head().unwrap().peel_to_commit().unwrap();
+        r.branch("theirs", &head, false).unwrap();
+
+        let cut = mgr.create("cut-for-me", "main", Isolation::Cow).unwrap();
+        let borrowed = mgr
+            .create_on_existing_branch("theirs", "main", Isolation::Cow)
+            .unwrap();
+
+        assert!(
+            cut.worktree
+                .path
+                .join(".git")
+                .join(BRANCH_TEARDOWN_MARKER)
+                .exists(),
+            "the marker is in the clone's own git directory"
+        );
+        assert_eq!(
+            branch_teardown(&cut.worktree.path).unwrap(),
+            BranchTeardown::DeletesBranch
+        );
+        assert_eq!(
+            branch_teardown(&borrowed.worktree.path).unwrap(),
+            BranchTeardown::KeepsBranch
+        );
+    }
+
     /// A clone is a directory, and a directory already under the worktrees root
     /// makes its name taken whatever made it — so a second create disambiguates.
     #[test]
@@ -3519,6 +3563,7 @@ mod tests {
 mod vanished_worktree_removal {
     use super::*;
     use crate::git_fixture::{git_in, init_repo};
+    use crate::isolation::probe::cow_or_skip;
 
     /// The state an outside cleanup leaves behind: directory removed,
     /// bookkeeping pruned, branch deleted.
@@ -3610,6 +3655,74 @@ mod vanished_worktree_removal {
         assert!(
             r.find_branch("theirs", git2::BranchType::Local).is_ok(),
             "and the branch it was only borrowing"
+        );
+    }
+
+    /// A clone that is gone from disk has taken the only record of it with it.
+    /// The project can vouch for nothing, so the removal refuses in its own
+    /// words — no git command ran — and the branch is left standing.
+    #[test]
+    fn a_vanished_clone_cannot_vouch_and_its_branch_stands() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
+        let wt = manager
+            .create("cloned-away", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
+        std::fs::remove_dir_all(&wt.path).unwrap();
+
+        let error = manager.remove(&wt).unwrap_err();
+
+        assert!(
+            matches!(error, WorktreeError::Refused(_)),
+            "nothing ran git to say otherwise: {error:?}"
+        );
+        assert!(format!("{error}").contains("cloned-away"), "{error}");
+        assert!(
+            git2::Repository::open(&repo)
+                .unwrap()
+                .find_branch(&wt.recorded_branch, git2::BranchType::Local)
+                .is_ok(),
+            "a branch nothing can vouch for is left standing"
+        );
+    }
+
+    /// A linked worktree keeps its record in the project, so a checkout gone
+    /// from disk is still answered for: the branch it only borrowed stands and
+    /// the branch it was cut for goes, with nobody having told the removal
+    /// which was which.
+    #[test]
+    fn a_vanished_linked_worktree_still_answers_from_its_record() {
+        let (dir, repo) = init_repo();
+        let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
+        let r = git2::Repository::open(&repo).unwrap();
+        let head = r.head().unwrap().peel_to_commit().unwrap();
+        r.branch("theirs", &head, false).unwrap();
+        let borrowed = manager
+            .create_on_existing_branch("theirs", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
+        let cut = manager
+            .create("cut-for-me", "main", Isolation::Worktree)
+            .unwrap()
+            .worktree;
+        std::fs::remove_dir_all(&borrowed.path).unwrap();
+        std::fs::remove_dir_all(&cut.path).unwrap();
+
+        manager.remove(&borrowed).unwrap();
+        manager.remove(&cut).unwrap();
+
+        assert!(
+            r.find_branch("theirs", git2::BranchType::Local).is_ok(),
+            "the borrowed branch its record kept survives"
+        );
+        assert!(
+            r.find_branch(&cut.recorded_branch, git2::BranchType::Local)
+                .is_err(),
+            "the branch its record says teardown owns goes"
         );
     }
 

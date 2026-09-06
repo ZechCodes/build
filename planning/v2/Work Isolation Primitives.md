@@ -5,7 +5,7 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
 `WorktreeManager` and the variation lives behind `IsolationBackend`, so no `match Isolation` is written outside
 `bridge/src/isolation/`, save the carve-outs §0.1 pins.
 
-## `bridge/src/isolation/mod.rs` — the types, the marker, the trait
+## `bridge/src/isolation/mod.rs` — the types, the markers, the trait
 - **`Isolation`**: the choice as a value — `ALL`, `wire`, `from_wire`, `of(&Path)`. `of` is the one authority on what
   an existing checkout is (two `stat`s, no git, no record) and never consults a setting, a record, or a caller's
   memory.
@@ -16,10 +16,18 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
 - **`local_branch_ref(branch: &str) -> String`** — `refs/heads/<branch>`, spelled here because both sides of the
   seam use it (the façade finds, cuts and deletes branches by it in the project repo; a backend checks one out by
   it), so no caller writes the prefix again.
-- **The marker**: `COW_MARKER` (the file name under `.git`) with `write_cow_marker(checkout, project)` and
-  `cow_marker_names(checkout, project) -> bool`. §4.6's name and format are one fact with one owner, here because
-  `Isolation::of` reads it in stage 1 before `cow.rs` exists; the three places that touch it — `Isolation::of`,
-  `materialize`, `verify`/`discover` — spell none.
+- **`checkout_git_dir(checkout: &Path) -> Result<PathBuf, WorktreeError>`** (main's `admin_dir_of` renamed): where a
+  checkout keeps its git directory — `<checkout>/.git` for a clone or a main checkout, and whatever the `gitdir:`
+  pointer names for a linked worktree, a relative one resolved against the directory holding it. Both markers below sit
+  in that directory, so it is spelled once and no backend spells a marker path.
+- **The markers**, both found through `checkout_git_dir`: `COW_MARKER` (the file name under `.git`) with
+  `write_cow_marker(checkout, project)` and `cow_marker_names(checkout, project) -> bool`, and `BranchTeardown`
+  (`deletes-branch` | `keeps-branch`) in `BRANCH_TEARDOWN_MARKER`, with `record_branch_teardown(checkout, teardown)`,
+  `branch_teardown(checkout)` and `teardown_in_git_dir(git_dir)` for a caller that already holds the directory. §4.6's
+  name and format are one fact with one owner, here because `Isolation::of` reads it in stage 1 before `cow.rs` exists;
+  the three places that touch it — `Isolation::of`, `materialize`, `verify`/`discover` — spell none. Writing the
+  teardown marker and reading it off a standing checkout are isolation-blind for the same reason: a clone's lands in its
+  own `.git` beside `COW_MARKER`, a linked worktree's in the entry git keeps for it in the project.
 - **`IsolationAvailability`** `{ cow: Result<(), String> }` (§1.3): can a clone be made here, and if not, the sentence
   a control shows. One constructor, `of(project, worktrees_root)`, wraps `cow_availability`; a hand-written `impl
   Serialize` emits §5.4's `{"cow": bool, "reason": string|null}`. Its one behavioral method, `lock_reason(&self,
@@ -27,9 +35,9 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
   is the one isolation a volume can lock — the ownership that keeps the variant out of `app.rs`, where the resolver and
   the refusal ask it.
 - **`IsolationBackend`**: `kind`, `materialize`, `verify`, `publish`, `sync_base`, `remove`, `discover`, `prune`,
-  `holds_record`, each answering `Result<_, WorktreeError>`. Each is whole — no caller sequences two for one outcome —
-  and none knows of runs, plans, threads, settings or naming. Branch cutting and deletion are absent by design:
-  project-repo work, identical for both, so the façade owns them.
+  `holds_record`, `teardown_record`, each answering `Result<_, WorktreeError>`. Each is whole — no caller sequences
+  two for one outcome — and none knows of runs, plans, threads, settings or naming. Branch cutting and deletion are
+  absent by design: project-repo work, identical for both, so the façade owns them.
 - **`prune(&self, project: &Path) -> Result<(), WorktreeError>`** is the eighth primitive: stale-record cleanup is a
   per-isolation variation — a linked worktree leaves a record in `.git/worktrees`, a clone leaves none — so it takes
   the shape of `publish`/`sync_base`: real work in `WorktreeBackend`, `Ok(())` in `CowBackend`. §3's "best effort" is
@@ -38,6 +46,12 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
   asked of one name. `WorktreeBackend` answers `repo.find_worktree(name).is_ok()`, `CowBackend` `false` — a clone's
   only trace is its directory, which the façade already tests. Without it the uniqueness check would query git's
   registry itself, leaving that variation outside the trait.
+- **`teardown_record(&self, project: &Path, name: &str) -> Result<Option<BranchTeardown>, WorktreeError>`** is the
+  tenth: what teardown of a checkout called `name` owns, read from the backend's own record of it — the one
+  per-isolation fact about the teardown marker, because a checkout whose directory is gone can no longer be asked
+  itself. `WorktreeBackend` answers from `<commondir>/worktrees/<name>/` (`Some`, an unmarked registration included,
+  and `Ok(None)` when git holds no registration); `CowBackend` answers `Ok(None)`, because a clone leaves no trace the
+  project can vouch for.
 - `WorktreeError` moves here (§2) — the trait's signatures are its most public use — and `worktree.rs` re-exports it,
   so `isolation/` imports nothing from the façade. It gains three variants for the failures where no git command ran,
   so none of them may render as one: `NotABuildCheckout(PathBuf)`, `"not a Build checkout: {0}"`;
@@ -57,8 +71,9 @@ directly for the raw `Output` (§2).
 
 ## The two backends
 **`WorktreeBackend`** (`bridge/src/isolation/worktree.rs`). Stage 1, moved code. Owns every `git worktree` invocation
-and every `find_worktree` in the tree, `git worktree prune` included (§8.2) as its `prune` and the registry lookup the
-façade used to make as its `holds_record`. `publish`/`sync_base` are `Ok(())` — the project repo already holds the
+and every `find_worktree` in the tree, `git worktree prune` included (§8.2) as its `prune`, the registry lookup the
+façade used to make as its `holds_record`, and the registry entry the façade used to address by hand — main's
+`admin_dir_for` — as its `teardown_record`. `publish`/`sync_base` are `Ok(())` — the project repo already holds the
 refs. Those no-ops, and `CowBackend`'s `Ok(())` `prune`, make both isolations one call site.
 
 **`CowBackend`** (`bridge/src/isolation/cow.rs`). `clone_tree(src, dst)` is the one platform call (`clonefile` on
@@ -95,14 +110,19 @@ hold a record of this name" is one question the façade asks twice today (worktr
 one private `record_held(&self, name) -> Result<bool, WorktreeError>` owns that walk, both callers ask it, and being
 fallible it makes `name_taken` fallible too. It owns branch cutting and deletion, the common `restore` checks,
 publish-before-read ordering, the union `discover`, `availability()` from `IsolationAvailability::of`, and
-`merge_into_base`, which absorbs `Orchestrator::merge_into_base` and `app::merge_external_branch`. No setting or record
+`merge_into_base`, which absorbs `Orchestrator::merge_into_base` and `app::merge_external_branch`. It owns one rule
+about the teardown marker too: a checkout still on disk is asked directly through `branch_teardown`, a vanished one
+through the backends' `teardown_record`, and `None` — nothing in the project able to vouch for the branch — is
+`remove`'s refusal, which leaves the branch standing, and the point where `restore` falls back to the caller's
+`UnregisteredRestore`. No setting or record
 is read here. `backend(Isolation)`, keyed on a resolved isolation, and `backend_of(&Path)`, keyed on `Isolation::of`,
 are the whole of keyed dispatch — nowhere else is a `match Isolation` written or a backend field reached for. Both
 resolve through `backends()`, the one list of backends: an array with one slot per `Isolation::ALL` entry, keyed to the
-enum by length, so a new isolation cannot be added without declaring its slot (`None` until its backend exists). Three
+enum by length, so a new isolation cannot be added without declaring its slot (`None` until its backend exists). Four
 primitives have nothing to key on, and each owns one walk over `every_backend()` — the backends this build has, that
 array with the empty slots dropped — that no caller repeats: `record_held` walks `holds_record` (a name carries no
-isolation), `remove_checkout(path)` (§3) walks `remove` (a gone checkout carries none), `prune` walks `prune`. Walking
+isolation), `teardown_record` walks `teardown_record` (nor does a vanished checkout), `remove_checkout(path)` (§3)
+walks `remove` (a gone checkout carries none), `prune` walks `prune`. Walking
 the array rather than `Isolation::ALL` keeps `backend()` from being asked for an absent backend mid-walk. So `remove_checkout` is `record_held`'s fallible sibling and never asks
 `backend_of`: absence is success for every backend's `remove`, so present and gone are one unconditional path. `prune`
 alone returns nothing, being the one place turning a backend's `Err` into a log line; the record clearing `restore`

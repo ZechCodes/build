@@ -815,19 +815,19 @@ describe("thread cache paging (the window over a long conversation)", () => {
   });
 });
 
-// The daemon's page stopped being measured in items: a page's `thread_limit`
-// buys CONVERSATION — messages and the events that call the human — and the
-// activity a headless session emits between them rides along uncounted, under
-// a hard ceiling of ten items per unit of budget. So a page routinely carries
-// far more items than it was asked for, which is a shape the merge here had
-// never been handed. No field changed meaning and none was added, so nothing
-// in the cache needed changing; these are what holds that claim.
+// The daemon's page is measured in MESSAGES, and it is not contiguous.
+//
+// A page's `thread_limit` buys messages: the walk always reaches the limit-th
+// of them, and the activity a headless session emits between them rides along
+// uncounted. What bounds a page is a cap per RUN of activity — only the newest
+// hundred items of any one run ship, and the run's digest accounts for the
+// rest. So a page routinely carries far more items than it asked for, with
+// holes inside its runs, and says what each run really came to beside them.
 describe("thread cache paging over an activity-heavy conversation", () => {
-  // The daemon's own bound: at most `limit * THREAD_PAGE_SPAN_FACTOR` items,
-  // factor 10 (bridge/src/thread.rs).
-  const PAGE_SPAN_FACTOR = 10;
+  // bridge/src/thread.rs: PAGE_ACTIVITY_RUN_CAP.
+  const RUN_CAP = 100;
   // `readOlderItems` names no bound, so the daemon's default page is what
-  // answers a scroll back — the same 60 the first load asks for.
+  // answers a scroll back — the same page the first load asks for.
   const DAEMON_PAGE = FIRST_PAGE_ITEMS;
 
   const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
@@ -847,45 +847,63 @@ describe("thread cache paging over an activity-heavy conversation", () => {
     return items;
   };
 
-  // The daemon's page rule, mirrored: walking newest→older from the seek,
-  // every item ships and the walk stops at the `limit`-th counted item or at
-  // the ceiling, whichever comes first. Only messages are counted here —
-  // activity is Status-classed, and Status-classed events ride free.
+  const isActivity = (entry) => entry.type !== "message";
+
+  // The daemon's page rule, mirrored: walk newest→older from the seek until
+  // the limit-th message, then cut each run of activity down to its newest
+  // `RUN_CAP` items and describe the whole of it in a digest.
   const conversationPage = (conversation, { before = Infinity, limit }) => {
     const older = conversation.filter((entry) => entry.data.sequence < before);
-    const ceiling = limit * PAGE_SPAN_FACTOR;
-    let taken = 0;
-    let counted = 0;
+    const span = [];
+    let messages = 0;
     for (const entry of [...older].reverse()) {
-      if (taken === ceiling || counted === limit) break;
-      taken += 1;
-      if (entry.type === "message") counted += 1;
+      if (messages === limit) break;
+      span.push(entry);
+      if (!isActivity(entry)) messages += 1;
     }
-    const items = older.slice(older.length - taken);
+    const shipped = [];
+    const digests = [];
+    for (let at = 0; at < span.length; at += 1) {
+      if (!isActivity(span[at])) {
+        shipped.push(span[at]);
+        continue;
+      }
+      const run = [];
+      while (at < span.length && isActivity(span[at])) run.push(span[at++]);
+      at -= 1;
+      shipped.push(...run.slice(0, RUN_CAP));
+      digests.push({
+        from_sequence: run.at(-1).data.sequence,
+        through_sequence: run[0].data.sequence,
+        tool_calls: run.filter((entry) => entry.data.event === "tool_use").length,
+        last_tool_call: { sequence: run[0].data.sequence, created_at: null, summary: run[0].data.summary, outcome: null },
+      });
+    }
+    const items = shipped.reverse();
     return {
       id: "thread:run-1",
       items,
+      activity_digests: digests.reverse(),
       revisions: [],
       thread_total: conversation.length,
       thread_last_sequence: conversation.at(-1).data.sequence,
       oldest_sequence: items[0]?.data.sequence ?? null,
-      has_more: older.length > taken,
+      has_more: older.length > span.length,
     };
   };
 
   const sequencesOf = (items) => items.map((entry) => entry.data.sequence);
+  const messagesOf = (items) => items.filter((entry) => !isActivity(entry));
 
   it("holds a page carrying far more items than the limit it asked for", () => {
     const cache = createThreadCache();
-    // Sixty turns of five tool calls each: the page buys sixty messages and
-    // three hundred tool calls travel with them, 360 items against a limit of
-    // 60. Before §6.3 the same ask answered with sixty items, of which ten
-    // were conversation.
+    // Twenty turns of five tool calls each: the page buys twenty messages and
+    // a hundred tool calls travel with them, against a limit of twenty.
     const conversation = sessionTranscript(80, 5);
     const opened = cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
 
     expect(opened.items).toHaveLength(FIRST_PAGE_ITEMS * 6);
-    expect(opened.items.filter((entry) => entry.type === "message")).toHaveLength(FIRST_PAGE_ITEMS);
+    expect(messagesOf(opened.items)).toHaveLength(FIRST_PAGE_ITEMS);
     // The window is sound: an oversized page is not a loss, and the forward
     // cursor engages off the newest item it shipped.
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.at(-1).data.sequence });
@@ -893,17 +911,29 @@ describe("thread cache paging over an activity-heavy conversation", () => {
     expect(cache.olderPageParam()).toEqual({ before_sequence: opened.items[0].data.sequence });
   });
 
-  it("walks an oversized window back to the start, seeing every item exactly once", () => {
+  it("holds a page with holes inside its runs, and the digests that account for them", () => {
     const cache = createThreadCache();
-    // Fifteen tool calls a turn, which is where the ceiling bites: sixty units
-    // of budget may ship six hundred items, and six hundred items of this
-    // conversation hold thirty-seven messages, not sixty. The page ends higher
-    // than the budget asked for, `has_more` says so, and the reader scrolls
-    // again — the design working, not a page that lost something.
+    // A hundred and fifty calls to a turn: fifty of each run stay behind, and
+    // the digest is the only word for them.
+    const conversation = sessionTranscript(6, 150);
+    const opened = cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
+
+    expect(messagesOf(opened.items)).toHaveLength(6);
+    expect(opened.items.filter(isActivity)).toHaveLength(6 * RUN_CAP);
+    expect(opened.activityDigests).toHaveLength(6);
+    expect(opened.activityDigests.map((held) => held.tool_calls)).toEqual([150, 150, 150, 150, 150, 150]);
+    // The window is still sound: a page shorter than the conversation is what
+    // paging IS, and the holes are inside it rather than at either end.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.at(-1).data.sequence });
+  });
+
+  it("walks an oversized window back to the start, seeing every message exactly once", () => {
+    const cache = createThreadCache();
+    // Fifteen tool calls a turn over forty turns: no run reaches the cap, so
+    // every page is contiguous and the walk covers the conversation whole.
     const conversation = sessionTranscript(40, 15);
     const first = conversationPage(conversation, { limit: FIRST_PAGE_ITEMS });
-    expect(first.items).toHaveLength(FIRST_PAGE_ITEMS * PAGE_SPAN_FACTOR);
-    expect(first.items.filter((entry) => entry.type === "message").length).toBeLessThan(FIRST_PAGE_ITEMS);
+    expect(messagesOf(first.items)).toHaveLength(FIRST_PAGE_ITEMS);
 
     cache.absorb(first);
     let widened = first;
@@ -926,6 +956,21 @@ describe("thread cache paging over an activity-heavy conversation", () => {
     // Scrolling back never moves the forward cursor: history arriving late is
     // not news.
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.length });
+  });
+
+  it("keeps every run's own digest as the reader walks back through them", () => {
+    const cache = createThreadCache();
+    const conversation = sessionTranscript(6, 150);
+    cache.absorb(conversationPage(conversation, { limit: 2 }));
+    let widened = null;
+    while (cache.hasOlderItems()) {
+      const seek = cache.olderPageParam();
+      widened = cache.absorbOlderPage(conversationPage(conversation, { before: seek.before_sequence, limit: 2 }), seek);
+    }
+
+    expect(messagesOf(widened.items)).toHaveLength(6);
+    expect(widened.activityDigests).toHaveLength(6);
+    expect(widened.activityDigests.map((held) => held.tool_calls)).toEqual([150, 150, 150, 150, 150, 150]);
   });
 
   it("keeps the window through a poll that delivers a turn's worth of activity", () => {

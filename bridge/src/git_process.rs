@@ -8,12 +8,16 @@
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// How long a git child may run before it is killed as timed out (spec §2).
 const GIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The gap between two looks at a child that has closed its pipes but has not
+/// exited yet.
+const EXIT_POLL: Duration = Duration::from_micros(200);
 
 /// Why one git child did not answer.
 #[derive(Debug, thiserror::Error)]
@@ -62,7 +66,7 @@ pub fn run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Out
 }
 
 fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::Result<Output> {
-    let mut child = Command::new("git")
+    let child = Command::new("git")
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
@@ -71,26 +75,66 @@ fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::
         .stderr(Stdio::piped())
         .current_dir(dir)
         .spawn()?;
+    bounded(child, args, deadline)
+}
+
+/// Everything `child` said, or the deadline it did not answer within. Both
+/// pipes are drained on threads of their own while it runs, and `deadline`
+/// bounds the whole of it — the pipes reaching their end and the process
+/// reaching its exit, which are two events and not one: a child that has let go
+/// of both pipes and not yet exited is killed like any other.
+fn bounded(mut child: Child, args: &[&OsStr], deadline: Duration) -> std::io::Result<Output> {
     let (closed, pipe_closed) = std::sync::mpsc::channel();
     let stdout = drain(child.stdout.take(), closed.clone());
     let stderr = drain(child.stderr.take(), closed);
     let expiry = Instant::now() + deadline;
     for _ in 0..2 {
         let left = expiry.saturating_duration_since(Instant::now());
-        if pipe_closed.recv_timeout(left).is_err() {
+        if let Err(unread) = pipe_closed.recv_timeout(left) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("git {args:?} did not return within {}s", deadline.as_secs()),
-            ));
+            return Err(match unread {
+                std::sync::mpsc::RecvTimeoutError::Timeout => timed_out(args, deadline),
+                std::sync::mpsc::RecvTimeoutError::Disconnected => std::io::Error::other(format!(
+                    "git {args:?}: a pipe reader died before the child did"
+                )),
+            });
         }
     }
+    let Some(status) = exit_before(&mut child, expiry)? else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(timed_out(args, deadline));
+    };
     Ok(Output {
-        status: child.wait()?,
+        status,
         stdout: collected(stdout)?,
         stderr: collected(stderr)?,
     })
+}
+
+/// How a child that outlived its deadline is answered.
+fn timed_out(args: &[&OsStr], deadline: Duration) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("git {args:?} did not return within {}s", deadline.as_secs()),
+    )
+}
+
+/// What the child exited with, or `None` when it is still running at `expiry`.
+/// The first look is free, and a child that has let go of both its pipes has
+/// all but exited — so only one still finishing pays a wait, and it pays it in
+/// slices rather than in one unbounded `wait`.
+fn exit_before(child: &mut Child, expiry: Instant) -> std::io::Result<Option<ExitStatus>> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= expiry {
+            return Ok(None);
+        }
+        std::thread::sleep(EXIT_POLL);
+    }
 }
 
 /// Read one of the child's pipes on its own thread, so both are emptied while
@@ -164,6 +208,33 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
         assert!(started.elapsed() < Duration::from_secs(5), "was not killed");
+    }
+
+    /// Pipe EOF and a process exit are different events. A child that has let
+    /// go of both pipes but has not exited — still fsyncing, still reaping a
+    /// helper of its own — is killed at the deadline like any other: waiting on
+    /// it is the unbounded wait every caller was promised this module makes
+    /// instead of them.
+    #[test]
+    fn a_child_that_closes_its_pipes_and_lingers_is_killed_at_the_deadline() {
+        let child = Command::new("sh")
+            .args(["-c", "exec 1>&- 2>&-; sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let started = Instant::now();
+        let error =
+            bounded(child, &[OsStr::new("linger")], Duration::from_millis(300)).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the child was waited on past its deadline: {:?}",
+            started.elapsed()
+        );
     }
 
     /// A child that writes more than one pipe buffer must be drained while it

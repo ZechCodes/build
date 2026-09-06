@@ -11254,10 +11254,15 @@ impl AppState {
         let project_id = self.project_of(run_id)?;
         let resolved = self.resolved_isolation(&project_id);
         let project = self.orch_for(&project_id)?.clone();
-        let row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
+        let mut row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
             .on_checkout(crate::worktree::external_worktree_id(&worktree.path))
-            .implementing(issue_id.to_string())
-            .isolated_as(resolved.isolation);
+            .implementing(issue_id.to_string());
+        // A checkout that is still standing is verified and reused, not made,
+        // and what is on disk describes itself: only a restore that has to put
+        // one back names the isolation it is putting back.
+        if !checkout_stood {
+            row = row.isolated_as(resolved.isolation);
+        }
         self.reserve_lifecycle(
             row,
             Box::new(RestoreImplementationCheckout {
@@ -23853,6 +23858,58 @@ mod tests {
         assert!(
             note.contains("linked worktree"),
             "the note carries the volume's own sentence: {note}"
+        );
+    }
+
+    /// A restore that finds its checkout standing makes nothing: the directory
+    /// is verified and reused, whatever it is. So the row it stands behind names
+    /// no isolation and the conversation hears no fallback — a run reached again
+    /// and again while the account asks for cloning would otherwise be told, on
+    /// every stage, that a checkout nobody made is a linked worktree.
+    #[test]
+    fn a_restore_that_reuses_its_checkout_names_no_isolation_and_announces_nothing() {
+        let (dir, repo) = init_repo();
+        let mut app = state_on_an_unclonable_project(dir.path(), &repo);
+        let issue_id = approved_issue(&mut app, "reuse the checkout that is still there");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        // Chosen after the run exists, so the only fallback that could reach
+        // this conversation is the restore's own.
+        app.isolation = Isolation::Cow;
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-implement",
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the checkout is being verified");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(
+            pending[0]["isolation"],
+            Value::Null,
+            "a verb that makes no checkout names no isolation: {pending:?}"
+        );
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the implementation answers once its restore is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let state = state.lock().unwrap();
+        assert!(
+            conversation_summaries(&state, &run_id)
+                .iter()
+                .all(|summary| !summary.starts_with("Created a git worktree: ")),
+            "the checkout was reused, not created: {:?}",
+            conversation_summaries(&state, &run_id)
         );
     }
 

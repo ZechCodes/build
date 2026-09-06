@@ -618,7 +618,11 @@ impl WorktreeMutation for RestoreImplementationCheckout {
                 checkout_stood: self.checkout_stood,
                 restored,
                 caller: self.caller,
-                downgrade: self.resolved.downgrade,
+                // A checkout that was still standing was verified and reused:
+                // nobody's setting made it, so there is no fallback to say.
+                downgrade: (!self.checkout_stood)
+                    .then_some(self.resolved.downgrade)
+                    .flatten(),
             }),
         })
     }

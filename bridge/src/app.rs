@@ -30347,7 +30347,7 @@ mod tests {
 
         // A number that went through a URL or an encoder without an integer
         // type still names the page its client typed.
-        for spelling in [json!("60"), json!(60.0)] {
+        for spelling in [json!("20"), json!(20.0)] {
             let thread = page_of(&mut state, spelling.clone());
             assert_eq!(
                 thread["items"].as_array().unwrap().len(),
@@ -30359,7 +30359,7 @@ mod tests {
 
         // A limit nobody can read is still a client saying it can page, so it
         // gets one — the default's worth — rather than the unbounded answer.
-        for nonsense in [json!(-1), json!("sixty"), json!(true), json!([60])] {
+        for nonsense in [json!(-1), json!("twenty"), json!(true), json!([20])] {
             let thread = page_of(&mut state, nonsense.clone());
             assert_eq!(
                 thread["items"].as_array().unwrap().len(),

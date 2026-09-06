@@ -1056,6 +1056,26 @@ impl ThreadItem {
         }
     }
 
+    /// Whether this item spends a page's budget — the page measure, and only
+    /// that.
+    ///
+    /// A page's limit buys MESSAGES, either role, an outcome among them since
+    /// an outcome is a message. Everything else on a conversation rides free:
+    /// the activity between two messages, and the lifecycle and attention
+    /// events with it. So the page a reviewer opens on is always the last
+    /// `limit` things anybody said, however much work and however many
+    /// milestones happened between them.
+    ///
+    /// Distinct from [`counted`](Self::counted), which is what an unread badge
+    /// and a catch-up packet measure: an attention event still calls the human
+    /// even though it costs a page nothing.
+    ///
+    /// The store filters the same rule as `message = 1` over the hoisted
+    /// column.
+    pub fn counts_toward_page(&self) -> bool {
+        matches!(self, ThreadItem::Message(_))
+    }
+
     /// What this item referenced, as derived when it was written.
     pub fn metadata(&self) -> &ItemMetadata {
         match self {
@@ -1147,15 +1167,14 @@ pub struct ConversationQuery {
     pub limit: usize,
 }
 
-/// How many conversation items a page carries when the caller asks for one
-/// without saying how large.
+/// How many MESSAGES a page carries when the caller asks for one without
+/// saying how large.
 ///
-/// One sitting at a task — the asks, the agent's replies, and the events
-/// between them — runs to a few dozen items; 60 holds a long one whole, so the
-/// view a reviewer opens onto is already the work they were doing. Everything
-/// older is a page up, which is the point: a conversation of hundreds no longer
-/// ships whole to show its last hour.
-pub const DEFAULT_THREAD_PAGE: usize = 60;
+/// The limit buys what was said, so twenty is twenty turns of conversation —
+/// the sitting a reviewer opens onto — however much work happened between
+/// them. Everything older is a page up, which is the point: a conversation of
+/// hundreds no longer ships whole to show its last hour.
+pub const DEFAULT_THREAD_PAGE: usize = 20;
 
 /// The most conversation one page ships, however large a limit it asks for.
 ///
@@ -2225,7 +2244,11 @@ impl Thread {
             .iter()
             .filter(|item| item.sequence() < before)
             .collect();
-        below.iter().filter(|item| item.counted()).count() < limit
+        below
+            .iter()
+            .filter(|item| item.counts_toward_page())
+            .count()
+            < limit
             && below.len() < page_span_ceiling(limit)
     }
 
@@ -2601,7 +2624,7 @@ fn page_span<'a>(newest_first: impl Iterator<Item = &'a ThreadItem>, limit: usiz
             break;
         }
         taken += 1;
-        if item.counted() {
+        if item.counts_toward_page() {
             counted += 1;
         }
     }
@@ -3244,6 +3267,34 @@ mod counted_page_tests {
         assert_eq!(page["oldest_sequence"], shipped[0], "{page:?}");
         assert_eq!(page["has_more"], true);
         assert_eq!(page["thread_total"], 60, "the total counts every item");
+    }
+
+    /// A page's limit buys MESSAGES, and nothing else on a conversation spends
+    /// it. An outcome, a block, a commit — everything Build records about the
+    /// work — rides beside the words it belongs to, so the page a reviewer
+    /// opens on is always the last twenty things anybody said.
+    #[test]
+    fn a_pages_limit_buys_messages_and_the_lifecycle_rides_beside_them() {
+        let mut thread = Thread::new("run-outcomes");
+        for turn in 0..6 {
+            thread.post_user(format!("ask {turn}"), None, NOW);
+            thread.push_event(
+                ThreadEventKind::Done,
+                Some(format!("finished {turn}")),
+                None,
+                None,
+                NOW,
+            );
+        }
+
+        let page = thread.wire_value_page(None, 3);
+        let shipped = page_items(&page);
+        assert_eq!(counted_in_page(&page), 3, "the limit counts messages");
+        assert_eq!(
+            shipped.len(),
+            6,
+            "each message's attention event rides with it: {shipped:?}"
+        );
     }
 
     /// The page stops AT the limit-th counted item: activity older than it is
@@ -4749,11 +4800,12 @@ mod tests {
 
     #[test]
     fn the_default_page_bounds_a_first_load_without_hiding_a_sitting() {
-        // A long sitting — a few dozen asks, replies and events — opens whole,
-        // so the default is not a bound the reviewer feels.
-        let one_sitting = thread_with_long_conversation(40);
+        // A sitting of the default's worth of messages opens whole, so the
+        // default is not a bound the reviewer feels.
+        let one_sitting = thread_with_long_conversation(DEFAULT_THREAD_PAGE);
         let sitting_page = one_sitting.wire_value_page(None, DEFAULT_THREAD_PAGE);
         assert_eq!(sitting_page["has_more"], false, "{sitting_page:?}");
+        assert_eq!(page_sequences(&sitting_page).len(), DEFAULT_THREAD_PAGE);
 
         // Everything past it is paged, not shipped.
         let long = thread_with_long_conversation(DEFAULT_THREAD_PAGE * 4);

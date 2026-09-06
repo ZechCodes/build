@@ -438,6 +438,11 @@ CREATE INDEX IF NOT EXISTS thread_items_cursor
 -- every statement that seeks down it repeats the predicate verbatim.
 CREATE INDEX IF NOT EXISTS thread_items_conversation
     ON thread_items(agent_id, sequence) WHERE message = 1 OR attention = 1;
+-- The page measure, indexed: a page's limit buys messages, so the seek that
+-- finds where a page reaches back to walks the words and never the work
+-- between them.
+CREATE INDEX IF NOT EXISTS thread_items_messages
+    ON thread_items(agent_id, sequence) WHERE message = 1;
 
 CREATE TABLE IF NOT EXISTS captures (
     id     TEXT PRIMARY KEY,
@@ -469,19 +474,20 @@ const THREAD_PAGE_SQL: &str = "SELECT item FROM thread_items \
 /// agent's catch-up packet is built from when the tail it booted onto holds
 /// only activity.
 ///
-/// The partial index's predicate is repeated verbatim as a conjunct so the
-/// planner's implication check is trivial, and `message = 1` then narrows the
-/// seek to the words themselves.
+/// `message = 1` is the message index's own predicate, so the planner's
+/// implication check is trivial and the seek runs down the words themselves.
 const THREAD_MESSAGE_PAGE_SQL: &str = "SELECT item FROM thread_items \
-     WHERE agent_id = ?1 AND (message = 1 OR attention = 1) AND message = 1 \
+     WHERE agent_id = ?1 AND message = 1 \
      ORDER BY sequence DESC LIMIT ?2";
 
-/// Where a page of conversation reaches back to: the sequence of the
-/// `limit`-th counted item below the seek, found by one seek down the partial
-/// index. Nothing found means the conversation runs out above the page, and
-/// the floor is the bottom.
+/// Where a page reaches back to: the sequence of the `limit`-th MESSAGE below
+/// the seek, found by one seek down the partial index. Nothing found means the
+/// conversation runs out above the page, and the floor is the bottom.
+///
+/// The page measure, and the reason the floor is always a message: whatever
+/// the span above it holds, its oldest item is something somebody said.
 const THREAD_CONVERSATION_FLOOR_SQL: &str = "SELECT sequence FROM thread_items \
-     WHERE agent_id = ?1 AND (message = 1 OR attention = 1) AND sequence < ?2 \
+     WHERE agent_id = ?1 AND message = 1 AND sequence < ?2 \
      ORDER BY sequence DESC LIMIT 1 OFFSET ?3";
 
 /// The page itself: every item in that span, newest-first under the ceiling —
@@ -812,6 +818,7 @@ impl Store {
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_attention;
              DROP INDEX IF EXISTS thread_items_conversation;
+             DROP INDEX IF EXISTS thread_items_messages;
              ALTER TABLE thread_items DROP COLUMN attention;
              ALTER TABLE thread_items DROP COLUMN message;
              UPDATE meta SET value = '1' WHERE key = 'schema_version';",
@@ -825,6 +832,7 @@ impl Store {
         let conn = self.connection();
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_conversation;
+             DROP INDEX IF EXISTS thread_items_messages;
              ALTER TABLE thread_items DROP COLUMN message;
              UPDATE meta SET value = '2' WHERE key = 'schema_version';",
         )
@@ -2553,13 +2561,13 @@ mod tests {
         );
     }
 
-    /// The conversation index by name. The primary key would answer this
-    /// statement too — by walking every tool call between the words, which is
-    /// the whole cost the partial index exists to skip — and the page it
-    /// returned would look identical either way. So the plan is pinned to the
-    /// index, not merely to a seek.
+    /// The message index by name. The primary key would answer this statement
+    /// too — by walking every tool call between the words, which is the whole
+    /// cost the partial index exists to skip — and the page it returned would
+    /// look identical either way. So the plan is pinned to the index, not
+    /// merely to a seek.
     #[test]
-    fn the_message_page_reads_through_the_conversation_index() {
+    fn the_message_page_reads_through_the_message_index() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let connection = store.connection();
@@ -2576,8 +2584,8 @@ mod tests {
             .expect("the plan reads");
         assert!(
             plan.iter()
-                .any(|step| step.contains("thread_items_conversation")),
-            "the message page does not use thread_items_conversation: {plan:?}"
+                .any(|step| step.contains("thread_items_messages")),
+            "the message page does not use thread_items_messages: {plan:?}"
         );
 
         // The same for the seek that finds where a page reaches back to: on
@@ -2597,8 +2605,8 @@ mod tests {
             .expect("the plan reads");
         assert!(
             plan.iter()
-                .any(|step| step.contains("thread_items_conversation")),
-            "the page floor does not use thread_items_conversation: {plan:?}"
+                .any(|step| step.contains("thread_items_messages")),
+            "the page floor does not use thread_items_messages: {plan:?}"
         );
     }
 
@@ -2903,6 +2911,45 @@ mod tests {
 
         assert!(!counted_in_rust.is_empty(), "the fixture counts nothing");
         assert_eq!(counted_in_sql, counted_in_rust);
+    }
+
+    /// A stored page reaches back to the `limit`-th MESSAGE, the way a
+    /// resident one does: an outcome or a commit between two messages rides
+    /// beside them instead of spending the budget the page is measured in.
+    #[test]
+    fn a_stored_page_floor_is_measured_in_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for turn in 0..6 {
+            record.agents[0]
+                .thread
+                .post_user(format!("ask {turn}"), None, NOW);
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Done,
+                Some(format!("finished {turn}")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+
+        let (page, has_more) = store
+            .thread_conversation_page(&record.agents[0].id, None, 3)
+            .expect("a page reads");
+        let shipped = sequences(&page);
+        assert_eq!(
+            page.iter().filter(|item| item.counts_toward_page()).count(),
+            3,
+            "the limit counts messages: {shipped:?}"
+        );
+        assert_eq!(
+            shipped.len(),
+            6,
+            "each message's attention event rides with it: {shipped:?}"
+        );
+        assert!(has_more, "there is history below this page");
     }
 
     /// A stored page is measured the same way a resident one is: its limit

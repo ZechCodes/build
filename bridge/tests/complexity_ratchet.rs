@@ -9,11 +9,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Measured when the gate landed: 19 in `src/app.rs`, 2 each in `src/bin/relay.rs`
-/// and `src/harness/codex_app_server/tests.rs`, and one each in `src/mcp.rs`,
-/// `src/rtc/testing.rs`, `src/thread.rs`, `src/worktree.rs`,
-/// `tests/pi_extension.rs` and `tests/real_store_migration.rs`.
-const RATCHETED_FUNCTIONS: usize = 29;
+/// 19 in `src/app.rs`, 2 each in `src/bin/relay.rs` and
+/// `src/harness/codex_app_server/tests.rs`, and one each in `src/mcp.rs`,
+/// `src/rtc/testing.rs`, `src/thread.rs`, `tests/pi_extension.rs` and
+/// `tests/real_store_migration.rs`. One below what the gate landed with:
+/// `worktree.rs`'s `parse_worktree_block` is a path-only porcelain parser now
+/// that the isolation seam owns what it used to describe, and needs no allow.
+const RATCHETED_FUNCTIONS: usize = 28;
 
 const ALLOW: &str = "#[allow(clippy::cognitive_complexity)]";
 

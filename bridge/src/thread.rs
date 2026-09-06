@@ -1056,6 +1056,24 @@ impl ThreadItem {
         }
     }
 
+    /// The tool call this item is, or `None` — the one place that answers
+    /// "is this a tool call".
+    ///
+    /// A call and its answer are one row, so the call carries the outcome and
+    /// there is nothing else to join it to.
+    fn tool_call(&self) -> Option<&ThreadEvent> {
+        match self {
+            ThreadItem::Event(event) if event.event == ThreadEventKind::ToolUse => Some(event),
+            _ => None,
+        }
+    }
+
+    /// Whether this item is a tool call — what a folded run of activity counts,
+    /// and what the store hoists into its `tool_call` column.
+    pub fn is_tool_call(&self) -> bool {
+        self.tool_call().is_some()
+    }
+
     /// Whether this item spends a page's budget — the page measure, and only
     /// that.
     ///

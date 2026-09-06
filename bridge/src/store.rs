@@ -426,6 +426,11 @@ CREATE TABLE IF NOT EXISTS thread_items (
     -- carries is conversation, and a conversation buried in activity can only
     -- be found under the tail by the database.
     message          INTEGER NOT NULL DEFAULT 0,
+    -- 1 when this item is a tool call. Hoisted for the same reason the other
+    -- two are: a page folds a run of activity into one row that says how many
+    -- calls it made, and the calls a page did not ship can only be counted by
+    -- the database.
+    tool_call        INTEGER NOT NULL DEFAULT 0,
     item             TEXT NOT NULL,
     PRIMARY KEY (agent_id, sequence)
 );
@@ -479,6 +484,15 @@ const THREAD_PAGE_SQL: &str = "SELECT item FROM thread_items \
 const THREAD_MESSAGE_PAGE_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND message = 1 \
      ORDER BY sequence DESC LIMIT ?2";
+
+/// How many tool calls a span of a conversation holds, counted off the hoisted
+/// column: the census a page's activity digests are exact by.
+///
+/// Inclusive at both ends, because a digest's span is the run's own first and
+/// last item — and exact over the whole run, including the items the page's
+/// per-run cap left off the wire.
+const THREAD_TOOL_CALL_COUNT_SQL: &str = "SELECT COUNT(*) FROM thread_items \
+     WHERE agent_id = ?1 AND tool_call = 1 AND sequence >= ?2 AND sequence <= ?3";
 
 /// Where a page reaches back to: the sequence of the `limit`-th MESSAGE below
 /// the seek, found by one seek down the partial index. Nothing found means the
@@ -538,7 +552,7 @@ const THREAD_LAST_SEQUENCE_SQL: &str =
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -615,17 +629,20 @@ impl Store {
         // Store share one connection, but the daemon is not the only process
         // that may ever open the file (a backup, a shell).
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        // The columns BEFORE the schema batch: `SCHEMA` indexes both of them,
-        // and an older table has no such column for an index to name. A v1
-        // database arrives here needing both, and reaches v3 in one open.
+        // The columns BEFORE the schema batch: `SCHEMA` indexes them, and an
+        // older table has no such column for an index to name. A v1 database
+        // arrives here needing all three, and reaches v4 in one open.
         if stored == Some(1) {
             Store::add_attention_column(&conn)?;
         }
         if matches!(stored, Some(1 | 2)) {
             Store::add_message_column(&conn)?;
         }
+        if matches!(stored, Some(1..=3)) {
+            Store::add_tool_call_column(&conn)?;
+        }
         conn.execute_batch(SCHEMA)?;
-        if matches!(stored, Some(1 | 2)) {
+        if matches!(stored, Some(1..=3)) {
             Store::classify_stored_items(&conn)?;
         }
         if stored.unwrap_or(0) < SCHEMA_VERSION {
@@ -697,13 +714,33 @@ impl Store {
         Ok(())
     }
 
+    /// Add the v4 `tool_call` column to an older table.
+    ///
+    /// The v2→v3 precedent exactly: `CREATE TABLE IF NOT EXISTS` does not alter
+    /// a table that already exists, and the column has to be there before the
+    /// schema batch runs over it.
+    fn add_tool_call_column(conn: &Connection) -> Result<(), StoreError> {
+        if conn
+            .prepare("SELECT tool_call FROM thread_items LIMIT 1")
+            .is_ok()
+        {
+            return Ok(());
+        }
+        conn.execute(
+            "ALTER TABLE thread_items ADD COLUMN tool_call INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Classify every stored item for the freshly added columns.
     ///
     /// The one place Build reads whole conversations on purpose: it runs once,
     /// on the upgrade, because a column added with a default says nothing about
-    /// the items already under it. Both columns are written on every upgrade
-    /// path — a v1 database gains them together, and rewriting `attention` with
-    /// the value it already holds is what makes one classifier serve both.
+    /// the items already under it. Every column is written on every upgrade
+    /// path — a v1 database gains them together, and rewriting one with the
+    /// value it already holds is what makes a single classifier serve all
+    /// three.
     fn classify_stored_items(conn: &Connection) -> Result<(), StoreError> {
         let rows: Vec<(String, i64, String)> = {
             let mut statement =
@@ -714,7 +751,7 @@ impl Store {
             read.collect::<Result<_, _>>()?
         };
         let mut set = conn.prepare(
-            "UPDATE thread_items SET attention = ?3, message = ?4 \
+            "UPDATE thread_items SET attention = ?3, message = ?4, tool_call = ?5 \
              WHERE agent_id = ?1 AND sequence = ?2",
         )?;
         for (agent_id, sequence, raw) in rows {
@@ -725,7 +762,8 @@ impl Store {
                 agent_id,
                 sequence,
                 i64::from(item.attention_reason().is_some()),
-                i64::from(matches!(item, ThreadItem::Message(_)))
+                i64::from(item.counts_toward_page()),
+                i64::from(item.is_tool_call())
             ])?;
         }
         Ok(())
@@ -821,6 +859,7 @@ impl Store {
              DROP INDEX IF EXISTS thread_items_messages;
              ALTER TABLE thread_items DROP COLUMN attention;
              ALTER TABLE thread_items DROP COLUMN message;
+             ALTER TABLE thread_items DROP COLUMN tool_call;
              UPDATE meta SET value = '1' WHERE key = 'schema_version';",
         )
         .expect("the v1 shape is staged");
@@ -834,9 +873,21 @@ impl Store {
             "DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
              ALTER TABLE thread_items DROP COLUMN message;
+             ALTER TABLE thread_items DROP COLUMN tool_call;
              UPDATE meta SET value = '2' WHERE key = 'schema_version';",
         )
         .expect("the v2 shape is staged");
+    }
+
+    /// Test-only: the v3 shape — attention and message hoisted, tool_call not.
+    #[cfg(test)]
+    pub fn pretend_to_be_v3(&self) {
+        let conn = self.connection();
+        conn.execute_batch(
+            "ALTER TABLE thread_items DROP COLUMN tool_call;
+             UPDATE meta SET value = '3' WHERE key = 'schema_version';",
+        )
+        .expect("the v3 shape is staged");
     }
 
     /// Test-only: make the next write fail once, then behave normally.
@@ -962,10 +1013,12 @@ impl Store {
              ON CONFLICT(id) DO UPDATE SET owner_id = ?2, ordinal = ?3, record = ?4",
         )?;
         let mut upsert_item = tx.prepare(
-            "INSERT INTO thread_items (agent_id, sequence, updated_sequence, attention, message, item)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO thread_items \
+             (agent_id, sequence, updated_sequence, attention, message, tool_call, item)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(agent_id, sequence)
-             DO UPDATE SET updated_sequence = ?3, attention = ?4, message = ?5, item = ?6",
+             DO UPDATE SET updated_sequence = ?3, attention = ?4, message = ?5, \
+                           tool_call = ?6, item = ?7",
         )?;
         let mut delete_item =
             tx.prepare("DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2")?;
@@ -1012,7 +1065,8 @@ impl Store {
                     sequence,
                     updated,
                     i64::from(item.attention_reason().is_some()),
-                    i64::from(matches!(item, ThreadItem::Message(_))),
+                    i64::from(item.counts_toward_page()),
+                    i64::from(item.is_tool_call()),
                     serde_json::to_string(item).expect("a thread item always serializes")
                 ])?;
             }
@@ -1148,6 +1202,26 @@ impl Store {
             .optional()?
             .is_some();
         Ok((page, has_more))
+    }
+
+    /// How many tool calls a conversation holds between two sequences,
+    /// inclusive — the census one activity digest's count is.
+    ///
+    /// A count, never a read: a page folds a run of a thousand calls into one
+    /// row that says a thousand, and deserializing the run to size that row
+    /// would undo the cap the page ships under.
+    pub fn tool_calls_between(
+        &self,
+        agent_id: &str,
+        from_sequence: u64,
+        through_sequence: u64,
+    ) -> Result<u64, StoreError> {
+        let count: i64 = self.connection().query_row(
+            THREAD_TOOL_CALL_COUNT_SQL,
+            rusqlite::params![agent_id, from_sequence as i64, through_sequence as i64],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
     }
 
     /// The newest `limit` **messages** of a conversation, oldest-first — what
@@ -3124,6 +3198,99 @@ mod tests {
         assert!(
             minted > event.updated_sequence,
             "a reload clears the bump, so no counter value is spent twice: {minted}"
+        );
+    }
+
+    /// The census a page's activity digests are counted with: exact over the
+    /// whole run, whatever a page shipped of it, and counted in SQL off the
+    /// hoisted column rather than by reading the items back.
+    #[test]
+    fn tool_calls_are_counted_in_sql_over_a_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0].thread.post_user("rename it", None, NOW);
+        for index in 0..40 {
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Reasoning,
+                Some("thinking".to_string()),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+        let agent_id = record.agents[0].id.clone();
+        let last = record.agents[0].thread.last_sequence();
+
+        assert_eq!(
+            store
+                .tool_calls_between(&agent_id, 2, last)
+                .expect("the census counts"),
+            40,
+            "every tool call of the run, none of the thinking between them"
+        );
+        // Inclusive at both ends, which is what a digest's span means.
+        assert_eq!(
+            store
+                .tool_calls_between(&agent_id, 2, 2)
+                .expect("the census counts"),
+            1
+        );
+        assert_eq!(
+            store
+                .tool_calls_between(&agent_id, 1, 1)
+                .expect("the census counts"),
+            0,
+            "a message is not a tool call"
+        );
+    }
+
+    /// A v3 database gains the tool_call column and is classified in place,
+    /// the way v2 gained message. Nobody's stored conversation has to be
+    /// rewritten for a page to count the work in it.
+    #[test]
+    fn a_v3_database_is_migrated_and_its_tool_calls_classified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let agent_id;
+        {
+            let store = Store::new(&root).expect("store opens");
+            let mut record = run_record("run-1", None, NOW);
+            agent_id = record.agents[0].id.clone();
+            record.agents[0].thread.post_user("said before", None, NOW);
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some("Read a file".to_string()),
+                None,
+                None,
+                NOW,
+            );
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Reasoning,
+                Some("thinking".to_string()),
+                None,
+                None,
+                NOW,
+            );
+            store.save_run(&record).expect("the run saves");
+            store.pretend_to_be_v3();
+        }
+        let migrated = Store::new(&root).expect("a v3 store opens");
+
+        assert_eq!(
+            migrated
+                .tool_calls_between(&agent_id, 1, 3)
+                .expect("the census counts"),
+            1,
+            "the backfill classified the items already stored"
         );
     }
 

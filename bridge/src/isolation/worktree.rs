@@ -3,7 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{checkout_name, local_branch_ref, Isolation, IsolationBackend, WorktreeError};
+use super::{
+    checkout_name, local_branch_ref, teardown_in_git_dir, BranchTeardown, Isolation,
+    IsolationBackend, WorktreeError,
+};
 use crate::git_process::run_git;
 
 /// Materializes a checkout as a git linked worktree of the project repository.
@@ -111,6 +114,23 @@ impl IsolationBackend for WorktreeBackend {
     fn holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError> {
         Ok(git2::Repository::open(project)?.find_worktree(name).is_ok())
     }
+
+    fn teardown_record(
+        &self,
+        project: &Path,
+        name: &str,
+    ) -> Result<Option<BranchTeardown>, WorktreeError> {
+        // `Repository::path()` is the caller's own admin directory, which is a
+        // linked worktree's when the project root is itself one, so the shared
+        // `commondir` is what holds the `worktrees/<name>` entries.
+        let repo = git2::Repository::open(project)?;
+        let registry_entry = repo.commondir().join("worktrees").join(name);
+        match repo.find_worktree(name) {
+            Ok(_) => teardown_in_git_dir(&registry_entry).map(Some),
+            Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 /// The name git's registry knows the checkout at `path` by, refused when the
@@ -136,4 +156,73 @@ fn checkout_path_in(block: &str) -> Option<PathBuf> {
         }
     }
     std::fs::canonicalize(path?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git_fixture::{git_in, init_repo};
+    use crate::isolation::{record_branch_teardown, BranchTeardown};
+
+    /// A linked worktree's record outlives its working directory, because git
+    /// keeps it in the project rather than in the checkout — so the one fact a
+    /// vanished checkout cannot answer for itself is still there to read.
+    #[test]
+    fn a_vanished_worktree_still_answers_from_the_record_git_holds() {
+        let (dir, project) = init_repo();
+        let checkout = dir.path().join("borrowed");
+        git_in(
+            &project,
+            &[
+                "worktree",
+                "add",
+                checkout.to_str().unwrap(),
+                "-b",
+                "theirs",
+            ],
+        );
+        record_branch_teardown(&checkout, BranchTeardown::KeepsBranch).unwrap();
+        std::fs::remove_dir_all(&checkout).unwrap();
+
+        assert_eq!(
+            WorktreeBackend
+                .teardown_record(&project, "borrowed")
+                .unwrap(),
+            Some(BranchTeardown::KeepsBranch),
+        );
+    }
+
+    /// A registered checkout with no marker is one Build did not create, and
+    /// that reading is the record's, not an absence of one.
+    #[test]
+    fn an_unmarked_registration_is_still_a_record() {
+        let (dir, project) = init_repo();
+        let checkout = dir.path().join("by-hand");
+        git_in(
+            &project,
+            &["worktree", "add", checkout.to_str().unwrap(), "-b", "side"],
+        );
+        std::fs::remove_dir_all(&checkout).unwrap();
+
+        assert_eq!(
+            WorktreeBackend
+                .teardown_record(&project, "by-hand")
+                .unwrap(),
+            Some(BranchTeardown::DeletesBranch),
+        );
+    }
+
+    /// No registration is no record: git holds nothing to read, so the branch
+    /// is nobody's to vouch for.
+    #[test]
+    fn a_name_git_never_registered_holds_no_record() {
+        let (_dir, project) = init_repo();
+
+        assert_eq!(
+            WorktreeBackend
+                .teardown_record(&project, "never-here")
+                .unwrap(),
+            None,
+        );
+    }
 }

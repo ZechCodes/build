@@ -372,6 +372,17 @@ pub trait IsolationBackend: Send + Sync {
 
     /// Whether this backend holds a record of a checkout called `name`.
     fn holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError>;
+
+    /// What teardown of the checkout called `name` owns, read from this
+    /// backend's own record of it in `project` — the answer for a checkout
+    /// whose directory is gone, which can no longer be asked itself. `Ok(None)`
+    /// when this backend keeps no record to read: nothing in the project can
+    /// vouch for the branch, and the façade says so.
+    fn teardown_record(
+        &self,
+        project: &Path,
+        name: &str,
+    ) -> Result<Option<BranchTeardown>, WorktreeError>;
 }
 
 #[cfg(test)]

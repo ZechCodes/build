@@ -8,8 +8,8 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::{
-    cow_marker_names, local_branch_ref, write_cow_marker, Isolation, IsolationBackend,
-    WorktreeError,
+    cow_marker_names, local_branch_ref, write_cow_marker, BranchTeardown, Isolation,
+    IsolationBackend, WorktreeError,
 };
 use crate::git_process::{git_failure, run_git, run_git_with_deadline};
 
@@ -195,6 +195,14 @@ impl IsolationBackend for CowBackend {
     fn holds_record(&self, _project: &Path, _name: &str) -> Result<bool, WorktreeError> {
         Ok(false)
     }
+
+    fn teardown_record(
+        &self,
+        _project: &Path,
+        _name: &str,
+    ) -> Result<Option<BranchTeardown>, WorktreeError> {
+        Ok(None)
+    }
 }
 
 /// Copy the tip of `branch` from the repository at `source` to the one at
@@ -291,6 +299,19 @@ mod tests {
     use crate::isolation::probe::cow_or_skip;
     #[cfg(target_os = "linux")]
     use std::os::unix::ffi::OsStrExt;
+
+    /// A clone leaves no trace in the project, so a clone whose directory is
+    /// gone leaves nothing the project can vouch for — and the façade hears
+    /// that as an answer rather than as a failure to look.
+    #[test]
+    fn a_vanished_clone_leaves_no_record_to_read() {
+        let (_dir, project) = init_repo();
+
+        assert_eq!(
+            CowBackend.teardown_record(&project, "cloned").unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn clone_tree_reproduces_a_symlink_and_a_subdirectory() {

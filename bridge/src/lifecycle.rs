@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::app::AppState;
-use crate::isolation::Isolation;
+use crate::isolation::{Isolation, ResolvedIsolation};
 use crate::models::ModelChoice;
 use crate::orchestrator::{AdoptableCheckout, AdoptionScope, ImplementableIssue, Orchestrator};
 use crate::worktree::{
@@ -318,12 +318,9 @@ pub struct CreateWorktree {
     /// it too unless the slug had to be suffixed, and the epilogue ships both.
     pub placeholder_id: String,
     /// How the checkout is made, resolved by the app before anything was
-    /// reserved.
-    pub isolation: Isolation,
-    /// Why the resolver could not give this create the isolation the settings
-    /// asked for, when it could not. A bare worktree has no conversation, so
-    /// the answer to the ask is where it is said.
-    pub downgrade: Option<String>,
+    /// reserved. A bare worktree has no conversation, so the answer to the ask
+    /// is where a fallback is said.
+    pub resolved: ResolvedIsolation,
 }
 
 impl WorktreeMutation for CreateWorktree {
@@ -337,13 +334,14 @@ impl WorktreeMutation for CreateWorktree {
                 self.project.create_worktree_on_existing_branch(
                     branch,
                     &self.base_branch,
-                    self.isolation,
+                    self.resolved.isolation,
                 )
             }
-            None => {
-                self.project
-                    .create_bare_worktree(&self.slug, &self.base_branch, self.isolation)
-            }
+            None => self.project.create_bare_worktree(
+                &self.slug,
+                &self.base_branch,
+                self.resolved.isolation,
+            ),
         }
         .map_err(|error| error.to_string())?;
         let worktree = minted.worktree;
@@ -378,7 +376,7 @@ impl WorktreeMutation for CreateWorktree {
                 branch: worktree.branch(),
                 name: worktree.name,
                 isolation: Isolation::of(&path),
-                downgrade: self.downgrade,
+                downgrade: self.resolved.downgrade,
                 path,
                 branch_was_cut: minted.teardown.deletes_branch(),
                 checkouts: self.checkouts,
@@ -400,11 +398,9 @@ pub struct OpenImplementation {
     pub store: crate::store::Store,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn crate::app::ImplementationCaller>,
-    pub isolation: Isolation,
-    /// Why the resolver could not give this implementation the isolation the
-    /// settings asked for, when it could not. Said on the Issue's conversation
-    /// once the run stands.
-    pub downgrade: Option<String>,
+    /// How this implementation's checkout is made. A fallback is said on the
+    /// Issue's conversation once the run stands.
+    pub resolved: ResolvedIsolation,
 }
 
 impl WorktreeMutation for OpenImplementation {
@@ -413,7 +409,7 @@ impl WorktreeMutation for OpenImplementation {
             &self.issue,
             &self.base_branch,
             &self.run_id,
-            self.isolation,
+            self.resolved.isolation,
             &self.store,
         );
         let prepared = match prepared {
@@ -456,7 +452,7 @@ impl WorktreeMutation for OpenImplementation {
                 prepared,
                 model_choice: self.model_choice,
                 caller: self.caller,
-                downgrade: self.downgrade,
+                downgrade: self.resolved.downgrade,
             }),
         })
     }
@@ -595,11 +591,9 @@ pub struct RestoreImplementationCheckout {
     pub worktree: crate::worktree::Worktree,
     pub checkout_stood: bool,
     pub caller: Box<dyn crate::app::ImplementationCaller>,
-    pub isolation: Isolation,
-    /// Why the resolver could not put the checkout back as the isolation the
-    /// settings asked for, when it could not. Said on the Issue's conversation
-    /// beside what the restore found.
-    pub downgrade: Option<String>,
+    /// How the checkout is put back, when it has to be. A fallback is said on
+    /// the Issue's conversation beside what the restore found.
+    pub resolved: ResolvedIsolation,
 }
 
 impl WorktreeMutation for RestoreImplementationCheckout {
@@ -613,7 +607,7 @@ impl WorktreeMutation for RestoreImplementationCheckout {
                 crate::worktree::UnregisteredRestore::Write(
                     crate::worktree::BranchTeardown::DeletesBranch,
                 ),
-                self.isolation,
+                self.resolved.isolation,
             )
             .map_err(|error| error.to_string());
         Ok(Performed {
@@ -624,7 +618,7 @@ impl WorktreeMutation for RestoreImplementationCheckout {
                 checkout_stood: self.checkout_stood,
                 restored,
                 caller: self.caller,
-                downgrade: self.downgrade,
+                downgrade: self.resolved.downgrade,
             }),
         })
     }
@@ -809,12 +803,10 @@ pub struct DispatchCheckout {
     /// asked for it. Written down by the apply phase, against the branch that
     /// is real by then.
     pub routed: Option<crate::app::RoutedCapture>,
-    /// How a checkout this dispatch has to cut is made.
-    pub isolation: Isolation,
-    /// Why the resolver could not cut it as the isolation the settings asked
-    /// for, when it could not. Said on the dispatched run's conversation, and
-    /// only when this dispatch cut a checkout of its own.
-    pub downgrade: Option<String>,
+    /// How a checkout this dispatch has to cut is made. A fallback is said on
+    /// the dispatched run's conversation, and only when this dispatch cut a
+    /// checkout of its own.
+    pub resolved: ResolvedIsolation,
     #[cfg(test)]
     pub fault: Option<BranchDispatchStep>,
 }
@@ -872,7 +864,7 @@ impl WorktreeMutation for DispatchCheckout {
             .project
             .describe_checkout(&minted.worktree.path, &self.base_branch)
             .map_err(|error| error.to_string());
-        let downgrade = self.downgrade.take();
+        let downgrade = self.resolved.downgrade.take();
         let dispatched = match described {
             Ok(checkout) => self.take_ownership(&checkout, downgrade),
             Err(error) => Err(error),
@@ -891,7 +883,7 @@ impl DispatchCheckout {
     /// Cut the branch this dispatch has nowhere else to put its work.
     fn cut_branch(&self) -> Result<NamedBranchCheckout, String> {
         self.target
-            .cut(&self.project, &self.base_branch, self.isolation)
+            .cut(&self.project, &self.base_branch, self.resolved.isolation)
     }
 
     /// Take Build's ownership of the checkout this dispatch reached, and owe the

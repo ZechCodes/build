@@ -97,6 +97,41 @@ impl Isolation {
     }
 }
 
+/// The isolation a checkout is being made with, and the sentence saying why it
+/// is not the one that was asked for.
+///
+/// One answer, decided once: a request this volume cannot honour comes back as
+/// the isolation every volume can make, carrying the reason for whoever tells
+/// the human — the conversation the checkout belongs to, or the answer to the
+/// ask when the checkout has no conversation. `downgrade` is `None` whenever
+/// the request was honoured, so nothing is said about a checkout made as asked.
+/// The pair travels together from the resolver, through the verb's run phase,
+/// to the epilogue that says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedIsolation {
+    pub isolation: Isolation,
+    pub downgrade: Option<String>,
+}
+
+impl ResolvedIsolation {
+    /// The request, honoured: nothing to say.
+    pub fn honoured(isolation: Isolation) -> ResolvedIsolation {
+        ResolvedIsolation {
+            isolation,
+            downgrade: None,
+        }
+    }
+
+    /// The isolation every volume can make, and the sentence saying why the
+    /// one that was asked for could not be.
+    pub fn downgraded(reason: &str) -> ResolvedIsolation {
+        ResolvedIsolation {
+            isolation: Isolation::default(),
+            downgrade: Some(reason.to_string()),
+        }
+    }
+}
+
 /// What the checkout at `path` is called: its directory's name, whatever made
 /// it. Git names a linked worktree after its directory and a clone has no
 /// other name, so this is the one name every backend calls a checkout by. A

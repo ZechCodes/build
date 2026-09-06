@@ -462,11 +462,13 @@ value logs and is treated as absent, like `default_harness` does.
 
 - `AppState.isolation: Isolation` (account default).
 - `Project.isolation: Option<Isolation>` (override).
-- `AppState::resolved_isolation(&self, project_id) -> (Isolation, Option<String>)`:
+- `AppState::resolved_isolation(&self, project_id) -> ResolvedIsolation`:
   `project.isolation.unwrap_or(self.isolation)` put to
   `orch.worktrees().availability().lock_reason(requested)` — `None` keeps the
-  request, `Some(reason)` is `(Isolation::default(), Some(reason))`. The downgrade
-  and the sentence announcing it are one answer.
+  request, `Some(reason)` is `ResolvedIsolation::downgraded(reason)`. The
+  downgrade and the sentence announcing it are one answer, so they are one
+  value: `ResolvedIsolation { isolation, downgrade }` in
+  `bridge/src/isolation/mod.rs`, carried whole by every verb that asks.
 - The setter refusal is that same question asked before the setting is stored:
   `settings.set` and `project.set_isolation` share one private
   `accept_isolation`, which parses the wire word and is

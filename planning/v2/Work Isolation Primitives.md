@@ -28,6 +28,11 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
   the three places that touch it — `Isolation::of`, `materialize`, `verify`/`discover` — spell none. Writing the
   teardown marker and reading it off a standing checkout are isolation-blind for the same reason: a clone's lands in its
   own `.git` beside `COW_MARKER`, a linked worktree's in the entry git keeps for it in the project.
+- **`ResolvedIsolation`** `{ isolation: Isolation, downgrade: Option<String> }` (§5.2): what a checkout is being made
+  as, and the sentence saying why it is not what was asked for — one answer, decided once by
+  `AppState::resolved_isolation` and carried whole through the verb that asked. `honoured(isolation)` and
+  `downgraded(reason)` are its constructors, so the fact that a downgrade lands on the isolation every volume can make
+  is spelled here rather than at the resolver.
 - **`IsolationAvailability`** `{ cow: Result<(), String> }` (§1.3): can a clone be made here, and if not, the sentence
   a control shows. One constructor, `of(project, worktrees_root)`, wraps `cow_availability`; a hand-written `impl
   Serialize` emits §5.4's `{"cow": bool, "reason": string|null}`. Its one behavioral method, `lock_reason(&self,
@@ -132,10 +137,11 @@ is not stale, so `materialize`'s own error is then the honest answer. `backend_o
 would name the wrong cause.
 
 ## `AppState::resolved_isolation` — `bridge/src/app.rs`
-`fn resolved_isolation(&self, project_id) -> (Isolation, Option<String>)` (§5.2) puts
-`project.isolation.unwrap_or(self.isolation)` to `availability.lock_reason`: `None` keeps the request, `Some(reason)`
-is `(Isolation::default(), Some(reason))`. One function decides the downgrade and hands back the sentence announcing
-it. The refusal `settings.set` and `project.set_isolation` share is that question asked before the setting is stored:
+`fn resolved_isolation(&self, project_id) -> ResolvedIsolation` (§5.2) puts
+`project.isolation.unwrap_or(self.isolation)` to `availability.lock_reason`: `None` is
+`ResolvedIsolation::honoured(requested)`, `Some(reason)` is `ResolvedIsolation::downgraded(reason)`. One function
+decides the downgrade and hands back the sentence announcing it, as one value rather than a pair every verb has to
+carry in two fields. The refusal `settings.set` and `project.set_isolation` share is that question asked before the setting is stored:
 one private `accept_isolation` parses the wire word and is `availability.lock_reason(parsed).map_or(Ok(()), refuse)`.
 Neither spells a variant — which isolation a volume can lock is `IsolationAvailability`'s fact — so
 `Isolation::from_wire` is all §0.1 still carves out. `settings.get` owns the one availability sentence about a registry
@@ -144,8 +150,8 @@ registry it just read (§5.4). The orchestrator holds no isolation state: creati
 argument, and the reason, when present, joins the events a create already writes.
 
 Every lifecycle verb that cuts or restores a checkout asks the resolver in its decide phase, under the lock, and
-carries the pair from there: the `Isolation` into the job's own `perform`, where it is the last argument of the façade
-creator, and the reason into the epilogue, where the apply phase says it — on the run's conversation
+carries the `ResolvedIsolation` from there: its `isolation` into the job's own `perform`, where it is the last argument
+of the façade creator, and its `downgrade` into the epilogue, where the apply phase says it — on the run's conversation
 (`note_isolation_downgrade`), or in the answer for a bare worktree, which has no conversation to say it on. The board
 row the verb reserves carries the same resolved answer (`PendingRow::isolated_as`, `"isolation"` on the wire beside the
 row's state), so the row a create stands behind says how the checkout is being made before there is a checkout to ask;

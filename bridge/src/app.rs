@@ -31,7 +31,7 @@ use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
     SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, Turn,
 };
-use crate::isolation::{Isolation, IsolationAvailability};
+use crate::isolation::{Isolation, IsolationAvailability, ResolvedIsolation};
 use crate::lifecycle::holders::{BranchHolder, ProjectCheckouts};
 #[cfg(test)]
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
@@ -2828,14 +2828,14 @@ impl AppState {
                 .filter(|_| !active.adopted)
                 .ok_or_else(|| "the original project/branch is unavailable".to_string())
                 .and_then(|project_id| {
-                    let (isolation, downgrade) = self.resolved_isolation(project_id);
+                    let resolved = self.resolved_isolation(project_id);
                     self.orch_for(project_id)?
                         .restore_run_worktree(
                             &active.worktree,
                             unregistered_restore_for(&active),
-                            isolation,
+                            resolved.isolation,
                         )
-                        .map(|worktree| (worktree, downgrade))
+                        .map(|worktree| (worktree, resolved.downgrade))
                         .map_err(err)
                 });
             match restored {
@@ -4142,15 +4142,13 @@ impl AppState {
         }
     }
 
-    /// The isolation a new checkout of `project_id` is made with, and the
-    /// sentence announcing a downgrade when there is one. The project's own
-    /// answer, or the account's when it names none, put to what this volume
-    /// can actually make: a request it cannot honour comes back as the
-    /// isolation every volume can, with the reason for whoever tells the human.
-    /// The one place a setting becomes a decision — nothing else reads either.
-    fn resolved_isolation(&self, project_id: &str) -> (Isolation, Option<String>) {
+    /// How a new checkout of `project_id` is made: the project's own answer, or
+    /// the account's when it names none, put to what this volume can actually
+    /// make. The one place a setting becomes a decision — nothing else reads
+    /// either.
+    fn resolved_isolation(&self, project_id: &str) -> ResolvedIsolation {
         let Some(project) = self.projects.iter().find(|p| p.id == project_id) else {
-            return (Isolation::default(), None);
+            return ResolvedIsolation::honoured(Isolation::default());
         };
         self.decide_isolation(project, &project.orch.worktrees().availability())
     }
@@ -4162,11 +4160,11 @@ impl AppState {
         &self,
         project: &Project,
         available: &IsolationAvailability,
-    ) -> (Isolation, Option<String>) {
+    ) -> ResolvedIsolation {
         let requested = project.isolation.unwrap_or(self.isolation);
         match available.lock_reason(requested) {
-            None => (requested, None),
-            Some(reason) => (Isolation::default(), Some(reason.to_string())),
+            None => ResolvedIsolation::honoured(requested),
+            Some(reason) => ResolvedIsolation::downgraded(reason),
         }
     }
 
@@ -5757,16 +5755,16 @@ impl AppState {
                 return Err("recovery report names a different branch".to_string());
             }
             let project_id = self.project_of(run_id)?;
-            let (isolation, downgrade) = self.resolved_isolation(&project_id);
+            let resolved = self.resolved_isolation(&project_id);
             let worktree = self
                 .orch_for(&project_id)?
                 .restore_run_worktree(
                     &active.worktree,
                     unregistered_restore_for(&active),
-                    isolation,
+                    resolved.isolation,
                 )
                 .map_err(err)?;
-            restored_isolation_downgrade = downgrade;
+            restored_isolation_downgrade = resolved.downgrade;
             let checkout =
                 git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
             let verified_head = checkout
@@ -7145,7 +7143,7 @@ impl AppState {
     /// to be made somewhere the caller can see.
     fn project_json(&self, p: &Project, remote: Option<String>) -> Value {
         let available = p.orch.worktrees().availability();
-        let (effective, _) = self.decide_isolation(p, &available);
+        let effective = self.decide_isolation(p, &available).isolation;
         json!({
             "project_id": p.id,
             "name": p.name,
@@ -8209,7 +8207,6 @@ impl AppState {
             self.planned_checkout_id(&project_id, &slug)?
         };
         let checkouts = self.project_checkouts(&project_id)?;
-        let (isolation, downgrade) = self.resolved_isolation(&project_id);
         let mutation = CreateWorktree {
             project: self.orch_for(&project_id)?.clone(),
             base_branch: self.base_for(&project_id)?,
@@ -8218,12 +8215,11 @@ impl AppState {
             existing_branch,
             checkouts,
             placeholder_id: placeholder_id.clone(),
-            isolation,
-            downgrade,
+            resolved: self.resolved_isolation(&project_id),
         };
         let row = PendingRow::creating(placeholder_id, Some(project_id), title)
             .on_branch(branch)
-            .isolated_as(mutation.isolation);
+            .isolated_as(mutation.resolved.isolation);
         self.defer_lifecycle(row, Box::new(mutation))
     }
 
@@ -11256,12 +11252,12 @@ impl AppState {
             )?);
         }
         let project_id = self.project_of(run_id)?;
-        let (isolation, downgrade) = self.resolved_isolation(&project_id);
+        let resolved = self.resolved_isolation(&project_id);
         let project = self.orch_for(&project_id)?.clone();
         let row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
             .on_checkout(crate::worktree::external_worktree_id(&worktree.path))
             .implementing(issue_id.to_string())
-            .isolated_as(isolation);
+            .isolated_as(resolved.isolation);
         self.reserve_lifecycle(
             row,
             Box::new(RestoreImplementationCheckout {
@@ -11271,8 +11267,7 @@ impl AppState {
                 worktree,
                 checkout_stood,
                 caller,
-                isolation,
-                downgrade,
+                resolved,
             }),
         )
         .map(Some)
@@ -12113,7 +12108,7 @@ impl AppState {
         })
         .map_err(err)?;
         let project = self.orch_for(&project_id)?.clone();
-        let (isolation, downgrade) = self.resolved_isolation(&project_id);
+        let resolved = self.resolved_isolation(&project_id);
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         // The ref this implementation is about to cut is on the row, so a
         // create or a dispatch claiming the same one collides here rather than
@@ -12121,7 +12116,7 @@ impl AppState {
         let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
             .on_branch(crate::worktree::branch_name_for(issue.slug()))
             .implementing(issue_id.to_string())
-            .isolated_as(isolation);
+            .isolated_as(resolved.isolation);
         self.reserve_lifecycle(
             row,
             Box::new(OpenImplementation {
@@ -12134,8 +12129,7 @@ impl AppState {
                 store,
                 model_choice,
                 caller,
-                isolation,
-                downgrade,
+                resolved,
             }),
         )
     }
@@ -15087,7 +15081,6 @@ impl AppState {
         // reserves against another, and deriving it in the git phase left two
         // calls on one instruction racing into `git worktree add`.
         let target = DispatchTarget::of(branch.as_deref(), &instruction)?;
-        let (isolation, downgrade) = self.resolved_isolation(&project_id);
 
         let mutation = DispatchCheckout {
             project: self.orch_for(&project_id)?.clone(),
@@ -15100,8 +15093,7 @@ impl AppState {
             model_choice: requested_choice,
             explicit_choice: has_agent_choice(params),
             routed,
-            isolation,
-            downgrade,
+            resolved: self.resolved_isolation(&project_id),
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
@@ -15111,7 +15103,7 @@ impl AppState {
             branch.unwrap_or(instruction),
         )
         .on_branch(mutation.target.branch().to_string())
-        .isolated_as(mutation.isolation);
+        .isolated_as(mutation.resolved.isolation);
         self.defer_lifecycle(row, Box::new(mutation))
     }
 
@@ -17541,9 +17533,8 @@ pub struct WorktreeCreated {
     /// What the checkout turned out to be, read off it once the git had made
     /// it.
     pub isolation: Option<Isolation>,
-    /// Why this volume could not make the isolation the settings asked for. A
-    /// bare worktree has no run, no agent and no conversation, so the answer to
-    /// the ask is where the human who made it hears what the log heard.
+    /// [`ResolvedIsolation::downgrade`], said in the answer to the ask: a bare
+    /// worktree has no run, no agent and no conversation to say it on.
     pub downgrade: Option<String>,
 }
 
@@ -17667,9 +17658,8 @@ pub struct RestoredCheckout {
     pub checkout_stood: bool,
     pub restored: Result<crate::worktree::Worktree, String>,
     pub caller: Box<dyn ImplementationCaller>,
-    /// Why the checkout was not put back as the isolation the settings asked
-    /// for, when it was not: said on the Issue's conversation beside what the
-    /// restore found.
+    /// [`ResolvedIsolation::downgrade`], said on the Issue's conversation
+    /// beside what the restore found.
     pub downgrade: Option<String>,
 }
 
@@ -17688,8 +17678,8 @@ pub struct ImplementationOpened {
     pub prepared: PreparedImplementation,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn ImplementationCaller>,
-    /// Why the checkout is not the isolation the settings asked for, when it is
-    /// not: said on the Issue's conversation before the run is written down.
+    /// [`ResolvedIsolation::downgrade`], said on the Issue's conversation
+    /// before the run is written down.
     pub downgrade: Option<String>,
 }
 
@@ -18268,8 +18258,8 @@ pub struct BranchDispatched {
     pub instruction: String,
     pub routed: Option<RoutedCapture>,
     pub checkouts: ProjectCheckouts,
-    /// Why the checkout this dispatch cut is not the isolation the settings
-    /// asked for, when it is not: said on the run's own conversation.
+    /// [`ResolvedIsolation::downgrade`], said on the dispatched run's own
+    /// conversation.
     pub downgrade: Option<String>,
 }
 
@@ -23414,10 +23404,9 @@ mod tests {
         state.projects[0].isolation = Some(Isolation::Worktree);
 
         let project_id = state.projects[0].id.clone();
-        assert_eq!(
-            state.resolved_isolation(&project_id),
-            (Isolation::Worktree, None)
-        );
+        let resolved = state.resolved_isolation(&project_id);
+        assert_eq!(resolved.isolation, Isolation::Worktree);
+        assert_eq!(resolved.downgrade, None);
     }
 
     /// An override the other way is kept the same way: the account asks for a
@@ -23433,10 +23422,9 @@ mod tests {
         state.projects[0].isolation = Some(Isolation::Cow);
 
         let project_id = state.projects[0].id.clone();
-        assert_eq!(
-            state.resolved_isolation(&project_id),
-            (Isolation::Cow, None)
-        );
+        let resolved = state.resolved_isolation(&project_id);
+        assert_eq!(resolved.isolation, Isolation::Cow);
+        assert_eq!(resolved.downgrade, None);
     }
 
     /// A volume that cannot clone does not fail the create: the request is
@@ -23454,10 +23442,13 @@ mod tests {
         state.isolation = Isolation::Cow;
         let project_id = state.add_project(linked, "feature".to_string());
 
-        let (isolation, reason) = state.resolved_isolation(&project_id);
-        assert_eq!(isolation, Isolation::Worktree);
+        let resolved = state.resolved_isolation(&project_id);
+        assert_eq!(resolved.isolation, Isolation::Worktree);
         assert!(
-            reason.unwrap_or_default().contains("linked worktree"),
+            resolved
+                .downgrade
+                .unwrap_or_default()
+                .contains("linked worktree"),
             "the downgrade carries the probe's own sentence"
         );
     }

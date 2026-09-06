@@ -34226,9 +34226,14 @@ mod tests {
         };
         // A spawn builds its session locator with the app mutex released, so a
         // factory that takes its time is time the delivery spends and the frame
-        // that queued it does not.
+        // that queued it does not. Seconds, not a slow frame's worth: the
+        // reporting frame renders the run's whole diff under the mutex and is
+        // hundreds of milliseconds on a loaded machine by itself, so only a
+        // spawn an order of magnitude longer tells a frame that waited for it
+        // apart from one that was merely slow.
+        const SPAWN_HOLD: Duration = Duration::from_secs(3);
         state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
-            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
+            std::thread::sleep(SPAWN_HOLD);
             None
         });
 
@@ -34280,21 +34285,18 @@ mod tests {
             slow_frame_millis(&line, "total=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
             "the spawn's seconds are the delivery's own: {line}"
         );
-        assert!(
-            !lines
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|line| line.starts_with("slow frame mcp.control ")),
-            "the reporting frame answered before the harness it triggered was up: {:?}",
-            lines.lock().unwrap()
-        );
         let stats = clock.stats();
         assert!(
             stats["methods"]["mcp.control"]["served"]
                 .as_u64()
                 .is_some_and(|served| served >= 1),
             "the socket's frames are counted since boot: {stats}"
+        );
+        assert!(
+            stats["methods"]["mcp.control"]["max_ms"]
+                .as_f64()
+                .is_some_and(|held| held < SPAWN_HOLD.as_millis() as f64),
+            "the reporting frame answered only once the harness it triggered was up: {stats}"
         );
     }
 

@@ -61,17 +61,18 @@ owns the one rule: a standing checkout is asked directly; a vanished one is aske
 pass; the spec §8 greps find nothing; every stage doc's "Done when" greps under `.build/plan/` still hold; the
 Branch Selection and Bridge Concurrency tests main added still pass unchanged in intent.
 
-### Known main-side flakes, so a red gate is read for what it is
-Three tests fail under a loaded machine and pass on their own. None of them runs isolation code, none of them is
-touched by this merge, and each is main's to pin:
+### Timing tests, and the two that are still main's to pin
+`app::tests::a_done_over_the_socket_is_timed_under_its_own_method` used to fail about one run in three: it asserted
+that no `slow frame mcp.control` line was logged, which is an assertion about a duration (`SLOW_FRAME` is 200 ms)
+rather than about the ordering it means, and the reporting frame renders the run's whole diff under the app mutex
+(one of the five verbs `Bridge Concurrency Primitives.md` leaves there) — hundreds of milliseconds on a loaded
+machine, with no spawn waited for. It now holds the harness spawn for three seconds and asserts the frame's own
+recorded maximum is under that, so a frame that waited for the spawn is what fails and a frame that was merely slow
+is not.
 
-- `app::tests::a_done_over_the_socket_is_timed_under_its_own_method` — asserts that no `slow frame mcp.control` line
-  was logged, which is an assertion about a duration (`SLOW_FRAME` is 200 ms) rather than about an ordering. Roughly
-  one run in three in isolation, and the observed holds are the frame's real work (`on_run_agent_done` renders the
-  run's whole diff under the app mutex — one of the five verbs `Bridge Concurrency Primitives.md` leaves there), not
-  the spawn the test slows down. Pinning it needs a barrier the harness spawn can be observed against; a factory held
-  open on an atomic starves the test's own multi-threaded runtime, so the barrier has to be one the delivery reaches
-  off a runtime worker.
-- `app::tests::an_entity_change_names_the_entity_that_moved` — passes in isolation, fails in a loaded full run.
-- `spa/test/agentRailDom.test.js` — three clock-driven failures in a loaded full run; 156/156 on its own.
+Two more fail only in a loaded full run and pass on their own. Neither runs isolation code, neither is touched by
+this merge, and both are main's to pin:
+
+- `app::tests::an_entity_change_names_the_entity_that_moved`.
+- `spa/test/agentRailDom.test.js` — three clock-driven failures; 156/156 on its own.
 

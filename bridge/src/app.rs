@@ -17537,11 +17537,10 @@ pub struct WorktreeCreated {
     /// What the checkout turned out to be, read off it once the git had made
     /// it.
     pub isolation: Option<Isolation>,
-    /// The sentence saying this volume could not make the isolation the
-    /// settings asked for. A bare worktree has no run, no agent and no
-    /// conversation, so the answer to the ask is where the human who made it
-    /// hears what the log heard.
-    pub isolation_note: Option<String>,
+    /// Why this volume could not make the isolation the settings asked for. A
+    /// bare worktree has no run, no agent and no conversation, so the answer to
+    /// the ask is where the human who made it hears what the log heard.
+    pub downgrade: Option<String>,
 }
 
 impl LifecycleEpilogue for WorktreeCreated {
@@ -17560,7 +17559,7 @@ impl LifecycleEpilogue for WorktreeCreated {
             "name": self.name,
             "path": self.path.display().to_string(),
             "isolation": self.isolation,
-            "isolation_note": self.isolation_note,
+            "isolation_note": self.downgrade.as_deref().map(announce_isolation_downgrade),
         }))
     }
 }

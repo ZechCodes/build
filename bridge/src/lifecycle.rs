@@ -378,9 +378,7 @@ impl WorktreeMutation for CreateWorktree {
                 branch: worktree.branch(),
                 name: worktree.name,
                 isolation: Isolation::of(&path),
-                isolation_note: self
-                    .downgrade
-                    .map(|reason| crate::app::announce_isolation_downgrade(&reason)),
+                downgrade: self.downgrade,
                 path,
                 branch_was_cut: minted.teardown.deletes_branch(),
                 checkouts: self.checkouts,

@@ -1,6 +1,6 @@
 [package]
 name = "build-bridge"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Build device daemon: worktrees, full-PTY harnesses, scoped conversation MCP tools, git-diff watcher, task lifecycle."
 license = "MIT"
@@ -17,6 +17,7 @@ path = "src/lib.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+async-trait = "0.1"
 git2 = "0.20"
 portable-pty = "0.9"
 vt100 = "0.15"
@@ -31,12 +32,41 @@ base64 = "0.22"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
+semver = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+# The process crypto provider for every rustls user above (the wss relay
+# socket, reqwest, webrtc's DTLS). Two providers are unified into this build —
+# reqwest brings aws-lc-rs, webrtc's rtc brings ring — so rustls 0.23 cannot
+# pick one on its own and the daemon installs this one at startup.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+webrtc = "0.20"
+
+# The Rust half of the complexity gate (CLAUDE.md "Complexity gates"). The
+# threshold itself lives in clippy.toml; this promotes the lint from
+# allow-by-default to a warning, which the CI gate
+# `cargo clippy --all-targets -- -D warnings` turns into an error for the lib,
+# the bins and the tests alike.
+[lints.clippy]
+cognitive_complexity = "warn"
+
+[features]
+# `carrier::testing`: the browser-side frame fixtures the crate's tests and the
+# integration tests both build from. Never compiled into the daemon.
+testing = []
+# `release-portable`: how the published binaries are built (see
+# .github/workflows/release.yml). git2's default features link the build
+# machine's libgit2, libssl and libssh2 when pkg-config finds them, which on a
+# GitHub runner produces a Linux binary that refuses to start on a machine
+# whose shared libraries have different sonames. Vendoring compiles both from
+# source into the binary, so the only thing a released build asks of the host
+# is glibc. Never on by default: a local `cargo build` keeps the fast path.
+release-portable = ["git2/vendored-libgit2", "git2/vendored-openssl"]
 
 [dev-dependencies]
+build-bridge = { path = ".", features = ["testing"] }
 tempfile = "3"
 # `test-util` only here: it brings tokio's controllable clock, which lets the
 # timing tests assert which side of a window something falls on instead of
@@ -45,4 +75,7 @@ tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6.5"
 # wss integration test: self-signed cert + local TLS WebSocket server.
 rcgen = "0.13"
+# The enforcement guards in src/harness read the crate's own modules as syntax
+# trees (patterns, comparisons, impl blocks) rather than as text.
+syn = { version = "2", features = ["full", "visit"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }

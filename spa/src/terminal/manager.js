@@ -12,6 +12,10 @@ import { TerminalSocket } from "./session.js";
 import { createStatusHub } from "./statusHub.js";
 
 let socket = null;
+// The `term` DataChannel, once the app session's upgrade has one. Remembered at
+// module scope because the socket is lazy: an upgrade can land long before the
+// first terminal tab mounts one.
+let peerCarrier = null;
 
 // One hub for the whole page: the singleton socket's status feeds it, every pane
 // overlay subscribes to it. Lives at module scope so subscribeTerminalStatus
@@ -42,10 +46,30 @@ export function terminalManager() {
     });
     socket.onStatus((status) => statusHub.set(status));
     // A failed initial connect self-heals: _connect closes the socket, whose
-    // close event schedules the backoff reconnect.
-    socket.start().catch(() => {});
+    // close event schedules the backoff reconnect. A channel that is already
+    // carrying takes over once the session it re-attaches over exists.
+    socket
+      .start()
+      .then(() => socket.peer(peerCarrier))
+      .catch(() => {});
   }
   return socket;
+}
+
+/**
+ * Ride the peer connection's `term` channel from now on, or `null` to fall back
+ * to the relay socket. The app session's upgrade owns both channels, so this is
+ * how the terminal stream learns that its half is open — and, when the peer path
+ * goes, that it is back on the relay.
+ *
+ * Nothing is watched here. "The two channels are one connection and fall back
+ * together" is written in `connection.js`, which hears each channel's close and
+ * hands both streams back at once; a second listener on the same carrier would
+ * run that fallback twice, through two owners of one fact.
+ */
+export function terminalsRideOn(carrier) {
+  peerCarrier = carrier || null;
+  socket?.peer(peerCarrier);
 }
 
 /**

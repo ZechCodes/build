@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
 from uuid import UUID
 
 from litestar import Controller, Request, get, post
@@ -40,14 +39,11 @@ from skrift.db.models.push_subscription import PushSubscription
 from skrift.push import save_subscription
 
 from buildapp import pairing_crypto, web_push
+from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.models import Device
-from buildapp.request_body import require_json_object
+from buildapp.request_body import read_json_object
 from buildapp.session_auth import require_user
-
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
 
 
 # The freshness window alone leaves a captured signed notify replayable for its
@@ -96,7 +92,7 @@ class PushController(Controller):
         user. The endpoint is unique per browser+origin, so an existing row for it
         is updated in place — including when a different account logs in."""
         user_id = require_user(request)
-        body = await request.json()
+        body = await read_json_object(request)
         try:
             endpoint = str(body["endpoint"])
             keys = body["keys"]
@@ -114,7 +110,7 @@ class PushController(Controller):
     async def unsubscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Remove this browser's subscription — only if the current user owns it."""
         user_id = require_user(request)
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         endpoint = str(body.get("endpoint", ""))
         if not endpoint:
             raise ClientException("endpoint required")
@@ -136,7 +132,7 @@ class PushController(Controller):
         into ``/app/``) to every subscription of the device's owner. Authenticated
         by the device's Ed25519 signature over a timestamped challenge that binds
         the task and kind; a freshness window bounds replay."""
-        body = await request.json()
+        body = await read_json_object(request)
         try:
             device_id = UUID(str(body["device_id"]))
             task_id = str(body["task_id"])
@@ -156,10 +152,10 @@ class PushController(Controller):
             device.identity_public_key_b64, challenge, signature
         ):
             raise NotAuthorizedException("notify signature invalid")
-        if not web_push.notify_timestamp_fresh(timestamp, _now()):
+        if not web_push.notify_timestamp_fresh(timestamp, utc_now()):
             raise NotAuthorizedException("notify timestamp out of window")
         if not _notify_replay_guard.check_and_record(
-            str(device_id), timestamp, signature, _now()
+            str(device_id), timestamp, signature, utc_now()
         ):
             raise NotAuthorizedException("notify replayed")
 

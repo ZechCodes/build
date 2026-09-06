@@ -30,23 +30,18 @@ use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
-use build_bridge::relay::{self, DeviceIdentity};
-use build_bridge::timing::FrameClock;
-use build_bridge::transport;
+use build_bridge::carrier::FrameHandler;
+use build_bridge::relay;
+use common::{device_identity, test_intake};
 
-fn test_identity() -> DeviceIdentity {
-    DeviceIdentity {
-        device_id: "wss-test-device".into(),
-        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
-    }
-}
+mod common;
 
-/// rustls 0.23 requires a process crypto provider when more than one provider
-/// feature is unified into the build (reqwest enables aws-lc-rs). Installing is
-/// idempotent-enough for tests: a second call fails and is ignored.
+/// The provider the daemon installs at startup, installed the daemon's way:
+/// a test that brought its own would pass while `serve` panicked on its first
+/// wss:// connect, which is what happened once webrtc unified a second
+/// provider into the build.
 fn install_crypto_provider() {
-    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+    relay::install_crypto_provider();
 }
 
 /// A TLS WebSocket server that accepts one connection with a fresh self-signed
@@ -133,16 +128,17 @@ async fn wss_connects_to_tls_server_with_injected_root() {
         .with_no_client_auth();
     let connector = Connector::Rustls(Arc::new(client_config));
 
-    let identity = test_identity();
+    let identity = device_identity();
     let url = format!("wss://localhost:{port}/ws/device");
-    let handler = relay::FrameHandler::new(
-        FrameClock::new(),
+    let handler: FrameHandler = FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
         |_sender, frame, _timer| json!({"echo": frame.payload}),
     );
 
+    let intake = test_intake(handler);
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run_with_connector(&url, &identity, handler, Some(connector)),
+        relay::run_with_connector(&url, &identity, intake.clone(), Some(connector)),
     )
     .await
     .expect("no timeout");
@@ -151,7 +147,7 @@ async fn wss_connects_to_tls_server_with_injected_root() {
     let (device_id, signed, transport_key) = seen_rx.recv().await.expect("server saw the device");
     assert_eq!(device_id, identity.device_id);
     assert!(signed, "auth headers rode the TLS upgrade");
-    assert_eq!(transport_key, identity.transport.public_key_b64);
+    assert_eq!(transport_key, intake.transport_public_key());
 }
 
 #[tokio::test]
@@ -164,16 +160,16 @@ async fn wss_scheme_is_supported_without_injected_connector() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
     };
-    let identity = test_identity();
+    let identity = device_identity();
     let url = format!("wss://127.0.0.1:{unused_port}/ws/device");
-    let handler = relay::FrameHandler::new(
-        FrameClock::new(),
+    let handler: FrameHandler = FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
         |_sender, frame, _timer| json!({"echo": frame.payload}),
     );
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run(&url, &identity, handler),
+        relay::run(&url, &identity, test_intake(handler)),
     )
     .await
     .expect("no timeout")

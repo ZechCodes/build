@@ -101,7 +101,7 @@ impl Harness for ClaudeHarness {
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
-    ) -> HarnessSpec {
+    ) -> Result<HarnessSpec, crate::harness::HarnessError> {
         let mut spec = HarnessSpec::new("claude")
             .settle(REAL_TUI_SETTLE)
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
@@ -124,8 +124,12 @@ impl Harness for ClaudeHarness {
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }
-        spec.env("BRIDGE_MCP_SOCKET", &context.mcp_socket)
-            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
+        Ok(spec
+            .env(
+                "BRIDGE_MCP_SOCKET",
+                context.mcp_socket.to_string_lossy().into_owned(),
+            )
+            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token))
     }
 
     fn prepare_workspace(&self, cwd: &Path) {
@@ -398,10 +402,12 @@ mod tests {
                 &ModelChoice::default(),
                 options,
                 &HarnessContext {
-                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                    bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+                    mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
+                    state_root: PathBuf::from("/tmp/build-state"),
                 },
             )
+            .unwrap()
             .args
             .join(" ")
     }

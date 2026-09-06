@@ -63,6 +63,7 @@ export function archiveDateLabel(iso) {
 
 const KIND_LABEL = { issue: "Issue", branch: "Branch" };
 
+// eslint-disable-next-line complexity -- ratchet: toRow is at 12, cap 10 — reduce it, then drop this line
 function toRow(item, index) {
   const kind = item.kind === "issue" ? "issue" : "branch";
   const branch = text(item.branch);

@@ -21,6 +21,13 @@ export const ADOPT_REASK_MS = 2000;
 export const ADOPT_REASK_LIMIT = 30;
 
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+/** The `run.adopt` params naming one external worktree — the shape both the
+ *  transparent adopter and an explicit adoption send, defined once. */
+export const worktreeAdoptScope = (projectId, worktreeId) => ({ project_id: projectId, worktree_id: worktreeId });
+
+/** The `run.adopt` params naming a project's primary checkout, adopted as a
+ *  super-worktree: what it is, not an id. */
+export const primaryAdoptScope = (projectId) => ({ project_id: projectId, primary: true });
 
 /** A run-RPC caller for one checkout that transparently adopts on first use.
  *  `adoptScope` is the run.adopt params naming that checkout. */
@@ -88,14 +95,14 @@ function createScopedAdoptingCall(call, adoptScope) {
 /** A run-RPC caller for one external worktree. `call` is App.call-shaped
  *  (injected for tests). */
 export function createAdoptingCall(call, projectId, worktreeId) {
-  return createScopedAdoptingCall(call, { project_id: projectId, worktree_id: worktreeId });
+  return createScopedAdoptingCall(call, worktreeAdoptScope(projectId, worktreeId));
 }
 
 /** A run-RPC caller for a project's primary checkout — the repo root, adopted
  *  as a super-worktree. The bridge enforces one owner per project, so a reload
  *  or a second browser converges on the run that already owns it. */
 export function createPrimaryAdoptingCall(call, projectId) {
-  return createScopedAdoptingCall(call, { project_id: projectId, primary: true });
+  return createScopedAdoptingCall(call, primaryAdoptScope(projectId));
 }
 
 /** What checkout a scope names, as one string — the key an adopter is kept

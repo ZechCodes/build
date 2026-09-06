@@ -6,7 +6,12 @@ controllers:
   - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
+  - buildapp.rtc_controller:RtcController
+  - buildapp.transport_controller:TransportController
+  - buildapp.transport_admin:TransportAdminController
   - buildapp.waitlist_controller:WaitlistController
+  - buildapp.invites_controller:InvitesController
+  - buildapp.invites_admin:InvitesAdminController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:

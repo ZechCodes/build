@@ -30,6 +30,9 @@ use crate::worktree::{
 };
 use serde_json::Value;
 
+pub mod holders;
+use holders::{BranchHolder, ProjectCheckouts};
+
 /// One lifecycle verb's git work, and the reservation waiting on it.
 pub struct WorktreeLifecycleJob {
     reservation: Box<dyn Reservation>,
@@ -292,6 +295,8 @@ pub struct CreateWorktree {
     pub project_id: String,
     pub base_branch: String,
     pub slug: String,
+    pub existing_branch: Option<String>,
+    pub checkouts: ProjectCheckouts,
     /// The id the decide phase put on the board. The settled checkout carries
     /// it too unless the slug had to be suffixed, and the epilogue ships both.
     pub placeholder_id: String,
@@ -299,10 +304,21 @@ pub struct CreateWorktree {
 
 impl WorktreeMutation for CreateWorktree {
     fn perform(self: Box<Self>) -> Result<Performed, String> {
-        let worktree = self
-            .project
-            .create_bare_worktree(&self.slug, &self.base_branch)
-            .map_err(|error| error.to_string())?;
+        let minted = match &self.existing_branch {
+            Some(branch) => {
+                let ownership = self.checkouts.holders()?;
+                if let Some(refusal) = BranchHolder::of(&ownership, branch).refusal(branch) {
+                    return Err(refusal);
+                }
+                self.project
+                    .create_worktree_on_existing_branch(branch, &self.base_branch)
+            }
+            None => self
+                .project
+                .create_bare_worktree(&self.slug, &self.base_branch),
+        }
+        .map_err(|error| error.to_string())?;
+        let worktree = minted.worktree;
         let described = self
             .project
             .describe_checkout(&worktree.path, &self.base_branch);
@@ -334,6 +350,8 @@ impl WorktreeMutation for CreateWorktree {
                 branch: worktree.branch(),
                 name: worktree.name,
                 path,
+                branch_was_cut: minted.teardown.deletes_branch(),
+                checkouts: self.checkouts,
             }),
         })
     }
@@ -548,7 +566,12 @@ impl WorktreeMutation for RestoreImplementationCheckout {
         // apply phase hands the run to the recovery agent over it.
         let restored = self
             .project
-            .restore_run_worktree(&self.worktree)
+            .restore_run_worktree(
+                &self.worktree,
+                crate::worktree::UnregisteredRestore::Write(
+                    crate::worktree::BranchTeardown::DeletesBranch,
+                ),
+            )
             .map_err(|error| error.to_string());
         Ok(Performed {
             change: WorktreeChange::nothing(),
@@ -713,14 +736,11 @@ impl DispatchTarget {
     ) -> Result<NamedBranchCheckout, String> {
         match self {
             DispatchTarget::Named(branch) => project
-                .create_worktree_on_named_branch(branch, base_branch)
+                .create_worktree_cutting_named_branch(branch, base_branch)
                 .map_err(|error| error.to_string()),
-            DispatchTarget::Minted { slug, .. } => Ok(NamedBranchCheckout {
-                worktree: project
-                    .create_bare_worktree(slug, base_branch)
-                    .map_err(|error| error.to_string())?,
-                branch_was_cut: true,
-            }),
+            DispatchTarget::Minted { slug, .. } => project
+                .create_bare_worktree(slug, base_branch)
+                .map_err(|error| error.to_string()),
         }
     }
 }
@@ -737,10 +757,9 @@ pub struct DispatchCheckout {
     /// The ref this dispatch claims, settled before any git ran.
     pub target: DispatchTarget,
     pub instruction: String,
-    /// Checkouts a run already owns, excluded from the scan exactly as the
-    /// board excludes them.
-    pub excluded: HashSet<PathBuf>,
+    pub checkouts: ProjectCheckouts,
     pub model_choice: ModelChoice,
+    pub explicit_choice: bool,
     /// The capture this dispatch is the destination of, when a route is what
     /// asked for it. Written down by the apply phase, against the branch that
     /// is real by then.
@@ -751,11 +770,52 @@ pub struct DispatchCheckout {
 
 impl WorktreeMutation for DispatchCheckout {
     fn perform(mut self: Box<Self>) -> Result<Performed, String> {
+        if let Some(branch) = self.target.adopted_branch() {
+            let ownership = self.checkouts.holders()?;
+            let holder = BranchHolder::of(&ownership, branch);
+            if let Some(run_id) = holder.held_by(crate::branch::BranchSource::Run) {
+                return Ok(Performed {
+                    change: WorktreeChange::nothing(),
+                    epilogue: Box::new(crate::app::BranchJoined {
+                        project_id: self.project_id.clone(),
+                        run_id: run_id.to_string(),
+                        branch: branch.to_string(),
+                        root: crate::worktree::canonical_root(
+                            &self
+                                .checkouts
+                                .run_checkouts
+                                .iter()
+                                .find(|(id, _)| id == run_id)
+                                .expect("the holder came from this snapshot")
+                                .1
+                                .path,
+                        ),
+                        instruction: self.instruction.clone(),
+                        model_choice: self.model_choice.clone(),
+                        explicit_choice: self.explicit_choice,
+                        routed: self.routed.take(),
+                        checkouts: self.checkouts.clone(),
+                    }),
+                });
+            }
+            if holder
+                .held_by(crate::branch::BranchSource::PrimaryCheckout)
+                .is_some()
+            {
+                return Err(holder
+                    .refusal(branch)
+                    .expect("the primary holds this branch"));
+            }
+            if let Some(found) = ownership
+                .external
+                .iter()
+                .find(|checkout| checkout.branch.as_deref() == Some(branch))
+            {
+                return self.take_ownership(found);
+            }
+        }
         // A checkout that was already there is never this call's to remove:
         // taking ownership of one touches nothing that has to be put back.
-        if let Some(found) = self.find_checkout()? {
-            return self.take_ownership(&found);
-        }
         let minted = self.cut_branch()?;
         let described = self
             .project
@@ -769,32 +829,13 @@ impl WorktreeMutation for DispatchCheckout {
             // What this call cut, this call removes — and the branch under it
             // only if this call cut that too.
             self.project
-                .discard_checkout(&minted.worktree, !minted.branch_was_cut);
+                .discard_checkout(&minted.worktree, !minted.teardown.deletes_branch());
         }
         dispatched
     }
 }
 
 impl DispatchCheckout {
-    /// The bare checkout of the branch this dispatch names, if this project has
-    /// one. A dispatch that named no branch has nothing to look for: it always
-    /// cuts a new branch rather than adopting whatever is lying around. A named
-    /// branch a run already owns never reaches here — that dispatch joins the
-    /// run and builds no job at all.
-    fn find_checkout(&self) -> Result<Option<ExternalWorktree>, String> {
-        let Some(branch) = self.target.adopted_branch() else {
-            return Ok(None);
-        };
-        // Forced rather than cached: a dispatch decides against the checkouts
-        // that exist now, not against a summary from a scan interval ago.
-        Ok(self
-            .project
-            .scan_checkouts(&self.base_branch, &self.excluded)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|checkout| checkout.branch.as_deref() == Some(branch)))
-    }
-
     /// Cut the branch this dispatch has nowhere else to put its work.
     fn cut_branch(&self) -> Result<NamedBranchCheckout, String> {
         self.target.cut(&self.project, &self.base_branch)
@@ -822,6 +863,7 @@ impl DispatchCheckout {
                 adopted,
                 instruction: self.instruction.clone(),
                 routed: self.routed.take(),
+                checkouts: self.checkouts.clone(),
             }),
         })
     }
@@ -924,8 +966,14 @@ impl AdoptionTarget {
                 .find(|checkout| &checkout.id == worktree_id)
                 .ok_or_else(|| format!("unknown worktree_id: {worktree_id}")),
             AdoptionTarget::Primary { repo_path } => {
-                crate::worktree::describe_primary_checkout(repo_path, base_branch)
-                    .map_err(|error| error.to_string())
+                crate::worktree::find_primary_checkout(repo_path, base_branch)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "the primary checkout at {} has no working tree to adopt",
+                            repo_path.display()
+                        )
+                    })
             }
         }
     }
@@ -1117,15 +1165,30 @@ fn open_repo(
         remote: git_remote_origin(&path),
         path,
         base,
+        created_checkout: None,
     })
 }
 
 /// One repository's registration, once its directory is on disk. Every project
 /// door ends here, so what a project knows about itself is read in one place.
-fn opened(path: PathBuf, requested_base: Option<String>) -> Result<Performed, String> {
+fn opened(
+    path: PathBuf,
+    requested_base: Option<String>,
+    created: bool,
+) -> Result<Performed, String> {
+    let mut registration = match open_repo(path.clone(), requested_base) {
+        Ok(registration) => registration,
+        Err(error) => {
+            if created {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+            return Err(error);
+        }
+    };
+    registration.created_checkout = created.then_some(path);
     Ok(Performed {
         change: WorktreeChange::nothing(),
-        epilogue: Box::new(open_repo(path, requested_base)?),
+        epilogue: Box::new(registration),
     })
 }
 
@@ -1137,7 +1200,7 @@ pub struct OpenRepo {
 
 impl WorktreeMutation for OpenRepo {
     fn perform(self: Box<Self>) -> Result<Performed, String> {
-        opened(self.path, self.requested_base)
+        opened(self.path, self.requested_base, false)
     }
 }
 
@@ -1168,7 +1231,7 @@ impl WorktreeMutation for CloneRepo {
                     ));
                 }
             }
-            return opened(self.dest, self.requested_base);
+            return opened(self.dest, self.requested_base, false);
         }
         std::fs::create_dir_all(&self.projects_dir)
             .map_err(|error| format!("cannot create projects folder: {error}"))?;
@@ -1187,7 +1250,7 @@ impl WorktreeMutation for CloneRepo {
                 String::from_utf8_lossy(&cloned.stderr).trim()
             ));
         }
-        opened(self.dest, self.requested_base)
+        opened(self.dest, self.requested_base, true)
     }
 }
 
@@ -1255,7 +1318,7 @@ impl WorktreeMutation for CreateRepo {
             }
             return Err(error);
         }
-        opened(dest, Some(self.base_branch))
+        opened(dest, Some(self.base_branch), true)
     }
 }
 

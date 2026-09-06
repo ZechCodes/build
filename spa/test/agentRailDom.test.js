@@ -127,7 +127,8 @@ const CATALOG = {
       efforts: ["low", "high"],
     },
     { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
-    { id: "codex", label: "Codex", models: [], efforts: [] },
+    { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+    { id: "codex", label: "Codex TUI", models: [], efforts: [] },
   ],
 };
 
@@ -1471,7 +1472,7 @@ describe("the pinned status line above the composer", () => {
       },
     });
     await mount();
-    expect(railStatus().textContent).toContain("Codex session started");
+    expect(railStatus().textContent).toContain("Codex TUI session started");
   });
 
   it("ticks the elapsed time between feed reads", async () => {
@@ -1571,9 +1572,6 @@ describe("the chat tab of a branch with no agent", () => {
     await flush();
   };
 
-  // Two agents, never three. Whether Claude Code opens as the TUI is the
-  // account's question, answered once in Settings — putting it in front of
-  // every human creating an agent is what this view stopped doing.
   it("offers the two agents, with the account's default already chosen", async () => {
     payload = agentless();
     await mount();

@@ -672,6 +672,7 @@ export function mountAgentRail(host, context) {
     if (panel) panel.dataset.body = wantedPanelBody();
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
   const paintPanel = () => {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
@@ -1148,6 +1149,7 @@ export function mountAgentRail(host, context) {
     if (input) input.focus();
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const renameAgentIdentity = (fromAgentId, toAgentId) => {
     if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) return;
     const entityKey = entity.entityId || key;

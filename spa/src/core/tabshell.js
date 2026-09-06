@@ -37,6 +37,7 @@ function menuItemsHtml(items, key) {
  *  { title } renders a leading chevron cell (the surface's way out — up to its
  *  project); `rightTabs` = [{ id, icon, label }] and a non-empty `menu` render
  *  the trailing right cluster. Everything is escaped but the icons. */
+// eslint-disable-next-line complexity -- ratchet: tabShellHtml is at 14, cap 10 — reduce it, then drop this line
 export function tabShellHtml({ tabs, active, newTabOptions, back, rightTabs, menu }) {
   const backCell = back
     ? `<div class="t tback" data-back="1" title="${esc(back.title || "Back")}" aria-label="${esc(back.title || "Back")}">‹</div>`
@@ -164,6 +165,7 @@ export function mountTabShell(
     });
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const paint = () => {
     closeMenu();
     host.innerHTML = tabShellHtml({

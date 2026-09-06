@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use build_bridge::app::AppState;
-use build_bridge::relay::{FrameHandler, SessionSender};
+use build_bridge::carrier::{FrameHandler, SessionSender};
 use build_bridge::transport::Frame;
 use serde_json::{json, Value};
 
@@ -74,16 +74,16 @@ async fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
     let repo = init_repo(dir.path());
     std::env::set_var("BRIDGE_TERM_SHELL", flooding_shell(dir.path()));
 
-    let state = AppState::new(
-        &repo,
-        dir.path().join("worktrees"),
-        "main",
-        true,
-        dir.path().join("mcp.sock").display().to_string(),
+    let context = build_bridge::harness::HarnessContext::resolved(
+        dir.path().join("mcp.sock"),
+        dir.path().to_path_buf(),
     )
-    .with_task_store(dir.path().join("state"))
-    .expect("a task store")
-    .shared();
+    .expect("a private harness context");
+    let state =
+        AppState::new_configured(&repo, dir.path().join("worktrees"), "main", true, context)
+            .with_task_store(dir.path().join("state"))
+            .expect("a task store")
+            .shared();
     let handler = AppState::handler(Arc::clone(&state));
     let client = Client::new(&handler, "s-setup");
 
@@ -275,6 +275,14 @@ impl Latencies {
             self.samples.len()
         );
         let p95 = self.percentile(95);
+        eprintln!(
+            "{}: p95 {:?}, p50 {:?}, worst {:?} ({} frames)",
+            self.method,
+            p95,
+            self.percentile(50),
+            self.worst(),
+            self.samples.len()
+        );
         assert!(
             p95 < ceiling,
             "{}: p95 {:?} over the spec's {:?} ({} frames, p50 {:?}, worst {:?})",

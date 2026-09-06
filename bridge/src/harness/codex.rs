@@ -21,6 +21,43 @@ use crate::pty::HarnessSpec;
 /// Reasoning-effort levels codex accepts, across all its models.
 pub const EFFORT_LEVELS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
+pub(super) fn models() -> Vec<ModelOption> {
+    const THROUGH_XHIGH: &[&str] = &["low", "medium", "high", "xhigh"];
+    const THROUGH_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    vec![
+        ModelOption {
+            id: "gpt-5.6-sol",
+            label: "GPT-5.6-Sol",
+            supports_effort: true,
+            efforts: &EFFORT_LEVELS,
+        },
+        ModelOption {
+            id: "gpt-5.6-terra",
+            label: "GPT-5.6-Terra",
+            supports_effort: true,
+            efforts: &EFFORT_LEVELS,
+        },
+        ModelOption {
+            id: "gpt-5.6-luna",
+            label: "GPT-5.6-Luna",
+            supports_effort: true,
+            efforts: THROUGH_MAX,
+        },
+        ModelOption {
+            id: "gpt-5.5",
+            label: "GPT-5.5",
+            supports_effort: true,
+            efforts: THROUGH_XHIGH,
+        },
+        ModelOption {
+            id: "gpt-5.2",
+            label: "GPT-5.2",
+            supports_effort: true,
+            efforts: THROUGH_XHIGH,
+        },
+    ]
+}
+
 pub struct CodexHarness;
 
 impl Harness for CodexHarness {
@@ -29,7 +66,7 @@ impl Harness for CodexHarness {
     }
 
     fn label(&self) -> &'static str {
-        "Codex"
+        "Codex TUI"
     }
 
     /// The curated catalog, most capable first. (cached: 2026-07)
@@ -38,40 +75,7 @@ impl Harness for CodexHarness {
     /// every installed CLI version exposes it; shipping the catalog keeps the
     /// web contract deterministic.
     fn models(&self) -> Vec<ModelOption> {
-        const THROUGH_XHIGH: &[&str] = &["low", "medium", "high", "xhigh"];
-        const THROUGH_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-        vec![
-            ModelOption {
-                id: "gpt-5.6-sol",
-                label: "GPT-5.6-Sol",
-                supports_effort: true,
-                efforts: &EFFORT_LEVELS,
-            },
-            ModelOption {
-                id: "gpt-5.6-terra",
-                label: "GPT-5.6-Terra",
-                supports_effort: true,
-                efforts: &EFFORT_LEVELS,
-            },
-            ModelOption {
-                id: "gpt-5.6-luna",
-                label: "GPT-5.6-Luna",
-                supports_effort: true,
-                efforts: THROUGH_MAX,
-            },
-            ModelOption {
-                id: "gpt-5.5",
-                label: "GPT-5.5",
-                supports_effort: true,
-                efforts: THROUGH_XHIGH,
-            },
-            ModelOption {
-                id: "gpt-5.2",
-                label: "GPT-5.2",
-                supports_effort: true,
-                efforts: THROUGH_XHIGH,
-            },
-        ]
+        models()
     }
 
     fn effort_levels(&self) -> &'static [&'static str] {
@@ -99,7 +103,7 @@ impl Harness for CodexHarness {
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
-    ) -> HarnessSpec {
+    ) -> Result<HarnessSpec, crate::harness::HarnessError> {
         let mut spec = HarnessSpec::new("codex")
             .settle(REAL_TUI_SETTLE)
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
@@ -108,37 +112,15 @@ impl Harness for CodexHarness {
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }
-        let mcp_args = serde_json::to_string(&vec!["mcp", "--task", options.owner_id.as_str()])
-            .expect("MCP args serialize");
+        for override_arg in CodexMcpConfig::new(options, context).overrides() {
+            spec = spec.arg("--config").arg(override_arg);
+        }
         for override_arg in [
-            format!(
-                "mcp_servers.build.command={}",
-                serde_json::to_string(&context.bridge_exe).expect("path serializes")
-            ),
-            format!("mcp_servers.build.args={mcp_args}"),
-            format!(
-                "mcp_servers.build.env.BRIDGE_MCP_SOCKET={}",
-                serde_json::to_string(&context.mcp_socket).expect("socket serializes")
-            ),
-            format!(
-                "mcp_servers.build.env.BRIDGE_MCP_TOKEN={}",
-                serde_json::to_string(&options.mcp_session_token).expect("MCP token serializes")
-            ),
             format!(
                 "projects.{}.trust_level=\"trusted\"",
                 serde_json::to_string(&options.cwd.to_string_lossy())
                     .expect("worktree path serializes")
             ),
-            "mcp_servers.build.required=true".to_string(),
-            // The tools this session's surface actually has. A router
-            // allow-listed for a coding agent's tools would be a session with
-            // nothing it can call.
-            format!(
-                "mcp_servers.build.enabled_tools={}",
-                serde_json::to_string(&mcp_tool_names(&options.owner_id))
-                    .expect("tool names serialize")
-            ),
-            "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
             // Build writes prompt bytes and Enter back-to-back. Codex's
             // fallback detector otherwise classifies that stream as a paste
             // burst and turns Enter into a newline, so the prompt remains
@@ -156,7 +138,7 @@ impl Harness for CodexHarness {
             None if options.continue_session => spec = spec.arg("resume").arg("--last"),
             None => {}
         }
-        spec
+        Ok(spec)
     }
 
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
@@ -186,6 +168,40 @@ impl Harness for CodexHarness {
             !held
         });
         held
+    }
+}
+
+pub(super) struct CodexMcpConfig {
+    command: String,
+    args: String,
+    socket: String,
+    token: String,
+    tools: String,
+}
+
+impl CodexMcpConfig {
+    pub(super) fn new(options: &SpawnOptions, context: &HarnessContext) -> CodexMcpConfig {
+        CodexMcpConfig {
+            command: serde_json::to_string(&context.bridge_exe).expect("path serializes"),
+            args: serde_json::to_string(&vec!["mcp", "--task", options.owner_id.as_str()])
+                .expect("MCP args serialize"),
+            socket: serde_json::to_string(&context.mcp_socket).expect("socket serializes"),
+            token: serde_json::to_string(&options.mcp_session_token).expect("MCP token serializes"),
+            tools: serde_json::to_string(&mcp_tool_names(&options.owner_id))
+                .expect("tool names serialize"),
+        }
+    }
+
+    pub(super) fn overrides(&self) -> Vec<String> {
+        vec![
+            format!("mcp_servers.build.command={}", self.command),
+            format!("mcp_servers.build.args={}", self.args),
+            format!("mcp_servers.build.env.BRIDGE_MCP_SOCKET={}", self.socket),
+            format!("mcp_servers.build.env.BRIDGE_MCP_TOKEN={}", self.token),
+            "mcp_servers.build.required=true".to_string(),
+            format!("mcp_servers.build.enabled_tools={}", self.tools),
+            "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
+        ]
     }
 }
 
@@ -448,10 +464,12 @@ mod tests {
                 &ModelChoice::default(),
                 options,
                 &HarnessContext {
-                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                    bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+                    mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
+                    state_root: PathBuf::from("/tmp/build-state"),
                 },
             )
+            .unwrap()
             .args
             .join(" ")
     }

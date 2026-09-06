@@ -1,4 +1,4 @@
-//! The headless Claude Code carrier — a session protocol, not a terminal.
+//! The headless Claude Code provider — a session protocol, not a terminal.
 //!
 //! `claude -p --input-format stream-json --output-format stream-json` runs the
 //! whole harness over newline-delimited JSON on stdin and stdout: a turn is one
@@ -19,7 +19,7 @@
 //!
 //! Nothing here parses a screen. Every answer below is a value the child said
 //! out loud, which is what keeps the scope doc's no-scraping rule intact for a
-//! carrier that has no screen to scrape.
+//! provider that has no screen to scrape.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -38,7 +38,8 @@ use crate::harness::shell_tail::ShellTail;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext,
-    HarnessError, SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
+    HarnessError, OpenedSession, SessionLocator, SessionOpenRequest, SessionOutput, ToolOutcome,
+    Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -58,8 +59,8 @@ impl Harness for AdkHarness {
         AgentProvider::ClaudeAdk
     }
 
-    /// The default carrier of this CLI, so it owns the plain name the human
-    /// knows. The terminal carrier beside it is "Claude Code TUI" — the
+    /// The default provider of this CLI, so it owns the plain name the human
+    /// knows. The terminal provider beside it is "Claude Code TUI" — the
     /// difference a human can see, never the word the code uses for it.
     fn label(&self) -> &'static str {
         "Claude Code"
@@ -84,7 +85,7 @@ impl Harness for AdkHarness {
     /// `--mcp-config`, the same `--strict-mcp-config`, the same
     /// `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because `done`,
     /// `post_thread_message`, `read_unread_messages` and `search_conversation`
-    /// arrive over the same unix socket whichever carrier is running. No
+    /// arrive over the same unix socket whichever provider is running. No
     /// settle window and no submit delay: those are how a prompt is typed into
     /// a line editor, and this harness is handed a turn as a value.
     fn spec(
@@ -92,7 +93,7 @@ impl Harness for AdkHarness {
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
-    ) -> HarnessSpec {
+    ) -> Result<HarnessSpec, HarnessError> {
         let mut spec = HarnessSpec::new("claude")
             .unset_all(INHERITED_AGENT_MARKERS)
             .arg("-p")
@@ -121,8 +122,21 @@ impl Harness for AdkHarness {
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }
-        spec.env("BRIDGE_MCP_SOCKET", &context.mcp_socket)
-            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
+        Ok(spec
+            .env(
+                "BRIDGE_MCP_SOCKET",
+                context.mcp_socket.to_string_lossy().into_owned(),
+            )
+            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token))
+    }
+
+    fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
+        let (session, activity) = AdkSession::spawn(&request.spec, Some(request.root))?;
+        let surfaces = session.surfaces_changed();
+        Ok(OpenedSession {
+            session: Arc::new(session),
+            output: SessionOutput::reporting(activity, surfaces),
+        })
     }
 
     /// No terminal, and this is the first provider to say so. A session that
@@ -143,23 +157,22 @@ impl Harness for AdkHarness {
     /// Headless sessions write the same `~/.claude/projects/**/*.jsonl`
     /// transcripts the TUI does, so the resume question has the same answer —
     /// and a worktree the human left a conversation in is picked up whichever
-    /// carrier ran there.
+    /// provider ran there.
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
         ClaudeHarness.has_transcript(home, cwd)
     }
 
     /// The same transcripts, so the same answer — and this is the dividend: an
-    /// id captured under the TUI carrier verifies here and resumes here, and
+    /// id captured under the TUI provider verifies here and resumes here, and
     /// one captured here resumes there. Both write that tree and both spend
-    /// `--resume`, so a provider swap between the two claude carriers keeps the
+    /// `--resume`, so a provider swap between the two claude providers keeps the
     /// exact conversation.
     fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
         ClaudeHarness.holds_conversation(home, cwd, id)
     }
 
-    /// No locator, and it is the only provider that answers so. This session
-    /// reads its own id off the `init` line the child sent, and a locator
-    /// beside that would be two records of one answer, free to disagree.
+    /// This protocol session reads its own id off the child's `init` line, so a
+    /// transcript locator beside it would be a second answer free to disagree.
     fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {
         let _ = (home, cwd);
         None
@@ -214,7 +227,7 @@ struct PendingInterrupt {
 /// Everything the protocol has told this session so far.
 ///
 /// Every field is reported rather than inferred, which is the whole difference
-/// between this carrier and a terminal: a PTY guesses `Working` from the age of
+/// between this session protocol and a terminal: a PTY guesses `Working` from the age of
 /// the last byte, and this one counts turns against the results that closed
 /// them.
 struct ProtocolState {
@@ -523,7 +536,7 @@ impl AdkSession {
 
     /// Write one protocol line to the child's stdin, and return.
     ///
-    /// The whole of what this carrier says to its child — a turn, an interrupt
+    /// The whole of what this session says to its child — a turn, an interrupt
     /// — is one line on the same pipe, and both callers return on the write for
     /// the same reason: the daemon speaks to a session from under the app-wide
     /// state lock.
@@ -682,7 +695,7 @@ impl AgentSession for AdkSession {
         self.state.lock().unwrap().model.clone()
     }
 
-    /// Reported, never guessed — the difference this carrier exists for. A model
+    /// Reported, never guessed — the difference this session protocol exists for. A model
     /// that reasons for forty minutes without emitting a token is `Working` the
     /// whole time, because the turn it was given has not been answered.
     fn status(&self) -> AgentStatus {
@@ -693,7 +706,7 @@ impl AgentSession for AdkSession {
     }
 
     /// The age of the last protocol line. The same instrument the PTY answers
-    /// with its paint clock, reading the evidence this carrier actually has.
+    /// with its paint clock, reading the evidence a session protocol actually has.
     fn quiet_for(&self) -> Duration {
         Instant::now().saturating_duration_since(self.state.lock().unwrap().last_line)
     }
@@ -716,7 +729,7 @@ impl AgentSession for AdkSession {
 
     /// Close stdin, then kill and reap.
     ///
-    /// Stdin first because it is how this carrier is asked to leave — the child
+    /// Stdin first because it is how this child is asked to leave — the child
     /// runs turn after turn for exactly as long as its stdin is open. The kill
     /// and the reap follow regardless: killing without collecting the status
     /// leaks one zombie per session on a daemon that never restarts.
@@ -1048,12 +1061,7 @@ impl ProtocolReader {
     /// work, not the agent speaking.
     fn mint_task_updates(&self, summaries: Vec<String>) {
         for summary in summaries {
-            self.report(
-                AgentActivity::TaskUpdate {
-                    summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
-                },
-                None,
-            );
+            self.send_report(ActivityReport::bounded_task_update(&summary));
         }
     }
 
@@ -1247,15 +1255,18 @@ impl ProtocolReader {
     }
 
     fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
-        let reported = match parent_call_id {
+        self.send_report(match parent_call_id {
             None => ActivityReport::own_work(activity),
             Some(spawning_call_id) => ActivityReport {
                 activity,
                 parent_call_id: Some(spawning_call_id.to_string()),
             },
-        };
+        });
+    }
+
+    fn send_report(&self, report: ActivityReport) {
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
-            let _ = sender.send(reported);
+            let _ = sender.send(report);
         }
     }
 }
@@ -2611,8 +2622,9 @@ mod tests {
 
     fn context() -> HarnessContext {
         HarnessContext {
-            bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-            mcp_socket: "/tmp/build-mcp.sock".to_string(),
+            bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+            mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
+            state_root: PathBuf::from("/tmp/build-state"),
         }
     }
 
@@ -2626,7 +2638,9 @@ mod tests {
             model: Some("claude-fable-5-1".to_string()),
             effort: Some("high".to_string()),
         };
-        let spec = AdkHarness.spec(&choice, &spawn_options(), &context());
+        let spec = AdkHarness
+            .spec(&choice, &spawn_options(), &context())
+            .unwrap();
 
         assert_eq!(spec.binary, "claude");
         let args = spec.args.join(" ");
@@ -2649,14 +2663,16 @@ mod tests {
             "a submit key is how a prompt is typed into a line editor, and there is none here"
         );
 
-        let resumed = AdkHarness.spec(
-            &choice,
-            &SpawnOptions {
-                continue_session: true,
-                ..spawn_options()
-            },
-            &context(),
-        );
+        let resumed = AdkHarness
+            .spec(
+                &choice,
+                &SpawnOptions {
+                    continue_session: true,
+                    ..spawn_options()
+                },
+                &context(),
+            )
+            .unwrap();
         assert!(
             resumed.args.contains(&"--continue".to_string()),
             "a headless session picks the worktree's conversation back up: {:?}",
@@ -2670,18 +2686,20 @@ mod tests {
     /// asking for both is asking for two different conversations.
     #[test]
     fn a_recorded_session_id_is_resumed_by_name_instead_of_by_the_cwd_guess() {
-        let by_name = AdkHarness.spec(
-            &ModelChoice::default(),
-            &SpawnOptions {
-                // Both offered, exactly as the daemon offers them: the probe
-                // answers for every Build-owned checkout, and the record
-                // answers for an agent that has run before.
-                continue_session: true,
-                resume_session_id: Some("sess-adk".to_string()),
-                ..spawn_options()
-            },
-            &context(),
-        );
+        let by_name = AdkHarness
+            .spec(
+                &ModelChoice::default(),
+                &SpawnOptions {
+                    // Both offered, exactly as the daemon offers them: the probe
+                    // answers for every Build-owned checkout, and the record
+                    // answers for an agent that has run before.
+                    continue_session: true,
+                    resume_session_id: Some("sess-adk".to_string()),
+                    ..spawn_options()
+                },
+                &context(),
+            )
+            .unwrap();
         let args = by_name.args.join(" ");
         assert!(args.contains("--resume sess-adk"), "{args}");
         assert!(
@@ -2692,15 +2710,17 @@ mod tests {
         // And nothing recorded leaves the shipped fallback exactly as it was:
         // an agent whose session died before announcing itself must not be a
         // spawn that fails.
-        let by_guess = AdkHarness.spec(
-            &ModelChoice::default(),
-            &SpawnOptions {
-                continue_session: true,
-                resume_session_id: None,
-                ..spawn_options()
-            },
-            &context(),
-        );
+        let by_guess = AdkHarness
+            .spec(
+                &ModelChoice::default(),
+                &SpawnOptions {
+                    continue_session: true,
+                    resume_session_id: None,
+                    ..spawn_options()
+                },
+                &context(),
+            )
+            .unwrap();
         let args = by_guess.args.join(" ");
         assert!(args.contains("--continue"), "{args}");
         assert!(!args.contains("--resume"), "{args}");
@@ -2708,7 +2728,7 @@ mod tests {
 
     /// §2's dividend, held to: everything an agent says to Build arrives over
     /// the MCP socket, so the from-agent half of the interface needs zero work
-    /// for a new carrier — provided the wiring really is identical. This is
+    /// for a new provider — provided the wiring really is identical. This is
     /// what checks that it is.
     #[test]
     fn the_headless_spec_carries_exactly_the_interactive_mcp_wiring() {
@@ -2717,8 +2737,10 @@ mod tests {
             ..ModelChoice::default()
         };
         let options = spawn_options();
-        let headless = AdkHarness.spec(&choice, &options, &context());
-        let interactive = ClaudeHarness.spec(&ModelChoice::default(), &options, &context());
+        let headless = AdkHarness.spec(&choice, &options, &context()).unwrap();
+        let interactive = ClaudeHarness
+            .spec(&ModelChoice::default(), &options, &context())
+            .unwrap();
 
         assert_eq!(
             headless.env, interactive.env,
@@ -2726,7 +2748,7 @@ mod tests {
         );
         assert_eq!(
             headless.unset, interactive.unset,
-            "an agent Build spawns is its own session on either carrier"
+            "an agent Build spawns is its own session on either provider"
         );
         let mcp_args = |spec: &HarnessSpec| -> Vec<String> {
             spec.args
@@ -2747,10 +2769,10 @@ mod tests {
     }
 
     /// The catalog, the trust registry and the transcripts belong to the CLI,
-    /// not to the carrier — it is the same claude, the same account and the
+    /// not to the session protocol — it is the same claude, the same account and the
     /// same `~/.claude/projects`. Only the terminal answer differs.
     #[test]
-    fn the_headless_provider_is_claude_in_every_way_but_its_carrier() {
+    fn the_headless_provider_is_claude_in_every_way_but_its_io() {
         assert_eq!(
             AdkHarness.models().len(),
             ClaudeHarness.models().len(),
@@ -2771,27 +2793,19 @@ mod tests {
             AdkHarness.has_transcript(home.path(), cwd),
             "a headless session writes the transcripts the TUI does, so a resume finds them"
         );
-
-        assert!(
-            !AdkHarness.has_terminal(),
-            "and the one thing that does differ: no basement"
-        );
     }
 
-    /// The two capabilities are alternatives, and this carrier takes the second
-    /// one: it reports its own reasoning and tool calls, so there is nothing for
-    /// a human to escape to.
     #[test]
-    fn a_reporting_session_has_no_terminal_and_offers_its_activity() {
+    fn a_reporting_session_matches_its_harness_capability() {
         let session = open(&stream_json_harness(&[RESULT]));
-        assert!(session.terminal().is_none());
-        assert!(session.activity().is_some());
+        assert_eq!(session.terminal().is_some(), AdkHarness.has_terminal());
+        assert_eq!(session.activity().is_some(), !AdkHarness.has_terminal());
         session.end();
     }
 
     /// `Starting` is not a guess here. The child is forked long before it can
     /// take a turn, and the init line is the moment it can — so the status the
-    /// PTY could never report is exactly what this carrier reads off the wire.
+    /// PTY could never report is exactly what this session protocol reads off the wire.
     #[test]
     fn status_is_starting_until_the_session_reports_init() {
         let session = open(&stream_json_harness(&[RESULT]));
@@ -2826,12 +2840,12 @@ mod tests {
         session.end();
     }
 
-    /// The turn boundary the whole carrier exists for: a model reasoning in
+    /// The turn boundary the whole session protocol exists for: a model reasoning in
     /// silence is still working, and only its result line says otherwise.
     #[test]
     fn a_turn_is_working_until_its_result_line_arrives() {
         // This fake takes its time answering and says NOTHING while it does —
-        // the silence the terminal carrier could only read as "waiting for you".
+        // the silence a terminal could only read as "waiting for you".
         let session = open(&HarnessSpec::new("sh").arg("-c").arg(format!(
             "printf '%s\\n' '{INIT}'\nwhile IFS= read -r turn; do sleep 0.4; printf '%s\\n' '{RESULT}'; done\n"
         )));
@@ -2858,7 +2872,7 @@ mod tests {
 
     /// A turn handed over mid-turn is absorbed by the one already running, and
     /// the child answers both with a single result. The session has to end that
-    /// turn on it: a carrier that kept waiting for a second result would report
+    /// turn on it: a session that kept waiting for a second result would report
     /// `Working` forever, and `Working` is what stops the idle sweep from ever
     /// explaining an agent that quietly stopped.
     #[test]
@@ -3685,7 +3699,7 @@ mod tests {
         session.end();
     }
 
-    /// The reap lag, from the other carrier's test: a dying child closes its
+    /// The reap lag, from the terminal's test: a dying child closes its
     /// pipes before its exit status is reapable, so the caller deciding whether
     /// a failed write means "crashed" rather than "wedged" waits it out here.
     #[test]
@@ -3725,7 +3739,7 @@ mod tests {
     }
 
     /// `send_turn` returns on the WRITE. The daemon's in-place nudge speaks from
-    /// under the app-wide state lock, so a carrier that waited on the model here
+    /// under the app-wide state lock, so a session that waited on the model here
     /// would stall every RPC, every pump and the idle sweep with it.
     #[test]
     fn send_turn_returns_on_the_write_even_when_the_child_never_answers() {
@@ -3798,7 +3812,7 @@ mod tests {
         silent.send_turn(&Turn::new("drop the index")).unwrap();
         assert!(
             !silent.can_interrupt(),
-            "a turn is open, so a false flag here is the carrier's refusal"
+            "a turn is open, so a false flag here is the session's refusal"
         );
         assert!(matches!(
             silent.interrupt(),
@@ -3880,7 +3894,7 @@ mod tests {
         );
         assert!(
             !said.contains("Esc"),
-            "and never sends anyone to a terminal this carrier does not have: {said}"
+            "and never sends anyone to a terminal this session does not have: {said}"
         );
 
         session
@@ -4038,7 +4052,7 @@ mod tests {
     }
 
     /// The quiet clock is the minutes-scale anomaly instrument the idle sweep
-    /// demotes on, and for this carrier it reads protocol lines rather than
+    /// demotes on, and for a session protocol it reads protocol lines rather than
     /// paint — the last thing the session actually said.
     #[test]
     fn quiet_for_reads_the_age_of_the_last_protocol_line() {

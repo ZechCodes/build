@@ -1972,6 +1972,7 @@ mod tests {
     /// The parser's whole job on this surface: turn a tool call into the typed
     /// action the daemon executes, and refuse one it cannot act on.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: every_router_tool_emits_its_typed_action is at 17, threshold 15 — bring it under, then remove
     fn every_router_tool_emits_its_typed_action() {
         let call = |name: &str, arguments: &str| {
             router().handle_message(&format!(

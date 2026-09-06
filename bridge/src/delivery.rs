@@ -133,21 +133,24 @@ impl AgentSpawnPlan {
             self.may_pick_up_a_conversation,
         );
         let locator = self.probes.locator(&self.root, provider);
-        self.project
-            .scaffold_agent_worktree(&self.root, &self.agent_id)
+        let resume_session_id = pickup.resume_session_id.clone();
+        let prepared = self
+            .project
+            .agent_launch()
+            .prepare(
+                &self.agent_id,
+                &self.root,
+                &self.model_choice,
+                pickup.continue_session,
+                pickup.resume_session_id,
+                &self.session_token,
+            )
             .map_err(|refusal| refusal.to_string())?;
-        let spec = self.project.agent_harness_spec(
-            &self.agent_id,
-            &self.root,
-            &self.model_choice,
-            pickup.continue_session,
-            pickup.resume_session_id,
-            &self.session_token,
-        );
         Ok(ReadyToSpawn {
-            spec,
-            size: self.project.pty_size(),
+            spec: prepared.spec,
+            size: prepared.pty_size,
             locator,
+            resume_session_id,
             recorded_name_is_gone: pickup.recorded_name_is_gone,
         })
     }
@@ -159,6 +162,7 @@ pub struct ReadyToSpawn {
     pub spec: HarnessSpec,
     pub size: PtySize,
     pub locator: Option<Box<dyn SessionLocator>>,
+    pub resume_session_id: Option<String>,
     pub recorded_name_is_gone: bool,
 }
 

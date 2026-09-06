@@ -45,6 +45,7 @@ const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.
 
 const shownByAMove = (live, name) => MOVED_PROPERTIES.includes(name) && live.hasAttribute("data-motion");
 
+// eslint-disable-next-line complexity -- ratchet: patchAttributes is at 16, cap 10 — reduce it, then drop this line
 function patchAttributes(live, next) {
   // A picture the browser already loaded keeps the bytes it holds: the renderer
   // leaves `src` out when it does not know the bytes yet, never to take the

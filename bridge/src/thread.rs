@@ -4793,6 +4793,7 @@ mod doc_comment_tests {
     /// A plan-doc comment is a post like any other: an anchored user message on
     /// the conversation, not a record beside it.
     #[test]
+    #[allow(clippy::cognitive_complexity)] // ratchet: a_doc_comment_is_an_anchored_post_on_the_conversation is at 19, threshold 15 — bring it under, then remove
     fn a_doc_comment_is_an_anchored_post_on_the_conversation() {
         let thread = commented_stage();
         assert_eq!(thread.items.len(), 1, "{:?}", thread.items);

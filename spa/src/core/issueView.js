@@ -110,6 +110,7 @@ export function docAnnotatable(stage, paneState) {
  * the host keep the URL on the open stage; `onGone()` is called when the issue
  * no longer exists.
  */
+// eslint-disable-next-line complexity -- ratchet: mountIssueView is at 12, cap 10 — reduce it, then drop this line
 export function mountIssueView(
   container,
   {
@@ -233,6 +234,7 @@ export function mountIssueView(
     container.onclick = handleClick;
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const render = () => {
     if (disposed || gone || !issue) return;
     if (!container.querySelector(".ivsplit")) paintSkeleton();
@@ -525,6 +527,7 @@ export function mountIssueView(
   /** The open stage's own actions: approve its plan while it is still planned,
    *  send its open comments back for a revision, implement just this stage, send
    *  a failed one back to fix, and read a completed stage's stable diff. */
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 20, cap 10 — reduce it, then drop this line
   const wireStageActions = (viewerHost, stage) => {
     const actions = viewerHost.querySelector("#stageactions");
     const stageHint = viewerHost.querySelector("#stagehint");
@@ -705,6 +708,7 @@ export function mountIssueView(
 
   /** One pass of the surface's payloads. `force` bypasses the freeze (a repaint
    *  after the user's own action must land). */
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 30, cap 10 — reduce it, then drop this line
   const load = async (force = false) => {
     if (disposed || gone) return;
     let payload;

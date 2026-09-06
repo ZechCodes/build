@@ -6,10 +6,20 @@ from uuid import UUID
 
 from litestar import Request
 from litestar.exceptions import NotAuthorizedException
+from litestar.response import Redirect
 
 from skrift.auth.session_keys import SESSION_USER_ID
 
 DESKTOP_USER_STATE_KEY = "build_user_id"
+LOGIN_PATH_TEMPLATE = "/auth/login?next={next_path}"
+
+
+def login_redirect(next_path: str) -> Redirect:
+    """Hand the visitor to Skrift's login and get them back to ``next_path``. Skrift
+    stores ``next`` in its own session key and honours it after a sign-in AND after a
+    passkey account creation, so a guest with no account yet makes one and lands where
+    they were headed."""
+    return Redirect(LOGIN_PATH_TEMPLATE.format(next_path=next_path))
 
 
 def session_user_id(request: Request) -> UUID | None:

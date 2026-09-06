@@ -18,8 +18,8 @@ use portable_pty::PtySize;
 use serde_json::{json, Value};
 
 use crate::app::b64encode;
+use crate::carrier::SessionSender;
 use crate::harness::{AgentSession, TerminalView};
-use crate::relay::SessionSender;
 
 /// Authoritative server-side screen: vt100 model + attach list + coalescing
 /// buffer + the monotonic byte cursor. Snapshot resync, not byte replay. One
@@ -939,7 +939,7 @@ mod tests {
 
     /// Drain every decrypted push a test sender has captured so far.
     fn drain_pushes(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         session_key: &str,
     ) -> Vec<Value> {
         let mut seen = Vec::new();
@@ -960,7 +960,7 @@ mod tests {
 
     fn flooded_screen() -> (
         TermScreen,
-        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         String,
     ) {
         let (sender, pushes, session_key) = SessionSender::observable("flood-client");
@@ -1118,7 +1118,7 @@ mod tests {
     /// One client's capture: everything the bridge pushed to it, and the
     /// session key those pushes decrypt with.
     type ClientCapture = (
-        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         String,
     );
 

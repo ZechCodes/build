@@ -122,9 +122,12 @@ pub fn outbound_channel() -> (Outbound, OutboundReceiver) {
 ///   `RELAY_API_URL`, then `http://127.0.0.1:8080` for dev).
 /// - `RELAY_INTERNAL_SECRET` — sent as `X-Internal-Secret` on every api call; unset or
 ///   blank means dev mode where the api trusts localhost instead.
-/// - `RELAY_DEVICE_LIVENESS_S` — sever a device that sends no frame for this long
-///   (default `3 × HEARTBEAT_INTERVAL_S`). A wedged bridge that stops reading and
-///   writing must be deregistered and reported offline, not stay "online" forever.
+/// - `RELAY_DEVICE_LIVENESS_S` — sever a device that sends no frame, or a peer of
+///   either kind that answers no ping, for this long (default
+///   `3 × HEARTBEAT_INTERVAL_S`). A wedged bridge that stops reading and writing
+///   must be deregistered and reported offline, not stay "online" forever; a
+///   browser that is gone while a load balancer keeps its TCP connection
+///   established must not stay a client forever either.
 /// - `RELAY_WRITE_STALL_S` — a single WebSocket write blocked this long means the
 ///   peer stopped reading; the connection is severed (default 30).
 #[derive(Debug, Clone, PartialEq, Eq)]

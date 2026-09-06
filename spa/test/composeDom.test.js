@@ -344,7 +344,12 @@ describe("the advanced panel", () => {
     $("#compose-project").dispatchEvent(new Event("change", { bubbles: true }));
     $("#compose-manual-go").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("issue.create", { goal: "add a /health endpoint", project_id: "p2", dispatch: false });
+    expect(App.call).toHaveBeenCalledWith("issue.create", {
+      goal: "add a /health endpoint",
+      project_id: "p2",
+      dispatch: false,
+      provider: "claude",
+    });
     expect(App.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
     expect(location.hash).toBe("#/project/p1/issue/iss-3");
   });
@@ -385,6 +390,30 @@ describe("the advanced panel", () => {
     await flush();
     expect($(".compose-box")).toBeNull();
     expect(location.hash).toBe("");
+  });
+
+  it("dispatches an untouched branch with the agent displayed when the account default is not offered", async () => {
+    App.modelCatalog = {
+      default_provider: "pi",
+      providers: [
+        { id: "pi", label: "Pi", models: [], efforts: [] },
+        { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
+        { id: "codex", label: "Codex", models: [], efforts: [] },
+      ],
+    };
+    openAdvanced();
+    type("#compose-text", "finish the redirect");
+    $('[data-compose-kind="branch"]').click();
+    type("#compose-branch", "build/login");
+    expect($("#compose-choice-provider").value).toBe("claude_adk");
+    $("#compose-manual-go").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("branch.dispatch", {
+      project_id: "p1",
+      instruction: "finish the redirect",
+      branch: "build/login",
+      provider: "claude_adk",
+    });
   });
 
   it("says what the daemon refused, and keeps what was typed", async () => {

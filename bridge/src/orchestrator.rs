@@ -677,10 +677,9 @@ pub struct SpawnOptions {
     ///
     /// An alternative to `continue_session`, never a companion: this names the
     /// exact conversation Build was speaking to, and `--continue` guesses the
-    /// newest one in the cwd. Every carrier can carry a name — a protocol one
-    /// announces it, a terminal one has it read out of the harness's own
-    /// transcript tree — so the field is carrier-neutral in fact, not only in
-    /// shape.
+    /// newest one in the cwd. Every carrier can carry a name: a protocol
+    /// announces it, while a terminal either knows it at launch or locates it
+    /// from durable harness records.
     pub resume_session_id: Option<String>,
     /// Entity whose per-session MCP server receives the terminal `done` report.
     pub owner_id: String,
@@ -700,8 +699,9 @@ pub struct SpawnOptions {
 /// The prompt is supplied so test and custom adapters can inspect the turn being
 /// dispatched, but it is always submitted through the tab's PTY, never baked
 /// into argv.
-pub type WarmBuilder =
-    std::sync::Arc<dyn Fn(&str, &ModelChoice, &SpawnOptions) -> HarnessSpec + Send + Sync>;
+pub type WarmBuilder = std::sync::Arc<
+    dyn Fn(&str, &ModelChoice, &SpawnOptions) -> Result<HarnessSpec, HarnessError> + Send + Sync,
+>;
 
 /// Whether the harness has an existing conversation transcript for a worktree
 /// cwd — the one question `--continue` turns on. Its whole job is picking a
@@ -962,6 +962,145 @@ pub enum Agent {
     WarmBuilder(WarmBuilder),
 }
 
+fn run_git(dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
+    let out = Command::new("git").args(args).current_dir(dir).output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .filter(|line| !line.is_empty())
+            .collect();
+        return Err(OrchestratorError::Git(format!(
+            "git {args:?}: {}",
+            detail.join("\n")
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Owned inputs for constructing one agent process. Cloning this under the app
+/// lock lets every filesystem and provider setup step run after that lock is
+/// released.
+#[derive(Clone)]
+pub(crate) struct AgentLaunch {
+    repo_path: PathBuf,
+    bridge_exe: PathBuf,
+    agent: Agent,
+    pty_size: PtySize,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedAgentLaunch {
+    pub(crate) spec: HarnessSpec,
+    pub(crate) pty_size: PtySize,
+}
+
+impl AgentLaunch {
+    /// Make the worktree launch-ready and return everything the app needs to
+    /// spawn it. The ordered scaffold/spec boundary stays inside this operation.
+    pub(crate) fn prepare(
+        &self,
+        owner_id: &str,
+        cwd: &Path,
+        model_choice: &ModelChoice,
+        continue_session: bool,
+        resume_session_id: Option<String>,
+        mcp_session_token: &str,
+    ) -> Result<PreparedAgentLaunch, OrchestratorError> {
+        self.scaffold_agent_worktree(cwd, owner_id)?;
+        let options = SpawnOptions {
+            continue_session,
+            resume_session_id,
+            owner_id: owner_id.to_string(),
+            mcp_session_token: mcp_session_token.to_string(),
+            cwd: cwd.to_path_buf(),
+        };
+        let spec = match &self.agent {
+            Agent::Warm(spec) => Ok(spec.clone()),
+            Agent::WarmBuilder(build) => build("", model_choice, &options),
+        }?;
+        Ok(PreparedAgentLaunch {
+            spec,
+            pty_size: self.pty_size,
+        })
+    }
+
+    fn scaffold_agent_worktree(
+        &self,
+        worktree_path: &Path,
+        owner_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        self.write_build_dir(worktree_path, owner_id)
+    }
+
+    fn is_primary_checkout(&self, path: &Path) -> bool {
+        let canonical =
+            |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        canonical(path) == canonical(&self.repo_path)
+    }
+
+    fn exclude_build_machinery_repo_locally(&self) -> Result<(), OrchestratorError> {
+        const RULES: [&str; 2] = [".build/mcp*.json", ".build/attachments/"];
+        let git_dir = run_git(&self.repo_path, &["rev-parse", "--git-common-dir"])?
+            .trim()
+            .to_string();
+        let git_dir = self.repo_path.join(git_dir);
+        let exclude_path = git_dir.join("info").join("exclude");
+        let existing = match std::fs::read_to_string(&exclude_path) {
+            Ok(existing) => existing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let missing: Vec<&str> = RULES
+            .into_iter()
+            .filter(|rule| !existing.lines().any(|line| line.trim() == *rule))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(git_dir.join("info"))?;
+        let mut updated = existing;
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str("# Build's machine-local agent plumbing\n");
+        for rule in missing {
+            updated.push_str(rule);
+            updated.push('\n');
+        }
+        crate::store::write_file_atomically(&exclude_path, &updated)?;
+        Ok(())
+    }
+
+    fn write_build_dir(
+        &self,
+        worktree_path: &Path,
+        owner_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        let build_dir = worktree_path.join(".build");
+        std::fs::create_dir_all(&build_dir)?;
+        if self.is_primary_checkout(worktree_path) {
+            self.exclude_build_machinery_repo_locally()?;
+        } else {
+            std::fs::write(build_dir.join(".gitignore"), "mcp*.json\nattachments/\n")?;
+        }
+        let mcp = serde_json::json!({
+            "mcpServers": {
+                "build": {
+                    "command": self.bridge_exe.to_string_lossy(),
+                    "args": ["mcp", "--task", owner_id]
+                }
+            }
+        });
+        std::fs::write(
+            build_dir.join(mcp_config_name(owner_id)),
+            serde_json::to_string_pretty(&mcp)?,
+        )?;
+        Ok(())
+    }
+}
+
 /// Owns project configuration and drives plans and runs through their
 /// lifecycles.
 ///
@@ -976,9 +1115,8 @@ pub struct Orchestrator {
     /// issue. Outside the repo: planning writes no files into the checkout it
     /// runs in.
     plan_docs_root: PathBuf,
-    agent: Agent,
+    launch: AgentLaunch,
     templates: Templates,
-    pty_size: PtySize,
 }
 
 impl Orchestrator {
@@ -987,74 +1125,33 @@ impl Orchestrator {
         worktrees_root: impl Into<PathBuf>,
         agent: Agent,
         templates: Templates,
+        bridge_exe: PathBuf,
     ) -> Self {
         let repo_path = repo_path.into();
         let worktrees_root = worktrees_root.into();
         let worktrees = WorktreeManager::new(repo_path.clone(), worktrees_root.clone());
         let plan_docs_root = worktrees_root.join(".issue-docs");
         Orchestrator {
-            repo_path,
+            repo_path: repo_path.clone(),
             worktrees,
             plan_docs_root,
-            agent,
-            templates,
-            pty_size: PtySize {
-                rows: 40,
-                cols: 120,
-                pixel_width: 0,
-                pixel_height: 0,
+            launch: AgentLaunch {
+                repo_path,
+                bridge_exe,
+                agent,
+                pty_size: PtySize {
+                    rows: 40,
+                    cols: 120,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                },
             },
+            templates,
         }
     }
 
-    /// The grid an agent PTY is spawned at (40 × 120). Attaching clients resize
-    /// it to their own viewport; this is what it paints into until one does.
-    pub fn pty_size(&self) -> PtySize {
-        self.pty_size
-    }
-
-    /// The harness command for an agent tab rooted at `cwd` and owned by
-    /// `owner_id`. The MCP socket lives inside the [`Agent::WarmBuilder`]
-    /// closure, so this is the only way the app layer can build a spec that
-    /// reaches Build's `done` / `read_unread_messages` server.
-    ///
-    /// The builder is handed an empty prompt on purpose: the prompt is never
-    /// baked into argv — every turn travels through the PTY.
-    pub fn agent_harness_spec(
-        &self,
-        owner_id: &str,
-        cwd: &Path,
-        model_choice: &ModelChoice,
-        continue_session: bool,
-        resume_session_id: Option<String>,
-        mcp_session_token: &str,
-    ) -> HarnessSpec {
-        let options = SpawnOptions {
-            continue_session,
-            resume_session_id,
-            owner_id: owner_id.to_string(),
-            mcp_session_token: mcp_session_token.to_string(),
-            cwd: cwd.to_path_buf(),
-        };
-        match &self.agent {
-            // A fixed warm harness (the QA agent) is provider-unaware: it takes
-            // its prompt over the PTY and needs no SpawnOptions.
-            Agent::Warm(spec) => spec.clone(),
-            Agent::WarmBuilder(build) => build("", model_choice, &options),
-        }
-    }
-
-    /// Write `.build/mcp.json` + `.build/.gitignore` into a worktree that is
-    /// about to host an agent. Idempotent, and required before every spawn:
-    /// under `--strict-mcp-config` claude exits before reading a byte of the
-    /// prompt when the config is missing, so a worktree that never hosted a run
-    /// (or whose `.build/` was deleted) would open a tab that paints nothing.
-    pub fn scaffold_agent_worktree(
-        &self,
-        worktree_path: &Path,
-        owner_id: &str,
-    ) -> Result<(), OrchestratorError> {
-        self.write_build_dir(worktree_path, owner_id)
+    pub(crate) fn agent_launch(&self) -> AgentLaunch {
+        self.launch.clone()
     }
 
     // ---- Plan seams (Plan/Run split) --------------------------------------
@@ -1158,7 +1255,8 @@ impl Orchestrator {
         // The stage-doc directory is made up front so the agent only ever has
         // to write files into a directory that is already there.
         std::fs::create_dir_all(workspace.docs_dir.join(templates::STAGES_DIR))?;
-        self.write_build_dir(&workspace.checkout, plan_id)?;
+        self.launch
+            .scaffold_agent_worktree(&workspace.checkout, plan_id)?;
         if !dir_holds_a_file(&workspace.docs_dir) {
             match store.materialize_plan_docs(plan_id, &workspace.docs_dir) {
                 Ok(()) | Err(crate::store::StoreError::NoStoredDocs { .. }) => {}
@@ -1538,21 +1636,32 @@ impl Orchestrator {
         &self,
         slug: &str,
         base_branch: &str,
-    ) -> Result<Worktree, OrchestratorError> {
+    ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
         Ok(self.worktrees.create(slug, base_branch)?)
     }
 
-    /// The same bare checkout, on a branch the caller named in full. Used when
-    /// a dispatch was given a branch name rather than words to name one after:
-    /// the name is a name, so it is cut exactly as given, `build/` or not — and
-    /// an existing branch is checked out rather than cut a second time, which
-    /// is what the answer's `branch_was_cut` tells teardown.
-    pub fn create_worktree_on_named_branch(
+    /// The same bare checkout, on a branch that already exists — here or on a
+    /// remote. A name no ref anywhere backs is refused, never cut.
+    pub fn create_worktree_on_existing_branch(
         &self,
         branch: &str,
         base_branch: &str,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self.worktrees.create_on_branch(branch, base_branch)?)
+        Ok(self
+            .worktrees
+            .create_on_existing_branch(branch, base_branch)?)
+    }
+
+    /// The same bare checkout, on a branch the caller named in full and means
+    /// to start: an existing branch is checked out rather than cut a second
+    /// time over the work it holds, and a name nothing backs is cut from the
+    /// base exactly as it was given.
+    pub fn create_worktree_cutting_named_branch(
+        &self,
+        branch: &str,
+        base_branch: &str,
+    ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
+        Ok(self.worktrees.create_cutting_branch(branch, base_branch)?)
     }
 
     /// Where the checkout for `slug` will go if nothing is in its way. The
@@ -1611,7 +1720,7 @@ impl Orchestrator {
         run_id: &str,
         store: &Store,
     ) -> Result<PreparedImplementation, OrchestratorError> {
-        let worktree = self.worktrees.create(&issue.slug, base_branch)?;
+        let worktree = self.worktrees.create(&issue.slug, base_branch)?.worktree;
         let prepared = self.scaffold_build_dir(&worktree, run_id).and_then(|()| {
             self.materialize_and_commit_plan_docs(
                 &issue.plan_id,
@@ -2799,8 +2908,12 @@ impl Orchestrator {
 
     /// Recreate a missing native implementation checkout from its exact
     /// persisted branch, using the verified local ref first and origin second.
-    pub fn restore_run_worktree(&self, worktree: &Worktree) -> Result<Worktree, OrchestratorError> {
-        Ok(self.worktrees.restore(worktree)?)
+    pub fn restore_run_worktree(
+        &self,
+        worktree: &Worktree,
+        when_unregistered: crate::worktree::UnregisteredRestore,
+    ) -> Result<Worktree, OrchestratorError> {
+        Ok(self.worktrees.restore(worktree, when_unregistered)?)
     }
 
     /// Best-effort teardown of a leftover checkout: the directory always, and
@@ -2813,7 +2926,12 @@ impl Orchestrator {
     /// checked out a branch somebody else made must hand that branch back
     /// whole.
     pub fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
-        if let Err(e) = self.worktrees.remove(worktree, keep_branch) {
+        let removed = if keep_branch {
+            self.worktrees.remove_keeping_branch(worktree)
+        } else {
+            self.worktrees.remove(worktree)
+        };
+        if let Err(e) = removed {
             eprintln!(
                 "discard_checkout {} (keep_branch {keep_branch}): {e}",
                 worktree.name
@@ -2937,113 +3055,8 @@ impl Orchestrator {
         worktree: &Worktree,
         owner_id: &str,
     ) -> Result<(), OrchestratorError> {
-        self.write_build_dir(&worktree.path, owner_id)
-    }
-
-    /// The scaffold itself, over a bare path — an agent tab may be opened in a
-    /// worktree Build has no [`Worktree`] record for yet.
-    /// Whether a path is this project's primary checkout. Compared canonically:
-    /// the same directory reaches this call spelled both ways (a caller's
-    /// canonicalized tab root, and the repo path as configured).
-    fn is_primary_checkout(&self, path: &Path) -> bool {
-        let canonical =
-            |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        canonical(path) == canonical(&self.repo_path)
-    }
-
-    /// Teach this repository — every worktree of it — to ignore Build's own
-    /// machinery, through `.git/info/exclude`: local, never committed, and the
-    /// only ignore file that can hold a rule for the primary checkout without
-    /// putting a file in the human's tree. Idempotent: a rule already there is
-    /// left alone.
-    ///
-    /// The file is the human's, and every planning workspace of this project
-    /// appends to it with the app mutex released, so two Issues planned at once
-    /// are two writers of one file. The replacement is atomic for that reason:
-    /// a writer that read a stale file rewrites the same two rules, never a
-    /// shortened copy of the human's own.
-    fn exclude_build_machinery_repo_locally(&self) -> Result<(), OrchestratorError> {
-        const RULES: [&str; 2] = [".build/mcp*.json", ".build/attachments/"];
-        let git_dir = self
-            .git(&self.repo_path, &["rev-parse", "--git-common-dir"])?
-            .trim()
-            .to_string();
-        let git_dir = self.repo_path.join(git_dir);
-        let exclude_path = git_dir.join("info").join("exclude");
-        let existing = std::fs::read_to_string(&exclude_path).unwrap_or_default();
-        let missing: Vec<&str> = RULES
-            .into_iter()
-            .filter(|rule| !existing.lines().any(|line| line.trim() == *rule))
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        std::fs::create_dir_all(git_dir.join("info"))?;
-        let mut updated = existing;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str("# Build's machine-local agent plumbing\n");
-        for rule in missing {
-            updated.push_str(rule);
-            updated.push('\n');
-        }
-        crate::store::write_file_atomically(&exclude_path, &updated)?;
-        Ok(())
-    }
-
-    fn write_build_dir(
-        &self,
-        worktree_path: &Path,
-        owner_id: &str,
-    ) -> Result<(), OrchestratorError> {
-        let build_dir = worktree_path.join(".build");
-        std::fs::create_dir_all(&build_dir)?;
-        // A hard guard so the AGENT's own commits can never capture mcp.json: the
-        // build templates now instruct the agent to commit its work, and a routine
-        // `git add -A` would otherwise stage this machine-local config (absolute
-        // exe path, per-task identity) into the branch — leaking the local path
-        // into base history and add/add-conflicting against every other task's
-        // copy. Build's own sweep already excludes it via pathspec; this ignore
-        // closes the agent path too. `.build/plan/*` stays committable (the
-        // gitignore itself rides Build's sweep, so the rule persists on-branch).
-        //
-        // `attachments/` is held back for the same reason and one more: files
-        // the reviewer sent with a message are conversation, not work, so they
-        // must not appear as an uncommitted change in the diff being reviewed.
-        //
-        // The primary checkout is the exception: it is the human's own tree and
-        // the one every merge lands in, and an untracked `.build/.gitignore`
-        // there refuses to be overwritten by any branch that carries one —
-        // which is every branch Build materializes docs on. Its rules go in the
-        // repo-local exclude file instead, where they cover the whole repo and
-        // nothing has to be written into the tree to hold them.
-        if self.is_primary_checkout(worktree_path) {
-            self.exclude_build_machinery_repo_locally()?;
-        } else {
-            std::fs::write(build_dir.join(".gitignore"), "mcp*.json\nattachments/\n")?;
-        }
-        // Absolute path to this binary so the harness can spawn it regardless of PATH.
-        let exe = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.to_str().map(String::from))
-            .unwrap_or_else(|| "build-bridge".to_string());
-        let mcp = serde_json::json!({
-            "mcpServers": {
-                "build": {
-                    "command": exe,
-                    "args": ["mcp", "--task", owner_id]
-                }
-            }
-        });
-        // Per owner, not per worktree: two agents can share one checkout, and
-        // each must report as itself — one shared `mcp.json` would give the
-        // second agent's identity to the first.
-        std::fs::write(
-            build_dir.join(mcp_config_name(owner_id)),
-            serde_json::to_string_pretty(&mcp)?,
-        )?;
-        Ok(())
+        self.launch
+            .scaffold_agent_worktree(&worktree.path, owner_id)
     }
 
     fn commit_all(&self, worktree_path: &Path, goal: &str) -> Result<(), OrchestratorError> {
@@ -3107,22 +3120,7 @@ impl Orchestrator {
     }
 
     fn git(&self, dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
-        let out = Command::new("git").args(args).current_dir(dir).output()?;
-        if !out.status.success() {
-            // git splits its story across streams (a conflicting merge reports
-            // "CONFLICT …" on stdout); surface both so the user sees why.
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .collect();
-            return Err(OrchestratorError::Git(format!(
-                "git {args:?}: {}",
-                detail.join("\n")
-            )));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        run_git(dir, args)
     }
 }
 
@@ -3171,6 +3169,7 @@ mod tests {
             dir.path().join("worktrees"),
             Agent::Warm(warm_harness()),
             Templates::default(),
+            std::fs::canonicalize(repo.join("README.md")).unwrap(),
         )
     }
 
@@ -3199,7 +3198,9 @@ mod tests {
                 let orch = std::sync::Arc::clone(&orch);
                 let repo = repo.clone();
                 std::thread::spawn(move || {
-                    orch.write_build_dir(&repo, &format!("plan-{i}")).unwrap();
+                    orch.launch
+                        .write_build_dir(&repo, &format!("plan-{i}"))
+                        .unwrap();
                 })
             })
             .collect();
@@ -3237,6 +3238,110 @@ mod tests {
             leftovers.is_empty(),
             "temp files left beside exclude: {leftovers:?}"
         );
+    }
+
+    /// A checkout whose directory a human already removed still says whose
+    /// branch it is: the answer lives beside the registration in the main
+    /// repository, not behind the pointer in the missing directory. Reading it
+    /// through the pointer left the registration and the branch behind.
+    #[test]
+    fn discarding_a_checkout_whose_directory_is_gone_still_takes_its_branch() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let worktree = orch
+            .create_bare_worktree("vanished", "main")
+            .unwrap()
+            .worktree;
+        std::fs::remove_dir_all(&worktree.path).unwrap();
+
+        orch.discard_checkout(&worktree, false);
+
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_worktree("vanished")
+                .err()
+                .map(|error| error.code() == git2::ErrorCode::NotFound)
+                .unwrap_or(false),
+            "the stale registration is pruned"
+        );
+        assert!(
+            r.find_branch("build/vanished", git2::BranchType::Local)
+                .is_err(),
+            "the branch Build cut goes with it"
+        );
+    }
+
+    #[test]
+    fn agent_launch_prepares_scaffolding_spec_and_pty_size_as_one_value() {
+        let (dir, repo) = init_repo();
+        let worktree = dir.path().join("prepared-worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let agent = Agent::WarmBuilder(std::sync::Arc::new(|_, _, options| {
+            assert!(
+                options
+                    .cwd
+                    .join(mcp_config_path(&options.owner_id))
+                    .exists(),
+                "the scaffold must exist before the fallible harness builder runs"
+            );
+            Ok(HarnessSpec::new("prepared-harness"))
+        }));
+        let orchestrator = Orchestrator::new(
+            repo.clone(),
+            dir.path().join("worktrees"),
+            agent,
+            Templates::default(),
+            std::fs::canonicalize(repo.join("README.md")).unwrap(),
+        );
+
+        let prepared = orchestrator
+            .agent_launch()
+            .prepare(
+                "agent-prepared",
+                &worktree,
+                &ModelChoice::default(),
+                false,
+                None,
+                "token",
+            )
+            .unwrap();
+
+        assert_eq!(prepared.spec.binary, "prepared-harness");
+        assert_eq!(prepared.pty_size.rows, 40);
+        assert_eq!(prepared.pty_size.cols, 120);
+    }
+
+    #[test]
+    fn prepared_agent_launch_preserves_setup_errors() {
+        let (dir, repo) = init_repo();
+        let worktree = dir.path().join("failed-worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let agent = Agent::WarmBuilder(std::sync::Arc::new(|_, _, _| {
+            Err(HarnessError::Setup("injected Pi setup failure".to_string()))
+        }));
+        let orchestrator = Orchestrator::new(
+            repo.clone(),
+            dir.path().join("worktrees"),
+            agent,
+            Templates::default(),
+            std::fs::canonicalize(repo.join("README.md")).unwrap(),
+        );
+        let error = orchestrator
+            .agent_launch()
+            .prepare(
+                "agent-fail",
+                &worktree,
+                &ModelChoice::default(),
+                false,
+                None,
+                "token",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            OrchestratorError::Harness(HarnessError::Setup(message))
+                if message == "injected Pi setup failure"
+        ));
     }
 
     fn done(phase: DonePhase, status: DoneStatus, plan_path: Option<&str>) -> DoneReport {
@@ -5620,6 +5725,7 @@ mod tests {
             dir.path().join("worktrees2"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            std::fs::canonicalize(repo.join("README.md")).unwrap(),
         );
         let plan = approved_multi_stage_plan(&orch2, &store, "plan-1", 2);
         let mut run = dispatch_planned_run(&orch2, &store, &plan, "run-1");

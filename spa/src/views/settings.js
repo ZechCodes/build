@@ -5,7 +5,9 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { refreshDevices } from "../devices.js";
-import { revokeDevice } from "../api.js";
+import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
+import { currentPlatformKey } from "../core/platform.js";
+import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openBrowser } from "../sheets/browser.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
@@ -79,6 +81,11 @@ export async function renderSettings() {
         <span class="dim" id="pushstate" style="font-size:13px"></span>
       </div>
       <div class="adderr" id="pusherr"></div>
+    </div>
+    <div class="panel">
+      <h3>⬇️ Downloads</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Install the bridge on another machine, or update this one.</div>
+      ${downloadsPlaceholderHtml()}
     </div>
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
@@ -264,7 +271,7 @@ export async function renderSettings() {
           <button class="btn mini revoke" data-id="${esc(d.id)}">Revoke</button></div>`,
             )
             .join("")
-        : '<div class="dim" style="font-size:13px">No devices yet. Start a bridge, then add it with its pairing code.</div>';
+        : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
       $("#devlist").querySelectorAll(".revoke").forEach(
         (btn) =>
           (btn.onclick = async () => {
@@ -285,4 +292,19 @@ export async function renderSettings() {
   };
   await refreshDeviceList();
   $("#adddev").onclick = () => openAddDevice(refreshDeviceList);
+
+  // The same block the first-run gate mounts — one renderer, two hosts. It is
+  // the only thing here that asks the api rather than the bridge, and nothing
+  // on the page depends on its answer, so it goes last and is not awaited: the
+  // page is done when the bridge-side mounts are. It paints itself into the
+  // placeholder when the api answers, and names its own refusal in
+  // #downloadserr, so a slow round trip leaves a "loading…" line — not a page
+  // of dead buttons, and not a caller (renderAccount, which mounts the account
+  // nav next) waiting on the api's clock.
+  void mountDownloads($("#root"), {
+    fetchDownloads,
+    mintInstallCommand,
+    platformKey: currentPlatformKey(),
+    clipboard: navigator.clipboard,
+  });
 }

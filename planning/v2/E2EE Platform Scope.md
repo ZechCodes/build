@@ -71,7 +71,7 @@ Three components, two pipes, one source of truth.
 ```
 
 - **Web client** — task board, embedded terminals, diff/review surface, notifications. Decrypts everything client-side.
-- **Relay** — moves ciphertext between client and bridge. Sees routing IDs, lengths, timing. Nothing else. (Already built.)
+- **Relay** — moves ciphertext between client and bridge, and after the WebRTC upgrade carries only signaling, presence and fallback (see section 8). Sees routing IDs, lengths, timing. Nothing else. (Already built.)
 - **build-bridge** — the daemon. Owns worktrees, spawns harnesses in PTYs, serves the Build MCP server, watches git, runs git operations, talks to the relay.
 
 ### The two pipes
@@ -246,6 +246,7 @@ State this plainly in the docs and the onboarding flow — transparency is the b
 - **Agents run in YOLO mode with no sandbox.** A worktree isolates *branches*, not the machine. An agent (or a prompt-injected agent) can read anything the user can read and reach any network the machine can reach. Indirect prompt injection via web content is an in-the-wild attack class, not a hypothetical.
 - **What v1 does provide:** the E2EE relay (Build's infrastructure is not a party to your code, prompts, or diffs), branch isolation (no agent touches main), and legibility (the diff shows everything that changed in the worktree).
 - **What v2 adds:** per-task permission profiles, PreToolUse approval gates on the hook layer, container/namespace isolation wrapping the same spawn call, egress allowlists. None of it requires rearchitecting v1.
+- **A second infrastructure party.** Browser and bridge negotiate a direct WebRTC DataChannel and use Cloudflare TURN only when neither peer can hole-punch, which makes Cloudflare a second infrastructure party beside the relay. Cloudflare sees TURN allocation source IPs and DTLS ciphertext; under that DTLS is the same secretbox envelope the relay carries, so even a broken DTLS session exposes no more than the relay already sees — session ids, sizes, timing — and never plaintext or session keys. The peer's DTLS fingerprint travels inside the sealed session, so neither Cloudflare nor anyone else on the path can substitute a peer. The direct path adds the one exposure the relay path hid: each peer learns the other's IP. TURN credentials are short-lived — their lifetime is `TTL_SECONDS` in `skriftapp/buildapp/ice_servers.py` — minted per authenticated user by the api, and reach the bridge inside the sealed session; the TURN key itself never leaves the api Secret.
 
 Users who close the laptop on a YOLO agent should be choosing that knowingly. The docs make sure they are.
 
@@ -262,7 +263,7 @@ v1 is done when a user can, from their phone, with their laptop at home:
 5. Merge — and at any point in 1–5, open the live terminal instead
 6. Run two tasks in parallel on the same repo without them touching each other
 7. Do all of the above with at least two different harnesses (Claude Code + one of Codex/OpenCode)
-8. Verify that the relay stored nothing but ciphertext
+8. Verify that the relay stored nothing but ciphertext, and that Cloudflare carried nothing but DTLS ciphertext
 
 Plus: templates overridable per project, credential class displayed correctly, and the security limitations documented where users will actually see them.
 

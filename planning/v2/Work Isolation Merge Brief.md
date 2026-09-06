@@ -75,4 +75,9 @@ this merge, and both are main's to pin:
 
 - `app::tests::an_entity_change_names_the_entity_that_moved`.
 - `spa/test/agentRailDom.test.js` — three clock-driven failures; 156/156 on its own.
+- `bridge/tests/concurrency_load.rs` — byte-identical to main's, and its flood is paced by a 20 ms sleep per burst.
+  On a host that coalesces short sleeps — this one rounds a 20 ms sleep to 205 ms, the same rounding the
+  `git_process` deadline is written around — about 30 of the 300 paced bursts land, so a shell paints ~78 KB against
+  a 100 KB floor. No frame it measures is slow; it is the test's own pacing, and the fix is a pacing that does not
+  sleep, not a lower floor.
 

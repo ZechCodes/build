@@ -15,9 +15,15 @@ use std::time::{Duration, Instant};
 /// How long a git child may run before it is killed as timed out (spec §2).
 const GIT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// The gap between two looks at a child that has closed its pipes but has not
-/// exited yet.
-const EXIT_POLL: Duration = Duration::from_micros(200);
+/// How long a child that has closed its pipes but has not exited is waited for
+/// by yielding rather than sleeping. Such a child is microseconds from gone,
+/// and a host that rounds a short sleep up to a tenth of a second would charge
+/// every git that raced its own exit that whole tenth.
+const EXIT_SPIN: Duration = Duration::from_millis(2);
+
+/// The gap between two looks at a child still running after [`EXIT_SPIN`]. It
+/// is no longer finishing, so what the host rounds this up to is its own.
+const EXIT_POLL: Duration = Duration::from_millis(5);
 
 /// Why one git child did not answer.
 #[derive(Debug, thiserror::Error)]
@@ -126,14 +132,20 @@ fn timed_out(args: &[&OsStr], deadline: Duration) -> std::io::Error {
 /// all but exited — so only one still finishing pays a wait, and it pays it in
 /// slices rather than in one unbounded `wait`.
 fn exit_before(child: &mut Child, expiry: Instant) -> std::io::Result<Option<ExitStatus>> {
+    let spinning_until = Instant::now() + EXIT_SPIN;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if Instant::now() >= expiry {
+        let now = Instant::now();
+        if now >= expiry {
             return Ok(None);
         }
-        std::thread::sleep(EXIT_POLL);
+        if now < spinning_until {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(EXIT_POLL);
+        }
     }
 }
 

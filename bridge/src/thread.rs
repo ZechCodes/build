@@ -726,6 +726,25 @@ impl ThreadEventKind {
         ThreadEventKind::TaskUpdate,
     ];
 
+    /// Whether this event is the agent working rather than something said or
+    /// decided.
+    ///
+    /// Activity is what a conversation folds: the thinking, the tool calls and
+    /// their answers, the narration, and the background tasks that outlive a
+    /// turn. Everything else — a message, a lifecycle marker, a call for the
+    /// human — ends a run of it. The web client folds the same five kinds, and
+    /// a test over [`ALL`](Self::ALL) holds the two readings equal.
+    pub fn is_activity(self) -> bool {
+        matches!(
+            self,
+            ThreadEventKind::Reasoning
+                | ThreadEventKind::ToolUse
+                | ThreadEventKind::ToolResult
+                | ThreadEventKind::Narration
+                | ThreadEventKind::TaskUpdate
+        )
+    }
+
     /// Whether this event needs the human, or merely tells them where things
     /// got to.
     ///
@@ -1023,6 +1042,18 @@ impl ThreadItem {
     /// every kind.
     pub fn counted(&self) -> bool {
         matches!(self, ThreadItem::Message(_)) || self.attention_reason().is_some()
+    }
+
+    /// Whether this item is the agent working — the rule a page's activity
+    /// runs are cut on.
+    ///
+    /// A message is never activity, whoever wrote it: a run of work ends the
+    /// moment somebody says something.
+    pub fn is_activity(&self) -> bool {
+        match self {
+            ThreadItem::Event(event) => event.event.is_activity(),
+            ThreadItem::Message(_) => false,
+        }
     }
 
     /// What this item referenced, as derived when it was written.
@@ -3393,6 +3424,66 @@ mod counted_item_tests {
         assert_eq!(
             counted,
             vec![true, false, false, false, false, false, false, true],
+            "{:?}",
+            thread.items
+        );
+    }
+}
+
+/// Activity is the agent working — what a conversation folds into one row
+/// rather than showing line by line.
+#[cfg(test)]
+mod activity_item_tests {
+    use super::*;
+
+    /// The two readings of the rule, held equal over every kind there is: the
+    /// Rust one here, and the set the web client folds with. A kind added
+    /// later cannot make them disagree without failing here.
+    #[test]
+    fn activity_is_the_five_kinds_the_client_folds() {
+        const FOLDED_BY_THE_CLIENT: [&str; 5] = [
+            "reasoning",
+            "tool_use",
+            "tool_result",
+            "narration",
+            "task_update",
+        ];
+
+        for kind in ThreadEventKind::ALL {
+            assert_eq!(
+                kind.is_activity(),
+                FOLDED_BY_THE_CLIENT.contains(&kind.as_str()),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// A message is never activity, whoever wrote it and whatever it reports —
+    /// a run of work ends the moment somebody says something.
+    #[test]
+    fn no_message_is_activity_and_every_activity_event_is() {
+        let mut thread = Thread::new("run-activity");
+        thread.post_user("please rename the helper", None, "2026-08-29T09:00:00Z");
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Read src/thread.rs".to_string()),
+            None,
+            None,
+            "2026-08-29T09:01:00Z",
+        );
+        thread.push_event(
+            ThreadEventKind::Committed,
+            None,
+            None,
+            None,
+            "2026-08-29T09:02:00Z",
+        );
+        thread.post_agent_progress("still going", None, "2026-08-29T09:03:00Z");
+
+        let folded: Vec<bool> = thread.items.iter().map(ThreadItem::is_activity).collect();
+        assert_eq!(
+            folded,
+            vec![false, true, false, false],
             "{:?}",
             thread.items
         );

@@ -22,14 +22,9 @@ impl ProjectCheckouts {
     pub fn holders(&self) -> Result<BranchOwnershipIndex, String> {
         let primary = crate::worktree::primary_checkout_holder(&self.primary_repo_path)
             .map_err(|error| error.to_string())?;
-        let excluded = self
-            .excluded
-            .iter()
-            .map(|path| crate::worktree::canonical_root(path))
-            .collect();
         let external = self
             .project
-            .scan_checkouts(&self.base_branch, &excluded)
+            .scan_checkouts(&self.base_branch, &self.excluded)
             .map_err(|error| error.to_string())?;
         let run_branches = self
             .run_checkouts

@@ -463,8 +463,8 @@ impl WorktreeManager {
     /// Every checkout of this project that is neither the project's own nor in
     /// `excluded` (Build-bound checkouts, which must never surface as
     /// adoptable, in whatever spelling the caller holds them: they are
-    /// canonicalized here, with no lock held, so the decide phase that collects
-    /// them makes no filesystem call), with a review summary each. Read-only apart
+    /// canonicalized here, beside the repository path, so the decide phase that
+    /// collects them makes no filesystem call), with a review summary each. Read-only apart
     /// from the base sync each checkout needs before its counts mean anything.
     /// A checkout whose summary cannot be computed is skipped — one broken
     /// stray must not fail the scan.

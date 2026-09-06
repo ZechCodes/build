@@ -402,12 +402,12 @@ describe("the Settings page", () => {
     return {};
   };
 
-  it("puts the isolation panel directly under the default agent, on what the account holds", async () => {
+  it("puts the isolation panel directly under the fallback agent, on what the account holds", async () => {
     await renderWith(settingsCall({ isolation: "cow", isolation_available: { cow: true, reason: null } }));
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Work isolation")).toBe(at("Default agent") + 1);
+    expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
     expect(document.querySelector("#root [data-isolation=select]").value).toBe("cow");
     expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(false);
   }, SLOW_IMPORT_MS);

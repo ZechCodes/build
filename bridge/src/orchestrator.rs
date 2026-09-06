@@ -1078,6 +1078,13 @@ impl AgentLaunch {
         worktree_path: &Path,
         owner_id: &str,
     ) -> Result<(), OrchestratorError> {
+        if !worktree_path.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no checkout at {}", worktree_path.display()),
+            )
+            .into());
+        }
         let build_dir = worktree_path.join(".build");
         std::fs::create_dir_all(&build_dir)?;
         if self.is_primary_checkout(worktree_path) {

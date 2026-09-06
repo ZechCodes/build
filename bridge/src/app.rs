@@ -4010,6 +4010,9 @@ impl AppState {
         if let Some(issue) = self.plans.get(owner) {
             return issue.workspace.is_some();
         }
+        if let Some(run) = self.runs.get(owner) {
+            return !run.run.state.is_terminal();
+        }
         if crate::capture::is_capture_id(owner) {
             return self.router_sessions.contains_key(owner);
         }
@@ -20241,7 +20244,9 @@ fn ensure_agent_tab(
         SpawnDecision::NoSession => return Ok(None),
         SpawnDecision::Reserved(reserved) => *reserved,
     };
-    let opened = open_agent_session(state, reserved, &key, timer)?;
+    let Some(opened) = open_agent_session(state, reserved, &key, timer)? else {
+        return Ok(None);
+    };
     Ok(
         publish_agent_tab(state, &key, opened, model_choice, phase, timer)
             .map(|wire_id| (wire_id, Spawned::Fresh)),
@@ -20477,17 +20482,29 @@ fn agent_open_request(
     }
 }
 
+/// `Ok(None)`: the owner's session ended while the spawn was reserved (a merge
+/// pruned the checkout, an issue was approved). The reservation is released
+/// and nothing is written to disk, so the pruned directory is not resurrected
+/// by the scaffold a spawn would otherwise lay down.
 fn open_agent_session(
     state: &Arc<Mutex<AppState>>,
     reserved: ReservedSpawn,
     key: &TabKey,
     timer: &FrameTimer,
-) -> Result<OpenedSession, String> {
+) -> Result<Option<OpenedSession>, String> {
     let ReservedSpawn {
         plan,
         role,
         holding,
     } = reserved;
+    let session_is_over = match &role {
+        TabRole::Agent { owner, .. } => !timer.lock(state).owner_still_has_a_session(owner),
+        TabRole::Shell => false,
+    };
+    if session_is_over {
+        holding.abandon(state, String::new(), timer);
+        return Ok(None);
+    }
     let choice = plan.model_choice.clone();
     let opened = plan.probe_and_scaffold().and_then(|ready| {
         let ReadyToSpawn {
@@ -20524,12 +20541,12 @@ fn open_agent_session(
             if let Some(screen) = holding.carried {
                 tab.adopt_screen(screen);
             }
-            Ok(OpenedSession {
+            Ok(Some(OpenedSession {
                 tab,
                 output,
                 recorded_name_is_gone,
                 claim: holding.claim,
-            })
+            }))
         }
         Err(error) => Err(holding.abandon(state, error, timer)),
     }
@@ -40135,6 +40152,100 @@ mod tests {
             req("agent.attach", json!({ "id": run_id })),
         );
         assert_eq!(attached["ok"], true, "{attached:?}");
+        assert_eq!(attached["result"]["live"], false, "{attached:?}");
+    }
+
+    /// The race the QA suite runs into: the second stage's turn is still
+    /// spawning its agent when the merge prunes the checkout. A run with no
+    /// checkout has no session, so the spawn that lands afterwards is stranded
+    /// and retired, and nothing resurrects the pruned directory.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_spawn_that_outlives_the_merge_that_pruned_its_checkout_is_stranded() {
+        let (dir, repo) = init_repo();
+        let canonical_dir = dir.path().canonicalize().unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let (state, handler) = shared_qa_state_and_handler(&repo, &canonical_dir);
+        let created = call(
+            &handler,
+            "issue.create",
+            json!({ "goal": "Add a greeting banner", "provider": "claude" }),
+        );
+        let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
+        wait_for_deliveries(&state).await;
+        call(&handler, "issue.approve", json!({ "issue_id": issue_id }));
+        let stages = call(&handler, "issue.stages", json!({ "issue_id": issue_id }));
+        let first = stages["result"]["stages"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second = stages["result"]["stages"][1]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": first }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let run_id = implemented["result"]["current_implementation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_for_deliveries(&state).await;
+        let root = state.lock().unwrap().entity_agent_root(&run_id).unwrap();
+        {
+            let mut s = state.lock().unwrap();
+            let tab = s
+                .tabs
+                .values_mut()
+                .find(|tab| tab.role.agent().is_some_and(|(owner, _)| owner == run_id))
+                .expect("the first stage's agent");
+            tab.session.end();
+            tab.live = false;
+        }
+        let spawning = spawns_parked_at(&state);
+        call(
+            &handler,
+            "issue.stage_approve",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        let implemented = call(
+            &handler,
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": second }),
+        );
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        spawning.wait_for_arrival();
+        let merged = call(
+            &handler,
+            "issue.git_action",
+            json!({ "issue_id": issue_id, "action": "merge" }),
+        );
+        assert_eq!(merged["ok"], true, "{merged:?}");
+        assert!(!root.exists(), "the merge pruned the checkout");
+        spawning.release();
+        wait_for_deliveries(&state).await;
+        let spawned = state
+            .lock()
+            .unwrap()
+            .tabs
+            .values()
+            .any(|tab| tab.role.agent().is_some_and(|(owner, _)| owner == run_id));
+        assert!(!spawned, "a run whose checkout is gone keeps no agent");
+        assert!(
+            !root.exists(),
+            "the late spawn must not resurrect the pruned checkout"
+        );
+        let attached = handler.call(
+            SessionSender::detached("s-late"),
+            req("agent.attach", json!({ "id": run_id })),
+        );
         assert_eq!(attached["result"]["live"], false, "{attached:?}");
     }
 

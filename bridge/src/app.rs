@@ -16965,8 +16965,11 @@ fn unregistered_restore_for(active: &ActiveRun) -> crate::worktree::Unregistered
 
 /// The answer `git.branches` and `git.branch_delete` share: gitgui's git facts
 /// about every offerable branch, each row stamped with the checkout holding it.
+/// Every held branch is published first, so a row weighs what its checkout
+/// holds rather than what the project last saw of it.
 fn stamped_branch_list(scope: &BranchListingScope) -> Result<Value, String> {
     let ownership = scope.checkouts.holders()?;
+    scope.checkouts.publish_held_branches(&ownership)?;
     let listing =
         crate::gitgui::branch_list(&scope.checkout.repo_path, &scope.checkout.base_branch)?;
     let branches: Vec<Value> = listing
@@ -29720,6 +29723,43 @@ mod tests {
         assert_eq!(feature["stat"]["deletions"], 0, "{feature:?}");
         let main = branches.iter().find(|b| b["name"] == "main").unwrap();
         assert_eq!(main["stat"]["insertions"], 0, "{main:?}");
+    }
+
+    /// A clone is a repository of its own, so a commit made in it is invisible
+    /// to the project until published. The switcher publishes every held
+    /// branch through the façade before it reads the project's refs (spec
+    /// §0.4), so a clone's row weighs what the clone holds; a linked
+    /// worktree's publish is a no-op, and its row was never stale.
+    #[test]
+    fn git_branches_weighs_a_clones_branch_after_publishing_it() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let clone = state
+            .orch_for(&project_id)
+            .unwrap()
+            .worktrees()
+            .create("cloned", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
+        std::fs::write(clone.path.join("cloned.rs"), "one\ntwo\nthree\n").unwrap();
+        git_in(&clone.path, &["add", "."]);
+        git_in(&clone.path, &["commit", "-m", "work in the clone"]);
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let cloned = branches
+            .iter()
+            .find(|b| b["name"] == clone.branch())
+            .expect("the clone's branch is the project's to list");
+        assert_eq!(
+            cloned["stat"]["insertions"], 3,
+            "the clone's commit weighs on its row: {cloned:?}"
+        );
     }
 
     /// A branch checked out in a worktree Build never adopted is unpickable

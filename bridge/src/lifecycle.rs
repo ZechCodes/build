@@ -304,6 +304,10 @@ pub struct CreateWorktree {
     /// How the checkout is made, resolved by the app before anything was
     /// reserved.
     pub isolation: Isolation,
+    /// Why the resolver could not give this create the isolation the settings
+    /// asked for, when it could not. A bare worktree has no conversation, so
+    /// the answer to the ask is where it is said.
+    pub downgrade: Option<String>,
 }
 
 impl WorktreeMutation for CreateWorktree {
@@ -357,6 +361,10 @@ impl WorktreeMutation for CreateWorktree {
                 worktree_id,
                 branch: worktree.branch(),
                 name: worktree.name,
+                isolation: Isolation::of(&path),
+                isolation_note: self
+                    .downgrade
+                    .map(|reason| crate::app::announce_isolation_downgrade(&reason)),
                 path,
                 branch_was_cut: minted.teardown.deletes_branch(),
                 checkouts: self.checkouts,
@@ -379,6 +387,10 @@ pub struct OpenImplementation {
     pub model_choice: ModelChoice,
     pub caller: Box<dyn crate::app::ImplementationCaller>,
     pub isolation: Isolation,
+    /// Why the resolver could not give this implementation the isolation the
+    /// settings asked for, when it could not. Said on the Issue's conversation
+    /// once the run stands.
+    pub downgrade: Option<String>,
 }
 
 impl WorktreeMutation for OpenImplementation {
@@ -430,6 +442,7 @@ impl WorktreeMutation for OpenImplementation {
                 prepared,
                 model_choice: self.model_choice,
                 caller: self.caller,
+                downgrade: self.downgrade,
             }),
         })
     }
@@ -569,6 +582,10 @@ pub struct RestoreImplementationCheckout {
     pub checkout_stood: bool,
     pub caller: Box<dyn crate::app::ImplementationCaller>,
     pub isolation: Isolation,
+    /// Why the resolver could not put the checkout back as the isolation the
+    /// settings asked for, when it could not. Said on the Issue's conversation
+    /// beside what the restore found.
+    pub downgrade: Option<String>,
 }
 
 impl WorktreeMutation for RestoreImplementationCheckout {
@@ -593,6 +610,7 @@ impl WorktreeMutation for RestoreImplementationCheckout {
                 checkout_stood: self.checkout_stood,
                 restored,
                 caller: self.caller,
+                downgrade: self.downgrade,
             }),
         })
     }
@@ -779,6 +797,10 @@ pub struct DispatchCheckout {
     pub routed: Option<crate::app::RoutedCapture>,
     /// How a checkout this dispatch has to cut is made.
     pub isolation: Isolation,
+    /// Why the resolver could not cut it as the isolation the settings asked
+    /// for, when it could not. Said on the dispatched run's conversation, and
+    /// only when this dispatch cut a checkout of its own.
+    pub downgrade: Option<String>,
     #[cfg(test)]
     pub fault: Option<BranchDispatchStep>,
 }
@@ -826,7 +848,7 @@ impl WorktreeMutation for DispatchCheckout {
                 .iter()
                 .find(|checkout| checkout.branch.as_deref() == Some(branch))
             {
-                return self.take_ownership(found);
+                return self.take_ownership(found, None);
             }
         }
         // A checkout that was already there is never this call's to remove:
@@ -836,8 +858,9 @@ impl WorktreeMutation for DispatchCheckout {
             .project
             .describe_checkout(&minted.worktree.path, &self.base_branch)
             .map_err(|error| error.to_string());
+        let downgrade = self.downgrade.take();
         let dispatched = match described {
-            Ok(checkout) => self.take_ownership(&checkout),
+            Ok(checkout) => self.take_ownership(&checkout, downgrade),
             Err(error) => Err(error),
         };
         if dispatched.is_err() {
@@ -858,8 +881,14 @@ impl DispatchCheckout {
     }
 
     /// Take Build's ownership of the checkout this dispatch reached, and owe the
-    /// apply phase the instruction on top of it.
-    fn take_ownership(&mut self, checkout: &ExternalWorktree) -> Result<Performed, String> {
+    /// apply phase the instruction on top of it. `downgrade` is the resolver's
+    /// sentence for a checkout this dispatch cut; a checkout that was already
+    /// there was made by nobody's setting and carries none.
+    fn take_ownership(
+        &mut self,
+        checkout: &ExternalWorktree,
+        downgrade: Option<String>,
+    ) -> Result<Performed, String> {
         #[cfg(test)]
         fail_dispatch_at(self.fault, BranchDispatchStep::Adopt)?;
         let adopted = adopt(
@@ -880,6 +909,7 @@ impl DispatchCheckout {
                 instruction: self.instruction.clone(),
                 routed: self.routed.take(),
                 checkouts: self.checkouts.clone(),
+                downgrade,
             }),
         })
     }

@@ -373,7 +373,7 @@ impl WorktreeManager {
         let branch = self.branch_name(&name);
 
         repo.branch(&branch, &base_commit, false)?;
-        let path = self.worktrees_root.join(&name);
+        let path = self.checkout_path(&name)?;
         backend.materialize(&self.repo_path, &branch, &path)?;
         let teardown = BranchTeardown::DeletesBranch;
         record_branch_teardown(&path, teardown)?;
@@ -486,7 +486,7 @@ impl WorktreeManager {
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
         let name = self.unique_checkout_name(&self.directory_name_for(branch), |_| false)?;
-        let path = self.worktrees_root.join(&name);
+        let path = self.checkout_path(&name)?;
         if let Err(error) = self
             .backend(isolation)
             .and_then(|backend| backend.materialize(&self.repo_path, branch, &path))
@@ -505,6 +505,14 @@ impl WorktreeManager {
             },
             teardown: prepared.teardown,
         })
+    }
+
+    /// Where a checkout called `name` lives, with the root it sits in already
+    /// there: a backend is handed a directory to materialize, never a folder to
+    /// make first.
+    fn checkout_path(&self, name: &str) -> Result<PathBuf, WorktreeError> {
+        std::fs::create_dir_all(&self.worktrees_root)?;
+        Ok(self.worktrees_root.join(name))
     }
 
     /// Ask every backend to be rid of the checkout at `path`. Removal's goal is
@@ -571,8 +579,10 @@ impl WorktreeManager {
     }
 
     /// Every checkout of this project that is neither the project's own nor in
-    /// `excluded` (the canonical paths of Build-bound checkouts, which must
-    /// never surface as adoptable), with a review summary each. Read-only apart
+    /// `excluded` (Build-bound checkouts, which must never surface as
+    /// adoptable, in whatever spelling the caller holds them: they are
+    /// canonicalized here, with no lock held, so the decide phase that collects
+    /// them makes no filesystem call), with a review summary each. Read-only apart
     /// from the base sync each checkout needs before its counts mean anything.
     /// A checkout whose summary cannot be computed is skipped — one broken
     /// stray must not fail the scan.
@@ -581,6 +591,7 @@ impl WorktreeManager {
         base_branch: &str,
         excluded: &HashSet<PathBuf>,
     ) -> Result<Vec<ExternalWorktree>, WorktreeError> {
+        let excluded: HashSet<PathBuf> = excluded.iter().map(|path| canonical_root(path)).collect();
         let mut paths: Vec<PathBuf> = Vec::new();
         for backend in self.every_backend() {
             for path in backend.discover(&self.repo_path, &self.worktrees_root)? {
@@ -941,13 +952,10 @@ impl WorktreeManager {
         let repo = git2::Repository::open(&self.repo_path)?;
         let teardown = self.teardown_across_prune(&repo, worktree, when_unregistered)?;
         self.ensure_local_branch(&repo, &worktree.recorded_branch)?;
-        std::fs::create_dir_all(&self.worktrees_root)?;
-        self.backend(isolation)?.materialize(
-            &self.repo_path,
-            &worktree.recorded_branch,
-            &worktree.path,
-        )?;
-        record_branch_teardown(&worktree.path, teardown)?;
+        let path = self.checkout_path(&worktree.name)?;
+        self.backend(isolation)?
+            .materialize(&self.repo_path, &worktree.recorded_branch, &path)?;
+        record_branch_teardown(&path, teardown)?;
         self.verify_existing_checkout(worktree)
     }
 

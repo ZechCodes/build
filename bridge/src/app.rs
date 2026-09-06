@@ -1772,7 +1772,7 @@ impl SettingsPatch {
 /// The daemon's log always hears it, and the sentence comes back for the
 /// conversation the create belongs to, so an operator reading the log and a
 /// human reading the thread are told the same thing in the same words.
-fn announce_isolation_downgrade(reason: &str) -> String {
+pub(crate) fn announce_isolation_downgrade(reason: &str) -> String {
     let note =
         format!("Created a git worktree: copy-on-write isolation is unavailable here — {reason}");
     eprintln!("{note}");
@@ -8205,10 +8205,7 @@ impl AppState {
             self.planned_checkout_id(&project_id, &slug)?
         };
         let checkouts = self.project_checkouts(&project_id)?;
-        // TODO-MERGE(Work Isolation Merge Brief §2): the downgrade sentence a
-        // resolver returns is dropped here; it belongs on the thread the apply
-        // phase writes.
-        let (isolation, _downgrade) = self.resolved_isolation(&project_id);
+        let (isolation, downgrade) = self.resolved_isolation(&project_id);
         let mutation = CreateWorktree {
             project: self.orch_for(&project_id)?.clone(),
             base_branch: self.base_for(&project_id)?,
@@ -8218,6 +8215,7 @@ impl AppState {
             checkouts,
             placeholder_id: placeholder_id.clone(),
             isolation,
+            downgrade,
         };
         let row = PendingRow::creating(placeholder_id, Some(project_id), title).on_branch(branch);
         self.defer_lifecycle(row, Box::new(mutation))
@@ -11248,9 +11246,7 @@ impl AppState {
             )?);
         }
         let project_id = self.project_of(run_id)?;
-        // TODO-MERGE(Work Isolation Merge Brief §2): the downgrade sentence is
-        // dropped; the restore's apply phase is where it belongs.
-        let (isolation, _downgrade) = self.resolved_isolation(&project_id);
+        let (isolation, downgrade) = self.resolved_isolation(&project_id);
         let project = self.orch_for(&project_id)?.clone();
         let row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
             .on_checkout(crate::worktree::external_worktree_id(&worktree.path))
@@ -11265,6 +11261,7 @@ impl AppState {
                 checkout_stood,
                 caller,
                 isolation,
+                downgrade,
             }),
         )
         .map(Some)
@@ -11281,6 +11278,7 @@ impl AppState {
             checkout_stood,
             restored,
             caller,
+            downgrade,
         } = restored;
         let worktree = match restored {
             Ok(worktree) => worktree,
@@ -11295,6 +11293,9 @@ impl AppState {
             let mut active = self.take_run(&run_id)?;
             active.worktree = worktree;
             active.last_error = None;
+            if let Some(reason) = downgrade {
+                self.note_isolation_downgrade(&run_id, &mut active, &reason);
+            }
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             self.finish_run_mutation(run_id.clone(), active)?;
             let mut issue = self.take_plan(&issue_id)?;
@@ -12101,9 +12102,7 @@ impl AppState {
         })
         .map_err(err)?;
         let project = self.orch_for(&project_id)?.clone();
-        // TODO-MERGE(Work Isolation Merge Brief §2): the downgrade sentence
-        // belongs on the Issue's thread from the apply phase.
-        let (isolation, _downgrade) = self.resolved_isolation(&project_id);
+        let (isolation, downgrade) = self.resolved_isolation(&project_id);
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         // The ref this implementation is about to cut is on the row, so a
         // create or a dispatch claiming the same one collides here rather than
@@ -12124,6 +12123,7 @@ impl AppState {
                 model_choice,
                 caller,
                 isolation,
+                downgrade,
             }),
         )
     }
@@ -12247,6 +12247,7 @@ impl AppState {
             prepared,
             model_choice,
             caller,
+            downgrade,
         } = opened;
         let opened = (|| -> Result<OpenedImplementation, String> {
             let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
@@ -12271,7 +12272,12 @@ impl AppState {
                 checkout_event: crate::thread::ThreadEventKind::WorktreeCreated,
             })
         })()
-        .and_then(|opened| self.open_implementation_run(opened));
+        .and_then(|mut opened| {
+            if let Some(reason) = downgrade {
+                self.note_isolation_downgrade(&run_id, &mut opened.active, &reason);
+            }
+            self.open_implementation_run(opened)
+        });
         caller.settle(self, opened.map(|()| run_id.as_str()))
     }
 
@@ -15069,9 +15075,7 @@ impl AppState {
         // reserves against another, and deriving it in the git phase left two
         // calls on one instruction racing into `git worktree add`.
         let target = DispatchTarget::of(branch.as_deref(), &instruction)?;
-        // TODO-MERGE(Work Isolation Merge Brief §2): the downgrade sentence
-        // belongs on the dispatched run's thread, from the apply phase.
-        let (isolation, _downgrade) = self.resolved_isolation(&project_id);
+        let (isolation, downgrade) = self.resolved_isolation(&project_id);
 
         let mutation = DispatchCheckout {
             project: self.orch_for(&project_id)?.clone(),
@@ -15085,6 +15089,7 @@ impl AppState {
             explicit_choice: has_agent_choice(params),
             routed,
             isolation,
+            downgrade,
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
@@ -15113,6 +15118,7 @@ impl AppState {
             instruction,
             routed,
             checkouts,
+            downgrade,
         } = dispatched;
         self.validate_checkout_snapshot(&adopted.project_id, &checkouts)?;
         #[cfg(test)]
@@ -15131,6 +15137,9 @@ impl AppState {
             &adopted.checkout.branch,
             adopted.checkout.path.clone(),
         );
+        if let Some(reason) = downgrade {
+            self.note_isolation_downgrade(&run_id, &mut active, &reason);
+        }
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.clone(), active)?;
@@ -17516,6 +17525,14 @@ pub struct WorktreeCreated {
     pub path: std::path::PathBuf,
     pub branch_was_cut: bool,
     pub checkouts: ProjectCheckouts,
+    /// What the checkout turned out to be, read off it once the git had made
+    /// it.
+    pub isolation: Option<Isolation>,
+    /// The sentence saying this volume could not make the isolation the
+    /// settings asked for. A bare worktree has no run, no agent and no
+    /// conversation, so the answer to the ask is where the human who made it
+    /// hears what the log heard.
+    pub isolation_note: Option<String>,
 }
 
 impl LifecycleEpilogue for WorktreeCreated {
@@ -17533,6 +17550,8 @@ impl LifecycleEpilogue for WorktreeCreated {
             "branch": self.branch,
             "name": self.name,
             "path": self.path.display().to_string(),
+            "isolation": self.isolation,
+            "isolation_note": self.isolation_note,
         }))
     }
 }
@@ -17635,6 +17654,10 @@ pub struct RestoredCheckout {
     pub checkout_stood: bool,
     pub restored: Result<crate::worktree::Worktree, String>,
     pub caller: Box<dyn ImplementationCaller>,
+    /// Why the checkout was not put back as the isolation the settings asked
+    /// for, when it was not: said on the Issue's conversation beside what the
+    /// restore found.
+    pub downgrade: Option<String>,
 }
 
 impl LifecycleEpilogue for RestoredCheckout {
@@ -17652,6 +17675,9 @@ pub struct ImplementationOpened {
     pub prepared: PreparedImplementation,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn ImplementationCaller>,
+    /// Why the checkout is not the isolation the settings asked for, when it is
+    /// not: said on the Issue's conversation before the run is written down.
+    pub downgrade: Option<String>,
 }
 
 impl LifecycleEpilogue for ImplementationOpened {
@@ -18229,6 +18255,9 @@ pub struct BranchDispatched {
     pub instruction: String,
     pub routed: Option<RoutedCapture>,
     pub checkouts: ProjectCheckouts,
+    /// Why the checkout this dispatch cut is not the isolation the settings
+    /// asked for, when it is not: said on the run's own conversation.
+    pub downgrade: Option<String>,
 }
 
 /// The holder read found an existing run; validate that snapshot before joining.

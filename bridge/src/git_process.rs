@@ -97,8 +97,7 @@ fn bounded(mut child: Child, args: &[&OsStr], deadline: Duration) -> std::io::Re
     for _ in 0..2 {
         let left = expiry.saturating_duration_since(Instant::now());
         if let Err(unread) = pipe_closed.recv_timeout(left) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_and_reap(&mut child);
             return Err(match unread {
                 std::sync::mpsc::RecvTimeoutError::Timeout => timed_out(args, deadline),
                 std::sync::mpsc::RecvTimeoutError::Disconnected => std::io::Error::other(format!(
@@ -108,8 +107,7 @@ fn bounded(mut child: Child, args: &[&OsStr], deadline: Duration) -> std::io::Re
         }
     }
     let Some(status) = exit_before(&mut child, expiry)? else {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_and_reap(&mut child);
         return Err(timed_out(args, deadline));
     };
     Ok(Output {
@@ -117,6 +115,13 @@ fn bounded(mut child: Child, args: &[&OsStr], deadline: Duration) -> std::io::Re
         stdout: collected(stdout)?,
         stderr: collected(stderr)?,
     })
+}
+
+/// End a child nobody is going to wait for, so no caller is answered while the
+/// process it asked about is still running.
+fn kill_and_reap(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// How a child that outlived its deadline is answered.

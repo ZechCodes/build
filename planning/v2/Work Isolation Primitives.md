@@ -143,6 +143,15 @@ rather than a volume: with no project registered it answers `cow: Err("no projec
 registry it just read (§5.4). The orchestrator holds no isolation state: creation entry points take the isolation as an
 argument, and the reason, when present, joins the events a create already writes.
 
+Every lifecycle verb that cuts or restores a checkout asks the resolver in its decide phase, under the lock, and
+carries the pair from there: the `Isolation` into the job's own `perform`, where it is the last argument of the façade
+creator, and the reason into the epilogue, where the apply phase says it — on the run's conversation
+(`note_isolation_downgrade`), or in the answer for a bare worktree, which has no conversation to say it on. The board
+row the verb reserves carries the same resolved answer (`PendingRow::isolated_as`, `"isolation"` on the wire beside the
+row's state), so the row a create stands behind says how the checkout is being made before there is a checkout to ask;
+a verb that makes none — a discard, an adoption of one already on disk — names no isolation, because what is on disk
+describes itself.
+
 ## `spa/src/core/isolation.js`
 Mirrors `core/defaultHarness.js`: `ISOLATIONS` (the client's only naming table), `isolationLabel`, `isolationOf`,
 `isolationLockReason`, `isolationOptionsHtml`, `isolationFieldHtml`, `isolationPanelHtml`, `mountIsolation`, plus

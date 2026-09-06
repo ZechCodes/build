@@ -18,13 +18,15 @@ import { cacheDeviceId } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
-import { parseDiff } from "./diff.js";
-import { diffStackHtml } from "./diffRender.js";
+import { createFileFolds, parseDiff, pathOf } from "./diff.js";
+import { diffStackEntries, stackClaims } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
+import { paintKeepingPlace } from "./paintKeepingPlace.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -43,9 +45,8 @@ export function reviewBarHtml(files, { statusHtml = "", offerChangedOnly = false
 
 /** What the stack says when the filter has hidden everything, or there is
  *  nothing to show at all. */
-export function emptyStackHtml(totalFiles, changedOnly) {
-  if (totalFiles && changedOnly) return '<div class="empty">Nothing changed since your review.</div>';
-  return '<div class="empty">No file changes yet.</div>';
+export function emptyStackText(totalFiles, changedOnly) {
+  return totalFiles && changedOnly ? "Nothing changed since your review." : "No file changes yet.";
 }
 
 /**
@@ -69,6 +70,7 @@ export function emptyStackHtml(totalFiles, changedOnly) {
  * - `statusHtml()` is the live claim in the bar (e.g. the agent is working).
  * - `onSent()` runs after comments go out, for whatever the surface does next.
  */
+// eslint-disable-next-line complexity -- ratchet: createReviewPlug is at 16, cap 10 — reduce it, then drop this line
 export function createReviewPlug({
   fetchDiff,
   submit = null,
@@ -84,7 +86,9 @@ export function createReviewPlug({
   // pushes can say when it moved instead of being asked every 1.6 seconds. A
   // surface that names none keeps the safety poll and nothing else.
   entity = null,
+  navigate = null,
 }) {
+  const openFile = (navigate && navigate.openFile) || null;
   let host = null;
   let watcher = null;
   let diffKey = null;
@@ -100,6 +104,7 @@ export function createReviewPlug({
   let triageProject = null;
   let trustDial = false;
   const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
+  const folds = createFileFolds();
   // Disagreeing with the pass: applied to the stack on the tap, sent after, and
   // held here only until the pass comes back carrying it.
   const overrides = submitOverride
@@ -158,46 +163,96 @@ export function createReviewPlug({
     actions.innerHTML = "";
   };
 
+  let paintChangeset = null;
+
   function render() {
     if (!host) return;
+    paintKeepingPlace(host, paintStack, DIFF_PLACE_KEEPING);
+  }
+
+  function paintStack() {
     const changed = changedSinceReview(reviewStamps, renderedFiles);
     const filesToRender = changedOnlyFilter ? renderedFiles.filter((file) => changed.has(file.path)) : renderedFiles;
     const editable = commentableNow && Boolean(commentLayer);
     trayMounted = editable;
-    const stack = filesToRender.length
-      ? diffStackHtml(filesToRender, {
-          commentable: editable,
-          changedSince: changed,
-          viewed: viewedFiles,
-          withViewedToggle: editable,
-          noiseExpanded,
-          review:
-            triageReport === undefined
-              ? null
-              : {
-                  triage: currentTriage(),
-                  patch: renderedPatch,
-                  dial: trustDial,
-                  expandedGroups,
-                  overridable: Boolean(overrides),
-                },
-        })
-      : emptyStackHtml(renderedFiles.length, changedOnlyFilter);
-    host.innerHTML =
-      reviewBarHtml(renderedFiles, {
+    const entries = diffStackEntries(filesToRender, {
+      commentable: editable,
+      openable: Boolean(openFile),
+      changedSince: changed,
+      viewed: viewedFiles,
+      folds,
+      withViewedToggle: editable,
+      noiseExpanded,
+      empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
+      review:
+        triageReport === undefined
+          ? null
+          : {
+              triage: currentTriage(),
+              patch: renderedPatch,
+              dial: trustDial,
+              expandedGroups,
+              overridable: Boolean(overrides),
+            },
+    });
+    paintChangeset({
+      bar: reviewBarHtml(renderedFiles, {
         statusHtml: statusHtml(),
         offerChangedOnly: reviewStamps.size > 0,
         changedOnly: changedOnlyFilter,
-      }) +
-      stack +
-      (trayMounted ? commentLayer.trayHtml() : changesActionbarHtml());
+      }),
+      entries,
+      tray: trayMounted ? commentLayer.trayHtml() : changesActionbarHtml(),
+    });
     if (trayMounted) commentLayer.attach(host);
     else paintActions();
     wire();
   }
 
-  /** The filter and the per-file Viewed box. The filter repaints; Viewed folds
-   *  the file in place with NO repaint, so the choice survives the poll. */
+  const claimSecret = (event) => toggleSecretSpoiler(event.target);
+
+  const claimNoiseGroup = (event) => {
+    if (!event.target.closest(".noisehead")) return false;
+    noiseExpanded = !noiseExpanded;
+    render();
+    return true;
+  };
+
+  const claimTrustDial = (event) => {
+    if (!event.target.closest(".tdial")) return false;
+    trustDial = !trustDial;
+    saveTrustDial(triageProject, trustDial);
+    render();
+    return true;
+  };
+
+  const claimOverride = (event) => Boolean(overrides && overrides.handleClick(event));
+
+  const claimTriageGroup = (event) => {
+    const head = event.target.closest(".tgrouphead");
+    if (!head) return false;
+    const name = head.dataset.group;
+    if (expandedGroups.has(name)) expandedGroups.delete(name);
+    else expandedGroups.add(name);
+    render();
+    return true;
+  };
+
+  const claims = [
+    claimSecret,
+    claimNoiseGroup,
+    claimTrustDial,
+    claimOverride,
+    claimTriageGroup,
+    ...stackClaims({
+      comments: () => (trayMounted ? commentLayer : null),
+      openFile: () => openFile,
+      folds: () => folds,
+      viewed: () => viewedFiles,
+      repaint: render,
+    }),
+  ];
+
   function wire() {
     host.onchange = (event) => {
       const target = event.target;
@@ -209,50 +264,13 @@ export function createReviewPlug({
         return;
       }
       if (!target.classList.contains("fviewed-box")) return;
-      const path = target.dataset.file;
-      const fileElement = target.closest(".file");
-      if (target.checked) {
-        viewedFiles.add(path);
-        if (fileElement) {
-          fileElement.classList.add("collapsed");
-          fileElement.classList.remove("capped");
-        }
-        return;
-      }
-      viewedFiles.delete(path);
-      if (fileElement) fileElement.classList.remove("collapsed");
+      const path = pathOf(target.dataset.key);
+      if (target.checked) viewedFiles.add(path);
+      else viewedFiles.delete(path);
+      render();
     };
-    // Folding belongs to the Changes pane around this plug; what is this plug's
-    // own is revealing a masked secret, opening the noise group, and the
-    // comment affordances (✎, a line tap, the tray's remove control).
     host.onclick = (event) => {
-      if (toggleSecretSpoiler(event.target)) return;
-      if (event.target.closest(".noisehead")) {
-        noiseExpanded = !noiseExpanded;
-        render();
-        return;
-      }
-      // The trust dial and the triage groups: the reviewer's own reading of how
-      // much of the pass's reading to take. The dial is remembered per project.
-      if (event.target.closest(".tdial")) {
-        trustDial = !trustDial;
-        saveTrustDial(triageProject, trustDial);
-        render();
-        return;
-      }
-      // Disagreeing with where the pass put a hunk, before the comment layer
-      // sees the press: the offer sits on a hunk row, and a line tap there
-      // would otherwise open a comment on it.
-      if (overrides && overrides.handleClick(event)) return;
-      const groupHead = event.target.closest(".tgrouphead");
-      if (groupHead) {
-        const name = groupHead.dataset.group;
-        if (expandedGroups.has(name)) expandedGroups.delete(name);
-        else expandedGroups.add(name);
-        render();
-        return;
-      }
-      if (trayMounted && commentLayer) commentLayer.handleClick(event);
+      for (const claim of claims) if (claim(event)) return;
     };
   }
 
@@ -284,6 +302,7 @@ export function createReviewPlug({
     render();
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
   const paint = async () => {
     if (!host || isOffline()) return;
     let payload;
@@ -343,6 +362,7 @@ export function createReviewPlug({
     mount(element) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
+      paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       livePainted = false;
       host.innerHTML = '<div class="empty">loading…</div>';

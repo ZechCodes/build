@@ -82,6 +82,16 @@ pub struct Agent {
     pub resume_session_id: Option<String>,
     #[serde(default)]
     pub active_model: Option<String>,
+    /// Why the last turn queued for this agent never reached a harness.
+    ///
+    /// A start is answered before the harness exists, so the client lays a
+    /// "starting" state over the row and waits for this agent's next word. A
+    /// spawn that never came up says nothing about the session, and this is
+    /// that word: the reason, until the next turn on its way replaces it.
+    /// `None` for an agent whose last delivery landed, and for one that has
+    /// never been asked to run.
+    #[serde(default)]
+    pub start_error: Option<String>,
 }
 
 impl Agent {
@@ -104,6 +114,7 @@ impl Agent {
             state: AgentLifecycle::Idle,
             resume_session_id: None,
             active_model: None,
+            start_error: None,
         }
     }
 }

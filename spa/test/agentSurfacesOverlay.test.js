@@ -30,7 +30,7 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: 
 const { App } = await import("../src/app.js");
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
-const { SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
+const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 
 const surfaces = () => surfacesSnapshot({ subagents: [], checklist: [] });
 
@@ -157,6 +157,7 @@ beforeEach(() => {
 afterEach(() => {
   if (rail) rail.dispose();
   rail = null;
+  App.modelCatalog = null;
   document.body.innerHTML = "";
   vi.useRealTimers();
 });
@@ -207,6 +208,21 @@ describe("openSurfaceOverlay", () => {
     expect(overlay()).not.toBe(null);
     expect(overlay().querySelector(".surface-shells")).not.toBe(null);
     expect(overlayRows()).toEqual([]);
+    held.close();
+  });
+
+  it("paints rows with the width it has, naming models through the label it was handed", () => {
+    const held = openSurfaceOverlay(AGENT_ENTRY_KIND, {
+      onOpenThreadItem: () => {},
+      modelLabel: (modelId) => `Opus 5 · ${modelId}`,
+    });
+    held.set({
+      subagents: [{ id: "a1", label: "reader", state: "running", model: "opus", tokens: 1200, tool_calls: 4 }],
+    });
+
+    const row = overlayRows()[0];
+    expect(row.querySelector(".surface-row-model").textContent).toBe("Opus 5 · opus");
+    expect(row.querySelector(".surface-row-stats").textContent).toContain("1200 tokens");
     held.close();
   });
 
@@ -281,6 +297,40 @@ describe("the conversation header's menu", () => {
     await poll(branchRow({ surfaces: {} }));
 
     expect(menuCaret()).toBe(null);
+  });
+});
+
+describe("the model a surface row names", () => {
+  it("says what the account's catalog calls it, and the raw id when it knows none", async () => {
+    App.modelCatalog = {
+      default_provider: "claude",
+      providers: [
+        { id: "claude", label: "Claude Code", models: [{ id: "claude-opus-5[1m]", label: "Opus 5 · 1m" }], efforts: [] },
+      ],
+    };
+    const named = surfaces();
+    named.workflows[0].phases[0].agents[0].model = "claude-opus-5[1m]";
+    payload = branchRow({ surfaces: named });
+    await mount();
+
+    menuCaret().click();
+    menuItem(WORKFLOW_ENTRY_KIND).click();
+    await flush();
+
+    expect(document.querySelector(".modal-surface .surface-row-model").textContent).toBe("Opus 5 · 1m");
+  });
+
+  it("falls back to the id itself while the catalog holds no such model", async () => {
+    const named = surfaces();
+    named.workflows[0].phases[0].agents[0].model = "some-unlisted-model";
+    payload = branchRow({ surfaces: named });
+    await mount();
+
+    menuCaret().click();
+    menuItem(WORKFLOW_ENTRY_KIND).click();
+    await flush();
+
+    expect(document.querySelector(".modal-surface .surface-row-model").textContent).toBe("some-unlisted-model");
   });
 });
 

@@ -100,6 +100,7 @@ function modifiedEscapeSequence(data, modifiers) {
  * xterm modifier parameter. Anything with no encoding — a paste, a character
  * with no control code — passes through untouched rather than being corrupted.
  */
+// eslint-disable-next-line complexity -- ratchet: applyModifiers is at 12, cap 10 — reduce it, then drop this line
 export function applyModifiers(data, { ctrl = false, alt = false } = {}) {
   if (!ctrl && !alt) return data;
   const sequence = modifiedEscapeSequence(data, { ctrl, alt });
@@ -146,6 +147,7 @@ export const TOUCH_KEYS = [
  * terminal's DECCKM state: an app that set it expects SS3 cursor keys, and gets
  * arrows that do nothing if it is ignored.
  */
+// eslint-disable-next-line complexity -- ratchet: keySequence is at 11, cap 10 — reduce it, then drop this line
 export function keySequence(id, { ctrl = false, alt = false, applicationCursor = false } = {}) {
   if (id === "interrupt") return "\x03"; // already a chord; modifiers would only garble it
   const literal = LITERAL_KEYS[id];

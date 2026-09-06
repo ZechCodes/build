@@ -7,13 +7,16 @@ from __future__ import annotations
 
 from html import escape
 
-from buildapp.landing_page import fill_slots, read_landing_file, render_shell
+from buildapp.landing_page import (
+    HOME_LINK,
+    fill_slots,
+    read_landing_file,
+    render_panel_page,
+)
 from buildapp.waitlist_unsubscribe_token import unsubscribe_path
 
-PANEL_NAME = "unsubscribe.html"
 ADDRESS_FRAGMENT_NAME = "unsubscribe-address.html"
 FORM_FRAGMENT_NAME = "unsubscribe-form.html"
-HOME_LINK_FRAGMENT_NAME = "home-link.html"
 
 CONFIRM_TITLE = "Unsubscribe — Build"
 CONFIRM_HEADING_TEMPLATE = "Remove {address} from the list?"
@@ -25,7 +28,6 @@ REMOVED_HEADING = "You’re off the list."
 REMOVED_MESSAGE_TEMPLATE = (
     "Nothing else will arrive. Changed your mind? Join again from the {home_link}."
 )
-HOME_LINK_LABEL = "home page"
 
 INVALID_TITLE = "Link expired — Build"
 INVALID_HEADING = "This link is no longer valid."
@@ -34,8 +36,6 @@ INVALID_MESSAGE = (
 )
 
 NO_ACTION = ""
-NO_DESCRIPTION = ""
-NO_SCRIPTS = ""
 
 
 def render_address(email: str) -> str:
@@ -53,27 +53,13 @@ def render_remove_form(token: str) -> str:
 
 
 def render_home_link() -> str:
-    return fill_slots(
-        read_landing_file(HOME_LINK_FRAGMENT_NAME), {"home_link_label": HOME_LINK_LABEL}
-    )
-
-
-def render_unsubscribe_page(
-    *, title: str, heading: str, message: str, action: str
-) -> str:
-    return render_shell(
-        title=title,
-        description=NO_DESCRIPTION,
-        body=fill_slots(
-            read_landing_file(PANEL_NAME),
-            {"heading": heading, "message": message, "action": action},
-        ),
-        scripts=NO_SCRIPTS,
-    )
+    """The shared link renderer, so the anchor in this page's copy is the same anchor
+    every other panel page renders."""
+    return HOME_LINK.render()
 
 
 def render_confirm_page(email: str, token: str) -> str:
-    return render_unsubscribe_page(
+    return render_panel_page(
         title=CONFIRM_TITLE,
         heading=CONFIRM_HEADING_TEMPLATE.format(address=render_address(email)),
         message=CONFIRM_MESSAGE,
@@ -82,7 +68,7 @@ def render_confirm_page(email: str, token: str) -> str:
 
 
 def render_removed_page() -> str:
-    return render_unsubscribe_page(
+    return render_panel_page(
         title=REMOVED_TITLE,
         heading=REMOVED_HEADING,
         message=REMOVED_MESSAGE_TEMPLATE.format(home_link=render_home_link()),
@@ -91,7 +77,7 @@ def render_removed_page() -> str:
 
 
 def render_invalid_page() -> str:
-    return render_unsubscribe_page(
+    return render_panel_page(
         title=INVALID_TITLE,
         heading=INVALID_HEADING,
         message=INVALID_MESSAGE,

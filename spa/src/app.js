@@ -36,6 +36,8 @@ export const App = {
   // can't carry this itself (routeFromHash/hashFromRoute only round-trip
   // name/projectId/branch/tab).
   focusComposerOnMount: false,
+
+  openFileOnMount: null,
 };
 
 /** The bridge's provider/model catalog, cached for the session.

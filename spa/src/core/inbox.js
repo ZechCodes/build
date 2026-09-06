@@ -22,8 +22,8 @@
 // nothing to weigh yet says so.
 //
 // Everything that has said nothing for a day is partitioned off into Recent at
-// the end of the list: still there, just not what today is about. With almost
-// nothing above it, it opens by itself.
+// the end of the list: still there, just not what today is about. It starts
+// shut, always — opening it is the user's, and holds until they shut it.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -36,10 +36,6 @@ const DAY_MS = 24 * 3600 * 1000;
 /** How long a row can say nothing before it belongs to Recent rather than to
  *  the list proper. */
 export const RECENT_AFTER_MS = DAY_MS;
-
-/** Under this many rows in the list proper, the inbox has nothing worth hiding
- *  behind a disclosure, so Recent opens itself. */
-export const RECENT_AUTO_OPEN_BELOW = 5;
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";
@@ -91,6 +87,77 @@ export function unreadReasonText(reason, kind) {
   return REASON_COPY[reason] || "Something needs you";
 }
 
+// ---- lifecycle verbs in flight -------------------------------------------------
+//
+// The daemon runs a create, an adopt or a discard with its state lock released
+// and puts a row on the board for the length of that git (`board.list`'s
+// `pending`). The row stands where the record will be, under the id the record
+// will carry, so the list never goes quiet while work is being made — and the
+// record replaces it in place when it lands.
+
+/** What a row in flight says on its second line. A state this client has never
+ *  heard of still reads as work — the dot says so — it just has no line of its
+ *  own to say. */
+const PENDING_LINE = {
+  creating: "Creating…",
+  discarding: "Removing…",
+  updating: "Updating…",
+};
+
+/** One pending row as a feed row: a branch under the id its record will settle
+ *  as, working, dated by nothing — an anchor it has not earned would put it
+ *  somewhere in the list it has no claim to.
+ *
+ *  `placeholder` is what tells this row apart from a card the same verb is
+ *  running ON: there is nothing behind it yet, so it opens nowhere until its
+ *  record lands under the same key. A standing card keeps its own surface for
+ *  the whole of the verb — the reader's issue or run does not stop opening
+ *  because a plan workspace is being cut in it. */
+const pendingItem = (row) => ({
+  kind: "branch",
+  entity_id: row.entity_id,
+  project_id: row.project_id,
+  project: row.project,
+  title: row.title,
+  branch: row.branch || null,
+  pending: row.state,
+  placeholder: true,
+  working: true,
+});
+
+/**
+ * The board's rows for the lifecycle verbs running right now, merged into the
+ * rows the daemon already has.
+ *
+ * A row names two ids and a card may be listed under either: the record it will
+ * settle as (`entity_id` — a run, an issue) and the checkout it holds
+ * (`checkout_id`, a worktree hash). An adopt leaves the run on the board while
+ * it claims the checkout, and a planning workspace holds no checkout at all, so
+ * a card matching either id is the card this verb is running on and is said ON —
+ * one piece of work, one row. A verb making a card that is not there yet stands
+ * on its own until its record lands under the same id, at which point the record
+ * is the row and the placeholder is gone.
+ *
+ * One card is listed under no id at all: a project's primary checkout is the
+ * repository, and it carries a null `worktree_id`, `run_id` and `issue_id`.
+ * Adopting it is the verb that acts on that card, so its row names the primary
+ * of a project instead, and that is the third way a row finds its card.
+ */
+export function mergePendingRows(items = [], pending = []) {
+  const rows = [...(items || [])];
+  const cardOf = (row) => (item) => {
+    if (row.primary) return !!item.primary && item.project_id === row.project_id;
+    const id = entityIdOf(item);
+    return id !== null && (id === row.entity_id || id === row.checkout_id);
+  };
+  for (const row of pending || []) {
+    const standing = rows.findIndex(cardOf(row));
+    if (standing < 0) rows.push(pendingItem(row));
+    else rows[standing] = { ...rows[standing], pending: row.state, working: true };
+  }
+  return rows;
+}
+
 /** Where an entry opens. A branch is (project, branch name); an issue is its
  *  own surface. A checkout with no branch is nameable by no URL, so it opens
  *  nowhere until it is on one.
@@ -100,6 +167,11 @@ export function unreadReasonText(reason, kind) {
  *  surface. One this client is still holding has no record to decide about, so
  *  it opens nowhere. */
 export function entryRoute(item) {
+  // A row standing in for a card that does not exist yet opens nowhere: there
+  // is nothing on the other side of it. It opens itself the moment its record
+  // lands under the same key. A card that is already there keeps its surface
+  // however busy the daemon is with it.
+  if (item.placeholder) return null;
   if (item.kind === "capture") {
     if (item.routing) {
       return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
@@ -153,7 +225,11 @@ export function dismissParamsOf(entry) {
  * The branch's whole weight is what the Changes surface opens on. Ahead/behind
  * stay as they are — they are the row's sync facts, not its change facts.
  */
+// eslint-disable-next-line complexity -- ratchet: entryFactsText is at 14, cap 10 — reduce it, then drop this line
 export function entryFactsText(item) {
+  // What is being done to the row outranks what it weighs: a checkout being cut
+  // has nothing to weigh, and one being removed is about to have nothing.
+  if (item && item.pending) return PENDING_LINE[item.pending] || "";
   const stat = item && item.stat;
   if (!stat) return "";
   const uncommitted = stat.uncommitted || {};
@@ -199,6 +275,7 @@ export function captureStatusText(entry) {
 /** One capture row, as the inbox reads it. A capture holds no conversation and
  *  no agents, so what it needs is read off the record: the router's unanswered
  *  question is the reason, and a route that gave up is a retry. */
+// eslint-disable-next-line complexity -- ratchet: toCaptureEntry is at 20, cap 10 — reduce it, then drop this line
 function toCaptureEntry(item) {
   const question = item.question && !item.question.answer ? item.question.text : "";
   const routing = item.routing || null;
@@ -239,6 +316,7 @@ function toCaptureEntry(item) {
 }
 
 /** One board.list row, as the inbox reads it. */
+// eslint-disable-next-line complexity -- ratchet: toEntry is at 15, cap 10 — reduce it, then drop this line
 function toEntry(item) {
   if (item.kind === "capture") return toCaptureEntry(item);
   const state = entryState(item);
@@ -265,6 +343,12 @@ function toEntry(item) {
     // happened since". It is not mute and not Done: the row is simply absent
     // until an attention event later than the dismissal brings it back.
     dismissed: !!item.dismissed,
+    // What the daemon is doing to this row right now, if anything. A row with
+    // a verb in flight is not the reader's to act on until that verb settles.
+    pending: item.pending || null,
+    // Whether this row IS the verb in flight rather than a card it is running
+    // on. Only a placeholder has nothing to open.
+    placeholder: !!item.placeholder,
     // Done destroys an entity — a branch's records, an issue's plans — and it
     // is spoken in that entity's name. A row that names none has nothing to
     // finish and no way to say it, so it is never offered Done however
@@ -300,12 +384,11 @@ function byAnchor(left, right) {
 
 /**
  * The rows the inbox lists, split into the list proper and Recent:
- * `{ entries, recent, autoOpen }`.
+ * `{ entries, recent }`.
  *
  * Both lists are in anchor order, oldest first. `recent` is everything whose
  * last activity — a file changing, a message, an agent painting — is over a day
- * old, and `autoOpen` is whether the section should be open with nobody having
- * said either way.
+ * old.
  *
  * A row the user cleared (`dismissed`) is in neither list — that is what
  * clearing means, and it is the whole difference from Recent, where a row that
@@ -320,7 +403,7 @@ export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
   const quiet = (entry) => entry.lastActivityMs !== null && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
   const entries = rows.filter((entry) => !quiet(entry));
   const recent = rows.filter(quiet);
-  return { entries, recent, autoOpen: entries.length < RECENT_AUTO_OPEN_BELOW };
+  return { entries, recent };
 }
 
 /** The entities whose local caches stay warm: the inbox's own partition is the
@@ -383,6 +466,10 @@ export function activeEntryKey(route, entries) {
  *  to take. A row with neither Done nor Mute still has its menu — Clear is
  *  what it is for. */
 function menuHtml(entry, open) {
+  // A row the daemon is in the middle of making or removing is not the
+  // reader's to act on: every verb here would race the one already running,
+  // and the daemon refuses a second claim on the same thing anyway.
+  if (entry.pending) return "";
   const items = [];
   if (entry.canFinish) {
     items.push(
@@ -401,8 +488,12 @@ function menuHtml(entry, open) {
       }</span></div>`,
     );
   }
+  // The menu is in the markup only while it is open: the DOM patcher leaves a
+  // split menu's `hidden` alone (a poll must not shut what the reader opened),
+  // so a menu that closes has to leave rather than hide.
+  const menu = open ? `<div class="splitmenu inbox-menu">${items.join("")}</div>` : "";
   return `<button class="iconbtn inbox-more" data-menu="${esc(entry.key)}" title="More" aria-label="More actions for ${esc(entry.name)}">⋯</button>
-    <div class="splitmenu inbox-menu"${open ? "" : " hidden"}>${items.join("")}</div>`;
+    ${menu}`;
 }
 
 /** Everything the two lines leave out, on the row itself: what the work is for,
@@ -415,6 +506,7 @@ function rowTooltip(entry) {
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
  *  line instead (quietRowHtml). */
+// eslint-disable-next-line complexity -- ratchet: inboxRowHtml is at 12, cap 10 — reduce it, then drop this line
 export function inboxRowHtml(entry, ui = {}) {
   if (entry.kind === "capture") return captureRowHtml(entry, ui);
   if (ui.quiet) return quietRowHtml(entry, ui);
@@ -482,10 +574,10 @@ export function inboxEmptyHtml() {
   return '<div class="inbox-clear dim">Nothing needs you. Work you start shows up here.</div>';
 }
 
-/** Whether Recent is open: what the user said if they have said anything, else
- *  what the partition decided for itself. */
-export function recentIsOpen({ autoOpen = false } = {}, recentOpen) {
-  return recentOpen === undefined || recentOpen === null ? !!autoOpen : !!recentOpen;
+/** Whether Recent is open: only if the user opened it. It never opens by
+ *  itself, however thin the list above it. */
+export function recentIsOpen(recentOpen) {
+  return recentOpen === true;
 }
 
 /** Recent's disclosure: the one control at the end of the list, counting what is
@@ -547,6 +639,7 @@ function rerouteMenuHtml(entry, ui = {}) {
 
 /** One capture row. `ui`: { activeKey, rerouteKey, projects, rerouteBranchProject,
  *  rerouteBranches }. */
+// eslint-disable-next-line complexity -- ratchet: captureRowHtml is at 14, cap 10 — reduce it, then drop this line
 export function captureRowHtml(entry, ui = {}) {
   const working = entry.captureState === "queued" || entry.captureState === "unrouted" || entry.captureState === "routing";
   // A question is the router at rest, waiting on the user: a spinner there

@@ -3,7 +3,7 @@
 // layer, one actionbar the surface fills with its own verbs.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createReviewPlug, reviewBarHtml, emptyStackHtml, REVIEW_POLL_MS } from "../src/core/changesReview.js";
+import { createReviewPlug, reviewBarHtml, emptyStackText, REVIEW_POLL_MS } from "../src/core/changesReview.js";
 
 const patchOf = (line) =>
   [
@@ -42,11 +42,11 @@ describe("reviewBarHtml", () => {
   });
 });
 
-describe("emptyStackHtml", () => {
+describe("emptyStackText", () => {
   it("distinguishes a filtered-away stack from an empty diff", () => {
-    expect(emptyStackHtml(4, true)).toContain("Nothing changed since your review.");
-    expect(emptyStackHtml(0, true)).toContain("No file changes yet.");
-    expect(emptyStackHtml(4, false)).toContain("No file changes yet.");
+    expect(emptyStackText(4, true)).toContain("Nothing changed since your review.");
+    expect(emptyStackText(0, true)).toContain("No file changes yet.");
+    expect(emptyStackText(4, false)).toContain("No file changes yet.");
   });
 });
 

@@ -10,6 +10,7 @@
 
 /** Score `text` against `query`, or null when the query is not a subsequence.
  *  Higher is better. Case-insensitive. */
+// eslint-disable-next-line complexity -- ratchet: fuzzyScore is at 12, cap 10 — reduce it, then drop this line
 export function fuzzyScore(text, query) {
   const haystack = String(text || "");
   const needle = String(query || "").trim();

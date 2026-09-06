@@ -15,8 +15,9 @@ import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
 import { railEntity } from "./agentRailModel.js";
-import { FIRST_PAGE_ITEMS, windowFromThreadPayload } from "./thread.js";
-import { cachedEntityIds, cachedSubKeys, evictEntity, writeCached } from "./localCache.js";
+import { FIRST_PAGE_ITEMS, THREAD_RECORD_KIND, windowFromThreadPayload } from "./thread.js";
+import { cachedEntityIds, cachedSubKeys, evictEntity, readCached, writeCached } from "./localCache.js";
+import { surfacesCacheAddress, surfacesFingerprint, surfacesFromRecord, surfacesRecord } from "./surfacesCache.js";
 
 const SYNC_LOCK = "build.cacheSync";
 
@@ -44,25 +45,39 @@ function gitScopeOf(row) {
   return null;
 }
 
+async function writeSurfaces(deviceId, entityId, agents) {
+  for (const agent of agents) {
+    if (!agent.id || !agent.surfaces) continue;
+    const address = surfacesCacheAddress({ deviceId, entityId, agentId: agent.id });
+    const stored = surfacesFromRecord(await readCached(address));
+    if (stored && surfacesFingerprint(stored.surfaces) === surfacesFingerprint(agent.surfaces)) continue;
+    await writeCached(address, surfacesRecord(agent.surfaces));
+  }
+}
+
 /** Re-read the conversations that were ever warmed on this entity — one full
  *  first page per agent, stored as the saved window the rail seeds from. A
  *  conversation never opened has no record here and is never asked for. */
 async function refreshThreads(deviceId, entityId, row) {
   const isIssue = row.kind === "issue";
   const detailParams = isIssue ? { issue_id: entityId } : { project_id: row.project_id, branch: row.branch };
-  for (const agentSub of await cachedSubKeys(deviceId, entityId, "thread")) {
+  let agentsOnEntity = [];
+  for (const agentSub of await cachedSubKeys(deviceId, entityId, THREAD_RECORD_KIND)) {
     try {
       const payload = await App.call(isIssue ? "issue.get" : "branch.get", {
         ...detailParams,
         ...(agentSub ? { agent_id: agentSub } : {}),
         thread_limit: FIRST_PAGE_ITEMS,
       });
-      const shaped = windowFromThreadPayload(railEntity(payload, isIssue ? "issue" : "branch").thread);
-      if (shaped) await writeCached({ deviceId, entityId, kind: "thread", sub: agentSub }, shaped);
+      const detail = railEntity(payload, isIssue ? "issue" : "branch");
+      agentsOnEntity = detail.agents;
+      const shaped = windowFromThreadPayload(detail.thread);
+      if (shaped) await writeCached({ deviceId, entityId, kind: THREAD_RECORD_KIND, sub: agentSub }, shaped);
     } catch {
       /* transient, or the agent left — the next event tries again */
     }
   }
+  await writeSurfaces(deviceId, entityId, agentsOnEntity);
 }
 
 /** Keep a branch's file listings warm: the top-level directory always — the
@@ -123,6 +138,7 @@ async function refreshEntity(entityId) {
   }
 }
 
+// eslint-disable-next-line complexity -- ratchet: onSnapshot is at 14, cap 10 — reduce it, then drop this line
 async function onSnapshot(snapshot) {
   const deviceId = deviceIdNow();
   // The feed's boot paint is this cache talking; only live answers are news.

@@ -1,5 +1,7 @@
 export const SPAWNING_CALL_SEQUENCE = 12;
 
+export const WORKFLOW_STARTED_AT = 1788291725678;
+
 export const surfacesSnapshot = (overrides = {}) => ({
   workflows: [
     {
@@ -7,7 +9,10 @@ export const surfacesSnapshot = (overrides = {}) => ({
       name: "Review sweep",
       state: "running",
       phases: [
-        { title: "Read", agents: [{ id: "a1", label: "reader", state: "running" }] },
+        {
+          title: "Read",
+          agents: [{ id: "a1", label: "reader", state: "running", started_at: WORKFLOW_STARTED_AT }],
+        },
         { title: "Judge", agents: [{ id: "a2", label: "judge", state: "queued" }] },
       ],
     },

@@ -1,11 +1,33 @@
 // Adopt-on-first-mutation: a run-RPC caller bound to one checkout that
 // transparently mints a run (run.adopt) the first time a mutating action runs,
 // then routes every call through the adopted run_id. Adoption happens at most
-// once; a failed adopt leaves the checkout un-adopted so the next action retries.
+// once; a refused adopt leaves the checkout un-adopted so the next action retries.
 //
 // Two checkouts adopt this way and they take the same path: an external
 // worktree (`worktree_id`) and the project's primary checkout (`primary: true`),
 // the repo root as a super-worktree. Only the scope the adopt names differs.
+
+import { replyOrNothing } from "./session.js";
+
+/** How long to wait before asking the daemon again whether the adoption it is
+ *  running has landed. The daemon runs an adopt's git — a scan, a checkpoint
+ *  commit, a scaffold — behind its answer, so the answer can outlive the RPC
+ *  timer while the adoption succeeds; and an adopt that arrives while that git
+ *  runs is told so and handed no run, since none is durable yet. Both read the
+ *  same way: the checkout is being claimed, ask again. */
+export const ADOPT_REASK_MS = 2000;
+/** How many times to ask again before giving up on the daemon ever naming the
+ *  run. A bound, so a daemon that never answers is an error and not a poll. */
+export const ADOPT_REASK_LIMIT = 30;
+
+const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+/** The `run.adopt` params naming one external worktree — the shape both the
+ *  transparent adopter and an explicit adoption send, defined once. */
+export const worktreeAdoptScope = (projectId, worktreeId) => ({ project_id: projectId, worktree_id: worktreeId });
+
+/** The `run.adopt` params naming a project's primary checkout, adopted as a
+ *  super-worktree: what it is, not an id. */
+export const primaryAdoptScope = (projectId) => ({ project_id: projectId, primary: true });
 
 /** A run-RPC caller for one checkout that transparently adopts on first use.
  *  `adoptScope` is the run.adopt params naming that checkout. */
@@ -14,16 +36,28 @@ function createScopedAdoptingCall(call, adoptScope) {
   let adoptInFlight = null;
   let adoptParams = {};
 
+  /** Ask until the daemon names the run that owns this checkout. Only a
+   *  refusal ends the asking early: a reply the timer cut short, or one that
+   *  names no run, is the adoption still running. */
+  const adoptUntilNamed = async () => {
+    for (let asked = 0; ; asked += 1) {
+      const view = await replyOrNothing(call("run.adopt", { ...adoptScope, ...adoptParams }));
+      if (view && view.run_id) return view.run_id;
+      if (asked >= ADOPT_REASK_LIMIT) throw new Error("run.adopt never answered with a run");
+      await wait(ADOPT_REASK_MS);
+    }
+  };
+
   const ensureAdopted = () => {
     if (runId) return Promise.resolve(runId);
     if (!adoptInFlight) {
-      adoptInFlight = call("run.adopt", { ...adoptScope, ...adoptParams }).then(
-        (view) => {
-          runId = view.run_id;
+      adoptInFlight = adoptUntilNamed().then(
+        (named) => {
+          runId = named;
           return runId;
         },
         (error) => {
-          adoptInFlight = null; // a failed adopt must not stick — let a retry re-adopt
+          adoptInFlight = null; // a refused adopt must not stick — let a retry re-adopt
           throw error;
         },
       );
@@ -61,14 +95,14 @@ function createScopedAdoptingCall(call, adoptScope) {
 /** A run-RPC caller for one external worktree. `call` is App.call-shaped
  *  (injected for tests). */
 export function createAdoptingCall(call, projectId, worktreeId) {
-  return createScopedAdoptingCall(call, { project_id: projectId, worktree_id: worktreeId });
+  return createScopedAdoptingCall(call, worktreeAdoptScope(projectId, worktreeId));
 }
 
 /** A run-RPC caller for a project's primary checkout — the repo root, adopted
  *  as a super-worktree. The bridge enforces one owner per project, so a reload
  *  or a second browser converges on the run that already owns it. */
 export function createPrimaryAdoptingCall(call, projectId) {
-  return createScopedAdoptingCall(call, { project_id: projectId, primary: true });
+  return createScopedAdoptingCall(call, primaryAdoptScope(projectId));
 }
 
 /** What checkout a scope names, as one string — the key an adopter is kept

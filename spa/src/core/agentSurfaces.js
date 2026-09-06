@@ -1,8 +1,8 @@
 import { el } from "../dom.js";
-import { patchElement } from "./domPatch.js";
+import { EXPANDED_ATTRIBUTE, patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { EXITING_ATTRIBUTE, patchList } from "./patchList.js";
-import { runningClock } from "./agentRailModel.js";
+import { elapsedClock } from "./agentRailModel.js";
 import { openModal } from "./modal.js";
 import {
   AGENT_ENTRY_KIND,
@@ -25,25 +25,26 @@ import {
   writeOpenSurface,
 } from "./agentSurfacesModel.js";
 import {
+  PRESSABLE_CLIP_SELECTOR,
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
   PILL_COUNT_SELECTOR,
-  ROW_CLOCK_SELECTOR,
   SURFACE_OVERLAY_BODY_SELECTOR,
   SURFACE_SELECTOR,
+  TICKING_CLOCK_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
   completedFoldHeadHtml,
   completedFoldHtml,
   kindViewerHtml,
+  phaseSectionHtml,
   runningAndCompletedViewerHtml,
   shellRowHtml,
   surfaceOverlayHtml,
   surfacePillHtml,
   workflowChoiceHtml,
   workflowHeadHtml,
-  workflowPhaseHtml,
   workflowViewerHtml,
 } from "./agentSurfacesRender.js";
 
@@ -52,15 +53,24 @@ const ROW_CLOCK_TICK_MS = 1000;
 const PILL_MOTION = motionHooks({ axis: "width" });
 const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
-const oneListOfKind = (kind, render) => ({
-  frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
-  lists: ({ surfaces }) => [{ selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render }],
+const nothingToRender = () => "";
+
+const oneListOfKind = (kind, renderRow) => ({
+  frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], nothingToRender),
+  lists: ({ surfaces, reading, rowOptions }) => [
+    {
+      selector: SURFACE_SELECTOR[kind],
+      rows: surfaceRows(kind, surfaces, reading),
+      render: (row) => renderRow(row, rowOptions),
+    },
+  ],
 });
 
-const runningAboveWhatFinished = (kind, render) => ({
-  frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, render),
-  lists: ({ surfaces }) => {
-    const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces));
+const runningAboveWhatFinished = (kind, renderRow) => ({
+  frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, nothingToRender),
+  lists: ({ surfaces, reading, rowOptions }) => {
+    const render = (row) => renderRow(row, rowOptions);
+    const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces, reading));
     return [
       { selector: SURFACE_SELECTOR.running, rows: running, render },
       { selector: SURFACE_SELECTOR.completed, rows: completed, render, folded: true },
@@ -68,45 +78,68 @@ const runningAboveWhatFinished = (kind, render) => ({
   },
 });
 
+const openNewlyRunningPhase = (opened, section, phase) => {
+  if (!phase.open || opened.has(phase.key)) return;
+  opened.add(phase.key);
+  section.open = true;
+};
+
 const VIEWER_PLANS = {
   [WORKFLOW_ENTRY_KIND]: {
-    frameHtmlWithEmptyLists: () => workflowViewerHtml({}, [], [], []),
+    frameHtmlWithEmptyLists: () => workflowViewerHtml({}, []),
     headSelector: WORKFLOW_HEAD_SELECTOR,
     headHtml: ({ workflow }) => workflowHeadHtml(workflow || {}),
-    lists: ({ surfaces, selectedWorkflowIndex, selectedPhaseIndex }) => {
-      const { phases, agents } = workflowPhases(surfaces, selectedWorkflowIndex, selectedPhaseIndex);
-      return [
-        {
-          selector: SURFACE_SELECTOR.workflowChoices,
-          rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex),
-          render: workflowChoiceHtml,
-        },
-        { selector: SURFACE_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
-        { selector: SURFACE_SELECTOR.workflowAgents, rows: agents, render: agentRowHtml },
-      ];
-    },
+    lists: ({ surfaces, selectedWorkflowIndex, reading, rowOptions, openedPhases }) => [
+      {
+        selector: SURFACE_SELECTOR.workflowChoices,
+        rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex, reading),
+        render: workflowChoiceHtml,
+      },
+      {
+        selector: SURFACE_SELECTOR.workflowPhases,
+        rows: workflowPhases(surfaces, selectedWorkflowIndex, reading),
+        render: phaseSectionHtml,
+        onPainted: (section, phase) => openNewlyRunningPhase(openedPhases, section, phase),
+        nested: (phase) => ({
+          selector: SURFACE_SELECTOR.workflowAgents,
+          rows: phase.rows,
+          render: (row) => agentRowHtml(row, rowOptions),
+        }),
+      },
+    ],
   },
   [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
   [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
   [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
 };
 
-export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
+function expandClippedText(event) {
+  const clipped = event.target.closest(PRESSABLE_CLIP_SELECTOR);
+  if (!clipped) return false;
+  event.preventDefault();
+  clipped.setAttribute("aria-expanded", String(clipped.toggleAttribute(EXPANDED_ATTRIBUTE)));
+  return true;
+}
+
+const CLIP_KEYS = ["Enter", " "];
+
+export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel }) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
+  const rowOptions = { compact };
+  const openedPhases = new Set();
   let surfaces = null;
   let selectedWorkflowIndex = 0;
-  let selectedPhaseIndex = 0;
   let ticker = null;
 
   const paintRowClocks = () => {
     const nowMs = Date.now();
-    const spans = [...host.querySelectorAll(ROW_CLOCK_SELECTOR)].filter(
+    const spans = [...host.querySelectorAll(TICKING_CLOCK_SELECTOR)].filter(
       (span) => !span.closest(`[${EXITING_ATTRIBUTE}]`),
     );
     for (const span of spans) {
-      span.textContent = runningClock((nowMs - Number(span.dataset.runningSince)) / 1000);
+      span.textContent = elapsedClock(Number(span.dataset.runningSince), nowMs);
     }
     return spans.length;
   };
@@ -136,12 +169,30 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
     return standing.querySelector(SURFACE_SELECTOR.completed);
   };
 
+  const paintList = (container, list) => {
+    const painted = patchList(container, list.rows, {
+      keyOf: (row) => row.key,
+      render: list.render,
+      ...VIEWER_ROW_MOTION,
+    });
+    painted.forEach((element, index) => {
+      const row = list.rows[index];
+      if (list.onPainted) list.onPainted(element, row);
+      if (!list.nested) return;
+      const inner = list.nested(row);
+      paintList(element.querySelector(inner.selector), inner);
+    });
+  };
+
   const paint = () => {
+    const reading = { nowMs: Date.now(), modelLabel };
     const paintContext = {
       surfaces,
-      workflow: openWorkflow(surfaces, selectedWorkflowIndex),
+      workflow: openWorkflow(surfaces, selectedWorkflowIndex, reading),
       selectedWorkflowIndex,
-      selectedPhaseIndex,
+      reading,
+      rowOptions,
+      openedPhases,
     };
     if (plan.headSelector) {
       patchElement(host.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
@@ -149,26 +200,16 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
     for (const list of plan.lists(paintContext)) {
       const container = list.folded ? completedFoldContainer(list.rows.length) : host.querySelector(list.selector);
       if (!container) continue;
-      patchList(container, list.rows, {
-        keyOf: (row) => row.key,
-        render: list.render,
-        ...VIEWER_ROW_MOTION,
-      });
+      paintList(container, list);
     }
     tickWhileAnyRowIsRunning();
   };
 
   const onViewerPress = (event) => {
+    if (expandClippedText(event)) return;
     const workflow = event.target.closest("[data-workflow-index]");
     if (workflow) {
       selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);
-      selectedPhaseIndex = 0;
-      paint();
-      return;
-    }
-    const phase = event.target.closest("[data-phase-index]");
-    if (phase) {
-      selectedPhaseIndex = Number(phase.dataset.phaseIndex);
       paint();
       return;
     }
@@ -176,8 +217,13 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
     if (spawned && onOpenThreadItem) onOpenThreadItem(Number(spawned.dataset.callSequence));
   };
 
+  const onViewerKey = (event) => {
+    if (CLIP_KEYS.includes(event.key)) expandClippedText(event);
+  };
+
   host.innerHTML = plan.frameHtmlWithEmptyLists();
   host.addEventListener("click", onViewerPress);
+  host.addEventListener("keydown", onViewerKey);
 
   return {
     kind,
@@ -188,12 +234,13 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
     dispose() {
       stopTicking();
       host.removeEventListener("click", onViewerPress);
+      host.removeEventListener("keydown", onViewerKey);
       host.innerHTML = "";
     },
   };
 }
 
-export function openSurfaceOverlay(kind, { onOpenThreadItem, onClose = null, host = document.body }) {
+export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, onClose = null, host = document.body }) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
@@ -203,7 +250,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, onClose = null, hos
       if (onClose) onClose();
     },
   });
-  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem });
+  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem, modelLabel });
   return {
     kind,
     set(surfaces) {
@@ -213,7 +260,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, onClose = null, hos
   };
 }
 
-export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, onPillsChanged }) {
+export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, modelLabel, onPillsChanged }) {
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = readOpenSurface(key);
@@ -255,7 +302,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     }
     closingFrame = null;
     if (viewer) viewer.dispose();
-    viewer = mountSurfaceViewer(viewerHost, kind, { onOpenThreadItem });
+    viewer = mountSurfaceViewer(viewerHost, kind, { onOpenThreadItem, modelLabel, compact: true });
     reveal(viewerHost, { axis: "height" });
     viewer.set(surfaces);
   };
@@ -313,12 +360,12 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
   pillHost.addEventListener("click", onPillPress);
 
   return {
-    set(nextSurfaces) {
+    set(nextSurfaces, seenAtMs = Date.now()) {
       const arriving = JSON.stringify(nextSurfaces || null);
       const unchangedSinceLastPaint = arriving === paintedSurfaces;
       paintedSurfaces = arriving;
       surfaces = nextSurfaces || null;
-      visibility = advanceSurfaceVisibility(visibility, surfaces, Date.now());
+      visibility = advanceSurfaceVisibility(visibility, surfaces, seenAtMs);
       if (unchangedSinceLastPaint) return;
       paint();
     },

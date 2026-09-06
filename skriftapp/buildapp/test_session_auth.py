@@ -9,14 +9,15 @@ from uuid import UUID, uuid4
 
 import pytest
 from litestar.exceptions import NotAuthorizedException
+from litestar.response import Redirect
 
 from skrift.auth.session_keys import SESSION_USER_ID
 
-from buildapp.session_auth import require_user, session_user_id
+from buildapp.session_auth import login_redirect, require_user, session_user_id
 
 
-def _request_with_session(session: dict) -> SimpleNamespace:
-    return SimpleNamespace(session=session)
+def _request_with_session(session: dict, state: dict | None = None) -> SimpleNamespace:
+    return SimpleNamespace(session=session, scope={"state": state or {}})
 
 
 def test_session_user_id_returns_the_uuid():
@@ -40,8 +41,23 @@ def test_require_user_returns_the_uuid():
     assert require_user(request) == UUID(str(user_id))
 
 
+def test_require_user_returns_the_guarded_desktop_user():
+    user_id = uuid4()
+    request = _request_with_session({}, {"build_user_id": str(user_id)})
+    assert require_user(request) == user_id
+
+
 def test_require_user_raises_not_authorized_for_missing_or_malformed():
     with pytest.raises(NotAuthorizedException):
         require_user(_request_with_session({}))
     with pytest.raises(NotAuthorizedException):
         require_user(_request_with_session({SESSION_USER_ID: "not-a-uuid"}))
+
+
+def test_login_redirect_hands_the_visitor_to_skrift_and_names_where_to_come_back():
+    """One spelling of "log in and return here". Skrift stores ``next`` in its own
+    session key and honours it after a sign-in AND after a passkey account creation,
+    so a guest with no account yet makes one and lands where they were headed."""
+    redirect = login_redirect("/app/")
+    assert isinstance(redirect, Redirect)
+    assert redirect.url == "/auth/login?next=/app/"

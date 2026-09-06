@@ -18,11 +18,14 @@ use std::time::Duration;
 use portable_pty::PtySize;
 use tokio::sync::{broadcast, watch};
 
+use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::surfaces::AgentSurfaces;
 
 /// Things that can go wrong starting or driving a harness session.
 #[derive(Debug, thiserror::Error)]
 pub enum HarnessError {
+    #[error("harness setup error: {0}")]
+    Setup(String),
     #[error("harness session error: {0}")]
     Session(String),
     #[error("io error: {0}")]
@@ -318,6 +321,17 @@ impl ActivityReport {
             parent_call_id: None,
         }
     }
+
+    /// Operational text about the work, collapsed onto one line and clipped to
+    /// the activity summary bound. Every carrier that narrates its own
+    /// machinery — a declined approval, an error the session survived, a
+    /// review-mode transition — builds its row here, so the bound and the
+    /// report kind have one owner.
+    pub fn bounded_task_update(summary: &str) -> ActivityReport {
+        ActivityReport::own_work(AgentActivity::TaskUpdate {
+            summary: one_line(summary, TOOL_SUMMARY_LIMIT),
+        })
+    }
 }
 
 /// What a session says about itself, subscribed at the moment it opened.
@@ -331,6 +345,10 @@ pub struct SessionOutput {
     pub bytes: Option<broadcast::Receiver<Vec<u8>>>,
     /// The session's own account of its work, for one that keeps it.
     pub activity: Option<broadcast::Receiver<ActivityReport>>,
+    /// The session's notice that its surfaces moved, for one that keeps them
+    /// ([`AgentSession::surfaces_changed`]). Carried here so the pump that
+    /// watches it never has to read the session back off a registry.
+    pub surfaces: Option<watch::Receiver<u64>>,
 }
 
 impl SessionOutput {
@@ -339,14 +357,19 @@ impl SessionOutput {
         SessionOutput {
             bytes: Some(bytes),
             activity: None,
+            surfaces: None,
         }
     }
 
     /// The output of a session that reports what it is doing.
-    pub fn reporting(activity: broadcast::Receiver<ActivityReport>) -> SessionOutput {
+    pub fn reporting(
+        activity: broadcast::Receiver<ActivityReport>,
+        surfaces: Option<watch::Receiver<u64>>,
+    ) -> SessionOutput {
         SessionOutput {
             bytes: None,
             activity: Some(activity),
+            surfaces,
         }
     }
 
@@ -356,6 +379,7 @@ impl SessionOutput {
         SessionOutput {
             bytes: None,
             activity: None,
+            surfaces: None,
         }
     }
 }
@@ -453,6 +477,21 @@ mod tests {
         let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
         assert!(session.interrupt().is_err());
         assert!(!session.can_interrupt());
+    }
+
+    /// Every carrier that reports operational text builds the same bounded row
+    /// through one constructor, so the clip rule has one owner.
+    #[test]
+    fn a_bounded_task_update_collapses_and_clips_its_summary() {
+        let sprawling = format!("operational\n text {}", "x".repeat(TOOL_SUMMARY_LIMIT));
+        let report = ActivityReport::bounded_task_update(&sprawling);
+        assert_eq!(report.parent_call_id, None);
+        assert!(matches!(report.activity, AgentActivity::TaskUpdate { .. }));
+        assert_eq!(
+            report.activity.summary().chars().count(),
+            TOOL_SUMMARY_LIMIT + 1,
+            "the clipped summary keeps the ellipsis the bound adds"
+        );
     }
 
     /// The capability defaults to absent, so a harness that is not opaque gets

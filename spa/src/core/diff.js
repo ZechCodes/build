@@ -1,6 +1,7 @@
 // Unified-diff parsing for the review surface. Pure: patch text in, rows out.
 
 /** Parse a `git diff` patch into per-file row lists the diff tab can render. */
+// eslint-disable-next-line complexity -- ratchet: parseDiff is at 16, cap 10 — reduce it, then drop this line
 export function parseDiff(patch) {
   const files = [];
   let current = null;
@@ -31,6 +32,38 @@ export function parseDiff(patch) {
     }
   }
   return files;
+}
+
+export function fileKey(file) {
+  return `${file.status}:${file.path}`;
+}
+
+export function pathOf(key) {
+  const text = String(key);
+  return text.slice(text.indexOf(":") + 1);
+}
+
+export function firstLineOf(file) {
+  const row = (file.rows || []).find((each) => typeof each.n === "number");
+  return row ? row.n : 1;
+}
+
+const OPEN = "open";
+const SHUT = "shut";
+const CAPPED = "capped";
+
+export function untouchedFold(key, viewed) {
+  return viewed && viewed.has(pathOf(key)) ? SHUT : CAPPED;
+}
+
+export function createFileFolds() {
+  const moved = new Map();
+  const foldOf = (key, { viewed = null } = {}) => moved.get(key) || untouchedFold(key, viewed);
+  return {
+    foldOf,
+    press: (key, { viewed = null } = {}) => moved.set(key, foldOf(key, { viewed }) === SHUT ? OPEN : SHUT),
+    openBody: (key) => moved.set(key, OPEN),
+  };
 }
 
 // ---- hunk identity ---------------------------------------------------------

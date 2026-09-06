@@ -12,13 +12,21 @@
 #   build-app       SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL,
 #                   VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT (web push),
 #                   SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS,
-#                   WAITLIST_NOTIFY_ADDRESS (outbound email)
+#                   WAITLIST_NOTIFY_ADDRESS (outbound email),
+#                   CF_TURN_KEY_ID, CF_TURN_KEY_API_TOKEN (Cloudflare TURN),
+#                   GITHUB_RELEASES_TOKEN (private release assets)
 #   build-relay     RELAY_INTERNAL_SECRET (same value as INTERNAL_API_SECRET)
 #
 # The email keys are credentials this script cannot invent: export
 # SMTP_USERNAME, SMTP_PASSWORD and SMTP_FROM_ADDRESS (and optionally
 # WAITLIST_NOTIFY_ADDRESS) in the environment before running, or the SMTP step
 # aborts.
+#
+# The Cloudflare TURN key is minted in the Cloudflare dashboard, so it cannot be
+# invented either — but the app runs without it (the ICE-servers route answers a
+# STUN-only list), so exporting CF_TURN_KEY_ID and CF_TURN_KEY_API_TOKEN is
+# optional and their absence is reported, not fatal. GITHUB_RELEASES_TOKEN is the
+# same shape of thing: minted on github.com, optional, absence reported.
 set -euo pipefail
 
 NAMESPACE=8ly
@@ -46,7 +54,7 @@ b64url() { base64 | tr -d '=\n' | tr '/+' '_-'; }
 # display-name from address cannot break (or extend) the merge patch.
 b64_value() { printf %s "$1" | base64 | tr -d '\n'; }
 
-smtp_key_missing() { [[ -z "$(kc get secret build-app -o "jsonpath={.data.$1}")" ]]; }
+app_key_missing() { [[ -z "$(kc get secret build-app -o "jsonpath={.data.$1}")" ]]; }
 
 # Generate a VAPID (P-256) keypair into VAPID_PRIVATE_KEY / VAPID_PUBLIC_KEY:
 # the raw 32-byte private scalar and the 65-byte uncompressed public point,
@@ -108,8 +116,8 @@ fi
 # The FastMail credentials the waitlist mail needs, plus the owner notification
 # address (empty disables the notification). Never generated — the operator
 # exports them before running.
-if smtp_key_missing SMTP_USERNAME || smtp_key_missing SMTP_PASSWORD \
-  || smtp_key_missing SMTP_FROM_ADDRESS || smtp_key_missing WAITLIST_NOTIFY_ADDRESS; then
+if app_key_missing SMTP_USERNAME || app_key_missing SMTP_PASSWORD \
+  || app_key_missing SMTP_FROM_ADDRESS || app_key_missing WAITLIST_NOTIFY_ADDRESS; then
   require_env SMTP_USERNAME
   require_env SMTP_PASSWORD
   require_env SMTP_FROM_ADDRESS
@@ -119,6 +127,38 @@ if smtp_key_missing SMTP_USERNAME || smtp_key_missing SMTP_PASSWORD \
     \"SMTP_FROM_ADDRESS\":\"$(b64_value "$SMTP_FROM_ADDRESS")\",
     \"WAITLIST_NOTIFY_ADDRESS\":\"$(b64_value "${WAITLIST_NOTIFY_ADDRESS:-}")\"}}"
   echo "secret build-app: SMTP keys added"
+fi
+
+# --- build-app cloudflare turn (add-if-missing) -------------------------------
+# The TURN key the ICE-servers route mints per-user credentials from. Never
+# generated: it comes from the Cloudflare dashboard. Without it the route answers
+# a STUN-only list and direct paths still carry every peer that can hole-punch,
+# so a bootstrap with no key is a supported deployment, not a failure.
+if app_key_missing CF_TURN_KEY_ID || app_key_missing CF_TURN_KEY_API_TOKEN; then
+  if [[ -n "${CF_TURN_KEY_ID:-}" && -n "${CF_TURN_KEY_API_TOKEN:-}" ]]; then
+    kc patch secret build-app --type merge -p "{\"data\":{
+      \"CF_TURN_KEY_ID\":\"$(b64_value "$CF_TURN_KEY_ID")\",
+      \"CF_TURN_KEY_API_TOKEN\":\"$(b64_value "$CF_TURN_KEY_API_TOKEN")\"}}"
+    echo "secret build-app: Cloudflare TURN keys added"
+  else
+    echo "secret build-app: no CF_TURN_KEY_ID/CF_TURN_KEY_API_TOKEN in the environment, ICE stays STUN-only"
+  fi
+fi
+
+# --- build-app github releases token (add-if-missing) --------------------------
+# The read-only PAT the download routes stream private release assets with. Never
+# generated: it is a fine-grained token minted on github.com with Contents: read
+# on ZechCodes/build-web. Without it the same routes 302 to the public assets,
+# which is exactly what they do once the repository is public, so a bootstrap with
+# no token is a supported deployment, not a failure.
+if app_key_missing GITHUB_RELEASES_TOKEN; then
+  if [[ -n "${GITHUB_RELEASES_TOKEN:-}" ]]; then
+    kc patch secret build-app --type merge -p "{\"data\":{
+      \"GITHUB_RELEASES_TOKEN\":\"$(b64_value "$GITHUB_RELEASES_TOKEN")\"}}"
+    echo "secret build-app: GitHub releases token added"
+  else
+    echo "secret build-app: no GITHUB_RELEASES_TOKEN in the environment, downloads redirect to the public assets"
+  fi
 fi
 
 # --- build-relay ---------------------------------------------------------------

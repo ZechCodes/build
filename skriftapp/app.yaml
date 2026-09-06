@@ -7,6 +7,8 @@
 #   VAPID_PRIVATE_KEY    — web-push VAPID private key (base64url raw P-256 scalar)
 #   VAPID_PUBLIC_KEY     — web-push VAPID public key (base64url uncompressed point)
 #   VAPID_SUBJECT        — optional contact claim, default mailto:ops@getbuild.ing
+#   CF_TURN_KEY_ID       — Cloudflare TURN key id (optional: absent means the
+#   CF_TURN_KEY_API_TOKEN  ICE-servers route answers a STUN-only list)
 #   SMTP_USERNAME        — FastMail login address
 #   SMTP_PASSWORD        — FastMail app password (not the account password)
 #   SMTP_FROM_ADDRESS    — an address or alias on that account, e.g. Build <hello@getbuild.ing>
@@ -18,7 +20,12 @@ controllers:
   - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
+  - buildapp.rtc_controller:RtcController
+  - buildapp.transport_controller:TransportController
+  - buildapp.transport_admin:TransportAdminController
   - buildapp.waitlist_controller:WaitlistController
+  - buildapp.invites_controller:InvitesController
+  - buildapp.invites_admin:InvitesAdminController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:
@@ -33,6 +40,7 @@ auth:
     passkey:
       type: passkey
       label: Passkey
+oauth2_enabled: true
 rate_limit:
   enabled: true
   rules:
@@ -46,6 +54,17 @@ rate_limit:
           per: minute
         - limit: 100
           per: day
+    # An invite link is a secret; a caller walking the token space gets 30 tries a
+    # minute and nothing else.
+    - name: invite_open
+      match:
+        path: /invite/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 30
+          per: minute
 email:
   backend: skrift.lib.email_backends:SMTPEmailBackend
   from_address: $SMTP_FROM_ADDRESS
@@ -69,5 +88,6 @@ internal_api:
 #   img-src    data:              — inline-encoded icons
 #   connect-src data:             — ghostty-web instantiates its wasm from a data: URL
 security_headers:
+  # OAuth consent may hand navigation back to the registered desktop client.
   csp_nonce: true
-  content_security_policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' data: wss://relay.getbuild.ing; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'self'; object-src 'none'"
+  content_security_policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' data: wss://relay.getbuild.ing; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self' getbuilding:; base-uri 'self'; object-src 'none'"

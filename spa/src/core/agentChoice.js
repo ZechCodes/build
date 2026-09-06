@@ -3,8 +3,8 @@
 // Two places ask the same question — the compose box's advanced panel and the
 // toolbar's create menu — and both mean exactly the same thing by it, so they
 // ask it with the same component. The catalog is the bridge's (models.list, via
-// App.modelCatalog); an empty choice means the harness's own default, which is
-// what "no preference" has to be able to say.
+// App.modelCatalog). An empty model or effort means the harness's own default;
+// the provider always resolves against the catalog the panel displays.
 
 import { esc } from "./text.js";
 import {
@@ -20,7 +20,7 @@ import {
   providerOptionsHtml,
 } from "./modelPicker.js";
 
-/** The empty choice: whatever the daemon's catalog says is default. */
+/** No stored preferences; the provider resolves against the displayed offer. */
 export const NO_AGENT_CHOICE = { provider: "", model: "", effort: "" };
 
 /** The provider a choice is really on: the one it named, else the catalog's
@@ -51,6 +51,7 @@ export function chosenProviderId(catalog, choice) {
  * account has already answered. An agent that already exists is locked to its
  * own harness and asks none of this: its picker is the composer's model menu.
  */
+// eslint-disable-next-line complexity -- ratchet: agentChoicePanelHtml is at 11, cap 10 — reduce it, then drop this line
 export function agentChoicePanelHtml(catalog, choice, { prefix = "agent-choice", open = false } = {}) {
   const offered = creatableCatalog(catalog || {});
   const providerId = chosenProviderId(offered, choice);
@@ -84,17 +85,17 @@ export function readAgentChoice(root, prefix = "agent-choice") {
   return { provider: valueOf("provider"), model: valueOf("model"), effort: valueOf("effort") };
 }
 
-/** The choice as create/dispatch params: empties are omitted (the harness's own
- *  default stands), and an effort the model does not support is dropped.
+/** The choice as create/dispatch params: empty model and effort are omitted (the
+ *  harness's own defaults stand), and unsupported effort is dropped.
  *
  *  The provider sent is the CLAMPED one — what the select painted — so a stale
- *  token cannot ride out on the wire under a control that showed another name.
- *  An empty provider still means the harness's own default and stays empty. */
+ *  token or an unavailable account default cannot ride out on the wire under a
+ *  control that showed another name. */
 export function agentChoiceParams(catalog, choice) {
   const offered = creatableCatalog(catalog || {});
   const providerId = chosenProviderId(offered, choice);
   const models = catalogForProvider(offered, providerId).models || [];
-  return modelParams(models, choice.model, choice.effort, choice.provider ? providerId : "");
+  return modelParams(models, choice.model, choice.effort, providerId);
 }
 
 // ---- the composer's model menu ---------------------------------------------

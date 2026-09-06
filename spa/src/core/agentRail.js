@@ -24,9 +24,13 @@ import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import {
+  AGENT_STARTING,
   QUIET_SHAPE,
   agentCanInterrupt,
   agentHasTerminal,
+  agentIsUp,
+  agentSessionAnswered,
+  agentStartFailure,
   agentTitle,
   canRemoveAgent,
   providerLabel,
@@ -36,10 +40,11 @@ import {
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  startFailuresLearned,
 } from "./agentRailModel.js";
 import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
 import { createAgentSelection } from "./agentSelection.js";
-import { NO_AGENT_CHOICE, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
+import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
 import {
   insertRecord,
@@ -61,8 +66,9 @@ import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } 
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { cacheDeviceId } from "./cacheScope.js";
+import { createConversationCache } from "./conversationCache.js";
 import { entityIdOf } from "./entityId.js";
-import { readCached, writeCached } from "./localCache.js";
+import { replyOrNothing } from "./session.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
@@ -81,7 +87,7 @@ import {
   writeThreadKeepingComposer,
 } from "./thread.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
-import { surfaceMenuOptions } from "./agentSurfacesModel.js";
+import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
@@ -200,6 +206,7 @@ export function bubbleHtml(bubble) {
   const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
   if (bubble.active) classes.push("active");
   if (bubble.working) classes.push("working");
+  if (bubble.starting) classes.push("starting");
   // A pattern IS the bubble's face, so it takes the label's place: a canvas
   // for core/agentCanvas.js to paint into, named by the ordinal it wears.
   // The `+` and anything else that speaks in a glyph keeps a label.
@@ -320,67 +327,48 @@ export function mountAgentRail(host, context) {
   let poll = null;
   let disposed = false;
   let tui = null; // the mounted PTY pane, in TUI mode
-  let threadCache = createThreadCache();
+  const threadCache = createThreadCache();
   // Choosing the next agent's harness, with the chooser in the panel. Entered
   // by the strip's `+`, left by the send that creates the agent or by opening
   // any existing bubble.
   let addingAgent = false;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
-  let threadSeedTried = false; // one cache seed per conversation key
-  let lastPersistedSequence = 0; // the window already on disk, to skip idle rewrites
+  let seededSurfaces = null;
 
-  /** The local cache's address for the open conversation, or null while the
-   *  entity is not yet known (no feed row) or no session device is live. */
-  const threadCacheAddress = () => {
+  const cacheIdentity = () => {
     const deviceId = cacheDeviceId();
     const entityId = context.kind === "issue" ? context.issueId : feedRow ? entityIdOf(feedRow) : null;
     if (!deviceId || !entityId) return null;
-    return { deviceId, entityId, kind: "thread", sub: selectedId || "" };
+    return { deviceId, entityId, agentId: selectedId || "" };
   };
 
-  /** Seed the empty cache from the saved window, once per conversation key.
-   *  After a seed the next detail read is a forward delta rather than a first
-   *  page — the history is already local. A live window refuses the seed.
-   *
-   *  A successful seed claims the cache for the agent it was read for
-   *  (threadAgentId): the rail remembers which bubble was open across
-   *  remounts, so without the claim the first threadFor of a revisit reads
-   *  "different agent" and wipes the window this seed just opened — after its
-   *  delta cursor was already sent, which is a conversation that paints empty
-   *  until the safety poll. And it paints: the reader is owed the history in
-   *  hand, not a loading frame until the wire answers. */
-  const trySeedThread = async () => {
-    const address = threadCacheAddress();
-    if (!address || threadSeedTried) return;
-    threadSeedTried = true;
-    const seededFor = selectedId;
-    const record = await readCached(address);
-    if (disposed || !record || seededFor !== selectedId) return;
-    if (threadCache.seedWindow(record.value)) {
-      lastPersistedSequence = record.value.deliveredSequence || 0;
+  const conversationCache = createConversationCache({
+    addressOf: cacheIdentity,
+    threadCache,
+    onThreadSeeded: (seededFor) => {
+      if (disposed) return;
       threadAgentId = seededFor;
       paintChat();
-    }
+    },
+    onSurfacesSeeded: (seen) => {
+      if (disposed) return;
+      seededSurfaces = { surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()), at: seen.at };
+      syncSurfaces();
+      paintSurfaceMenu();
+    },
+  });
+
+  const absorbSurfaces = () => {
+    seededSurfaces = null;
+    const agent = agentInFocus();
+    conversationCache.absorbSurfaces(agent ? agent.surfaces : null);
   };
 
-  /** Persist the window when it has moved. Fire-and-forget, sequence-guarded:
-   *  a repaint that absorbed nothing new writes nothing. */
-  const persistThreadWindow = () => {
-    const address = threadCacheAddress();
-    const window = threadCache.readWindow();
-    if (!address || !window || window.deliveredSequence === lastPersistedSequence) return;
-    lastPersistedSequence = window.deliveredSequence;
-    writeCached(address, window);
-  };
-
-  /** Drop the conversation cache — and with it, the seed's one-shot flag, so
-   *  the next conversation key seeds from its own saved window. */
-  const resetThreadCache = () => {
-    threadCache.reset();
-    threadSeedTried = false;
-    lastPersistedSequence = 0;
+  const resetConversationCache = () => {
+    conversationCache.reset();
     absorbedThreadPayload = null;
+    seededSurfaces = null;
   };
   // The one payload already folded through the cache. A repaint hands the same
   // payload back, and absorbing it twice is not idempotent for the one shape
@@ -419,7 +407,7 @@ export function mountAgentRail(host, context) {
 
   const openConversation = (agentId) => {
     chooseAgent(agentId);
-    resetThreadCache();
+    resetConversationCache();
     threadAgentId = agentId;
   };
   const pendingAgentsScope = () => `agents:${key}`;
@@ -557,9 +545,7 @@ export function mountAgentRail(host, context) {
   /// surface before the rail asked for; the param is here so the panel follows
   /// the bubble as soon as the daemon can tell them apart.
   const detail = async () => {
-    // The saved window first, so a revisit's first read is a forward delta
-    // with the history already local. One try per conversation key.
-    await trySeedThread();
+    await conversationCache.seed();
     const askedAgentId = selectedId && !isProvisionalKey(selectedId) ? { agent_id: selectedId } : {};
     const scope = { ...threadCache.cursorParam(), ...askedAgentId };
     if (context.kind === "issue") {
@@ -568,20 +554,25 @@ export function mountAgentRail(host, context) {
     return App.call("branch.get", { project_id: context.projectId, branch: context.branch, ...scope });
   };
 
+  const letGoOfRefusedAgent = (error, asked) => {
+    if (!asked || isProvisionalKey(asked)) return;
+    if (!/agent_id/.test((error && error.message) || "")) return;
+    openConversation(null);
+  };
+
+  const answerLostTheAgents = (answered) => {
+    if (answered.agents.length || !visibleAgents().length || agentlessOnce) return false;
+    agentlessOnce = true;
+    return true;
+  };
+
   const refresh = async () => {
     const asked = selectedId;
     let payload;
     try {
       payload = await detail();
     } catch (error) {
-      // The agent we asked about is not on this work item any more — its run
-      // was replaced, or it was retired. The daemon refuses rather than
-      // answering with somebody else's conversation, so let the choice go and
-      // the next tick reopens on whichever agent is here now. Without this the
-      // rail would ask the same refused question forever.
-      if (asked && !isProvisionalKey(asked) && /agent_id/.test((error && error.message) || "")) {
-        openConversation(null);
-      }
+      letGoOfRefusedAgent(error, asked);
       // Anything else — a branch that stopped resolving (finished, renamed) —
       // leaves the rail as it was rather than blanking the conversation under
       // the reader.
@@ -594,23 +585,12 @@ export function mountAgentRail(host, context) {
     // another's name. Drop it; the next tick asks about the right one.
     if (asked !== selectedId) return;
     const answered = railEntity(payload, context.kind);
-    // A branch is read off whichever source knows most about it, and the only
-    // source that knows about agents is the run behind it. A tick that cannot
-    // resolve the run answers off the bare checkout instead — no run, no
-    // conversation, no agents — and the next tick has all three back. Believing
-    // the first of those closes the conversation that is open: the strip drops
-    // to a ghost, the head renames itself, and the panel is rebuilt around a
-    // NEW textarea, which takes the words, the caret and, on a phone, the
-    // keyboard with them. At a poll every 1.6 seconds that is a message that
-    // cannot be typed at all.
-    //
-    // So an answer that loses the agents has to say it twice. A run that is
-    // really gone (finished, abandoned) keeps saying it and the rail falls back
-    // to the ghost as it always did, one tick later; a hiccup says it once and
-    // is dropped.
-    if (!answered.agents.length && visibleAgents().length && !agentlessOnce) {
-      agentlessOnce = true;
-      return;
+    if (answerLostTheAgents(answered)) return;
+    // A start that never reached a harness is answered here and nowhere else:
+    // the daemon replied to the press long before the spawn, so this push is
+    // the first word about it. Said once, where the throw used to land.
+    for (const failed of startFailuresLearned(entity.agents, answered.agents)) {
+      notifyError("Could not start the agent", agentStartFailure(failed));
     }
     agentlessOnce = false;
     entity = answered;
@@ -620,6 +600,7 @@ export function mountAgentRail(host, context) {
     // when we asked about none, which is every first read — the entity's own,
     // which is the agent the selection just landed on (its first).
     if (!isProvisionalKey(selectedId)) threadOwner = asked === null ? selectedId : asked;
+    absorbSurfaces();
     paint();
   };
 
@@ -691,6 +672,7 @@ export function mountAgentRail(host, context) {
     if (panel) panel.dataset.body = wantedPanelBody();
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
   const paintPanel = () => {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
@@ -750,7 +732,7 @@ export function mountAgentRail(host, context) {
       panel.dataset.head = wantedHead;
       wireHead(panel);
     }
-    paintSurfaceMenu(panel);
+    paintSurfaceMenu();
     syncSurfaceOverlay();
     if (shownMode === "chat") {
       paintChat();
@@ -785,9 +767,9 @@ export function mountAgentRail(host, context) {
   const threadWindow = () => {
     // The cache holds one conversation; switching bubbles switches which.
     if (threadAgentId !== selectedId) {
-      resetThreadCache();
+      resetConversationCache();
       threadAgentId = selectedId;
-      trySeedThread(); // fire and forget; the refresh under way folds onto it
+      conversationCache.seed(); // fire and forget; the refresh under way folds onto it
     }
     // The payload in hand belongs to the agent it was read for. Just after a
     // switch that is the agent just left, and absorbing it would refill the
@@ -810,7 +792,7 @@ export function mountAgentRail(host, context) {
     }
     absorbedThreadPayload = entity.thread;
     const thread = threadCache.absorb(entity.thread);
-    persistThreadWindow();
+    conversationCache.persistThread();
     return thread;
   };
 
@@ -1032,7 +1014,13 @@ export function mountAgentRail(host, context) {
     syncSurfaces();
   };
 
+  const surfaceModelLabel = (modelId) => {
+    const agent = agentInFocus();
+    return activeModelLabel(catalog, agent ? agent.provider : "", modelId);
+  };
+
   const surfaceViewerCallbacks = () => ({
+    modelLabel: surfaceModelLabel,
     onOpenThreadItem: (sequence) => {
       if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
       notifyError(
@@ -1042,12 +1030,15 @@ export function mountAgentRail(host, context) {
     },
   });
 
-  const surfacesInFocus = () => {
+  const surfacesSeen = () => {
     const agent = agentInFocus();
-    return (agent && agent.surfaces) || null;
+    const live = agent && agent.surfaces;
+    if (live) return { surfaces: live, at: Date.now() };
+    if (agent && seededSurfaces) return seededSurfaces;
+    return { surfaces: null, at: Date.now() };
   };
 
-  const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesInFocus());
+  const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesSeen().surfaces);
 
   const mountSurfaces = (panel) => {
     const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
@@ -1071,11 +1062,12 @@ export function mountAgentRail(host, context) {
 
   const syncSurfaces = () => {
     if (!surfacesBlock) return;
-    surfacesBlock.set(surfacesInFocus());
+    const seen = surfacesSeen();
+    surfacesBlock.set(seen.surfaces, seen.at);
   };
 
-  const paintSurfaceMenu = (panel) => {
-    const region = panel.querySelector(SURFACE_MENU_SELECTOR);
+  const paintSurfaceMenu = () => {
+    const region = host.querySelector(SURFACE_MENU_SELECTOR);
     if (!region) return;
     closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuOptionsInFocus()), {
       onChoose: openSurfaceOverlayForKind,
@@ -1096,7 +1088,7 @@ export function mountAgentRail(host, context) {
 
   const syncSurfaceOverlay = () => {
     if (!surfaceOverlay) return;
-    surfaceOverlay.set(surfacesInFocus());
+    surfaceOverlay.set(surfacesSeen().surfaces);
   };
 
   const closeSurfaceOverlay = () => {
@@ -1157,6 +1149,7 @@ export function mountAgentRail(host, context) {
     if (input) input.focus();
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const renameAgentIdentity = (fromAgentId, toAgentId) => {
     if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) return;
     const entityKey = entity.entityId || key;
@@ -1197,17 +1190,45 @@ export function mountAgentRail(host, context) {
     else handle.rekey(messageKey, String(sequence), { ...provisional, data: { ...provisional.data, sequence } });
   };
 
+  /** Put the message on the conversation, and settle the provisional row under
+   *  the sequence the daemon gave it.
+   *
+   *  A post the browser stopped waiting for is not a refusal: the turn is
+   *  durable on the daemon's side, and reverting it here would hand the draft
+   *  back and have the human send the same turn twice. The provisional row
+   *  stands instead, and the next thread read replaces it with the real
+   *  message. */
   const postMessage = async (handle, { entityId, addressed, message, messageKey, provisionalMessage }) => {
-    const posted = await App.call("thread.post", {
-      entity_id: entityId,
-      ...addressed,
-      ...message,
-      ...MUTATION_THREAD_PAGE,
-    });
-    rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+    const posted = await replyOrNothing(
+      App.call("thread.post", {
+        entity_id: entityId,
+        ...addressed,
+        ...message,
+        ...MUTATION_THREAD_PAGE,
+      }),
+    );
+    if (posted) rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
   };
 
-  const wakeAgent = (entityId, addressed) => App.call("agent.start", { id: entityId, ...addressed });
+  /** Put an agent on this entity's message, and say which agent got it.
+   *
+   *  The daemon answers a start before the harness exists and need not name the
+   *  agent it opened; the entity does, on its next answer, so a reply without
+   *  one — or no reply at all, when the start outlives the timer — is read
+   *  there instead. */
+  const wakeAgent = async (entityId, addressed) => {
+    const started = await replyOrNothing(App.call("agent.start", { id: entityId, ...addressed }));
+    if (started && started.agent_id) return started.agent_id;
+    if (addressed.agent_id) return addressed.agent_id;
+    await refresh();
+    return selectAgentId(visibleAgents(), selectedId);
+  };
+
+  /** The state a row wears from the moment a session is asked for until the
+   *  entity answers — one record, whichever verb asked: the Resume press or
+   *  the message that wakes the agent behind it. */
+  const startingRecord = (agentId) =>
+    patchRecord(agentId, { state: AGENT_STARTING }, { scope: pendingAgentsScope(), clearedBy: agentSessionAnswered });
 
   const createAgentWithMessage = async (message) => {
     const provisionalAgentId = provisionalKey("agent");
@@ -1290,27 +1311,31 @@ export function mountAgentRail(host, context) {
     const messageKey = provisionalKey("message");
     const provisionalMessage = provisionalMessageEntry(messageKey, message);
     const addressedAgentId = selectedId;
+    const agent = agentInFocus();
+    const wakesAgent = entity.kind === "branch" && !agentIsUp(agent);
 
     let messageDelivered = false;
 
     const call = async (handle) => {
       const entityId = await ensureEntity();
-      const agent = agentInFocus();
       const addressed = agent ? { agent_id: agent.id } : {};
       await postMessage(handle, { entityId, addressed, message, messageKey, provisionalMessage });
       messageDelivered = true;
-      if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
-        const started = await wakeAgent(entityId, addressed);
-        if (started && started.agent_id) {
-          handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(started.agent_id));
-          openConversation(started.agent_id);
+      if (wakesAgent) {
+        const startedAgentId = await wakeAgent(entityId, addressed);
+        if (startedAgentId && startedAgentId !== addressedAgentId) {
+          handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(startedAgentId));
+          openConversation(startedAgentId);
         }
       }
     };
 
     runOptimistic({
       scope: pendingThreadScope(addressedAgentId),
-      records: [insertRecord(messageKey, provisionalMessage)],
+      records: [
+        insertRecord(messageKey, provisionalMessage),
+        ...(wakesAgent && agent ? [startingRecord(agent.id)] : []),
+      ],
       call,
       failureSummary: "Message failed",
       onRevert: () => {
@@ -1464,20 +1489,28 @@ export function mountAgentRail(host, context) {
 
   /** Put the open agent back on its screen. It names no harness: the agent is
    *  locked to the one it was created on, and its conversation is waiting
-   *  there. */
+   *  there.
+   *
+   *  The daemon answers the start before the harness exists, so the row wears
+   *  AGENT_STARTING from the press: the answer to a start is the entity's own
+   *  next word about the session, never this reply. A start that outlives the
+   *  timer settles the same way — the patch stands, and nothing is thrown at
+   *  the pane that would paint a refusal over a session coming up. */
   const startAgent = async () => {
     const agent = agentOf(selectedId);
     let started = null;
     let refusal = null;
     const settled = await runOptimistic({
       scope: pendingAgentsScope(),
-      records: agent ? [patchRecord(agent.id, { state: "live" })] : [],
+      records: agent ? [startingRecord(agent.id)] : [],
       call: async () => {
         const entityId = await ensureEntity();
-        started = await App.call("agent.start", {
-          id: entityId,
-          ...(agent ? { agent_id: agent.id } : {}),
-        });
+        started = await replyOrNothing(
+          App.call("agent.start", {
+            id: entityId,
+            ...(agent ? { agent_id: agent.id } : {}),
+          }),
+        );
       },
       notify: false,
       onRevert: (error) => {

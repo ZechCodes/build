@@ -12,8 +12,21 @@ export function removeRecord(key, { scope = null } = {}) {
   return { kind: "remove", key: String(key), scope, settledAt: null };
 }
 
-export function patchRecord(key, fields, { scope = null } = {}) {
-  return { kind: "patch", key: String(key), fields, scope, settledAt: null };
+/** Whether the snapshot has caught up with a patch: by default, by carrying the
+ *  fields the patch put on the row. */
+const entryCarriesFields = (entry, fields) =>
+  Object.keys(fields).every((name) => entry[name] === fields[name]);
+
+/**
+ * Lay `fields` over the row named by `key` until the snapshot answers for them.
+ *
+ * `clearedBy(entry, fields)` is what "answers" means, for a patch whose row the
+ * entity will never carry as a field — a state the client shows while the
+ * daemon works behind an answer it has already given. It names the push that
+ * takes the patch off instead.
+ */
+export function patchRecord(key, fields, { scope = null, clearedBy = entryCarriesFields } = {}) {
+  return { kind: "patch", key: String(key), fields, scope, clearedBy, settledAt: null };
 }
 
 export function projectPending(entries, records, { keyOf }) {
@@ -28,9 +41,6 @@ export function projectPending(entries, records, { keyOf }) {
   }, [...entries]);
 }
 
-const entryCarriesFields = (entry, fields) =>
-  Object.keys(fields).every((name) => entry[name] === fields[name]);
-
 export function retirePending(records, entries, { keyOf, nowMs }) {
   const held = new Map(entries.map((entry) => [String(keyOf(entry)), entry]));
   return records.filter((record) => {
@@ -39,7 +49,7 @@ export function retirePending(records, entries, { keyOf, nowMs }) {
     if (record.kind === "remove") return held.has(record.key);
     if (record.kind === "insert") return !held.has(record.key);
     const entry = held.get(record.key);
-    return Boolean(entry) && !entryCarriesFields(entry, record.fields);
+    return Boolean(entry) && !record.clearedBy(entry, record.fields);
   });
 }
 

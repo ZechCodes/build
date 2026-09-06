@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import {
   AGENT_PATTERN_COUNT,
+  AGENT_STARTING,
   agentCanInterrupt,
+  agentIsUp,
+  agentSessionAnswered,
+  agentSessionIsLive,
   agentPattern,
   agentTitle,
   aheadBehindText,
@@ -15,8 +19,10 @@ import {
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  startFailuresLearned,
   startupStatusLine,
   statText,
+  elapsedClock,
   workingClock,
   runningClock,
   workingSeconds,
@@ -39,11 +45,11 @@ const agent = (over = {}) => ({
 describe("who an agent is", () => {
   it("names the harness and which one of it this is", () => {
     expect(providerLabel("claude_adk")).toBe("Claude Code");
-    expect(providerLabel("codex")).toBe("Codex");
-    // An agent is locked to its harness, so the two claude harnesses are two
-    // agents and the bubble says which one it is.
+    expect(providerLabel("codex_app_server")).toBe("Codex");
+    expect(providerLabel("codex")).toBe("Codex TUI");
+    // An agent is locked to its harness, so the bubble says which one it is.
     expect(providerLabel("claude")).toBe("Claude Code TUI");
-    expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex 2");
+    expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex TUI 2");
   });
 
   it("says what an unnamed provider is, rather than nothing", () => {
@@ -56,6 +62,64 @@ describe("who an agent is", () => {
     expect(bubbleTip(agent({ unread_count: 3, unread_reason: "done" })))
       .toBe("Claude Code 1 — The agent finished — review the work");
     expect(bubbleTip(agent())).toBe("Claude Code 1");
+  });
+});
+
+// The bridge answers a start as soon as the turn is durable and spawns the
+// harness behind that answer, so the reply says nothing about a session. The
+// row wears `starting` meanwhile, and the entity's own answer is what takes it
+// off.
+describe("an agent whose start has been asked for", () => {
+  it("is up while it is starting, so a message behind the press starts nothing twice", () => {
+    expect(agentIsUp(agent({ state: AGENT_STARTING }))).toBe(true);
+    expect(agentIsUp(agent({ state: "live" }))).toBe(true);
+    expect(agentIsUp(agent({ state: "idle" }))).toBe(false);
+    expect(agentIsUp(null)).toBe(false);
+  });
+
+  it("is answered only by a live session", () => {
+    expect(agentSessionIsLive(agent({ state: "live" }))).toBe(true);
+    expect(agentSessionIsLive(agent({ state: AGENT_STARTING }))).toBe(false);
+    expect(agentSessionIsLive(agent({ state: "ended" }))).toBe(false);
+    expect(agentSessionIsLive(null)).toBe(false);
+  });
+
+  // The question a start asks has two answers, and either one ends the wait.
+  // A spawn that never came up says nothing about a session, so a client
+  // waiting on liveness alone waits out its own grace and then goes quiet.
+  it("is also answered by a start that never reached a harness", () => {
+    const failed = agent({ state: "idle", start_error: "could not reach the agent: gone" });
+    expect(agentSessionAnswered(failed)).toBe(true);
+    expect(agentSessionAnswered(agent({ state: "live" }))).toBe(true);
+    expect(agentSessionAnswered(agent({ state: "idle" }))).toBe(false);
+    expect(bubbleTip(failed)).toBe("Claude Code 1 — could not reach the agent: gone");
+  });
+
+  // Said once, and only about a start this rail was already showing an agent
+  // for: a reason that was on the payload before the comparison began is what
+  // the row already says.
+  it("names only the failures that have just arrived", () => {
+    const quiet = agent({ id: "ag-1", state: "idle" });
+    const failed = agent({ id: "ag-1", state: "idle", start_error: "no worktree" });
+    expect(startFailuresLearned([quiet], [failed]).map((a) => a.id)).toEqual(["ag-1"]);
+    expect(startFailuresLearned([failed], [failed])).toEqual([]);
+    expect(startFailuresLearned([], [failed])).toEqual([]);
+    expect(startFailuresLearned([failed], [quiet])).toEqual([]);
+  });
+
+  it("says so on its bubble", () => {
+    const bubbles = railBubbles({ agents: [agent({ state: AGENT_STARTING })], selectedId: null, kind: "branch" });
+    expect(bubbles[0].starting).toBe(true);
+    expect(bubbles[0].live).toBe(false);
+    expect(bubbleTip(agent({ state: AGENT_STARTING }))).toBe("Claude Code 1 — starting…");
+    expect(railBubbles({ agents: [agent()], selectedId: null, kind: "branch" })[0].starting).toBe(false);
+  });
+
+  // Unread wins over starting the way it wins over working: an agent that asked
+  // something before its session dropped is still asking.
+  it("still says what it is waiting on", () => {
+    expect(bubbleTip(agent({ state: AGENT_STARTING, unread_count: 2, unread_reason: "blocked" })))
+      .toBe("Claude Code 1 — Blocked — the agent needs you");
   });
 });
 
@@ -179,10 +243,10 @@ describe("which agent can be taken back off", () => {
 
   it("outlines what removal actually does before it is confirmed", () => {
     const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex" }));
-    expect(plan.title).toBe("Remove Codex 2 from this branch?");
+    expect(plan.title).toBe("Remove Codex TUI 2 from this branch?");
     expect(plan.actions).toEqual([
       "End the agent's session, if one is running",
-      "Remove Codex 2 and its conversation from the branch",
+      "Remove Codex TUI 2 and its conversation from the branch",
       "Leave the branch and its files untouched",
     ]);
     expect(plan.confirmLabel).toBe("Remove agent");
@@ -268,6 +332,12 @@ describe("the pinned status line above the composer", () => {
     expect(runningClock(5399)).toBe("89:59");
     expect(runningClock(5400)).toBe("1:30");
     expect(runningClock(90000)).toBe("25:00");
+  });
+
+  it("clocks how long ago a stamp was, in the running clock's own form", () => {
+    expect(elapsedClock(NOW - 65_000, NOW)).toBe("1:05");
+    expect(elapsedClock(NOW, NOW)).toBe("0:00");
+    expect(elapsedClock(NOW + 5_000, NOW)).toBe("0:00");
   });
 
   it("says the additions and deletions, and nothing when there are none", () => {

@@ -47,6 +47,7 @@ export function isImageAttachment(mime) {
 /// out of a viewer carries its own filename as text too, and pasting that
 /// filename is never what was meant. Some sources expose the image only as a
 /// clipboard ITEM rather than a file, so both are read.
+// eslint-disable-next-line complexity -- ratchet: pasteIntent is at 13, cap 10 — reduce it, then drop this line
 export function pasteIntent(clipboardData) {
   if (!clipboardData) return { files: [], asFile: null };
   const files = [...(clipboardData.files || [])];
@@ -249,6 +250,7 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
 /// Returns a controller: `attachments()` for the descriptors a send should
 /// carry, `busy()` for whether an upload is still in flight, and `clear()` for
 /// after a send lands.
+// eslint-disable-next-line complexity -- ratchet: mountComposerAttachments is at 15, cap 10 — reduce it, then drop this line
 export function mountComposerAttachments(root, {
   ids,
   upload,

@@ -13,6 +13,7 @@ const CONFIRM_SCRIM_ID = "confirm-scrim";
  *  the verb is about to cost — the bridge's own preflight — and they are read
  *  first, because they are the part that changes the answer. All strings
  *  escaped. */
+// eslint-disable-next-line complexity -- ratchet: confirmModalHtml is at 11, cap 10 — reduce it, then drop this line
 export function confirmModalHtml({
   title,
   intro = "",

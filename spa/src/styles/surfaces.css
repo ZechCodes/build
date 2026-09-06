@@ -59,21 +59,18 @@
 
 .tsectionhead { font-size:12px; font-family:var(--mono); color:var(--dim);
   padding:2px 2px 8px; letter-spacing:.02em; }
-.tsection.tcritical { border-left:2px solid var(--red); padding-left:10px; margin-bottom:14px; }
+.file.tcritical { border-left:2px solid var(--red); }
 
 .tgroup { border:1px dashed var(--line3); border-radius:11px; margin:4px 0 12px; }
-.tgroup.open { border-style:solid; border-color:var(--line); }
 .tgrouphead { font:inherit; font-size:12px; font-family:var(--mono); color:var(--dim); background:none;
   border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px;
   display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
 .tgrouphead:hover { color:var(--accent); background:var(--line2); }
-.tgroup.open .tgrouphead { border-bottom:1px solid var(--line2); border-radius:11px 11px 0 0; }
+.tgrouphead.open { border:1px solid var(--line); border-radius:11px 11px 0 0; margin-top:4px; }
 .tgrouphead .tgname { color:var(--ink); }
 .tgrouphead .tgrationale { flex:1 1 100%; color:var(--dim); font-family:inherit; }
-/* Collapsed, never dropped: the group's diffs are always in the DOM, so a
-   reviewer can find them — and their own browser can — without opening it. */
+.file.tgrouped { margin-left:12px; }
 .tgroup .tgfiles { display:none; padding:12px 12px 2px; }
-.tgroup.open .tgfiles { display:block; }
 
 .hchip { display:inline-flex; align-items:baseline; gap:6px; margin-left:10px; padding:1px 7px;
   border-radius:999px; font-size:11px; font-family:var(--mono); cursor:default; }
@@ -123,7 +120,7 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    at its foot. */
 /* The reading column pays the seam gutter itself now, so the bar states no
    right inset of its own — it would stand a double gutter short of the seam. */
-.gitpane .cdetail-host > .actionbar, .issueview .ivviewer > .actionbar {
+.gitpane .cstray > .actionbar, .issueview .ivviewer > .actionbar {
   background:var(--bg); box-shadow:0 -14px 16px -6px var(--bg);
 }
 /* A sticky box cannot travel past its parent's content box, so a column that
@@ -133,8 +130,9 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    changeset that ends WITHOUT a bar still gets its last line off the frame. */
 .gitpane .cdetail-host, .issueview .ivviewer { padding-bottom:0;
   scroll-padding-bottom:calc(var(--pane-bottom) + 58px); }
-.gitpane .cdetail-host > :last-child:not(.actionbar),
 .issueview .ivviewer > :last-child:not(.actionbar) { margin-bottom:var(--pane-bottom); }
+.gitpane .cstray { display:contents; }
+.gitpane .dstack { padding-bottom:var(--pane-bottom); }
 
 /* ---- work surfaces: the issue view -----------------------------------------
    Stages | stage viewer, persistent: the list is a rail the way the commit list

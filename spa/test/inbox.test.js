@@ -4,7 +4,6 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  RECENT_AUTO_OPEN_BELOW,
   activeEntryKey,
   branchDoneConfirm,
   dismissParamsOf,
@@ -15,6 +14,7 @@ import {
   inboxEntries,
   inboxRowHtml,
   issueDoneConfirm,
+  mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
   cacheableEntityIds,
@@ -229,6 +229,166 @@ describe("what the inbox lists", () => {
   });
 });
 
+// ---- lifecycle verbs in flight ---------------------------------------------------
+// The daemon puts a row on the board the moment a verb reaches for git and takes
+// it off when the record lands (`board.list`'s `pending`). A checkout being cut
+// is on the inbox from the moment it is asked for, under the id it will settle
+// as, so the list never goes quiet while the work is being made.
+
+describe("the rows a lifecycle verb in flight leaves", () => {
+  const creating = (over = {}) => ({
+    entity_id: "wt-new",
+    project_id: "p1",
+    project: "relaydb",
+    title: "mascot spike",
+    branch: "build/mascot-spike",
+    state: "creating",
+    checkout_id: null,
+    implements: null,
+    pending_seconds: 1,
+    ...over,
+  });
+
+  it("lists a checkout being cut, under the id it will settle as", () => {
+    const entries = listed(mergePendingRows([branch()], [creating()]));
+    const pending = entries.find((entry) => entry.key === "wt-new");
+    expect(pending.kind).toBe("branch");
+    expect(pending.project).toBe("relaydb");
+    expect(pending.name).toBe("build/mascot-spike");
+    expect(pending.state).toBe("working");
+    expect(pending.facts).toBe("Creating…");
+    // Nothing is there to open yet, so the row opens nowhere — it opens itself
+    // the moment the record lands under the same key.
+    expect(pending.route).toBeNull();
+    expect(pending.canFinish).toBe(false);
+  });
+
+  // The wire's real shape: the row names the run it settles as (`entity_id`)
+  // and the checkout it holds (`checkout_id`, a worktree hash). The run's card
+  // carries both, under its run id.
+  it("says what is happening to a card that is already there, rather than adding a second row", () => {
+    const items = mergePendingRows(
+      [branch()],
+      [creating({ entity_id: "run-1", state: "discarding", checkout_id: "wt-1", title: "build/login" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entityId).toBe("run-1");
+    expect(entries[0].facts).toBe("Removing…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  // An adopt leaves the run on the board and publishes a pending row for it, so
+  // both are in the same snapshot. Two rows under one key is one row painted
+  // twice, which loses the state the second write did not carry.
+  it("keeps a run whose checkout is being claimed to one row", () => {
+    const items = mergePendingRows(
+      [branch()],
+      [creating({ entity_id: "run-1", checkout_id: "wt-1", implements: "iss-1", title: "build/login" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("run-1");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  // A planning workspace holds no checkout — it is written against the primary
+  // one — so its row names the issue and nothing else. The issue card is
+  // already listed, and that is where it is said.
+  it("says on an issue's own card that its planning workspace is being cut", () => {
+    const items = mergePendingRows(
+      [issue()],
+      [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("iss-1");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  // Three verbs put `creating` on a card that is already there and already
+  // openable: a plan workspace on its issue, an implementation on the run that
+  // owns the checkout, and a restore on its run. The card is the reader's, and
+  // it keeps opening for the whole of that git.
+  it("keeps a standing card openable while a verb runs on it", () => {
+    const [entry] = listed(
+      mergePendingRows([issue()], [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })]),
+    );
+    expect(entry.facts).toBe("Creating…");
+    expect(entry.placeholder).toBe(false);
+    expect(entry.route).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
+  });
+
+  it("sends a row with nothing behind it nowhere, whatever the verb is called", () => {
+    const [entry] = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
+    expect(entry.placeholder).toBe(true);
+    expect(entry.route).toBeNull();
+  });
+
+  // The project's own checkout is the one listed card with no id of its own:
+  // adopting it publishes a row naming the primary of the project, and the card
+  // it is running on is right there on the board.
+  it("says on a project's primary card that its checkout is being adopted", () => {
+    const primary = branch({
+      branch: "main",
+      run_id: null,
+      worktree_id: null,
+      primary: true,
+      can_finish: false,
+      anchor: ago(1),
+    });
+    const items = mergePendingRows(
+      [primary],
+      [creating({ entity_id: "run-new", checkout_id: "wt-repo-root", primary: true, title: "relaydb" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("branch:p1:main");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].placeholder).toBe(false);
+  });
+
+  it("reads a state it has never heard of as work in flight, not as nothing", () => {
+    const entries = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].state).toBe("working");
+    expect(entries[0].facts).toBe("");
+  });
+
+  // The verb in flight is said in one place, `pending`. A row's `state` is the
+  // run vocabulary the list filters on, and a verb name that happened to match
+  // a finished state would have dropped the row out of the list.
+  it("keeps a row listed and unfinished whatever its verb is called", () => {
+    const entries = listed(mergePendingRows([], [creating({ state: "merged" })]));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].state).toBe("working");
+    expect(entries[0].merged).toBe(false);
+    expect(entries[0].pending).toBe("merged");
+  });
+
+  // Every verb in that menu would race the one the daemon is already running,
+  // which it refuses anyway. The row says what is happening and offers nothing.
+  it("offers no verbs on a row a verb is already running on", () => {
+    const [pending] = listed(mergePendingRows([], [creating()]));
+    const html = inboxRowHtml(pending, {});
+    expect(html).not.toContain("data-menu");
+    expect(html).not.toContain("data-done=");
+    expect(html).not.toContain("data-dismiss=");
+    expect(html).toContain("Creating…");
+  });
+
+  it("takes no pending rows at all in its stride", () => {
+    expect(mergePendingRows([branch()], [])).toEqual([branch()]);
+    expect(mergePendingRows(undefined, undefined)).toEqual([]);
+  });
+});
+
 // ---- Recent --------------------------------------------------------------------
 // Everything that has said nothing for a day is still there; it is just not what
 // today is about, so it sits behind one disclosure at the end of the list.
@@ -253,17 +413,6 @@ describe("the Recent section", () => {
     expect(recent.map((entry) => entry.entityId)).toEqual(["run-a", "run-b"]);
   });
 
-  it("opens itself when the inbox proper is nearly empty", () => {
-    expect(inboxEntries({ items: [branch(), quiet()], nowMs: NOW }).autoOpen).toBe(true);
-  });
-
-  it("stays shut when the inbox proper has enough to read", () => {
-    const busy = Array.from({ length: RECENT_AUTO_OPEN_BELOW }, (_, index) =>
-      branch({ branch: `build/live-${index}`, run_id: `run-live-${index}`, anchor: ago(index + 1) }),
-    );
-    expect(inboxEntries({ items: [...busy, quiet()], nowMs: NOW }).autoOpen).toBe(false);
-  });
-
   it("is one disclosure, counting what is behind it", () => {
     const { recent } = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
     const shut = recentToggleHtml(recent, false);
@@ -274,12 +423,13 @@ describe("the Recent section", () => {
     expect(recentToggleHtml(recent, true)).toContain('aria-expanded="true"');
   });
 
-  it("follows its own auto-open when nobody has said otherwise", () => {
-    const partition = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
-    expect(recentIsOpen(partition, null)).toBe(true);
-    expect(recentIsOpen(partition, undefined)).toBe(true);
-    expect(recentIsOpen(partition, false)).toBe(false);
-    expect(recentIsOpen({ autoOpen: false }, true)).toBe(true);
+  // Recent always starts shut, however thin the list above it: only the user
+  // opens it.
+  it("starts shut and opens only when the user says so", () => {
+    expect(recentIsOpen(null)).toBe(false);
+    expect(recentIsOpen(undefined)).toBe(false);
+    expect(recentIsOpen(false)).toBe(false);
+    expect(recentIsOpen(true)).toBe(true);
   });
 
   it("says nothing at all when nothing has gone quiet", () => {
@@ -473,9 +623,9 @@ describe("what a row says", () => {
 
   it("offers Done whenever there is something to finish", () => {
     const [nothing] = listed([branch({ can_finish: false })]);
-    expect(inboxRowHtml(nothing, {})).not.toContain("data-done=");
+    expect(inboxRowHtml(nothing, { openMenuKey: "run-1" })).not.toContain("data-done=");
     const [finishable] = listed([branch()]);
-    expect(inboxRowHtml(finishable, {})).toContain('data-done="run-1"');
+    expect(inboxRowHtml(finishable, { openMenuKey: "run-1" })).toContain('data-done="run-1"');
   });
 
   it("offers mute in the entry's own menu, and says so when it is already muted", () => {
@@ -484,9 +634,11 @@ describe("what a row says", () => {
     expect(html).toContain('data-mute="run-1"');
     expect(html).toContain("Unmute");
     expect(html).toContain("inbox-muted");
-    // The open menu is the one whose row was asked for; a shut one is hidden.
+    // The open menu is the one whose row was asked for; a shut one is not in
+    // the markup at all — the DOM patcher would never re-hide it.
     expect(html).toMatch(/class="splitmenu inbox-menu">/);
-    expect(inboxRowHtml(entry, {})).toMatch(/class="splitmenu inbox-menu" hidden>/);
+    expect(inboxRowHtml(entry, {})).not.toContain("splitmenu");
+    expect(inboxRowHtml(entry, {})).not.toContain("data-mute=");
   });
 
   // The reviewer's second screenshot: a Done button with a caret laid over the
@@ -495,7 +647,7 @@ describe("what a row says", () => {
   // is the right distance for it.
   it("keeps Done one step behind the ⋯, first in the menu, and never on the row", () => {
     const [entry] = listed([branch()]);
-    const html = inboxRowHtml(entry, {});
+    const html = inboxRowHtml(entry, { openMenuKey: "run-1" });
     expect(html).toContain("inbox-more");
     expect(html).toContain("⋯");
     expect(html).not.toContain('class="splitbtn"');
@@ -506,7 +658,7 @@ describe("what a row says", () => {
 
   it("wears the same ⋯ on a row with no Done", () => {
     const [entry] = listed([branch({ can_finish: false })]);
-    const html = inboxRowHtml(entry, {});
+    const html = inboxRowHtml(entry, { openMenuKey: "run-1" });
     expect(html).toContain("inbox-more");
     expect(html).not.toContain("data-done=");
     expect(html).toContain('data-dismiss="run-1"');

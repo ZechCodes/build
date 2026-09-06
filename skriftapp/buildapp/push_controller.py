@@ -8,7 +8,7 @@ production) so the key the browser subscribes with is exactly the key notify
 signs with.
 
 Two audiences, mirroring ``devices_controller``:
-- **authenticated** (browser/session, ``auth_guard``): subscribe/unsubscribe this
+- **authenticated** (browser session/desktop OAuth): subscribe/unsubscribe this
   browser's push subscription, and read the VAPID public key to subscribe with.
 - **public** (bridge-facing): ``/api/push/notify`` — no session; authenticated by
   an Ed25519 signature over a timestamped challenge, verified against the
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
 from uuid import UUID
 
 from litestar import Controller, Request, get, post
@@ -36,18 +35,15 @@ from litestar.response import Response
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from skrift.auth.guards import auth_guard
 from skrift.db.models.push_subscription import PushSubscription
 from skrift.push import save_subscription
 
 from buildapp import pairing_crypto, web_push
+from buildapp.clock import utc_now
+from buildapp.desktop_auth import build_auth_guard
 from buildapp.models import Device
-from buildapp.request_body import require_json_object
+from buildapp.request_body import read_json_object
 from buildapp.session_auth import require_user
-
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
 
 
 # The freshness window alone leaves a captured signed notify replayable for its
@@ -84,19 +80,19 @@ class PushController(Controller):
 
     # ----- authenticated (browser/session) -----------------------------------
 
-    @get("/api/push/vapid-public-key", guards=[auth_guard])
+    @get("/api/push/vapid-public-key", guards=[build_auth_guard])
     async def vapid_public_key(self, request: Request) -> Response:
         """The application server key the browser subscribes with."""
         require_user(request)
         return Response({"public_key": _vapid_public_key()})
 
-    @post("/api/push/subscribe", guards=[auth_guard])
+    @post("/api/push/subscribe", guards=[build_auth_guard])
     async def subscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Store (or take over) this browser's push subscription for the current
         user. The endpoint is unique per browser+origin, so an existing row for it
         is updated in place — including when a different account logs in."""
         user_id = require_user(request)
-        body = await request.json()
+        body = await read_json_object(request)
         try:
             endpoint = str(body["endpoint"])
             keys = body["keys"]
@@ -110,11 +106,11 @@ class PushController(Controller):
         await save_subscription(db_session, str(user_id), endpoint, p256dh_key, auth_key)
         return Response({"ok": True}, status_code=201)
 
-    @post("/api/push/unsubscribe", guards=[auth_guard])
+    @post("/api/push/unsubscribe", guards=[build_auth_guard])
     async def unsubscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Remove this browser's subscription — only if the current user owns it."""
         user_id = require_user(request)
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         endpoint = str(body.get("endpoint", ""))
         if not endpoint:
             raise ClientException("endpoint required")
@@ -136,7 +132,7 @@ class PushController(Controller):
         into ``/app/``) to every subscription of the device's owner. Authenticated
         by the device's Ed25519 signature over a timestamped challenge that binds
         the task and kind; a freshness window bounds replay."""
-        body = await request.json()
+        body = await read_json_object(request)
         try:
             device_id = UUID(str(body["device_id"]))
             task_id = str(body["task_id"])
@@ -156,10 +152,10 @@ class PushController(Controller):
             device.identity_public_key_b64, challenge, signature
         ):
             raise NotAuthorizedException("notify signature invalid")
-        if not web_push.notify_timestamp_fresh(timestamp, _now()):
+        if not web_push.notify_timestamp_fresh(timestamp, utc_now()):
             raise NotAuthorizedException("notify timestamp out of window")
         if not _notify_replay_guard.check_and_record(
-            str(device_id), timestamp, signature, _now()
+            str(device_id), timestamp, signature, utc_now()
         ):
             raise NotAuthorizedException("notify replayed")
 

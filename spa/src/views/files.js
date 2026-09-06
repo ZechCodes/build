@@ -21,6 +21,7 @@ const FS_READ_MAX_BYTES = 1_048_576;
 /** Pure: the preview mode for a server `mime` hint + `truncated` flag. A
  *  truncated image/html/svg is garbage as a partial, so it demotes to a
  *  size placeholder ("toolarge"); markdown/source render what arrived. */
+// eslint-disable-next-line complexity -- ratchet: previewModeFor is at 18, cap 10 — reduce it, then drop this line
 export function previewModeFor(mime, truncated) {
   const base =
     mime === "text/markdown"
@@ -87,7 +88,7 @@ export function sourcePreviewHtml(path, text) {
   const lang = langForPath(path);
   const rows = text
     .split("\n")
-    .map((line, index) => `<tr><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
+    .map((line, index) => `<tr data-new-line="${index + 1}"><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
     .join("");
   return `<div class="fsrc"><table>${rows}</table></div>`;
 }
@@ -107,6 +108,7 @@ export function shouldMaskDotenv(path, mode, showSource) {
 
 /** Render the preview body HTML for a fs.read response + a source-override flag.
  *  `path` selects the syntax-highlighting grammar for the source branch. */
+// eslint-disable-next-line complexity -- ratchet: previewBodyHtml is at 12, cap 10 — reduce it, then drop this line
 function previewBodyHtml(path, file, showSource) {
   const mode = previewModeFor(file.mime, file.truncated);
   const truncNotice = file.truncated ? `<div class="ftrunc">truncated at 1 MiB</div>` : "";
@@ -141,7 +143,7 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection. Returns { dispose() }.
  */
-export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
+export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
   // `#ftree` is the stable column (what the drawer slides, what the tab bar
@@ -167,7 +169,8 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   // beside the preview, so the empty state names it instead of pointing at it.
   showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
 
-  let dir = initialPath ? parentPath(initialPath) : ""; // current directory, relative to the scope root
+  let dir = openAt ? parentPath(openAt.path) : ""; // current directory, relative to the scope root
+  let requestedLine = openAt && openAt.line ? { path: openAt.path, line: openAt.line } : null;
   let sourceOverride = false; // per-selected-file "view source" toggle
 
   const renderTree = (entries) => {
@@ -189,6 +192,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   let liveRenderedRequest = 0; // a live answer outranks the cache for its request
   let cachePaintedRequest = 0; // whether the cache already painted this request
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
   const loadTree = async (nextDir) => {
     const request = ++treeRequest;
     const address = treeAddress(nextDir);
@@ -219,6 +223,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   };
 
   const selectFile = async (path, row) => {
+    if (requestedLine && requestedLine.path !== path) requestedLine = null;
     treeEl.querySelectorAll(".frow.sel").forEach((r) => r.classList.remove("sel"));
     if (row) row.classList.add("sel");
     sourceOverride = false;
@@ -255,6 +260,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
     }
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
   const renderPreview = (path, file) => {
     previewEl.classList.remove("idle");
     const mode = previewModeFor(file.mime, file.truncated);
@@ -275,6 +281,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
       <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${revealAll}${toggle}</div>
       <div class="fpbody">${dotenv ? dotenv.html + truncNotice : previewBodyHtml(path, file, sourceOverride)}</div>`;
     if (dotenv) wireDotenvSpoilers(dotenv.secrets);
+    scrollRequestedLineIntoView(path);
     const toggleBtn = previewEl.querySelector("#fsrctoggle");
     if (toggleBtn)
       toggleBtn.onclick = () => {
@@ -283,11 +290,19 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
       };
   };
 
+  const scrollRequestedLineIntoView = (path) => {
+    if (!requestedLine || requestedLine.path !== path) return;
+    const row = previewEl.querySelector(`.fsrc tr[data-new-line="${requestedLine.line}"]`);
+    if (!row || typeof row.scrollIntoView !== "function") return;
+    requestedLine = null;
+    row.scrollIntoView({ block: "center" });
+  };
+
   loadTree(dir).then(() => {
-    if (!initialPath) return;
-    const fileName = initialPath.split("/").at(-1);
+    if (!openAt) return;
+    const fileName = openAt.path.split("/").at(-1);
     const row = [...treeEl.querySelectorAll(".ffile")].find((entry) => entry.dataset.file === fileName);
-    selectFile(initialPath, row || null);
+    selectFile(openAt.path, row || null);
   });
 
   return { dispose: () => drawer.dispose() };

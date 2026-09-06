@@ -1,4 +1,4 @@
-import { workingClock } from "./agentRailModel.js";
+import { elapsedClock, runningClock } from "./agentRailModel.js";
 
 export const WORKFLOW_ENTRY_KIND = "workflows";
 export const AGENT_ENTRY_KIND = "subagents";
@@ -18,6 +18,10 @@ const KIND_LABELS = {
   [SHELL_ENTRY_KIND]: "Shells",
   [CHECKLIST_ENTRY_KIND]: "Checklist",
 };
+
+const PENDING_STATE = "pending";
+const RUNNING_STATE = "running";
+const DONE_STATE = "done";
 
 const RUNNING_MARK = "running";
 const DONE_MARK = "ok";
@@ -117,6 +121,13 @@ function pillIsShown(kind, runningCount, visibility, nowMs) {
   return graceExpiryFor(visibility, kind, nowMs) !== null;
 }
 
+export function surfacesAfterGrace(surfaces, seenAtMs, nowMs) {
+  if (!surfaces || seenAtMs + SURFACE_PILL_GRACE_MS >= nowMs) return surfaces;
+  const kept = { ...surfaces };
+  for (const kind of KINDS_THAT_LINGER) delete kept[kind];
+  return kept;
+}
+
 export function surfaceKindLabel(kind) {
   return KIND_LABELS[kind] || "";
 }
@@ -174,24 +185,23 @@ function keyedBy(keyPrefix, entries, shape) {
   });
 }
 
-function runningSinceOf(kind, entry) {
-  if (!stateMarkIs(kind, entry, RUNNING_MARK)) return null;
-  return Number.isFinite(entry.started_at) ? entry.started_at : null;
+export function entryClock(startedAt, durationMs, running, nowMs) {
+  if (running && Number.isFinite(startedAt)) {
+    return { clock: elapsedClock(startedAt, nowMs), runningSince: startedAt };
+  }
+  if (Number.isFinite(durationMs)) return { clock: runningClock(durationMs / 1000), runningSince: null };
+  return { clock: "", runningSince: null };
 }
 
-function keyedRows(keyPrefix, entryKind, entries, normalise) {
+function keyedRows(keyPrefix, entryKind, entries, normalise, { nowMs = 0 } = {}) {
   return keyedBy(keyPrefix, entries, (entry, index) => ({
     id: entry.id || null,
     state: entry.state || "",
     stateMark: surfaceStateMark(entryKind, entry.state),
     subject: rowSubject(entryKind, entry),
-    runningSince: runningSinceOf(entryKind, entry),
+    ...entryClock(entry.started_at, entry.duration_ms, stateMarkIs(entryKind, entry, RUNNING_MARK), nowMs),
     ...normalise(entry, index),
   }));
-}
-
-function keyedPhaseRows(phases, shapePhase) {
-  return keyedBy("phase", phases, shapePhase);
 }
 
 function phasesOf(workflow) {
@@ -207,11 +217,10 @@ function lastToolText(lastTool) {
   return [lastTool.name, lastTool.summary].filter(Boolean).join(" ");
 }
 
-function agentRow(entry) {
+function agentRow(entry, modelLabel) {
   return {
     label: entry.label || "",
-    model: entry.model || "",
-    duration: Number.isFinite(entry.duration_ms) ? workingClock(entry.duration_ms / 1000) : "",
+    model: entry.model ? modelLabel(entry.model) : "",
     tokens: Number.isFinite(entry.tokens) ? entry.tokens : null,
     toolCalls: Number.isFinite(entry.tool_calls) ? entry.tool_calls : null,
     lastTool: lastToolText(entry.last_tool),
@@ -222,8 +231,12 @@ function agentRow(entry) {
   };
 }
 
-export function agentRows(agents) {
-  return keyedRows("agent", AGENT_ENTRY_KIND, Array.isArray(agents) ? agents : [], agentRow);
+const rawModelId = (modelId) => modelId;
+
+export function agentRows(agents, reading = {}) {
+  const { modelLabel = rawModelId } = reading;
+  const entries = Array.isArray(agents) ? agents : [];
+  return keyedRows("agent", AGENT_ENTRY_KIND, entries, (entry) => agentRow(entry, modelLabel), reading);
 }
 
 const ROW_NORMALISERS = {
@@ -242,11 +255,11 @@ const ROW_NORMALISERS = {
   }),
 };
 
-export function surfaceRows(kind, surfaces) {
+export function surfaceRows(kind, surfaces, reading = {}) {
   const entries = entriesOfKind(surfaces, kind);
-  if (kind === AGENT_ENTRY_KIND) return agentRows(entries);
+  if (kind === AGENT_ENTRY_KIND) return agentRows(entries, reading);
   const normalise = ROW_NORMALISERS[kind];
-  return normalise ? keyedRows(kind, kind, entries, normalise) : [];
+  return normalise ? keyedRows(kind, kind, entries, normalise, reading) : [];
 }
 
 function rowHasFinished(row) {
@@ -270,33 +283,59 @@ function selectedWorkflowEntry(surfaces, selectedWorkflowIndex) {
   return entries[chosenIndex(entries.length, selectedWorkflowIndex)];
 }
 
-export function openWorkflow(surfaces, selectedWorkflowIndex = 0) {
-  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+export function openWorkflow(surfaces, selectedWorkflowIndex = 0, reading = {}) {
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces, reading);
   if (!rows.length) return null;
   return rows[chosenIndex(rows.length, selectedWorkflowIndex)];
 }
 
-export function workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex) {
-  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+export function workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex, reading = {}) {
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces, reading);
   if (rows.length < 2) return [];
   const selected = chosenIndex(rows.length, selectedWorkflowIndex);
   return rows.map((row, index) => ({ ...row, index, selected: index === selected }));
 }
 
-export function workflowPhases(surfaces, selectedWorkflowIndex = 0, selectedPhaseIndex = 0) {
+export function phaseClock(agents, running, nowMs) {
+  const { startedAt, endedAt } = phaseSpan(agents);
+  return entryClock(startedAt, startedAt === null ? null : endedAt - startedAt, running, nowMs);
+}
+
+function phaseSpan(agents) {
+  return agents.reduce(
+    (span, agent) => {
+      if (!Number.isFinite(agent.started_at)) return span;
+      const endedAt = agent.started_at + (Number.isFinite(agent.duration_ms) ? agent.duration_ms : 0);
+      if (span.startedAt === null) return { startedAt: agent.started_at, endedAt };
+      return { startedAt: Math.min(span.startedAt, agent.started_at), endedAt: Math.max(span.endedAt, endedAt) };
+    },
+    { startedAt: null, endedAt: null },
+  );
+}
+
+const rowMarkIs = (row, mark) => !!row.stateMark && row.stateMark.mark === mark;
+
+function phaseState(rows, running) {
+  if (running) return RUNNING_STATE;
+  return rows.length && rows.every(rowHasFinished) ? DONE_STATE : PENDING_STATE;
+}
+
+export function workflowPhases(surfaces, selectedWorkflowIndex = 0, reading = {}) {
   const phases = phasesOf(selectedWorkflowEntry(surfaces, selectedWorkflowIndex));
-  if (!phases.length) return { phases: [], agents: [] };
-  const selected = chosenIndex(phases.length, selectedPhaseIndex);
-  return {
-    phases: keyedPhaseRows(phases, (phase, index) => ({
-      index,
+  return keyedBy("phase", phases, (phase) => {
+    const agents = agentsOf(phase);
+    const rows = agentRows(agents, reading);
+    const running = rows.some((row) => rowMarkIs(row, RUNNING_MARK));
+    return {
       title: phase.title || "",
-      total: agentsOf(phase).length,
-      done: agentsOf(phase).filter((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, DONE_MARK)).length,
-      selected: index === selected,
-    })),
-    agents: agentRows(agentsOf(phases[selected])),
-  };
+      total: rows.length,
+      done: rows.filter((row) => rowMarkIs(row, DONE_MARK)).length,
+      state: phaseState(rows, running),
+      open: running,
+      ...phaseClock(agents, running, reading.nowMs || 0),
+      rows,
+    };
+  });
 }
 
 const ROW_SUBJECTS = {

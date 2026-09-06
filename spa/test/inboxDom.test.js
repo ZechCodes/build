@@ -38,6 +38,12 @@ let markSeen;
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
 const rowFor = (entityId) => document.querySelector(`.inbox-entry[data-entity="${entityId}"]`);
+/** An item of a row's ⋯ menu, opening the menu first when it is shut — a shut
+ *  menu is not in the markup at all. */
+const menuItem = (row, selector) => {
+  if (!row.querySelector(selector)) row.querySelector("[data-menu]").click();
+  return row.querySelector(selector);
+};
 
 /** Answer the confirmation modal the decisive verbs open. */
 async function answerConfirm(ok) {
@@ -116,10 +122,11 @@ const issueRow = (over = {}) => ({
   ...over,
 });
 
-/** Repaint the rail from a fresh set of rows. */
-const feed = (items) => {
+/** Repaint the rail from a fresh set of rows, and whatever the daemon says it
+ *  is making or removing right now. */
+const feed = (items, pending = []) => {
   feedItems = items;
-  subscriber({ items, projects: feedProjects });
+  subscriber({ items, pending, projects: feedProjects });
 };
 
 beforeEach(async () => {
@@ -175,6 +182,106 @@ describe("the inbox rail", () => {
     expect(rowFor("iss-1")).toBeTruthy();
   });
 
+  // The daemon puts a row on the board the moment a create reaches for git and
+  // replaces it with the record when the git lands. Both are the same row: the
+  // placeholder carries the id the checkout will settle under.
+  it("paints a checkout being cut, and lets its record settle into the same row", () => {
+    feed([branchRow()], [
+      {
+        entity_id: "wt-new",
+        project_id: "p1",
+        project: "relaydb",
+        title: "mascot spike",
+        branch: "build/mascot-spike",
+        state: "creating",
+        checkout_id: null,
+        implements: null,
+        pending_seconds: 0,
+      },
+    ]);
+    const cutting = rowFor("wt-new");
+    expect(cutting).toBeTruthy();
+    expect(cutting.querySelector(".inbox-facts").textContent).toBe("Creating…");
+    expect(cutting.querySelector(".sdot").className).toContain("sdot-working");
+    // Nothing is there to open yet, and nothing to act on either.
+    expect(cutting.classList.contains("inbox-unroutable")).toBe(true);
+    expect(cutting.querySelector("[data-menu]")).toBeNull();
+
+    feed([
+      branchRow(),
+      branchRow({ branch: "build/mascot-spike", run_id: null, worktree_id: "wt-new", state: "created", unread: false }),
+    ]);
+    const settled = rowFor("wt-new");
+    expect(settled).toBe(cutting);
+    expect(settled.querySelector("[data-menu]")).toBeTruthy();
+    expect(settled.querySelector(".inbox-facts").textContent).not.toBe("Creating…");
+  });
+
+  // The wire's real shape: the row names the run it settles as and the checkout
+  // it holds, and the run's card is listed under its run id. Both ids have to
+  // find the one card, or the placeholder is pushed as a second row under the
+  // same key and the two overwrite each other.
+  it("says on the card itself that its checkout is being removed", () => {
+    feed([branchRow()], [
+      {
+        entity_id: "run-1",
+        project_id: "p1",
+        project: "relaydb",
+        title: "build/login",
+        branch: "build/login",
+        state: "discarding",
+        checkout_id: "wt-1",
+        implements: null,
+        pending_seconds: 0,
+      },
+    ]);
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("run-1").querySelector(".inbox-facts").textContent).toBe("Removing…");
+    expect(rowFor("run-1").querySelector("[data-menu]")).toBeNull();
+  });
+
+  // An implement that adopts a checkout the run already owns leaves the run on
+  // the board AND publishes a row for it, so one snapshot carries both.
+  it("keeps a run whose checkout is being claimed to one row", () => {
+    feed([branchRow()], [
+      {
+        entity_id: "run-1",
+        project_id: "p1",
+        project: "relaydb",
+        title: "build/login",
+        branch: "build/login",
+        state: "creating",
+        checkout_id: "wt-1",
+        implements: "iss-1",
+        pending_seconds: 0,
+      },
+    ]);
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("run-1").querySelector(".inbox-facts").textContent).toBe("Creating…");
+    expect(rowFor("run-1").querySelector("[data-menu]")).toBeNull();
+  });
+
+  // A planning workspace is cut against the primary checkout, so its row holds
+  // no checkout at all — the issue's own card is where it is said.
+  it("says on an issue's own card that its planning workspace is being cut", () => {
+    feed([issueRow()], [
+      {
+        entity_id: "iss-1",
+        project_id: "p2",
+        project: "dotfiles",
+        title: "Rework the prompt cache",
+        branch: null,
+        state: "creating",
+        checkout_id: null,
+        implements: null,
+        pending_seconds: 0,
+      },
+    ]);
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("iss-1").querySelector(".inbox-facts").textContent).toBe("Creating…");
+    expect(rowFor("iss-1").querySelector("[data-menu]")).toBeNull();
+  });
+
   it("never paints work that is over", () => {
     feed([branchRow({ state: "merged" }), issueRow({ state: "archived" })]);
     expect(rows()).toEqual([]);
@@ -227,7 +334,7 @@ describe("the inbox rail", () => {
   });
 
   it("deletes a branch on Done, dismisses its row at once, and reads the entry", async () => {
-    rowFor("run-1").querySelector("[data-done]").click();
+    menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
     expect(App.call).toHaveBeenCalledWith("branch.finish", {
       project_id: "p1",
@@ -251,7 +358,7 @@ describe("the inbox rail", () => {
         },
       }),
     ]);
-    rowFor("run-1").querySelector("[data-done]").click();
+    menuItem(rowFor("run-1"), "[data-done]").click();
     await flush();
     const scrim = document.getElementById("confirm-scrim");
     expect(scrim.querySelector(".confirm-warnings").textContent).toContain("4 commits that main does not");
@@ -265,14 +372,14 @@ describe("the inbox rail", () => {
   // clearing its cursor here would swallow the event that says what happened.
   it("reads only the branch it deleted, never the issue it hands back", async () => {
     feed([branchRow({ issue_id: "iss-9" })]);
-    rowFor("run-1").querySelector("[data-done]").click();
+    menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", { entity_id: "iss-9" });
   });
 
   it("keeps the row when the confirmation is declined", async () => {
-    rowFor("run-1").querySelector("[data-done]").click();
+    menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(false);
     expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
     expect(rowFor("run-1")).toBeTruthy();
@@ -284,7 +391,7 @@ describe("the inbox rail", () => {
       return { ok: true };
     });
     const neighbour = rowFor("iss-1");
-    rowFor("run-1").querySelector("[data-done]").click();
+    menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
     expect(rowFor("run-1")).toBeNull();
     expect(rowFor("iss-1")).toBe(neighbour);
@@ -295,7 +402,7 @@ describe("the inbox rail", () => {
       if (method === "branch.finish") return new Promise(() => {});
       return { ok: true };
     });
-    rowFor("run-1").querySelector("[data-done]").click();
+    menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
     feed([branchRow(), issueRow()]);
     expect(rowFor("run-1")).toBeNull();
@@ -307,7 +414,7 @@ describe("the inbox rail", () => {
       if (method === "branch.finish") throw new Error("worktree is dirty");
       return { ok: true };
     });
-    rowFor("run-1").querySelector("[data-done]").click();
+    menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
     const row = rowFor("run-1");
     expect(row).toBeTruthy();
@@ -327,7 +434,7 @@ describe("the inbox rail", () => {
         finish: { warnings: [{ code: "unimplemented", message: "No branch has implemented this issue" }] },
       }),
     ]);
-    rowFor("iss-1").querySelector("[data-done]").click();
+    menuItem(rowFor("iss-1"), "[data-done]").click();
     await flush();
     expect(document.getElementById("confirm-scrim").querySelector(".confirm-warnings").textContent).toContain(
       "No branch has implemented this issue",
@@ -337,12 +444,33 @@ describe("the inbox rail", () => {
     expect(App.call).toHaveBeenCalledWith("plan.archive", { plan_id: "iss-1" });
   });
 
-  it("mutes an entry from its own menu, on the derived entity id", async () => {
-    expect(rowFor("run-1").querySelector(".inbox-menu").hidden).toBe(true);
+  // The reviewer's screenshot: a menu that could only be shut by choosing.
+  // The ⋯ shuts it again, and a shut menu leaves the markup — the DOM patcher
+  // never re-hides a split menu, so hiding it would not have worked.
+  it("shuts the menu on a second press of the ⋯", async () => {
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    expect(rowFor("run-1").querySelector(".inbox-menu").hidden).toBe(false);
-    rowFor("run-1").querySelector("[data-mute]").click();
+    expect(rowFor("run-1").querySelector(".inbox-menu")).toBeTruthy();
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    expect(rowFor("run-1").querySelector(".inbox-menu")).toBeNull();
+  });
+
+  it("shuts the menu on a press anywhere outside it", async () => {
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    expect(rowFor("run-1").querySelector(".inbox-menu")).toBeTruthy();
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await flush();
+    expect(rowFor("run-1").querySelector(".inbox-menu")).toBeNull();
+  });
+
+  it("mutes an entry from its own menu, on the derived entity id", async () => {
+    expect(rowFor("run-1").querySelector(".inbox-menu")).toBeNull();
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    expect(rowFor("run-1").querySelector(".inbox-menu")).toBeTruthy();
+    menuItem(rowFor("run-1"), "[data-mute]").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
   });
@@ -354,7 +482,7 @@ describe("the inbox rail", () => {
     });
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-mute]").click();
+    menuItem(rowFor("run-1"), "[data-mute]").click();
 
     expect(rowFor("run-1").className).toContain("inbox-muted");
     await flush();
@@ -372,7 +500,7 @@ describe("the inbox rail", () => {
     });
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-mute]").click();
+    menuItem(rowFor("run-1"), "[data-mute]").click();
     await flush();
 
     const row = rowFor("run-1");
@@ -386,7 +514,6 @@ describe("the inbox rail", () => {
   });
 
   it("keeps Recent open across a repaint once the user has opened it", async () => {
-    // Five live rows, so Recent does not open itself.
     const live = Array.from({ length: 5 }, (_, index) =>
       branchRow({ branch: `build/live-${index}`, run_id: `run-live-${index}`, anchor: hoursAgo(index + 1) }),
     );
@@ -405,14 +532,15 @@ describe("the inbox rail", () => {
     expect(rowFor("run-old")).toBeTruthy();
   });
 
-  it("opens Recent by itself when there is almost nothing above it", () => {
+  it("starts Recent shut even when there is almost nothing above it", () => {
     feed([branchRow(), branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
-    expect(document.querySelector("[data-recent-toggle]").getAttribute("aria-expanded")).toBe("true");
-    expect(rowFor("run-old")).toBeTruthy();
+    expect(document.querySelector("[data-recent-toggle]").getAttribute("aria-expanded")).toBe("false");
+    expect(rowFor("run-old")).toBeNull();
   });
 
   it("paints Recent's rows as one quiet line each, with no state dot", () => {
     feed([branchRow(), branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    document.querySelector("[data-recent-toggle]").click();
     expect(rowFor("run-1").querySelector(".sdot")).toBeTruthy();
     expect(rowFor("run-old").classList.contains("inbox-quiet")).toBe(true);
     expect(rowFor("run-old").querySelector(".sdot")).toBeNull();
@@ -421,6 +549,7 @@ describe("the inbox rail", () => {
 
   it("opens a Recent row like any other", async () => {
     feed([branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    document.querySelector("[data-recent-toggle]").click();
     rowFor("run-old").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-old" });
@@ -438,7 +567,7 @@ describe("the inbox rail", () => {
     });
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-dismiss]").click();
+    menuItem(rowFor("run-1"), "[data-dismiss]").click();
     expect(rowFor("run-1")).toBeNull();
 
     await flush();
@@ -456,7 +585,7 @@ describe("the inbox rail", () => {
     });
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-dismiss]").click();
+    menuItem(rowFor("run-1"), "[data-dismiss]").click();
     await flush();
     const row = rowFor("run-1");
     expect(row).toBeTruthy();
@@ -473,7 +602,7 @@ describe("the inbox rail", () => {
     const neighbour = rowFor("iss-1");
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-dismiss]").click();
+    menuItem(rowFor("run-1"), "[data-dismiss]").click();
     await flush();
 
     feed([branchRow(), issueRow()]);
@@ -489,7 +618,7 @@ describe("the inbox rail", () => {
     });
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-dismiss]").click();
+    menuItem(rowFor("run-1"), "[data-dismiss]").click();
     await flush();
 
     feed([branchRow(), issueRow()]);
@@ -501,7 +630,7 @@ describe("the inbox rail", () => {
   it("lets a cleared row come back when something new needs the user", async () => {
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-dismiss]").click();
+    menuItem(rowFor("run-1"), "[data-dismiss]").click();
     await flush();
     expect(rowFor("run-1")).toBeNull();
 
@@ -530,7 +659,7 @@ describe("the inbox rail", () => {
     });
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-mute]").click();
+    menuItem(rowFor("run-1"), "[data-mute]").click();
     await flush();
 
     const notices = [...document.querySelectorAll("#notices .notice.error")];
@@ -543,7 +672,7 @@ describe("the inbox rail", () => {
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     expect(rowFor("run-1").className).toContain("inbox-muted");
-    rowFor("run-1").querySelector("[data-mute]").click();
+    menuItem(rowFor("run-1"), "[data-mute]").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: false });
     expect(location.hash).toBe("");
@@ -598,6 +727,7 @@ describe("the inbox rail's paint", () => {
     const toggle = document.querySelector("[data-recent-toggle]");
     expect(rowFor("run-1").compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Recent's own rows are its children, so each list reconciles only its own.
+    toggle.click();
     expect(rowFor("run-old").parentElement.className).toBe("inbox-recent");
   });
 
@@ -663,7 +793,7 @@ describe("captures on the rail", () => {
     feed([branchRow({ unread: true, unread_count: 1, unread_reason: "agent_message" })]);
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
-    rowFor("run-1").querySelector("[data-dismiss]").click();
+    menuItem(rowFor("run-1"), "[data-dismiss]").click();
     await flush();
     const calls = App.call.mock.calls.map(([method]) => method);
     expect(calls.indexOf("entity.seen")).toBeGreaterThan(-1);
@@ -679,7 +809,7 @@ describe("captures on the rail", () => {
     row.querySelector("[data-menu]").click();
     await flush();
     expect(row.querySelector("[data-mute]")).toBeTruthy();
-    rowFor("wt-9").querySelector("[data-dismiss]").click();
+    menuItem(rowFor("wt-9"), "[data-dismiss]").click();
     expect(rowFor("wt-9")).toBeNull(); // gone before the daemon answers
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "wt-9" });

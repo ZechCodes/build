@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "ruff>=0.16",
 ]
 
 [tool.uv]
@@ -40,3 +41,17 @@ package = false
 # Drop this source and the vendor/ wheel once 0.2.0a10 is published.
 [tool.uv.sources]
 skrift = { path = "vendor/skrift-0.2.0a10-py3-none-any.whl" }
+
+# The Python half of the complexity gate (CLAUDE.md "Complexity gates"). The
+# rule set is deliberately small: ruff's default correctness checks, plus C901
+# so no function grows past a cyclomatic complexity of 10. Style is not the
+# point; a function nobody can hold in their head is.
+[tool.ruff]
+target-version = "py313"
+extend-exclude = ["migrations", "vendor"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "C901"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10

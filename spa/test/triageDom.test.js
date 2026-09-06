@@ -92,9 +92,9 @@ const open = async (options) => {
 describe("the triage overlay in the Changes pane", () => {
   it("surfaces the critical file above the collapsed group", async () => {
     const container = await open();
-    const critical = container.querySelector(".tsection.tcritical .file");
-    expect(critical.dataset.file).toBe("src/crypto.rs");
-    const group = container.querySelector(".tgroup");
+    const critical = container.querySelector(".file.tcritical");
+    expect(critical.dataset.key).toBe("EDIT:src/crypto.rs");
+    const group = container.querySelector(".tgrouphead");
     expect(group.querySelector(".tgname").textContent).toBe("Version bumps");
     expect(group.querySelector(".tgcount").textContent).toBe("1 file · 1 hunk");
     expect(group.querySelector(".tgrationale").textContent).toBe("a version string");
@@ -110,22 +110,22 @@ describe("the triage overlay in the Changes pane", () => {
 
   it("keeps the collapsed group's diff in the page and opens it on a click", async () => {
     const container = await open();
-    expect(container.querySelector('.tgroup .file[data-file="Cargo.toml"]')).toBeTruthy();
-    expect(container.querySelector(".tgroup").classList.contains("open")).toBe(false);
+    expect(container.querySelector('.tgroup .file[data-key$=":Cargo.toml"]')).toBeTruthy();
+    expect(container.querySelector(".tgrouphead").classList.contains("open")).toBe(false);
     container.querySelector(".tgrouphead").click();
     await settle();
-    const group = container.querySelector(".tgroup");
+    const group = container.querySelector(".tgrouphead");
     expect(group.classList.contains("open")).toBe(true);
-    expect(group.querySelector(".tgrouphead").getAttribute("aria-expanded")).toBe("true");
+    expect(group.getAttribute("aria-expanded")).toBe("true");
     container.querySelector(".tgrouphead").click();
     await settle();
-    expect(container.querySelector(".tgroup").classList.contains("open")).toBe(false);
+    expect(container.querySelector(".tgrouphead").classList.contains("open")).toBe(false);
   });
 
   it("says a changeset is untriaged rather than ordering it silently", async () => {
     const container = await open({ triage: null });
     expect(container.querySelector(".tuntriaged")).toBeTruthy();
-    expect(container.querySelector(".tsection.tcritical")).toBeNull();
+    expect(container.querySelector(".file.tcritical")).toBeNull();
     expect(container.querySelectorAll(".file").length).toBe(2);
     // Nothing to trust, so nothing to dial.
     expect(container.querySelector(".tdial")).toBeNull();
@@ -135,21 +135,21 @@ describe("the triage overlay in the Changes pane", () => {
     const container = await open();
     container.querySelector(".tdial").click();
     await settle();
-    expect(container.querySelector(".tsection.tcritical")).toBeNull();
-    expect(container.querySelector(".tgroup")).toBeNull();
+    expect(container.querySelector(".file.tcritical")).toBeNull();
+    expect(container.querySelector(".tgrouphead")).toBeNull();
     expect(container.querySelectorAll(".file").length).toBe(2);
     expect(container.querySelector(".tdial").getAttribute("aria-pressed")).toBe("true");
 
     const reopened = await open();
-    expect(reopened.querySelector(".tsection.tcritical")).toBeNull();
+    expect(reopened.querySelector(".file.tcritical")).toBeNull();
     expect(reopened.querySelector(".tdial").getAttribute("aria-pressed")).toBe("true");
 
     reopened.querySelector(".tdial").click();
     await settle();
-    expect(reopened.querySelector(".tsection.tcritical")).toBeTruthy();
+    expect(reopened.querySelector(".file.tcritical")).toBeTruthy();
     // Another project is unaffected by this one's dial.
     const elsewhere = await open({ projectId: "proj-2" });
-    expect(elsewhere.querySelector(".tsection.tcritical")).toBeTruthy();
+    expect(elsewhere.querySelector(".file.tcritical")).toBeTruthy();
   });
 
   it("re-orders the open stack when a pass lands under it, repo untouched", async () => {
@@ -174,7 +174,7 @@ describe("the triage overlay in the Changes pane", () => {
     pass = TRIAGE;
     await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
     await settle();
-    expect(container.querySelector(".tsection.tcritical .file").dataset.file).toBe("src/crypto.rs");
+    expect(container.querySelector(".file.tcritical").dataset.key).toBe("EDIT:src/crypto.rs");
   });
 
   it("leaves a surface with no triage to read exactly as it was", async () => {
@@ -234,7 +234,7 @@ describe("disagreeing with the pass in the Changes pane", () => {
   it("collapses a surfaced critical on the tap, and tells the bridge what was said", async () => {
     const { container, calls } = await openWithPass();
     await disagree(
-      container.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]'),
+      container.querySelector('.file.tcritical .toverride[data-direction="collapse"]'),
       "a rename, nothing more",
     );
 
@@ -246,8 +246,8 @@ describe("disagreeing with the pass in the Changes pane", () => {
         note: "a rename, nothing more",
       },
     ]);
-    expect(container.querySelector(".tsection.tcritical")).toBeNull();
-    const collapsed = container.querySelector('.tgroup .file[data-file="src/crypto.rs"]');
+    expect(container.querySelector(".file.tcritical")).toBeNull();
+    const collapsed = container.querySelector('.tgroup .file[data-key$=":src/crypto.rs"]');
     expect(collapsed).toBeTruthy();
     const chip = collapsed.querySelector(".hchip.overridden");
     expect(chip.textContent).toContain("your call: collapsed");
@@ -262,12 +262,12 @@ describe("disagreeing with the pass in the Changes pane", () => {
     const { container, calls } = await openWithPass();
     container.querySelector(".tgrouphead").click();
     await settle();
-    await disagree(container.querySelector('.tgroup .toverride[data-direction="surface"]'));
+    await disagree(container.querySelector('.file.tgrouped .toverride[data-direction="surface"]'));
 
     expect(calls).toEqual([
       { run_id: "run-1", hunk_id: ids["Cargo.toml"], direction: "surface", note: "" },
     ]);
-    const surfaced = container.querySelector('.tsection.tnormal .file[data-file="Cargo.toml"]');
+    const surfaced = container.querySelector('.file.tnormal[data-key$=":Cargo.toml"]');
     expect(surfaced).toBeTruthy();
     expect(surfaced.querySelector(".hchip.overridden").textContent).toContain("your call: surfaced");
     // And the way back is what it now offers.
@@ -276,19 +276,19 @@ describe("disagreeing with the pass in the Changes pane", () => {
 
   it("holds the correction through the polls before the pass carries it, and never doubles it", async () => {
     const { container, echo } = await openWithPass();
-    await disagree(container.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]'));
+    await disagree(container.querySelector('.file.tcritical .toverride[data-direction="collapse"]'));
 
     // The pass has not caught up yet: the reviewer's reading must not flicker.
     await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
     await settle();
-    expect(container.querySelector(".tsection.tcritical")).toBeNull();
+    expect(container.querySelector(".file.tcritical")).toBeNull();
     expect(container.querySelectorAll(".hchip.overridden").length).toBe(1);
 
     // Now it does, and the surface renders the disagreement from the pass alone.
     echo({ ...TRIAGE, overrides: [{ hunk_id: ids["src/crypto.rs"], direction: "collapse", note: "" }] });
     await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
     await settle();
-    expect(container.querySelector(".tsection.tcritical")).toBeNull();
+    expect(container.querySelector(".file.tcritical")).toBeNull();
     expect(container.querySelectorAll(".hchip.overridden").length).toBe(1);
   });
 
@@ -298,9 +298,9 @@ describe("disagreeing with the pass in the Changes pane", () => {
         throw new Error("the pass on run-1 did not classify that hunk");
       },
     });
-    await disagree(container.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]'));
+    await disagree(container.querySelector('.file.tcritical .toverride[data-direction="collapse"]'));
 
-    expect(container.querySelector('.tsection.tcritical .file').dataset.file).toBe("src/crypto.rs");
+    expect(container.querySelector('.file.tcritical').dataset.key).toBe("EDIT:src/crypto.rs");
     expect(container.querySelector(".hchip.overridden")).toBeNull();
     expect(document.querySelector("#notices .notice")).toBeTruthy();
   });
@@ -370,16 +370,16 @@ describe("the triage overlay on the aggregate review stack", () => {
 
   it("orders the run's own diff and remembers the dial for its project", async () => {
     const { host, plug } = await mountPlug({ triage: TRIAGE, projectId: "proj-1" });
-    expect(host.querySelector(".tsection.tcritical .file").dataset.file).toBe("src/crypto.rs");
+    expect(host.querySelector(".file.tcritical").dataset.key).toBe("EDIT:src/crypto.rs");
     expect(host.querySelector(".tgname").textContent).toBe("Version bumps");
 
     host.querySelector(".tgrouphead").click();
     await settle();
-    expect(host.querySelector(".tgroup").classList.contains("open")).toBe(true);
+    expect(host.querySelector(".tgrouphead").classList.contains("open")).toBe(true);
 
     host.querySelector(".tdial").click();
     await settle();
-    expect(host.querySelector(".tsection.tcritical")).toBeNull();
+    expect(host.querySelector(".file.tcritical")).toBeNull();
     expect(host.querySelectorAll(".file").length).toBe(2);
     plug.unmount();
 
@@ -412,7 +412,7 @@ describe("the triage overlay on the aggregate review stack", () => {
     plug.mount(host);
     await settle();
 
-    host.querySelector('.tsection.tcritical .toverride[data-direction="collapse"]').click();
+    host.querySelector('.file.tcritical .toverride[data-direction="collapse"]').click();
     document.querySelector(".cp-save").click();
     await settle();
 
@@ -421,8 +421,8 @@ describe("the triage overlay on the aggregate review stack", () => {
       direction: "collapse",
       note: "",
     });
-    expect(host.querySelector(".tsection.tcritical")).toBeNull();
-    expect(host.querySelector('.tgroup .file[data-file="src/crypto.rs"]')).toBeTruthy();
+    expect(host.querySelector(".file.tcritical")).toBeNull();
+    expect(host.querySelector('.tgroup .file[data-key$=":src/crypto.rs"]')).toBeTruthy();
     plug.unmount();
   });
 });

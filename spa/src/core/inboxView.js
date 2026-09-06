@@ -26,6 +26,7 @@ import {
   inboxEntries,
   inboxRowHtml,
   issueDoneConfirm,
+  mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
 } from "./inbox.js";
@@ -42,8 +43,8 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
-import { loadFoldedProjects, persistFoldedProjects } from "./railMode.js";
+import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
+import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
@@ -51,6 +52,9 @@ import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from
 import "../styles/shell.css";
 
 let items = [];
+// The board's rows for lifecycle verbs in flight (board.list's `pending`): a
+// checkout being cut is on the list while its git runs.
+let pendingLifecycle = [];
 let projects = [];
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
@@ -61,8 +65,10 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // it is: the inbox's, or one project block's. A scope nobody has spoken for
 // lets its partition decide (it opens when the list above it is thin).
 const recentOpen = new Map();
-// The project blocks folded shut, by project id. Remembered on this device.
-let folded = new Set();
+// What the user has said of each block's fold (project id → folded). A block
+// they have said nothing about folds as the face decides. Remembered on this
+// device.
+let folds = new Map();
 // Each block as last painted, by project id: where its head opens, and what
 // it is called — which is what the create it offers is titled with.
 let blocksPainted = new Map();
@@ -126,7 +132,7 @@ export const INBOX_SCOPE = "inbox";
 
 // The captures this client is holding or watching stand beside the daemon's
 // own rows; the daemon's copy wins wherever both name the same capture.
-const mergedItems = () => mergeCaptureRows(items, pendingCaptureRows());
+const mergedItems = () => mergeCaptureRows(mergePendingRows(items, pendingLifecycle), pendingCaptureRows());
 
 /** Show one of the rail's two faces. The shell calls this with what the user
  *  chose (and remembered); the list repaints as that face. */
@@ -170,7 +176,7 @@ function rowUi(showProject) {
     // compose panel offers: one source for "which branches are there".
     rerouteBranches: branchOptions(items, rerouteBranchProject),
     showProject,
-    folded,
+    folded: new Set(),
     // The block holding the branch or issue the route stands on. A capture's
     // route names no project; the row it stands on does.
     activeProjectId: App.route.projectId || (entries.find((entry) => entry.key === activeEntryKey(App.route, entries)) || {}).projectId || null,
@@ -195,7 +201,7 @@ function drawProjects(list, shown, nowMs) {
   const face = projectBlocks({ items: shown, projects, nowMs });
   entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(face.blocks.map((block) => [block.id, block]));
-  const ui = rowUi(false);
+  const ui = { ...rowUi(false), folded: new Set(face.blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.id)) };
   const frame = projectsFrame(list);
   patchList(frame.unsorted, face.unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
   paintBlocks(frame.blocks, face.blocks, ui);
@@ -233,7 +239,7 @@ function paintBlocks(host, blocks, ui) {
       host.insertBefore(element, anchor);
     } else {
       element.classList.toggle("inbox-flat", block.flat);
-      element.classList.toggle("inbox-folded", folded.has(block.id));
+      element.classList.toggle("inbox-folded", ui.folded.has(block.id));
       element.classList.toggle("active", ui.activeProjectId === block.id);
       patchElement(element.querySelector(":scope > .inbox-project-head"), el(projectHeadHtml(block, ui)));
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
@@ -281,7 +287,7 @@ function paintRecent(host, partition, ui, scope) {
   // above it lands after the section, so the section is put back at the end
   // whenever a paint has left something below it.
   if (host.lastElementChild !== section) host.appendChild(section);
-  const open = recentIsOpen(partition, recentOpen.get(scope));
+  const open = recentIsOpen(recentOpen.get(scope));
   patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(partition.recent, open, scope)));
   // Recent's rows are quiet rows: one line each, no state dot.
   patchList(section, open ? partition.recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
@@ -402,9 +408,10 @@ function projectClicked(target) {
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */
 function toggleFold(projectId) {
-  if (folded.has(projectId)) folded.delete(projectId);
-  else folded.add(projectId);
-  persistFoldedProjects(folded, localStorage);
+  const block = blocksPainted.get(projectId);
+  if (!block) return;
+  folds.set(projectId, !blockIsFolded(block, folds));
+  persistProjectFolds(folds, localStorage);
   draw();
 }
 
@@ -617,11 +624,12 @@ export function mountInboxList() {
     return;
   }
   mounted = true;
-  folded = loadFoldedProjects(localStorage);
+  folds = loadProjectFolds(localStorage);
   subscribePendingCaptures(drawFromFeed);
   subscribeOptimistic(INBOX_SCOPE, draw);
   subscribeFeed((feed) => {
     items = feed.items || [];
+    pendingLifecycle = feed.pending || [];
     projects = feed.projects || [];
     const live = new Set(items.map(entryKeyOf));
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);

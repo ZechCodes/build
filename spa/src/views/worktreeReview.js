@@ -63,6 +63,7 @@ export function createWorktreeReview({
   onAdopted = () => {},
   onFinished = () => {},
   onGone = () => {},
+  navigate = null,
 }) {
   // A mutating action (request changes / merge / abandon) is running: it is
   // about to adopt or remove this worktree, so the poll must not race it to a
@@ -95,6 +96,7 @@ export function createWorktreeReview({
 
   const plug = createReviewPlug({
     isOffline,
+    navigate,
     // Until this worktree is adopted it is its own entity; once it is, the run
     // it became is the one the bridge names.
     entity: () => adopting.adoptedRunId() || worktreeId,

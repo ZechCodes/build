@@ -1,0 +1,165 @@
+use std::fs::{self, DirEntry};
+use std::path::PathBuf;
+
+use serde_json::{json, Value};
+
+use super::protocol::CLIENT_NAME;
+use crate::harness::HarnessContext;
+use crate::models::{AgentProvider, ModelChoice};
+use crate::orchestrator::SpawnOptions;
+
+pub(super) const SELECTED_MODEL: &str = "gpt-5.6-sol";
+pub(super) const SELECTED_EFFORT: &str = "high";
+pub(super) const WORKTREE_ROOT: &str = "/tmp/worktree";
+pub(super) const THREAD_ID: &str = "thread-1";
+pub(super) const TURN_ID: &str = "turn-1";
+pub(super) const CHILD_THREAD_ID: &str = "thread-child";
+pub(super) const CHILD_TURN_ID: &str = "turn-child";
+pub(super) const EXACT_THREAD_ID: &str = "thread-exact";
+
+pub(super) fn supported_user_agent() -> String {
+    format!("{CLIENT_NAME}/0.153.0 (fixture)")
+}
+
+pub(super) fn selected_choice() -> ModelChoice {
+    ModelChoice {
+        provider: AgentProvider::CodexAppServer,
+        model: Some(SELECTED_MODEL.to_string()),
+        effort: Some(SELECTED_EFFORT.to_string()),
+    }
+}
+
+pub(super) fn initialize_result(user_agent: &str) -> Value {
+    json!({ "userAgent": user_agent })
+}
+
+pub(super) fn thread_opened_with(
+    thread_id: &str,
+    reasoning_effort: Option<&str>,
+    overrides: Value,
+) -> Value {
+    let mut opened = json!({
+        "thread": { "id": thread_id },
+        "model": SELECTED_MODEL,
+        "reasoningEffort": reasoning_effort,
+        "cwd": WORKTREE_ROOT,
+        "approvalPolicy": "never",
+        "sandbox": { "type": "dangerFullAccess" }
+    });
+    opened
+        .as_object_mut()
+        .expect("an opened thread is an object")
+        .extend(
+            overrides
+                .as_object()
+                .expect("thread-open overrides are an object")
+                .clone(),
+        );
+    opened
+}
+
+pub(super) fn thread_opened_at(
+    cwd: &str,
+    thread_id: &str,
+    reasoning_effort: Option<&str>,
+) -> Value {
+    thread_opened_with(thread_id, reasoning_effort, json!({ "cwd": cwd }))
+}
+
+pub(super) fn thread_opened(thread_id: &str, reasoning_effort: Option<&str>) -> Value {
+    thread_opened_with(thread_id, reasoning_effort, json!({}))
+}
+
+pub(super) fn item_envelope_at(thread_id: &str, turn_id: &str, item: Value) -> Value {
+    json!({ "threadId": thread_id, "turnId": turn_id, "item": item })
+}
+
+pub(super) fn item_envelope(item: Value) -> Value {
+    item_envelope_at(THREAD_ID, TURN_ID, item)
+}
+
+pub(super) fn spawn_options() -> SpawnOptions {
+    SpawnOptions {
+        owner_id: "run-1".to_string(),
+        cwd: PathBuf::from(WORKTREE_ROOT),
+        mcp_session_token: "fixture-token".to_string(),
+        ..SpawnOptions::default()
+    }
+}
+
+pub(super) fn harness_context() -> HarnessContext {
+    HarnessContext {
+        bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+        mcp_socket: PathBuf::from("/tmp/build.sock"),
+        state_root: PathBuf::from("/tmp/build-state"),
+    }
+}
+
+macro_rules! corpus_path {
+    ($($segment:expr),*) => {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/codex-app-server/"
+            $(, $segment)*
+        )
+    };
+}
+
+const CHECKED_IN_FIXTURE_CORPUS_ROOT: &str = corpus_path!();
+const CORPUS_PROVENANCE_FILE_NAME: &str = "PROVENANCE.md";
+
+macro_rules! checked_in_fixture_corpus {
+    ($($version:literal => [$($name:literal),+ $(,)?]),+ $(,)?) => {
+        pub(super) const CHECKED_IN_FIXTURES: &[(&str, &str)] = &[$($((
+            concat!($version, "/", $name),
+            include_str!(corpus_path!($version, "/", $name)),
+        ),)+)+];
+    };
+}
+
+checked_in_fixture_corpus!(
+    "0.153.0" => [
+        "observed-session-start.jsonl",
+        "observed-session-resume.jsonl",
+        "observed-session-mcp.jsonl",
+        "synthetic-model-events.jsonl",
+    ],
+);
+
+pub(super) fn checked_in_fixture(version_qualified_name: &str) -> &'static str {
+    CHECKED_IN_FIXTURES
+        .iter()
+        .find(|(fixture_name, _)| *fixture_name == version_qualified_name)
+        .unwrap_or_else(|| panic!("{version_qualified_name} is not a checked-in fixture"))
+        .1
+}
+
+pub(super) fn corpus_file_names() -> Vec<String> {
+    let mut version_qualified_names: Vec<String> = fs::read_dir(CHECKED_IN_FIXTURE_CORPUS_ROOT)
+        .expect("the fixture corpus root is checked in")
+        .flat_map(|version_entry| {
+            version_directory_fixture_names(
+                &version_entry.expect("a corpus version entry is readable"),
+            )
+        })
+        .collect();
+    version_qualified_names.sort();
+    version_qualified_names
+}
+
+fn version_directory_fixture_names(version_entry: &DirEntry) -> Vec<String> {
+    let version = entry_file_name(version_entry);
+    fs::read_dir(version_entry.path())
+        .unwrap_or_else(|error| panic!("{version} is not a fixture version directory: {error}"))
+        .map(|fixture_entry| entry_file_name(&fixture_entry.expect("a fixture entry is readable")))
+        .filter(|file_name| file_name != CORPUS_PROVENANCE_FILE_NAME)
+        .map(|file_name| format!("{version}/{file_name}"))
+        .collect()
+}
+
+fn entry_file_name(entry: &DirEntry) -> String {
+    entry
+        .file_name()
+        .into_string()
+        .unwrap_or_else(|name| panic!("{name:?} is not a UTF-8 corpus file name"))
+}

@@ -136,6 +136,33 @@ describe("the feed's cached boot paint", () => {
     expect(seen[0].items).toHaveLength(1);
   });
 
+  // What a verb was doing last time this browser was open is not a fact about
+  // now: those verbs settled long ago, and the live answer names whatever is
+  // running today.
+  it("paints nothing in flight from the cache", async () => {
+    App.selectedDeviceId = "dev-1";
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached(
+      { deviceId: "dev-1", entityId: "", kind: "feed" },
+      {
+        items: [],
+        plans: [],
+        runs: [],
+        externalWorktrees: [],
+        pending: [{ entity_id: "wt-old", project_id: "p1", title: "gone", state: "creating" }],
+        projects: [],
+        primaryChanges: [],
+      },
+    );
+    App.call = vi.fn(() => new Promise(() => {}));
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    startFeed();
+    for (let i = 0; i < 15; i++) await settle();
+    expect(seen[0].cached).toBe(true);
+    expect(seen[0].pending).toEqual([]);
+  });
+
   it("never paints the cache over a live answer", async () => {
     App.selectedDeviceId = "dev-1";
     const { writeCached } = await import("../src/core/localCache.js");

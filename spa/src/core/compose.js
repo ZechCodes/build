@@ -124,6 +124,7 @@ function captureUnreadReason(capture) {
  * still holding — as an inbox row, in the shape `board.list` gives the captures
  * it carries. One row vocabulary, whichever side the copy came from.
  */
+// eslint-disable-next-line complexity -- ratchet: captureRow is at 11, cap 10 — reduce it, then drop this line
 export function captureRow(capture, { projectName = "" } = {}) {
   const routing = capture.routing || null;
   const reason = captureUnreadReason(capture);
@@ -192,6 +193,7 @@ export function composePromptHtml() {
  * going (queued while the device is away); `advanced` is the manual panel's
  * markup, rendered only while its disclosure is open.
  */
+// eslint-disable-next-line complexity -- ratchet: composeBoxHtml is at 13, cap 10 — reduce it, then drop this line
 export function composeBoxHtml({ value = "", note = "", error = "", busy = false, advanced = "" } = {}) {
   return `<div class="compose-box">
     <textarea id="compose-text" rows="3" placeholder="What do you want to get done?"
@@ -239,11 +241,19 @@ export function manualRoute({ kind, projectId, text, branch = "", agentParams = 
   };
 }
 
-/** Where a manual route lands: what it made, opened. */
+/** Where a manual route lands: what it made, opened — or nowhere, when the
+ *  reply names nothing to open. The daemon cuts a branch with its state lock
+ *  released and answers once the git lands, so the reply can name the work
+ *  after this browser has stopped waiting for it; the board carries the row
+ *  either way. */
 export function manualRouteDestination(kind, created, projectId) {
-  const project = (created && created.project_id) || projectId;
-  if (kind === "branch") return { name: "branch", projectId: project, branch: created.branch, tab: "changes" };
-  return { name: "issue", projectId: project, id: created.issue_id || created.plan_id };
+  const made = created || {};
+  const project = made.project_id || projectId;
+  if (kind === "branch") {
+    return made.branch ? { name: "branch", projectId: project, branch: made.branch, tab: "changes" } : null;
+  }
+  const issueId = made.issue_id || made.plan_id;
+  return issueId ? { name: "issue", projectId: project, id: issueId } : null;
 }
 
 /** What the box says about a capture it cannot send yet. The text is kept

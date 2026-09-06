@@ -208,9 +208,11 @@ export function mountAgentTab(host, target, { idleLabel = "No agent is currently
     try {
       await onStart();
       starting = false;
-      // The agent is up. Its first frame would clear this anyway (the pane is
-      // already attached to the screen it is born onto), but not waiting for a
-      // round trip is what makes the press feel like it did something.
+      // The start is accepted, not finished: the bridge answers as soon as the
+      // agent is queued and spawns it behind the reply. The pane is already
+      // attached to the screen it will be born onto, so its first frame — or
+      // its absence — is what has the last word; dropping the offer here is
+      // what makes the press feel like it did something meanwhile.
       shade.hidden = true;
     } catch (e) {
       // Standing offer, plus the reason — a start that failed silently would

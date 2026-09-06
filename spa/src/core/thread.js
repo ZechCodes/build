@@ -1,6 +1,7 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { patchElement } from "./domPatch.js";
+import { paintKeepingPlace, pinToBottom } from "./paintKeepingPlace.js";
 import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
 import {
   INTERRUPT_SEND_OPTION,
@@ -30,6 +31,7 @@ function calendarDayNumber(date) {
   return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS;
 }
 
+// eslint-disable-next-line complexity -- ratchet: formatRelativeDate is at 19, cap 10 — reduce it, then drop this line
 export function formatRelativeDate(value, nowValue = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
@@ -83,6 +85,8 @@ function timeHtml(createdAt) {
 // a poll that names no bound gets the conversation whole, which is the only
 // answer a client written before paging could reconcile.
 export const FIRST_PAGE_ITEMS = 60;
+
+export const THREAD_RECORD_KIND = "thread";
 
 // What a MUTATION asks its answer to carry. Every mutation RPC answers with
 // the whole entity, conversation included, and no caller here reads that
@@ -477,6 +481,7 @@ function harnessLabel(thread, override) {
   return providerLabel(LEGACY_PROVIDER_IDS[raw] || raw);
 }
 
+// eslint-disable-next-line complexity -- ratchet: linkLocation is at 12, cap 10 — reduce it, then drop this line
 function linkLocation(link) {
   if (link.kind !== "file") {
     return link.path || link.implementation_id || link.run_id || link.worktree_id || link.sha || link.recovery_id || "Open";
@@ -490,6 +495,7 @@ function linkLocation(link) {
 function linksHtml(links) {
   if (!links || !links.length) return "";
   return `<div class="thread-references">${links
+    // eslint-disable-next-line complexity -- ratchet: this callback is at 13, cap 10 — reduce it, then drop this line
     .map((link) => {
       const attributes = [
         `data-kind="${esc(link.kind || "")}"`,
@@ -653,6 +659,7 @@ function outcomeMarkerHtml(outcome, agentLabel) {
   </div>`;
 }
 
+// eslint-disable-next-line complexity -- ratchet: messageHtml is at 11, cap 10 — reduce it, then drop this line
 function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer = "") {
   const user = message.role === "user";
   const status = user
@@ -854,6 +861,7 @@ function foldActivityRuns(entries) {
   return rows;
 }
 
+// eslint-disable-next-line complexity -- ratchet: eventHtml is at 11, cap 10 — reduce it, then drop this line
 function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml);
@@ -927,6 +935,7 @@ function timelineHtml(sourceItems, agentLabel, threadId) {
   // only that one. An event between it and now changes nothing — a commit
   // landing is not somebody speaking.
   const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const entries = topLevelItems.flatMap((item, index) => {
     if (item.type !== "message") {
       const event = item.data || {};
@@ -997,6 +1006,7 @@ function threadActionsHtml(actionsId) {
   return actionsId ? `<div class="thread-actions" id="${esc(actionsId)}"></div>` : "";
 }
 
+// eslint-disable-next-line complexity -- ratchet: threadHtml is at 11, cap 10 — reduce it, then drop this line
 export function threadHtml(thread, options = {}) {
   const agentLabel = harnessLabel(thread, options.agentLabel);
   const sourceItems = (thread && thread.items) || [];
@@ -1065,6 +1075,7 @@ const composerSurvives = (live, next) => {
 /// must wire everything in it again, including any composer this render
 /// created; false means the wired one is still there and re-wiring it would
 /// throw away the tray's uploads.
+// eslint-disable-next-line complexity -- ratchet: writeThreadKeepingComposer is at 11, cap 10 — reduce it, then drop this line
 export function writeThreadKeepingComposer(container, html) {
   const live = container.querySelector(".review-thread");
   const rendered = container.ownerDocument.createElement("div");
@@ -1097,85 +1108,11 @@ export function writeThreadKeepingComposer(container, html) {
   return false;
 }
 
-/** How near the end still counts as reading the end. Absorbs the fractional
- *  scroll heights a zoomed or sub-pixel layout leaves behind. */
-const AT_BOTTOM_SLACK_PX = 32;
-
-/// Run `paint` and report whether it moved anything under `scroller`.
-///
-/// Asking the DOM is the only honest answer: the paint belongs to the caller,
-/// and a poll's repaint that resolved the same conversation writes nothing at
-/// all. Observing it costs one observer per tick and tells the difference
-/// between a repaint and a tick that merely happened.
-function paintAndSayWhetherAnythingMoved(scroller, paint) {
-  if (typeof MutationObserver !== "function") {
-    paint();
-    return true;
-  }
-  const observer = new MutationObserver(() => {});
-  observer.observe(scroller, { childList: true, subtree: true, attributes: true, characterData: true });
-  try {
-    paint();
-    return observer.takeRecords().length > 0;
-  } finally {
-    observer.disconnect();
-  }
-}
-
-/// Paint a conversation with the reader's place kept.
-///
-/// The newest message is the one the human came for and it sits at the END, so
-/// opening a thread lands at the bottom. Every surface then re-renders the whole
-/// timeline on its poll, and writing innerHTML resets scrollTop — which is the
-/// same lever, so both halves live here: a reader already at the end is carried
-/// along with new messages, and a reader who scrolled up is left exactly where
-/// they were rather than yanked back down mid-sentence.
-///
-/// `scroller` is the element that scrolls (the surfaces' `#tabbody`), which is
-/// not always the element `paint` writes into — the issue surface paints a
-/// wrapper inside it. With no scroller this is `paint()` and nothing else.
-///
-/// A tick whose paint wrote nothing is not a repaint, and the scroller is not
-/// touched for it — not even to write back the number it already holds. That
-/// assignment is not free: on iOS it cancels the momentum of a flick in
-/// progress and drops the reader back where the tick found them, which at a
-/// poll every 1.6 seconds is a thread that cannot be scrolled down at all.
-///
-/// `olderItemsPrepended` says this paint grew the timeline at the TOP — a page
-/// of history the reader asked for by scrolling back past the start of the
-/// window. Everything they were reading has moved down by the height of what
-/// arrived, so keeping their scrollTop would keep the pixel and lose the
-/// message, jumping them a page further back on every load.
 export function paintThreadKeepingPlace(scroller, paint, { olderItemsPrepended = false } = {}) {
-  if (!scroller) {
-    paint();
-    return;
-  }
-  // Nothing rendered yet means this paint is the open: the tab was just
-  // selected, or a shell rebuild wiped the body under it.
-  const opening = !scroller.querySelector(".review-thread");
-  const previousScrollTop = scroller.scrollTop;
-  const previousScrollHeight = scroller.scrollHeight;
-  const wasAtBottom =
-    previousScrollHeight - scroller.clientHeight - previousScrollTop <= AT_BOTTOM_SLACK_PX;
-  const changed = paintAndSayWhetherAnythingMoved(scroller, paint);
-  if (olderItemsPrepended) {
-    scroller.scrollTop = previousScrollTop + (scroller.scrollHeight - previousScrollHeight);
-    return;
-  }
-  if (!opening && !changed) return;
-  if (!opening && !wasAtBottom) {
-    scroller.scrollTop = previousScrollTop;
-    return;
-  }
-  const toBottom = () => {
-    scroller.scrollTop = scroller.scrollHeight;
-  };
-  toBottom();
-  // Markdown and web fonts can settle a frame after the content lands, leaving
-  // the open short of the newest message. Only the open re-pins: doing it on a
-  // poll's repaint would fight a reader who scrolled away within that frame.
-  if (opening && typeof requestAnimationFrame === "function") requestAnimationFrame(toBottom);
+  paintKeepingPlace(scroller, paint, {
+    opening: (element) => !element.querySelector(".review-thread"),
+    policy: pinToBottom({ olderItemsPrepended }),
+  });
 }
 
 export function wireThreadRevisionLinks(root, loadRevision) {
@@ -1309,6 +1246,7 @@ export function wireThreadAttachments(root, load) {
 export function wireThreadLinks(root, openLink) {
   if (!root) return;
   root.querySelectorAll(".thread-reference").forEach((button) => {
+    // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
     button.onclick = () => {
       const link = { kind: button.dataset.kind };
       if (button.dataset.path) link.path = button.dataset.path;
@@ -1386,6 +1324,7 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
     if (caret) caret.disabled = !pressable;
   };
 
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
   const submit = async ({ interrupt = false } = {}) => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;

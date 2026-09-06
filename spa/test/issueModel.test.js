@@ -259,7 +259,7 @@ describe("worktreeChoices", () => {
 describe("implementParams", () => {
   const catalog = {
     default_provider: "claude_adk",
-    providers: [{ id: "codex", label: "Codex", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["high"] }],
+    providers: [{ id: "codex", label: "Codex TUI", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["high"] }],
   };
 
   it("carries the issue and the assignment's overrides to implement_all", () => {
@@ -272,9 +272,10 @@ describe("implementParams", () => {
     });
   });
 
-  it("omits what was left at the default", () => {
+  it("omits empty base, model and effort while carrying the displayed agent", () => {
     expect(implementParams("issue-1", { worktree: "new", agent: "new", base: "  ", provider: "", model: "", effort: "" }, { catalog })).toEqual({
       issue_id: "issue-1",
+      provider: "claude_adk",
     });
   });
 
@@ -282,6 +283,7 @@ describe("implementParams", () => {
     expect(implementParams("issue-1", defaultAssignment(null), { catalog, stageId: "s2" })).toEqual({
       issue_id: "issue-1",
       stage_id: "s2",
+      provider: "claude_adk",
     });
   });
 
@@ -292,7 +294,7 @@ describe("implementParams", () => {
         { ...defaultAssignment(null), worktree: "existing", worktreeId: "wt-1", base: "release" },
         { catalog },
       ),
-    ).toEqual({ issue_id: "issue-1", worktree_id: "wt-1" });
+    ).toEqual({ issue_id: "issue-1", worktree_id: "wt-1", provider: "claude_adk" });
   });
 
   it("refuses to dispatch a target the bridge cannot honour", () => {

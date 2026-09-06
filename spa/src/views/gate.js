@@ -4,12 +4,13 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { RELAY_URL } from "../config.js";
 import { onlineStickyDeviceId } from "../core/devicePolicy.js";
 import { App, render } from "../app.js";
 import { openAppSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
-import { lookupDevice, approveDevice } from "../api.js";
+import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
+import { currentPlatformKey } from "../core/platform.js";
+import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { startFeed, stopFeed } from "../core/taskFeed.js";
 import { startCacheSync } from "../core/cacheSync.js";
@@ -65,7 +66,7 @@ function watchForOnline() {
     if (!devices.length) {
       clearInterval(App._watch);
       App._watch = null;
-      renderOnboarding();
+      await renderOnboarding();
       return;
     }
     paintWaiting(devices);
@@ -79,33 +80,43 @@ function watchForOnline() {
   }, 3000);
 }
 
-function renderOnboarding() {
-  setGate(true);
-  setConn('<span class="dot" style="background:var(--dim)"></span>no devices');
-  const api = location.origin;
-  const cmd = `BRIDGE_API_URL=${api} BRIDGE_WEB_URL=${api} BRIDGE_RELAY_URL=${RELAY_URL} BRIDGE_IDENTITY_FILE=/tmp/bld/my-device.json BRIDGE_REPO=/tmp/bld/repo BRIDGE_WORKTREES=/tmp/bld/wt build-bridge serve`;
-  $("#root").innerHTML = `
+const STEP_BULLET =
+  "flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600";
+
+const stepHtml = (number, body) =>
+  `<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="${STEP_BULLET}">${number}</span><div>${body}</div></div>`;
+
+/** The three steps of a first run, as pure html. Step 1 holds the downloads
+ *  placeholder; mountDownloads fills it from the api once it answers. */
+function onboardingStepsHtml() {
+  return `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
       <h1 style="margin:0 0 6px">Welcome to Build</h1>
-      <p class="settings-intro" style="margin:0 0 22px">Your coding agents run on your own devices, end-to-end encrypted. Add a device to begin — only paired devices can read your tasks, plans, and diffs.</p>
+      <p class="settings-intro" style="margin:0 0 10px">Your coding agents run on your own devices, end-to-end encrypted. Add a device to begin — only paired devices can read your tasks, plans, and diffs.</p>
+      <p class="dim" style="font-size:12.5px;margin:0 0 22px">Agents run on your machine in YOLO mode; Build makes what they did visible, it does not sandbox them.</p>
       <div class="panel">
-        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">1</span><div><b>Start a bridge</b> on the machine where your code lives.
-          <div style="display:flex;gap:8px;align-items:flex-start;margin-top:6px">
-            <code class="mono" style="flex:1;font-size:11px;line-height:1.5;padding:8px 10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">${esc(cmd)}</code>
-            <button class="btn mini" id="copycmd">Copy</button></div></div></div>
-        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">2</span><div><b>Enter its pairing code</b> — the bridge prints it on startup.
+        ${stepHtml(
+          1,
+          `<b>Install the bridge</b> on the machine where your code lives.
+          <div style="margin-top:8px">${downloadsPlaceholderHtml()}</div>`,
+        )}
+        ${stepHtml(
+          2,
+          `<b>Enter its pairing code</b> — the bridge prints it when it starts, and again while it waits for you.
           <div class="addproj" style="margin-top:6px"><input id="ocode" placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" autofocus />
-            <button class="btn primary" id="olookup">Add device</button></div></div></div>
-        <div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0"><span style="flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">3</span><div><b>Compare the fingerprint</b> with what the bridge printed, then approve.</div></div>
+            <button class="btn primary" id="olookup">Add device</button></div>`,
+        )}
+        ${stepHtml(3, "<b>Compare the fingerprint</b> with what the bridge printed, then approve.")}
       </div>
       <div id="opairbox"></div>
       <div class="adderr" id="oerr"></div>
     </div>`;
-  $("#copycmd").onclick = () => {
-    navigator.clipboard?.writeText(cmd);
-    $("#copycmd").textContent = "Copied";
-    setTimeout(() => ($("#copycmd").textContent = "Copy"), 1500);
-  };
+}
+
+/** Lookup → fingerprint → approve, unchanged. The pairing code is what actually
+ *  pairs a device, so it is wired before the downloads block is asked for and
+ *  stays usable whatever that route answers. */
+function bindPairing() {
   const lookup = async () => {
     const code = $("#ocode").value.trim().toUpperCase();
     if (!code) return;
@@ -139,6 +150,22 @@ function renderOnboarding() {
   $("#olookup").onclick = lookup;
   $("#ocode")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") lookup();
+  });
+}
+
+// The first run: no approved device on this account. Nobody can enter a pairing
+// code before there is a bridge to print one, so the download comes first — on
+// the same screen, above the code the bridge will print.
+async function renderOnboarding() {
+  setGate(true);
+  setConn('<span class="dot" style="background:var(--dim)"></span>no devices');
+  $("#root").innerHTML = onboardingStepsHtml();
+  bindPairing();
+  await mountDownloads($("#root"), {
+    fetchDownloads,
+    mintInstallCommand,
+    platformKey: currentPlatformKey(),
+    clipboard: navigator.clipboard,
   });
 }
 
@@ -181,7 +208,7 @@ export async function boot() {
   setConn('<span class="dot" style="background:var(--amber)"></span>connecting…');
   const devices = await refreshDevices();
   if (!devices.length) {
-    renderOnboarding();
+    await renderOnboarding();
     return;
   }
   if (devices.some((d) => d.status === "online")) {

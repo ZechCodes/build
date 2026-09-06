@@ -1,0 +1,124 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Transport - Admin - {{ site_name() }}{% endblock %}
+
+{% block admin_content %}
+<div class="sk-admin-header">
+    <hgroup>
+        <h1>Transport</h1>
+        <p>How client sessions reach their bridges, as the bridges reported it</p>
+    </hgroup>
+    <nav aria-label="Window">
+        {% for w in dashboard.windows %}
+        <a href="/admin/transport?window={{ w }}" role="button" class="{{ 'sk-btn' if w == dashboard.window else 'sk-btn-outline' }}">{{ w }}</a>
+        {% endfor %}
+    </nav>
+</div>
+
+<section class="sk-stats">
+    <article class="sk-stat-card">
+        <div class="sk-stat-label">Sessions</div>
+        <div class="sk-stat-value">{{ dashboard.totals.sessions }}</div>
+        <div class="sk-stat-sub">minted in the last {{ dashboard.window }}</div>
+    </article>
+    <article class="sk-stat-card">
+        <div class="sk-stat-label">{{ dashboard.labels.direct }}</div>
+        <div class="sk-stat-value">{{ dashboard.totals.direct }}</div>
+        <div class="sk-stat-sub">{{ dashboard.direct_share }} — reliably on a DataChannel, never fell back</div>
+    </article>
+    <article class="sk-stat-card">
+        <div class="sk-stat-label">{{ dashboard.labels.turn }}</div>
+        <div class="sk-stat-value">{{ dashboard.totals.turn }}</div>
+        <div class="sk-stat-sub">{{ dashboard.turn_share }} — relayed through Cloudflare at least once (billed)</div>
+    </article>
+    <article class="sk-stat-card">
+        <div class="sk-stat-label">{{ dashboard.labels.relay_only }}</div>
+        <div class="sk-stat-value">{{ dashboard.totals.relay_only }}</div>
+        <div class="sk-stat-sub">{{ dashboard.relay_share }} — never left the WebSocket relay</div>
+    </article>
+    <article class="sk-stat-card">
+        <div class="sk-stat-label">{{ dashboard.labels.unstable }}</div>
+        <div class="sk-stat-value">{{ dashboard.totals.unstable }}</div>
+        <div class="sk-stat-sub">upgraded, then fell back to the relay</div>
+    </article>
+</section>
+
+<p class="sk-muted">
+    A bridge names a browser's candidate <code>prflx</code> when the browser's connectivity
+    check reached it before its trickled candidate did, so a browser on TURN can be counted
+    as direct here. Cloudflare's own egress figure is the billing authority; this count is
+    the lower bound.
+</p>
+
+<section class="sk-panel">
+    <div class="sk-panel-head"><h2>Per device</h2></div>
+    <div class="sk-table-scroll">
+        <table class="sk-admin-table">
+            <thead>
+                <tr>
+                    <th>Device</th>
+                    <th>Sessions</th>
+                    <th>{{ dashboard.labels.direct }}</th>
+                    <th>{{ dashboard.labels.turn }}</th>
+                    <th>{{ dashboard.labels.relay_only }}</th>
+                    <th>{{ dashboard.labels.unstable }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in dashboard.devices %}
+                <tr>
+                    <td>{{ row.device }}</td>
+                    <td>{{ row.sessions }}</td>
+                    <td>{{ row.direct }}</td>
+                    <td>{{ row.turn }}</td>
+                    <td>{{ row.relay_only }}</td>
+                    <td>{{ row.unstable }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">No sessions in this window.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="sk-panel">
+    <div class="sk-panel-head"><h2>Recent sessions</h2></div>
+    <div class="sk-table-scroll">
+        <table class="sk-admin-table">
+            <thead>
+                <tr>
+                    <th>Session</th>
+                    <th>Device</th>
+                    <th>Bucket</th>
+                    <th>First path</th>
+                    <th>Now</th>
+                    <th>Carries</th>
+                    <th>TURN</th>
+                    <th>Fallbacks</th>
+                    <th>Minted</th>
+                    <th>Ended</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in dashboard.recent %}
+                <tr>
+                    <td><code>{{ s.session_id }}</code></td>
+                    <td>{{ s.device }}</td>
+                    <td>{{ dashboard.labels[s.bucket] }}</td>
+                    <td>{{ s.first_path }}</td>
+                    <td>{{ s.current_path }}</td>
+                    <td>{{ s.carrying_count }}</td>
+                    <td>{{ s.turn_count }}</td>
+                    <td>{{ s.fell_back_count }}</td>
+                    <td>{{ s.minted_at.strftime('%Y-%m-%d %H:%M') if s.minted_at else '' }}</td>
+                    <td>{{ 'yes' if s.ended else 'live' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="10">No sessions in this window.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

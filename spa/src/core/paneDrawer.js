@@ -40,6 +40,7 @@ export function paneDrawerHtml(label) {
  * Returns { open, close, isOpen, dispose } — dispose drops the document
  * listener, so a pane that remounts never leaves one behind.
  */
+// eslint-disable-next-line complexity -- ratchet: initPaneDrawer is at 11, cap 10 — reduce it, then drop this line
 export function initPaneDrawer(split, { list, closeOnSelect }) {
   const handle = split.querySelector("[data-pane-handle]");
   const scrim = split.querySelector("[data-pane-scrim]");

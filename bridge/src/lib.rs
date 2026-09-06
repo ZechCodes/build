@@ -53,9 +53,13 @@ pub mod changes;
 pub mod config;
 pub mod delivery;
 pub mod diff;
+#[cfg(test)]
+pub mod git_fixture;
+pub mod git_process;
 pub mod gitgui;
 pub mod harness;
 pub mod identity;
+pub mod isolation;
 pub mod lifecycle;
 pub mod mcp;
 pub mod models;

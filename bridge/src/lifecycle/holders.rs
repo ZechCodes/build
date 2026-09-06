@@ -22,14 +22,9 @@ impl ProjectCheckouts {
     pub fn holders(&self) -> Result<BranchOwnershipIndex, String> {
         let primary = crate::worktree::primary_checkout_holder(&self.primary_repo_path)
             .map_err(|error| error.to_string())?;
-        let excluded = self
-            .excluded
-            .iter()
-            .map(|path| crate::worktree::canonical_root(path))
-            .collect();
         let external = self
             .project
-            .scan_checkouts(&self.base_branch, &excluded)
+            .scan_checkouts(&self.base_branch, &self.excluded)
             .map_err(|error| error.to_string())?;
         let run_branches = self
             .run_checkouts
@@ -41,6 +36,33 @@ impl ProjectCheckouts {
             run_branches,
             primary,
         })
+    }
+
+    /// Make every held branch's tip the project's before the project's refs
+    /// are read (Work Isolation spec §0.4). A linked worktree's already is; a
+    /// clone's is not until published, and a listing that skipped this would
+    /// weigh a clone's branch by what the project last saw of it. The
+    /// project's own checkout holds nothing to publish: its refs are the
+    /// project's.
+    pub fn publish_held_branches(&self, ownership: &BranchOwnershipIndex) -> Result<(), String> {
+        let worktrees = self.project.worktrees();
+        let external = ownership.external.iter().filter_map(|checkout| {
+            checkout
+                .branch
+                .clone()
+                .map(|branch| (checkout.path.clone(), branch))
+        });
+        let runs = self
+            .run_checkouts
+            .iter()
+            .filter(|(_, checkout)| checkout.path != self.primary_repo_path)
+            .map(|(_, checkout)| (checkout.path.clone(), checkout.branch()));
+        for (path, branch) in external.chain(runs) {
+            worktrees
+                .publish(&path, &branch)
+                .map_err(|error| format!("publishing {branch} from {}: {error}", path.display()))?;
+        }
+        Ok(())
     }
 }
 

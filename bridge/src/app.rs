@@ -31,6 +31,7 @@ use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
     SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, Turn,
 };
+use crate::isolation::{Isolation, IsolationAvailability, ResolvedIsolation};
 use crate::lifecycle::holders::{BranchHolder, ProjectCheckouts};
 #[cfg(test)]
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
@@ -72,8 +73,8 @@ use crate::thread::ThreadDetail;
 use crate::timing::{FrameClock, FrameTimer};
 use crate::transport::{self, Frame};
 use crate::worktree::{
-    bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees,
-    git_remote_origin, git_stdout, ExternalWorktree, Worktree,
+    bounded_git_fetch, configured_remote_for_branch, git_remote_origin, git_stdout,
+    ExternalWorktree, Worktree, WorktreeManager,
 };
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
@@ -871,6 +872,9 @@ struct Project {
     repo_path: std::path::PathBuf,
     base_branch: String,
     orch: Orchestrator,
+    /// Which isolation this project's new checkouts are made with, when the
+    /// account's answer is not the one wanted here. `None` inherits it.
+    isolation: Option<Isolation>,
     /// Cached external-worktree scan, refreshed at most every
     /// `EXTERNAL_SCAN_INTERVAL`. `None` until the first scan lands: a read
     /// answers `scanning` rather than taking one.
@@ -1227,7 +1231,9 @@ enum DiffCacheRefresh {
     },
     ExternalScan {
         project_id: String,
-        repo_path: std::path::PathBuf,
+        /// The project's own checkout seam, cloned off the app mutex so the
+        /// scan that walks every checkout runs without it.
+        worktrees: WorktreeManager,
         base_branch: String,
         excluded: std::collections::HashSet<std::path::PathBuf>,
     },
@@ -1348,13 +1354,13 @@ impl DiffCacheRefresh {
             }),
             Self::ExternalScan {
                 project_id,
-                repo_path,
+                worktrees,
                 base_branch,
                 excluded,
-            } => match discover_external_worktrees(repo_path, base_branch, excluded) {
-                Ok(worktrees) => Some(DiffCacheEntry::ExternalScan {
+            } => match worktrees.discover(base_branch, excluded) {
+                Ok(scanned) => Some(DiffCacheEntry::ExternalScan {
                     project_id: project_id.clone(),
-                    worktrees,
+                    worktrees: scanned,
                 }),
                 Err(e) => {
                     eprintln!("external_worktrees {project_id}: {e}");
@@ -1645,6 +1651,138 @@ struct ConversationNews {
     attention_reason: Option<&'static str>,
 }
 
+/// The isolation `entry`'s `"isolation"` key names, or `None` when it names
+/// none. A word this bridge does not know is logged under `field` and read as
+/// absent — a config written by a newer bridge is not a reason to fail boot,
+/// the same answer an unknown `default_harness` gets.
+fn configured_isolation(entry: &Value, field: &str) -> Option<Isolation> {
+    let named = entry.get("isolation").and_then(Value::as_str)?;
+    match Isolation::from_wire(named) {
+        Some(isolation) => Some(isolation),
+        None => {
+            eprintln!("config {field}: unknown {named:?}; using the default");
+            None
+        }
+    }
+}
+
+/// The isolation `named` asks for, accepted only when this machine can make
+/// it. The wire word is parsed here and nowhere else in the app, and what a
+/// volume can lock stays [`IsolationAvailability`]'s fact, so a setter refuses
+/// without naming an isolation of its own. Both isolation setters ask it.
+fn accept_isolation(named: &str, available: &IsolationAvailability) -> Result<Isolation, String> {
+    let asked = Isolation::from_wire(named)
+        .ok_or_else(|| format!("unknown isolation {named:?} (expected \"worktree\" or \"cow\")"))?;
+    match available.lock_reason(asked) {
+        None => Ok(asked),
+        Some(reason) => Err(format!(
+            "copy-on-write isolation is unavailable: {reason}; locked to worktrees"
+        )),
+    }
+}
+
+/// One `settings.set`: every account setting a client named, parsed whole
+/// before any of it is applied, so a refusal leaves the account exactly as it
+/// was rather than half-moved.
+///
+/// A setting is one row of [`SettingsPatch::FIELDS`] — its wire key beside the
+/// parse that puts the value here — so what this bridge accepts, in what order,
+/// and what "nothing to set" means are all the table, never a condition
+/// somewhere else that someone must remember to extend.
+#[derive(Default)]
+struct SettingsPatch {
+    projects_dir: Option<std::path::PathBuf>,
+    default_harness: Option<AgentProvider>,
+    isolation: Option<Isolation>,
+}
+
+/// What a field does with the value a client sent for it: refuse it, or put it
+/// in the patch. Every parse is handed what this volume can make; only
+/// isolation has anything to ask it.
+type SettingsFieldParse =
+    fn(&mut SettingsPatch, &Value, &IsolationAvailability) -> Result<(), String>;
+
+impl SettingsPatch {
+    /// Read in this order, so a client that sends both `claude_mode` and
+    /// `default_harness` is read by the newer word: they name one setting, and
+    /// the later row lands on top of the earlier.
+    const FIELDS: [(&'static str, SettingsFieldParse); 5] = [
+        ("projects_dir", |patch, value, _| {
+            let named = value
+                .as_str()
+                .ok_or_else(|| "missing required param: projects_dir".to_string())?;
+            patch.projects_dir = Some(expand_tilde(named));
+            Ok(())
+        }),
+        ("claude_mode", |patch, value, _| {
+            let named = value.as_str().unwrap_or_default();
+            patch.default_harness =
+                Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
+                    format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
+                })?);
+            Ok(())
+        }),
+        ("default_harness", |patch, value, _| {
+            let named = value.as_str().unwrap_or_default();
+            patch.default_harness = Some(AgentProvider::from_wire(named).ok_or_else(|| {
+                format!(
+                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
+                     \"codex\", \"codex_app_server\" or \"pi\")"
+                )
+            })?);
+            Ok(())
+        }),
+        ("codex_mode", |patch, value, _| {
+            let named = value.as_str().unwrap_or_default();
+            patch.default_harness =
+                Some(models::carrier_of_codex_mode(named).ok_or_else(|| {
+                    format!("unknown codex_mode {named:?} (expected \"headless\" or \"tui\")")
+                })?);
+            Ok(())
+        }),
+        ("isolation", |patch, value, available| {
+            patch.isolation = Some(accept_isolation(
+                value.as_str().unwrap_or_default(),
+                available,
+            )?);
+            Ok(())
+        }),
+    ];
+
+    /// The patch `params` asks for, or the refusal a set that names no setting
+    /// this bridge knows has earned: a no-op dressed as a mutation says so.
+    fn parse(params: &Value, available: &IsolationAvailability) -> Result<Self, String> {
+        let mut patch = Self::default();
+        let mut named_a_setting = false;
+        for (key, parse_field) in Self::FIELDS {
+            if let Some(value) = params.get(key) {
+                parse_field(&mut patch, value, available)?;
+                named_a_setting = true;
+            }
+        }
+        if !named_a_setting {
+            return Err("settings.set: nothing to set".to_string());
+        }
+        Ok(patch)
+    }
+}
+
+/// What a volume that could not make the clone the settings asked for is said
+/// with, spelled once so an operator reading the log and a human reading the
+/// thread are told the same thing in the same words.
+fn isolation_downgrade_note(reason: &str) -> String {
+    format!("Created a git worktree: copy-on-write isolation is unavailable here — {reason}")
+}
+
+/// Say that sentence on the daemon's log, and hand it back for whoever the
+/// create owes it to. Every announcing site goes through here, so the log
+/// hears every fallback exactly once and no caller can choose another policy.
+pub(crate) fn announce_isolation_downgrade(reason: &str) -> String {
+    let note = isolation_downgrade_note(reason);
+    eprintln!("{note}");
+    note
+}
+
 /// Shared application state behind the relay handler.
 pub struct AppState {
     /// Registered projects (repos) plans and runs can be dispatched to.
@@ -1665,6 +1803,10 @@ pub struct AppState {
     /// page and spent at creation — never re-read to move an agent that
     /// already exists.
     default_harness: AgentProvider,
+    /// How a new checkout is isolated from the project it comes from, for
+    /// every project that names no isolation of its own. Spent at creation,
+    /// like `default_harness`: an existing checkout says what it is itself.
+    isolation: Isolation,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     #[cfg(test)]
@@ -2232,6 +2374,7 @@ impl AppState {
             worktrees_root,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
+            isolation: Isolation::default(),
             config_path: None,
             #[cfg(test)]
             config_persist_failure: None,
@@ -2366,6 +2509,9 @@ impl AppState {
             self.projects_dir = expand_tilde(dir);
         }
         self.apply_default_harness_config(config);
+        if let Some(isolation) = configured_isolation(config, "isolation") {
+            self.isolation = isolation;
+        }
         self.apply_router_config(config);
         self.restore_configured_projects(config);
     }
@@ -2420,8 +2566,13 @@ impl AppState {
                 .unwrap_or("main")
                 .to_string();
             let repo = std::path::PathBuf::from(repo);
-            if repo.exists() {
-                self.add_project(repo, base);
+            if !repo.exists() {
+                continue;
+            }
+            let id = self.add_project(repo, base);
+            let isolation = configured_isolation(project, "project isolation");
+            if let Some(registered) = self.projects.iter_mut().find(|p| p.id == id) {
+                registered.isolation = isolation;
             }
         }
     }
@@ -2618,12 +2769,18 @@ impl AppState {
         // considering worktree recovery. The write-ahead record names the exact
         // candidate, and classification refreshes its configured remote ref.
         if let Some(attempt) = active.publication_attempt.clone() {
-            let publication = classify_stage_publication(
-                &repo_path,
-                &active.worktree.branch(),
-                &active.worktree.base_branch,
-                &attempt.candidate_sha,
-            );
+            let publication = project_id
+                .as_deref()
+                .and_then(|id| self.orch_for(id).ok())
+                .map_or(StagePublication::Local, |orch| {
+                    classify_stage_publication(
+                        orch.worktrees(),
+                        &active.worktree.path,
+                        &active.worktree.branch(),
+                        &active.worktree.base_branch,
+                        &attempt.candidate_sha,
+                    )
+                });
             let proven = match attempt.action.as_str() {
                 "push" => matches!(
                     publication,
@@ -2671,13 +2828,22 @@ impl AppState {
                 .filter(|_| !active.adopted)
                 .ok_or_else(|| "the original project/branch is unavailable".to_string())
                 .and_then(|project_id| {
+                    let resolved = self.resolved_isolation(project_id);
                     self.orch_for(project_id)?
-                        .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
+                        .restore_run_worktree(
+                            &active.worktree,
+                            unregistered_restore_for(&active),
+                            resolved.isolation,
+                        )
+                        .map(|worktree| (worktree, resolved.downgrade))
                         .map_err(err)
                 });
             match restored {
-                Ok(worktree) => {
+                Ok((worktree, downgrade)) => {
                     active.worktree = worktree;
+                    if let Some(reason) = downgrade {
+                        self.note_isolation_downgrade(&run_id, &mut active, &reason);
+                    }
                     recovery_event = Some((
                         crate::thread::ThreadEventKind::WorktreeRecreated,
                         format!(
@@ -3807,25 +3973,44 @@ impl AppState {
         &self,
         projects_dir: &std::path::Path,
         default_harness: AgentProvider,
+        isolation: Isolation,
     ) -> Value {
-        self.config_value_with_project(projects_dir, default_harness, None)
+        self.config_value_with_project(projects_dir, default_harness, isolation, None)
     }
 
     fn config_value_with_project(
         &self,
         projects_dir: &std::path::Path,
         default_harness: AgentProvider,
+        isolation: Isolation,
         prospective_project: Option<&Project>,
     ) -> Value {
         json!({
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
+            "isolation": isolation,
             "router_model": self.router_choice,
-            "projects": self.projects.iter().chain(prospective_project).map(|p| json!({
-                "path": p.repo_path.display().to_string(),
-                "base_branch": p.base_branch,
-            })).collect::<Vec<_>>(),
+            "projects": self.projects.iter().chain(prospective_project).map(|p| {
+                let mut entry = json!({
+                    "path": p.repo_path.display().to_string(),
+                    "base_branch": p.base_branch,
+                });
+                if let Some(isolation) = p.isolation {
+                    entry["isolation"] = json!(isolation);
+                }
+                entry
+            }).collect::<Vec<_>>(),
         })
+    }
+
+    /// Write the config as it stands, for a verb that has already put its
+    /// change to the account. The settings setter builds a prospective value
+    /// instead, so a refused write leaves nothing applied.
+    fn persist(&self) {
+        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        if let Err(error) = self.persist_config(&config) {
+            eprintln!("persist config: {error}");
+        }
     }
 
     /// Persist projects and settings atomically, if persistence is configured.
@@ -3916,10 +4101,9 @@ impl AppState {
             .and_then(|s| s.to_str())
             .unwrap_or("project")
             .to_string();
-        let worktrees = self.worktrees_root.join(&id);
         let orch = Orchestrator::new(
             repo_path.clone(),
-            worktrees,
+            self.project_worktrees_root(&id),
             self.agent.clone(),
             Templates::default(),
             self.bridge_exe.clone(),
@@ -3930,6 +4114,7 @@ impl AppState {
             repo_path,
             base_branch,
             orch,
+            isolation: None,
             external_scan: None,
             external_scan_failed_at: None,
             primary_summary: None,
@@ -3946,10 +4131,47 @@ impl AppState {
         id
     }
 
+    /// What this machine can make, as the account asks it: one bridge serves
+    /// one worktrees root, so the first registered project answers for the
+    /// account. Whether any project is registered is no fact of a volume, so
+    /// the probe never words it and this does.
+    fn account_availability(&self) -> IsolationAvailability {
+        match self.projects.first() {
+            Some(project) => project.orch.worktrees().availability(),
+            None => IsolationAvailability::unavailable("no project registered yet"),
+        }
+    }
+
+    /// How a new checkout of `project_id` is made: the project's own answer, or
+    /// the account's when it names none, put to what this volume can actually
+    /// make. The one place a setting becomes a decision — nothing else reads
+    /// either.
+    fn resolved_isolation(&self, project_id: &str) -> ResolvedIsolation {
+        let Some(project) = self.projects.iter().find(|p| p.id == project_id) else {
+            return ResolvedIsolation::honoured(Isolation::default());
+        };
+        self.decide_isolation(project, &project.orch.worktrees().availability())
+    }
+
+    /// The same decision made against an availability the caller already read,
+    /// so a project row reports its volume's answer and the isolation that
+    /// answer leads to without probing the volume twice.
+    fn decide_isolation(
+        &self,
+        project: &Project,
+        available: &IsolationAvailability,
+    ) -> ResolvedIsolation {
+        let requested = project.isolation.unwrap_or(self.isolation);
+        match available.lock_reason(requested) {
+            None => ResolvedIsolation::honoured(requested),
+            Some(reason) => ResolvedIsolation::downgraded(reason),
+        }
+    }
+
     /// The path of every Build-bound worktree — one per run: they are Build's,
     /// never external. As recorded, not canonicalized: this is read under the
     /// app mutex by every decide phase that hands a scan its exclusions, and
-    /// `discover_external_worktrees` canonicalizes them off the lock.
+    /// the façade's `discover` canonicalizes them off the lock.
     fn bound_worktree_paths(&self) -> std::collections::HashSet<std::path::PathBuf> {
         // Run worktrees are Build's. Issues own no worktree at all — their
         // agents run in the primary checkout — so there is nothing to add here
@@ -4344,12 +4566,18 @@ impl AppState {
         })
     }
 
+    /// Where one project's checkouts are materialized: its own directory under
+    /// the bridge's worktrees root, the root its orchestrator was given.
+    fn project_worktrees_root(&self, project_id: &str) -> std::path::PathBuf {
+        self.worktrees_root.join(project_id)
+    }
+
     /// The refresh that rescans one project's external worktrees.
     fn external_scan_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
         let project = self.project(project_id)?;
         Some(DiffCacheRefresh::ExternalScan {
             project_id: project.id.clone(),
-            repo_path: project.repo_path.clone(),
+            worktrees: project.orch.worktrees().clone(),
             base_branch: project.base_branch.clone(),
             excluded: self.bound_worktree_paths(),
         })
@@ -4680,14 +4908,14 @@ impl AppState {
     ) -> Result<Vec<ExternalWorktree>, String> {
         let excluded = self.bound_worktree_paths();
         let base = self.base_for(project_id)?;
-        let repo_path = self.repo_path_for(project_id)?;
-        match discover_external_worktrees(&repo_path, &base, &excluded) {
-            Ok(worktrees) => {
+        let worktrees = self.orch_for(project_id)?.worktrees().clone();
+        match worktrees.discover(&base, &excluded) {
+            Ok(scanned) => {
                 self.store_diff_entry(DiffCacheEntry::ExternalScan {
                     project_id: project_id.to_string(),
-                    worktrees: worktrees.clone(),
+                    worktrees: scanned.clone(),
                 });
-                Ok(worktrees)
+                Ok(scanned)
             }
             Err(e) => {
                 eprintln!("external_worktrees {project_id}: {e}");
@@ -5500,6 +5728,7 @@ impl AppState {
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let now = now_rfc3339();
         let reported = report.outputs.recovery.clone();
+        let mut restored_isolation_downgrade = None;
         let verification = (|| -> Result<crate::mcp::RecoveryReport, String> {
             if report.status != DoneStatus::Completed {
                 return Err(format!(
@@ -5526,10 +5755,16 @@ impl AppState {
                 return Err("recovery report names a different branch".to_string());
             }
             let project_id = self.project_of(run_id)?;
+            let resolved = self.resolved_isolation(&project_id);
             let worktree = self
                 .orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
+                .restore_run_worktree(
+                    &active.worktree,
+                    unregistered_restore_for(&active),
+                    resolved.isolation,
+                )
                 .map_err(err)?;
+            restored_isolation_downgrade = resolved.downgrade;
             let checkout =
                 git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
             let verified_head = checkout
@@ -5547,6 +5782,9 @@ impl AppState {
             active.worktree = worktree;
             Ok(reported)
         })();
+        if let Some(reason) = restored_isolation_downgrade {
+            self.note_isolation_downgrade(run_id, &mut active, &reason);
+        }
 
         let (event, summary, recovery_id, requested_stage_id) = match verification {
             Ok(verified) => {
@@ -6356,6 +6594,7 @@ impl AppState {
             "project.create" => self.project_create(params),
             "project.clone" => self.project_clone(params),
             "project.set_remote" => self.project_set_remote(params),
+            "project.set_isolation" => self.project_set_isolation(params),
             "board.list" => Ok(self.board_list()),
             // Capture surface: what the user said, kept before anything routes it.
             "capture.create" => self.capture_create(params),
@@ -6889,9 +7128,33 @@ impl AppState {
         let projects: Vec<Value> = self
             .projects
             .iter()
-            .map(|project| project_json(project, git_remote_origin(&project.repo_path)))
+            .map(|project| self.project_json(project, git_remote_origin(&project.repo_path)))
             .collect();
         json!({ "projects": projects })
+    }
+
+    /// The wire row for a project: what it is, and the whole isolation picture
+    /// a control paints from — what this project chose (`null` while it
+    /// inherits), what the account chose, what its next checkout will be, and
+    /// what its volume can make.
+    ///
+    /// The remote is passed in rather than read here: a verb that just wrote it
+    /// knows what it wrote, and every read of it is a git subprocess that has
+    /// to be made somewhere the caller can see.
+    fn project_json(&self, p: &Project, remote: Option<String>) -> Value {
+        let available = p.orch.worktrees().availability();
+        let effective = self.decide_isolation(p, &available).isolation;
+        json!({
+            "project_id": p.id,
+            "name": p.name,
+            "path": p.repo_path.display().to_string(),
+            "base_branch": p.base_branch,
+            "remote": remote,
+            "isolation": p.isolation,
+            "isolation_default": self.isolation,
+            "isolation_effective": effective,
+            "isolation_available": available,
+        })
     }
 
     /// Register a project from a host path. Validates it is a git repo with the
@@ -7061,36 +7324,38 @@ impl AppState {
             "default_harness": self.default_harness,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
+            "isolation": self.isolation,
+            "isolation_available": self.account_availability(),
         })
     }
 
     /// Set the account settings a client names, and only those: where cloned
-    /// repos land (creating the folder), and which harness a new agent opens on.
+    /// repos land (creating the folder), which harness a new agent opens on,
+    /// and how a new checkout is isolated.
     ///
-    /// Every field is parsed before any is applied, so a refusal leaves the
-    /// settings exactly as they were rather than half-moved.
+    /// Which settings those are is [`SettingsPatch`]'s table; putting an
+    /// accepted one to the account is [`AppState::apply_settings`].
     fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
-        let projects_dir = match params.get("projects_dir") {
-            Some(_) => Some(expand_tilde(&require_str(params, "projects_dir")?)),
-            None => None,
+        let patch = SettingsPatch::parse(params, &self.account_availability())?;
+        // Every accepted field is put to a prospective config and written
+        // BEFORE any of it reaches the account, so a refused write leaves
+        // nothing applied. `projects_dir` is the one that touches the disk —
+        // the folder is made here or the set is refused.
+        let projects_dir = match patch.projects_dir {
+            Some(dir) => {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+                std::fs::canonicalize(&dir)
+                    .map_err(|error| format!("cannot resolve {}: {error}", dir.display()))?
+            }
+            None => self.projects_dir.clone(),
         };
-        let default_harness = requested_default_harness(params)?;
-        if projects_dir.is_none() && default_harness.is_none() {
-            return Err("settings.set: nothing to set".to_string());
-        }
-        let prospective_projects_dir = if let Some(dir) = projects_dir {
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-            std::fs::canonicalize(&dir)
-                .map_err(|error| format!("cannot resolve {}: {error}", dir.display()))?
-        } else {
-            self.projects_dir.clone()
-        };
-        let prospective_default_harness = default_harness.unwrap_or(self.default_harness);
-        let prospective = self.config_value(&prospective_projects_dir, prospective_default_harness);
-        self.persist_config(&prospective)?;
-        self.projects_dir = prospective_projects_dir;
-        self.default_harness = prospective_default_harness;
+        let default_harness = patch.default_harness.unwrap_or(self.default_harness);
+        let isolation = patch.isolation.unwrap_or(self.isolation);
+        self.persist_config(&self.config_value(&projects_dir, default_harness, isolation))?;
+        self.projects_dir = projects_dir;
+        self.default_harness = default_harness;
+        self.isolation = isolation;
         Ok(self.settings_get())
     }
 
@@ -7198,6 +7463,30 @@ impl AppState {
             .iter()
             .find(|p| p.id == project_id)
             .ok_or_else(|| format!("unknown project_id: {project_id}"))
+    }
+
+    /// Set (or clear, with a null isolation) a project's override of the
+    /// account's isolation. The choice is put to this project's volume before
+    /// it is stored, so a client only ever repaints from a row the bridge would
+    /// honour; naming no isolation at all is a missing param, not a clear.
+    fn project_set_isolation(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let index = self
+            .projects
+            .iter()
+            .position(|p| p.id == project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let isolation = match params.get("isolation") {
+            Some(Value::Null) => None,
+            _ => Some(accept_isolation(
+                &require_str(params, "isolation")?,
+                &self.projects[index].orch.worktrees().availability(),
+            )?),
+        };
+        self.projects[index].isolation = isolation;
+        self.persist();
+        let remote = git_remote_origin(&self.projects[index].repo_path);
+        Ok(self.project_json(&self.projects[index], remote))
     }
 
     /// The orchestrator for a project id.
@@ -7316,6 +7605,7 @@ impl AppState {
                     "project_id": project_id,
                     "project": project_name,
                     "path": w.path.display().to_string(),
+                    "isolation": w.isolation.wire(),
                     "branch": w.branch,
                     "head_sha": w.head_sha,
                     "head_subject": w.head_subject,
@@ -7925,8 +8215,11 @@ impl AppState {
             existing_branch,
             checkouts,
             placeholder_id: placeholder_id.clone(),
+            resolved: self.resolved_isolation(&project_id),
         };
-        let row = PendingRow::creating(placeholder_id, Some(project_id), title).on_branch(branch);
+        let row = PendingRow::creating(placeholder_id, Some(project_id), title)
+            .on_branch(branch)
+            .isolated_as(mutation.resolved.isolation);
         self.defer_lifecycle(row, Box::new(mutation))
     }
 
@@ -7992,8 +8285,8 @@ impl AppState {
             ));
         }
         Ok(PlannedFinish::Deferred(Box::new(WorktreeFinishJob {
+            worktrees: self.orch_for(&project_id)?.worktrees().clone(),
             project_id,
-            project_path,
             base_branch,
             worktree_id,
             action,
@@ -8087,6 +8380,10 @@ impl AppState {
                     // own, so a row standing on it is matched by this instead.
                     "primary": row.primary,
                     "implements": row.implements,
+                    // How the checkout being made is isolated, said the way a
+                    // settled card says it. A verb that makes none says
+                    // nothing: what is already on disk describes itself.
+                    "isolation": row.isolation.map(crate::isolation::Isolation::wire),
                     // How long this row has stood. A row older than a scan
                     // interval reads as stuck rather than as work in flight.
                     "pending_seconds": row.since.elapsed().as_secs(),
@@ -9143,6 +9440,31 @@ impl AppState {
         let mut issue = self.take_plan(&issue_id)?;
         write(issue.agents.sole_thread_mut());
         self.finish_plan_mutation(issue_id, issue)
+    }
+
+    /// Announce on `active`'s conversation, and on the log, that the checkout
+    /// it was just given is not the isolation the settings asked for.
+    ///
+    /// Says, never fails. A volume that cannot clone is a fact to tell the
+    /// human, and by the time it is told the checkout stands, the branch is
+    /// cut and the record is written — so a telling that does not land is a
+    /// line in the log, never a create undone or a run left off the board.
+    /// Every creation site announces through here, so no caller can choose
+    /// another policy.
+    fn note_isolation_downgrade(&mut self, run_id: &str, active: &mut ActiveRun, reason: &str) {
+        let note = announce_isolation_downgrade(reason);
+        let written = self.record_on_run_conversation(active, |thread| {
+            thread.push_event(
+                crate::thread::ThreadEventKind::WorktreeCreated,
+                Some(note),
+                None,
+                None,
+                now_rfc3339(),
+            );
+        });
+        if let Err(error) = written {
+            eprintln!("{run_id}: the isolation fallback went unrecorded: {error}");
+        }
     }
 
     /// Tell the Issue where its implementation got to.
@@ -10930,10 +11252,17 @@ impl AppState {
             )?);
         }
         let project_id = self.project_of(run_id)?;
+        let resolved = self.resolved_isolation(&project_id);
         let project = self.orch_for(&project_id)?.clone();
-        let row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
+        let mut row = PendingRow::creating(run_id.to_string(), Some(project_id), title)
             .on_checkout(crate::worktree::external_worktree_id(&worktree.path))
             .implementing(issue_id.to_string());
+        // A checkout that is still standing is verified and reused, not made,
+        // and what is on disk describes itself: only a restore that has to put
+        // one back names the isolation it is putting back.
+        if !checkout_stood {
+            row = row.isolated_as(resolved.isolation);
+        }
         self.reserve_lifecycle(
             row,
             Box::new(RestoreImplementationCheckout {
@@ -10943,6 +11272,7 @@ impl AppState {
                 worktree,
                 checkout_stood,
                 caller,
+                resolved,
             }),
         )
         .map(Some)
@@ -10959,6 +11289,7 @@ impl AppState {
             checkout_stood,
             restored,
             caller,
+            downgrade,
         } = restored;
         let worktree = match restored {
             Ok(worktree) => worktree,
@@ -10973,6 +11304,9 @@ impl AppState {
             let mut active = self.take_run(&run_id)?;
             active.worktree = worktree;
             active.last_error = None;
+            if let Some(reason) = downgrade {
+                self.note_isolation_downgrade(&run_id, &mut active, &reason);
+            }
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             self.finish_run_mutation(run_id.clone(), active)?;
             let mut issue = self.take_plan(&issue_id)?;
@@ -11779,13 +12113,15 @@ impl AppState {
         })
         .map_err(err)?;
         let project = self.orch_for(&project_id)?.clone();
+        let resolved = self.resolved_isolation(&project_id);
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         // The ref this implementation is about to cut is on the row, so a
         // create or a dispatch claiming the same one collides here rather than
         // in git.
         let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
             .on_branch(crate::worktree::branch_name_for(issue.slug()))
-            .implementing(issue_id.to_string());
+            .implementing(issue_id.to_string())
+            .isolated_as(resolved.isolation);
         self.reserve_lifecycle(
             row,
             Box::new(OpenImplementation {
@@ -11798,6 +12134,7 @@ impl AppState {
                 store,
                 model_choice,
                 caller,
+                resolved,
             }),
         )
     }
@@ -11921,6 +12258,7 @@ impl AppState {
             prepared,
             model_choice,
             caller,
+            downgrade,
         } = opened;
         let opened = (|| -> Result<OpenedImplementation, String> {
             let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
@@ -11945,7 +12283,12 @@ impl AppState {
                 checkout_event: crate::thread::ThreadEventKind::WorktreeCreated,
             })
         })()
-        .and_then(|opened| self.open_implementation_run(opened));
+        .and_then(|mut opened| {
+            if let Some(reason) = downgrade {
+                self.note_isolation_downgrade(&run_id, &mut opened.active, &reason);
+            }
+            self.open_implementation_run(opened)
+        });
         caller.settle(self, opened.map(|()| run_id.as_str()))
     }
 
@@ -14755,6 +15098,7 @@ impl AppState {
             model_choice: requested_choice,
             explicit_choice: has_agent_choice(params),
             routed,
+            resolved: self.resolved_isolation(&project_id),
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
@@ -14763,7 +15107,8 @@ impl AppState {
             Some(project_id),
             branch.unwrap_or(instruction),
         )
-        .on_branch(mutation.target.branch().to_string());
+        .on_branch(mutation.target.branch().to_string())
+        .isolated_as(mutation.resolved.isolation);
         self.defer_lifecycle(row, Box::new(mutation))
     }
 
@@ -14783,6 +15128,7 @@ impl AppState {
             instruction,
             routed,
             checkouts,
+            downgrade,
         } = dispatched;
         self.validate_checkout_snapshot(&adopted.project_id, &checkouts)?;
         #[cfg(test)]
@@ -14801,6 +15147,9 @@ impl AppState {
             &adopted.checkout.branch,
             adopted.checkout.path.clone(),
         );
+        if let Some(reason) = downgrade {
+            self.note_isolation_downgrade(&run_id, &mut active, &reason);
+        }
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
         self.finish_run_mutation(run_id.clone(), active)?;
@@ -15062,7 +15411,7 @@ impl AppState {
     fn stage_publication_query(&self, run_id: &str, active: &ActiveRun) -> StagePublicationQuery {
         StagePublicationQuery {
             run_id: run_id.to_string(),
-            repo_path: self
+            worktrees: self
                 .entity_project
                 .get(run_id)
                 .and_then(|project_id| {
@@ -15070,7 +15419,8 @@ impl AppState {
                         .iter()
                         .find(|project| &project.id == project_id)
                 })
-                .map(|project| project.repo_path.clone()),
+                .map(|project| project.orch.worktrees().clone()),
+            checkout: active.worktree.path.clone(),
             branch: active.worktree.branch(),
             base_branch: active.worktree.base_branch.clone(),
             completions: active
@@ -15226,29 +15576,18 @@ impl AppState {
         }
     }
 
-    /// Best-effort `git worktree prune` in the run's project repo.
-    fn prune_worktree_records(&mut self, run_id: &str) {
-        let Some(repo_path) = self
+    /// Clear every stale record of a checkout in the run's project — the
+    /// sweep after one went away outside Build. Best effort, which is the
+    /// façade's own policy for it: nothing the caller asked for depends on it.
+    fn prune_worktree_records(&self, run_id: &str) {
+        let Some(project) = self
             .entity_project
             .get(run_id)
             .and_then(|pid| self.projects.iter().find(|p| &p.id == pid))
-            .map(|p| p.repo_path.clone())
         else {
             return;
         };
-        match std::process::Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(&repo_path)
-            .output()
-        {
-            Ok(out) if !out.status.success() => eprintln!(
-                "git worktree prune {}: {}",
-                repo_path.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-            Err(e) => eprintln!("git worktree prune {}: {e}", repo_path.display()),
-            Ok(_) => {}
-        }
+        project.orch.worktrees().prune();
     }
 
     /// The wire view of a plan (spec §board.list): identity, state, project,
@@ -16260,18 +16599,6 @@ fn write_in_dir(dir: &std::path::Path, rel: &str, contents: &str) -> Result<(), 
     }
     std::fs::write(path, contents).map_err(|e| e.to_string())
 }
-/// One project's wire view. The remote is passed in rather than read here: a
-/// verb that just wrote it knows what it wrote, and every read of it is a git
-/// subprocess that has to be made somewhere the caller can see.
-fn project_json(p: &Project, remote: Option<String>) -> Value {
-    json!({
-        "project_id": p.id,
-        "name": p.name,
-        "path": p.repo_path.display().to_string(),
-        "base_branch": p.base_branch,
-        "remote": remote,
-    })
-}
 
 /// A project name that can be a directory: not empty, one path segment, and
 /// nothing that climbs out of the folder it is going into.
@@ -16440,35 +16767,6 @@ fn require_array(params: &Value, key: &str) -> Result<Vec<Value>, String> {
         .as_array()
         .cloned()
         .ok_or_else(|| missing_param(key))
-}
-
-fn requested_default_harness(params: &Value) -> Result<Option<AgentProvider>, String> {
-    let parse_mode = |key: &str,
-                      mapping: fn(&str) -> Option<AgentProvider>|
-     -> Result<Option<AgentProvider>, String> {
-        let Some(value) = params.get(key) else {
-            return Ok(None);
-        };
-        let named = value.as_str().unwrap_or_default();
-        mapping(named)
-            .map(Some)
-            .ok_or_else(|| format!("unknown {key} {named:?} (expected \"headless\" or \"tui\")"))
-    };
-    let claude_mode = parse_mode("claude_mode", models::carrier_of_claude_mode)?;
-    let codex_mode = parse_mode("codex_mode", models::carrier_of_codex_mode)?;
-    let default_harness = params
-        .get("default_harness")
-        .map(|value| {
-            let named = value.as_str().unwrap_or_default();
-            AgentProvider::from_wire(named).ok_or_else(|| {
-                format!(
-                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
-                     \"codex\", \"codex_app_server\" or \"pi\")"
-                )
-            })
-        })
-        .transpose()?;
-    Ok(default_harness.or(codex_mode).or(claude_mode))
 }
 
 /// The detail polls' optional `thread_after_sequence` cursor. A missing or
@@ -16667,8 +16965,11 @@ fn unregistered_restore_for(active: &ActiveRun) -> crate::worktree::Unregistered
 
 /// The answer `git.branches` and `git.branch_delete` share: gitgui's git facts
 /// about every offerable branch, each row stamped with the checkout holding it.
+/// Every held branch is published first, so a row weighs what its checkout
+/// holds rather than what the project last saw of it.
 fn stamped_branch_list(scope: &BranchListingScope) -> Result<Value, String> {
     let ownership = scope.checkouts.holders()?;
+    scope.checkouts.publish_held_branches(&ownership)?;
     let listing =
         crate::gitgui::branch_list(&scope.checkout.repo_path, &scope.checkout.base_branch)?;
     let branches: Vec<Value> = listing
@@ -16908,7 +17209,10 @@ enum PlannedRunFinish {
 /// to minutes on a large checkout, and none of it touching [`AppState`].
 struct WorktreeFinishJob {
     project_id: String,
-    project_path: std::path::PathBuf,
+    /// The project's checkout seam, cloned off its orchestrator: every
+    /// checkout, branch and scan this job touches goes through it, with the
+    /// app mutex released.
+    worktrees: WorktreeManager,
     base_branch: String,
     worktree_id: String,
     action: WorktreeFinishAction,
@@ -17234,10 +17538,17 @@ pub struct WorktreeCreated {
     pub path: std::path::PathBuf,
     pub branch_was_cut: bool,
     pub checkouts: ProjectCheckouts,
+    /// What the checkout turned out to be, read off it once the git had made
+    /// it.
+    pub isolation: Option<Isolation>,
+    /// [`ResolvedIsolation::downgrade`], said in the answer to the ask: a bare
+    /// worktree has no run, no agent and no conversation to say it on.
+    pub downgrade: Option<String>,
 }
 
 impl LifecycleEpilogue for WorktreeCreated {
     fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        let note = self.downgrade.as_deref().map(announce_isolation_downgrade);
         state.validate_checkout_snapshot(&self.project_id, &self.checkouts)?;
         Ok(json!({
             "project_id": self.project_id,
@@ -17251,6 +17562,8 @@ impl LifecycleEpilogue for WorktreeCreated {
             "branch": self.branch,
             "name": self.name,
             "path": self.path.display().to_string(),
+            "isolation": self.isolation,
+            "isolation_note": note,
         }))
     }
 }
@@ -17353,6 +17666,9 @@ pub struct RestoredCheckout {
     pub checkout_stood: bool,
     pub restored: Result<crate::worktree::Worktree, String>,
     pub caller: Box<dyn ImplementationCaller>,
+    /// [`ResolvedIsolation::downgrade`], said on the Issue's conversation
+    /// beside what the restore found.
+    pub downgrade: Option<String>,
 }
 
 impl LifecycleEpilogue for RestoredCheckout {
@@ -17370,6 +17686,9 @@ pub struct ImplementationOpened {
     pub prepared: PreparedImplementation,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn ImplementationCaller>,
+    /// [`ResolvedIsolation::downgrade`], said on the Issue's conversation
+    /// before the run is written down.
+    pub downgrade: Option<String>,
 }
 
 impl LifecycleEpilogue for ImplementationOpened {
@@ -17792,12 +18111,13 @@ impl LifecycleEpilogue for ProjectAdded {
             .iter()
             .find(|project| project.repo_path == self.path)
         {
-            return Ok(project_json(existing, self.remote));
+            return Ok(state.project_json(existing, self.remote));
         }
         let project = state.project_candidate(self.path, self.base);
         let config = state.config_value_with_project(
             &state.projects_dir,
             state.default_harness,
+            state.isolation,
             Some(&project),
         );
         if let Err(error) = state.persist_config(&config) {
@@ -17806,7 +18126,7 @@ impl LifecycleEpilogue for ProjectAdded {
             }
             return Err(error);
         }
-        let reply = project_json(&project, self.remote);
+        let reply = state.project_json(&project, self.remote);
         state.insert_project(project);
         Ok(reply)
     }
@@ -17847,7 +18167,7 @@ impl LifecycleEpilogue for ProjectRemoteSet {
             .iter()
             .find(|project| project.id == self.project_id)
             .ok_or_else(|| format!("unknown project: {}", self.project_id))?;
-        Ok(project_json(project, self.remote))
+        Ok(state.project_json(project, self.remote))
     }
 }
 
@@ -17946,6 +18266,9 @@ pub struct BranchDispatched {
     pub instruction: String,
     pub routed: Option<RoutedCapture>,
     pub checkouts: ProjectCheckouts,
+    /// [`ResolvedIsolation::downgrade`], said on the dispatched run's own
+    /// conversation.
+    pub downgrade: Option<String>,
 }
 
 /// The holder read found an existing run; validate that snapshot before joining.
@@ -18046,11 +18369,7 @@ impl WorktreeFinishJob {
         let (mut record, scan) = match self.resume.take() {
             Some(record) => (record, None),
             None => {
-                let scanned = match crate::worktree::discover_external_worktrees(
-                    &self.project_path,
-                    &self.base_branch,
-                    &self.excluded,
-                ) {
+                let scanned = match self.worktrees.discover(&self.base_branch, &self.excluded) {
                     Ok(scanned) => scanned,
                     Err(error) => {
                         return WorktreeFinishOutcome {
@@ -18083,7 +18402,7 @@ impl WorktreeFinishJob {
                 result: Err(format!("worktree finish intent store: {error}")),
             };
         }
-        if let Err(error) = run_finish_git_steps(&self.project_path, &self.base_branch, &record) {
+        if let Err(error) = run_finish_git_steps(&self.worktrees, &self.base_branch, &record) {
             return WorktreeFinishOutcome {
                 scan,
                 record: Some(record),
@@ -18135,7 +18454,7 @@ impl WorktreeFinishJob {
 
         Ok(PersistedArchivedWorktree {
             status: WorktreeFinishStatus::Pending,
-            project_path: self.project_path.display().to_string(),
+            project_path: self.worktrees.repo_path().display().to_string(),
             worktree_id: external.id,
             worktree_name: external.name,
             worktree_path: external.path.display().to_string(),
@@ -18155,28 +18474,29 @@ impl WorktreeFinishJob {
 
 /// The destructive half of a finish, over the steps the chosen action owns.
 /// The record is the only authority for what is acted on — a client path never
-/// reaches here.
+/// reaches here — and every checkout and branch it touches goes through the
+/// façade, so a clone and a linked worktree are finished by one function.
 fn run_finish_git_steps(
-    project_path: &std::path::Path,
+    worktrees: &WorktreeManager,
     base_branch: &str,
     record: &PersistedArchivedWorktree,
 ) -> Result<(), String> {
-    let worktree_path = validate_finish_record_path(record, project_path)?;
+    let checkout = validate_finish_record_path(record, worktrees.repo_path())?;
     (record.action.git_steps())(&FinishContext {
-        project_path,
+        worktrees,
         base_branch,
         record,
-        worktree_path: &worktree_path,
+        checkout: &checkout,
     })
 }
 
 /// Everything a finish action's steps may act on, resolved once. Each step
 /// reads the fields its own work needs and nothing else.
 struct FinishContext<'a> {
-    project_path: &'a std::path::Path,
+    worktrees: &'a WorktreeManager,
     base_branch: &'a str,
     record: &'a PersistedArchivedWorktree,
-    worktree_path: &'a std::path::Path,
+    checkout: &'a std::path::Path,
 }
 
 /// What one finish action does to the repository, once its checkout has been
@@ -18185,7 +18505,7 @@ type FinishGitSteps = fn(&FinishContext<'_>) -> Result<(), String>;
 
 /// How a finish action lands the work it promised to keep before the checkout
 /// goes away. An action that promises nothing lands nothing.
-type FinishLanding = fn(&std::path::Path, &str, &str) -> Result<(), String>;
+type FinishLanding = fn(&FinishContext<'_>, &str) -> Result<(), String>;
 
 impl WorktreeFinishAction {
     /// The steps this action owns — the one place a finish action decides
@@ -18211,27 +18531,39 @@ impl WorktreeFinishAction {
     }
 }
 
+/// Be rid of the checkout a finish is done with. Absence is the goal, so a
+/// checkout somebody already deleted is nothing to report.
 fn remove_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
-    if context.worktree_path.exists() {
-        remove_registered_worktree(context.project_path, context.worktree_path, false)?;
-    }
-    Ok(())
+    context
+        .worktrees
+        .remove_checkout(context.checkout)
+        .map_err(|error| error.to_string())
 }
 
 fn push_then_remove_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
-    if context.worktree_path.exists() {
-        crate::gitgui::push(context.worktree_path, false)?;
-        remove_registered_worktree(context.project_path, context.worktree_path, false)?;
+    if !context.checkout.exists() {
+        return Ok(());
     }
-    Ok(())
+    crate::gitgui::push(context.checkout, false)?;
+    remove_finished_checkout(context)
 }
 
 fn merge_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
-    finish_by_landing_then_removing(context, Some(merge_external_branch))
+    finish_by_landing_then_removing(context, Some(merge_finished_branch_into_base))
 }
 
 fn delete_finished_checkout(context: &FinishContext<'_>) -> Result<(), String> {
     finish_by_landing_then_removing(context, None)
+}
+
+fn merge_finished_branch_into_base(
+    context: &FinishContext<'_>,
+    branch: &str,
+) -> Result<(), String> {
+    context
+        .worktrees
+        .merge_into_base(context.checkout, branch, context.base_branch)
+        .map_err(|error| error.to_string())
 }
 
 /// Land what the action promised to keep, then take the checkout away — and
@@ -18240,8 +18572,9 @@ fn finish_by_landing_then_removing(
     context: &FinishContext<'_>,
     land: Option<FinishLanding>,
 ) -> Result<(), String> {
-    let branch = finish_branch_still_present(context)?;
-    if !refuse_finish_that_lost_its_checkout(context, branch)? {
+    let standing = context.checkout.exists();
+    let branch = finish_branch_still_present(context, standing)?;
+    if !refuse_finish_that_lost_its_checkout(context, standing, branch)? {
         return Ok(());
     }
     let deleted_branch = match branch {
@@ -18251,14 +18584,30 @@ fn finish_by_landing_then_removing(
     remove_finished_checkout_restoring_branch_on_failure(context, deleted_branch)
 }
 
-/// The branch this finish acts on, if the record names one and git still has
-/// it. A checkout with no branch (a detached HEAD) or whose branch is already
-/// gone has nothing for the finish to land or delete.
-fn finish_branch_still_present<'a>(context: &FinishContext<'a>) -> Result<Option<&'a str>, String> {
-    match context.record.branch.as_deref() {
-        Some(branch) => Ok(local_branch_exists(context.project_path, branch)?.then_some(branch)),
-        None => Ok(None),
+/// The branch this finish acts on, if the record names one and the project repo
+/// still has it. Spec §0.4's publish-before-read step is here: whatever a
+/// standing checkout holds reaches the project repo first — for a clone the only
+/// way its branch is there at all, for a linked worktree nothing — and only then
+/// is the project repo asked. A checkout with no branch (a detached HEAD) or
+/// whose branch is already gone has nothing for the finish to land or delete.
+fn finish_branch_still_present<'a>(
+    context: &FinishContext<'a>,
+    standing: bool,
+) -> Result<Option<&'a str>, String> {
+    let Some(branch) = context.record.branch.as_deref() else {
+        return Ok(None);
+    };
+    if standing {
+        context
+            .worktrees
+            .publish(context.checkout, branch)
+            .map_err(|error| error.to_string())?;
     }
+    let stands = context
+        .worktrees
+        .branch_exists(branch)
+        .map_err(|error| error.to_string())?;
+    Ok(stands.then_some(branch))
 }
 
 /// Whether there is still a checkout to act on. A checkout that vanished
@@ -18267,9 +18616,10 @@ fn finish_branch_still_present<'a>(context: &FinishContext<'a>) -> Result<Option
 /// with no branch behind it has simply finished already.
 fn refuse_finish_that_lost_its_checkout(
     context: &FinishContext<'_>,
+    standing: bool,
     branch: Option<&str>,
 ) -> Result<bool, String> {
-    if context.worktree_path.exists() {
+    if standing {
         return Ok(true);
     }
     match branch {
@@ -18285,21 +18635,24 @@ fn refuse_finish_that_lost_its_checkout(
 /// says teardown owns it. Answers whether the branch was deleted, so a
 /// removal that fails afterwards knows what to put back.
 ///
-/// The teardown is read here, before `remove_registered_worktree` prunes the
-/// admin directory the answer lives in.
+/// The teardown is read here, before the removal prunes the admin directory
+/// the answer lives in.
 fn land_then_delete_branch_if_owned(
     context: &FinishContext<'_>,
     branch: &str,
     land: Option<FinishLanding>,
 ) -> Result<bool, String> {
-    let deletes_branch = crate::worktree::branch_teardown(context.worktree_path)
+    let deletes_branch = crate::worktree::branch_teardown(context.checkout)
         .map_err(|error| error.to_string())?
         .deletes_branch();
     if let Some(land) = land {
-        land(context.project_path, branch, context.base_branch)?;
+        land(context, branch)?;
     }
     if deletes_branch {
-        delete_local_branch_for_finish(context.project_path, branch, &context.record.head_sha)?;
+        context
+            .worktrees
+            .delete_branch_at(branch, &context.record.head_sha)
+            .map_err(|error| error.to_string())?;
     }
     Ok(deletes_branch)
 }
@@ -18308,18 +18661,25 @@ fn remove_finished_checkout_restoring_branch_on_failure(
     context: &FinishContext<'_>,
     deleted_branch: bool,
 ) -> Result<(), String> {
-    if let Err(remove_error) =
-        remove_registered_worktree(context.project_path, context.worktree_path, true)
-    {
-        restore_finish_branch_after_removal_failure(
-            context.project_path,
-            context.record,
-            deleted_branch,
-            &remove_error,
-        )?;
+    let Err(remove_error) = remove_finished_checkout(context) else {
+        return Ok(());
+    };
+    if !deleted_branch {
         return Err(remove_error);
     }
-    Ok(())
+    let Some(branch) = context.record.branch.as_deref() else {
+        return Err(remove_error);
+    };
+    match context
+        .worktrees
+        .restore_branch(branch, &context.record.head_sha)
+    {
+        Ok(()) => Err(remove_error),
+        Err(restore_error) => Err(format!(
+            "{remove_error}; restoring branch {branch:?} after removal failure also failed: \
+             {restore_error}"
+        )),
+    }
 }
 
 fn parse_worktree_finish_action(action: &str) -> Result<WorktreeFinishAction, String> {
@@ -18438,48 +18798,10 @@ fn validate_finish_record_path(
     Ok(resolved_worktree)
 }
 
-fn local_branch_exists(project_path: &std::path::Path, branch: &str) -> Result<bool, String> {
-    let repo = git2::Repository::open(project_path).map_err(|error| error.to_string())?;
-    let result = match repo.find_branch(branch, git2::BranchType::Local) {
-        Ok(_) => Ok(true),
-        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(false),
-        Err(error) => Err(error.to_string()),
-    };
-    result
-}
-
-fn delete_local_branch_for_finish(
-    project_path: &std::path::Path,
-    branch: &str,
-    expected_head: &str,
-) -> Result<(), String> {
-    let reference = format!("refs/heads/{branch}");
-    git_stdout(
-        project_path,
-        &["update-ref", "-d", &reference, expected_head],
-    )
-    .map(|_| ())
-}
-
-fn restore_finish_branch_after_removal_failure(
-    project_path: &std::path::Path,
-    record: &PersistedArchivedWorktree,
-    deleted_branch: bool,
-    remove_error: &str,
-) -> Result<(), String> {
-    let Some(branch) = record.branch.as_deref().filter(|_| deleted_branch) else {
-        return Ok(());
-    };
-    let reference = format!("refs/heads/{branch}");
-    git_stdout(project_path, &["update-ref", &reference, &record.head_sha])
-        .map(|_| ())
-        .map_err(|restore_error| {
-            format!(
-                "{remove_error}; restoring branch {branch:?} after removal failure also failed: {restore_error}"
-            )
-        })
-}
-
+/// Whether a Pending finish record's git is in fact already done — the boot
+/// question that turns an interrupted finish into an archived one. It is asked
+/// before any project is registered, so the record's own two paths are the
+/// only thing that can say which repository to put it to.
 fn finish_git_steps_are_complete(record: &PersistedArchivedWorktree) -> bool {
     if std::path::Path::new(&record.worktree_path).exists() {
         return false;
@@ -18488,55 +18810,34 @@ fn finish_git_steps_are_complete(record: &PersistedArchivedWorktree) -> bool {
         WorktreeFinishAction::Cleanup | WorktreeFinishAction::Push => true,
         WorktreeFinishAction::Merge | WorktreeFinishAction::Delete => {
             record.branch.as_deref().is_none_or(|branch| {
-                local_branch_exists(std::path::Path::new(&record.project_path), branch)
+                worktrees_of_record(record)
+                    .branch_exists(branch)
                     .is_ok_and(|exists| !exists)
             })
         }
     }
 }
 
-fn merge_external_branch(
-    project_path: &std::path::Path,
-    branch: &str,
-    base_branch: &str,
-) -> Result<(), String> {
-    let checked_out = git_stdout(project_path, &["symbolic-ref", "--short", "HEAD"])?;
-    if checked_out.trim() != base_branch {
-        return Err(format!(
-            "primary checkout is on {:?}, not configured base {base_branch:?}",
-            checked_out.trim()
-        ));
-    }
-    if let Err(merge_error) = git_stdout(project_path, &["merge", "--no-edit", "--", branch]) {
-        if let Err(abort_error) = git_stdout(project_path, &["merge", "--abort"]) {
-            eprintln!("worktree.finish merge {branch}: abort failed: {abort_error}");
-        }
-        return Err(merge_error);
-    }
-    Ok(())
-}
-
-fn remove_registered_worktree(
-    project_path: &std::path::Path,
-    worktree_path: &std::path::Path,
-    force: bool,
-) -> Result<(), String> {
-    let path = worktree_path
-        .to_str()
-        .ok_or("worktree path is not valid UTF-8")?;
-    let mut args = vec!["worktree", "remove"];
-    if force {
-        args.push("--force");
-    }
-    args.extend(["--", path]);
-    git_stdout(project_path, &args).map(|_| ())
+/// The checkout seam for the project a finish record names, rooted where that
+/// record's own checkout stood — the two paths a record carries, and all a
+/// completeness check needs to ask the project repo about its branches.
+fn worktrees_of_record(record: &PersistedArchivedWorktree) -> WorktreeManager {
+    let checkout = std::path::Path::new(&record.worktree_path);
+    WorktreeManager::new(
+        std::path::PathBuf::from(&record.project_path),
+        checkout.parent().unwrap_or(checkout),
+    )
 }
 
 /// Everything one run's stage publications have to be decided against, taken
 /// under the state lock so the deciding needs none.
 struct StagePublicationQuery {
     run_id: String,
-    repo_path: Option<std::path::PathBuf>,
+    /// The project's checkout seam, when the project is still registered. A
+    /// classification reads the project repo's refs, which the checkout's
+    /// branch has to reach through `publish` first.
+    worktrees: Option<WorktreeManager>,
+    checkout: std::path::PathBuf,
     branch: String,
     base_branch: String,
     /// One entry per stage that reached a completion commit. A stage without
@@ -18593,7 +18894,7 @@ impl StagePublicationQuery {
     /// The git half: a bounded fetch and two graph walks per completed stage.
     /// MUST run with the state lock released.
     fn classify(&self) -> StagePublications {
-        let Some(repo_path) = self.repo_path.as_ref() else {
+        let Some(worktrees) = self.worktrees.as_ref() else {
             return StagePublications::default();
         };
         StagePublications(
@@ -18603,7 +18904,8 @@ impl StagePublicationQuery {
                     (
                         stage_id.clone(),
                         classify_stage_publication(
-                            repo_path,
+                            worktrees,
+                            &self.checkout,
                             &self.branch,
                             &self.base_branch,
                             completion_sha,
@@ -18662,12 +18964,27 @@ fn reconcile_missing_run_worktree(
     affected
 }
 
+/// How far a stage's completion commit has travelled, read from the project
+/// repo's own refs — which the checkout's branch reaches first, because a
+/// clone's tip is invisible there until it is published. A publish that fails
+/// is no verdict: classification still has to answer, so it is said and passed
+/// over.
 fn classify_stage_publication(
-    repo_path: &std::path::Path,
+    worktrees: &WorktreeManager,
+    checkout: &std::path::Path,
     branch: &str,
     base_branch: &str,
     completion_sha: &str,
 ) -> StagePublication {
+    if checkout.exists() {
+        if let Err(error) = worktrees.publish(checkout, branch) {
+            eprintln!(
+                "classify_stage_publication {branch}: publishing {} failed: {error}",
+                checkout.display()
+            );
+        }
+    }
+    let repo_path = worktrees.repo_path();
     let Ok(repo) = git2::Repository::open(repo_path) else {
         return StagePublication::Local;
     };
@@ -21755,10 +22072,9 @@ fn b64decode(s: &str) -> Result<Vec<u8>, String> {
 mod tests {
     include!("app_merge_regressions.rs");
     use super::*;
+    use crate::git_fixture::{git_in, init_repo, init_repo_named};
     use std::path::{Path, PathBuf};
     use std::process::Command;
-
-    use crate::worktree::git_in;
 
     use crate::harness::claude;
     use crate::harness::stream_fixtures::{
@@ -21896,37 +22212,8 @@ mod tests {
     // ---- git GUI v2: repo management (fetch/pull/push, branches, stash,
     // discard, merge-abort) ------------------------------------------------
 
-    fn init_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = init_repo_named(dir.path(), "repo");
-        (dir, repo)
-    }
-
     fn test_bridge_exe() -> PathBuf {
         std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap()
-    }
-
-    /// A repository under `parent`, named. A project is named after its
-    /// repository directory, so a test about telling two projects apart needs
-    /// to say what each one is called.
-    fn init_repo_named(parent: &std::path::Path, name: &str) -> PathBuf {
-        let repo = parent.join(name);
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@build.ing"]);
-        git(&["config", "user.name", "T"]);
-        std::fs::write(repo.join("README.md"), "# project\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
-        repo
     }
 
     #[test]
@@ -22896,6 +23183,38 @@ mod tests {
         );
     }
 
+    /// One setting, two words for it: a client mid-upgrade sends both, and the
+    /// word this bridge writes back is the one it keeps.
+    #[test]
+    fn a_client_that_sends_both_harness_words_is_read_by_the_newer_one() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+
+        let set = state.handle(req(
+            "settings.set",
+            json!({ "claude_mode": "tui", "default_harness": "codex" }),
+        ));
+
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(set["result"]["default_harness"], "codex", "{set:?}");
+        assert_eq!(state.default_harness, AgentProvider::Codex);
+
+        let refused = state.handle(req(
+            "settings.set",
+            json!({ "claude_mode": "telepathy", "default_harness": "codex" }),
+        ));
+        assert_eq!(
+            refused["ok"], false,
+            "and a word it cannot read is still refused, whichever key carries it: {refused:?}"
+        );
+    }
+
     /// A bridge upgraded in place keeps the provider its human chose, with no
     /// migration step: the old key is read when the new one is absent, and
     /// never written again.
@@ -22996,6 +23315,847 @@ mod tests {
             empty["error"].as_str().unwrap(),
             "settings.set: nothing to set"
         );
+    }
+
+    /// Which isolation new checkouts get is an account setting with a
+    /// per-project override, and both outlive the process that chose them. A
+    /// project that inherits writes nothing: the absent key is what inheriting
+    /// looks like on disk.
+    #[test]
+    fn the_account_isolation_and_a_project_override_survive_a_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let inheriting = crate::git_fixture::init_repo_named(tmp.path(), "inheriting");
+        let cfg = tmp.path().join("config.json");
+        let load = |cfg: &std::path::Path| {
+            AppState::new(
+                repo.clone(),
+                tmp.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(cfg)
+            .unwrap()
+        };
+        {
+            let mut state = load(&cfg);
+            state.add_project(inheriting.clone(), "main".to_string());
+            state.isolation = Isolation::Cow;
+            state.projects[0].isolation = Some(Isolation::Worktree);
+            state.persist();
+        }
+
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(written["isolation"], "cow", "{written:?}");
+        assert_eq!(
+            written["projects"][0]["isolation"], "worktree",
+            "{written:?}"
+        );
+        assert!(
+            written["projects"][1].get("isolation").is_none(),
+            "a project that inherits the account setting persists no override: {written:?}"
+        );
+
+        let reloaded = load(&cfg);
+        assert_eq!(reloaded.isolation, Isolation::Cow);
+        assert_eq!(reloaded.projects[0].isolation, Some(Isolation::Worktree));
+        assert_eq!(
+            reloaded.projects[1].isolation, None,
+            "an absent key loads as inheriting, not as a choice"
+        );
+    }
+
+    /// A config naming an isolation this bridge has never heard of is a config
+    /// from a newer bridge, not a reason to fail boot: the word is logged and
+    /// read as absent, exactly as an unknown `default_harness` is.
+    #[test]
+    fn an_unknown_persisted_isolation_loads_as_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(
+            &cfg,
+            json!({
+                "isolation": "telepathy",
+                "projects": [ {
+                    "path": repo.display().to_string(),
+                    "base_branch": "main",
+                    "isolation": "telekinesis",
+                } ],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&cfg)
+        .unwrap();
+        assert_eq!(state.isolation, Isolation::Worktree);
+        assert_eq!(state.projects[0].isolation, None);
+    }
+
+    /// The project's own answer is the one asked first: an override of the
+    /// linked worktree beats an account default of cloning, and no volume has
+    /// to be consulted to honour it.
+    #[test]
+    fn a_project_override_beats_the_account_isolation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        state.isolation = Isolation::Cow;
+        state.projects[0].isolation = Some(Isolation::Worktree);
+
+        let project_id = state.projects[0].id.clone();
+        let resolved = state.resolved_isolation(&project_id);
+        assert_eq!(resolved.isolation, Isolation::Worktree);
+        assert_eq!(resolved.downgrade, None);
+    }
+
+    /// An override the other way is kept the same way: the account asks for a
+    /// linked worktree, this project asks to be cloned, and a volume that can
+    /// clone answers with the project's choice and nothing to announce.
+    #[test]
+    fn a_project_asking_to_be_cloned_is_cloned_where_the_volume_can() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+        state.projects[0].isolation = Some(Isolation::Cow);
+
+        let project_id = state.projects[0].id.clone();
+        let resolved = state.resolved_isolation(&project_id);
+        assert_eq!(resolved.isolation, Isolation::Cow);
+        assert_eq!(resolved.downgrade, None);
+    }
+
+    /// A volume that cannot clone does not fail the create: the request is
+    /// downgraded to the isolation every volume can make, and the resolver
+    /// hands back the sentence that says why, for whoever announces it.
+    #[test]
+    fn a_clone_no_volume_can_make_is_downgraded_with_its_reason() {
+        let (dir, repo) = init_repo();
+        let linked = dir.path().join("linked");
+        crate::git_fixture::git_in(
+            &repo,
+            &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
+        );
+        let mut state = qa_state(&repo, dir.path());
+        state.isolation = Isolation::Cow;
+        let project_id = state.add_project(linked, "feature".to_string());
+
+        let resolved = state.resolved_isolation(&project_id);
+        assert_eq!(resolved.isolation, Isolation::Worktree);
+        assert!(
+            resolved
+                .downgrade
+                .unwrap_or_default()
+                .contains("linked worktree"),
+            "the downgrade carries the probe's own sentence"
+        );
+    }
+
+    /// A checkout that is itself a linked worktree can never be cloned, on any
+    /// filesystem: the one project shape that makes this machine's answer
+    /// deterministic wherever the suite runs.
+    fn state_on_an_unclonable_project(dir: &std::path::Path, repo: &std::path::Path) -> AppState {
+        let linked = dir.join("linked");
+        crate::git_fixture::git_in(
+            repo,
+            &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
+        );
+        qa_state(&linked, dir)
+    }
+
+    /// The account settings carry the isolation new checkouts get and what this
+    /// machine can actually make, so one read tells a control both what is
+    /// chosen and whether the other choice is even offerable.
+    #[test]
+    fn settings_get_reports_the_account_isolation_and_what_this_volume_can_make() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let settings = state.handle(req("settings.get", json!({})));
+        assert_eq!(settings["ok"], true, "{settings:?}");
+        let result = &settings["result"];
+        assert_eq!(result["isolation"], "worktree", "{result:?}");
+        let available = &result["isolation_available"];
+        assert!(available["cow"].is_boolean(), "{result:?}");
+        assert_eq!(
+            available["reason"].is_null(),
+            available["cow"] == true,
+            "a locked clone carries its sentence and an available one carries none: {result:?}"
+        );
+    }
+
+    /// Whether a volume can clone is a project's question, so a bridge with no
+    /// project has no volume to ask — and says exactly that rather than
+    /// reporting a machine limit it never tested.
+    #[test]
+    fn with_no_project_registered_the_clone_answer_names_the_missing_project() {
+        let mut state = AppState::new_unrooted("/tmp/no-such-wt", "main", true, "/tmp/test.sock");
+
+        let settings = state.handle(req("settings.get", json!({})));
+        assert_eq!(
+            settings["result"]["isolation_available"],
+            json!({ "cow": false, "reason": "no project registered yet" }),
+            "{settings:?}"
+        );
+    }
+
+    /// Choosing to clone is kept where the volume can clone, and the answer the
+    /// setter returns is the settings themselves — the control repaints from
+    /// what the bridge holds, never from what it asked for.
+    #[test]
+    fn the_account_can_choose_cloning_where_the_volume_clones() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+
+        let saved = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        assert_eq!(saved["result"]["isolation"], "cow", "{saved:?}");
+        assert_eq!(
+            state.handle(req("settings.get", json!({})))["result"]["isolation"],
+            "cow"
+        );
+    }
+
+    /// A clone this machine cannot make is refused with the volume's own reason
+    /// before anything is stored, so the setting a client is shown afterwards is
+    /// the one that was already there.
+    #[test]
+    fn a_clone_this_machine_cannot_make_is_refused_and_changes_nothing() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+
+        let refused = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let sentence = refused["error"].as_str().unwrap().to_string();
+        assert!(
+            sentence.starts_with("copy-on-write isolation is unavailable: ")
+                && sentence.contains("linked worktree")
+                && sentence.ends_with("; locked to worktrees"),
+            "{sentence}"
+        );
+
+        let settings = state.handle(req("settings.get", json!({})));
+        assert_eq!(settings["result"]["isolation"], "worktree", "{settings:?}");
+        assert_eq!(
+            settings["result"]["isolation_available"]["cow"], false,
+            "{settings:?}"
+        );
+        assert_eq!(
+            settings["result"]["isolation_available"]["reason"]
+                .as_str()
+                .unwrap(),
+            sentence
+                .trim_start_matches("copy-on-write isolation is unavailable: ")
+                .trim_end_matches("; locked to worktrees"),
+            "the refusal quotes the reason the same read reports: {settings:?}"
+        );
+    }
+
+    /// An isolation only a newer bridge knows is refused by name, and naming
+    /// the isolation alone is something to set: the emptiness check counts it
+    /// like every other field.
+    #[test]
+    fn an_unknown_isolation_is_refused_and_a_known_one_is_not_an_empty_set() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+
+        let refused = state.handle(req("settings.set", json!({ "isolation": "telepathy" })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(
+            refused["error"].as_str().unwrap(),
+            "unknown isolation \"telepathy\" (expected \"worktree\" or \"cow\")"
+        );
+
+        let saved = state.handle(req("settings.set", json!({ "isolation": "worktree" })));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        assert_eq!(saved["result"]["isolation"], "worktree", "{saved:?}");
+    }
+
+    /// A project row carries the whole isolation picture a control paints from:
+    /// what this project chose (nothing, while it inherits), what the account
+    /// chose, what its next checkout will actually be, and what its volume can
+    /// make — so no client composes any of it.
+    #[test]
+    fn a_project_row_carries_its_own_isolation_the_accounts_and_the_effective_one() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let listed = state.handle(req("project.list", json!({})));
+        let row = &listed["result"]["projects"][0];
+        assert!(
+            row["isolation"].is_null(),
+            "a project that inherits names none of its own: {row:?}"
+        );
+        assert_eq!(row["isolation_default"], "worktree", "{row:?}");
+        assert_eq!(row["isolation_effective"], "worktree", "{row:?}");
+        let available = &row["isolation_available"];
+        assert!(available["cow"].is_boolean(), "{row:?}");
+        assert_eq!(
+            available["reason"].is_null(),
+            available["cow"] == true,
+            "a locked clone carries its sentence and an available one carries none: {row:?}"
+        );
+    }
+
+    /// A project's override is stored, answered as the row the control repaints
+    /// from, and written where a reload will find it; naming no isolation at all
+    /// clears it back to inheriting and unwrites it.
+    #[test]
+    fn a_project_override_is_stored_and_a_null_clears_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, repo) = init_repo();
+        let cfg = tmp.path().join("config.json");
+        let mut state = qa_state(&repo, dir.path()).with_config(&cfg).unwrap();
+        let project_id = state.projects[0].id.clone();
+        let persisted_override = |cfg: &std::path::Path| -> Value {
+            let written: Value =
+                serde_json::from_str(&std::fs::read_to_string(cfg).unwrap()).unwrap();
+            written["projects"][0]["isolation"].clone()
+        };
+
+        let saved = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": "worktree" }),
+        ));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        assert_eq!(saved["result"]["isolation"], "worktree", "{saved:?}");
+        assert_eq!(state.projects[0].isolation, Some(Isolation::Worktree));
+        assert_eq!(persisted_override(&cfg), json!("worktree"));
+
+        let cleared = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": null }),
+        ));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        assert!(
+            cleared["result"]["isolation"].is_null(),
+            "a cleared override inherits again: {cleared:?}"
+        );
+        assert_eq!(state.projects[0].isolation, None);
+        assert_eq!(persisted_override(&cfg), Value::Null);
+    }
+
+    /// A project on a volume that cannot clone is refused the choice in the
+    /// volume's own words, keeps the setting it had, and reports a next checkout
+    /// of the isolation every volume can make even while the account asks for
+    /// the other one.
+    #[test]
+    fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": "cow" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let sentence = refused["error"].as_str().unwrap().to_string();
+        assert!(
+            sentence.starts_with("copy-on-write isolation is unavailable: ")
+                && sentence.contains("linked worktree")
+                && sentence.ends_with("; locked to worktrees"),
+            "{sentence}"
+        );
+        assert_eq!(
+            state.projects[0].isolation, None,
+            "a refused choice stores nothing"
+        );
+
+        let listed = state.handle(req("project.list", json!({})));
+        let row = &listed["result"]["projects"][0];
+        assert!(row["isolation"].is_null(), "{row:?}");
+        assert_eq!(row["isolation_default"], "cow", "{row:?}");
+        assert_eq!(
+            row["isolation_effective"], "worktree",
+            "a locked volume makes the checkout every volume can: {row:?}"
+        );
+        assert_eq!(row["isolation_available"]["cow"], false, "{row:?}");
+        assert!(
+            row["isolation_available"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("linked worktree"),
+            "{row:?}"
+        );
+    }
+
+    /// Where the volume clones, a project may ask for it while the account has
+    /// not: the row answers the override, the account's untouched default, and
+    /// the clone as the effective choice.
+    #[test]
+    fn a_project_may_choose_cloning_where_its_volume_clones() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let saved = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": "cow" }),
+        ));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        let row = &saved["result"];
+        assert_eq!(row["isolation"], "cow", "{row:?}");
+        assert_eq!(row["isolation_default"], "worktree", "{row:?}");
+        assert_eq!(row["isolation_effective"], "cow", "{row:?}");
+        assert_eq!(state.projects[0].isolation, Some(Isolation::Cow));
+    }
+
+    /// The setter fails fast on both ways of naming nothing: a project this
+    /// bridge does not hold, and a call that names no isolation at all — silence
+    /// is not the same as the explicit null that clears an override.
+    #[test]
+    fn project_set_isolation_refuses_an_unknown_project_and_an_unnamed_choice() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let unknown = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": "proj-nowhere", "isolation": null }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert_eq!(
+            unknown["error"].as_str().unwrap(),
+            "unknown project: proj-nowhere"
+        );
+
+        let project_id = state.projects[0].id.clone();
+        let unnamed = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id }),
+        ));
+        assert_eq!(unnamed["ok"], false, "{unnamed:?}");
+        assert_eq!(
+            unnamed["error"].as_str().unwrap(),
+            "missing required param: isolation"
+        );
+    }
+
+    /// Every summary the conversation of `run_id` carries, whoever wrote it:
+    /// an Issue's implementation talks on the Issue's thread and a branch's
+    /// agent talks on its own, and a fallback note is legible on either.
+    fn conversation_summaries(state: &AppState, run_id: &str) -> Vec<String> {
+        let thread = match state.runs[run_id]
+            .run
+            .plan_id
+            .as_ref()
+            .and_then(|issue_id| state.plans.get(&issue_id.0))
+        {
+            Some(issue) => issue.agents.sole_thread(),
+            None => {
+                &state.runs[run_id]
+                    .agents
+                    .primary()
+                    .expect("the run has an agent to talk to")
+                    .thread
+            }
+        };
+        thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event) => event.summary.clone(),
+                crate::thread::ThreadItem::Message(_) => None,
+            })
+            .collect()
+    }
+
+    /// The environment can change under a setting that was accepted when it was
+    /// true. A create never fails for it: the checkout is made the way every
+    /// volume can, and the conversation says so in the volume's own words, so
+    /// nobody is left wondering why the clone they chose is a worktree.
+    #[test]
+    fn a_create_that_cannot_clone_falls_back_and_says_so_on_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+        let project_id = state.projects[0].id.clone();
+
+        let dispatched = state.handle(req(
+            "branch.dispatch",
+            json!({
+                "project_id": project_id,
+                "instruction": "Add a health endpoint",
+            }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        let run_id = dispatched["result"]["run_id"].as_str().unwrap().to_string();
+
+        let checkout = state.runs[&run_id].worktree.path.clone();
+        assert_eq!(
+            Isolation::of(&checkout),
+            Some(Isolation::Worktree),
+            "the create fell back to the isolation this volume can make"
+        );
+        let note = conversation_summaries(&state, &run_id)
+            .into_iter()
+            .find(|summary| summary.starts_with("Created a git worktree: "))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fallback is on the conversation: {:?}",
+                    conversation_summaries(&state, &run_id)
+                )
+            });
+        assert!(
+            note.starts_with(
+                "Created a git worktree: copy-on-write isolation is unavailable here — "
+            ) && note.contains("linked worktree"),
+            "the note carries the volume's own sentence: {note}"
+        );
+    }
+
+    /// Putting a checkout back is a create like any other: the isolation it is
+    /// remade with is what the settings resolve to now — never a memory of what
+    /// the vanished one was — and a volume that cannot clone is said on the
+    /// same conversation the restore is written on.
+    #[test]
+    fn a_restore_that_cannot_clone_puts_a_worktree_back_and_says_so_on_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        let issue_id = approved_issue(&mut state, "put the checkout back");
+        let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        std::fs::remove_dir_all(&state.runs[&run_id].worktree.path).unwrap();
+        // Chosen after the run exists, so the only fallback on this
+        // conversation is the restore's own.
+        state.isolation = Isolation::Cow;
+
+        let implemented = state.handle(req(
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        ));
+
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let restored = state.runs[&run_id].worktree.path.clone();
+        assert_eq!(
+            Isolation::of(&restored),
+            Some(Isolation::Worktree),
+            "the checkout came back as the isolation this volume can make: {restored:?}"
+        );
+        let note = conversation_summaries(&state, &run_id)
+            .into_iter()
+            .find(|summary| summary.starts_with("Created a git worktree: "))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the fallback is on the conversation: {:?}",
+                    conversation_summaries(&state, &run_id)
+                )
+            });
+        assert!(
+            note.contains("linked worktree"),
+            "the note carries the volume's own sentence: {note}"
+        );
+    }
+
+    /// A restore that finds its checkout standing makes nothing: the directory
+    /// is verified and reused, whatever it is. So the row it stands behind names
+    /// no isolation and the conversation hears no fallback — a run reached again
+    /// and again while the account asks for cloning would otherwise be told, on
+    /// every stage, that a checkout nobody made is a linked worktree.
+    #[test]
+    fn a_restore_that_reuses_its_checkout_names_no_isolation_and_announces_nothing() {
+        let (dir, repo) = init_repo();
+        let mut app = state_on_an_unclonable_project(dir.path(), &repo);
+        let issue_id = approved_issue(&mut app, "reuse the checkout that is still there");
+        let run = app.handle(req("run.create", json!({ "plan_id": issue_id })));
+        let run_id = run_id_of(&run);
+        // Chosen after the run exists, so the only fallback that could reach
+        // this conversation is the restore's own.
+        app.isolation = Isolation::Cow;
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let implemented = frame_on_a_thread(
+            &state,
+            "s-implement",
+            "issue.implement_stage",
+            json!({ "issue_id": issue_id, "stage_id": "second-half" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the checkout is being verified");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(
+            pending[0]["isolation"],
+            Value::Null,
+            "a verb that makes no checkout names no isolation: {pending:?}"
+        );
+
+        gate_handle.release();
+        let implemented = implemented
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the implementation answers once its restore is done");
+        assert_eq!(implemented["ok"], true, "{implemented:?}");
+        let state = state.lock().unwrap();
+        assert!(
+            conversation_summaries(&state, &run_id)
+                .iter()
+                .all(|summary| !summary.starts_with("Created a git worktree: ")),
+            "the checkout was reused, not created: {:?}",
+            conversation_summaries(&state, &run_id)
+        );
+    }
+
+    /// A bare worktree has no run, no agent and no conversation, so the only
+    /// place the fallback can reach the human who asked for it is the answer to
+    /// the ask — the same sentence the log and every thread carry.
+    #[test]
+    fn a_bare_worktree_that_cannot_be_cloned_says_so_in_its_answer() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "somewhere to work" }),
+        ));
+
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["isolation"], "worktree", "{result:?}");
+        let note = result["isolation_note"].as_str().unwrap_or_default();
+        assert!(
+            note.starts_with(
+                "Created a git worktree: copy-on-write isolation is unavailable here — "
+            ) && note.contains("linked worktree"),
+            "the answer carries the volume's own sentence: {result:?}"
+        );
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap_or_default());
+        assert_eq!(
+            Isolation::of(&path),
+            Some(Isolation::Worktree),
+            "and the checkout is the one this volume can make: {path:?}"
+        );
+    }
+
+    /// The row that stands where a checkout will be says how that checkout is
+    /// being made, and what it says is the resolver's answer rather than the
+    /// account's ask: a board watching a create appear reads the same fact off
+    /// the row that it will read off the card.
+    #[test]
+    fn a_creating_row_carries_the_isolation_the_checkout_is_being_made_as() {
+        let (dir, repo) = init_repo();
+        let mut app = state_on_an_unclonable_project(dir.path(), &repo);
+        app.isolation = Isolation::Cow;
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "Scratch Space" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the checkout is being cut");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(
+            pending[0]["isolation"],
+            json!("worktree"),
+            "the row says what this volume can make, not what the account asked for: {pending:?}"
+        );
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+    }
+
+    /// And on a volume that clones, the same create is a clone from the row
+    /// onwards: what the board is told while the git runs is what the checkout
+    /// turns out to be, and a clone that was made announces no fallback.
+    #[test]
+    fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut app = qa_state(&repo, dir.path());
+        app.isolation = Isolation::Cow;
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let created = frame_on_a_thread(
+            &state,
+            "s-create",
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "Scratch Space" }),
+        );
+        gate_handle.wait_for_arrival();
+
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the clone is being made");
+        let pending = pending_on_the_board(&board);
+        assert_eq!(
+            pending[0]["isolation"],
+            json!("cow"),
+            "the row says the checkout being made is a clone: {pending:?}"
+        );
+
+        gate_handle.release();
+        let created = created
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the create answers once its git is done");
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["isolation"], "cow", "{result:?}");
+        assert!(
+            result["isolation_note"].is_null(),
+            "a clone that was made announces no fallback: {result:?}"
+        );
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap_or_default());
+        assert_eq!(
+            Isolation::of(&path),
+            Some(Isolation::Cow),
+            "and what stands on disk is the clone: {path:?}"
+        );
+    }
+
+    /// The fallback is an announcement, not a term of the create. A store that
+    /// refuses the note leaves the checkout, the branch and the record exactly
+    /// as they are, and the run reaches the board it would have reached — the
+    /// alternative is a run alive on disk that the bridge has forgotten.
+    #[test]
+    fn a_fallback_that_cannot_be_recorded_still_leaves_the_run_on_the_board() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+
+        let plan = state.handle(req(
+            "plan.create",
+            json!({ "goal": "add a health endpoint" }),
+        ));
+        let plan_id = plan_id_of(&plan);
+        for stage_id in ["first-half", "second-half"] {
+            let approved = state.handle(req(
+                "plan.stage_approve",
+                json!({ "plan_id": plan_id, "stage_id": stage_id }),
+            ));
+            assert_eq!(approved["ok"], true, "{approved:?}");
+        }
+        let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
+        assert_eq!(approved["ok"], true, "{approved:?}");
+
+        // The first write the dispatch makes is the note's: everything before
+        // it is git and files, so this refusal lands on the announcement alone.
+        state
+            .store
+            .as_ref()
+            .expect("the qa state has a store")
+            .fail_next_write();
+        let dispatched = state.handle(req("run.create", json!({ "plan_id": plan_id })));
+
+        assert_eq!(
+            dispatched["ok"], true,
+            "an announcement that cannot be written never fails the create: {dispatched:?}"
+        );
+        let run_id = run_id_of(&dispatched);
+        assert!(
+            state.runs.contains_key(&run_id),
+            "and the run it made is on the board: {:?}",
+            state.runs.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The whole feature, end to end, on a volume that clones: the account
+    /// chooses cloning, the run that follows lives in a clone of the project
+    /// rather than a linked worktree, every surface that reads its work still
+    /// reads it, and Done lands the clone's branch on the base and takes the
+    /// directory away.
+    #[test]
+    fn a_run_dispatched_under_cloning_lives_in_a_clone_and_lands_from_it() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+        let chosen = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+
+        let (_, run_id) = planned_run_in_review(&mut state, "clone the project to work in it");
+        let checkout = state.runs[&run_id].worktree.path.clone();
+        assert_eq!(
+            Isolation::of(&checkout),
+            Some(Isolation::Cow),
+            "the chosen isolation is what the run got: {checkout:?}"
+        );
+        assert!(
+            conversation_summaries(&state, &run_id)
+                .iter()
+                .all(|summary| !summary.starts_with("Created a git worktree: ")),
+            "a clone that was made announces no fallback"
+        );
+
+        let diff = state.handle(req("run.diff", json!({ "run_id": run_id })));
+        let files: Vec<String> = diff["result"]["files"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the clone's work is reviewable: {diff:?}"))
+            .iter()
+            .map(|file| file["path"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            files.contains(&"result-first-half.txt".to_string())
+                && files.contains(&"result-second-half.txt".to_string()),
+            "{files:?}"
+        );
+
+        let board = state.handle(req("board.list", json!({})));
+        let row = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["run_id"] == json!(run_id.clone()))
+            .unwrap_or_else(|| panic!("the run is on the feed: {board:?}"));
+        assert_eq!(
+            row["stat"]["branch"], row["branch"],
+            "the feed reads the clone's own branch: {row:?}"
+        );
+        assert!(
+            row["stat"]["files_changed"].as_u64().unwrap() >= 2,
+            "the feed counts the clone's work: {row:?}"
+        );
+
+        let finished = state.handle(req(
+            "run.finish",
+            json!({ "run_id": run_id, "action": "merge" }),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(
+            repo.join("result-first-half.txt").exists()
+                && repo.join("result-second-half.txt").exists(),
+            "the clone's branch landed on the base"
+        );
+        assert!(!checkout.exists(), "Done took the clone away");
     }
 
     /// Naming no provider means "the account's default harness"; naming one
@@ -27335,6 +28495,15 @@ mod tests {
         path
     }
 
+    /// Whether the project repo still holds a local branch, asked the way
+    /// every caller asks it: through the project's own checkout seam.
+    fn local_branch_exists(
+        repo: &std::path::Path,
+        branch: &str,
+    ) -> Result<bool, crate::worktree::WorktreeError> {
+        WorktreeManager::new(repo, repo.join("worktrees")).branch_exists(branch)
+    }
+
     #[test]
     fn merge_cleanup_rejects_non_string_values_instead_of_pruning() {
         // Absent / null → Prune (backward-compat default).
@@ -27676,24 +28845,15 @@ mod tests {
         assert_eq!(unknown["ok"], false, "{unknown:?}");
         assert_eq!(unknown["error"], "unknown project_id");
     }
-    /// Run a git command inside `dir`, asserting success (fixture plumbing).
-    fn git_in_dir(dir: &std::path::Path, args: &[&str]) {
-        assert!(Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .unwrap()
-            .success());
-    }
 
     /// A repo initialized on `main` but with no commits yet (unborn HEAD).
     fn init_unborn_repo() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
-        git_in_dir(&repo, &["init", "-b", "main"]);
-        git_in_dir(&repo, &["config", "user.email", "t@build.ing"]);
-        git_in_dir(&repo, &["config", "user.name", "T"]);
+        git_in(&repo, &["init", "-b", "main"]);
+        git_in(&repo, &["config", "user.email", "t@build.ing"]);
+        git_in(&repo, &["config", "user.name", "T"]);
         (dir, repo)
     }
 
@@ -27743,8 +28903,8 @@ mod tests {
     fn git_show_shapes_a_commit_and_its_root_parent() {
         let (dir, repo) = init_repo();
         std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
-        git_in_dir(&repo, &["add", "a.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "subject line", "-m", "body text"]);
+        git_in(&repo, &["add", "a.txt"]);
+        git_in(&repo, &["commit", "-m", "subject line", "-m", "body text"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -27762,8 +28922,8 @@ mod tests {
         assert_eq!(shown["result"]["short"], top_hash[..7]);
         assert_eq!(shown["result"]["subject"], "subject line");
         assert_eq!(shown["result"]["body"], "body text");
-        assert_eq!(shown["result"]["author"], "T");
-        assert_eq!(shown["result"]["email"], "t@build.ing");
+        assert_eq!(shown["result"]["author"], "Test");
+        assert_eq!(shown["result"]["email"], "test@build.ing");
         assert!(shown["result"]["time"].as_i64().unwrap() > 0);
         assert_eq!(shown["result"]["stat"]["files_changed"], 1);
         assert_eq!(shown["result"]["stat"]["insertions"], 1);
@@ -27820,8 +28980,8 @@ mod tests {
         let line_count = 80_000; // ~1.36 MiB of "+…" patch lines, over the 1 MiB cap
         let big: String = "0123456789abcdef\n".repeat(line_count);
         std::fs::write(repo.join("big.txt"), &big).unwrap();
-        git_in_dir(&repo, &["add", "big.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "big"]);
+        git_in(&repo, &["add", "big.txt"]);
+        git_in(&repo, &["commit", "-m", "big"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -27856,8 +29016,8 @@ mod tests {
         let msg_file = dir.path().join("msg.txt");
         std::fs::write(&msg_file, format!("{subject}\n\n{body}")).unwrap();
         std::fs::write(repo.join("x.txt"), "x\n").unwrap();
-        git_in_dir(&repo, &["add", "x.txt"]);
-        git_in_dir(&repo, &["commit", "-q", "-F", msg_file.to_str().unwrap()]);
+        git_in(&repo, &["add", "x.txt"]);
+        git_in(&repo, &["commit", "-q", "-F", msg_file.to_str().unwrap()]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -27888,10 +29048,10 @@ mod tests {
 
         // full: a new file, staged, with no further worktree edits.
         std::fs::write(repo.join("full.txt"), "staged\n").unwrap();
-        git_in_dir(&repo, &["add", "full.txt"]);
+        git_in(&repo, &["add", "full.txt"]);
         // partial: staged edits AND later worktree edits on the same path.
         std::fs::write(repo.join("README.md"), "# project\nstaged edit\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
+        git_in(&repo, &["add", "README.md"]);
         std::fs::write(
             repo.join("README.md"),
             "# project\nstaged edit\nunstaged edit\n",
@@ -27935,14 +29095,14 @@ mod tests {
     fn git_status_surfaces_merge_conflicts_as_u_entries() {
         let (dir, repo) = init_repo();
         // A real content conflict: two branches editing the same line.
-        git_in_dir(&repo, &["checkout", "-q", "-b", "side"]);
+        git_in(&repo, &["checkout", "-q", "-b", "side"]);
         std::fs::write(repo.join("README.md"), "# side\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
-        git_in_dir(&repo, &["commit", "-q", "-m", "side edit"]);
-        git_in_dir(&repo, &["checkout", "-q", "main"]);
+        git_in(&repo, &["add", "README.md"]);
+        git_in(&repo, &["commit", "-q", "-m", "side edit"]);
+        git_in(&repo, &["checkout", "-q", "main"]);
         std::fs::write(repo.join("README.md"), "# main\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
-        git_in_dir(&repo, &["commit", "-q", "-m", "main edit"]);
+        git_in(&repo, &["add", "README.md"]);
+        git_in(&repo, &["commit", "-q", "-m", "main edit"]);
         let merge = Command::new("git")
             .args(["merge", "side"])
             .current_dir(&repo)
@@ -27973,7 +29133,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
-        git_in_dir(&repo, &["mv", "README.md", "RENAMED.md"]);
+        git_in(&repo, &["mv", "README.md", "RENAMED.md"]);
 
         // Both sides of the rename appear, matching the patch (which has no
         // rename detection): a staged delete at the old path, a staged add at
@@ -28271,7 +29431,7 @@ mod tests {
     fn init_repo_with_origin() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let (dir, repo) = init_repo();
         let origin = dir.path().join("origin.git");
-        git_in_dir(
+        git_in(
             dir.path(),
             &[
                 "clone",
@@ -28280,23 +29440,23 @@ mod tests {
                 origin.to_str().unwrap(),
             ],
         );
-        git_in_dir(
+        git_in(
             &repo,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
-        git_in_dir(&repo, &["fetch", "origin"]);
-        git_in_dir(&repo, &["branch", "--set-upstream-to=origin/main", "main"]);
+        git_in(&repo, &["fetch", "origin"]);
+        git_in(&repo, &["branch", "--set-upstream-to=origin/main", "main"]);
         (dir, repo, origin)
     }
 
     /// A second working checkout of `origin`, standing in for another dev.
     fn clone_working(origin: &std::path::Path, dest: &std::path::Path) {
-        git_in_dir(
+        git_in(
             dest.parent().unwrap(),
             &["clone", origin.to_str().unwrap(), dest.to_str().unwrap()],
         );
-        git_in_dir(dest, &["config", "user.email", "o@build.ing"]);
-        git_in_dir(dest, &["config", "user.name", "O"]);
+        git_in(dest, &["config", "user.email", "o@build.ing"]);
+        git_in(dest, &["config", "user.name", "O"]);
     }
 
     /// Another dev pushes one commit on `branch` to `origin`; the path returned
@@ -28309,11 +29469,11 @@ mod tests {
     ) -> std::path::PathBuf {
         let other = dir.path().join("other");
         clone_working(origin, &other);
-        git_in_dir(&other, &["checkout", "-b", branch]);
+        git_in(&other, &["checkout", "-b", branch]);
         std::fs::write(other.join("work.rs"), "one\n").unwrap();
-        git_in_dir(&other, &["add", "."]);
-        git_in_dir(&other, &["commit", "-m", "remote work"]);
-        git_in_dir(&other, &["push", "origin", branch]);
+        git_in(&other, &["add", "."]);
+        git_in(&other, &["commit", "-m", "remote work"]);
+        git_in(&other, &["push", "origin", branch]);
         let clone = dir.path().join("clone");
         clone_working(origin, &clone);
         clone
@@ -28346,9 +29506,9 @@ mod tests {
 
         // Another dev pushes a commit to origin.
         std::fs::write(other.join("remote.txt"), "remote\n").unwrap();
-        git_in_dir(&other, &["add", "remote.txt"]);
-        git_in_dir(&other, &["commit", "-m", "remote work"]);
-        git_in_dir(&other, &["push", "origin", "main"]);
+        git_in(&other, &["add", "remote.txt"]);
+        git_in(&other, &["commit", "-m", "remote work"]);
+        git_in(&other, &["push", "origin", "main"]);
 
         // git.fetch updates the tracking ref: we are now behind by one.
         let fetched = state.handle(req("git.fetch", json!({ "project_id": project_id })));
@@ -28365,8 +29525,8 @@ mod tests {
 
         // A local commit, then git.push publishes it to origin.
         std::fs::write(repo.join("local.txt"), "local\n").unwrap();
-        git_in_dir(&repo, &["add", "local.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "local work"]);
+        git_in(&repo, &["add", "local.txt"]);
+        git_in(&repo, &["commit", "-m", "local work"]);
         let ahead = state.handle(req("git.status", json!({ "project_id": project_id })));
         assert_eq!(ahead["result"]["ahead"], 1);
 
@@ -28376,7 +29536,7 @@ mod tests {
         assert_eq!(pushed["result"]["behind"], 0);
 
         // The other checkout can now fetch our commit — proof it reached origin.
-        git_in_dir(&other, &["fetch", "origin"]);
+        git_in(&other, &["fetch", "origin"]);
         let log = Command::new("git")
             .args(["log", "--oneline", "origin/main"])
             .current_dir(&other)
@@ -28389,11 +29549,11 @@ mod tests {
     fn git_push_sets_the_upstream_on_the_first_push() {
         let (dir, repo) = init_repo();
         let origin = dir.path().join("origin.git");
-        git_in_dir(
+        git_in(
             dir.path(),
             &["init", "--bare", "-b", "main", origin.to_str().unwrap()],
         );
-        git_in_dir(
+        git_in(
             &repo,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
@@ -28418,14 +29578,14 @@ mod tests {
 
         // Publish a commit, then rewrite it so local diverges from origin.
         std::fs::write(repo.join("x.txt"), "one\n").unwrap();
-        git_in_dir(&repo, &["add", "x.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "first"]);
+        git_in(&repo, &["add", "x.txt"]);
+        git_in(&repo, &["commit", "-m", "first"]);
         assert_eq!(
             state.handle(req("git.push", json!({ "project_id": project_id })))["ok"],
             true
         );
         std::fs::write(repo.join("x.txt"), "two\n").unwrap();
-        git_in_dir(&repo, &["commit", "-a", "--amend", "-m", "rewritten"]);
+        git_in(&repo, &["commit", "-a", "--amend", "-m", "rewritten"]);
 
         // A plain push is rejected (non-fast-forward); force-with-lease wins.
         let plain = state.handle(req("git.push", json!({ "project_id": project_id })));
@@ -28440,7 +29600,7 @@ mod tests {
     #[test]
     fn git_push_refuses_a_detached_head() {
         let (dir, repo, _origin) = init_repo_with_origin();
-        git_in_dir(&repo, &["checkout", "--detach", "HEAD"]);
+        git_in(&repo, &["checkout", "--detach", "HEAD"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -28458,13 +29618,13 @@ mod tests {
         let project_id = state.projects[0].id.clone();
 
         std::fs::write(other.join("theirs.txt"), "theirs\n").unwrap();
-        git_in_dir(&other, &["add", "theirs.txt"]);
-        git_in_dir(&other, &["commit", "-m", "theirs"]);
-        git_in_dir(&other, &["push", "origin", "main"]);
+        git_in(&other, &["add", "theirs.txt"]);
+        git_in(&other, &["commit", "-m", "theirs"]);
+        git_in(&other, &["push", "origin", "main"]);
 
         std::fs::write(repo.join("mine.txt"), "mine\n").unwrap();
-        git_in_dir(&repo, &["add", "mine.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "mine"]);
+        git_in(&repo, &["add", "mine.txt"]);
+        git_in(&repo, &["commit", "-m", "mine"]);
 
         assert_eq!(
             state.handle(req("git.fetch", json!({ "project_id": project_id })))["ok"],
@@ -28489,10 +29649,10 @@ mod tests {
 
         // Both sides edit README differently; the other side lands first.
         std::fs::write(other.join("README.md"), "# theirs\n").unwrap();
-        git_in_dir(&other, &["commit", "-am", "theirs"]);
-        git_in_dir(&other, &["push", "origin", "main"]);
+        git_in(&other, &["commit", "-am", "theirs"]);
+        git_in(&other, &["push", "origin", "main"]);
         std::fs::write(repo.join("README.md"), "# mine\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mine"]);
+        git_in(&repo, &["commit", "-am", "mine"]);
         assert_eq!(
             state.handle(req("git.fetch", json!({ "project_id": project_id })))["ok"],
             true
@@ -28515,8 +29675,8 @@ mod tests {
     #[test]
     fn git_branches_lists_locals_current_first() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "feature-a"]);
-        git_in_dir(&repo, &["branch", "feature-b"]);
+        git_in(&repo, &["branch", "feature-a"]);
+        git_in(&repo, &["branch", "feature-b"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -28543,11 +29703,11 @@ mod tests {
     #[test]
     fn git_branches_carries_each_branchs_own_diffstat_against_base() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["checkout", "-b", "feature-a"]);
+        git_in(&repo, &["checkout", "-b", "feature-a"]);
         std::fs::write(repo.join("feature.rs"), "one\ntwo\nthree\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "feature work"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "feature work"]);
+        git_in(&repo, &["checkout", "main"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -28563,6 +29723,43 @@ mod tests {
         assert_eq!(feature["stat"]["deletions"], 0, "{feature:?}");
         let main = branches.iter().find(|b| b["name"] == "main").unwrap();
         assert_eq!(main["stat"]["insertions"], 0, "{main:?}");
+    }
+
+    /// A clone is a repository of its own, so a commit made in it is invisible
+    /// to the project until published. The switcher publishes every held
+    /// branch through the façade before it reads the project's refs (spec
+    /// §0.4), so a clone's row weighs what the clone holds; a linked
+    /// worktree's publish is a no-op, and its row was never stale.
+    #[test]
+    fn git_branches_weighs_a_clones_branch_after_publishing_it() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let clone = state
+            .orch_for(&project_id)
+            .unwrap()
+            .worktrees()
+            .create("cloned", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
+        std::fs::write(clone.path.join("cloned.rs"), "one\ntwo\nthree\n").unwrap();
+        git_in(&clone.path, &["add", "."]);
+        git_in(&clone.path, &["commit", "-m", "work in the clone"]);
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let cloned = branches
+            .iter()
+            .find(|b| b["name"] == clone.branch())
+            .expect("the clone's branch is the project's to list");
+        assert_eq!(
+            cloned["stat"]["insertions"], 3,
+            "the clone's commit weighs on its row: {cloned:?}"
+        );
     }
 
     /// A branch checked out in a worktree Build never adopted is unpickable
@@ -28697,8 +29894,8 @@ mod tests {
     fn git_branches_lists_a_branch_two_remotes_carry_once_preferring_origin() {
         let (dir, _repo, origin) = init_repo_with_origin();
         let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
-        git_in_dir(&clone, &["remote", "add", "fork", origin.to_str().unwrap()]);
-        git_in_dir(&clone, &["fetch", "fork"]);
+        git_in(&clone, &["remote", "add", "fork", origin.to_str().unwrap()]);
+        git_in(&clone, &["fetch", "fork"]);
         let mut state = git_gui_state(&dir, &clone);
         let project_id = state.projects[0].id.clone();
 
@@ -28747,11 +29944,13 @@ mod tests {
     #[test]
     fn git_branches_names_the_primary_checkout_holding_a_branch() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "feature-idle"]);
+        git_in(&repo, &["branch", "feature-idle"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
-        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
-            .unwrap()
+        let primary_id = state.projects[0]
+            .orch
+            .worktrees()
+            .describe_primary("main")
             .unwrap()
             .id;
 
@@ -28805,8 +30004,8 @@ mod tests {
     #[test]
     fn git_branches_lists_every_branch_when_the_primary_holds_none() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "feature-idle"]);
-        git_in_dir(&repo, &["checkout", "--detach"]);
+        git_in(&repo, &["branch", "feature-idle"]);
+        git_in(&repo, &["checkout", "--detach"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -28911,12 +30110,12 @@ mod tests {
     fn git_checkout_refuses_while_a_merge_is_in_progress() {
         let (dir, repo) = init_repo();
         // Manufacture a conflicting merge so the repo is left mid-merge.
-        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        git_in(&repo, &["checkout", "-b", "topic"]);
         std::fs::write(repo.join("README.md"), "# topic\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "topic"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["commit", "-am", "topic"]);
+        git_in(&repo, &["checkout", "main"]);
         std::fs::write(repo.join("README.md"), "# mainline\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_in(&repo, &["commit", "-am", "mainline"]);
         git_try(&repo, &["merge", "topic"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
@@ -28932,13 +30131,13 @@ mod tests {
     #[test]
     fn git_branch_delete_removes_and_force_deletes() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "merged-branch"]);
+        git_in(&repo, &["branch", "merged-branch"]);
         // An unmerged branch: a commit main cannot reach.
-        git_in_dir(&repo, &["checkout", "-b", "unmerged"]);
+        git_in(&repo, &["checkout", "-b", "unmerged"]);
         std::fs::write(repo.join("u.txt"), "u\n").unwrap();
-        git_in_dir(&repo, &["add", "u.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "unmerged work"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["add", "u.txt"]);
+        git_in(&repo, &["commit", "-m", "unmerged work"]);
+        git_in(&repo, &["checkout", "main"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -29009,7 +30208,7 @@ mod tests {
 
         // A tracked edit (staged) and a fresh untracked file.
         std::fs::write(repo.join("README.md"), "# tampered\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
+        git_in(&repo, &["add", "README.md"]);
         std::fs::write(repo.join("junk.txt"), "junk\n").unwrap();
 
         let res = state.handle(req(
@@ -29070,19 +30269,19 @@ mod tests {
         assert_eq!(clean["error"], "no abortable operation in progress");
 
         // Merging: abort returns to a clean state.
-        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        git_in(&repo, &["checkout", "-b", "topic"]);
         std::fs::write(repo.join("README.md"), "# topic\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "topic"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["commit", "-am", "topic"]);
+        git_in(&repo, &["checkout", "main"]);
         std::fs::write(repo.join("README.md"), "# mainline\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_in(&repo, &["commit", "-am", "mainline"]);
         git_try(&repo, &["merge", "topic"]);
         let aborted = state.handle(req("git.merge_abort", json!({ "project_id": project_id })));
         assert_eq!(aborted["ok"], true, "{aborted:?}");
         assert_eq!(aborted["result"]["repo_state"], "clean");
 
         // Rebasing: a conflicting rebase leaves a rebasing state to abort.
-        git_in_dir(&repo, &["checkout", "topic"]);
+        git_in(&repo, &["checkout", "topic"]);
         git_try(&repo, &["rebase", "main"]);
         let status = state.handle(req("git.status", json!({ "project_id": project_id })));
         assert_eq!(status["result"]["repo_state"], "rebasing");
@@ -29652,7 +30851,7 @@ mod tests {
         let (_, run_id) = planned_run_in_review(&mut state, "quick change");
         let worktree_path = state.runs[&run_id].worktree.path.clone();
         let branch = state.runs[&run_id].worktree.branch();
-        git_in_dir(&worktree_path, &["push", "-u", "origin", &branch]);
+        git_in(&worktree_path, &["push", "-u", "origin", &branch]);
         std::fs::write(worktree_path.join("uncommitted.txt"), "one\ntwo\n").unwrap();
         let res = state.handle(req("run.get", json!({ "run_id": run_id })));
         assert_eq!(res["result"]["state"], "review", "{res:?}");
@@ -29733,12 +30932,12 @@ mod tests {
         let (_, run_id) = planned_run_in_review(&mut state, "renamed branch");
         let worktree_path = state.runs[&run_id].worktree.path.clone();
         let original_branch = state.runs[&run_id].worktree.branch();
-        git_in_dir(&worktree_path, &["push", "-u", "origin", &original_branch]);
-        git_in_dir(
+        git_in(&worktree_path, &["push", "-u", "origin", &original_branch]);
+        git_in(
             &worktree_path,
             &["branch", "-m", "build/actually-checked-out"],
         );
-        git_in_dir(
+        git_in(
             &worktree_path,
             &["push", "-u", "origin", "build/actually-checked-out"],
         );
@@ -30509,7 +31708,7 @@ mod tests {
             run_id = run_id_of(&run);
             let branch = state.runs[&run_id].worktree.branch();
             let worktree = state.runs[&run_id].worktree.path.clone();
-            git_in_dir(
+            git_in(
                 &repo,
                 &[
                     "worktree",
@@ -30519,7 +31718,7 @@ mod tests {
                     worktree.to_str().unwrap(),
                 ],
             );
-            git_in_dir(&repo, &["branch", "-D", "--", &branch]);
+            git_in(&repo, &["branch", "-D", "--", &branch]);
             let requested = state.handle(req(
                 "issue.implement_stage",
                 json!({ "issue_id": issue_id, "stage_id": "second-half" }),
@@ -33067,9 +34266,14 @@ mod tests {
         };
         // A spawn builds its session locator with the app mutex released, so a
         // factory that takes its time is time the delivery spends and the frame
-        // that queued it does not.
+        // that queued it does not. Seconds, not a slow frame's worth: the
+        // reporting frame renders the run's whole diff under the mutex and is
+        // hundreds of milliseconds on a loaded machine by itself, so only a
+        // spawn an order of magnitude longer tells a frame that waited for it
+        // apart from one that was merely slow.
+        const SPAWN_HOLD: Duration = Duration::from_secs(3);
         state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
-            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
+            std::thread::sleep(SPAWN_HOLD);
             None
         });
 
@@ -33121,21 +34325,18 @@ mod tests {
             slow_frame_millis(&line, "total=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
             "the spawn's seconds are the delivery's own: {line}"
         );
-        assert!(
-            !lines
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|line| line.starts_with("slow frame mcp.control ")),
-            "the reporting frame answered before the harness it triggered was up: {:?}",
-            lines.lock().unwrap()
-        );
         let stats = clock.stats();
         assert!(
             stats["methods"]["mcp.control"]["served"]
                 .as_u64()
                 .is_some_and(|served| served >= 1),
             "the socket's frames are counted since boot: {stats}"
+        );
+        assert!(
+            stats["methods"]["mcp.control"]["max_ms"]
+                .as_f64()
+                .is_some_and(|held| held < SPAWN_HOLD.as_millis() as f64),
+            "the reporting frame answered only once the harness it triggered was up: {stats}"
         );
     }
 
@@ -36303,7 +37504,7 @@ mod tests {
         })
         .unwrap();
         let prepared = orch
-            .prepare_run_checkout(&issue, "main", run_id, store)
+            .prepare_run_checkout(&issue, "main", run_id, Isolation::Worktree, store)
             .unwrap();
         orch.open_prepared_run(RunId::new(run_id), plan, prepared, Default::default())
             .unwrap()
@@ -37544,23 +38745,23 @@ mod tests {
     fn boot_recovers_journaled_push_from_configured_remote_evidence() {
         let (dir, repo) = init_repo();
         let remote = dir.path().join("mirror.git");
-        git_in_dir(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
-        git_in_dir(
+        git_in(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git_in(
             &repo,
             &["remote", "add", "mirror", remote.to_str().unwrap()],
         );
-        git_in_dir(&repo, &["checkout", "-b", "build/journaled"]);
+        git_in(&repo, &["checkout", "-b", "build/journaled"]);
         std::fs::write(repo.join("published.txt"), "published\n").unwrap();
-        git_in_dir(&repo, &["add", "published.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "published candidate"]);
+        git_in(&repo, &["add", "published.txt"]);
+        git_in(&repo, &["commit", "-m", "published candidate"]);
         let candidate = git_stdout(&repo, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
             .to_string();
-        git_in_dir(&repo, &["push", "-u", "mirror", "build/journaled"]);
+        git_in(&repo, &["push", "-u", "mirror", "build/journaled"]);
         // Force recovery to refresh remote evidence rather than trusting a
         // convenient local remote-tracking ref left by setup.
-        git_in_dir(
+        git_in(
             &repo,
             &["update-ref", "-d", "refs/remotes/mirror/build/journaled"],
         );
@@ -38884,9 +40085,9 @@ mod tests {
     fn a_primary_runs_branch_follows_the_checkout() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        git_in(&repo, &["checkout", "-b", "feature-era"]).unwrap();
+        git_in(&repo, &["checkout", "-b", "feature-era"]);
         let run_id = adopted_primary_run(&mut state);
-        git_in(&repo, &["checkout", "main"]).unwrap();
+        git_in(&repo, &["checkout", "main"]);
 
         assert_eq!(state.runs[&run_id].worktree.branch(), "main");
 
@@ -39056,8 +40257,8 @@ mod tests {
         let run_id = adopted_run(&mut state, &repo, dir.path(), "archive-finished-run");
         let project_id = state.projects[0].id.clone();
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["add", "-A"]);
-        git_in_dir(&worktree, &["commit", "-m", "Finish adopted work"]);
+        git_in(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["commit", "-m", "Finish adopted work"]);
 
         let finished = state.handle(req(
             "run.finish",
@@ -39087,8 +40288,8 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "preflight-run");
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["add", "-A"]);
-        git_in_dir(&worktree, &["commit", "-m", "Finish adopted work"]);
+        git_in(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["commit", "-m", "Finish adopted work"]);
 
         // The board reads the checkout while it is clean, and caches that.
         let board = state.handle(req("board.list", json!({})));
@@ -39125,10 +40326,10 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (plan_id, run_id) = planned_run_in_review(&mut state, "archive planned run");
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["add", "-A"]);
         let staged = git_stdout(&worktree, &["diff", "--cached", "--name-only"]).unwrap();
         if !staged.trim().is_empty() {
-            git_in_dir(&worktree, &["commit", "-m", "Finish planned work"]);
+            git_in(&worktree, &["commit", "-m", "Finish planned work"]);
         }
 
         let finished = state.handle(req(
@@ -41395,11 +42596,11 @@ mod tests {
     #[test]
     fn worktree_create_checks_out_an_existing_local_branch_without_cutting() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["checkout", "-q", "-b", "theirs"]);
+        git_in(&repo, &["checkout", "-q", "-b", "theirs"]);
         std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "their work"]);
-        git_in_dir(&repo, &["checkout", "-q", "main"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "their work"]);
+        git_in(&repo, &["checkout", "-q", "main"]);
         let tip = git2::Repository::open(&repo)
             .unwrap()
             .find_branch("theirs", git2::BranchType::Local)
@@ -41488,8 +42689,10 @@ mod tests {
         let run_id = adopted_run(&mut state, &repo, dir.path(), "run-owned");
         add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
         let external_worktree_id = external_id(&mut state, &project_id, Some("by-hand"));
-        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
-            .unwrap()
+        let primary_id = state.projects[0]
+            .orch
+            .worktrees()
+            .describe_primary("main")
             .unwrap()
             .id;
 
@@ -41545,7 +42748,7 @@ mod tests {
     #[test]
     fn worktree_create_takes_exactly_one_of_branch_and_name() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "theirs"]);
+        git_in(&repo, &["branch", "theirs"]);
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
 
@@ -41570,7 +42773,7 @@ mod tests {
     #[test]
     fn finishing_a_borrowed_checkout_keeps_its_branch_and_a_cut_one_does_not() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "theirs"]);
+        git_in(&repo, &["branch", "theirs"]);
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
 
@@ -41615,11 +42818,11 @@ mod tests {
     #[test]
     fn finishing_a_borrowed_checkout_with_merge_merges_and_keeps_the_branch() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["checkout", "-b", "theirs"]);
+        git_in(&repo, &["checkout", "-b", "theirs"]);
         std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "their work"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "their work"]);
+        git_in(&repo, &["checkout", "main"]);
         let r = git2::Repository::open(&repo).unwrap();
         let tip = r
             .find_branch("theirs", git2::BranchType::Local)
@@ -41727,7 +42930,7 @@ mod tests {
     #[test]
     fn recovering_an_adopted_checkout_whose_registration_is_gone_refuses() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "theirs"]);
+        git_in(&repo, &["branch", "theirs"]);
         // Adoption records the checkout's canonical path, and the managed-root
         // guard compares it to the configured root, so the test's root is the
         // canonical one a real install has.
@@ -41757,7 +42960,7 @@ mod tests {
             .unwrap()
             .id()
             .to_string();
-        git_in_dir(
+        git_in(
             &repo,
             &[
                 "worktree",
@@ -41840,8 +43043,8 @@ mod tests {
 
         // A local commit that origin has not seen: ahead 1, behind 0.
         std::fs::write(repo.join("ahead.txt"), "local\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "local only"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "local only"]);
         // …and an uncommitted edit, so both halves are non-zero at once.
         std::fs::write(repo.join("dirty.txt"), "wip\n").unwrap();
 
@@ -41863,10 +43066,10 @@ mod tests {
     fn primary_changes_compares_an_untracked_branch_with_local_main() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        git_in(&repo, &["checkout", "-b", "topic"]);
         std::fs::write(repo.join("topic.txt"), "topic\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "topic"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "topic"]);
 
         let board = state.handle(req("board.list", json!({})));
         let entry = board["result"]["primary_changes"]
@@ -46989,8 +48192,8 @@ mod tests {
     /// something new.
     fn commit_in(checkout: &std::path::Path, message: &str) {
         std::fs::write(checkout.join("worked.txt"), message).unwrap();
-        git_in_dir(checkout, &["add", "."]);
-        git_in_dir(checkout, &["commit", "-m", message]);
+        git_in(checkout, &["add", "."]);
+        git_in(checkout, &["commit", "-m", message]);
     }
 
     /// The primary checkout's row is entity-less — a different dismissal path
@@ -47386,6 +48589,165 @@ mod tests {
             .id
     }
 
+    /// Every scanned row says how its checkout is isolated, so a client can
+    /// tell a clone from a linked worktree without asking a second question.
+    #[test]
+    fn every_scanned_worktree_row_says_how_it_is_isolated() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "labelled", "labelled");
+
+        let rows = state.external_worktrees_json();
+
+        let row = rows
+            .rows
+            .iter()
+            .find(|row| row["branch"] == json!("labelled"))
+            .expect("the scan finds the checkout");
+        assert_eq!(row["isolation"], "worktree", "{row:?}");
+    }
+
+    /// A finish whose checkout vanished between the write-ahead record and the
+    /// destructive steps refuses while its branch still stands, rather than
+    /// quietly dropping work nobody has merged. Whether the branch stands is
+    /// the façade's answer about the project repo, not the app's own git.
+    #[test]
+    fn a_finish_merge_that_lost_its_checkout_refuses_while_the_branch_stands() {
+        let (dir, repo) = init_repo();
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let checkout =
+            std::fs::canonicalize(add_external_worktree(&repo, dir.path(), "lost", "lost"))
+                .unwrap();
+        let record = pending_merge_record(&repo, &checkout);
+        std::fs::remove_dir_all(&checkout).unwrap();
+
+        let refused = run_finish_git_steps(&worktrees, "main", &record).unwrap_err();
+
+        assert!(
+            refused.contains("lost its worktree before branch deletion"),
+            "{refused}"
+        );
+        assert!(
+            worktrees.branch_exists("lost").unwrap(),
+            "the branch the finish refused to act on is untouched"
+        );
+    }
+
+    /// The same finish once the branch has gone too: there is nothing left to
+    /// merge or delete, so the destructive half is already done.
+    #[test]
+    fn a_finish_merge_that_lost_its_checkout_and_its_branch_is_done() {
+        let (dir, repo) = init_repo();
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let checkout =
+            std::fs::canonicalize(add_external_worktree(&repo, dir.path(), "gone", "gone"))
+                .unwrap();
+        let record = pending_merge_record(&repo, &checkout);
+        std::fs::remove_dir_all(&checkout).unwrap();
+        git_in(&repo, &["worktree", "prune"]);
+        git_in(&repo, &["branch", "-D", "gone"]);
+
+        assert!(run_finish_git_steps(&worktrees, "main", &record).is_ok());
+    }
+
+    /// The write-ahead record a `merge` finish steps from, for a checkout whose
+    /// branch is named after its directory.
+    fn pending_merge_record(
+        repo: &std::path::Path,
+        checkout: &std::path::Path,
+    ) -> PersistedArchivedWorktree {
+        let name = checkout
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the checkout has a directory name")
+            .to_string();
+        PersistedArchivedWorktree {
+            status: WorktreeFinishStatus::Pending,
+            project_path: repo.display().to_string(),
+            worktree_id: crate::worktree::external_worktree_id(checkout),
+            worktree_name: name.clone(),
+            worktree_path: checkout.display().to_string(),
+            branch: Some(name),
+            head_sha: git_stdout(checkout, &["rev-parse", "HEAD"])
+                .unwrap()
+                .trim()
+                .to_string(),
+            upstream: None,
+            unpushed: None,
+            dirty_files: 0,
+            uncommitted_files: 0,
+            uncommitted_insertions: 0,
+            uncommitted_deletions: 0,
+            action: WorktreeFinishAction::Merge,
+            archived_at: None,
+        }
+    }
+
+    /// Stage publication is evidence in the project repo's refs, and putting
+    /// the checkout's branch to them first — nothing at all for a linked
+    /// worktree, whose refs are already the project's — changes no answer it
+    /// gives.
+    #[test]
+    fn stage_publication_of_a_linked_worktree_survives_publishing_first() {
+        let (dir, repo) = init_repo();
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let checkout = add_external_worktree(&repo, dir.path(), "staged", "staged");
+        std::fs::write(checkout.join("stage.txt"), "shipped\n").unwrap();
+        git_in(&checkout, &["add", "-A"]);
+        git_in(&checkout, &["commit", "-m", "stage work"]);
+        let completion_sha = git_stdout(&checkout, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        assert_eq!(
+            classify_stage_publication(&worktrees, &checkout, "staged", "main", &completion_sha),
+            StagePublication::Local,
+            "nothing in the project carries the commit yet"
+        );
+
+        git_in(&repo, &["merge", "--no-edit", "--", "staged"]);
+
+        assert_eq!(
+            classify_stage_publication(&worktrees, &checkout, "staged", "main", &completion_sha),
+            StagePublication::Merged,
+        );
+    }
+
+    /// The same finish over a copy-on-write clone. A clone is its own
+    /// repository, so its commits reach the project only through the publish
+    /// the façade does first, and git's worktree registry has never heard of
+    /// the directory: the app's own git could neither merge the work nor take
+    /// the checkout away. Going through the façade, one finish path does both.
+    #[test]
+    fn a_finish_merge_of_a_clone_lands_its_work_and_takes_its_branch() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let clone = worktrees
+            .create_cutting_branch("landed", "main", Isolation::Cow)
+            .unwrap()
+            .worktree;
+        std::fs::write(clone.path.join("landed.txt"), "shipped\n").unwrap();
+        git_in(&clone.path, &["add", "-A"]);
+        git_in(&clone.path, &["commit", "-m", "clone work"]);
+        let record = pending_merge_record(&repo, &std::fs::canonicalize(&clone.path).unwrap());
+
+        run_finish_git_steps(&worktrees, "main", &record).unwrap();
+
+        assert!(
+            repo.join("landed.txt").exists(),
+            "the clone's commit is on the base branch in the project"
+        );
+        assert!(
+            !worktrees.branch_exists("landed").unwrap(),
+            "teardown owns the branch the clone was cut onto"
+        );
+        assert!(!clone.path.exists(), "the clone itself is gone");
+    }
+
     #[test]
     fn worktree_finish_cleanup_requires_clean_and_preserves_branch() {
         let (dir, repo) = init_repo();
@@ -47497,7 +48859,7 @@ mod tests {
         assert_eq!(rejected["ok"], false, "{rejected:?}");
         assert!(rejected["error"].as_str().unwrap().contains("upstream"));
 
-        git_in_dir(&path, &["push", "-u", "origin", "push-me"]);
+        git_in(&path, &["push", "-u", "origin", "push-me"]);
         std::fs::write(path.join("pushed.txt"), "published\n").unwrap();
         let finished = state.handle(req(
             "worktree.finish",
@@ -47524,7 +48886,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "detached", "detached-source");
-        git_in_dir(&path, &["checkout", "--detach"]);
+        git_in(&path, &["checkout", "--detach"]);
         std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
         let worktree_id = external_id(&mut state, &project_id, None);
 
@@ -47606,9 +48968,9 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "conflict", "conflict");
         std::fs::write(path.join("README.md"), "feature\n").unwrap();
-        git_in_dir(&path, &["commit", "-am", "feature"]);
+        git_in(&path, &["commit", "-am", "feature"]);
         std::fs::write(repo.join("README.md"), "mainline\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_in(&repo, &["commit", "-am", "mainline"]);
         let worktree_id = external_id(&mut state, &project_id, Some("conflict"));
 
         let forged = state.handle(req(
@@ -49153,7 +50515,7 @@ mod tests {
         let (issue_id, run_id) = planned_run_in_review(&mut state, "finished work");
         let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["push", "-u", "origin", &branch]);
+        git_in(&worktree, &["push", "-u", "origin", &branch]);
         let finished = state.handle(req(
             "branch.finish",
             json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
@@ -49368,7 +50730,7 @@ mod tests {
             let mut state = qa_state(&repo, dir.path());
             let project_id = state.projects[0].id.clone();
             let path = add_external_worktree(&repo, dir.path(), "durable-push", "durable-push");
-            git_in_dir(&path, &["push", "-u", "origin", "durable-push"]);
+            git_in(&path, &["push", "-u", "origin", "durable-push"]);
             std::fs::write(path.join("pushed.txt"), "published\n").unwrap();
             worktree_id = external_id(&mut state, &project_id, Some("durable-push"));
             let finished = state.handle(req(
@@ -51021,8 +52383,8 @@ mod tests {
 
         std::fs::write(worktree.join("one.txt"), "a\nb\n").unwrap();
         std::fs::write(worktree.join("two.txt"), "c\n").unwrap();
-        git_in_dir(&worktree, &["add", "."]);
-        git_in_dir(&worktree, &["commit", "-m", "two files"]);
+        git_in(&worktree, &["add", "."]);
+        git_in(&worktree, &["commit", "-m", "two files"]);
 
         // No upstream yet: ahead/behind are measured against the base branch,
         // and `upstream: null` is what says so. That distinction is what Done
@@ -51038,7 +52400,7 @@ mod tests {
         assert_eq!(stat["ahead"], 1, "{stat:?}");
         assert_eq!(stat["behind"], 0, "{stat:?}");
 
-        git_in_dir(&worktree, &["push", "-u", "origin", "feature-counted"]);
+        git_in(&worktree, &["push", "-u", "origin", "feature-counted"]);
         let published = branch_row(&mut state, "feature-counted");
         let stat = &published["stat"];
         assert_eq!(stat["upstream"], "origin/feature-counted", "{stat:?}");
@@ -51308,8 +52670,8 @@ mod tests {
         // Committed, with no remote: the base branch is the only place the
         // work could survive Done, and it is not there.
         std::fs::write(worktree.join("work.txt"), "one\n").unwrap();
-        git_in_dir(&worktree, &["add", "-A"]);
-        git_in_dir(&worktree, &["commit", "-m", "work"]);
+        git_in(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["commit", "-m", "work"]);
         let unmerged = branch_row(&mut state, "feature-done");
         assert_eq!(unmerged["can_finish"], true, "{unmerged:?}");
         assert_eq!(warning_codes(&unmerged), vec!["unmerged"], "{unmerged:?}");
@@ -51322,7 +52684,7 @@ mod tests {
             "{unmerged:?}"
         );
 
-        git_in_dir(&worktree, &["push", "-u", "origin", "feature-done"]);
+        git_in(&worktree, &["push", "-u", "origin", "feature-done"]);
         let pushed = branch_row(&mut state, "feature-done");
         assert!(
             warning_codes(&pushed).is_empty(),
@@ -51335,7 +52697,7 @@ mod tests {
         assert_eq!(warning_codes(&dirty), vec!["uncommitted"], "{dirty:?}");
 
         // Committed, and now the remote is the one behind.
-        git_in_dir(&worktree, &["commit", "-am", "more"]);
+        git_in(&worktree, &["commit", "-am", "more"]);
         let ahead = branch_row(&mut state, "feature-done");
         assert_eq!(warning_codes(&ahead), vec!["unpushed"], "{ahead:?}");
         assert_eq!(
@@ -52937,7 +54299,8 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "fresh", "feature-fresh");
         let described =
-            crate::worktree::describe_checkout(&repo, "main", &path).expect("it is a checkout");
+            crate::worktree::describe_checkout(&path, "main", crate::worktree::unix_now())
+                .expect("it is a checkout");
         let scan = DiffCacheKey::ExternalScan(project_id.clone());
         state.diff_refreshes_in_flight.insert(scan.clone());
         state.changes.flush();

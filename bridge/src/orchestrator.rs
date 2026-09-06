@@ -40,13 +40,14 @@
 //! forwards (the caller routes each report by owner lookup).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use portable_pty::PtySize;
 
 use crate::agent::AgentRoster;
 use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, WorktreeDiff};
+use crate::git_process::{run_git, GitError};
 use crate::harness::HarnessError;
+use crate::isolation::Isolation;
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{
@@ -104,11 +105,23 @@ pub enum OrchestratorError {
     MergeFailed(String),
 }
 
+impl From<GitError> for OrchestratorError {
+    fn from(error: GitError) -> Self {
+        match error {
+            GitError::Unstartable(io) => OrchestratorError::Io(io),
+            GitError::Failed(detail) => OrchestratorError::Git(detail),
+        }
+    }
+}
+
 /// Convert any git failure hit during a merge approval into [`OrchestratorError::MergeFailed`]
 /// so the RPC message carries the contract's `merge_failed:` prefix.
 fn as_merge_failure(error: OrchestratorError) -> OrchestratorError {
     match error {
         OrchestratorError::Git(reason) => OrchestratorError::MergeFailed(reason),
+        OrchestratorError::Worktree(WorktreeError::Command(reason)) => {
+            OrchestratorError::MergeFailed(reason)
+        }
         already @ OrchestratorError::MergeFailed(_) => already,
         other => OrchestratorError::MergeFailed(other.to_string()),
     }
@@ -962,23 +975,6 @@ pub enum Agent {
     WarmBuilder(WarmBuilder),
 }
 
-fn run_git(dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
-    let out = Command::new("git").args(args).current_dir(dir).output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-            .into_iter()
-            .filter(|line| !line.is_empty())
-            .collect();
-        return Err(OrchestratorError::Git(format!(
-            "git {args:?}: {}",
-            detail.join("\n")
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
 /// Owned inputs for constructing one agent process. Cloning this under the app
 /// lock lets every filesystem and provider setup step run after that lock is
 /// released.
@@ -1155,6 +1151,12 @@ impl Orchestrator {
             },
             templates,
         }
+    }
+
+    /// The one seam every checkout operation goes through, for callers that
+    /// hold the orchestrator rather than the manager.
+    pub fn worktrees(&self) -> &WorktreeManager {
+        &self.worktrees
     }
 
     pub(crate) fn agent_launch(&self) -> AgentLaunch {
@@ -1643,8 +1645,9 @@ impl Orchestrator {
         &self,
         slug: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self.worktrees.create(slug, base_branch)?)
+        Ok(self.worktrees.create(slug, base_branch, isolation)?)
     }
 
     /// The same bare checkout, on a branch that already exists — here or on a
@@ -1653,10 +1656,11 @@ impl Orchestrator {
         &self,
         branch: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
         Ok(self
             .worktrees
-            .create_on_existing_branch(branch, base_branch)?)
+            .create_on_existing_branch(branch, base_branch, isolation)?)
     }
 
     /// The same bare checkout, on a branch the caller named in full and means
@@ -1667,8 +1671,11 @@ impl Orchestrator {
         &self,
         branch: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self.worktrees.create_cutting_branch(branch, base_branch)?)
+        Ok(self
+            .worktrees
+            .create_cutting_branch(branch, base_branch, isolation)?)
     }
 
     /// Where the checkout for `slug` will go if nothing is in its way. The
@@ -1685,11 +1692,13 @@ impl Orchestrator {
         path: &Path,
         base_branch: &str,
     ) -> Result<ExternalWorktree, OrchestratorError> {
-        Ok(crate::worktree::describe_checkout(
-            &self.repo_path,
-            base_branch,
-            path,
-        )?)
+        crate::worktree::describe_checkout(path, base_branch, crate::worktree::unix_now())
+            .ok_or_else(|| {
+                OrchestratorError::Git(format!(
+                    "{} is not a checkout this project can describe",
+                    path.display()
+                ))
+            })
     }
 
     /// Every checkout of this repository no run owns, as they stand right now.
@@ -1701,11 +1710,7 @@ impl Orchestrator {
         base_branch: &str,
         excluded: &std::collections::HashSet<PathBuf>,
     ) -> Result<Vec<ExternalWorktree>, OrchestratorError> {
-        Ok(crate::worktree::discover_external_worktrees(
-            &self.repo_path,
-            base_branch,
-            excluded,
-        )?)
+        Ok(self.worktrees.discover(base_branch, excluded)?)
     }
 
     /// Cut the checkout an Issue's implementation works in and make it ready
@@ -1725,9 +1730,13 @@ impl Orchestrator {
         issue: &ImplementableIssue,
         base_branch: &str,
         run_id: &str,
+        isolation: Isolation,
         store: &Store,
     ) -> Result<PreparedImplementation, OrchestratorError> {
-        let worktree = self.worktrees.create(&issue.slug, base_branch)?.worktree;
+        let worktree = self
+            .worktrees
+            .create(&issue.slug, base_branch, isolation)?
+            .worktree;
         let prepared = self.scaffold_build_dir(&worktree, run_id).and_then(|()| {
             self.materialize_and_commit_plan_docs(
                 &issue.plan_id,
@@ -1905,8 +1914,7 @@ impl Orchestrator {
     ) -> Result<String, OrchestratorError> {
         store.materialize_plan_docs(plan_id, checkout)?;
         self.commit_all_with_message(checkout, &format!("plan: {goal}"))?;
-        Ok(self
-            .git(checkout, &["rev-parse", "HEAD"])?
+        Ok(run_git(checkout, &["rev-parse", "HEAD"])?
             .trim()
             .to_string())
     }
@@ -2191,8 +2199,7 @@ impl Orchestrator {
             &active.worktree.path,
             &format!("Build: stage {stage_id} — checkpoint (swept by Build)"),
         )?;
-        let built_sha = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let built_sha = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
         // Commit/rev-parse are fallible. Only move Building → Built after both
@@ -2281,11 +2288,10 @@ impl Orchestrator {
                     "stage {stage_id} has no pinned built_sha; validation cannot establish a stable boundary"
                 ))
             })?;
-        let head = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let head = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
-        let dirty = self.git(
+        let dirty = run_git(
             &active.worktree.path,
             &["status", "--porcelain", "--untracked-files=all"],
         )?;
@@ -2398,8 +2404,7 @@ impl Orchestrator {
 
         // Probe the candidate boundary before mutating the run machine. A
         // vanished/corrupt checkout must leave StageGate intact for recovery.
-        let start_sha = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let start_sha = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
         active.run.apply(RunEvent::Dispatch)?;
@@ -2758,8 +2763,13 @@ impl Orchestrator {
         run_transition(&active.run.state, RunEvent::ApproveMerge)?;
         self.commit_all(&active.worktree.path, &active.run.goal)
             .map_err(as_merge_failure)?;
-        self.merge_into_base(&active.worktree.branch(), &active.worktree.base_branch)
-            .map_err(as_merge_failure)?;
+        self.worktrees
+            .merge_into_base(
+                &active.worktree.path,
+                &active.worktree.branch(),
+                &active.worktree.base_branch,
+            )
+            .map_err(|error| as_merge_failure(error.into()))?;
         active.run.apply(RunEvent::ApproveMerge)?;
         active.last_error = None;
         Ok(())
@@ -2779,7 +2789,7 @@ impl Orchestrator {
             .map_err(|error| OrchestratorError::Git(error.to_string()))?;
         let remote = configured_remote_for_branch(&repo, &active.worktree.branch())
             .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
-        self.git(
+        run_git(
             &active.worktree.path,
             // `--` stops option parsing so option-shaped names remain opaque.
             &["push", "-u", &remote, "--", &active.worktree.branch()],
@@ -2796,7 +2806,7 @@ impl Orchestrator {
             .map_err(|error| OrchestratorError::Git(error.to_string()))?;
         let remote = configured_remote_for_branch(&repo, &base)
             .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
-        self.git(&self.repo_path, &["push", &remote, &base])?;
+        run_git(&self.repo_path, &["push", &remote, &base])?;
         Ok(())
     }
 
@@ -2919,8 +2929,11 @@ impl Orchestrator {
         &self,
         worktree: &Worktree,
         when_unregistered: crate::worktree::UnregisteredRestore,
+        isolation: Isolation,
     ) -> Result<Worktree, OrchestratorError> {
-        Ok(self.worktrees.restore(worktree, when_unregistered)?)
+        Ok(self
+            .worktrees
+            .restore(worktree, when_unregistered, isolation)?)
     }
 
     /// Best-effort teardown of a leftover checkout: the directory always, and
@@ -3084,78 +3097,23 @@ impl Orchestrator {
         // time), which `git add -A` honors silently — and which also guards the
         // agent's own commits. (A `:(exclude)` pathspec here would instead ERROR,
         // since it names an ignored path explicitly.)
-        self.git(worktree_path, &["add", "-A", "--", "."])?;
+        run_git(worktree_path, &["add", "-A", "--", "."])?;
         // Only commit if something is staged (the MCP config alone must not
         // produce a commit).
-        let staged = self.git(worktree_path, &["diff", "--cached", "--name-only"])?;
+        let staged = run_git(worktree_path, &["diff", "--cached", "--name-only"])?;
         if !staged.trim().is_empty() {
-            self.git(worktree_path, &["commit", "-m", message])?;
+            run_git(worktree_path, &["commit", "-m", message])?;
         }
         Ok(())
-    }
-
-    /// Merge the task branch into `base_branch` via the primary checkout. The
-    /// primary repo is the user's live checkout, so first verify it actually has
-    /// the base branch checked out — merging into whatever happens to be at HEAD
-    /// would land the task on the wrong branch (and a later push of the base
-    /// branch would silently publish nothing).
-    fn merge_into_base(&self, branch: &str, base_branch: &str) -> Result<(), OrchestratorError> {
-        let head = self
-            .git(&self.repo_path, &["symbolic-ref", "--short", "HEAD"])?
-            .trim()
-            .to_string();
-        if head != base_branch {
-            return Err(OrchestratorError::Git(format!(
-                "primary checkout is on {head:?}, not the base branch {base_branch:?} — \
-                 check out {base_branch:?} (or commit/stash your work) and approve again"
-            )));
-        }
-        // `--` stops option parsing so an option-shaped branch name can never be
-        // read by git as a flag (defense in depth alongside the adopt-time guard).
-        if let Err(merge_error) = self.git(&self.repo_path, &["merge", "--no-edit", "--", branch]) {
-            // A conflict leaves the primary checkout wedged mid-merge; abort it so
-            // the checkout returns to a clean base and later merges aren't poisoned.
-            // Best-effort — the merge failure is the error we surface either way.
-            if let Err(abort_error) = self.git(&self.repo_path, &["merge", "--abort"]) {
-                eprintln!(
-                    "merge_into_base {branch}: merge failed and abort also failed: {abort_error}"
-                );
-            }
-            return Err(merge_error);
-        }
-        Ok(())
-    }
-
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
-        run_git(dir, args)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_fixture::init_repo;
     use crate::mcp::DoneOutputs;
-
-    fn init_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@build.ing"]);
-        git(&["config", "user.name", "T"]);
-        std::fs::write(repo.join("README.md"), "# project\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
-        (dir, repo)
-    }
+    use std::process::Command;
 
     /// A warm "harness" that stays alive and drains stdin (it discards the
     /// prompt), like a real interactive CLI. Draining matters: a child that never
@@ -3256,7 +3214,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let worktree = orch
-            .create_bare_worktree("vanished", "main")
+            .create_bare_worktree("vanished", "main", Isolation::Worktree)
             .unwrap()
             .worktree;
         std::fs::remove_dir_all(&worktree.path).unwrap();
@@ -3365,8 +3323,6 @@ mod tests {
 
     // ---- Worktree adoption ----
 
-    use crate::worktree::discover_external_worktrees;
-
     /// Create a user worktree at `dir/<name>` on a new `branch` (cut from the
     /// primary HEAD) and return its discovered summary — the same shape the
     /// app layer resolves a `worktree_id` to.
@@ -3383,7 +3339,8 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        discover_external_worktrees(repo, "main", &std::collections::HashSet::new())
+        WorktreeManager::new(repo, dir.path().join("worktrees"))
+            .discover("main", &std::collections::HashSet::new())
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some(branch))
@@ -3744,7 +3701,7 @@ mod tests {
         })
         .unwrap();
         let prepared = orch
-            .prepare_run_checkout(&issue, "main", id, store)
+            .prepare_run_checkout(&issue, "main", id, Isolation::Worktree, store)
             .unwrap();
         orch.open_prepared_run(RunId::new(id), plan, prepared, Default::default())
             .unwrap()
@@ -5773,6 +5730,35 @@ mod tests {
         );
     }
 
+    /// git's failures reach the orchestrator through one door, keeping the
+    /// message the RPC surfaces the same one the child gave.
+    #[test]
+    fn a_failed_git_child_arrives_as_a_git_failure() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let failure: OrchestratorError = run_git(dir.path(), &["rev-parse", "--verify", "HEAD"])
+            .unwrap_err()
+            .into();
+
+        assert!(matches!(failure, OrchestratorError::Git(_)), "{failure}");
+        assert!(failure.to_string().contains("rev-parse"), "{failure}");
+    }
+
+    /// A refusal the manager composed itself is already the sentence to show:
+    /// wrapping it in a merge failure adds the prefix the web client keys on
+    /// and nothing else.
+    #[test]
+    fn a_refused_merge_reads_as_the_refusal_itself() {
+        let refusal = OrchestratorError::Worktree(WorktreeError::Refused(
+            "primary checkout is on \"elsewhere\"".to_string(),
+        ));
+
+        assert_eq!(
+            as_merge_failure(refusal).to_string(),
+            "merge_failed: primary checkout is on \"elsewhere\""
+        );
+    }
+
     #[tokio::test]
     async fn run_finishers_commit_merge_and_report_conflicts() {
         let (dir, repo) = init_repo();
@@ -5818,6 +5804,14 @@ mod tests {
             .run_approve_merge(&mut second)
             .expect_err("the second write conflicts");
         assert!(err.to_string().starts_with("merge_failed:"), "{err}");
+        assert!(
+            err.to_string().contains("CONFLICT"),
+            "a failed merge carries git's own words: {err}"
+        );
+        assert!(
+            !err.to_string().contains("git command failed"),
+            "the banner carries git's words alone, not the façade's prefix: {err}"
+        );
         assert_eq!(second.run.state, RunState::Review);
         assert!(
             !repo.join(".git/MERGE_HEAD").exists(),

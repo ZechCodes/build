@@ -18,6 +18,7 @@ import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
 import { chosenProviderId } from "../core/agentChoice.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
+import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
 import { loadModelCatalog } from "../app.js";
 import {
   catalogForProvider,
@@ -68,6 +69,7 @@ export async function renderSettings() {
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
     ${defaultHarnessPanelHtml()}
+    ${isolationPanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -103,7 +105,7 @@ export async function renderSettings() {
           .map(
             (p) => `
         <div class="projrow"><span class="pname">${esc(p.name)}</span>
-          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)}</span>
+          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)} · ${isolationLabel(p.isolation_effective)}</span>
           <span class="premote">${p.remote ? "⇄ " + esc(p.remote) : '<span class="dim">no remote</span>'}</span>
           <button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button></div>`,
           )
@@ -122,7 +124,9 @@ export async function renderSettings() {
     }
   };
   await refresh();
-  await mountDefaultHarness($("#root"), { callRpc: (method, params) => App.call(method, params) });
+  const callRpc = (method, params) => App.call(method, params);
+  await mountDefaultHarness($("#root"), { callRpc });
+  await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);

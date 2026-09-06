@@ -120,6 +120,9 @@ const pendingItem = (row) => ({
   project: row.project,
   title: row.title,
   branch: row.branch || null,
+  // How the checkout being cut is isolated, said the way the card that lands
+  // in this row's place says it. A verb cutting nothing names none.
+  isolation: row.isolation || null,
   pending: row.state,
   placeholder: true,
   working: true,

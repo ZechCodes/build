@@ -36,6 +36,19 @@ export function mergeActivityDigests(held = [], payload) {
   return [...byRun.values()].sort((a, b) => a.from_sequence - b.from_sequence);
 }
 
+/// The digest whose run covers a sequence, or nothing.
+///
+/// A run is keyed in the timeline by the oldest sequence the WINDOW holds of
+/// it, which is not where the run started whenever the page cut one — so what
+/// a run's digest is found by is the span it covers, never its first sequence.
+export function digestCovering(digests, sequence) {
+  return (
+    (digests || []).find(
+      (digest) => digest.from_sequence <= sequence && digest.through_sequence >= sequence,
+    ) || null
+  );
+}
+
 const sequenceOf = (activity) => (Number.isFinite(activity.sequence) ? activity.sequence : null);
 
 /// The span of the conversation a run in hand covers, or nothing for a run

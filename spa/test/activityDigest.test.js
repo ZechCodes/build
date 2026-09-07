@@ -7,7 +7,7 @@
 // hand.
 
 import { describe, expect, it } from "vitest";
-import { activityRunSummary, firstLine, mergeActivityDigests } from "../src/core/activityDigest.js";
+import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "../src/core/activityDigest.js";
 
 const digest = (from, through, toolCalls, lastToolCall = null) => ({
   from_sequence: from,
@@ -290,5 +290,25 @@ describe("the line of a summary", () => {
   it("is the first line with anything on it", () => {
     expect(firstLine("\n\nBash(cargo test)\n→ 412 passed")).toBe("Bash(cargo test)");
     expect(firstLine("")).toBe("");
+  });
+});
+
+// A run's key is the oldest sequence the WINDOW holds of it, which is not
+// where the run started when the page cut it. So the pane finds a run's digest
+// by what it covers, never by its first sequence.
+describe("the digest over a sequence", () => {
+  it("answers the digest whose run covers it, at either end of the span", () => {
+    const digests = [digest(1, 40, 12), digest(120, 870, 300)];
+
+    expect(digestCovering(digests, 400)).toBe(digests[1]);
+    expect(digestCovering(digests, 120)).toBe(digests[1]);
+    expect(digestCovering(digests, 870)).toBe(digests[1]);
+    expect(digestCovering(digests, 40)).toBe(digests[0]);
+  });
+
+  it("answers nothing for a sequence no digest reaches", () => {
+    expect(digestCovering([digest(1, 40, 12)], 900)).toBe(null);
+    expect(digestCovering([], 900)).toBe(null);
+    expect(digestCovering(null, 900)).toBe(null);
   });
 });

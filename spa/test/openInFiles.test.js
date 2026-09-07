@@ -9,25 +9,13 @@ import { resolve } from "node:path";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { createReviewPlug } from "../src/core/changesReview.js";
 import { renderFilesTab } from "../src/views/files.js";
+import { worktreeOf } from "./gitWireFixture.js";
 
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -12,2 +12,2 @@\n-old\n+${line}\n`;
 
-const status = (over = {}) => ({
-  branch: "main",
-  head: "f".repeat(40),
-  repo_state: "clean",
-  upstream: "origin/main",
-  ahead: 0,
-  behind: 0,
-  stash_count: 0,
-  files: [{ path: "src/a.js", staged: "none", index_status: "M", worktree_status: "M" }],
-  files_truncated: false,
-  stat: { files_changed: 1, insertions: 1, deletions: 1 },
-  patch: patchFor("src/a.js", "first"),
-  truncated: false,
-  ...over,
-});
+const tree = worktreeOf({ "src/a.js": "first" }, { patchOf: patchFor });
+const status = (over = {}) => tree.status(over);
 
 const log = () => ({ branch: "main", commits: [], more: false });
 
@@ -55,8 +43,9 @@ describe("the control in a file's head", () => {
     const opened = [];
     const container = document.createElement("div");
     document.body.appendChild(container);
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return status();
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       return {};
     });
@@ -78,8 +67,9 @@ describe("the control in a file's head", () => {
   it("offers none where the surface has nowhere to send the reader", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return status();
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       return {};
     });

@@ -8,24 +8,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { createReviewPlug, REVIEW_POLL_MS } from "../src/core/changesReview.js";
 
-const patchFor = (path, line) =>
-  `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n`;
+import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
-const status = (over = {}) => ({
-  branch: "main",
-  head: "f".repeat(40),
-  repo_state: "clean",
-  upstream: "origin/main",
-  ahead: 0,
-  behind: 0,
-  stash_count: 0,
-  files: [{ path: "src/a.js", staged: "none", index_status: "M", worktree_status: "M" }],
-  files_truncated: false,
-  stat: { files_changed: 1, insertions: 1, deletions: 1 },
-  patch: patchFor("src/a.js", "first"),
-  truncated: false,
-  ...over,
-});
+let tree = worktreeOf({ "src/a.js": "first" });
+const status = (over = {}) => tree.status(over);
 
 const log = () => ({
   branch: "main",
@@ -58,6 +44,7 @@ const click = async (element) => {
 const fileOf = (root, path) => root.querySelector(`.file[data-key$=":${path}"]`);
 
 beforeEach(() => {
+  tree = worktreeOf({ "src/a.js": "first" });
   document.body.innerHTML = "";
 });
 
@@ -70,8 +57,9 @@ describe("the Changes pane's folds", () => {
   const mount = async (served) => {
     const container = document.createElement("div");
     document.body.appendChild(container);
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return served.status;
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       if (method === "git.show") return show();
       return {};
@@ -88,7 +76,8 @@ describe("the Changes pane's folds", () => {
     await click(fileOf(container, "src/a.js").querySelector("td.code"));
     expect(fileOf(container, "src/a.js").classList.contains("capped")).toBe(false);
 
-    served.status = status({ patch: patchFor("src/a.js", "the agent moved on"), head: "e".repeat(40) });
+    tree.write("src/a.js", "the agent moved on");
+    served.status = status({ head: "e".repeat(40) });
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
     expect(container.textContent).toContain("the agent moved on");

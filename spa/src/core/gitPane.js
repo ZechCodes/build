@@ -34,8 +34,10 @@ import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { createFileFolds, parseDiff, pathOf } from "./diff.js";
-import { diffStackEntries, stackClaims } from "./diffRender.js";
-import { fileViewFromParsedFile } from "./fileEntries.js";
+import { stackClaims } from "./diffRender.js";
+import { fileStackEntries, fileViewFromParsedFile, fileViewFromStatus, openFilePaths } from "./fileEntries.js";
+import { createFileDiffs, wholePatch } from "./fileDiffs.js";
+import { timedPaint } from "./paintTiming.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
@@ -215,36 +217,33 @@ export function repoStateBanner(repoState) {
   return null;
 }
 
-/** The repaint-freeze key for one poll's payloads: HEAD + branch + the status
- *  patch + every file's stage state + the visible commit page, PLUS the additive
- *  v2 sync fields (repo_state/upstream/ahead/behind/stash_count) so an
- *  out-of-band ref move — a terminal `git fetch` shifting `behind` with no local
- *  HEAD/file change — still repaints the toolbar chips and state banner.
- *  Unchanged key → the poll leaves the DOM (and the user's checkbox focus) alone. */
+/** The repaint-freeze key for one poll's payloads: the bridge's own status_key
+ *  — a hash over everything a repaint depends on, branch and HEAD and repo state
+ *  and every file's stage state and content key — plus the visible commit page.
+ *  Unchanged key → the poll leaves the DOM (and the user's caret) alone.
+ *
+ *  The status carries no patch any more: a file's body is fetched on its own and
+ *  keyed by its content key, so what moved in the working tree reaches the key
+ *  through the shape rather than through a megabyte of diff. */
 export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
-  const files = (status.files || [])
-    .map((f) => [f.path, f.staged, f.index_status, f.worktree_status].join("\x01"))
-    .join("\x02");
   const commits = ((log && log.commits) || []).map((c) => c.hash).join(",");
   // A coarse minute bucket: relative commit ages re-render at most once a
   // minute even when the repo itself is untouched.
   const minuteBucket = Math.floor(nowSeconds / 60);
-  return [
-    status.branch,
-    status.head,
-    status.truncated,
-    Boolean(status.files_truncated),
-    status.patch,
-    files,
-    commits,
-    Boolean(log && log.more),
-    status.repo_state,
-    status.upstream,
-    status.ahead,
-    status.behind,
-    status.stash_count,
-    minuteBucket,
-  ].join("\x03");
+  return [status.status_key, commits, Boolean(log && log.more), minuteBucket].join("\x03");
+}
+
+/** What to ask git.status with: the key the pane already holds, so a repo that
+ *  has not moved answers `{ unchanged: true }` and the bridge never renders a
+ *  diff nobody asked for. A pane holding no status asks for the whole shape. */
+export function ifStatusKey(status) {
+  return status && status.status_key ? { if_status_key: status.status_key } : {};
+}
+
+/** The status the pane holds after one poll: the shape it was handed, or the
+ *  one it already had when the bridge says the key it was sent still stands. */
+export function statusAfterPoll(answer, held) {
+  return answer && answer.unchanged ? held : answer;
 }
 
 /** The stash key for a scope's in-progress commit-message draft: drafts live in
@@ -416,6 +415,9 @@ export function mountGitPane(
     const address = cacheAddress(kind, sub);
     if (address) writeCached(address, value); // fire and forget — never awaited
   };
+  // The uncommitted changeset's bodies: git.status names the files and what each
+  // one holds, and each file's diff is fetched, cached and answered on its own.
+  const fileDiffs = createFileDiffs({ deviceId: cacheDeviceId(), entityId: cacheEntityId, scope, call: callRpc });
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
   let inFlightActions = 0; // commit/discard/sync RPCs currently awaited
   let scopeErrorShown = null; // the terminal scope error currently rendered
@@ -430,10 +432,10 @@ export function mountGitPane(
   const triageProject = projectId || (scope && scope.project_id) || null;
   let trustDial = loadTrustDial(triageProject);
   // Re-review memory, per changeset: what the reviewer saw when they last sent
-  // comments on it, so the next pass can mark what moved. renderedFiles is the
-  // freshest parsed diff of the OPEN changeset, which is what a stamp is of.
+  // comments on it, so the next pass can mark what moved. renderedViews is the
+  // OPEN changeset's files as the stack draws them, which is what a stamp is of.
   let reviewStamps = new Map();
-  let renderedFiles = [];
+  let renderedViews = [];
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
@@ -554,7 +556,7 @@ export function mountGitPane(
           });
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
-          reviewStamps = stampChangeset(reviewStamps, selected, renderedFiles.map(fileViewFromParsedFile));
+          reviewStamps = stampChangeset(reviewStamps, selected, renderedViews);
         },
         revisionId,
         onChange: () => render(),
@@ -578,59 +580,99 @@ export function mountGitPane(
     };
   };
 
-  /** The one renderer for every changeset: a header, the stacked full file
-   *  diffs (noise collapsed into its group at the bottom), and — where the
-   *  surface can talk to an agent — the pending-comment tray. */
+  /** The uncommitted changeset's files as the stack draws them: shape from the
+   *  status, bodies from the per-file cache. */
+  const uncommittedViews = () => (lastStatus.files || []).map(fileViewFromStatus);
+
+  /** The one renderer for every changeset: a header, the stacked file diffs in
+   *  the folds the reader put them in (noise collapsed into its group at the
+   *  bottom), and — where the surface can talk to an agent — the pending-comment
+   *  tray. */
   const renderChangeset = (detailHost) => {
     const folds = foldsOfOpenChangeset();
     // Every stack carries the same re-review chip: a file that moved since the
     // reviewer last sent comments on THIS changeset says so.
-    const stackFor = (files, patch) => ({
+    const stackFor = (views, patch) => ({
       commentable,
       openable: Boolean(openFile),
       noiseExpanded: noiseExpanded.has(String(selected)),
       folds,
-      changedSince: changedSinceChangeset(reviewStamps, selected, files.map(fileViewFromParsedFile)),
+      changedSince: changedSinceChangeset(reviewStamps, selected, views),
       // Review prioritization, on the changeset the reviewer has open — the
       // rail is never reordered, only the stack under it. A surface with no run
-      // behind it has no pass to read and takes the plain stack.
-      review: triageOverlay(patch),
+      // behind it has no pass to read, and a stack whose bodies are still
+      // arriving has no whole patch to read one from, so both draw plain.
+      review: patch === null ? null : triageOverlay(patch),
     });
     if (selected === "uncommitted") {
-      const files = parseDiff(lastStatus.patch);
-      renderedFiles = hasUncommittedChanges(lastStatus) ? files : [];
+      renderedViews = hasUncommittedChanges(lastStatus) ? uncommittedViews() : [];
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
       paintChangeset(detailHost, {
         bar: uncommittedHeaderHtml(lastStatus),
-        files: renderedFiles,
-        stackOptions: { ...stackFor(renderedFiles, lastStatus.patch), fileMenu, empty: "No uncommitted changes." },
+        views: renderedViews,
+        stackOptions: {
+          ...stackFor(renderedViews, wholePatch(lastStatus, fileDiffs.bodyOf)),
+          fileMenu,
+          bodyOf: fileDiffs.bodyOf,
+          empty: "No uncommitted changes.",
+        },
       });
       return;
     }
     const detail = showCache.get(selected);
     if (!detail) {
-      renderedFiles = [];
+      renderedViews = [];
       detailHost.innerHTML = '<div class="empty cdetail-loading">loading…</div>';
       return;
     }
-    const commitFiles = parseDiff(detail.patch);
-    renderedFiles = commitFiles;
+    // A commit's patch comes whole in its payload, so its files carry their own
+    // rows and need no body fetched for them.
+    renderedViews = parseDiff(detail.patch).map(fileViewFromParsedFile);
     paintChangeset(detailHost, {
       bar: commitHeaderHtml(detail),
-      files: commitFiles,
-      stackOptions: stackFor(commitFiles, detail.patch),
+      views: renderedViews,
+      stackOptions: stackFor(renderedViews, detail.patch),
     });
   };
 
-  const paintChangeset = (detailHost, { bar, files, stackOptions = {} }) => {
+  const paintChangeset = (detailHost, { bar, views, stackOptions = {} }) => {
     paintChangesetInto({
       bar,
-      entries: diffStackEntries(files, stackOptions),
+      entries: fileStackEntries(views, stackOptions),
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
     if (commentLayer) commentLayer.attach(detailHost);
+  };
+
+  /** Keep the open files' bodies current against the shape the pane holds, and
+   *  repaint when any land. Fetching is the pane's job, never the render's. */
+  const refreshBodies = () => {
+    if (disposed || !lastStatus || selected !== "uncommitted") return;
+    const views = uncommittedViews();
+    fileDiffs
+      .sync({
+        status: lastStatus,
+        openPaths: openFilePaths(views, { folds: foldsOfOpenChangeset() }),
+        triaged: Boolean(currentTriage()),
+      })
+      .then(
+        (filled) => {
+          if (filled && !disposed) render();
+        },
+        (error) => {
+          // A poll failure is transient and retried; a scope that no longer
+          // resolves is the same terminal error git.status reports.
+          if (!disposed && isPermanentGitScopeError(error && error.message)) renderScopeError(error.message);
+        },
+      );
+  };
+
+  /** Paint what is held, then ask for whatever the paint found missing. */
+  const renderAndFetch = () => {
+    render();
+    refreshBodies();
   };
 
   /** The commit box: disclosed only while uncommitted changes exist, and only
@@ -710,16 +752,18 @@ export function mountGitPane(
         reviewMounted = false;
         detailHost.innerHTML = "";
       }
-      paintKeepingPlace(
-        detailHost,
-        () => {
-          if (selected === null || selected === undefined) {
-            detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
-            return;
-          }
-          renderChangeset(detailHost);
-        },
-        DIFF_PLACE_KEEPING,
+      timedPaint("changes", () =>
+        paintKeepingPlace(
+          detailHost,
+          () => {
+            if (selected === null || selected === undefined) {
+              detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
+              return;
+            }
+            renderChangeset(detailHost);
+          },
+          DIFF_PLACE_KEEPING,
+        ),
       );
     }
     renderCommitBox();
@@ -795,7 +839,7 @@ export function mountGitPane(
     // may be gone) — matching "any repaint resets the pending confirm".
     clearConfirm();
     renderedKey = pollKeyNow(lastStatus, lastLog);
-    render();
+    renderAndFetch();
   };
 
   /** Refetch both payloads and repaint unconditionally (post-action refresh). */
@@ -911,7 +955,7 @@ export function mountGitPane(
     selected = sel;
     clearConfirm();
     fileMenuPath = null; // a menu belongs to the changeset it was opened on
-    render();
+    renderAndFetch();
     if (sel !== "review" && sel !== "uncommitted" && !showCache.has(sel)) fetchShow(sel);
   };
 
@@ -1159,7 +1203,7 @@ export function mountGitPane(
       comments: () => (reviewMounted ? null : commentLayer),
       openFile: () => openFile,
       folds: () => (reviewMounted ? null : foldsOfOpenChangeset()),
-      repaint: render,
+      repaint: renderAndFetch,
     }),
   ];
 
@@ -1186,7 +1230,10 @@ export function mountGitPane(
     if (disposed) return;
     let status, log;
     try {
-      [status, log] = await Promise.all([callRpc("git.status", { ...scope }), callRpc("git.log", { ...scope })]);
+      [status, log] = await Promise.all([
+        callRpc("git.status", { ...scope, ...ifStatusKey(lastStatus) }),
+        callRpc("git.log", { ...scope }),
+      ]);
     } catch (e) {
       // Permanent scope errors (pruned task, removed project) never recover —
       // surface them instead of "loading…" forever; everything else is
@@ -1196,6 +1243,7 @@ export function mountGitPane(
     }
     if (disposed) return;
     scopeErrorShown = null; // recovered — the next render paints normally
+    status = statusAfterPoll(status, lastStatus);
     if (lastHead !== undefined && status.head !== lastHead) {
       extraCommits = []; // HEAD moved — the paged-in history is stale
       pagedMore = null;
@@ -1203,9 +1251,9 @@ export function mountGitPane(
     lastHead = status.head;
     lastStatus = status;
     lastLog = log;
-    // Every live poll writes through, with the uncommitted patch emptied — the
-    // dirty file list and its weights are synced, the diff loads on demand.
-    writeThroughCache("status", { ...status, patch: "" });
+    // Every live poll writes the shape through as received: it carries no patch
+    // to strip, and each file's body is its own record.
+    writeThroughCache("status", status);
     writeThroughCache("log", log);
     // Where the surface opens is a function of what it has to show: the first
     // status picks it, and an empty selection falls back to the same place
@@ -1243,7 +1291,7 @@ export function mountGitPane(
     )
       return;
     renderedKey = key;
-    render();
+    renderAndFetch();
   };
 
   // A press anywhere outside the pane dismisses a live interaction (an armed
@@ -1275,7 +1323,7 @@ export function mountGitPane(
     lastStatus = cachedStatus;
     lastLog = cachedLog;
     if (selected === undefined) selected = defaultSelection();
-    render();
+    renderAndFetch();
   };
 
   seedFromCache();
@@ -1303,6 +1351,7 @@ export function mountGitPane(
         drawer.dispose();
         drawer = null;
       }
+      fileDiffs.dispose();
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();
       container.onclick = null;

@@ -89,6 +89,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   sync.stopCacheSync();
+  delete globalThis.requestIdleCallback;
 });
 
 describe("following the feed", () => {
@@ -150,7 +151,25 @@ describe("keeping active branches warm", () => {
     expect(App.call).toHaveBeenCalledWith("git.diff", { run_id: "run-1", paths: ["src/a.js"] });
     const body = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" });
     expect(body.value.patch).toBe(patchFor("src/a.js", "new line"));
-    delete globalThis.requestIdleCallback;
+  });
+
+  it("keeps syncing an entity whose idle turn never comes", async () => {
+    const idleNeverRun = [];
+    globalThis.requestIdleCallback = (work) => idleNeverRun.push(work);
+    App.call = vi.fn(async (method, params) => {
+      if (method === "git.status") return warmStatus();
+      if (method === "git.diff") return warmTree.diff(params);
+      if (method === "git.log") return { commits: [], more: false };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(idleNeverRun.length).toBeGreaterThan(0);
+
+    App.call.mockClear();
+    registeredWatchers.find((watcher) => watcher.entity === "run-1").refresh();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
   });
 
   it("asks for no body it already holds, and never more than one call's worth", async () => {

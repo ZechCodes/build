@@ -387,6 +387,7 @@ export function mountGitPane(
   const openFile = (navigate && navigate.openFile) || null;
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
+  let bodiesUnpainted = false; // a file body landed while a repaint was held
   let lastStatus = null;
   let lastLog = null; // the poll's first page (limit default)
   let lastHead; // undefined until the first poll lands
@@ -647,7 +648,9 @@ export function mountGitPane(
   };
 
   /** Keep the open files' bodies current against the shape the pane holds, and
-   *  repaint when any land. Fetching is the pane's job, never the render's. */
+   *  repaint when any land. Fetching is the pane's job, never the render's. A
+   *  body that lands while a repaint is held stays unpainted news until the
+   *  next turn the pane is free to paint. */
   const refreshBodies = () => {
     if (disposed || !lastStatus || selected !== "uncommitted") return;
     const views = uncommittedViews();
@@ -659,11 +662,14 @@ export function mountGitPane(
       })
       .then(
         (filled) => {
-          if (filled && !disposed) render();
+          if (!filled || disposed) return;
+          bodiesUnpainted = repaintHeld({ keyUnchanged: false });
+          if (!bodiesUnpainted) render();
         },
         (error) => {
-          // A poll failure is transient and retried; a scope that no longer
-          // resolves is the same terminal error git.status reports.
+          // A body fetch failure is transient — the next turn asks again; a
+          // scope that no longer resolves is the terminal error git.status
+          // reports.
           if (!disposed && isPermanentGitScopeError(error && error.message)) renderScopeError(error.message);
         },
       );
@@ -1225,7 +1231,28 @@ export function mountGitPane(
     container.innerHTML = `<div class="gitpane"><div class="empty giterror">${esc(message)}</div></div>`;
   };
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 19, cap 10 — reduce it, then drop this line
+  /** An interaction a repaint would clobber: an armed confirm, an open file or
+   *  split menu somebody is reaching into, or a review in progress (pending
+   *  comments, an open popover, typed general text). Each closes itself on a
+   *  press outside, so none can hold a paint longer than the reach. */
+  const interactionLive = () =>
+    Boolean(pendingConfirm) ||
+    fileMenuPath !== null ||
+    Boolean(container.querySelector(".splitmenu:not([hidden])")) ||
+    Boolean(commentLayer && commentLayer.busy());
+
+  /** Whether the pane must keep its hands off the DOM right now — asked by every
+   *  paint the pane does on its own initiative, not just the poll's. */
+  const repaintHeld = ({ keyUnchanged }) =>
+    pollRenderFrozen({
+      paneRendered: Boolean(container.querySelector(".gitpane .changes2")),
+      keyUnchanged,
+      draftActive: draftBusy(),
+      actionInFlight: inFlightActions > 0,
+      interactionActive: interactionLive(),
+    });
+
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
   const poll = async () => {
     if (disposed) return;
     let status, log;
@@ -1259,39 +1286,24 @@ export function mountGitPane(
     // status picks it, and an empty selection falls back to the same place
     // afterwards.
     selected = selected === undefined ? defaultSelection() : selectionAfterPoll(selected, status, { review });
+    // Every turn asks for whatever the open files are missing, freeze or not: a
+    // body fetch that failed leaves the shape where it was, so a retry gated on
+    // the shape moving would never come. A quiet repo asks for nothing.
+    refreshBodies();
     // An abandoned confirm auto-expires: past the TTL the poll disarms it and
     // forces a repaint (S2c), so a destructive verb never stays one click from
     // firing — and the interactionActive freeze it caused is released too.
     const expired = confirmExpired(armedAt, Date.now());
     if (expired) clearConfirm();
     const key = pollKeyNow(status, log);
-    const rendered = container.querySelector(".gitpane .changes2");
-    // Freeze while unchanged, while the user is drafting a commit message, while
-    // any action RPC is in flight, or while an interaction is live: an armed
-    // confirm, an open file menu, or a review in progress (pending comments, an
-    // open popover, typed general text) a repaint would clobber. A just-expired
+    // Freeze while nothing has moved, while the user is drafting a commit
+    // message, while any action RPC is in flight, or while an interaction is
+    // live. A body that landed unpainted is something that moved; a just-expired
     // confirm bypasses the freeze so its armed label actually clears.
-    if (
-      !expired &&
-      pollRenderFrozen({
-        paneRendered: Boolean(rendered),
-        keyUnchanged: key === renderedKey,
-        draftActive: draftBusy(),
-        actionInFlight: inFlightActions > 0,
-        interactionActive:
-          Boolean(pendingConfirm) ||
-          fileMenuPath !== null ||
-          // A split button's menu (Commit, Pull, Push, Stash) is open because
-          // somebody is reaching into it, and the repaint that rebuilds the
-          // toolbar would shut it. It closes itself on any press outside, so
-          // this can never hold the poll for longer than the reach.
-          Boolean(container.querySelector(".splitmenu:not([hidden])")) ||
-          Boolean(commentLayer && commentLayer.busy()),
-      })
-    )
-      return;
+    if (!expired && repaintHeld({ keyUnchanged: key === renderedKey && !bodiesUnpainted })) return;
     renderedKey = key;
-    renderAndFetch();
+    bodiesUnpainted = false;
+    render();
   };
 
   // A press anywhere outside the pane dismisses a live interaction (an armed

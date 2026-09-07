@@ -45,6 +45,21 @@ const pathsAsked = (calls) => calls.filter((call) => call.method === "git.diff")
 const fileOf = (container, path) => [...container.querySelectorAll(".file")].find((file) => file.dataset.key.endsWith(path));
 const rowsIn = (element) => element.querySelectorAll("tr").length;
 
+/** A bridge that refuses the first body it is asked for — busy, or a connection
+ *  blip — and answers every one after it, while the shape never moves. */
+function refusingTheFirstBody(tree) {
+  const held = tree.status();
+  let refused = false;
+  return {
+    "git.status": (params) => (params.if_status_key === held.status_key ? unchangedStatus(held) : held),
+    "git.diff": (params) => {
+      if (refused) return tree.diff(params);
+      refused = true;
+      return Promise.reject(new Error("bridge busy"));
+    },
+  };
+}
+
 beforeEach(() => {
   document.body.innerHTML = "";
 });
@@ -126,6 +141,37 @@ describe("the shape and its bodies", () => {
     await click(head()); // shut → open, which is when the body is worth having
     expect(pathsAsked(calls)).toEqual([["src/a.js"]]);
     expect(container.textContent).toContain("the agent moved on");
+    pane.dispose();
+  });
+
+  it("asks again after a body fetch fails, even though the shape has not moved", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const tree = worktreeOf({ "src/a.js": "new line" });
+    const { container, pane, calls } = await mount({ tree, answers: refusingTheFirstBody(tree) });
+    expect(container.textContent).toContain("loading…");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(pathsAsked(calls)).toEqual([["src/a.js"], ["src/a.js"]]);
+    expect(container.textContent).toContain("new line");
+    pane.dispose();
+  });
+
+  it("paints a body that landed while the reader was mid-draft on the next free turn", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const tree = worktreeOf({ "src/a.js": "new line" });
+    const { container, pane } = await mount({ tree, answers: refusingTheFirstBody(tree) });
+    const draft = container.querySelector(".gitmsg");
+    draft.value = "a commit message being typed";
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(container.textContent).not.toContain("new line"); // the draft holds the repaint
+
+    draft.value = "";
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(container.textContent).toContain("new line");
     pane.dispose();
   });
 

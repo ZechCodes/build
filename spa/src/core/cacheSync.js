@@ -127,12 +127,17 @@ async function refreshGitState(deviceId, entityId, scope) {
   }
 }
 
-/** Run `work` when the tab has nothing better to do — or, where the browser
- *  offers no idle callback, on the next turn. */
+/** How long an idle turn may be waited for before the work is done anyway: a
+ *  busy or hidden tab may never go idle, and a warm that never runs is a warm
+ *  that never fills the cache. */
+const IDLE_DEADLINE_MS = 2000;
+
+/** Run `work` when the tab has nothing better to do — by the deadline at the
+ *  latest, or, where the browser offers no idle callback, on the next turn. */
 function whenIdle(work) {
   return new Promise((resolve, reject) => {
     const run = () => Promise.resolve().then(work).then(resolve, reject);
-    if (typeof requestIdleCallback === "function") requestIdleCallback(run);
+    if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: IDLE_DEADLINE_MS });
     else setTimeout(run, 0);
   });
 }
@@ -152,7 +157,9 @@ async function warmFileDiffs(deviceId, entityId, scope, status) {
 }
 
 /** Re-read one active entity into the cache: a branch's git state and the
- *  bodies it names, and every conversation that was ever warmed on it. */
+ *  bodies it names, and every conversation that was ever warmed on it. The warm
+ *  waits for an idle turn, so it runs alongside the refresh rather than inside
+ *  it — an entity whose tab never goes idle still syncs on the next tick. */
 async function refreshEntity(entityId) {
   const deviceId = deviceIdNow();
   const row = activeRows.get(entityId);
@@ -164,7 +171,7 @@ async function refreshEntity(entityId) {
       const status = await refreshGitState(deviceId, entityId, scope);
       await refreshTrees(deviceId, entityId, scope);
       await refreshDiff(deviceId, entityId, row);
-      if (status) await warmFileDiffs(deviceId, entityId, scope, status);
+      if (status) void warmFileDiffs(deviceId, entityId, scope, status);
     }
     await refreshThreads(deviceId, entityId, row);
   } finally {

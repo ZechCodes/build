@@ -3,6 +3,8 @@
 // A collapsed file costs a header and a peek; an open one costs its diff.
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   COLLAPSED_PREVIEW_ROWS,
   fileEntry,
@@ -131,6 +133,50 @@ describe("fileEntry", () => {
     const parsed = parseDiff(patchFor("src/b.js", 4))[0];
     const { html } = fileEntry(fileViewFromParsedFile(parsed), { fold: "open" });
     expect(rowCount(html)).toBe(7);
+  });
+});
+
+// The peek is markup only if the sheet lets it through: the collapse rule hides
+// the full body, and the box the peek sits in must not be that box.
+const stylesSource = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8").replace(
+  /\/\*[\s\S]*?\*\//g,
+  "",
+);
+
+/** What a rule body settles on for one property, the way the cascade does. */
+const declarationOf = (body, property) =>
+  body
+    .split(";")
+    .map((piece) => piece.split(":"))
+    .filter((piece) => piece.length === 2 && piece[0].trim() === property)
+    .map((piece) => piece[1].trim())
+    .pop() || null;
+
+const collapsedSelectorsWhere = (property, value) =>
+  [...stylesSource.matchAll(/([^{}@;]+)\{([^{}]*)\}/g)]
+    .map((rule) => ({ selector: rule[1].trim().replace(/\s+/g, " "), body: rule[2] }))
+    .filter((rule) => rule.selector.startsWith(".file.collapsed ") && declarationOf(rule.body, property) === value)
+    .map((rule) => rule.selector);
+
+/** The class of the box a file's body — its table, or the line that stands in
+ *  for one — is drawn in. */
+const bodyBoxOf = (html) => html.match(/<div class="([^"]+)">(?:<table>|<div class="dload">)/)[1];
+
+describe("the collapsed peek", () => {
+  const view = () => fileViewFromStatus(statusFile("src/a.js"));
+
+  it.each([
+    ["its cached rows", bodyFor("src/a.js", 20)],
+    ["its expand affordance", undefined],
+  ])("draws %s in a box the collapse rule leaves on screen", (_unused, body) => {
+    const box = bodyBoxOf(fileEntry(view(), { fold: "shut", body }).html);
+    expect(collapsedSelectorsWhere("display", "none")).not.toContain(`.file.collapsed .${box}`);
+    expect(collapsedSelectorsWhere("display", "block")).toContain(`.file.collapsed .${box}`);
+  });
+
+  it("leaves the full body in the box the collapse rule hides", () => {
+    const box = bodyBoxOf(fileEntry(view(), { fold: "open", body: bodyFor("src/a.js", 20) }).html);
+    expect(collapsedSelectorsWhere("display", "none")).toContain(`.file.collapsed .${box}`);
   });
 });
 

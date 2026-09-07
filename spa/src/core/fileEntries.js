@@ -13,7 +13,7 @@
 // a hash of its own rows.
 
 import { fileKey, parseDiff } from "./diff.js";
-import { diffStackEntries, fileBodyHtml, fileFoldOf, fileFrameHtml } from "./diffRender.js";
+import { diffStackEntries, fileBodyHtml, fileFoldOf, fileFrameHtml, fileNoticeHtml, filePeekHtml } from "./diffRender.js";
 import { bodyMatches } from "./fileDiffs.js";
 import { hashFileRows } from "./reviewMemory.js";
 
@@ -66,14 +66,12 @@ function rowsOf(view, body) {
   return parsed ? parsed.rows : [];
 }
 
-const noBodyHtml = (label) => `<div class="dscroll"><div class="dload">${label}</div></div>`;
-
 const previewOf = (file) => ({ ...file, rows: file.rows.slice(0, COLLAPSED_PREVIEW_ROWS) });
 
 function foldedBodyHtml(file, fold, options) {
   const collapsed = fold === SHUT;
-  if (!file.rows) return noBodyHtml(collapsed ? "expand to load this file" : "loading…");
-  return fileBodyHtml(collapsed ? previewOf(file) : file, options);
+  if (!file.rows) return fileNoticeHtml(collapsed ? "expand to load this file" : "loading…");
+  return collapsed ? filePeekHtml(previewOf(file), options) : fileBodyHtml(file, options);
 }
 
 /** One file's entry for the keyed list: its key, and the html of it in the fold

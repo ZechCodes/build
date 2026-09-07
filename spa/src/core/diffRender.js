@@ -160,13 +160,34 @@ export function fileHeadHtml(file, options) {
         <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChipHtml(file, options.changedSince)}${viewedToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</div>`;
 }
 
-/** One file's diff table, every row of it. */
-export function fileBodyHtml(file, options) {
-  return `<div class="dscroll"><table>${diffRowsHtml(file.rows, langForPath(file.path), {
+// The two boxes a file's body can sit in: the scrolling one the collapse rule
+// hides, and the peek it leaves on screen.
+const BODY_BOX = "dscroll";
+const PEEK_BOX = "dpeek";
+
+function diffTableBoxHtml(boxClass, file, options) {
+  return `<div class="${boxClass}"><table>${diffRowsHtml(file.rows, langForPath(file.path), {
           maskDotenv: isDotenvPath(file.path),
           hunkMarks: file.triageHunks || null,
           overridable: options.overridable,
         })}</table></div>`;
+}
+
+/** One file's diff table, every row of it, in the box the collapse rule hides. */
+export function fileBodyHtml(file, options) {
+  return diffTableBoxHtml(BODY_BOX, file, options);
+}
+
+/** The rows a collapsed file keeps on screen: the same table in the box that
+ *  survives the collapse — a peek is what a folded file is for. */
+export function filePeekHtml(file, options) {
+  return diffTableBoxHtml(PEEK_BOX, file, options);
+}
+
+/** What a file shows where its rows are not there to show: one dim line, in the
+ *  peek's box, so a collapsed file says how to get them. */
+export function fileNoticeHtml(label) {
+  return `<div class="${PEEK_BOX}"><div class="dload">${esc(label)}</div></div>`;
 }
 
 /** A file's header and the caller's choice of body, in the fold the reader put

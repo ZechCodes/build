@@ -2642,16 +2642,13 @@ impl Thread {
             .collect();
         let reached = older.len() - page_span(older.iter().rev().copied(), limit);
         let span: Vec<&ThreadItem> = older[reached..].iter().rev().copied().collect();
-        // The census is exact off the resident tail because every run on a page
-        // answered from memory lies entirely inside it: such a page has
-        // `page_reaches_stored_history() == false`, so its limit-th message is
-        // resident and a message ends the oldest run — or the walk reached the
-        // start of the conversation, where there is nothing below it at all.
-        debug_assert!(
-            reached + self.earlier_item_count as usize == 0
-                || span.last().is_none_or(|oldest| !oldest.is_activity()),
-            "a memory page whose oldest walked item is activity cannot count its own run"
-        );
+        // The census is exact over the span every digest NAMES, because the
+        // walk never leaves the resident tail: nothing in `[from, through]`
+        // sits under it. A digest covers a WHOLE run when the walk reached a
+        // message, which is what the page gate buys — a page memory answers
+        // has `page_reaches_stored_history() == false`, so its limit-th
+        // message is resident and a message ends the oldest run. A conversation
+        // shorter than the limit is reached whole and has nothing below it.
         let census = |from: u64, through: u64| {
             Ok::<u64, std::convert::Infallible>(
                 self.items
@@ -3556,6 +3553,26 @@ mod counted_page_tests {
         let digests = page["activity_digests"].as_array().unwrap();
         assert_eq!(digests[0]["tool_calls"], 0, "{digests:?}");
         assert!(digests[0]["last_tool_call"].is_null(), "{digests:?}");
+    }
+
+    /// The run still open at the end of a conversation is digested through the
+    /// thread's last sequence, not through some item inside it: a client
+    /// holding only the page can tell exactly which arrivals the digest has
+    /// already counted and which it must add itself.
+    #[test]
+    fn the_open_tail_runs_digest_reaches_the_threads_last_sequence() {
+        let thread = conversation_with_activity(6, 4);
+
+        let page = thread.wire_value_page(None, 2);
+        let digests = page["activity_digests"].as_array().unwrap();
+        let tail = digests.last().expect("the open run has a digest");
+        assert_eq!(tail["through_sequence"], thread.last_sequence(), "{tail:?}");
+        assert_eq!(tail["tool_calls"], 4, "{tail:?}");
+        assert_eq!(
+            tail["last_tool_call"]["sequence"],
+            thread.last_sequence(),
+            "{tail:?}"
+        );
     }
 
     /// What a sequence-paging client relies on: pages abut at their seeks, so

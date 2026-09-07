@@ -5934,7 +5934,7 @@ impl AppState {
             }
             Some(after_sequence) => thread.wire_value_after(after_sequence),
             None => match thread_detail(params) {
-                ThreadDetail::Page(limit) => thread.wire_value_page(None, limit),
+                ThreadDetail::Page(limit) => self.thread_page_at(thread, None, limit)?,
                 _ => thread.wire_value(),
             },
         }))
@@ -11490,14 +11490,44 @@ impl AppState {
         let entity_id = conversation_owner_param(params)?;
         let thread = self.agent_conversation(&entity_id, addressed_agent(params).as_deref())?;
         let before = params.get("before_sequence").and_then(Value::as_u64);
-        let limit = thread_page_limit(params);
-        // A conversation is loaded as its tail, so a walk far enough up one
-        // leaves memory. Where it does, the page comes back out of the store —
-        // the same page, in the same shape, off the same seek.
-        if thread.page_reaches_stored_history(before, limit) {
-            return self.stored_thread_page(thread, before, limit);
+        self.thread_page_at(thread, before, thread_page_limit(params))
+    }
+
+    /// One page of a conversation, wherever the page lives.
+    ///
+    /// A conversation is loaded as its tail, so a page far enough up one — or
+    /// a first page of a session that emitted hundreds of tool calls between
+    /// two words — leaves memory. Where it does, the page comes back out of
+    /// the store: the same page, in the same shape, off the same seek, cut by
+    /// the same rule. The one gate every page passes, so the page a reviewer
+    /// opens on and the pages a scroll asks for above it always abut.
+    fn thread_page_at(
+        &self,
+        thread: &crate::thread::Thread,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Value, String> {
+        if thread.page_reaches_stored_history(before_sequence, limit) {
+            return self.stored_thread_page(thread, before_sequence, limit);
         }
-        Ok(thread.wire_value_page(before, limit))
+        Ok(thread.wire_value_page(before_sequence, limit))
+    }
+
+    /// The page a detail poll opens a conversation on.
+    ///
+    /// A detail view is the whole entity, and it renders whether or not the
+    /// store answers: a conversation short of its oldest turn is worth more to
+    /// a reviewer than an error where the view was, so a store that cannot be
+    /// read is reported and the tail memory holds is shipped instead.
+    fn first_thread_page(&self, thread: &crate::thread::Thread, limit: usize) -> Value {
+        self.thread_page_at(thread, None, limit)
+            .unwrap_or_else(|error| {
+                eprintln!(
+                    "first_thread_page {}: {error}; shipping the resident tail",
+                    thread.agent.id
+                );
+                thread.wire_value_page(None, limit)
+            })
     }
 
     /// One page of the history no load read, straight off the store.
@@ -14697,7 +14727,7 @@ impl AppState {
             "thread": match thread_detail {
                 ThreadDetail::Digest => active.agents.sole_thread().digest_value(),
                 ThreadDetail::Full => active.agents.sole_thread().wire_value(),
-                ThreadDetail::Page(limit) => active.agents.sole_thread().wire_value_page(None, limit),
+                ThreadDetail::Page(limit) => self.first_thread_page(active.agents.sole_thread(), limit),
             },
             // The rail's bubble strip: one entry per agent, on every surface
             // that renders an entity, so status stays legible fully collapsed.
@@ -14839,7 +14869,7 @@ impl AppState {
             "thread": match thread_detail {
                 ThreadDetail::Digest => conversation.digest_value(),
                 ThreadDetail::Full => conversation.wire_value(),
-                ThreadDetail::Page(limit) => conversation.wire_value_page(None, limit),
+                ThreadDetail::Page(limit) => self.first_thread_page(conversation, limit),
             },
             // The rail's bubble strip — see `plan_view`.
             "agents": self.agent_digests(run_id, scope),
@@ -37035,6 +37065,61 @@ mod tests {
             })
             .expect("the conversation is written");
         issue_id
+    }
+
+    /// The page a reviewer OPENS on is cut by the same gate a scroll is. An
+    /// issue whose tail holds nothing but tool calls has its words under the
+    /// tail, so a detail poll that reads only memory hands the reviewer a
+    /// conversation with nothing said in it — and digests a run it can only
+    /// see the newest of.
+    #[test]
+    fn a_detail_polls_page_reaches_the_words_under_a_starved_tail() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            issue_buried_in_activity(
+                &mut state,
+                "fix the login redirect",
+                "the redirect drops the query string",
+            )
+        };
+
+        let mut state = qa_state(&repo, dir.path());
+        let answer = state.handle(req(
+            "issue.get",
+            json!({ "issue_id": issue_id, "thread_limit": 20 }),
+        ));
+        let thread = &answer["result"]["thread"];
+        let said: Vec<&str> = thread["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .map(|item| item["data"]["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                "fix the login redirect",
+                "the redirect drops the query string"
+            ],
+            "the page a reviewer opens on says nothing"
+        );
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            said.len() + crate::thread::PAGE_ACTIVITY_RUN_CAP,
+            "the run ships its newest hundred and no more"
+        );
+
+        // And the digest over the run covers the WHOLE run, not the slice of
+        // it the tail happened to hold.
+        let digests = thread["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 1, "{digests:?}");
+        assert_eq!(
+            digests[0]["tool_calls"],
+            crate::store::RESIDENT_CONVERSATION_TAIL as u64 + 40,
+            "{digests:?}"
+        );
     }
 
     /// §6.3's first failure. A conversation is loaded as its newest 200 items,

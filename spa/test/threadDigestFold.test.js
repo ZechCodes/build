@@ -21,8 +21,12 @@ const reasoning = (sequence, summary) => ({
 
 const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
 
+// The digest is what a run's HEAD counts, and the rows it stands for are what
+// it draws when open — both readings are here, so every run is open.
+const EVERY_RUN_OPEN = { has: () => true };
+
 const paint = (thread) => {
-  document.body.innerHTML = threadHtml(thread);
+  document.body.innerHTML = threadHtml(thread, { openRuns: EVERY_RUN_OPEN });
   return document.querySelector(".thread-activity-group");
 };
 

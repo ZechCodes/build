@@ -57,8 +57,13 @@ const laterCall = {
   },
 };
 
+// What folds under which row is what these tests are about, and a run draws
+// what it stands for only when the reader has it open (core/thread.js
+// `activityRunHtml`). So every run is open here.
+const EVERY_RUN_OPEN = { has: () => true };
+
 const paint = (items) => {
-  document.body.innerHTML = threadHtml({ items });
+  document.body.innerHTML = threadHtml({ items }, { openRuns: EVERY_RUN_OPEN });
   return document.querySelector(".thread-items");
 };
 
@@ -140,6 +145,5 @@ describe("rows that fold under the call that spawned them", () => {
 
     expect(revealThreadSequence(scroller, 4242)).toBe(false);
     expect(revealThreadSequence(scroller, '"] , [data-sequence')).toBe(false);
-    expect(document.querySelector(".thread-activity-group").open).toBe(false);
   });
 });

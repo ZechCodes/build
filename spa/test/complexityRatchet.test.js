@@ -12,7 +12,10 @@ import { describe, it, expect } from "vitest";
 
 // Measured when the gate landed: 78 functions across 39 files under src/.
 // 77 since diffFileHtml became a header, a body and a frame.
-const RATCHETED_FUNCTIONS = 77;
+// 75 since the timeline became keyed rows: threadHtml took its initial message
+// and its title from two named helpers, and the row builder split into a
+// message row and an activity row.
+const RATCHETED_FUNCTIONS = 75;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

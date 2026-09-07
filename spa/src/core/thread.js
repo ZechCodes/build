@@ -818,6 +818,38 @@ function activityMeat(event, meta, agentLabel) {
   return summary ? firstLine(summary) : eventLabel(meta, agentLabel);
 }
 
+/// How a folded run names itself in the document: the sequence it starts at,
+/// and the newest sequence it stands for. Together they are the whole of what a
+/// shut run says about what is inside it.
+const ACTIVITY_RUN_ATTRIBUTE = "data-activity-run";
+const ACTIVITY_RUN_THROUGH_ATTRIBUTE = "data-activity-through";
+
+/// The run a press landed on, or nothing at all: a folded run's head is the
+/// only thing in a timeline that opens one, and opening one is the pane's to
+/// do — it can mean fetching what the run holds.
+export function pressedActivityRunKey(target) {
+  const head = target && target.closest ? target.closest(".thread-activity-group-head") : null;
+  const run = head && head.parentElement;
+  return run && run.hasAttribute(ACTIVITY_RUN_ATTRIBUTE) ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
+}
+
+const runSpanAttribute = (run, name) => Number(run.getAttribute(name));
+
+/// The run a sequence is folded into, or nothing when the row stands on its
+/// own. A reference from elsewhere in the app (a subagent row naming the call
+/// that spawned it) points at a sequence, and a shut run holds no row to point
+/// at — so the run is opened first, and this is what says which one.
+export function activityRunKeyAt(scroller, sequence) {
+  const wanted = Number(sequence);
+  if (!scroller || !Number.isFinite(wanted)) return null;
+  const run = [...scroller.querySelectorAll(`[${ACTIVITY_RUN_ATTRIBUTE}]`)].find(
+    (element) =>
+      runSpanAttribute(element, ACTIVITY_RUN_ATTRIBUTE) <= wanted &&
+      runSpanAttribute(element, ACTIVITY_RUN_THROUGH_ATTRIBUTE) >= wanted,
+  );
+  return run ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
+}
+
 /// A run of activity, collapsed to one line.
 ///
 /// Everything between two things somebody SAID is one row here: how many tools
@@ -834,15 +866,19 @@ function activityMeat(event, meta, agentLabel) {
 /// and where each printed value came from, is activityRunSummary's to resolve
 /// (core/activityDigest.js); this prints what it was handed.
 ///
-/// A `<details>` rather than a wired button, for the same reason each row inside
-/// it is one: the open state then belongs to the element the reader clicked, and
-/// `patchElement` already knows to leave it alone across a repaint.
+/// `children` is the html of what the run stands for, and null while the run is
+/// shut — a shut run is a HEAD, and a thousand calls nobody has asked to see
+/// are a thousand rows the document never has to hold. Which runs are open is
+/// the pane's to say (core/activityRuns.js), because opening one can mean
+/// fetching it.
 ///
 /// Keyed by the run's FIRST item, so a run that grows under a reader watching it
 /// keeps its identity — and with it, the scroll position inside the box they
-/// opened.
-function activityRunHtml(run, summary) {
-  return `<details class="thread-activity-group" data-activity-run="${esc(String(run[0].key))}">
+/// opened. It carries the newest sequence it stands for as well, so a reference
+/// from somewhere else in the app can find the run a call is folded into
+/// without opening every one of them (`activityRunKeyAt`).
+function activityRunHtml(span, summary, children) {
+  return `<details class="thread-activity-group" ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
     <summary class="thread-activity-head thread-activity-group-head">
       <span class="thread-event-icon" aria-hidden="true">${esc(summary.icon)}</span>
       <span class="thread-activity-count">${summary.count}</span>
@@ -850,30 +886,63 @@ function activityRunHtml(run, summary) {
       ${toolOutcomeHtml(summary.outcome)}
       ${timeHtml(summary.createdAt)}
     </summary>
-    <div class="thread-activity-group-list">${run.map((entry) => entry.html).join("")}</div>
+    ${children === null ? "" : `<div class="thread-activity-group-list">${children}</div>`}
   </details>`;
 }
 
-/// Fold every maximal run of consecutive activity into one row apiece, and
+/// The newest sequence a run stands for: its own rows, and the calls they fold.
+const runThroughSequence = (run) =>
+  run.reduce(
+    (newest, row) =>
+      (row.activity.toolCalls || []).reduce(
+        (highest, call) => Math.max(highest, call.sequence || 0),
+        Math.max(newest, row.activity.sequence || 0),
+      ),
+    0,
+  );
+
+/// What an open run draws: the items fetched for it, and whatever the window
+/// holds past them.
+///
+/// A run older than the newest message never changes, so the fetched items are
+/// the whole of it. The tail run is the one still being written, and the window
+/// is where its newest rows land — so the rows past the fetch are taken from
+/// the window, already rendered, and the head of a live run goes on ticking.
+function runChildrenHtml(run, view) {
+  const fetched = view.runItemsOf(run[0].key);
+  if (!fetched || !fetched.length) return run.map((row) => row.html).join("");
+  const fetchedThrough = fetched.reduce((newest, item) => Math.max(newest, item.data?.sequence || 0), 0);
+  const live = run.filter((row) => Number(row.key) > fetchedThrough);
+  return [...timelineRowsOf(fetched, view.agentLabel, view.threadId), ...live].map((row) => row.html).join("");
+}
+
+function runEntry(run, digests, view) {
+  const key = run[0].key;
+  const span = { key, through: runThroughSequence(run) };
+  const children = view.openRuns.has(key) ? runChildrenHtml(run, view) : null;
+  return { key, html: activityRunHtml(span, activityRunSummary(digests, run), children) };
+}
+
+/// Fold every maximal run of consecutive activity into one entry apiece, and
 /// leave everything else exactly where it was.
-function foldActivityRuns(entries, digests) {
-  const rows = [];
+function foldActivityRuns(rows, digests, view) {
+  const entries = [];
   let run = [];
   const closeRun = () => {
     if (!run.length) return;
-    rows.push(activityRunHtml(run, activityRunSummary(digests, run)));
+    entries.push(runEntry(run, digests, view));
     run = [];
   };
-  for (const entry of entries) {
-    if (entry.activity) {
-      run.push(entry);
+  for (const row of rows) {
+    if (row.activity) {
+      run.push(row);
       continue;
     }
     closeRun();
-    rows.push(entry.html);
+    entries.push({ key: row.key, html: row.html });
   }
   closeRun();
-  return rows;
+  return entries;
 }
 
 // eslint-disable-next-line complexity -- ratchet: eventHtml is at 11, cap 10 — reduce it, then drop this line
@@ -956,7 +1025,78 @@ export function revealThreadSequence(scroller, sequence) {
   return true;
 }
 
-/// The timeline: what was said, and what happened.
+/// One row of the timeline, before the runs are folded: its key, the item it
+/// was drawn from, its html, and — for activity — what the fold reads off it.
+///
+/// Keyed by the item's own sequence, which is what makes a row's identity (and
+/// a run's, which is its first row's) stable while the conversation grows. A
+/// conversation rendered without sequences (the tests, and the initial-message
+/// row) falls back to where the item sits.
+const rowKey = (data, index) => String(data.sequence ?? `at-${index}`);
+
+function activityRow(item, index, agentLabel, folding) {
+  const event = item.data || {};
+  const meta = activityMetaOf(event);
+  const row = {
+    key: rowKey(event, index),
+    item,
+    html: eventHtml(event, agentLabel, folding.foldedChildrenHtmlOf(event.sequence)),
+  };
+  if (!meta) return row;
+  return {
+    ...row,
+    activity: {
+      icon: meta.icon,
+      sequence: event.sequence,
+      meat: activityMeat(event, meta, agentLabel),
+      outcome: event.outcome,
+      createdAt: event.created_at,
+      // What this row stands for, which is not always itself: a call that
+      // spawned a subagent stands for every call the subagent made.
+      toolCalls: folding.toolCallsUnder(item),
+    },
+  };
+}
+
+/// A message's row, or no row at all for the two the timeline does not draw.
+///
+/// `spoken` is whether this is the last thing said, which is the whole of
+/// whether its offer can still be answered.
+function messageRow(item, index, agentLabel, { threadId, spoken }) {
+  const message = item.data || {};
+  // Old bridges persisted the noisy structured handoff as a chat message.
+  if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
+  // A choice is drawn on the chips that offered it, so the message it sent
+  // would be the same words a second time.
+  if (message.answers_options_of) return [];
+  const key = offerKey(threadId, message.id);
+  const live = spoken && !sendingChoices.has(key);
+  return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, live, key) }];
+}
+
+/// Every top-level row a set of items draws, in order.
+///
+/// The one reading of what a row is: startup noise is not one, a row folded
+/// under the call that spawned it is not one of its own, and two kinds of
+/// message are drawn on other rows instead. Used for the conversation itself
+/// and for the children of an open run, so a fetched run's rows are the rows
+/// the window would have drawn for the same items.
+function timelineRowsOf(sourceItems, agentLabel, threadId) {
+  const items = sourceItems.filter((item) => !isStartupEvent(item));
+  const folding = threadFolding(items, agentLabel);
+  const topLevelItems = items.filter((item) => !folding.foldedItems.has(item));
+  // Which message may still be answered with a chip: the last one said, and
+  // only that one. An event between it and now changes nothing — a commit
+  // landing is not somebody speaking.
+  const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
+  return topLevelItems.flatMap((item, index) =>
+    item.type === "message"
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken })
+      : [activityRow(item, index, agentLabel, folding)],
+  );
+}
+
+/// The timeline: what was said, and what happened, as keyed entries.
 ///
 /// Working time and the diffstat are NOT here. They are facts about the branch
 /// or issue rather than about anything anyone said, they are true wherever you
@@ -964,56 +1104,29 @@ export function revealThreadSequence(scroller, sequence) {
 /// toolbar (core/toolbar.js) and the conversation keeps its own record: the
 /// messages, the events, and whether the agent has read you.
 ///
-/// Returns the top-level rows, and how many conversation items they were
-/// rendered from — which is not the same number any more: a run of activity is
-/// many items and one row, and the count on the conversation's title counts
-/// what was said and done rather than how it fell into runs.
-function timelineHtml(sourceItems, agentLabel, threadId, digests) {
-  const items = sourceItems.filter((item) => !isStartupEvent(item));
-  const { foldedItems, foldedChildrenHtmlOf, toolCallsUnder } = threadFolding(items, agentLabel);
-  const topLevelItems = items.filter((item) => !foldedItems.has(item));
-  // Which message may still be answered with a chip: the last one said, and
-  // only that one. An event between it and now changes nothing — a commit
-  // landing is not somebody speaking.
-  const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
-  const entries = topLevelItems.flatMap((item, index) => {
-    if (item.type !== "message") {
-      const event = item.data || {};
-      const meta = activityMetaOf(event);
-      const html = eventHtml(event, agentLabel, foldedChildrenHtmlOf(event.sequence));
-      if (!meta) return [{ html }];
-      return [{
-        html,
-        // Keyed by the item's own sequence, which is what makes a run's
-        // identity stable while its tail grows. A conversation rendered
-        // without sequences (the tests, and the initial-message row) falls
-        // back to where the item sits.
-        key: event.sequence ?? `at-${index}`,
-        activity: {
-          icon: meta.icon,
-          sequence: event.sequence,
-          meat: activityMeat(event, meta, agentLabel),
-          outcome: event.outcome,
-          createdAt: event.created_at,
-          // What this row stands for, which is not always itself: a call that
-          // spawned a subagent stands for every call the subagent made.
-          toolCalls: toolCallsUnder(item),
-        },
-      }];
-    }
-    const message = item.data || {};
-    // Old bridges persisted the noisy structured handoff as a chat message.
-    if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
-    // A choice is drawn on the chips that offered it, so the message it sent
-    // would be the same words a second time.
-    if (message.answers_options_of) return [];
-    const key = offerKey(threadId, message.id);
-    const live = index === lastSpoken && !sendingChoices.has(key);
-    return [{ html: messageHtml(message, agentLabel, live, key) }];
-  });
-  return { rows: foldActivityRuns(entries, digests), itemCount: entries.length };
+/// One entry per top-level row, keyed so the reconciler can leave a row nobody
+/// changed alone: a message under its sequence, a folded run under the sequence
+/// it starts at, a lifecycle event under its own. `openRuns` says which runs
+/// draw what they stand for, and `runItemsOf(key)` answers the items fetched
+/// for one — both the pane's (core/activityRuns.js).
+///
+/// `itemCount` is how many conversation items the entries were drawn from,
+/// which is not how many entries there are: a run of activity is many items
+/// and one row, and the count on the conversation's title counts what was said
+/// and done rather than how it fell into runs.
+export function timelineEntries(sourceItems, agentLabel, threadId, digests, { openRuns, runItemsOf } = {}) {
+  const rows = timelineRowsOf(sourceItems, agentLabel, threadId);
+  const view = {
+    agentLabel,
+    threadId,
+    openRuns: openRuns || NO_RUNS_OPEN,
+    runItemsOf: runItemsOf || noRunItems,
+  };
+  return { entries: foldActivityRuns(rows, digests, view), itemCount: rows.length };
 }
+
+const NO_RUNS_OPEN = new Set();
+const noRunItems = () => undefined;
 
 // The plan composer's historical ids/copy, kept as the `composer: true`
 // defaults so existing callers are unchanged.
@@ -1056,27 +1169,40 @@ function threadActionsHtml(actionsId) {
 /// run with no digest counts what is in hand.
 const digestsOf = (thread) => (thread && thread.activityDigests) || [];
 
-// eslint-disable-next-line complexity -- ratchet: threadHtml is at 11, cap 10 — reduce it, then drop this line
+/// The rows a timeline holds: its entries, or the one row a conversation with
+/// nothing on the record shows. Keyed like any other, so the reconciler takes
+/// it away the moment there is something to say.
+const EMPTY_TIMELINE_ENTRY = { key: "empty", html: '<div class="thread-empty">No conversation yet.</div>' };
+
+const timelineRows = ({ entries, itemCount }) => (itemCount ? entries : [EMPTY_TIMELINE_ENTRY]);
+
+/// The conversation's own head: what it is, how much of it there is, and where
+/// the work it records stands.
+const threadTitleHtml = (itemCount, status) =>
+  `<span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(status)}`;
+
+/// The initial message a surface opened the conversation with, ahead of the
+/// items, until the conversation itself holds it.
+function itemsWithInitialMessage(sourceItems, initialMessage) {
+  const body = String(initialMessage || "").trim();
+  const alreadySaid = sourceItems.some(
+    (item) => item.type === "message" && item.data?.role === "user" && String(item.data.body || "").trim() === body,
+  );
+  if (!body || alreadySaid) return sourceItems;
+  return [{ type: "message", data: { role: "user", body, seen_at: "initial" } }, ...sourceItems];
+}
+
 export function threadHtml(thread, options = {}) {
   const agentLabel = harnessLabel(thread, options.agentLabel);
-  const sourceItems = (thread && thread.items) || [];
-  const initialMessage = String(options.initialMessage || "").trim();
-  const hasInitialMessage = sourceItems.some(
-    (item) => item.type === "message" && item.data?.role === "user" && String(item.data.body || "").trim() === initialMessage,
-  );
-  const items = initialMessage && !hasInitialMessage
-    ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
-    : sourceItems;
-  const { rows, itemCount } = timelineHtml(items, agentLabel, thread && thread.id, digestsOf(thread));
+  const items = itemsWithInitialMessage((thread && thread.items) || [], options.initialMessage);
+  const built = timelineEntries(items, agentLabel, thread && thread.id, digestsOf(thread), options);
   // The timeline draws the avatar spine, and the messages sit in the gutter it
   // runs down. With nothing on the record there is neither, so the empty case
   // says so and the CSS drops both rather than ruling a line beside a sentence.
-  const empty = itemCount ? "" : " is-empty";
+  const empty = built.itemCount ? "" : " is-empty";
   return `<section class="review-thread pane-col${empty}">
-    <div class="thread-title"><span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(options.status)}</div>
-    <div class="thread-items thread-timeline${empty}">${itemCount
-      ? rows.join("")
-      : '<div class="thread-empty">No conversation yet.</div>'}</div>
+    <div class="thread-title">${threadTitleHtml(built.itemCount, options.status)}</div>
+    <div class="thread-items thread-timeline${empty}">${timelineRows(built).map((row) => row.html).join("")}</div>
     <div class="thread-revision-view" hidden></div>
     ${threadActionsHtml(options.actionsId)}
     ${threadComposerHtml(options.composer)}

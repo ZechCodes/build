@@ -7932,11 +7932,16 @@ impl AppState {
         })
     }
 
-    /// `git.status` — branch/head plus per-file staging tri-state and the
-    /// uncommitted patch for the scoped checkout.
+    /// `git.status` — branch/head, per-file staging tri-state, content keys and
+    /// line counts for the scoped checkout. No patch: a file's body comes from
+    /// `git.diff`, per path.
+    ///
+    /// `if_status_key` is what the browser is already painting; when it still
+    /// names the working tree the answer is `{"unchanged": true}` and its key.
     fn git_status(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, _| {
-            crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, false, |scope, params| {
+            let if_status_key = params.get("if_status_key").and_then(Value::as_str);
+            crate::gitgui::status_payload_unless(&scope.repo_path, if_status_key)
         })
     }
 
@@ -29124,11 +29129,44 @@ mod tests {
         assert!(!has_file_entry(status, ".build/mcp.json"));
 
         assert_eq!(status["stat"]["files_changed"], 3);
-        let patch = status["patch"].as_str().unwrap();
-        assert!(patch.contains("+loose"));
-        assert!(!patch.contains("mcp.json"));
-        assert_eq!(status["truncated"], false);
+        assert_eq!(untracked["added"], 1);
+        assert_eq!(untracked["deleted"], 0);
+        assert_eq!(untracked["binary"], false);
+        assert!(!untracked["content_key"].as_str().unwrap().is_empty());
+        assert!(status.get("patch").is_none(), "{status}");
         assert_eq!(status["files_truncated"], false);
+        assert_eq!(status["status_key"].as_str().unwrap().len(), 16);
+    }
+
+    /// The poll's cheap turn: a browser that names the key it holds is told
+    /// only that it still holds it, and hears the whole shape the moment the
+    /// working tree moves under it.
+    #[test]
+    fn a_held_status_key_answers_unchanged_over_the_wire() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
+
+        let first = state.handle(req("git.status", json!({ "project_id": project_id })));
+        let held = first["result"]["status_key"].as_str().unwrap().to_string();
+
+        let unchanged = state.handle(req(
+            "git.status",
+            json!({ "project_id": project_id, "if_status_key": held }),
+        ));
+        assert_eq!(
+            unchanged["result"],
+            json!({ "unchanged": true, "status_key": held })
+        );
+
+        std::fs::write(repo.join("loose.txt"), "loose and then some\n").unwrap();
+        let moved = state.handle(req(
+            "git.status",
+            json!({ "project_id": project_id, "if_status_key": held }),
+        ));
+        assert_ne!(moved["result"]["status_key"].as_str().unwrap(), held);
+        assert_eq!(file_entry(&moved["result"], "loose.txt")["added"], 1);
     }
 
     #[test]
@@ -29216,7 +29254,7 @@ mod tests {
         let untracked = file_entry(&res["result"], "first.txt");
         assert_eq!(untracked["staged"], "none");
         assert_eq!(untracked["index_status"], "?");
-        assert!(res["result"]["patch"].as_str().unwrap().contains("+hello"));
+        assert_eq!(untracked["added"], 1);
     }
 
     #[test]

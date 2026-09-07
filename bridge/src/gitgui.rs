@@ -8,7 +8,7 @@
 //! before any git call, and the scaffolded `.build/mcp.json` never enters the
 //! index through these verbs.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -361,8 +361,27 @@ fn file_status_json(path: &str, status: git2::Status) -> Option<Value> {
 /// The full `git.status` payload for a checkout — also the response body of
 /// `git.stage`/`git.unstage` and the `status` field of `git.commit`, so the
 /// UI repaints straight from the mutation's response.
+///
+/// Shape and counts, never a patch: a file's body is fetched per path through
+/// [`file_patches`] and cached against its `content_key`.
 pub fn status_payload(repo_path: &Path) -> Result<Value, String> {
-    status_payload_with_file_cap(repo_path, GIT_STATUS_MAX_FILES)
+    status_payload_unless(repo_path, None)
+}
+
+/// [`status_payload`], unless the client already holds it.
+///
+/// `if_status_key` is the [`status_key`] the browser is painting. When it still
+/// names the working tree, the answer is that fact alone — the status walk ran,
+/// nothing else did, and no patch, count or body crossed the wire.
+pub fn status_payload_unless(
+    repo_path: &Path,
+    if_status_key: Option<&str>,
+) -> Result<Value, String> {
+    let (shape, key) = status_shape(repo_path, GIT_STATUS_MAX_FILES)?;
+    match if_status_key {
+        Some(held) if held == key => Ok(json!({ "unchanged": true, "status_key": key })),
+        _ => counted_status(shape, key, repo_path),
+    }
 }
 
 /// Map a raw [`git2::RepositoryState`] to the wire vocabulary the SPA banner
@@ -454,45 +473,93 @@ fn count_stashes(repo: &mut git2::Repository) -> Result<u64, String> {
     Ok(count)
 }
 
-/// [`status_payload`] with the `files` cap injectable, so tests exercise the
-/// truncation path without a 2 000-file fixture.
-fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Value, String> {
+/// A stable name for a file's current WORKING-TREE content, which is what a
+/// cached body must be keyed by. The index is not usable here: a tracked file
+/// that is staged and then edited again keeps its index entry, so two
+/// successive edits would share one key and a stale body would read as current.
+struct ContentKeys {
+    worktree_root: std::path::PathBuf,
+}
+
+impl ContentKeys {
+    /// libgit2's own working-tree object id when the status walk computed one,
+    /// and the file's size and modification time hashed when it did not.
+    fn key_for(&self, path: &str, entry: &git2::StatusEntry<'_>) -> String {
+        entry
+            .index_to_workdir()
+            .map(|delta| delta.new_file().id())
+            .filter(|oid| !oid.is_zero())
+            .map_or_else(|| self.key_off_disk(path), |oid| oid.to_string())
+    }
+
+    /// A path with nothing on disk is `deleted` — the one key that names an
+    /// absence rather than a content.
+    fn key_off_disk(&self, path: &str) -> String {
+        let Ok(metadata) = std::fs::symlink_metadata(self.worktree_root.join(path)) else {
+            return "deleted".to_string();
+        };
+        let modified_nanos = metadata
+            .modified()
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |since_epoch| since_epoch.as_nanos());
+        crate::diff::fnv1a64_hex(&format!("{}:{modified_nanos}", metadata.len()))
+    }
+}
+
+/// The repository-wide fields a repaint depends on.
+const STATUS_KEY_FIELDS: [&str; 8] = [
+    "branch",
+    "head",
+    "repo_state",
+    "upstream",
+    "ahead",
+    "behind",
+    "stash_count",
+    "files_truncated",
+];
+
+/// The per-file fields a repaint depends on. Line counts are not among them:
+/// they follow the content key, which already moved.
+const FILE_KEY_FIELDS: [&str; 5] = [
+    "path",
+    "staged",
+    "index_status",
+    "worktree_status",
+    "content_key",
+];
+
+/// A stable 16-hex name for everything a client's repaint depends on, so a
+/// poll that finds the same key can stop there.
+fn status_key(shape: &Value) -> String {
+    let mut material = String::new();
+    let mut push = |value: &Value| {
+        material.push_str(&value.to_string());
+        material.push('|');
+    };
+    for field in STATUS_KEY_FIELDS {
+        push(&shape[field]);
+    }
+    for file in shape["files"].as_array().into_iter().flatten() {
+        for field in FILE_KEY_FIELDS {
+            push(&file[field]);
+        }
+    }
+    crate::diff::fnv1a64_hex(&material)
+}
+
+/// The status walk alone — the repository's state, its changed paths, and each
+/// path's content key — with the key that names all of it. No line is counted
+/// and no patch is rendered here.
+fn status_shape(repo_path: &Path, max_files: usize) -> Result<(Value, String), String> {
     let mut repo = open_repo(repo_path)?;
     let branch = current_branch(&repo)?;
     let head = head_commit_id(&repo)?.map(|oid| oid.to_string());
     let repo_state = repo_state_label(&repo)?;
     let (upstream, ahead, behind) = upstream_status(&repo);
-    // Rename detection stays OFF: a staged rename decomposes into a plain
-    // D (old path) + A (new path) pair, matching the patch (which has no
-    // rename detection) and keeping stage/unstage per-path symmetric. With
-    // renames on, git2 reports one "R" entry under the OLD path only — the
-    // new path never surfaces and unstaging the row half-unstages the rename.
-    // Scoped so the immutable statuses borrow ends before the &mut stash walk.
-    let (files, files_truncated) = {
-        let mut opts = git2::StatusOptions::new();
-        opts.include_untracked(true).recurse_untracked_dirs(true);
-        let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
-        let mut files: Vec<Value> = statuses
-            .iter()
-            .filter_map(|entry| {
-                let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
-                if crate::diff::is_mcp_config(&path) {
-                    return None;
-                }
-                file_status_json(&path, entry.status())
-            })
-            .collect();
-        files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
-        let files_truncated = files.len() > max_files;
-        files.truncate(max_files);
-        (files, files_truncated)
-    };
+    let (files, files_truncated) = status_files(&repo, max_files)?;
     let stash_count = count_stashes(&mut repo)?;
-    let diff = crate::diff::diff_uncommitted(repo_path).map_err(|e| e.to_string())?;
-    let stat = diff.stat();
-    let (patch, truncated) =
-        truncate_at_utf8_boundary(diff.patch().to_string(), GIT_SHOW_MAX_PATCH_BYTES);
-    Ok(json!({
+    let shape = json!({
         "branch": branch,
         "path": repo_path.display().to_string(),
         "head": head,
@@ -503,10 +570,81 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
         "stash_count": stash_count,
         "files": files,
         "files_truncated": files_truncated,
-        "stat": stat.to_json(),
-        "patch": patch,
-        "truncated": truncated,
-    }))
+    });
+    let key = status_key(&shape);
+    Ok((shape, key))
+}
+
+/// Every changed path, by path, each carrying its staging tri-state and its
+/// content key; `max_files` is injectable so tests exercise the truncation
+/// path without a 2 000-file fixture.
+///
+/// Rename detection stays OFF: a staged rename decomposes into a plain
+/// D (old path) + A (new path) pair, matching the patch (which has no
+/// rename detection) and keeping stage/unstage per-path symmetric. With
+/// renames on, git2 reports one "R" entry under the OLD path only — the
+/// new path never surfaces and unstaging the row half-unstages the rename.
+fn status_files(repo: &git2::Repository, max_files: usize) -> Result<(Vec<Value>, bool), String> {
+    let keys = ContentKeys {
+        worktree_root: repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf(),
+    };
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+    let mut files: Vec<Value> = statuses
+        .iter()
+        .filter_map(|entry| {
+            let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
+            if crate::diff::is_mcp_config(&path) {
+                return None;
+            }
+            let mut file = file_status_json(&path, entry.status())?;
+            file["content_key"] = json!(keys.key_for(&path, &entry));
+            Some(file)
+        })
+        .collect();
+    files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    let files_truncated = files.len() > max_files;
+    files.truncate(max_files);
+    Ok((files, files_truncated))
+}
+
+/// The shape with the working tree's line census joined in.
+fn counted_status(shape: Value, status_key: String, repo_path: &Path) -> Result<Value, String> {
+    let deltas = crate::diff::uncommitted_file_deltas(repo_path).map_err(|e| e.to_string())?;
+    Ok(with_line_counts(shape, &deltas, status_key))
+}
+
+/// Each file's added/deleted/binary, and the `stat` totals those files sum to
+/// — one census, joined onto the shape it describes.
+fn with_line_counts(shape: Value, deltas: &[crate::diff::FileDelta], status_key: String) -> Value {
+    let counted: HashMap<&str, &crate::diff::FileDelta> = deltas
+        .iter()
+        .map(|delta| (delta.path.as_str(), delta))
+        .collect();
+    let mut payload = shape;
+    for file in payload["files"].as_array_mut().into_iter().flatten() {
+        let delta = file["path"].as_str().and_then(|path| counted.get(path));
+        file["added"] = json!(delta.map_or(0, |delta| delta.added));
+        file["deleted"] = json!(delta.map_or(0, |delta| delta.deleted));
+        file["binary"] = json!(delta.is_some_and(|delta| delta.binary));
+    }
+    payload["stat"] = crate::diff::DiffStat {
+        files_changed: deltas.len(),
+        insertions: deltas.iter().map(|delta| delta.added).sum(),
+        deletions: deltas.iter().map(|delta| delta.deleted).sum(),
+    }
+    .to_json();
+    payload["status_key"] = json!(status_key);
+    payload
+}
+
+/// [`status_payload`] with the `files` cap injectable, so tests exercise the
+/// truncation path without a 2 000-file fixture.
+#[cfg(test)]
+fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Value, String> {
+    let (shape, key) = status_shape(repo_path, max_files)?;
+    counted_status(shape, key, repo_path)
 }
 
 /// Validate and filter a stage/unstage path list: every path must pass the
@@ -1240,6 +1378,79 @@ mod tests {
         assert!(file_status_json("ignored.txt", git2::Status::IGNORED).is_none());
     }
 
+    /// A file's key follows the WORKING TREE, not the index: the index entry
+    /// of a staged-then-edited file does not move when the file is edited
+    /// again, so keying on it would serve a stale body as current.
+    #[test]
+    fn a_second_working_tree_edit_moves_the_files_key_and_the_status_key() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        std::fs::write(repo.join("README.md"), "one\n").unwrap();
+        crate::git_fixture::git_in(&repo, &["add", "README.md"]);
+
+        let staged = status_payload(&repo).unwrap();
+        std::fs::write(repo.join("README.md"), "one plus two\n").unwrap();
+        let edited = status_payload(&repo).unwrap();
+        std::fs::write(repo.join("README.md"), "one plus two plus three\n").unwrap();
+        let edited_again = status_payload(&repo).unwrap();
+
+        let key_of = |status: &Value| {
+            status["files"][0]["content_key"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_ne!(key_of(&staged), key_of(&edited));
+        assert_ne!(key_of(&edited), key_of(&edited_again));
+        assert_ne!(staged["status_key"], edited["status_key"]);
+        assert_ne!(edited["status_key"], edited_again["status_key"]);
+        assert_eq!(edited_again["status_key"].as_str().unwrap().len(), 16);
+    }
+
+    #[test]
+    fn the_status_payload_carries_counts_and_no_patch() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        std::fs::write(repo.join("README.md"), "# project\nadded\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "a\nb\n").unwrap();
+
+        let status = status_payload(&repo).unwrap();
+
+        assert!(status.get("patch").is_none(), "{status}");
+        assert!(status.get("truncated").is_none(), "{status}");
+        let readme = &status["files"][0];
+        assert_eq!(readme["path"], "README.md");
+        assert_eq!(readme["added"], 1);
+        assert_eq!(readme["deleted"], 0);
+        assert_eq!(readme["binary"], false);
+        assert_eq!(status["files"][1]["added"], 2);
+        assert_eq!(status["stat"]["insertions"], 3);
+        assert_eq!(status["stat"]["files_changed"], 2);
+    }
+
+    #[test]
+    fn a_deleted_file_keys_as_deleted() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        std::fs::remove_file(repo.join("README.md")).unwrap();
+
+        let status = status_payload(&repo).unwrap();
+        assert_eq!(status["files"][0]["content_key"], "deleted");
+        assert_eq!(status["files"][0]["deleted"], 1);
+    }
+
+    #[test]
+    fn a_held_status_key_answers_unchanged_and_nothing_else() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        std::fs::write(repo.join("README.md"), "# project\nedit\n").unwrap();
+
+        let full = status_payload(&repo).unwrap();
+        let held = full["status_key"].as_str().unwrap();
+
+        let unchanged = status_payload_unless(&repo, Some(held)).unwrap();
+        assert_eq!(unchanged, json!({ "unchanged": true, "status_key": held }));
+
+        let stale = status_payload_unless(&repo, Some("0000000000000000")).unwrap();
+        assert_eq!(stale, full);
+    }
+
     #[test]
     fn status_files_list_is_capped_with_a_truncation_flag() {
         let dir = tempfile::tempdir().unwrap();
@@ -1248,15 +1459,16 @@ mod tests {
             std::fs::write(dir.path().join(format!("f{i:02}.txt")), "x\n").unwrap();
         }
 
-        // Over the cap: first N by path, flagged; stat/patch stay exact.
+        // Over the cap: first N by path, flagged; the stat stays exact.
         let capped = status_payload_with_file_cap(dir.path(), 5).unwrap();
         let files = capped["files"].as_array().unwrap();
         assert_eq!(files.len(), 5);
         assert_eq!(capped["files_truncated"], true);
         assert_eq!(files[0]["path"], "f00.txt");
         assert_eq!(files[4]["path"], "f04.txt");
+        assert_eq!(files[0]["added"], 1);
         assert_eq!(capped["stat"]["files_changed"], 8);
-        assert!(capped["patch"].as_str().unwrap().contains("+x"));
+        assert_eq!(capped["stat"]["insertions"], 8);
 
         // At the cap exactly: everything fits, no flag.
         let uncapped = status_payload_with_file_cap(dir.path(), 8).unwrap();

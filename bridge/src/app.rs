@@ -29102,7 +29102,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cognitive_complexity)] // ratchet: git_status_reports_tristate_staging_and_excludes_the_mcp_config is at 19, threshold 15 — bring it under, then remove
+    #[allow(clippy::cognitive_complexity)] // ratchet: git_status_reports_tristate_staging_and_excludes_the_mcp_config is at 16, threshold 15 — bring it under, then remove
     fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);
@@ -29146,13 +29146,7 @@ mod tests {
         assert!(!has_file_entry(status, ".build/mcp.json"));
 
         assert_eq!(status["stat"]["files_changed"], 3);
-        assert_eq!(untracked["added"], 1);
-        assert_eq!(untracked["deleted"], 0);
-        assert_eq!(untracked["binary"], false);
-        assert!(!untracked["content_key"].as_str().unwrap().is_empty());
-        assert!(status.get("patch").is_none(), "{status}");
         assert_eq!(status["files_truncated"], false);
-        assert_eq!(status["status_key"].as_str().unwrap().len(), 16);
     }
 
     /// The poll's cheap turn: a browser that names the key it holds is told
@@ -29184,6 +29178,37 @@ mod tests {
         ));
         assert_ne!(moved["result"]["status_key"].as_str().unwrap(), held);
         assert_eq!(file_entry(&moved["result"], "loose.txt")["added"], 1);
+    }
+
+    /// The per-file census the browser draws a row from before it asks for any
+    /// body: how many lines moved, whether there is a body worth asking for,
+    /// and the key that says a held body is still the current one.
+    #[test]
+    fn git_status_carries_a_content_key_and_counts_per_file() {
+        let (dir, repo) = init_repo();
+        std::fs::write(repo.join("gone.txt"), "one\ntwo\n").unwrap();
+        git_in(&repo, &["add", "gone.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "fixture"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        std::fs::remove_file(repo.join("gone.txt")).unwrap();
+        std::fs::write(repo.join("README.md"), "# project\nsecond\n").unwrap();
+        std::fs::write(repo.join("logo.bin"), [0u8, 1, 2, 0, 255, b'\n']).unwrap();
+
+        let res = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let status = &res["result"];
+
+        let edited = file_entry(status, "README.md");
+        assert_eq!(edited["added"], 1);
+        assert_eq!(edited["deleted"], 0);
+        assert_eq!(edited["binary"], false);
+        assert!(!edited["content_key"].as_str().unwrap().is_empty());
+        assert_eq!(file_entry(status, "gone.txt")["content_key"], "deleted");
+        assert_eq!(file_entry(status, "logo.bin")["binary"], true);
+        assert!(status.get("patch").is_none(), "{status}");
+        assert_eq!(status["status_key"].as_str().unwrap().len(), 16);
     }
 
     #[test]

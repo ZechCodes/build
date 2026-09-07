@@ -6574,6 +6574,7 @@ impl AppState {
             "git.log" => self.git_log(params),
             "git.show" => self.git_show(params),
             "git.status" => self.git_status(params),
+            "git.diff" => self.git_diff(params),
             "git.stage" => self.git_stage(params),
             "git.unstage" => self.git_unstage(params),
             "git.commit" => self.git_commit(params),
@@ -7942,6 +7943,15 @@ impl AppState {
         self.defer_git(params, false, |scope, params| {
             let if_status_key = params.get("if_status_key").and_then(Value::as_str);
             crate::gitgui::status_payload_unless(&scope.repo_path, if_status_key)
+        })
+    }
+
+    /// `git.diff` — the uncommitted patch of the named paths, one entry each,
+    /// keyed by content so a browser caches a body until that file moves.
+    fn git_diff(&mut self, params: &Value) -> Result<Value, String> {
+        self.defer_git(params, false, |scope, params| {
+            let paths = require_path_list(params)?;
+            crate::gitgui::file_patches(&scope.repo_path, &paths)
         })
     }
 
@@ -29238,6 +29248,41 @@ mod tests {
         let new = file_entry(&unstaged["result"], "RENAMED.md");
         assert_eq!(new["staged"], "none");
         assert_eq!(new["index_status"], "?");
+    }
+
+    /// `git.diff` is where a body comes from now that `git.status` carries
+    /// only shape: the patch of the asked path, under the key the status shape
+    /// gave it, and an error for a path it may not read.
+    #[test]
+    fn git_diff_answers_the_asked_paths_body_under_its_status_key() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
+
+        let status = state.handle(req("git.status", json!({ "project_id": project_id })));
+        let key = file_entry(&status["result"], "loose.txt")["content_key"].clone();
+
+        let res = state.handle(req(
+            "git.diff",
+            json!({ "project_id": project_id, "paths": ["loose.txt"] }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let file = &res["result"]["files"][0];
+        assert_eq!(file["path"], "loose.txt");
+        assert_eq!(file["content_key"], key);
+        assert!(file["patch"].as_str().unwrap().contains("+loose"));
+        assert_eq!(file["truncated"], false);
+
+        for bad in [json!(["../evil"]), json!([".build/mcp.json"]), json!([])] {
+            let refused = state.handle(req(
+                "git.diff",
+                json!({ "project_id": project_id, "paths": bad }),
+            ));
+            assert_eq!(refused["ok"], false, "paths {bad:?}: {refused:?}");
+        }
+        let missing = state.handle(req("git.diff", json!({ "project_id": project_id })));
+        assert_eq!(missing["ok"], false, "{missing:?}");
     }
 
     #[test]

@@ -482,6 +482,13 @@ struct ContentKeys {
 }
 
 impl ContentKeys {
+    /// The keys of one checkout's files.
+    fn of(repo: &git2::Repository) -> Self {
+        ContentKeys {
+            worktree_root: repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf(),
+        }
+    }
+
     /// libgit2's own working-tree object id when the status walk computed one,
     /// and the file's size and modification time hashed when it did not.
     fn key_for(&self, path: &str, entry: &git2::StatusEntry<'_>) -> String {
@@ -585,9 +592,7 @@ fn status_shape(repo_path: &Path, max_files: usize) -> Result<(Value, String), S
 /// renames on, git2 reports one "R" entry under the OLD path only — the
 /// new path never surfaces and unstaging the row half-unstages the rename.
 fn status_files(repo: &git2::Repository, max_files: usize) -> Result<(Vec<Value>, bool), String> {
-    let keys = ContentKeys {
-        worktree_root: repo.workdir().unwrap_or_else(|| repo.path()).to_path_buf(),
-    };
+    let keys = ContentKeys::of(repo);
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
     let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
@@ -645,6 +650,107 @@ fn with_line_counts(shape: Value, deltas: &[crate::diff::FileDelta], status_key:
 fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Value, String> {
     let (shape, key) = status_shape(repo_path, max_files)?;
     counted_status(shape, key, repo_path)
+}
+
+/// The most paths one `git.diff` may ask for. A browser fetches the bodies of
+/// what it is showing, in batches; the cap is what keeps one answer inside the
+/// relay's frame.
+pub const GIT_DIFF_MAX_PATHS: usize = 50;
+
+/// `git.diff` — the uncommitted patch of each of `paths`, with the content key
+/// each body should be cached under.
+///
+/// Answers in request order, one entry per asked path: a path with no change
+/// answers an empty patch and its key, and each patch is capped at
+/// [`GIT_SHOW_MAX_PATCH_BYTES`] with a `truncated` flag.
+pub fn file_patches(repo_path: &Path, paths: &[String]) -> Result<Value, String> {
+    file_patches_capped(repo_path, paths, GIT_SHOW_MAX_PATCH_BYTES)
+}
+
+/// [`file_patches`] with the per-patch cap injectable, so a test exercises the
+/// truncation path without a megabyte of fixture.
+fn file_patches_capped(
+    repo_path: &Path,
+    paths: &[String],
+    max_patch_bytes: usize,
+) -> Result<Value, String> {
+    reject_unreadable_paths(paths)?;
+    let repo = open_repo(repo_path)?;
+    let keys = content_keys_for_paths(&repo, paths)?;
+    let rendered: HashMap<String, String> = crate::diff::patch_for_paths(repo_path, paths)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|file| (file.path, file.patch))
+        .collect();
+    let files: Vec<Value> = paths
+        .iter()
+        .map(|path| {
+            let (patch, truncated) = truncate_at_utf8_boundary(
+                rendered.get(path).cloned().unwrap_or_default(),
+                max_patch_bytes,
+            );
+            json!({
+                "path": path,
+                "content_key": keys.get(path).cloned().unwrap_or_default(),
+                "patch": patch,
+                "truncated": truncated,
+            })
+        })
+        .collect();
+    Ok(json!({ "files": files }))
+}
+
+/// The fence `git.diff` reads paths through. It is the pair of predicates
+/// [`stageable_paths`] is built from, but both are fatal here: `git.diff`
+/// answers every path it is asked for, in order, so a path it cannot read is
+/// an error rather than a dropped answer nobody can align.
+fn reject_unreadable_paths(paths: &[String]) -> Result<(), String> {
+    if paths.is_empty() || paths.len() > GIT_DIFF_MAX_PATHS {
+        return Err(format!(
+            "git.diff takes 1 to {GIT_DIFF_MAX_PATHS} paths, got {}",
+            paths.len()
+        ));
+    }
+    for path in paths {
+        if !crate::plan::is_worktree_contained_path(path) {
+            return Err(format!("path escapes the worktree: {path}"));
+        }
+        if crate::diff::is_mcp_config(path) {
+            return Err(format!("path is not readable through git.diff: {path}"));
+        }
+    }
+    Ok(())
+}
+
+/// The content key of each of `paths`, from a status walk restricted to them.
+/// A path the walk does not report is unchanged, and keys off its file on disk.
+fn content_keys_for_paths(
+    repo: &git2::Repository,
+    paths: &[String],
+) -> Result<HashMap<String, String>, String> {
+    let keys = ContentKeys::of(repo);
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .disable_pathspec_match(true);
+    for path in paths {
+        opts.pathspec(path);
+    }
+    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+    let mut found: HashMap<String, String> = statuses
+        .iter()
+        .map(|entry| {
+            let path = String::from_utf8_lossy(entry.path_bytes()).into_owned();
+            let key = keys.key_for(&path, &entry);
+            (path, key)
+        })
+        .collect();
+    for path in paths {
+        found
+            .entry(path.clone())
+            .or_insert_with(|| keys.key_off_disk(path));
+    }
+    Ok(found)
 }
 
 /// Validate and filter a stage/unstage path list: every path must pass the
@@ -1449,6 +1555,80 @@ mod tests {
 
         let stale = status_payload_unless(&repo, Some("0000000000000000")).unwrap();
         assert_eq!(stale, full);
+    }
+
+    #[test]
+    fn a_files_patch_is_answered_for_every_asked_path_in_order() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        std::fs::write(repo.join("new.txt"), "a\nb\n").unwrap();
+        std::fs::write(repo.join("README.md"), "# project\nedit\n").unwrap();
+
+        let answer =
+            file_patches(&repo, &["new.txt".to_string(), "README.md".to_string()]).unwrap();
+        let files = answer["files"].as_array().unwrap();
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["path"], "new.txt");
+        assert!(files[0]["patch"].as_str().unwrap().contains("+a"));
+        assert_eq!(files[0]["truncated"], false);
+        assert_eq!(files[1]["path"], "README.md");
+        assert!(files[1]["patch"].as_str().unwrap().contains("+edit"));
+
+        let status = status_payload(&repo).unwrap();
+        let readme = status["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "README.md")
+            .unwrap();
+        assert_eq!(
+            files[1]["content_key"], readme["content_key"],
+            "one file, one key on both verbs"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_path_answers_an_empty_patch_and_still_carries_its_key() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+
+        let answer = file_patches(&repo, &["README.md".to_string()]).unwrap();
+        let file = &answer["files"][0];
+
+        assert_eq!(file["path"], "README.md");
+        assert_eq!(file["patch"], "");
+        assert_eq!(file["truncated"], false);
+        assert_eq!(file["content_key"].as_str().unwrap().len(), 16);
+    }
+
+    /// `git.diff` answers every path it is asked for, in order, so a path it
+    /// cannot read is an error rather than a silently dropped answer.
+    #[test]
+    fn a_path_git_diff_cannot_read_is_an_error_not_a_gap() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+
+        assert!(file_patches(&repo, &["../evil".to_string()])
+            .unwrap_err()
+            .contains("escapes the worktree"));
+        assert!(file_patches(&repo, &[".build/mcp.json".to_string()])
+            .unwrap_err()
+            .contains("not readable through git.diff"));
+        assert!(file_patches(&repo, &[]).is_err());
+        let too_many: Vec<String> = (0..=GIT_DIFF_MAX_PATHS)
+            .map(|n| format!("f{n}.txt"))
+            .collect();
+        assert!(file_patches(&repo, &too_many).is_err());
+    }
+
+    #[test]
+    fn a_patch_past_the_cap_is_truncated_and_flagged() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        std::fs::write(repo.join("big.txt"), "line\n".repeat(500)).unwrap();
+
+        let answer = file_patches_capped(&repo, &["big.txt".to_string()], 200).unwrap();
+        let file = &answer["files"][0];
+
+        assert_eq!(file["truncated"], true);
+        assert!(file["patch"].as_str().unwrap().len() <= 200);
     }
 
     #[test]

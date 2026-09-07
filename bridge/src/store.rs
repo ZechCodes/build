@@ -1282,6 +1282,40 @@ impl Store {
         decode_thread_item_text(agent_id, raw_items)
     }
 
+    /// The newest activity strictly between two sequences, oldest-first and
+    /// bounded by `limit` — what an opened run renders, read out of the
+    /// history no load holds.
+    ///
+    /// The exact sibling of `Thread::activity_between`, and the same statement
+    /// a page's own run read steps: exclusive at both ends, so the bound
+    /// arithmetic a verb with an inclusive span needs lives at that verb's call
+    /// site rather than in two statements that would have to be kept equal.
+    pub fn thread_activity_range(
+        &self,
+        agent_id: &str,
+        after_sequence: u64,
+        before_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let connection = self.connection();
+        let rows = read_sequenced_rows(
+            &mut connection.prepare(THREAD_ACTIVITY_RANGE_SQL)?,
+            rusqlite::params![
+                agent_id,
+                i64::try_from(after_sequence).unwrap_or(i64::MAX),
+                i64::try_from(before_sequence).unwrap_or(i64::MAX),
+                limit as i64
+            ],
+        )?;
+        drop(connection);
+        let mut page =
+            decode_thread_item_text(agent_id, rows.into_iter().map(|(_, item)| item).collect())?;
+        // Read newest-first off the seek, handed back in the order the run
+        // happened in — the way every other page is.
+        page.reverse();
+        Ok(page)
+    }
+
     /// How many tool calls a conversation holds between two sequences,
     /// inclusive — the census one activity digest's count is.
     ///

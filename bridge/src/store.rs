@@ -3043,10 +3043,10 @@ mod tests {
     }
 
     /// A stored page is measured the same way a resident one is: its limit
-    /// buys conversation, the activity between two messages travels with them,
-    /// and `has_more` answers for items of any kind below what was shipped.
+    /// buys MESSAGES, the activity between two messages travels with them, and
+    /// `has_more` answers for items of any kind below what was shipped.
     #[test]
-    fn a_stored_page_is_measured_in_conversation() {
+    fn a_stored_page_is_measured_in_messages() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
@@ -3072,9 +3072,12 @@ mod tests {
             .expect("a page reads");
         let shipped = sequences(&page.items);
         assert_eq!(
-            page.items.iter().filter(|item| item.counted()).count(),
+            page.items
+                .iter()
+                .filter(|item| item.counts_toward_page())
+                .count(),
             3,
-            "the limit counts conversation: {shipped:?}"
+            "the limit counts messages: {shipped:?}"
         );
         assert!(
             shipped.len() > 3,
@@ -3083,7 +3086,7 @@ mod tests {
         assert_eq!(
             shipped,
             (*shipped.first().unwrap()..=60).collect::<Vec<u64>>(),
-            "a page is one contiguous run, oldest-first"
+            "no run here reaches the cap, so this page is contiguous, oldest-first"
         );
         assert!(has_more, "there is history below this page");
 

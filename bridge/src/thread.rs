@@ -3555,6 +3555,42 @@ mod counted_page_tests {
         assert!(digests[0]["last_tool_call"].is_null(), "{digests:?}");
     }
 
+    /// The shape on the wire, whole. A client reads these four names and no
+    /// others, and a digest always carries `last_tool_call` — the object when
+    /// the run made a call, `null` when it made none — so nothing has to read
+    /// around a field that is sometimes absent.
+    #[test]
+    fn an_activity_digest_ships_a_fixed_shape() {
+        let mut thread = Thread::new("run-shape");
+        thread.post_user("rename the helper", None, NOW);
+        thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        let call = thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Bash(cargo test)".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        assert!(thread.resolve_tool_call(call, ToolCallOutcome::Ok, "1735 passed"));
+
+        let page = thread.wire_value_page(None, 5);
+        assert_eq!(
+            page["activity_digests"][0],
+            json!({
+                "from_sequence": 2,
+                "through_sequence": 3,
+                "tool_calls": 1,
+                "last_tool_call": {
+                    "sequence": 3,
+                    "created_at": NOW,
+                    "summary": "Bash(cargo test)\n\u{2192} 1735 passed",
+                    "outcome": "ok"
+                }
+            }),
+            "{page:?}"
+        );
+    }
+
     /// The run still open at the end of a conversation is digested through the
     /// thread's last sequence, not through some item inside it: a client
     /// holding only the page can tell exactly which arrivals the digest has

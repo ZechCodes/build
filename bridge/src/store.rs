@@ -513,9 +513,12 @@ const THREAD_CONVERSATION_FLOOR_SQL: &str = "SELECT sequence FROM thread_items \
 /// newest-first — so the activity between two messages travels with them, and
 /// the runs of it are whole, which is what makes their digests countable.
 ///
-/// Bounded in MESSAGES rather than in items, so the read is unbounded in
-/// activity: the deferred tool-call lazy-load is what replaces it, and the
-/// `tool_call` column is what will let the digests survive that change.
+/// Bounded in MESSAGES rather than in items, so the read itself is unbounded
+/// in activity: a turn of a thousand tool calls is a thousand rows read to
+/// answer a page. What the page SHIPS is bounded anyway, by the cut, and the
+/// count each folded run reports comes from the census rather than from these
+/// rows — so the rows a run contributes past the cut are read, decoded and
+/// dropped. That is the cost this read still carries.
 const THREAD_CONVERSATION_PAGE_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND sequence < ?2 AND sequence >= ?3 \
      ORDER BY sequence DESC";
@@ -1197,6 +1200,11 @@ impl Store {
     /// The floor is a message, so the span's oldest item ends whatever run sits
     /// above it — which is what lets the cut count a run it can see the whole
     /// of.
+    ///
+    /// The connection is held for the two reads and let go before the JSON is
+    /// parsed. Deserializing a page of items is the expensive half of this
+    /// call, and every other store call — an append, a poll, another
+    /// conversation's page — waits behind the same mutex while it runs.
     fn conversation_span(
         &self,
         agent_id: &str,
@@ -1218,11 +1226,14 @@ impl Store {
             .optional()?
             .unwrap_or(0);
         let mut statement = connection.prepare(THREAD_CONVERSATION_PAGE_SQL)?;
-        let rows = statement.query_map(rusqlite::params![agent_id, before, floor], |row| {
-            row.get::<_, String>(0)
-        })?;
-        let span = decode_thread_items(agent_id, rows)?;
-        Ok(span)
+        let raw_items = statement
+            .query_map(rusqlite::params![agent_id, before, floor], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<String>, _>>()?;
+        drop(statement);
+        drop(connection);
+        decode_thread_item_text(agent_id, raw_items)
     }
 
     /// How many tool calls a conversation holds between two sequences,
@@ -2116,13 +2127,26 @@ fn read_thread_page(
     Ok(page)
 }
 
-/// Turn stored item rows into conversation items, naming the conversation in
-/// the error so a corrupt row says which agent's history stopped parsing.
+/// Turn stored item rows into conversation items. Reads the rows off the
+/// statement — so the caller is still holding the connection — and decodes
+/// them in the same breath.
 fn decode_thread_items(
     agent_id: &str,
     rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<String>>,
 ) -> Result<Vec<ThreadItem>, StoreError> {
-    rows.collect::<Result<Vec<String>, _>>()?
+    decode_thread_item_text(agent_id, rows.collect::<Result<Vec<String>, _>>()?)
+}
+
+/// Turn stored item TEXT into conversation items, naming the conversation in
+/// the error so a corrupt row says which agent's history stopped parsing.
+///
+/// Takes the text rather than the rows so a caller that has finished with the
+/// database can let the connection go before it parses.
+fn decode_thread_item_text(
+    agent_id: &str,
+    raw_items: Vec<String>,
+) -> Result<Vec<ThreadItem>, StoreError> {
+    raw_items
         .into_iter()
         .map(|raw| serde_json::from_str(&raw))
         .collect::<Result<Vec<_>, _>>()

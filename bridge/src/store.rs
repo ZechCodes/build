@@ -448,6 +448,11 @@ CREATE INDEX IF NOT EXISTS thread_items_conversation
 -- between them.
 CREATE INDEX IF NOT EXISTS thread_items_messages
     ON thread_items(agent_id, sequence) WHERE message = 1;
+-- The census, indexed: a page's digest counts the tool calls of a run exactly,
+-- including the ones the per-run cap left off the wire. Partial and covering,
+-- so the count is a seek down the calls themselves and never reads a row.
+CREATE INDEX IF NOT EXISTS thread_items_tool_calls
+    ON thread_items(agent_id, sequence) WHERE tool_call = 1;
 
 CREATE TABLE IF NOT EXISTS captures (
     id     TEXT PRIMARY KEY,
@@ -861,6 +866,7 @@ impl Store {
             "DROP INDEX IF EXISTS thread_items_attention;
              DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
+             DROP INDEX IF EXISTS thread_items_tool_calls;
              ALTER TABLE thread_items DROP COLUMN attention;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
@@ -876,6 +882,7 @@ impl Store {
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
+             DROP INDEX IF EXISTS thread_items_tool_calls;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
              UPDATE meta SET value = '2' WHERE key = 'schema_version';",
@@ -888,7 +895,8 @@ impl Store {
     pub fn pretend_to_be_v3(&self) {
         let conn = self.connection();
         conn.execute_batch(
-            "ALTER TABLE thread_items DROP COLUMN tool_call;
+            "DROP INDEX IF EXISTS thread_items_tool_calls;
+             ALTER TABLE thread_items DROP COLUMN tool_call;
              UPDATE meta SET value = '3' WHERE key = 'schema_version';",
         )
         .expect("the v3 shape is staged");
@@ -2561,6 +2569,7 @@ mod tests {
             THREAD_MESSAGE_PAGE_SQL,
             THREAD_CONVERSATION_FLOOR_SQL,
             THREAD_CONVERSATION_PAGE_SQL,
+            THREAD_TOOL_CALL_COUNT_SQL,
         ] {
             let mut explain = connection
                 .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
@@ -2645,6 +2654,34 @@ mod tests {
         assert!(
             plan.iter().any(|step| step.contains("thread_items_cursor")),
             "the forward cursor does not use thread_items_cursor: {plan:?}"
+        );
+    }
+
+    /// The census's index by name. A count over a span answered off the
+    /// primary key reads every item in the span to test `tool_call` on each —
+    /// the whole cost of a thousand-call run, paid to print one number. The
+    /// partial index holds only the calls, so the count is a seek down them
+    /// and the plan says COVERING: the row itself is never touched.
+    #[test]
+    fn the_tool_call_census_reads_through_the_tool_call_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let connection = store.connection();
+        let mut explain = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {THREAD_TOOL_CALL_COUNT_SQL}"))
+            .expect("the statement prepares");
+        let placeholders = vec![1_i64; explain.parameter_count()];
+        let plan: Vec<String> = explain
+            .query_map(rusqlite::params_from_iter(placeholders), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("the plan reads")
+            .collect::<Result<_, _>>()
+            .expect("the plan reads");
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("COVERING INDEX thread_items_tool_calls")),
+            "the census does not use thread_items_tool_calls: {plan:?}"
         );
     }
 

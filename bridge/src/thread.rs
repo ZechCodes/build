@@ -1201,18 +1201,6 @@ pub const DEFAULT_THREAD_PAGE: usize = 20;
 /// paging exists to prevent, so the cap holds even when the caller means well.
 pub const MAX_THREAD_PAGE: usize = 200;
 
-/// How many items a page may ship per unit of its limit.
-///
-/// A page's `limit` buys CONVERSATION — messages and the events that call the
-/// human — and the activity between two messages travels beside them without
-/// being counted, because an agent that spent an hour on tool calls must not
-/// push what was said off the page a reviewer opens on. This is the hard bound
-/// that keeps "rides free" from meaning "unbounded": an all-activity stretch
-/// ends the page early, and `has_more` says so. A multiple of the budget
-/// rather than a flat constant, so the smallest polls stay small — a page of 1
-/// ships at most 10 items, the default 60 at most 600.
-pub const THREAD_PAGE_SPAN_FACTOR: usize = 10;
-
 /// How many items of any ONE run of activity a page ships.
 ///
 /// A run is folded to a single row, so what the wire has to carry is the newest
@@ -2374,26 +2362,21 @@ impl Thread {
     /// Whether the page asked for reaches under the tail this process holds,
     /// and so has to be read from the store instead of out of memory.
     ///
-    /// Counted the way the page is: the tail answers when it holds the page's
-    /// worth of CONVERSATION below the seek, or when it holds the page's
-    /// ceiling in items of any kind — a tail that fills the ceiling is a full
-    /// page whatever is in it, and there is nothing the store could add.
+    /// Measured the way the page is: the tail answers when it holds the page's
+    /// worth of MESSAGES below the seek. A tail of pure activity holds no page
+    /// at all, however many items it holds — which is also what makes a page
+    /// answered from memory able to count its own runs, since its oldest walked
+    /// item is then a resident message.
     pub fn page_reaches_stored_history(&self, before_sequence: Option<u64>, limit: usize) -> bool {
         if self.earlier_item_count == 0 {
             return false;
         }
         let before = before_sequence.unwrap_or(u64::MAX);
-        let below: Vec<&ThreadItem> = self
-            .items
+        self.items
             .iter()
-            .filter(|item| item.sequence() < before)
-            .collect();
-        below
-            .iter()
-            .filter(|item| item.counts_toward_page())
+            .filter(|item| item.sequence() < before && item.counts_toward_page())
             .count()
             < limit
-            && below.len() < page_span_ceiling(limit)
     }
 
     /// Whether a cursor this far back reaches under the tail this process
@@ -2657,26 +2640,68 @@ impl Thread {
             .iter()
             .filter(|item| item.sequence() < before)
             .collect();
-        let page = &older[older.len() - page_span(older.iter().rev().copied(), limit)..];
-        // What is left above this page, plus the history no load read: both
+        let reached = older.len() - page_span(older.iter().rev().copied(), limit);
+        let span: Vec<&ThreadItem> = older[reached..].iter().rev().copied().collect();
+        // The census is exact off the resident tail because every run on a page
+        // answered from memory lies entirely inside it: such a page has
+        // `page_reaches_stored_history() == false`, so its limit-th message is
+        // resident and a message ends the oldest run — or the walk reached the
+        // start of the conversation, where there is nothing below it at all.
+        debug_assert!(
+            reached + self.earlier_item_count as usize == 0
+                || span.last().is_none_or(|oldest| !oldest.is_activity()),
+            "a memory page whose oldest walked item is activity cannot count its own run"
+        );
+        let census = |from: u64, through: u64| {
+            Ok::<u64, std::convert::Infallible>(
+                self.items
+                    .iter()
+                    .filter(|item| {
+                        item.is_tool_call() && (from..=through).contains(&item.sequence())
+                    })
+                    .count() as u64,
+            )
+        };
+        let cut = match cut_activity_runs(span, census) {
+            Ok(cut) => cut,
+            Err(impossible) => match impossible {},
+        };
+        // What is left below what shipped, plus the history no load read: both
         // are pages the client can still ask for.
-        let outstanding = older.len() - page.len() + self.earlier_item_count as usize;
-        self.wire_value_of_page(page, outstanding > 0)
+        let outstanding = match cut.items.first().map(|item| item.sequence()) {
+            Some(oldest) => older.iter().filter(|item| item.sequence() < oldest).count(),
+            None => older.len(),
+        } + self.earlier_item_count as usize;
+        self.wire_value_of_page(&cut, outstanding > 0)
     }
 
-    /// The page shape, around items the caller already chose — the tail this
-    /// process holds, or a page read back out of the store.
+    /// The page shape, around the cut the caller already made — off the tail
+    /// this process holds, or off a page read back out of the store. Takes the
+    /// cut whole, borrowed or owned, so items and digests cannot be assembled
+    /// out of sync.
+    ///
+    /// A page is NOT guaranteed contiguous: the per-run cap omits items inside
+    /// a run of activity, and `activity_digests` is what accounts for them —
+    /// one per run the page touches, exact over the whole run. `has_more` is
+    /// unchanged and means what it always did: something sits below the page's
+    /// oldest SHIPPED item.
     ///
     /// `thread_total` still counts the whole conversation, not the page, so the
     /// client can tell "my cache is a bounded window" from "my cache lost
     /// something" — the gap check the forward cursor already relies on.
-    pub fn wire_value_of_page(&self, page: &[&ThreadItem], has_more: bool) -> Value {
+    pub fn wire_value_of_page<T: Borrow<ThreadItem>>(
+        &self,
+        cut: &PageCut<T>,
+        has_more: bool,
+    ) -> Value {
+        let page: Vec<&ThreadItem> = cut.items.iter().map(Borrow::borrow).collect();
         count_serialized_items(page.len());
         json!({
             "id": self.id,
             "agent": self.agent,
             "sessions": self.sessions,
             "items": page,
+            "activity_digests": cut.digests,
             "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
             "thread_total": self.total_item_count(),
@@ -2746,25 +2771,19 @@ impl Thread {
     }
 }
 
-/// The most items a page of `limit` conversation may ship.
-pub fn page_span_ceiling(limit: usize) -> usize {
-    limit.saturating_mul(THREAD_PAGE_SPAN_FACTOR)
-}
-
-/// How many items a page takes, walking newest→older: every item ships, the
-/// walk stops at the `limit`-th counted item, and the ceiling stops it early
-/// however much activity it is walking through.
+/// How far back a page reaches, walking newest→older: to the `limit`-th
+/// message, and no further.
 ///
-/// So activity BETWEEN counted items travels with the page uncounted, folded
-/// beside the messages it sits between, and activity older than the page's
-/// oldest counted item waits for the next page. A page is always one
-/// contiguous run of sequences.
+/// The whole span, not what ships: activity between two messages is the page's
+/// too, and [`cut_activity_runs`] decides how much of each run the wire
+/// carries. A conversation shorter than the limit is reached whole, which is
+/// what makes the oldest walked item either a message or the start of the
+/// conversation — and so what makes a run on a page always countable.
 fn page_span<'a>(newest_first: impl Iterator<Item = &'a ThreadItem>, limit: usize) -> usize {
-    let ceiling = page_span_ceiling(limit);
     let mut taken = 0;
     let mut counted = 0;
     for item in newest_first {
-        if taken == ceiling || counted == limit {
+        if counted == limit {
             break;
         }
         taken += 1;
@@ -3459,11 +3478,11 @@ mod counted_page_tests {
         );
     }
 
-    /// The ceiling. An all-activity stretch cannot make a page unbounded: the
-    /// walk stops at ten items per unit of the budget, the page ends higher,
-    /// and `has_more` says there is more to ask for.
+    /// The cap. An all-activity stretch cannot make a page unbounded: the run
+    /// ships its newest hundred and the digest beside it says how many there
+    /// really were, so the reviewer is told a thousand without being sent one.
     #[test]
-    fn an_all_activity_stretch_is_bounded_by_the_span_factor() {
+    fn an_all_activity_stretch_is_bounded_by_the_run_cap() {
         let mut thread = Thread::new("run-busy");
         thread.post_user("please rename the helper", None, NOW);
         for index in 0..1000 {
@@ -3478,15 +3497,60 @@ mod counted_page_tests {
 
         let page = thread.wire_value_page(None, 5);
         let shipped = page_items(&page);
+        assert_eq!(shipped.len(), 1 + PAGE_ACTIVITY_RUN_CAP, "{}", shipped.len());
+        assert_eq!(counted_in_page(&page), 1, "the one thing said is on it");
         assert_eq!(
-            shipped.len(),
-            5 * THREAD_PAGE_SPAN_FACTOR,
-            "{}",
-            shipped.len()
+            page["has_more"], false,
+            "nothing sits below the page's oldest item"
         );
-        assert_eq!(counted_in_page(&page), 0, "there was nothing said in it");
-        assert_eq!(page["has_more"], true, "the walk stopped early and says so");
         assert_eq!(page["oldest_sequence"], shipped[0]);
+
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 1, "{digests:?}");
+        assert_eq!(digests[0]["from_sequence"], 2);
+        assert_eq!(digests[0]["through_sequence"], thread.last_sequence());
+        assert_eq!(digests[0]["tool_calls"], 1000, "the omitted calls counted");
+        assert_eq!(digests[0]["last_tool_call"]["sequence"], 1001);
+        assert_eq!(
+            digests[0]["last_tool_call"]["summary"], "Read file-999.rs",
+            "{digests:?}"
+        );
+    }
+
+    /// Every page carries its runs' digests; a forward delta carries none —
+    /// a delta says what arrived, and what arrived is what the client holds.
+    #[test]
+    fn a_page_carries_activity_digests_and_a_delta_carries_none() {
+        let thread = conversation_with_activity(4, 3);
+
+        let page = thread.wire_value_page(None, 2);
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 2, "one per run on the page: {digests:?}");
+        assert!(
+            digests
+                .iter()
+                .all(|digest| digest["tool_calls"] == 3 && digest["last_tool_call"].is_object()),
+            "{digests:?}"
+        );
+
+        let delta = thread.wire_value_after(0);
+        assert!(delta.get("activity_digests").is_none(), "{delta:?}");
+    }
+
+    /// A run of nothing but thinking folds to a row with nothing to claim, and
+    /// the fixed shape says so rather than leaving the field out.
+    #[test]
+    fn a_run_without_tool_calls_ships_a_null_last_call() {
+        let mut thread = Thread::new("run-quiet");
+        thread.post_user("what do you make of it", None, NOW);
+        for _ in 0..4 {
+            thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        }
+
+        let page = thread.wire_value_page(None, 5);
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests[0]["tool_calls"], 0, "{digests:?}");
+        assert!(digests[0]["last_tool_call"].is_null(), "{digests:?}");
     }
 
     /// What a sequence-paging client relies on: pages abut at their seeks, so
@@ -3512,12 +3576,12 @@ mod counted_page_tests {
         assert_eq!(walked, (1..=thread.last_sequence()).collect::<Vec<u64>>());
     }
 
-    /// The gate that sends a page to the store is counted too: a tail holding
-    /// only activity cannot answer a page, however many items it holds — and a
-    /// tail that fills the ceiling is a full page from memory whatever it
-    /// holds.
+    /// The gate that sends a page to the store is measured in messages too: a
+    /// tail holding only activity cannot answer a page, however many items it
+    /// holds, and a tail holding the page's worth of words answers it whatever
+    /// else is under it.
     #[test]
-    fn the_stored_page_gate_counts_conversation_and_respects_the_ceiling() {
+    fn the_stored_page_gate_is_measured_in_messages() {
         let mut whole = Thread::new("run-busy");
         whole.post_user("please rename the helper", None, NOW);
         for index in 0..300 {
@@ -3541,11 +3605,22 @@ mod counted_page_tests {
             starved.page_reaches_stored_history(None, 5),
             "a tail of pure activity holds no page of conversation"
         );
-        // A page of one buys ten items at most, and the tail holds twenty:
-        // there is nothing the store could add to it.
         assert!(
-            !starved.page_reaches_stored_history(None, 1),
-            "a tail that fills the ceiling is a full page from memory"
+            starved.page_reaches_stored_history(None, 1),
+            "not even one message: the words are under the tail"
+        );
+
+        whole.post_agent("renamed it", None, NOW);
+        let spoken = whole.items.clone();
+        let mut fed = Thread::new("run-busy");
+        fed.adopt_stored_tail(
+            spoken[spoken.len() - 20..].to_vec(),
+            (spoken.len() - 20) as u64,
+            whole.last_sequence(),
+        );
+        assert!(
+            !fed.page_reaches_stored_history(None, 1),
+            "a tail holding the page's words answers it from memory"
         );
     }
 }

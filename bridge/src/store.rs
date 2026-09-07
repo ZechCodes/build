@@ -59,7 +59,7 @@ use crate::attention::Attention;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc};
 use crate::run::{RunState, StageProgress};
-use crate::thread::{Thread, ThreadItem};
+use crate::thread::{cut_activity_runs, PageCut, Thread, ThreadItem};
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -504,12 +504,16 @@ const THREAD_CONVERSATION_FLOOR_SQL: &str = "SELECT sequence FROM thread_items \
      WHERE agent_id = ?1 AND message = 1 AND sequence < ?2 \
      ORDER BY sequence DESC LIMIT 1 OFFSET ?3";
 
-/// The page itself: every item in that span, newest-first under the ceiling —
-/// so the activity between two messages travels with them, and an
-/// all-activity stretch ends the page early instead of reading without bound.
+/// The span the page reaches over: every item between the floor and the seek,
+/// newest-first — so the activity between two messages travels with them, and
+/// the runs of it are whole, which is what makes their digests countable.
+///
+/// Bounded in MESSAGES rather than in items, so the read is unbounded in
+/// activity: the deferred tool-call lazy-load is what replaces it, and the
+/// `tool_call` column is what will let the digests survive that change.
 const THREAD_CONVERSATION_PAGE_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND sequence < ?2 AND sequence >= ?3 \
-     ORDER BY sequence DESC LIMIT ?4";
+     ORDER BY sequence DESC";
 
 /// How much of a conversation a load reads and the daemon then holds.
 ///
@@ -1140,21 +1144,57 @@ impl Store {
         read_thread_page(&mut statement, agent_id, before, limit)
     }
 
-    /// One page of a conversation, measured in conversation: the items down to
-    /// and including the `limit`-th counted one below `before_sequence`,
-    /// oldest-first, with whether anything at all remains below it.
+    /// One page of a conversation, measured in messages: the items down to and
+    /// including the `limit`-th message below `before_sequence`, cut the way
+    /// every page is cut, with whether anything at all remains below what it
+    /// shipped.
     ///
-    /// Three seeks and no scan. One finds where the page reaches back to, one
-    /// reads that span under the ceiling, and one asks whether anything is
-    /// left below what was shipped — which is what `has_more` means, for items
-    /// of any kind, so a client walking `before_sequence = oldest_sequence`
-    /// sees every row exactly once.
+    /// The cut is [`cut_activity_runs`](crate::thread::cut_activity_runs), the
+    /// same one the resident path uses — the only difference is the census,
+    /// which here counts in SQL off the hoisted `tool_call` column instead of
+    /// walking a tail. So a run of a thousand calls ships its newest hundred
+    /// from either path, and says a thousand from either path.
     pub fn thread_conversation_page(
         &self,
         agent_id: &str,
         before_sequence: Option<u64>,
         limit: usize,
-    ) -> Result<(Vec<ThreadItem>, bool), StoreError> {
+    ) -> Result<(PageCut<ThreadItem>, bool), StoreError> {
+        let span = self.conversation_span(agent_id, before_sequence, limit)?;
+        let cut = cut_activity_runs(span, |from, through| {
+            self.tool_calls_between(agent_id, from, through)
+        })?;
+        // Off the page's own oldest item, never off the floor: the cap may have
+        // omitted the oldest of a run, and a page that claimed to reach the
+        // floor it asked for would tell a client to skip what it never sent.
+        let Some(shipped_floor) = cut.items.first().map(ThreadItem::sequence) else {
+            return Ok((cut, false));
+        };
+        let has_more = self
+            .connection()
+            .query_row(
+                "SELECT 1 FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 LIMIT 1",
+                rusqlite::params![agent_id, shipped_floor as i64],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok((cut, has_more))
+    }
+
+    /// The span a page reaches over, newest-first: two seeks and no scan. One
+    /// finds the `limit`-th message below the seek, the other reads everything
+    /// from there up.
+    ///
+    /// The floor is a message, so the span's oldest item ends whatever run sits
+    /// above it — which is what lets the cut count a run it can see the whole
+    /// of.
+    fn conversation_span(
+        &self,
+        agent_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
         let before = before_sequence
             .and_then(|sequence| i64::try_from(sequence).ok())
             .unwrap_or(i64::MAX);
@@ -1169,39 +1209,13 @@ impl Store {
             )
             .optional()?
             .unwrap_or(0);
-        let mut page = {
-            let mut statement = connection.prepare(THREAD_CONVERSATION_PAGE_SQL)?;
-            let span = decode_thread_items(
-                agent_id,
-                statement.query_map(
-                    rusqlite::params![
-                        agent_id,
-                        before,
-                        floor,
-                        crate::thread::page_span_ceiling(limit) as i64
-                    ],
-                    |row| row.get::<_, String>(0),
-                )?,
-            )?;
-            span
-        };
-        page.reverse();
-        // Off the page's own oldest item, never off the floor: the ceiling may
-        // have stopped the read above it, and a page that claimed to reach the
-        // floor it asked for would tell a client to skip what it never sent.
-        let shipped_floor = match page.first() {
-            Some(oldest) => oldest.sequence() as i64,
-            None => return Ok((page, false)),
-        };
-        let has_more = connection
-            .query_row(
-                "SELECT 1 FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 LIMIT 1",
-                rusqlite::params![agent_id, shipped_floor],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        Ok((page, has_more))
+        let mut statement = connection.prepare(THREAD_CONVERSATION_PAGE_SQL)?;
+        decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, before, floor], |row| {
+                row.get::<_, String>(0)
+            })?,
+        )
     }
 
     /// How many tool calls a conversation holds between two sequences,
@@ -3092,10 +3106,10 @@ mod tests {
         assert_eq!(walked, (1..=60).collect::<Vec<u64>>());
     }
 
-    /// The ceiling holds in SQL too: an all-activity stretch ends the page
-    /// early rather than reading an unbounded span of it.
+    /// The cap holds in SQL too: an all-activity stretch ships its newest
+    /// hundred and the digest beside it counts the rest.
     #[test]
-    fn a_stored_page_of_pure_activity_stops_at_the_ceiling() {
+    fn a_stored_page_of_pure_activity_ships_its_newest_and_counts_them_all() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
@@ -3111,11 +3125,73 @@ mod tests {
         }
         store.save_run(&record).expect("the conversation saves");
 
-        let (page, has_more) = store
+        let (cut, has_more) = store
             .thread_conversation_page(&record.agents[0].id, None, 4)
             .expect("a page reads");
-        assert_eq!(page.len(), 4 * crate::thread::THREAD_PAGE_SPAN_FACTOR);
-        assert!(has_more, "the walk stopped early and says so");
+        assert_eq!(cut.items.len(), 1 + crate::thread::PAGE_ACTIVITY_RUN_CAP);
+        assert!(!has_more, "nothing sits below the page's oldest item");
+        let digest = cut.digests.first().expect("the run has a digest");
+        assert_eq!(digest.tool_calls, 500, "the omitted calls counted");
+        assert_eq!(
+            digest.last_tool_call.as_ref().map(|last| last.sequence),
+            Some(501)
+        );
+    }
+
+    /// The two page paths are one rule. The same conversation, read out of
+    /// memory and read back out of SQLite, ships the same items and the same
+    /// digests — the only difference between them is where the census counted.
+    #[test]
+    fn the_stored_page_and_the_resident_page_are_the_same_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for turn in 0..8 {
+            record.agents[0]
+                .thread
+                .post_user(format!("ask {turn}"), None, NOW);
+            for index in 0..crate::thread::PAGE_ACTIVITY_RUN_CAP + 20 {
+                record.agents[0].thread.push_event(
+                    crate::thread::ThreadEventKind::ToolUse,
+                    Some(format!("Read file-{turn}-{index}.rs")),
+                    None,
+                    None,
+                    NOW,
+                );
+            }
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Committed,
+                Some(format!("committed {turn}")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+        let thread = &record.agents[0].thread;
+
+        let (cut, has_more) = store
+            .thread_conversation_page(&record.agents[0].id, None, 3)
+            .expect("a page reads");
+        let from_store = thread.wire_value_of_page(&cut, has_more);
+        let from_memory = thread.wire_value_page(None, 3);
+
+        assert_eq!(from_store["items"], from_memory["items"]);
+        assert_eq!(
+            from_store["activity_digests"],
+            from_memory["activity_digests"]
+        );
+        assert_eq!(from_store["has_more"], from_memory["has_more"]);
+        assert_eq!(
+            from_store["activity_digests"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|digest| digest["tool_calls"].as_u64().unwrap())
+                .collect::<Vec<u64>>(),
+            vec![crate::thread::PAGE_ACTIVITY_RUN_CAP as u64 + 20; 3],
+            "{from_store:?}"
+        );
     }
 
     /// A tool call answered after it was stored is rewritten where it sits, and

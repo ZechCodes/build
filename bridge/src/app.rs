@@ -11502,10 +11502,11 @@ impl AppState {
 
     /// One page of the history no load read, straight off the store.
     ///
-    /// Measured in conversation exactly as a resident page is — the limit buys
-    /// messages and the events that call the human, the activity between them
-    /// rides along — and the store answers `has_more` for items of any kind
-    /// below what it shipped, so a client's backward walk still abuts.
+    /// Cut exactly as a resident page is — the limit buys messages, the
+    /// activity between them rides along folded under its per-run cap, and the
+    /// digests beside it count what the cap left off. The store answers
+    /// `has_more` for items of any kind below what it shipped, so a client's
+    /// backward walk still abuts.
     fn stored_thread_page(
         &self,
         thread: &crate::thread::Thread,
@@ -11516,10 +11517,10 @@ impl AppState {
             .store
             .as_ref()
             .ok_or("this conversation's history is not stored")?;
-        let (page, has_more) = store
+        let (cut, has_more) = store
             .thread_conversation_page(&thread.agent.id, before_sequence, limit)
             .map_err(|error| format!("conversation store: {error}"))?;
-        Ok(thread.wire_value_of_page(&page.iter().collect::<Vec<_>>(), has_more))
+        Ok(thread.wire_value_of_page(&cut, has_more))
     }
 
     /// A cursor's delta completed out of the store: the forward seek answers
@@ -37192,6 +37193,15 @@ mod tests {
             "the page a reviewer opens on is five turns of conversation: {said:?}"
         );
         assert_eq!(said.last(), Some(&"ask 39"), "{said:?}");
+
+        // And the work between the words is folded rather than shipped row by
+        // row: one digest per run, each counting the calls it made.
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 5, "one per run on the page: {digests:?}");
+        assert!(
+            digests.iter().all(|digest| digest["tool_calls"] == 6),
+            "{digests:?}"
+        );
 
         // And the walk back is whole: every item exactly once, in order, over
         // the seam between the tail and the stored history under it.

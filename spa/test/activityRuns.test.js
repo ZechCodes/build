@@ -142,21 +142,27 @@ describe("fetching what a run holds", () => {
   it("asks once for a run pressed twice before the answer lands", async () => {
     const calls = [];
     let answer = null;
+    let wireWasAsked = null;
+    const asked = new Promise((resolve) => {
+      wireWasAsked = resolve;
+    });
     const runs = createActivityRuns({
       deviceId: "dev-1",
       entityId: "run-3",
       agentId: "ag-1",
       call: async (method, params) => {
         calls.push({ method, params });
-        return new Promise((resolve) => {
+        const held = new Promise((resolve) => {
           answer = resolve;
         });
+        wireWasAsked();
+        return held;
       },
     });
 
     const first = runs.open(DIGEST);
     expect(await runs.open(DIGEST)).toBe(false);
-    await new Promise((tick) => setTimeout(tick, 0)); // the local cache is asked first
+    await asked; // the local cache is asked before the wire is
 
     answer(page([121]));
     expect(await first).toBe(true);

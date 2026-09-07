@@ -1,10 +1,10 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
-import { patchElement, patchInnerHtml } from "./domPatch.js";
+import { RENDERED_FOLD_ATTRIBUTE, patchElement, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { paintKeepingPlace, pinToBottom } from "./paintKeepingPlace.js";
 import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
-import { activityRunSummary, firstLine, mergeActivityDigests } from "./activityDigest.js";
+import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "./activityDigest.js";
 import {
   INTERRUPT_SEND_OPTION,
   autoGrow,
@@ -823,6 +823,7 @@ function activityMeat(event, meta, agentLabel) {
 /// and the newest sequence it stands for. Together they are the whole of what a
 /// shut run says about what is inside it.
 const ACTIVITY_RUN_ATTRIBUTE = "data-activity-run";
+const ACTIVITY_RUN_FROM_ATTRIBUTE = "data-activity-from";
 const ACTIVITY_RUN_THROUGH_ATTRIBUTE = "data-activity-through";
 
 /// The run a press landed on, or nothing at all: a folded run's head is the
@@ -840,12 +841,17 @@ const runSpanAttribute = (run, name) => Number(run.getAttribute(name));
 /// own. A reference from elsewhere in the app (a subagent row naming the call
 /// that spawned it) points at a sequence, and a shut run holds no row to point
 /// at — so the run is opened first, and this is what says which one.
+///
+/// The span it matches on is the DIGEST's, which reaches back over the half of
+/// a run the page cut away; the key it answers with is the run's, which is the
+/// oldest sequence the window holds. Matching on the key instead would miss
+/// every call that never travelled — exactly the ones a press has to fetch.
 export function activityRunKeyAt(scroller, sequence) {
   const wanted = Number(sequence);
   if (!scroller || !Number.isFinite(wanted)) return null;
   const run = [...scroller.querySelectorAll(`[${ACTIVITY_RUN_ATTRIBUTE}]`)].find(
     (element) =>
-      runSpanAttribute(element, ACTIVITY_RUN_ATTRIBUTE) <= wanted &&
+      runSpanAttribute(element, ACTIVITY_RUN_FROM_ATTRIBUTE) <= wanted &&
       runSpanAttribute(element, ACTIVITY_RUN_THROUGH_ATTRIBUTE) >= wanted,
   );
   return run ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
@@ -875,11 +881,16 @@ export function activityRunKeyAt(scroller, sequence) {
 ///
 /// Keyed by the run's FIRST item, so a run that grows under a reader watching it
 /// keeps its identity — and with it, the scroll position inside the box they
-/// opened. It carries the newest sequence it stands for as well, so a reference
-/// from somewhere else in the app can find the run a call is folded into
-/// without opening every one of them (`activityRunKeyAt`).
+/// opened. It carries the whole span it stands for as well — the digest's, so
+/// the half a page cut away is inside it — which is how a reference from
+/// somewhere else in the app finds the run a call is folded into without
+/// opening every one of them (`activityRunKeyAt`).
+///
+/// The fold is the render's to write: `RENDERED_FOLD_ATTRIBUTE` tells the patch
+/// so, and the pane cancels the press's own activation, so `open` says what the
+/// pane says and a shut run is one nothing is drawn inside.
 function activityRunHtml(span, summary, children) {
-  return `<details class="thread-activity-group" ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
+  return `<details class="thread-activity-group" ${RENDERED_FOLD_ATTRIBUTE} ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_FROM_ATTRIBUTE}="${esc(String(span.from))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
     <summary class="thread-activity-head thread-activity-group-head">
       <span class="thread-event-icon" aria-hidden="true">${esc(summary.icon)}</span>
       <span class="thread-activity-count">${summary.count}</span>
@@ -917,11 +928,20 @@ function runChildrenHtml(run, view) {
   return [...timelineRowsOf(fetched, view.agentLabel, view.threadId), ...live].map((row) => row.html).join("");
 }
 
+/// Where a run starts and where it reaches. The start is the digest's, because
+/// a page that cut the run shipped only its newest rows and the calls before
+/// them are still findable; the end is what the window holds, which for the
+/// live tail run is newer than any digest.
+function runSpan(run, digests) {
+  const key = run[0].key;
+  const digest = digestCovering(digests, Number(key));
+  return { key, from: digest ? digest.from_sequence : key, through: runThroughSequence(run) };
+}
+
 function runEntry(run, digests, view) {
   const key = run[0].key;
-  const span = { key, through: runThroughSequence(run) };
   const children = view.openRuns.has(key) ? runChildrenHtml(run, view) : null;
-  return { key, html: activityRunHtml(span, activityRunSummary(digests, run), children) };
+  return { key, html: activityRunHtml(runSpan(run, digests), activityRunSummary(digests, run), children) };
 }
 
 /// Fold every maximal run of consecutive activity into one entry apiece, and

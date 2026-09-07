@@ -7,7 +7,13 @@
 // hand.
 
 import { describe, expect, it } from "vitest";
-import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "../src/core/activityDigest.js";
+import {
+  activityRunSummary,
+  digestCovering,
+  firstLine,
+  mergeActivityDigests,
+  runDigestToFetch,
+} from "../src/core/activityDigest.js";
 
 const digest = (from, through, toolCalls, lastToolCall = null) => ({
   from_sequence: from,
@@ -310,5 +316,26 @@ describe("the digest over a sequence", () => {
     expect(digestCovering([digest(1, 40, 12)], 900)).toBe(null);
     expect(digestCovering([], 900)).toBe(null);
     expect(digestCovering(null, 900)).toBe(null);
+  });
+});
+
+// Which pressed runs are a fetch, and which are already in hand.
+describe("the run a press has to fetch", () => {
+  const digests = [digest(10, 51, 40), digest(60, 90, 8)];
+
+  it("asks over the digest of a run the page cut", () => {
+    expect(runDigestToFetch(digests, 50, 200)).toEqual(digests[0]);
+  });
+
+  it("asks for nothing when the window holds the run whole", () => {
+    expect(runDigestToFetch([digest(60, 90, 8)], 60, 200)).toBe(null);
+  });
+
+  it("asks for nothing when the run reaches the end of the conversation", () => {
+    expect(runDigestToFetch(digests, 50, 51)).toBe(null);
+  });
+
+  it("asks for nothing for a sequence no digest covers", () => {
+    expect(runDigestToFetch(digests, 55, 200)).toBe(null);
   });
 });

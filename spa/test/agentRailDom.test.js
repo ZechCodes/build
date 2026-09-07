@@ -2197,6 +2197,7 @@ describe("the agent's surfaces, carried by the status row", () => {
 
     railHost().querySelector('[data-surface-kind="subagents"]').click();
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
 
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
@@ -2960,7 +2961,18 @@ describe("a run of activity in the rail", () => {
   });
 
   const runHead = () => railHost().querySelector(".thread-activity-group-head");
+  const runBox = () => railHost().querySelector("details.thread-activity-group");
   const runRows = () => [...railHost().querySelectorAll(".thread-activity-group-list > .thread-activity")];
+
+  const answering = (activityPage) => {
+    App.call.mockImplementation(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return payload;
+      if (method === "thread.activity") return activityPage;
+      return {};
+    });
+  };
 
   it("draws a shut run as a head, and its rows on the press that opens it", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(2, "Read a.js"), toolCall(3, "Read b.js")], [
@@ -2970,27 +2982,28 @@ describe("a run of activity in the rail", () => {
 
     expect(railHost().querySelector(".thread-activity-count").textContent).toBe("2");
     expect(runRows()).toHaveLength(0);
+    expect(runBox().open).toBe(false);
 
     runHead().click();
     await flush();
 
     expect(runRows()).toHaveLength(2);
+    expect(runBox().open).toBe(true);
     expect(callsTo("thread.activity")).toEqual([]);
+
+    runHead().click();
+    await flush();
+
+    expect(runRows()).toHaveLength(0);
+    expect(runBox().open).toBe(false);
   });
 
   it("asks for the half of a cut run the window never held, once", async () => {
-    payload = conversation([said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js")], [
-      { from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null },
-    ]);
-    App.call.mockImplementation(async (method, params) => {
-      calls.push({ method, params });
-      if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return payload;
-      if (method === "thread.activity") {
-        return { items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false };
-      }
-      return {};
-    });
+    payload = conversation(
+      [said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js"), said(52, "Done.")],
+      [{ from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null }],
+    );
+    answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
     await mount();
 
     runHead().click();
@@ -3012,6 +3025,23 @@ describe("a run of activity in the rail", () => {
     expect(callsTo("thread.activity")).toHaveLength(1);
   });
 
+  // The tail run is the one still being written, and a record is kept until the
+  // entity is evicted — so freezing a live run into one would hide every call it
+  // grew afterwards. The window is where the tail's rows land instead.
+  it("never asks for the run that reaches the end of the conversation", async () => {
+    payload = conversation([said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js")], [
+      { from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null },
+    ]);
+    answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
+    await mount();
+
+    runHead().click();
+    await flush();
+
+    expect(callsTo("thread.activity")).toEqual([]);
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51"]);
+  });
+
   it("opens the run a surface's call is folded into before reaching for the row", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(2, "Task(review the parser)")], [
       { from_sequence: 2, through_sequence: 2, tool_calls: 1, last_tool_call: null },
@@ -3025,6 +3055,54 @@ describe("a run of activity in the rail", () => {
 
     expect(notifyError).not.toHaveBeenCalled();
     expect(railHost().querySelector('[data-sequence="2"]')).not.toBe(null);
+  });
+
+  // The reader pressed a fold and the daemon could not answer: the box still
+  // opens onto the rows the window holds, and what did not arrive is said out
+  // loud rather than left as an empty box.
+  it("says so when the half of a run it asked for does not arrive", async () => {
+    payload = conversation(
+      [said(1, "Have a look."), toolCall(50, "Read y.js"), said(52, "Done.")],
+      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, last_tool_call: null }],
+    );
+    App.call.mockImplementation(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return payload;
+      if (method === "thread.activity") throw new Error("entity is not loaded");
+      return {};
+    });
+    await mount();
+
+    runHead().click();
+    await flush();
+
+    expect(notifyError).toHaveBeenCalledWith("Could not load this activity", "entity is not loaded");
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50"]);
+  });
+
+  // A run the page cut holds calls no row in the window stands for, and the
+  // reference a surface carries can point at one of them. What says which run a
+  // sequence belongs to is the digest's span, not the oldest row in hand.
+  it("reaches a call in the half of a cut run the window never held", async () => {
+    payload = conversation(
+      [said(1, "Have a look."), toolCall(50, "Read z.js"), said(60, "Done.")],
+      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, last_tool_call: null }],
+    );
+    payload.agents = [agent({ surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 12 }] } })];
+    answering({
+      items: [toolCall(12, "Task(review the parser)")],
+      oldest_sequence: 12,
+      has_more: false,
+    });
+    await mount();
+
+    railHost().querySelector('[data-surface-kind="subagents"]').click();
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null);
   });
 });
 

@@ -61,6 +61,15 @@ describe("patching a live tree to say what a rendered one says", () => {
     expect(live.querySelector("div").hasAttribute("hidden")).toBe(false);
   });
 
+  // A fold the render owns is the other half of that rule: a run of activity
+  // draws its rows only while it is open, so a render that shut one has to be
+  // able to take `open` back off — nobody else writes it.
+  it("shuts the fold whose renderer owns it", () => {
+    const live = tree(`<details data-rendered-fold open><summary>a</summary></details>`);
+    patchElement(live, tree(`<details data-rendered-fold><summary>a</summary></details>`));
+    expect(live.querySelector("details").open).toBe(false);
+  });
+
   it("leaves the fold and the menu the reader opened open", () => {
     const live = tree(`<details open><summary>a</summary></details><div class="splitmenu"></div>`);
     patchElement(live, tree(`<details><summary>a</summary></details><div class="splitmenu" hidden></div>`));

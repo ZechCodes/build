@@ -91,7 +91,7 @@ import {
   wireThreadRevisionLinks,
 } from "./thread.js";
 import { createActivityRuns } from "./activityRuns.js";
-import { digestCovering } from "./activityDigest.js";
+import { digestCovering, runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
@@ -908,13 +908,17 @@ export function mountAgentRail(host, context) {
     return digest ? conversationRuns().itemsOf(digest.from_sequence) : undefined;
   };
 
+  /// The newest sequence the conversation has reached — the end a run has to
+  /// touch to be the live tail.
+  const lastSequenceOf = (thread) => (thread && thread.thread_last_sequence) || 0;
+
   /// How far the window has taken delivery of the conversation. The one number
   /// that moves for an item mutated in place — a call answered, a message
   /// marked seen — which changes what a row says without changing how many
   /// rows there are.
   const deliveredSequenceOf = (thread) => {
     const held = threadCache.readWindow();
-    return Math.max(held ? held.deliveredSequence : 0, (thread && thread.thread_last_sequence) || 0);
+    return Math.max(held ? held.deliveredSequence : 0, lastSequenceOf(thread));
   };
 
   const threadItems = (thread) => (thread && thread.items) || [];
@@ -978,25 +982,26 @@ export function mountAgentRail(host, context) {
     reportRead(body);
   };
 
-  /// The reader pressing a folded run.
+  /// The reader pressing a folded run, settled: the fold has flipped, and
+  /// whatever the new side needed fetching has landed.
   ///
-  /// The head is a `<summary>`, so the box opens under their finger; what it
-  /// opens onto is drawn on the repaint. A run the window holds whole is drawn
-  /// from the window, and one the page cut is asked for — the daemon holds the
-  /// half that never travelled.
-  const pressActivityRun = (runKey) => {
+  /// The repaint is what draws the box open or shut — the press's own
+  /// activation is cancelled where it is wired, so `open` says what this says.
+  /// A run the window holds whole is drawn from the window, and one the page cut
+  /// is asked for; the daemon holds the half that never travelled.
+  const pressActivityRun = async (runKey) => {
     const runs = conversationRuns();
     const opened = runs.toggle(runKey);
     paintChat();
-    if (!opened) return;
-    const digest = digestCovering(digestsInHand(), Number(runKey));
-    if (!digest || digest.from_sequence >= Number(runKey)) return;
-    runs.open(digest).then(
-      (filled) => {
-        if (filled && !disposed) paintChat();
-      },
-      (error) => notifyError("Could not load this activity", error.message),
-    );
+    const digest = opened
+      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(threadFor()))
+      : null;
+    if (!digest) return;
+    const filled = await runs.open(digest).catch((error) => {
+      notifyError("Could not load this activity", error.message);
+      return false;
+    });
+    if (filled && !disposed) paintChat();
   };
 
   const composerPlaceholder = () =>
@@ -1092,9 +1097,16 @@ export function mountAgentRail(host, context) {
     }));
     // Delegated, because the row a press lands on is redrawn under it: the
     // scroller outlives every repaint, and the run names itself on the head.
+    //
+    // The default is cancelled so the browser never toggles the `<details>`
+    // itself. It would do so AFTER this handler, undoing whatever the repaint
+    // wrote, and a run that opens onto rows it has to fetch cannot be a fold
+    // two writers share.
     body.onclick = (event) => {
       const runKey = pressedActivityRunKey(event.target);
-      if (runKey) pressActivityRun(runKey);
+      if (!runKey) return;
+      event.preventDefault();
+      pressActivityRun(runKey);
     };
   };
 
@@ -1131,18 +1143,20 @@ export function mountAgentRail(host, context) {
   };
 
   /// A reference from a surface points at a call, and a call folded into a shut
-  /// run has no row to point at — so the run it sits in is opened first.
-  const openRunHolding = (body, sequence) => {
+  /// run has no row to point at — so the run it sits in is opened first, and
+  /// waited for: the half of a cut run the window never held is a fetch away,
+  /// and reaching for the row before it lands finds nothing.
+  const openRunHolding = async (body, sequence) => {
     const runKey = activityRunKeyAt(body, sequence);
     if (!runKey || conversationRuns().isOpen(runKey)) return;
-    pressActivityRun(runKey);
+    await pressActivityRun(runKey);
   };
 
   const surfaceViewerCallbacks = () => ({
     modelLabel: surfaceModelLabel,
-    onOpenThreadItem: (sequence) => {
+    onOpenThreadItem: async (sequence) => {
       const body = host.querySelector("#rail-body");
-      openRunHolding(body, sequence);
+      await openRunHolding(body, sequence);
       if (revealThreadSequence(body, sequence)) return;
       notifyError(
         "That call is not in the loaded conversation",

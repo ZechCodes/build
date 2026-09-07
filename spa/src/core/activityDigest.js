@@ -49,6 +49,23 @@ export function digestCovering(digests, sequence) {
   );
 }
 
+/// The digest a pressed run must be fetched over, or nothing.
+///
+/// Two kinds of run are drawn from the window instead. One the page shipped
+/// whole — its digest starts no earlier than the oldest row in hand, so there
+/// is nothing missing to ask for. And the TAIL run, the one that reaches the
+/// end of the conversation: it is still being written, and the window is where
+/// its newest rows land. Fetching it would freeze a moving run into a record
+/// kept until the entity is evicted, and every call it grew afterwards would
+/// fall between that record's end and the window's oldest row, unseen and never
+/// asked for again.
+export function runDigestToFetch(digests, runKey, threadLastSequence) {
+  const key = Number(runKey);
+  const digest = digestCovering(digests, key);
+  if (!digest || digest.from_sequence >= key) return null;
+  return digest.through_sequence >= Number(threadLastSequence) ? null : digest;
+}
+
 const sequenceOf = (activity) => (Number.isFinite(activity.sequence) ? activity.sequence : null);
 
 /// The span of the conversation a run in hand covers, or nothing for a run

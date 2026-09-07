@@ -1,6 +1,7 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
-import { patchElement } from "./domPatch.js";
+import { patchElement, patchInnerHtml } from "./domPatch.js";
+import { patchList } from "./patchList.js";
 import { paintKeepingPlace, pinToBottom } from "./paintKeepingPlace.js";
 import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
 import { activityRunSummary, firstLine, mergeActivityDigests } from "./activityDigest.js";
@@ -1207,6 +1208,94 @@ export function threadHtml(thread, options = {}) {
     ${threadActionsHtml(options.actionsId)}
     ${threadComposerHtml(options.composer)}
   </section>`;
+}
+
+/// What the paint is drawn from, as one string.
+///
+/// The conversation repaints on a poll and on every event, and most of those
+/// ticks resolve exactly what the last one did. This is the one place the
+/// inputs of a paint are named, so a tick that moved none of them can build
+/// nothing at all: the window's delivery point and how many items it holds,
+/// what the daemon said each run totals, which runs are open and which of them
+/// have their items in hand, whose conversation it is and what that agent is
+/// called, and the offer state riding the last message.
+export function chatPaintFingerprint({
+  deliveredSequence,
+  itemCount,
+  digests,
+  openRunKeys,
+  fetchedRunKeys,
+  selectedAgentId,
+  agentLabel,
+  sending,
+  choiceState,
+}) {
+  return [
+    deliveredSequence,
+    itemCount,
+    digestsSignature(digests),
+    keysSignature(openRunKeys),
+    keysSignature(fetchedRunKeys),
+    selectedAgentId || "",
+    agentLabel || "",
+    sending || "",
+    choiceState || "",
+  ].join("|");
+}
+
+const lastCallSignature = (call) => (call ? `${call.sequence}:${call.outcome || ""}` : "");
+
+const digestsSignature = (digests) =>
+  (digests || [])
+    .map((digest) => `${digest.from_sequence}-${digest.through_sequence}:${digest.tool_calls}:${lastCallSignature(digest.last_tool_call)}`)
+    .join(",");
+
+const keysSignature = (keys) => [...(keys || [])].sort().join(",");
+
+/// The offers in hand as the paint sees them: what has been picked and not yet
+/// sent, and what is being sent right now. Both are this module's own state —
+/// the chips write it and the timeline reads it — so a paint that skips has to
+/// be able to see it move.
+export function threadOfferState() {
+  const picks = [...pendingChoices].map(([key, chosen]) => `${key}=${[...chosen].sort().join(",")}`);
+  return { choiceState: picks.sort().join("|"), sending: [...sendingChoices].sort().join("|") };
+}
+
+const NOTHING_SAID_YET = { items: [] };
+
+/// Whether the conversation is drawn as one that has nothing on the record —
+/// the timeline draws the avatar spine, and with nothing to hang on it there is
+/// neither spine nor gutter.
+function showEmptyThread(section, empty) {
+  section.classList.toggle("is-empty", empty);
+  section.querySelector(".thread-items").classList.toggle("is-empty", empty);
+}
+
+/// Draw a conversation into `container` as keyed rows.
+///
+/// The frame — the title, the timeline, the revision viewer, whatever composer
+/// the caller asked for — is written once, from the same builder `threadHtml`
+/// is; the rows inside it are the reconciler's from then on, so a row nobody
+/// changed keeps its element and everything the browser hangs off it: the
+/// selection in it, the fold the reader opened, the picture it had fetched, and
+/// the place scroll anchoring was holding.
+///
+/// Answers whether the frame was written this time, which is when the caller
+/// has to wire what is in it.
+export function paintThreadEntries(container, built, options = {}) {
+  const framed = !container.querySelector(".thread-items");
+  if (framed) {
+    writeThreadKeepingComposer(container, threadHtml(NOTHING_SAID_YET, options));
+    container.querySelector(".thread-items").replaceChildren();
+  }
+  const section = container.querySelector(".review-thread");
+  patchInnerHtml(section.querySelector(".thread-title"), threadTitleHtml(built.itemCount, options.status));
+  showEmptyThread(section, !built.itemCount);
+  patchList(section.querySelector(".thread-items"), timelineRows(built), {
+    keyOf: (row) => row.key,
+    render: (row) => row.html,
+  });
+  return framed;
 }
 
 /// The parts of a rendered thread a repaint may overwrite. The composer is

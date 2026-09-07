@@ -3074,6 +3074,33 @@ describe("a run of activity in the rail", () => {
     expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51", "52"]);
   });
 
+  // A window that breaks — an item deleted, a delta dropped, the daemon
+  // restarted — is let go for a refetch, and the very tick that let it go still
+  // paints the rows and the digests it was drawn from. So the side that decides
+  // what to fetch has to read the digests the paint read: reading the window
+  // instead leaves the run the reader presses in that frame asking for nothing.
+  it("asks over the digests the timeline was painted from, not the window's", async () => {
+    payload = conversation(
+      [said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js"), said(60, "Done.")],
+      [{ from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null }],
+    );
+    answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
+    await mount();
+
+    // One item shorter than the cache was told the conversation is: a deletion,
+    // which is the one change no arrival ever unsays.
+    payload = branchRow({
+      run: { run_id: "run-3", thread: { sessions: [], items: [], thread_total: 3, thread_last_sequence: 60 } },
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    runHead().click();
+    await flush();
+
+    expect(callsTo("thread.activity").map((call) => call.params.from_sequence)).toEqual([10]);
+  });
+
   it("opens the run a surface's call is folded into before reaching for the row", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(2, "Task(review the parser)")], [
       { from_sequence: 2, through_sequence: 2, tool_calls: 1, last_tool_call: null },

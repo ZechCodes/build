@@ -78,6 +78,7 @@ import {
   activityRunThroughAt,
   chatPaintFingerprint,
   createThreadCache,
+  digestsOf,
   paintThreadEntries,
   paintThreadKeepingPlace,
   pressedActivityRunKey,
@@ -345,6 +346,7 @@ export function mountAgentRail(host, context) {
   let activityRuns = null; // the open runs of the conversation in the panel
   let activityRunsFor = null; // whose conversation those runs belong to
   let paintedChat = null; // what the timeline in the panel was drawn from
+  let paintedDigests = []; // the run totals that timeline was drawn with
   let seededSurfaces = null;
 
   const cacheIdentity = () => {
@@ -896,9 +898,14 @@ export function mountAgentRail(host, context) {
     return activityRuns;
   };
 
-  /// What the daemon last said each run over this window totals. The cache is
-  /// what holds them: a forward delta says nothing about a run's total.
-  const digestsInHand = () => (threadCache.readWindow() || {}).activityDigests || [];
+  /// What the daemon last said each run over this window totals: the digests
+  /// the timeline on screen was drawn with.
+  ///
+  /// The paint is what holds them rather than the cache, because the two part
+  /// company — a tick that lets a broken window go still paints the rows and
+  /// digests it was drawn from — and a run is pressed on the timeline the
+  /// reader is looking at, not on the window behind it.
+  const digestsInHand = () => paintedDigests;
 
   /// The items fetched for a run, found by what its digest COVERS.
   ///
@@ -923,14 +930,13 @@ export function mountAgentRail(host, context) {
   };
 
   const threadItems = (thread) => (thread && thread.items) || [];
-  const threadDigests = (thread) => (thread && thread.activityDigests) || [];
 
   const chatFingerprintOf = (thread, agentLabel) => {
     const openRuns = conversationRuns().openKeys();
     return chatPaintFingerprint({
       deliveredSequence: deliveredSequenceOf(thread),
       itemCount: threadItems(thread).length,
-      digests: threadDigests(thread),
+      digests: digestsOf(thread),
       openRunKeys: openRuns,
       fetchedRunKeys: [...openRuns].filter((key) => fetchedRunItems(key)),
       selectedAgentId: selectedId,
@@ -949,7 +955,8 @@ export function mountAgentRail(host, context) {
     const fingerprint = chatFingerprintOf(thread, agentLabel);
     if (fingerprint === paintedChat && body.querySelector(".thread-items")) return;
     paintedChat = fingerprint;
-    const built = timelineEntries(threadItems(thread), agentLabel, thread && thread.id, threadDigests(thread), {
+    paintedDigests = digestsOf(thread);
+    const built = timelineEntries(threadItems(thread), agentLabel, thread && thread.id, paintedDigests, {
       openRuns: conversationRuns().openKeys(),
       runItemsOf: fetchedRunItems,
     });
@@ -998,10 +1005,12 @@ export function mountAgentRail(host, context) {
     const runs = conversationRuns();
     const runThrough = activityRunThroughAt(host.querySelector("#rail-body"), runKey);
     const opened = runs.toggle(runKey);
-    paintChat();
+    // Decided against the timeline the press landed on, before the repaint
+    // draws the next one over it.
     const digest = opened
       ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(threadFor()), runThrough)
       : null;
+    paintChat();
     if (!digest) return;
     const filled = await runs.open(digest).catch((error) => {
       notifyError("Could not load this activity", error.message);

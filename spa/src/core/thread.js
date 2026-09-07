@@ -1200,7 +1200,10 @@ function threadActionsHtml(actionsId) {
 /// What the daemon said each activity run over this window totals. A thread
 /// rendered straight off the wire (a first paint, a test) carries none, and a
 /// run with no digest counts what is in hand.
-const digestsOf = (thread) => (thread && thread.activityDigests) || [];
+///
+/// The one reader, so a pane that draws a timeline and a pane that decides what
+/// to fetch for it can never be reading two different answers.
+export const digestsOf = (thread) => (thread && thread.activityDigests) || [];
 
 /// The rows a timeline holds: its entries, or the one row a conversation with
 /// nothing on the record shows. Keyed like any other, so the reconciler takes

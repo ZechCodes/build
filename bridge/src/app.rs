@@ -4740,8 +4740,9 @@ impl AppState {
                 .insert(run_id.clone(), now_rfc3339());
             // This cache IS the git watcher: two computes that disagree are
             // files that landed in the checkout, which is exactly what an
-            // entity's diff surface is showing.
-            self.note_entity_changed(&run_id);
+            // entity's diff surface is showing. It fires as fast as an agent
+            // writes files, so the entity's own event is paced.
+            self.note_entity_settled(&run_id);
         }
         self.run_stat_cache.insert(run_id, (now, stat));
         // A board answered `stat: null` for this run and claimed this refresh;
@@ -5071,6 +5072,12 @@ impl AppState {
     /// feed shows a row for it, so this stales that too.
     fn note_entity_changed(&self, entity_id: &str) {
         self.changes.note_entity(entity_id);
+    }
+
+    /// The same, from an origin that fires on every file an agent writes: the
+    /// entity's event is paced at [`crate::changes::ENTITY_SETTLE_WINDOW`].
+    fn note_entity_settled(&self, entity_id: &str) {
+        self.changes.note_entity_settled(entity_id);
     }
 
     /// The relay's frame handler over a shared state. `stream.start`/`term.attach`

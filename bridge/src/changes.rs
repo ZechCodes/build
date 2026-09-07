@@ -35,7 +35,7 @@
 //! and a burst behind it costs one event per key per window rather than one
 //! per mutation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -47,6 +47,14 @@ use crate::carrier::SessionSender;
 /// a browser reacts as if it were watching, long enough that a mutation storm
 /// (a stage sweep, an agent writing a file a second) costs a handful of frames.
 pub const DEFAULT_COALESCE_WINDOW: Duration = Duration::from_millis(250);
+
+/// How long one entity's own event waits before it may be repeated.
+///
+/// The bus's window collapses a burst of notes into one event; this bounds how
+/// often the SAME entity's event goes out at all, for the origin that fires on
+/// every file an agent writes. A browser repaints a git surface off it, and a
+/// second is as often as a human reads one.
+pub const ENTITY_SETTLE_WINDOW: Duration = Duration::from_secs(1);
 
 /// The most keys one un-flushed window holds before it gives up on precision.
 ///
@@ -90,6 +98,9 @@ struct Pending {
     /// Noted since the last flush. A set, so a thousand notes of one key are
     /// one event.
     keys: BTreeSet<ChangeKey>,
+    /// The subset of `keys` noted through [`ChangeBus::note_entity_settled`],
+    /// which may not go out again inside [`ENTITY_SETTLE_WINDOW`].
+    settled: BTreeSet<ChangeKey>,
     /// Past [`PENDING_KEY_CAP`] the window gave up naming entities and stands
     /// as a bare [`ChangeKey::Board`] until it is flushed. Latched, so the
     /// notes that keep arriving cannot start refilling the set behind it.
@@ -107,6 +118,10 @@ pub struct ChangeBus {
     /// change rather than on a tick.
     wake: tokio::sync::Notify,
     window: Duration,
+    /// When each key last reached a browser, pruned to
+    /// [`ENTITY_SETTLE_WINDOW`] on every flush: an older entry can hold
+    /// nothing back, so this never grows with the entities a bridge has seen.
+    emitted_at: Mutex<HashMap<ChangeKey, tokio::time::Instant>>,
 }
 
 impl ChangeBus {
@@ -117,6 +132,7 @@ impl ChangeBus {
             pending: Mutex::new(Pending::default()),
             wake: tokio::sync::Notify::new(),
             window,
+            emitted_at: Mutex::new(HashMap::new()),
         })
     }
 
@@ -161,6 +177,7 @@ impl ChangeBus {
         if pending.keys.len() >= PENDING_KEY_CAP {
             pending.collapsed = true;
             pending.keys.clear();
+            pending.settled.clear();
             pending.keys.insert(ChangeKey::Board);
         } else {
             pending.keys.insert(key);
@@ -180,6 +197,24 @@ impl ChangeBus {
         self.note(ChangeKey::Board);
     }
 
+    /// This entity is stale, at the pace a browser can paint — its own event
+    /// goes out at most once per [`ENTITY_SETTLE_WINDOW`], the feed at the
+    /// bus's own window.
+    ///
+    /// For an origin that fires as fast as an agent writes files. Every other
+    /// caller wants [`note_entity`](Self::note_entity).
+    pub fn note_entity_settled(&self, id: &str) {
+        let entity = ChangeKey::Entity(id.to_string());
+        {
+            let mut pending = self.pending.lock().unwrap();
+            if !pending.collapsed {
+                pending.settled.insert(entity.clone());
+            }
+        }
+        self.note(entity);
+        self.note(ChangeKey::Board);
+    }
+
     /// Whether anything is waiting to go out.
     pub fn has_pending(&self) -> bool {
         !self.pending.lock().unwrap().keys.is_empty()
@@ -192,13 +227,10 @@ impl ChangeBus {
     /// MUST NOT run holding the app mutex: it encrypts a frame per subscriber
     /// per key.
     pub fn flush(&self) -> usize {
-        let keys: Vec<ChangeKey> = {
-            let mut pending = self.pending.lock().unwrap();
-            if pending.keys.is_empty() {
-                return 0;
-            }
-            std::mem::take(&mut *pending).keys.into_iter().collect()
-        };
+        let keys = self.take_due_keys();
+        if keys.is_empty() {
+            return 0;
+        }
         let payloads: Vec<Value> = keys.iter().map(ChangeKey::payload).collect();
         let mut subscribers = self.subscribers.lock().unwrap();
         subscribers.retain(|subscriber| {
@@ -210,6 +242,44 @@ impl ChangeBus {
             true
         });
         payloads.len()
+    }
+
+    /// What this flush may send. A settled key a browser heard about inside
+    /// [`ENTITY_SETTLE_WINDOW`] stays pending instead, and holding one back
+    /// wakes the flusher so the next turn sends it.
+    fn take_due_keys(&self) -> Vec<ChangeKey> {
+        let mut pending = self.pending.lock().unwrap();
+        if pending.keys.is_empty() {
+            return Vec::new();
+        }
+        let (held, due) = self.split_off_unsettled(std::mem::take(&mut *pending));
+        let holding_back = !held.is_empty();
+        pending.settled.clone_from(&held);
+        pending.keys = held;
+        drop(pending);
+        if holding_back {
+            self.wake.notify_one();
+        }
+        due
+    }
+
+    /// The noted keys, split into the ones held back by the settle window and
+    /// the ones due now — which are stamped as emitted on the way out.
+    ///
+    /// Pruning first is what makes `contains_key` mean "emitted inside the
+    /// window", and what keeps the map bounded.
+    fn split_off_unsettled(&self, noted: Pending) -> (BTreeSet<ChangeKey>, Vec<ChangeKey>) {
+        let now = tokio::time::Instant::now();
+        let mut emitted_at = self.emitted_at.lock().unwrap();
+        emitted_at.retain(|_, at| now.duration_since(*at) < ENTITY_SETTLE_WINDOW);
+        let (held, due): (BTreeSet<ChangeKey>, BTreeSet<ChangeKey>) = noted
+            .keys
+            .into_iter()
+            .partition(|key| noted.settled.contains(key) && emitted_at.contains_key(key));
+        for key in &due {
+            emitted_at.insert(key.clone(), now);
+        }
+        (held, due.into_iter().collect())
     }
 
     /// Drive [`flush`](Self::flush) forever: wake on the first note, send, then
@@ -393,6 +463,90 @@ mod tests {
         assert_eq!(
             drained(&mut rx, &key),
             vec![json!({ "type": "board.changed" })]
+        );
+    }
+
+    /// An ordinary entity note keeps the bus's own window: two flushes, two
+    /// events. Only the settled origin is paced.
+    #[test]
+    fn an_ordinary_entity_note_is_never_held_back() {
+        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
+
+        bus.note_entity("run-7");
+        assert_eq!(bus.flush(), 2);
+        bus.note_entity("run-7");
+        assert_eq!(bus.flush(), 2);
+    }
+
+    /// The origin that fires on every file an agent writes: the entity's own
+    /// event is repeated no more than once per settle window, while the feed
+    /// keeps staling at the bus's window.
+    #[tokio::test(start_paused = true)]
+    async fn a_settled_entity_reaches_a_browser_once_per_settle_window() {
+        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(&sender);
+
+        bus.note_entity_settled("run-7");
+        bus.flush();
+        assert_eq!(
+            drained(&mut rx, &key),
+            vec![
+                json!({ "type": "board.changed" }),
+                json!({ "type": "entity.changed", "id": "run-7" }),
+            ]
+        );
+
+        bus.note_entity_settled("run-7");
+        bus.flush();
+        assert_eq!(
+            drained(&mut rx, &key),
+            vec![json!({ "type": "board.changed" })],
+            "the entity was heard about a moment ago"
+        );
+        assert!(bus.has_pending(), "and is still queued, not dropped");
+
+        tokio::time::advance(ENTITY_SETTLE_WINDOW).await;
+        bus.flush();
+        assert_eq!(
+            drained(&mut rx, &key),
+            vec![json!({ "type": "entity.changed", "id": "run-7" })]
+        );
+    }
+
+    /// Nothing more is noted after the storm, so the held-back event only goes
+    /// out if holding it back woke the flusher again.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_back_entity_goes_out_when_its_window_closes() {
+        let bus = ChangeBus::new(Duration::from_millis(150));
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        bus.subscribe(&sender);
+        ChangeBus::spawn_flusher(Arc::clone(&bus));
+
+        bus.note_entity_settled("run-7");
+        settle(Duration::from_millis(30)).await;
+        assert_eq!(
+            drained(&mut rx, &key),
+            vec![
+                json!({ "type": "board.changed" }),
+                json!({ "type": "entity.changed", "id": "run-7" }),
+            ]
+        );
+
+        for _ in 0..50 {
+            bus.note_entity_settled("run-7");
+        }
+        settle(Duration::from_millis(200)).await;
+        assert_eq!(
+            drained(&mut rx, &key),
+            vec![json!({ "type": "board.changed" })],
+            "the storm's entity event waits out the settle window"
+        );
+
+        settle(ENTITY_SETTLE_WINDOW).await;
+        assert_eq!(
+            drained(&mut rx, &key),
+            vec![json!({ "type": "entity.changed", "id": "run-7" })]
         );
     }
 

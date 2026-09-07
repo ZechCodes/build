@@ -1,10 +1,11 @@
 // The cache's sync layer: one tab holds the lock and follows the feed —
 // persisting the snapshot, evicting entities the active set stops naming, and
-// keeping every active branch's git status and commit list warm.
+// keeping every active branch's git status, commit list and file bodies warm.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
+import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
 // Real clock, not a frozen one: the syncer partitions active-vs-Recent with
 // Date.now(), so the items' ages must be relative to the same now.
@@ -54,9 +55,13 @@ let cache, sync;
 
 const flush = async () => {
   // Generous: a refresh is an RPC pair, then two IndexedDB transactions, each
-  // settling on its own macrotask under fake-indexeddb.
-  for (let i = 0; i < 25; i++) await new Promise((done) => setTimeout(done, 0));
+  // settling on its own macrotask under fake-indexeddb — and the file bodies
+  // are warmed a turn behind that.
+  for (let i = 0; i < 40; i++) await new Promise((done) => setTimeout(done, 0));
 };
+
+const warmTree = worktreeOf({ "src/a.js": "new line" });
+const warmStatus = () => warmTree.status({ head: "abc", stat: { insertions: 1, deletions: 0 } });
 
 const snapshot = (items) => ({ items, plans: [], runs: [], externalWorktrees: [], projects: [], primaryChanges: [] });
 
@@ -74,7 +79,7 @@ beforeEach(async () => {
   feedSubscriber = null;
   App.session = { deviceId: "dev-1" };
   App.call = vi.fn(async (method) => {
-    if (method === "git.status") return { head: "abc", patch: "diff --git a b", stat: { insertions: 1, deletions: 0 } };
+    if (method === "git.status") return warmStatus();
     if (method === "git.log") return { commits: [{ hash: "abc" }], more: false };
     return {};
   });
@@ -118,12 +123,51 @@ describe("keeping active branches warm", () => {
     expect(log.value.commits).toHaveLength(1);
   });
 
-  it("stores the status without the uncommitted patch — that loads on demand", async () => {
+  it("stores the status shape as received — there is no patch on it to strip", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
     const status = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" });
     expect(status.value.head).toBe("abc");
-    expect(status.value.patch).toBe("");
+    expect(status.value.status_key).toBe(warmStatus().status_key);
+    expect(status.value.files).toHaveLength(1);
+  });
+
+  it("prefetches the changed files' bodies in idle time, so expanding one is instant", async () => {
+    const idle = [];
+    globalThis.requestIdleCallback = (work) => idle.push(work);
+    App.call = vi.fn(async (method, params) => {
+      if (method === "git.status") return warmStatus();
+      if (method === "git.diff") return warmTree.diff(params);
+      if (method === "git.log") return { commits: [], more: false };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(App.call).not.toHaveBeenCalledWith("git.diff", expect.anything());
+
+    idle.forEach((work) => work());
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("git.diff", { run_id: "run-1", paths: ["src/a.js"] });
+    const body = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" });
+    expect(body.value.patch).toBe(patchFor("src/a.js", "new line"));
+    delete globalThis.requestIdleCallback;
+  });
+
+  it("asks for no body it already holds, and never more than one call's worth", async () => {
+    const many = Object.fromEntries(Array.from({ length: 60 }, (_unused, index) => [`f${index}.js`, "line"]));
+    const big = worktreeOf(many);
+    App.call = vi.fn(async (method, params) => {
+      if (method === "git.status") return big.status();
+      if (method === "git.diff") return big.diff(params);
+      if (method === "git.log") return { commits: [], more: false };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    await flush();
+    const asked = App.call.mock.calls.filter(([method]) => method === "git.diff");
+    expect(asked).toHaveLength(1);
+    expect(asked[0][1].paths).toHaveLength(50);
   });
 
   it("scopes a checkout Build does not own by project and worktree", async () => {

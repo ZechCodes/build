@@ -17,6 +17,7 @@ import { entityIdOf } from "./entityId.js";
 import { railEntity } from "./agentRailModel.js";
 import { FIRST_PAGE_ITEMS, THREAD_RECORD_KIND, windowFromThreadPayload } from "./thread.js";
 import { cachedEntityIds, cachedSubKeys, evictEntity, readCached, writeCached } from "./localCache.js";
+import { createFileDiffs } from "./fileDiffs.js";
 import { surfacesCacheAddress, surfacesFingerprint, surfacesFromRecord, surfacesRecord } from "./surfacesCache.js";
 
 const SYNC_LOCK = "build.cacheSync";
@@ -111,9 +112,47 @@ async function refreshDiff(deviceId, entityId, row) {
   }
 }
 
-/** Re-read one active entity into the cache: a branch's status (with the
- *  uncommitted patch emptied — it loads on demand) and commit list, and every
- *  conversation that was ever warmed on it. */
+/** Re-read a checkout's git state: the status shape as received (it carries no
+ *  patch — each file's body is its own record) and the commit list. Answers the
+ *  shape, so the caller can warm the bodies it names. */
+async function refreshGitState(deviceId, entityId, scope) {
+  try {
+    const [status, log] = await Promise.all([App.call("git.status", scope), App.call("git.log", scope)]);
+    await writeCached({ deviceId, entityId, kind: "status" }, status);
+    await writeCached({ deviceId, entityId, kind: "log" }, log);
+    return status;
+  } catch {
+    /* offline or mid-switch — the next event or safety poll tries again */
+    return null;
+  }
+}
+
+/** Run `work` when the tab has nothing better to do — or, where the browser
+ *  offers no idle callback, on the next turn. */
+function whenIdle(work) {
+  return new Promise((resolve, reject) => {
+    const run = () => Promise.resolve().then(work).then(resolve, reject);
+    if (typeof requestIdleCallback === "function") requestIdleCallback(run);
+    else setTimeout(run, 0);
+  });
+}
+
+/** Warm the bodies of the files a status names — one bounded git.diff per pass,
+ *  asking only for what the cache does not already hold — so opening the
+ *  Changes surface expands a file with no round trip, offline included. */
+async function warmFileDiffs(deviceId, entityId, scope, status) {
+  const diffs = createFileDiffs({ deviceId, entityId, scope, call: (method, params) => App.call(method, params) });
+  try {
+    await whenIdle(() => diffs.warm(status));
+  } catch {
+    /* transient — the next event or safety poll warms it again */
+  } finally {
+    diffs.dispose();
+  }
+}
+
+/** Re-read one active entity into the cache: a branch's git state and the
+ *  bodies it names, and every conversation that was ever warmed on it. */
 async function refreshEntity(entityId) {
   const deviceId = deviceIdNow();
   const row = activeRows.get(entityId);
@@ -122,15 +161,10 @@ async function refreshEntity(entityId) {
   try {
     const scope = gitScopeOf(row);
     if (scope) {
-      try {
-        const [status, log] = await Promise.all([App.call("git.status", scope), App.call("git.log", scope)]);
-        await writeCached({ deviceId, entityId, kind: "status" }, { ...status, patch: "" });
-        await writeCached({ deviceId, entityId, kind: "log" }, log);
-      } catch {
-        /* offline or mid-switch — the next event or safety poll tries again */
-      }
+      const status = await refreshGitState(deviceId, entityId, scope);
       await refreshTrees(deviceId, entityId, scope);
       await refreshDiff(deviceId, entityId, row);
+      if (status) await warmFileDiffs(deviceId, entityId, scope, status);
     }
     await refreshThreads(deviceId, entityId, row);
   } finally {

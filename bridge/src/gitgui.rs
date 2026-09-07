@@ -657,22 +657,37 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
 /// relay's frame.
 pub const GIT_DIFF_MAX_PATHS: usize = 50;
 
+/// The most bytes of patch one `git.diff` answer may carry, across all its
+/// files. The per-file cap alone does not bound the answer:
+/// [`GIT_DIFF_MAX_PATHS`] files at [`GIT_SHOW_MAX_PATCH_BYTES`] each is
+/// 50 MiB, and the relay refuses a frame over `MAX_WS_MESSAGE_BYTES` (8 MiB,
+/// `relay_server.rs`) — which base64-after-encryption reaches at roughly
+/// 6 MiB of plaintext. The budget is spent in request order.
+pub const GIT_DIFF_MAX_ANSWER_BYTES: usize = 4 * 1_048_576;
+
 /// `git.diff` — the uncommitted patch of each of `paths`, with the content key
 /// each body should be cached under.
 ///
 /// Answers in request order, one entry per asked path: a path with no change
-/// answers an empty patch and its key, and each patch is capped at
-/// [`GIT_SHOW_MAX_PATCH_BYTES`] with a `truncated` flag.
+/// answers an empty patch and its key, each patch is capped at
+/// [`GIT_SHOW_MAX_PATCH_BYTES`], and the answer as a whole is capped at
+/// [`GIT_DIFF_MAX_ANSWER_BYTES`] — a shortened patch carries `truncated`.
 pub fn file_patches(repo_path: &Path, paths: &[String]) -> Result<Value, String> {
-    file_patches_capped(repo_path, paths, GIT_SHOW_MAX_PATCH_BYTES)
+    file_patches_capped(
+        repo_path,
+        paths,
+        GIT_SHOW_MAX_PATCH_BYTES,
+        GIT_DIFF_MAX_ANSWER_BYTES,
+    )
 }
 
-/// [`file_patches`] with the per-patch cap injectable, so a test exercises the
-/// truncation path without a megabyte of fixture.
+/// [`file_patches`] with both caps injectable, so a test exercises the
+/// truncation paths without megabytes of fixture.
 fn file_patches_capped(
     repo_path: &Path,
     paths: &[String],
     max_patch_bytes: usize,
+    max_answer_bytes: usize,
 ) -> Result<Value, String> {
     reject_unreadable_paths(paths)?;
     let repo = open_repo(repo_path)?;
@@ -682,21 +697,21 @@ fn file_patches_capped(
         .into_iter()
         .map(|file| (file.path, file.patch))
         .collect();
-    let files: Vec<Value> = paths
-        .iter()
-        .map(|path| {
-            let (patch, truncated) = truncate_at_utf8_boundary(
-                rendered.get(path).cloned().unwrap_or_default(),
-                max_patch_bytes,
-            );
-            json!({
-                "path": path,
-                "content_key": keys.get(path).cloned().unwrap_or_default(),
-                "patch": patch,
-                "truncated": truncated,
-            })
-        })
-        .collect();
+    let mut unspent = max_answer_bytes;
+    let mut files: Vec<Value> = Vec::with_capacity(paths.len());
+    for path in paths {
+        let (patch, truncated) = truncate_at_utf8_boundary(
+            rendered.get(path).cloned().unwrap_or_default(),
+            max_patch_bytes.min(unspent),
+        );
+        unspent -= patch.len();
+        files.push(json!({
+            "path": path,
+            "content_key": keys.get(path).cloned().unwrap_or_default(),
+            "patch": patch,
+            "truncated": truncated,
+        }));
+    }
     Ok(json!({ "files": files }))
 }
 
@@ -1624,11 +1639,63 @@ mod tests {
         let (_dir, repo) = crate::git_fixture::init_repo();
         std::fs::write(repo.join("big.txt"), "line\n".repeat(500)).unwrap();
 
-        let answer = file_patches_capped(&repo, &["big.txt".to_string()], 200).unwrap();
+        let answer = file_patches_capped(
+            &repo,
+            &["big.txt".to_string()],
+            200,
+            GIT_DIFF_MAX_ANSWER_BYTES,
+        )
+        .unwrap();
         let file = &answer["files"][0];
 
         assert_eq!(file["truncated"], true);
         assert!(file["patch"].as_str().unwrap().len() <= 200);
+    }
+
+    /// The per-file cap is not the whole story: 50 files at 1 MiB each would be
+    /// 50 MiB, eight times what a relay frame holds. One budget is spent in
+    /// request order, and the files past it answer empty and flagged.
+    #[test]
+    fn one_answer_budget_is_spent_across_the_files_in_request_order() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        let paths: Vec<String> = (0..GIT_DIFF_MAX_PATHS)
+            .map(|n| format!("f{n:02}.txt"))
+            .collect();
+        for path in &paths {
+            std::fs::write(repo.join(path), "line\n".repeat(200)).unwrap();
+        }
+
+        let answer = file_patches_capped(&repo, &paths, 200, 1_000).unwrap();
+        let files = answer["files"].as_array().unwrap();
+
+        assert_eq!(files.len(), GIT_DIFF_MAX_PATHS);
+        let spent: usize = files
+            .iter()
+            .map(|file| file["patch"].as_str().unwrap().len())
+            .sum();
+        assert!(spent <= 1_000, "answer spent {spent} bytes");
+        assert_eq!(files[0]["truncated"], true);
+        assert_eq!(files[0]["patch"].as_str().unwrap().len(), 200);
+        let tail = files.last().unwrap();
+        assert_eq!(tail["patch"], "", "the budget was gone by the tail");
+        assert_eq!(tail["truncated"], true);
+        assert_eq!(
+            tail["content_key"].as_str().unwrap().len(),
+            16,
+            "a flagged-empty file still carries its key"
+        );
+
+        // The real caps: every path answers whole, inside the answer budget.
+        let whole = file_patches(&repo, &paths).unwrap();
+        let whole_files = whole["files"].as_array().unwrap();
+        let whole_spent: usize = whole_files
+            .iter()
+            .map(|file| file["patch"].as_str().unwrap().len())
+            .sum();
+        assert!(whole_spent < GIT_DIFF_MAX_ANSWER_BYTES);
+        assert!(whole_files
+            .iter()
+            .all(|file| file["truncated"] == false && !file["patch"].as_str().unwrap().is_empty()));
     }
 
     #[test]

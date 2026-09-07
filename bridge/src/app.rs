@@ -36595,6 +36595,42 @@ mod tests {
         assert_eq!(walked, (first_call..=last_call).collect::<Vec<u64>>());
     }
 
+    /// What a page costs is the bridge's to decide, not the caller's: a call
+    /// that names no limit gets the default page, and one that names a huge
+    /// limit gets the cap. Either way the rest of the span is still there.
+    #[test]
+    fn thread_activity_ships_the_default_page_and_clamps_a_greedy_one() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 700);
+
+        let span = json!({
+            "entity_id": issue_id,
+            "from_sequence": first_call,
+            "through_sequence": last_call,
+        });
+
+        let unnamed = state.handle(req("thread.activity", span.clone()));
+        let default_page = &unnamed["result"];
+        assert_eq!(
+            default_page["items"].as_array().map(Vec::len),
+            Some(crate::thread::DEFAULT_ACTIVITY_PAGE),
+            "{unnamed:?}"
+        );
+        assert_eq!(default_page["has_more"], json!(true), "{unnamed:?}");
+
+        let mut greedy = span;
+        greedy["limit"] = json!(5000);
+        let clamped = state.handle(req("thread.activity", greedy));
+        let capped_page = &clamped["result"];
+        assert_eq!(
+            capped_page["items"].as_array().map(Vec::len),
+            Some(crate::thread::MAX_ACTIVITY_PAGE),
+            "{clamped:?}"
+        );
+        assert_eq!(capped_page["has_more"], json!(true), "{clamped:?}");
+    }
+
     /// The two ways a client can ask for work that never happened: on an
     /// entity that is not there, and over a span this conversation never
     /// reached. Both are errors rather than an empty page, because an empty

@@ -1272,12 +1272,8 @@ impl Store {
             )
             .optional()?
             .unwrap_or(0);
-        let structure = read_sequenced_rows(
-            &mut connection.prepare(THREAD_CONVERSATION_STRUCTURE_SQL)?,
-            rusqlite::params![agent_id, before, floor],
-        )?;
         let raw_items = RunReader::new(&connection, agent_id, page_activity_budget(limit))?
-            .span(structure, before, floor)?;
+            .span(before, floor)?;
         drop(connection);
         decode_thread_item_text(agent_id, raw_items)
     }
@@ -2210,14 +2206,16 @@ fn read_thread_page(
     Ok(page)
 }
 
-/// The runs of one page's span, read one at a time and never whole.
+/// One page's span: the conversation between its bounds, and the runs of
+/// activity between those items read one at a time and never whole.
 ///
 /// Holds what the page may still ship, because that is what says how much of
 /// the next run to read: a page that has spent its budget reads a run's edges
 /// and nothing else. Statements are prepared once and stepped per run, so a
-/// page over a conversation of many turns still prepares three.
+/// page over a conversation of many turns still prepares four.
 struct RunReader<'a> {
     agent_id: &'a str,
+    structure: rusqlite::Statement<'a>,
     newest: rusqlite::Statement<'a>,
     oldest: rusqlite::Statement<'a>,
     last_call: rusqlite::Statement<'a>,
@@ -2232,6 +2230,7 @@ impl<'a> RunReader<'a> {
     ) -> Result<Self, StoreError> {
         Ok(RunReader {
             agent_id,
+            structure: connection.prepare(THREAD_CONVERSATION_STRUCTURE_SQL)?,
             newest: connection.prepare(THREAD_ACTIVITY_RANGE_SQL)?,
             oldest: connection.prepare(THREAD_RUN_OLDEST_SQL)?,
             last_call: connection.prepare(THREAD_RUN_LAST_CALL_SQL)?,
@@ -2239,19 +2238,19 @@ impl<'a> RunReader<'a> {
         })
     }
 
-    /// The span, newest-first: each of the page's own items with the run that
-    /// sits above it read in first.
+    /// The span, newest-first: the page's own items between `floor` and
+    /// `before`, each with the run that sits above it read in first.
     ///
     /// `before` bounds the newest run and `floor` the oldest. Both are
     /// exclusive of the item that ends the run, which is why the floor is
     /// stepped down: the floor row itself is a message, and a page that reaches
     /// the start of a conversation has no message under its oldest run at all.
-    fn span(
-        mut self,
-        structure: Vec<(i64, String)>,
-        before: i64,
-        floor: i64,
-    ) -> Result<Vec<String>, StoreError> {
+    fn span(mut self, before: i64, floor: i64) -> Result<Vec<String>, StoreError> {
+        let agent_id = self.agent_id;
+        let structure = read_sequenced_rows(
+            &mut self.structure,
+            rusqlite::params![agent_id, before, floor],
+        )?;
         let mut span = Vec::with_capacity(structure.len());
         let mut above = before;
         for (sequence, item) in structure {

@@ -4,6 +4,7 @@
 //! run), while individual harness processes are recorded as session lineage.
 //! Messages cost agent tokens; events and revision links do not.
 
+use std::borrow::Borrow;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -1211,6 +1212,131 @@ pub const MAX_THREAD_PAGE: usize = 200;
 /// rather than a flat constant, so the smallest polls stay small — a page of 1
 /// ships at most 10 items, the default 60 at most 600.
 pub const THREAD_PAGE_SPAN_FACTOR: usize = 10;
+
+/// How many items of any ONE run of activity a page ships.
+///
+/// A run is folded to a single row, so what the wire has to carry is the newest
+/// of it — the last thing the agent did, and enough above it to read as work.
+/// The digest beside the page carries the truth about the rest: how many calls
+/// the run made, and which one was last. Items past the cap are omitted, which
+/// is why a page is not a contiguous run of sequences.
+pub const PAGE_ACTIVITY_RUN_CAP: usize = 100;
+
+/// The newest tool call of an activity run, as a folded row prints it.
+///
+/// A fixed shape: `summary` and `outcome` serialize as `null` when the call
+/// carries none, so the client falls back rather than reading around an absent
+/// field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LastToolCall {
+    pub sequence: u64,
+    pub created_at: String,
+    pub summary: Option<String>,
+    pub outcome: Option<ToolCallOutcome>,
+}
+
+impl LastToolCall {
+    fn of(event: &ThreadEvent) -> Self {
+        LastToolCall {
+            sequence: event.sequence,
+            created_at: event.created_at.clone(),
+            summary: event.summary.clone(),
+            outcome: event.outcome,
+        }
+    }
+}
+
+/// What one folded run of activity amounts to, whatever a page shipped of it.
+///
+/// The count is the fact only the bridge can see: a client counts the rows it
+/// was handed, and the cap means those are not all the rows there were. So the
+/// span is named — `[from_sequence, through_sequence]`, the run's own first and
+/// last item — and the count is exact over it, cap-omitted items included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivityDigest {
+    pub from_sequence: u64,
+    pub through_sequence: u64,
+    pub tool_calls: u64,
+    pub last_tool_call: Option<LastToolCall>,
+}
+
+/// A page: what ships, and what the runs inside it mean. Held together because
+/// they are one answer — items alone would say a run was a hundred calls long.
+pub struct PageCut<T> {
+    pub items: Vec<T>,
+    pub digests: Vec<ActivityDigest>,
+}
+
+/// Cut a page out of the span it reaches over: keep everything that is not
+/// activity, keep the newest [`PAGE_ACTIVITY_RUN_CAP`] of every run that is,
+/// and answer for each run with a digest.
+///
+/// Generic over how the caller holds an item, so neither page path has to take
+/// its span apart and put it back together: memory passes borrows off its
+/// resident tail, the store passes the items it just decoded, and both get the
+/// same cut back. Takes the span newest-first — the order both paths read in —
+/// and hands the items back oldest-first, the order a conversation is rendered
+/// in.
+///
+/// `tool_calls_between` is the census, and the only thing that differs between
+/// reading memory and reading SQLite. It is asked for the run's whole span,
+/// which both callers can answer exactly: a run on a page never reaches below
+/// the span, because the span's oldest item is a message and a message ends a
+/// run.
+pub fn cut_activity_runs<T, E>(
+    span_newest_first: Vec<T>,
+    tool_calls_between: impl Fn(u64, u64) -> Result<u64, E>,
+) -> Result<PageCut<T>, E>
+where
+    T: Borrow<ThreadItem>,
+{
+    let mut cut = PageCut {
+        items: Vec::with_capacity(span_newest_first.len()),
+        digests: Vec::new(),
+    };
+    let mut run: Vec<T> = Vec::new();
+    for item in span_newest_first {
+        if item.borrow().is_activity() {
+            run.push(item);
+            continue;
+        }
+        cut = fold_activity_run(cut, std::mem::take(&mut run), &tool_calls_between)?;
+        cut.items.push(item);
+    }
+    let mut cut = fold_activity_run(cut, run, &tool_calls_between)?;
+    cut.items.reverse();
+    cut.digests.reverse();
+    Ok(cut)
+}
+
+/// Close one run onto the cut: its digest, then the newest of its items. Both
+/// the run and the cut being built are newest-first, so the caller reverses
+/// once at the end rather than per run.
+fn fold_activity_run<T, E>(
+    mut cut: PageCut<T>,
+    run_newest_first: Vec<T>,
+    tool_calls_between: &impl Fn(u64, u64) -> Result<u64, E>,
+) -> Result<PageCut<T>, E>
+where
+    T: Borrow<ThreadItem>,
+{
+    let (Some(newest), Some(oldest)) = (run_newest_first.first(), run_newest_first.last()) else {
+        return Ok(cut);
+    };
+    let from_sequence = oldest.borrow().sequence();
+    let through_sequence = newest.borrow().sequence();
+    cut.digests.push(ActivityDigest {
+        from_sequence,
+        through_sequence,
+        tool_calls: tool_calls_between(from_sequence, through_sequence)?,
+        last_tool_call: run_newest_first
+            .iter()
+            .find_map(|item| item.borrow().tool_call().map(LastToolCall::of)),
+    });
+    cut.items
+        .extend(run_newest_first.into_iter().take(PAGE_ACTIVITY_RUN_CAP));
+    Ok(cut)
+}
 
 /// How many hits a query returns when it does not say.
 pub const DEFAULT_QUERY_LIMIT: usize = 20;
@@ -3555,6 +3681,211 @@ mod activity_item_tests {
             vec![false, true, false, false],
             "{:?}",
             thread.items
+        );
+    }
+}
+
+/// The one cut both page paths ship under: maximal runs of activity, capped at
+/// their newest, each answered for by a digest that is exact over the whole
+/// run.
+#[cfg(test)]
+mod activity_cut_tests {
+    use super::*;
+
+    const NOW: &str = "2026-09-06T18:03:11.412Z";
+
+    /// The cut as a page takes it: the whole conversation newest-first, with a
+    /// census that counts the tool calls of a span exactly.
+    fn cut_over(thread: &Thread) -> PageCut<&ThreadItem> {
+        let span: Vec<&ThreadItem> = thread.items.iter().rev().collect();
+        let census = |from: u64, through: u64| {
+            Ok::<u64, std::convert::Infallible>(
+                thread
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        item.is_tool_call() && (from..=through).contains(&item.sequence())
+                    })
+                    .count() as u64,
+            )
+        };
+        match cut_activity_runs(span, census) {
+            Ok(cut) => cut,
+            Err(impossible) => match impossible {},
+        }
+    }
+
+    fn call(thread: &mut Thread, summary: &str) -> u64 {
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some(summary.to_string()),
+            None,
+            None,
+            NOW,
+        )
+    }
+
+    /// The shape the fold exists for. A thousand calls ship as a hundred, and
+    /// the digest carries the truth about the rest: how many there were, and
+    /// which one was last.
+    #[test]
+    fn a_run_of_a_thousand_calls_ships_its_newest_hundred_and_counts_them_all() {
+        let mut thread = Thread::new("run-busy");
+        thread.post_user("rename the helper", None, NOW);
+        for index in 0..1000 {
+            call(&mut thread, &format!("Read file-{index}.rs"));
+        }
+
+        let cut = cut_over(&thread);
+        let shipped: Vec<u64> = cut.items.iter().map(|item| item.sequence()).collect();
+        assert_eq!(
+            shipped.len(),
+            1 + PAGE_ACTIVITY_RUN_CAP,
+            "{}",
+            shipped.len()
+        );
+        assert_eq!(
+            shipped[0], 1,
+            "the message is not activity and always ships"
+        );
+        assert_eq!(
+            &shipped[1..],
+            (902..=1001).collect::<Vec<u64>>(),
+            "the newest of the run, oldest-first"
+        );
+
+        let digest = cut.digests.first().expect("the run has a digest");
+        assert_eq!(digest.from_sequence, 2);
+        assert_eq!(digest.through_sequence, 1001);
+        assert_eq!(digest.tool_calls, 1000, "exact over the whole run");
+        let last = digest
+            .last_tool_call
+            .as_ref()
+            .expect("the run called tools");
+        assert_eq!(last.sequence, 1001);
+        assert_eq!(last.summary.as_deref(), Some("Read file-999.rs"));
+        assert_eq!(last.created_at, NOW);
+        assert!(last.outcome.is_none(), "{last:?}");
+    }
+
+    /// A run that only thought counts nothing and names no call, so the row it
+    /// folds to has nothing to claim.
+    #[test]
+    fn a_run_of_pure_reasoning_counts_no_calls_and_names_none() {
+        let mut thread = Thread::new("run-quiet");
+        thread.post_user("what do you make of it", None, NOW);
+        for _ in 0..5 {
+            thread.push_event(
+                ThreadEventKind::Reasoning,
+                Some("thinking".to_string()),
+                None,
+                None,
+                NOW,
+            );
+        }
+
+        let cut = cut_over(&thread);
+        let digest = cut.digests.first().expect("the run has a digest");
+        assert_eq!(digest.tool_calls, 0);
+        assert!(digest.last_tool_call.is_none(), "{digest:?}");
+        assert_eq!(cut.items.len(), 6, "nothing was capped");
+    }
+
+    /// The newest call, wherever in the run it sits: the cap keeps the newest
+    /// ITEMS, and a run that thought for a hundred steps after its last call
+    /// still says which call that was.
+    #[test]
+    fn the_last_call_is_named_even_when_the_cap_left_it_off_the_wire() {
+        let mut thread = Thread::new("run-thinky");
+        thread.post_user("rename the helper", None, NOW);
+        let called = call(&mut thread, "Bash(cargo test)");
+        for _ in 0..PAGE_ACTIVITY_RUN_CAP + 20 {
+            thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        }
+
+        let cut = cut_over(&thread);
+        let shipped: Vec<u64> = cut.items.iter().map(|item| item.sequence()).collect();
+        assert!(!shipped.contains(&called), "the cap left the call off");
+        let digest = cut.digests.first().expect("the run has a digest");
+        assert_eq!(digest.tool_calls, 1);
+        assert_eq!(
+            digest.last_tool_call.as_ref().map(|last| last.sequence),
+            Some(called)
+        );
+    }
+
+    /// A run is maximal, and anything that is not activity ends one: a message
+    /// or a lifecycle marker both do.
+    #[test]
+    fn every_non_activity_item_ends_a_run() {
+        let mut thread = Thread::new("run-mixed");
+        thread.post_user("rename the helper", None, NOW);
+        call(&mut thread, "Read one.rs");
+        call(&mut thread, "Read two.rs");
+        thread.push_event(ThreadEventKind::Committed, None, None, None, NOW);
+        call(&mut thread, "Read three.rs");
+        thread.post_agent("done", None, NOW);
+        thread.push_event(ThreadEventKind::Narration, None, None, None, NOW);
+
+        let cut = cut_over(&thread);
+        let runs: Vec<(u64, u64, u64)> = cut
+            .digests
+            .iter()
+            .map(|digest| {
+                (
+                    digest.from_sequence,
+                    digest.through_sequence,
+                    digest.tool_calls,
+                )
+            })
+            .collect();
+        assert_eq!(runs, vec![(2, 3, 2), (5, 5, 1), (7, 7, 0)], "{runs:?}");
+        assert_eq!(
+            cut.items
+                .iter()
+                .map(|item| item.sequence())
+                .collect::<Vec<u64>>(),
+            (1..=7).collect::<Vec<u64>>(),
+            "nothing was capped, so the page is whole"
+        );
+    }
+
+    /// The open run at the end of a conversation reaches the newest thing
+    /// there is, so the client knows the digest speaks for everything it holds
+    /// below it.
+    #[test]
+    fn the_open_tail_runs_through_sequence_is_the_last_sequence() {
+        let mut thread = Thread::new("run-live");
+        thread.post_user("rename the helper", None, NOW);
+        for index in 0..300 {
+            call(&mut thread, &format!("Read file-{index}.rs"));
+        }
+
+        let cut = cut_over(&thread);
+        assert_eq!(
+            cut.digests.last().expect("a run").through_sequence,
+            thread.last_sequence()
+        );
+    }
+
+    /// A conversation with no activity in it cuts to itself: every item ships,
+    /// oldest-first, and there is nothing to fold.
+    #[test]
+    fn a_conversation_of_words_alone_cuts_to_itself() {
+        let mut thread = Thread::new("run-talky");
+        for turn in 0..4 {
+            thread.post_user(format!("ask {turn}"), None, NOW);
+            thread.post_agent(format!("answer {turn}"), None, NOW);
+        }
+
+        let cut = cut_over(&thread);
+        assert!(cut.digests.is_empty(), "{:?}", cut.digests);
+        assert_eq!(
+            cut.items
+                .iter()
+                .map(|item| item.sequence())
+                .collect::<Vec<u64>>(),
+            (1..=8).collect::<Vec<u64>>()
         );
     }
 }

@@ -137,10 +137,16 @@ describe("uncommittedHeaderHtml", () => {
     expect(html).toContain("−3");
   });
 
-  it("surfaces both truncation notices when the bridge capped its payloads", () => {
-    expect(uncommittedHeaderHtml(status({ truncated: true }))).toContain("diff truncated");
+  it("surfaces the file-list truncation notice when the bridge capped the shape", () => {
     expect(uncommittedHeaderHtml(status({ files_truncated: true }))).toContain("file list truncated");
     expect(uncommittedHeaderHtml(status())).not.toContain("truncated");
+  });
+
+  // git.status ships shape and no patch at all, so there is no whole-changeset
+  // diff for a 1 MiB cap to fall on. The cap falls on one file's body, and the
+  // file is where it is drawn (core/fileEntries.js).
+  it("says nothing about a capped diff over the whole changeset", () => {
+    expect(uncommittedHeaderHtml(status({ truncated: true }))).not.toContain("diff truncated");
   });
 });
 

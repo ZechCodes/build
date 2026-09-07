@@ -68,6 +68,18 @@ function rowsOf(view, body) {
 
 const previewOf = (file) => ({ ...file, rows: file.rows.slice(0, COLLAPSED_PREVIEW_ROWS) });
 
+/** The body cached for one file: the one a caller handed for this file, or the
+ *  one the stack's `bodyOf` answers for its path. */
+const cachedBody = (view, options) =>
+  options.body || (options.bodyOf ? options.bodyOf(view.path) : undefined);
+
+/** What a file whose diff the daemon cut at 1 MiB says about itself, in either
+ *  fold. The cap falls on one file's body — a status ships shape and no patch —
+ *  so the file that was cut is where the reader is told, rather than a line over
+ *  a changeset that says nothing about which diff is short. */
+const truncatedNoticeHtml = (body) =>
+  body && body.truncated ? '<div class="ftrunc">diff truncated at 1 MiB</div>' : "";
+
 function foldedBodyHtml(file, fold, options) {
   const collapsed = fold === SHUT;
   if (!file.rows) return fileNoticeHtml(collapsed ? "expand to load this file" : "loading…");
@@ -75,12 +87,15 @@ function foldedBodyHtml(file, fold, options) {
 }
 
 /** One file's entry for the keyed list: its key, and the html of it in the fold
- *  it is in. `options.body` is the cached `{ content_key, patch, truncated }`;
+ *  it is in. The cached `{ content_key, patch, truncated }` is `options.body`
+ *  for one file, or whatever `options.bodyOf` answers for its path on a stack;
  *  every other option is the stack's (folds, viewed, changedSince, fileMenu…). */
 export function fileEntry(view, options = {}) {
-  const file = { ...view, rows: rowsOf(view, options.body) };
+  const body = cachedBody(view, options);
+  const file = { ...view, rows: rowsOf(view, body) };
   const fold = fileFoldOf(file, options);
-  return { key: fileKey(file), html: fileFrameHtml(file, options, foldedBodyHtml(file, fold, options)) };
+  const html = `${foldedBodyHtml(file, fold, options)}${truncatedNoticeHtml(body)}`;
+  return { key: fileKey(file), html: fileFrameHtml(file, options, html) };
 }
 
 const noBodies = () => undefined;

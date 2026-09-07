@@ -129,6 +129,16 @@ describe("fileEntry", () => {
     expect(html).toContain("changed since your review");
   });
 
+  // The 1 MiB cap falls on one file's body — git.status ships shape and no
+  // patch — so the file that was cut short is what says so, in either fold.
+  it("says a file's diff was cut short, open and collapsed alike", () => {
+    const cut = { ...bodyFor("src/a.js", 20), truncated: true };
+
+    expect(fileEntry(view(), { fold: "open", body: cut }).html).toContain("diff truncated at 1 MiB");
+    expect(fileEntry(view(), { fold: "shut", body: cut }).html).toContain("diff truncated at 1 MiB");
+    expect(fileEntry(view(), { fold: "open", body: bodyFor("src/a.js", 20) }).html).not.toContain("truncated");
+  });
+
   it("renders a git.show file from the rows the payload carried", () => {
     const parsed = parseDiff(patchFor("src/b.js", 4))[0];
     const { html } = fileEntry(fileViewFromParsedFile(parsed), { fold: "open" });
@@ -200,6 +210,13 @@ describe("fileStackEntries", () => {
     folds.press("EDIT:src/a.js"); // capped → shut
     const [first] = fileStackEntries(views(), { bodyOf, folds });
     expect(rowCount(first.html)).toBe(COLLAPSED_PREVIEW_ROWS);
+  });
+
+  it("says which file of a stack the daemon cut short", () => {
+    const cut = { ...bodies["src/a.js"], truncated: true };
+    const [first] = fileStackEntries(views(), { bodyOf: (path) => (path === "src/a.js" ? cut : bodies[path]) });
+
+    expect(first.html).toContain("diff truncated at 1 MiB");
   });
 
   it("says the stack is empty when the shape names no file", () => {

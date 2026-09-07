@@ -75,8 +75,12 @@ export function changesRailEntries({ status, log, selected, review = null, nowSe
   return entries;
 }
 
-/** The uncommitted changeset's header: what this is, its counts, and the
- *  bridge's two truncation notices when its payloads were capped. */
+/** The uncommitted changeset's header: what this is, its counts, and the notice
+ *  the bridge cut its file list short with.
+ *
+ *  Nothing about a capped diff: `git.status` ships shape and no patch, so the
+ *  1 MiB cap falls on one file's body and the file draws its own line for it
+ *  (core/fileEntries.js). */
 export function uncommittedHeaderHtml(status) {
   const totals = uncommittedTotals(status);
   const fileCount = totals.files;
@@ -85,8 +89,7 @@ export function uncommittedHeaderHtml(status) {
     insertions: totals.insertions,
     deletions: totals.deletions,
   })}</div>
-    ${status && status.files_truncated ? `<div class="ftrunc">file list truncated — ${fileCount} shown; a commit here commits the listed files</div>` : ""}
-    ${status && status.truncated ? TRUNCATED_NOTICE : ""}`;
+    ${status && status.files_truncated ? `<div class="ftrunc">file list truncated — ${fileCount} shown; a commit here commits the listed files</div>` : ""}`;
 }
 
 /** One commit's header: subject, body, identity line, truncation notice. */

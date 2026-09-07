@@ -2933,3 +2933,146 @@ describe("the viewer at the bottom of the conversation column", () => {
     expect(viewerRule).not.toMatch(/border-top/);
   });
 });
+
+// A folded run of activity is a head until the reader presses it, and what it
+// opens onto is not always in hand: the daemon caps how much of one run a page
+// carries and says in a digest how far the whole of it reaches.
+describe("a run of activity in the rail", () => {
+  const toolCall = (sequence, summary) => ({
+    type: "event",
+    data: { sequence, event: "tool_use", summary },
+  });
+
+  const said = (sequence, body) => ({ type: "message", data: { sequence, id: `m-${sequence}`, role: "agent", body } });
+
+  const conversation = (items, digests) => branchRow({
+    run: {
+      run_id: "run-3",
+      thread: {
+        sessions: [],
+        items,
+        has_more: false,
+        thread_total: items.length,
+        thread_last_sequence: items[items.length - 1].data.sequence,
+        activity_digests: digests,
+      },
+    },
+  });
+
+  const runHead = () => railHost().querySelector(".thread-activity-group-head");
+  const runRows = () => [...railHost().querySelectorAll(".thread-activity-group-list > .thread-activity")];
+
+  it("draws a shut run as a head, and its rows on the press that opens it", async () => {
+    payload = conversation([said(1, "Have a look."), toolCall(2, "Read a.js"), toolCall(3, "Read b.js")], [
+      { from_sequence: 2, through_sequence: 3, tool_calls: 2, last_tool_call: null },
+    ]);
+    await mount();
+
+    expect(railHost().querySelector(".thread-activity-count").textContent).toBe("2");
+    expect(runRows()).toHaveLength(0);
+
+    runHead().click();
+    await flush();
+
+    expect(runRows()).toHaveLength(2);
+    expect(callsTo("thread.activity")).toEqual([]);
+  });
+
+  it("asks for the half of a cut run the window never held, once", async () => {
+    payload = conversation([said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js")], [
+      { from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null },
+    ]);
+    App.call.mockImplementation(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return payload;
+      if (method === "thread.activity") {
+        return { items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false };
+      }
+      return {};
+    });
+    await mount();
+
+    runHead().click();
+    await flush();
+
+    expect(callsTo("thread.activity").map((call) => call.params)).toEqual([{
+      entity_id: "run-3",
+      agent_id: "ag-1",
+      from_sequence: 10,
+      through_sequence: 51,
+      limit: 200,
+    }]);
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]);
+
+    runHead().click();
+    runHead().click();
+    await flush();
+
+    expect(callsTo("thread.activity")).toHaveLength(1);
+  });
+
+  it("opens the run a surface's call is folded into before reaching for the row", async () => {
+    payload = conversation([said(1, "Have a look."), toolCall(2, "Task(review the parser)")], [
+      { from_sequence: 2, through_sequence: 2, tool_calls: 1, last_tool_call: null },
+    ]);
+    payload.agents = [agent({ surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 2 }] } })];
+    await mount();
+
+    railHost().querySelector('[data-surface-kind="subagents"]').click();
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('[data-sequence="2"]')).not.toBe(null);
+  });
+});
+
+// The conversation repaints on every poll and every event, and most of those
+// ticks resolve exactly what the last one did.
+describe("a chat paint with nothing to say", () => {
+  const said = (sequence, body) => ({ type: "message", data: { sequence, id: `m-${sequence}`, role: "agent", body } });
+
+  const conversationOf = (items) => branchRow({
+    run: {
+      run_id: "run-3",
+      thread: {
+        sessions: [],
+        items,
+        has_more: false,
+        thread_total: items.length,
+        thread_last_sequence: items[items.length - 1].data.sequence,
+      },
+    },
+  });
+
+  // A repaint writes every row it disagrees with, and a mark nobody rendered
+  // is a disagreement — so a mark left on a row survives exactly the ticks the
+  // paint skipped.
+  const markTheFirstRow = () => railHost().querySelector(".thread-items").firstElementChild.setAttribute("data-probe", "1");
+  const markSurvived = () => railHost().querySelector('[data-probe="1"]') !== null;
+
+  it("builds nothing on a tick that moved none of its inputs", async () => {
+    payload = conversationOf([said(1, "the first thing said")]);
+    await mount();
+    markTheFirstRow();
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(markSurvived()).toBe(true);
+  });
+
+  it("paints again the moment one of them does", async () => {
+    payload = conversationOf([said(1, "the first thing said")]);
+    await mount();
+    markTheFirstRow();
+
+    payload = conversationOf([said(1, "the first thing said"), said(2, "and the next")]);
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(markSurvived()).toBe(false);
+    expect(railHost().querySelector(".thread-items").textContent).toContain("and the next");
+  });
+});

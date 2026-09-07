@@ -74,18 +74,25 @@ import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
   MUTATION_THREAD_PAGE,
+  activityRunKeyAt,
+  chatPaintFingerprint,
   createThreadCache,
+  paintThreadEntries,
   paintThreadKeepingPlace,
+  pressedActivityRunKey,
   revealThreadSequence,
-  threadHtml,
+  threadOfferState,
+  timelineEntries,
   wireThreadAttachments,
   wireThreadOptions,
   wireThreadComposer,
   threadItemKey,
   wireThreadLinks,
   wireThreadRevisionLinks,
-  writeThreadKeepingComposer,
 } from "./thread.js";
+import { createActivityRuns } from "./activityRuns.js";
+import { digestCovering } from "./activityDigest.js";
+import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
@@ -334,6 +341,9 @@ export function mountAgentRail(host, context) {
   let addingAgent = false;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
+  let activityRuns = null; // the open runs of the conversation in the panel
+  let activityRunsFor = null; // whose conversation those runs belong to
+  let paintedChat = null; // what the timeline in the panel was drawn from
   let seededSurfaces = null;
 
   const cacheIdentity = () => {
@@ -866,6 +876,88 @@ export function mountAgentRail(host, context) {
     };
   };
 
+  /// The open runs of the conversation the panel is showing.
+  ///
+  /// One handle per conversation: switching bubbles is a different thread, with
+  /// its own sequences and its own folds, so the runs the reader had open in
+  /// the one they left do not follow them into the next.
+  const conversationRuns = () => {
+    const runsFor = `${entity.entityId || ""}:${selectedId || ""}`;
+    if (!activityRuns || activityRunsFor !== runsFor) {
+      activityRunsFor = runsFor;
+      activityRuns = createActivityRuns({
+        deviceId: cacheDeviceId(),
+        entityId: entity.entityId,
+        agentId: selectedId,
+        call: (method, params) => App.call(method, params),
+      });
+    }
+    return activityRuns;
+  };
+
+  /// What the daemon last said each run over this window totals. The cache is
+  /// what holds them: a forward delta says nothing about a run's total.
+  const digestsInHand = () => (threadCache.readWindow() || {}).activityDigests || [];
+
+  /// The items fetched for a run, found by what its digest COVERS.
+  ///
+  /// A run is keyed by the oldest sequence the window holds of it, which is
+  /// where the run started only when the page did not cut one.
+  const fetchedRunItems = (runKey) => {
+    const digest = digestCovering(digestsInHand(), Number(runKey));
+    return digest ? conversationRuns().itemsOf(digest.from_sequence) : undefined;
+  };
+
+  /// How far the window has taken delivery of the conversation. The one number
+  /// that moves for an item mutated in place — a call answered, a message
+  /// marked seen — which changes what a row says without changing how many
+  /// rows there are.
+  const deliveredSequenceOf = (thread) => {
+    const held = threadCache.readWindow();
+    return Math.max(held ? held.deliveredSequence : 0, (thread && thread.thread_last_sequence) || 0);
+  };
+
+  const threadItems = (thread) => (thread && thread.items) || [];
+  const threadDigests = (thread) => (thread && thread.activityDigests) || [];
+
+  const chatFingerprintOf = (thread, agentLabel) => {
+    const openRuns = conversationRuns().openKeys();
+    return chatPaintFingerprint({
+      deliveredSequence: deliveredSequenceOf(thread),
+      itemCount: threadItems(thread).length,
+      digests: threadDigests(thread),
+      openRunKeys: openRuns,
+      fetchedRunKeys: [...openRuns].filter((key) => fetchedRunItems(key)),
+      selectedAgentId: selectedId,
+      agentLabel,
+      ...threadOfferState(),
+    });
+  };
+
+  /// The conversation, unless nothing it is drawn from has moved.
+  ///
+  /// Everything else the panel shows — the composer, the pills, the read report
+  /// — is about the agent rather than about what it said, so a skipped timeline
+  /// never skips those.
+  const paintTimeline = (body, thread, olderItemsPrepended) => {
+    const agentLabel = providerLabel((agentOf(selectedId) || {}).provider);
+    const fingerprint = chatFingerprintOf(thread, agentLabel);
+    if (fingerprint === paintedChat && body.querySelector(".thread-items")) return;
+    paintedChat = fingerprint;
+    const built = timelineEntries(threadItems(thread), agentLabel, thread && thread.id, threadDigests(thread), {
+      openRuns: conversationRuns().openKeys(),
+      runItemsOf: fetchedRunItems,
+    });
+    // No composer in here: the box is pinned below this scroller, so what the
+    // poll repaints is the timeline and only the timeline.
+    timedPaint("chat", () =>
+      paintThreadKeepingPlace(body, () => {
+        paintThreadEntries(body, built);
+        wireTimeline(body);
+      }, { olderItemsPrepended }),
+    );
+  };
+
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
@@ -875,17 +967,7 @@ export function mountAgentRail(host, context) {
       syncSurfaces();
       return;
     }
-    const thread = threadFor();
-    const agent = agentOf(selectedId);
-    paintThreadKeepingPlace(body, () => {
-      // No composer in here: the box is pinned below this scroller, so what the
-      // poll repaints is the timeline and only the timeline.
-      const html = threadHtml(thread || { items: [] }, {
-        agentLabel: providerLabel(agent && agent.provider),
-      });
-      writeThreadKeepingComposer(body, html);
-      wireTimeline(body);
-    }, { olderItemsPrepended });
+    paintTimeline(body, threadFor(), olderItemsPrepended);
     // Assignment rather than a listener: the scroller outlives every repaint,
     // and adding one per paint would ask for the same page once per tick.
     body.onscroll = () => {
@@ -894,6 +976,27 @@ export function mountAgentRail(host, context) {
     syncComposer();
     syncSurfaces();
     reportRead(body);
+  };
+
+  /// The reader pressing a folded run.
+  ///
+  /// The head is a `<summary>`, so the box opens under their finger; what it
+  /// opens onto is drawn on the repaint. A run the window holds whole is drawn
+  /// from the window, and one the page cut is asked for — the daemon holds the
+  /// half that never travelled.
+  const pressActivityRun = (runKey) => {
+    const runs = conversationRuns();
+    const opened = runs.toggle(runKey);
+    paintChat();
+    if (!opened) return;
+    const digest = digestCovering(digestsInHand(), Number(runKey));
+    if (!digest || digest.from_sequence >= Number(runKey)) return;
+    runs.open(digest).then(
+      (filled) => {
+        if (filled && !disposed) paintChat();
+      },
+      (error) => notifyError("Could not load this activity", error.message),
+    );
   };
 
   const composerPlaceholder = () =>
@@ -987,6 +1090,12 @@ export function mountAgentRail(host, context) {
       notifyError("Choice failed", error.message);
       throw error;
     }));
+    // Delegated, because the row a press lands on is redrawn under it: the
+    // scroller outlives every repaint, and the run names itself on the head.
+    body.onclick = (event) => {
+      const runKey = pressedActivityRunKey(event.target);
+      if (runKey) pressActivityRun(runKey);
+    };
   };
 
   /// Wire the pinned box. `panel` rather than the composer row itself, so a file
@@ -1021,10 +1130,20 @@ export function mountAgentRail(host, context) {
     return activeModelLabel(catalog, agent ? agent.provider : "", modelId);
   };
 
+  /// A reference from a surface points at a call, and a call folded into a shut
+  /// run has no row to point at — so the run it sits in is opened first.
+  const openRunHolding = (body, sequence) => {
+    const runKey = activityRunKeyAt(body, sequence);
+    if (!runKey || conversationRuns().isOpen(runKey)) return;
+    pressActivityRun(runKey);
+  };
+
   const surfaceViewerCallbacks = () => ({
     modelLabel: surfaceModelLabel,
     onOpenThreadItem: (sequence) => {
-      if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
+      const body = host.querySelector("#rail-body");
+      openRunHolding(body, sequence);
+      if (revealThreadSequence(body, sequence)) return;
       notifyError(
         "That call is not in the loaded conversation",
         "Scroll back to load older items, then press the row again.",

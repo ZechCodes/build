@@ -163,7 +163,7 @@ describe("every surface's conversation scrolls the same way", () => {
   it.each(SURFACES_WITH_A_CONVERSATION)("%s wraps every thread paint in the shared helper", (file) => {
     const source = sourceOf(file);
     const bodyLines = source.split("\n").filter((line) => !/^import\b/.test(line.trim()));
-    const threadPaints = bodyLines.join("\n").match(/threadHtml\(/g) || [];
+    const threadPaints = bodyLines.join("\n").match(/paintThreadEntries\(/g) || [];
     const wrapped = bodyLines.join("\n").match(/paintThreadKeepingPlace\(/g) || [];
     expect(threadPaints.length).toBeGreaterThan(0);
     expect(wrapped).toHaveLength(threadPaints.length);

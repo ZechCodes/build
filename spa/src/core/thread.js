@@ -800,8 +800,6 @@ function sequenceAttribute(event) {
 /// swept into one. The five kinds are a closed set the daemon and this client
 /// agree on, and a row nobody can classify is better read as something that
 /// happened than hidden inside a fold.
-const TOOL_CALL_KIND = "tool_use";
-
 const activityMetaOf = (event) => {
   const meta = EVENT_META[event.event];
   return meta && meta.activity ? meta : null;
@@ -822,11 +820,19 @@ function activityMeat(event, meta, agentLabel) {
 
 /// A run of activity, collapsed to one line.
 ///
-/// Everything between two things somebody SAID is one row here: a counter, and
-/// the newest item's own words. No label — the reader can see it is activity,
-/// and the label would spend the width of the line saying so — and no tone,
-/// because a run of work asks for nothing. For a live run the line is a ticker:
-/// each repaint shows the newest item and the count going up.
+/// Everything between two things somebody SAID is one row here: how many tools
+/// the run called, and the last call's line, mark, time and glyph. The number is
+/// the bridge's own count of the whole run rather than a count of the rows in
+/// hand, so it says the same thing under a page that shipped a hundred of a
+/// thousand calls as under one that shipped them all. No label — the reader can
+/// see it is activity, and the label would spend the width of the line saying so
+/// — and no tone, because a run of work asks for nothing. For a live run the
+/// line is a ticker: each repaint shows the newest call and the count going up.
+///
+/// A run that called no tool at all keeps the old look: its latest row's words
+/// and glyph, and how many rows it holds. Which of the two readings a run gets,
+/// and where each printed value came from, is activityRunSummary's to resolve
+/// (core/activityDigest.js); this prints what it was handed.
 ///
 /// A `<details>` rather than a wired button, for the same reason each row inside
 /// it is one: the open state then belongs to the element the reader clicked, and
@@ -883,6 +889,8 @@ function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${completionReportHtml(event.completion_report)}${linksHtml(event.links)}</div>
   </div>`;
 }
+
+const TOOL_CALL_KIND = "tool_use";
 
 /// How a run of activity folds: which rows hide under which, and what calls a
 /// row stands for.

@@ -220,9 +220,10 @@ impl ChangeBus {
         !self.pending.lock().unwrap().keys.is_empty()
     }
 
-    /// Send one event per distinct key noted since the last flush, and drop
+    /// Send one event per distinct key noted since the last flush — less the
+    /// settled keys still inside their window, which stay pending — and drop
     /// every subscriber whose connection is gone. Returns the number of events
-    /// sent per subscriber (0 when nothing was pending).
+    /// sent per subscriber (0 when nothing went out).
     ///
     /// MUST NOT run holding the app mutex: it encrypts a frame per subscriber
     /// per key.

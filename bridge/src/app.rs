@@ -16980,29 +16980,34 @@ enum DigestScope {
     Detail,
 }
 
-/// How much of a conversation a `thread.page` call asked for. Absent means a
-/// first load's page; a limit larger than one page could sanely carry is
-/// clamped rather than refused, since the caller still wants conversation
-/// back — and shipping the whole of a long one is the thing paging exists to
-/// prevent.
-fn thread_page_limit(params: &Value) -> usize {
+/// How much a paged verb asked for. Absent means the default; a limit larger
+/// than one page could sanely carry is clamped rather than refused, since the
+/// caller still wants an answer back — and shipping the whole of a long
+/// conversation is the thing paging exists to prevent.
+fn page_limit_param(params: &Value, default: usize, most: usize) -> usize {
     params
         .get("limit")
         .and_then(thread_limit_size)
-        .map(|limit| limit.clamp(1, crate::thread::MAX_THREAD_PAGE))
-        .unwrap_or(crate::thread::DEFAULT_THREAD_PAGE)
+        .map(|limit| limit.clamp(1, most))
+        .unwrap_or(default)
 }
 
-/// How much of a span a `thread.activity` call asked for. Clamped rather than
-/// refused, the way `thread.page`'s limit is: the caller still wants the run
-/// back, and a client that asks for a whole long run at once is what paging
-/// exists to prevent.
+/// How much of a conversation a `thread.page` call asked for.
+fn thread_page_limit(params: &Value) -> usize {
+    page_limit_param(
+        params,
+        crate::thread::DEFAULT_THREAD_PAGE,
+        crate::thread::MAX_THREAD_PAGE,
+    )
+}
+
+/// How much of one run's activity a `thread.activity` call asked for.
 fn activity_page_limit(params: &Value) -> usize {
-    params
-        .get("limit")
-        .and_then(thread_limit_size)
-        .map(|limit| limit.clamp(1, crate::thread::MAX_ACTIVITY_PAGE))
-        .unwrap_or(crate::thread::DEFAULT_ACTIVITY_PAGE)
+    page_limit_param(
+        params,
+        crate::thread::DEFAULT_ACTIVITY_PAGE,
+        crate::thread::MAX_ACTIVITY_PAGE,
+    )
 }
 
 /// The span a `thread.activity` call names, read against the conversation it
@@ -36649,6 +36654,40 @@ mod tests {
         assert_eq!(
             nameless["error"], "missing required param: from_sequence",
             "{nameless:?}"
+        );
+    }
+
+    /// The failure a client has to be able to tell from an empty run: the span
+    /// is under this process's tail and the history that holds it cannot be
+    /// read. An empty page would be cached as "this run had no work in it".
+    #[test]
+    fn thread_activity_says_so_when_the_history_it_needs_is_not_stored() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 12);
+        let agent_id = primary_agent_id(&state, &issue_id);
+        state
+            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                let tail = thread.items[4..].to_vec();
+                let last = thread.last_sequence();
+                thread.adopt_stored_tail(tail, 400, last);
+                Ok(())
+            })
+            .expect("the conversation is written");
+        state.store = None;
+
+        let answer = state.handle(req(
+            "thread.activity",
+            json!({
+                "entity_id": issue_id,
+                "from_sequence": first_call,
+                "through_sequence": last_call,
+            }),
+        ));
+        assert_eq!(answer["ok"], false, "{answer:?}");
+        assert_eq!(
+            answer["error"], "this conversation's history is not stored",
+            "{answer:?}"
         );
     }
 

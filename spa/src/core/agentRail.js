@@ -93,7 +93,7 @@ import {
   wireThreadRevisionLinks,
 } from "./thread.js";
 import { createActivityRuns } from "./activityRuns.js";
-import { digestCovering, runDigestToFetch } from "./activityDigest.js";
+import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
@@ -907,14 +907,9 @@ export function mountAgentRail(host, context) {
   /// reader is looking at, not on the window behind it.
   const digestsInHand = () => paintedDigests;
 
-  /// The items fetched for a run, found by what its digest COVERS.
-  ///
-  /// A run is keyed by the oldest sequence the window holds of it, which is
-  /// where the run started only when the page did not cut one.
-  const fetchedRunItems = (runKey) => {
-    const digest = digestCovering(digestsInHand(), Number(runKey));
-    return digest ? conversationRuns().itemsOf(digest.from_sequence) : undefined;
-  };
+  /// The items fetched for a run, by the key the fold names it with — the runs
+  /// hold the span each fetch covered, so there is nothing to translate here.
+  const fetchedRunItems = (runKey) => conversationRuns().itemsOf(runKey);
 
   /// The newest sequence the conversation has reached — the end a run has to
   /// touch to be the live tail.

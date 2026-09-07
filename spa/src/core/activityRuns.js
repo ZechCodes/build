@@ -28,14 +28,23 @@ const runRecordSub = (agentId, fromSequence) => `${agentId || ""}:${fromSequence
 /**
  * The open runs of one conversation.
  *
- * `itemsOf(fromSequence)` answers the items held for a run, or undefined — a
- * paint asks it and never waits. `open(digest)` is the only thing that does:
- * it fetches the run the digest describes unless it is already in hand, and
+ * Every one of these is spoken to in the key a fold names its run by — the
+ * oldest sequence the window holds of it, which is where the run STARTS only
+ * when the page did not cut one. The span a digest carries is what bridges the
+ * two, and holding that here is what keeps a caller from translating: a
+ * translation done wrong is an empty answer, and an empty answer looks exactly
+ * like a run nobody has fetched.
+ *
+ * `itemsOf(runKey)` answers the items held for a run, or undefined — a paint
+ * asks it and never waits. `open(digest)` is the only thing that does: it
+ * fetches the run the digest describes unless it is already in hand, and
  * answers whether anything new landed, so a pane repaints only on news.
  */
 export function createActivityRuns({ deviceId, entityId, agentId, call }) {
   const openRuns = new Set();
-  // The span each fetched run covers, learned from the digest that opened it.
+  // Where each fetched run starts and how far it reaches, learned from the
+  // digest that opened it. The record is written under the start; the fold asks
+  // with a key somewhere inside the span.
   const spans = new Map();
   // The runs being fetched right now. A reader pressing the same fold twice
   // while the first answer is still on its way is one ask, not two.
@@ -76,8 +85,21 @@ export function createActivityRuns({ deviceId, entityId, agentId, call }) {
     valueOf: (run) => ({ key: run.fromSequence, value: { items: run.items } }),
   });
 
+  /// Where the run a fold's key sits in starts, or nothing for a key no fetched
+  /// run covers — a run the window holds whole, or one nobody has opened.
+  const runStartAt = (runKey) => {
+    const key = Number(runKey);
+    for (const [fromSequence, throughSequence] of spans) {
+      if (fromSequence <= key && key <= throughSequence) return fromSequence;
+    }
+    return null;
+  };
+
   return {
-    itemsOf: (fromSequence) => (bodies.read(fromSequence) || {}).items,
+    itemsOf(runKey) {
+      const fromSequence = runStartAt(runKey);
+      return fromSequence === null ? undefined : (bodies.read(fromSequence) || {}).items;
+    },
 
     /** Hold what the run this digest describes contains, and answer whether
      *  that is news. A run already in hand is never asked for twice: it cannot

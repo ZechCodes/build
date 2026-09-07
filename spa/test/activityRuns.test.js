@@ -82,6 +82,28 @@ describe("fetching what a run holds", () => {
     expect(runs.itemsOf(120).map((held) => held.data.sequence)).toEqual([121, 122]);
   });
 
+  // A fold names its run by the oldest sequence the WINDOW holds of it, which
+  // is where the run starts only when the page did not cut one. That key is the
+  // only one this module is spoken to in: a pane translating between two key
+  // spaces gets it wrong silently, since a wrong key is an empty answer.
+  it("answers a run's items by the key its fold is pressed with", async () => {
+    const runs = runsOver([page([121, 122])], []);
+
+    await runs.open(DIGEST);
+
+    expect(runs.itemsOf(500).map((held) => held.data.sequence)).toEqual([121, 122]);
+    expect(runs.itemsOf(870).map((held) => held.data.sequence)).toEqual([121, 122]);
+  });
+
+  it("answers nothing for a key no run it holds covers", async () => {
+    const runs = runsOver([page([121, 122])], []);
+
+    await runs.open(DIGEST);
+
+    expect(runs.itemsOf(2000)).toBeUndefined();
+    expect(runs.itemsOf(119)).toBeUndefined();
+  });
+
   it("pages back until the span is answered, oldest first", async () => {
     const calls = [];
     const runs = runsOver([page([500, 501], true), page([300, 301], false)], calls);

@@ -8,7 +8,7 @@
 /// reader scrolls, so the count is read off the digest and topped up with the
 /// calls that arrived after the page was cut.
 ///
-/// Nothing here touches the DOM. The renderer is handed four printed values.
+/// Nothing here touches the DOM. The renderer is handed five printed values.
 
 import { EVENT_META } from "./threadEvents.js";
 
@@ -107,7 +107,7 @@ function headOf(call, latest) {
 }
 
 /// What one folded run prints: how many tools it called, and the last call's
-/// line, mark and time.
+/// line, mark, time and glyph.
 ///
 /// The count is the sum over every digest the run reaches, plus the calls held
 /// newer than the newest of them — where a row's calls are the ones it STANDS

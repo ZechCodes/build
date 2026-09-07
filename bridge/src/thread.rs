@@ -2379,6 +2379,23 @@ impl Thread {
             < limit
     }
 
+    /// How many tool calls the resident tail holds between two sequences,
+    /// inclusive — the memory census, and the exact sibling of the store's
+    /// `tool_calls_between`.
+    ///
+    /// Exact wherever a page is allowed to ask it: a page answered out of
+    /// memory has `page_reaches_stored_history() == false`, so every run it
+    /// touches is resident whole and nothing in `[from, through]` sits under
+    /// the tail.
+    pub fn tool_calls_between(&self, from_sequence: u64, through_sequence: u64) -> u64 {
+        self.items
+            .iter()
+            .filter(|item| {
+                item.is_tool_call() && (from_sequence..=through_sequence).contains(&item.sequence())
+            })
+            .count() as u64
+    }
+
     /// Whether a cursor this far back reaches under the tail this process
     /// holds, and so has to be completed out of the store.
     ///
@@ -2650,14 +2667,7 @@ impl Thread {
         // message is resident and a message ends the oldest run. A conversation
         // shorter than the limit is reached whole and has nothing below it.
         let census = |from: u64, through: u64| {
-            Ok::<u64, std::convert::Infallible>(
-                self.items
-                    .iter()
-                    .filter(|item| {
-                        item.is_tool_call() && (from..=through).contains(&item.sequence())
-                    })
-                    .count() as u64,
-            )
+            Ok::<u64, std::convert::Infallible>(self.tool_calls_between(from, through))
         };
         let cut = match cut_activity_runs(span, census) {
             Ok(cut) => cut,
@@ -3832,20 +3842,39 @@ mod activity_cut_tests {
     fn cut_over(thread: &Thread) -> PageCut<&ThreadItem> {
         let span: Vec<&ThreadItem> = thread.items.iter().rev().collect();
         let census = |from: u64, through: u64| {
-            Ok::<u64, std::convert::Infallible>(
-                thread
-                    .items
-                    .iter()
-                    .filter(|item| {
-                        item.is_tool_call() && (from..=through).contains(&item.sequence())
-                    })
-                    .count() as u64,
-            )
+            Ok::<u64, std::convert::Infallible>(thread.tool_calls_between(from, through))
         };
         match cut_activity_runs(span, census) {
             Ok(cut) => cut,
             Err(impossible) => match impossible {},
         }
+    }
+
+    /// The memory census itself: how many tool calls a span of the resident
+    /// tail holds, inclusive at both ends. What a digest's count is when a
+    /// page is answered out of memory, and the sibling of the SQL count the
+    /// store answers with.
+    #[test]
+    fn the_memory_census_counts_the_tool_calls_of_a_span_inclusively() {
+        let mut thread = Thread::new("run-census");
+        thread.post_user("rename the helper", None, NOW);
+        let first = call(&mut thread, "Read one.rs");
+        thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        let last = call(&mut thread, "Read two.rs");
+        thread.post_agent("renamed it", None, NOW);
+
+        assert_eq!(thread.tool_calls_between(first, last), 2, "both ends count");
+        assert_eq!(
+            thread.tool_calls_between(first, first),
+            1,
+            "one item, one call"
+        );
+        assert_eq!(
+            thread.tool_calls_between(1, thread.last_sequence()),
+            2,
+            "nothing but a call is a call: not the words, not the thinking"
+        );
+        assert_eq!(thread.tool_calls_between(last + 1, u64::MAX), 0);
     }
 
     fn call(thread: &mut Thread, summary: &str) -> u64 {

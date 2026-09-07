@@ -26,6 +26,7 @@ import {
   inboxEntries,
   inboxRowHtml,
   issueDoneConfirm,
+  mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
 } from "./inbox.js";
@@ -51,6 +52,9 @@ import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from
 import "../styles/shell.css";
 
 let items = [];
+// The board's rows for lifecycle verbs in flight (board.list's `pending`): a
+// checkout being cut is on the list while its git runs.
+let pendingLifecycle = [];
 let projects = [];
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
@@ -128,7 +132,7 @@ export const INBOX_SCOPE = "inbox";
 
 // The captures this client is holding or watching stand beside the daemon's
 // own rows; the daemon's copy wins wherever both name the same capture.
-const mergedItems = () => mergeCaptureRows(items, pendingCaptureRows());
+const mergedItems = () => mergeCaptureRows(mergePendingRows(items, pendingLifecycle), pendingCaptureRows());
 
 /** Show one of the rail's two faces. The shell calls this with what the user
  *  chose (and remembered); the list repaints as that face. */
@@ -625,6 +629,7 @@ export function mountInboxList() {
   subscribeOptimistic(INBOX_SCOPE, draw);
   subscribeFeed((feed) => {
     items = feed.items || [];
+    pendingLifecycle = feed.pending || [];
     projects = feed.projects || [];
     const live = new Set(items.map(entryKeyOf));
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);

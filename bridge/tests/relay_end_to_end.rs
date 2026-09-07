@@ -5,8 +5,6 @@
 //! bootstraps an encrypted session, sends a request frame, and reads the bridge's
 //! encrypted response — proving the whole transport path works, relay-blind.
 
-use std::sync::Arc;
-
 use build_bridge::carrier::testing::{reporting_handler, within_patience};
 use build_bridge::carrier::FrameHandler;
 use build_bridge::transport::{self, Envelope};
@@ -22,8 +20,10 @@ mod common;
 async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     let identity = device_identity();
     // Run the real bridge relay-client; its handler echoes the request payload.
-    let handler: FrameHandler =
-        Arc::new(|_sender, frame| json!({ "echo": frame.payload, "ok": true }));
+    let handler: FrameHandler = FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
+        |_sender, frame, _timer| json!({ "echo": frame.payload, "ok": true }),
+    );
     let intake = test_intake(handler);
     let ConnectedDevice {
         to_device,
@@ -88,12 +88,15 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
 async fn a_slow_handler_does_not_stall_the_socket() {
     let identity = device_identity();
     // `slow` is the board.list-with-a-libgit2-diff of the incident.
-    let handler: FrameHandler = Arc::new(|_sender, frame| {
-        if frame.payload["method"] == "slow" {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-        }
-        json!({ "id": frame.payload["id"] })
-    });
+    let handler: FrameHandler = FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
+        |_sender, frame, _timer| {
+            if frame.payload["method"] == "slow" {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+            }
+            json!({ "id": frame.payload["id"] })
+        },
+    );
     let ConnectedDevice {
         to_device,
         mut from_device,

@@ -41,6 +41,47 @@ export function agentHasTerminal(agent) {
   return !agent || agent.has_terminal !== false;
 }
 
+/** The state of an agent this client has asked for a session for and not been
+ *  told about yet.
+ *
+ *  The daemon answers a start as soon as the turn is durable and opens the
+ *  harness behind that answer, so the reply says nothing about a session. The
+ *  row wears this until the entity's own push says the session is live; it is
+ *  the client's word, and no payload ever carries it. */
+export const AGENT_STARTING = "starting";
+
+/** Whether this agent has a session running right now — the one answer to a
+ *  start, and the only one the daemon speaks. */
+export const agentSessionIsLive = (agent) => !!agent && agent.state === "live";
+
+/** Why this agent's last start never reached a harness, or "" when the last one
+ *  did. The second answer to a start: a spawn that failed says nothing about a
+ *  session, so without this the row wears "starting" until the overlay's grace
+ *  runs out and then goes quietly idle with the reason nowhere. */
+export const agentStartFailure = (agent) => (agent && agent.start_error) || "";
+
+/** Whether the daemon has answered the question a start asks. Two answers, and
+ *  the client's own `AGENT_STARTING` stands until one of them arrives: a
+ *  session is live, or none ever opened and this is why. */
+export const agentSessionAnswered = (agent) => agentSessionIsLive(agent) || !!agentStartFailure(agent);
+
+/** The starts that have just been reported failed: an agent the rail was
+ *  already showing, with no reason on it, that now carries one. A reason that
+ *  was there before this comparison began is old news — the row says it, and
+ *  nothing is raised over it a second time. */
+export function startFailuresLearned(before = [], after = []) {
+  const known = new Map(before.map((agent) => [agent.id, agentStartFailure(agent)]));
+  return after.filter((agent) => {
+    const failure = agentStartFailure(agent);
+    return !!failure && known.has(agent.id) && known.get(agent.id) !== failure;
+  });
+}
+
+/** Whether this agent has a session or is getting one. The question the
+ *  composer asks before waking an agent, so a message sent behind a start that
+ *  has not been answered does not open a second harness. */
+export const agentIsUp = (agent) => agentSessionIsLive(agent) || (!!agent && agent.state === AGENT_STARTING);
+
 /** Whether the turn this agent is running can be stopped and re-steered right
  *  now — which is two things at once, and the composer offers the interrupting
  *  send only where both hold: there is a turn in flight, and the child running
@@ -83,6 +124,9 @@ export function bubbleTip(agent) {
     return reason ? `${title} — ${reason}` : `${title} — ${agent.unread_count} unread`;
   }
   if (agent && agent.working) return `${title} — working`;
+  if (agent && agent.state === AGENT_STARTING) return `${title} — starting…`;
+  const failure = agentStartFailure(agent);
+  if (failure) return `${title} — ${failure}`;
   return title;
 }
 
@@ -124,7 +168,8 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
     active: agent.id === selectedId,
     unread: agent.unread_count || 0,
     working: !!agent.working,
-    live: agent.state === "live",
+    live: agentSessionIsLive(agent),
+    starting: agent.state === AGENT_STARTING,
   }));
   // Issues carry exactly one agent session: implementing one hands the work to
   // a new agent on a branch, which is a different work item entirely.

@@ -248,6 +248,15 @@ describe("the manual route", () => {
       tab: "changes",
     });
   });
+
+  // The daemon cuts the branch with its state lock released, and the row is on
+  // the board from the moment it is asked for. A reply that names nothing to
+  // open leaves the capture where the board is already showing it.
+  it("opens nothing when the reply names nothing", () => {
+    expect(manualRouteDestination("branch", { project_id: "p1" }, "p1")).toBeNull();
+    expect(manualRouteDestination("issue", { project_id: "p1" }, "p1")).toBeNull();
+    expect(manualRouteDestination("branch", null, "p1")).toBeNull();
+  });
 });
 
 describe("the branches a project already has", () => {

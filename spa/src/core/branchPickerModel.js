@@ -90,7 +90,9 @@ const cutStart = (projectId, query) => ({
  * conversation of its own.
  */
 const landing = (projectId, branch, focusComposer) => (answer) => ({
-  route: { name: "branch", projectId, branch: branch || (answer && answer.branch) || "", tab: "changes" },
+  route: branch || answer?.branch
+    ? { name: "branch", projectId, branch: branch || answer.branch, tab: "changes" }
+    : null,
   focusComposer,
 });
 

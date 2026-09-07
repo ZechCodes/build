@@ -39,9 +39,25 @@ BRIDGE_API_URL=http://127.0.0.1:8090 BRIDGE_WEB_URL=http://127.0.0.1:8090 \
   ../bridge/target/debug/build-bridge serve
 ```
 
+Build is **invite-only**: `/app/`, the whole browser API (device approval included)
+and `/app/downloads` all require a redeemed invite, and everyone else gets a 403
+"invite only" page. Give yourself one before step 2 by seeding an open invite:
+
+```bash
+sqlite3 ./app.db "INSERT INTO invites (id,token_hash,email,invited_by,expires_at,\
+  redeemed_by,redeemed_at,revoked_at,created_at,updated_at) VALUES (randomblob(16),\
+  '$(printf %s DEV-INVITE | shasum -a 256 | cut -d" " -f1)','you@example.com',NULL,\
+  datetime('now','+14 days'),NULL,NULL,NULL,datetime('now'),datetime('now'));"
+```
+
 Open <http://localhost:8090/app/> → log in with **Dummy Login (Dev)** (any email) →
+open <http://localhost:8090/invite/DEV-INVITE> with that account to redeem it →
 pair the bridge with the pairing code it printed → write a goal → review the plan →
 approve → watch the diff.
+
+(The compose dev stack does this for you: `deploy/app-dev-entrypoint.sh` seeds one
+open invite for `qa@localhost` with the raw token in `BUILD_DEV_INVITE_TOKEN`,
+default `COMPOSE-INVITE`, and `web/pair.mjs` redeems it before it pairs.)
 
 Automated end-to-end (from `../web/`):
 
@@ -83,6 +99,28 @@ app password), `SMTP_FROM_ADDRESS` (the address mail is sent from, e.g.
 notification goes; empty disables it). `app.yaml` interpolates the three `SMTP_*`
 variables and the app refuses to boot without them.
 
+Optional: `GITHUB_RELEASES_TOKEN` — a fine-grained GitHub PAT with `Contents:
+read` on `ZechCodes/build-web`, the one repository everything ships from
+(`buildapp/releases.py` names it; no template, script or SPA file carries a
+download URL). Present, the api streams release assets out of the GitHub REST
+API, which is what a private repository needs; absent, the same routes `302` to
+the public asset URLs. That decision is made once, in
+`release_assets.asset_source`, and nothing else reads the variable — so removing
+the secret at launch is the whole change.
+
+### Downloads
+
+`GET /app/downloads` (alpha members only) answers the platform table, the
+checksums URL and a copyable install one-liner, minting the ten-minute **download
+token** the line carries; `POST /app/downloads/token` mints another when a page
+has been open too long. The line runs with no browser session, so
+`GET /app/downloads/{asset}` accepts that token in `?t=` as well as a session —
+and asks the alpha question either way, so a revoked invite closes a live token.
+Downloading a tarball spends it; the checksums and the signature do not, because
+one install fetches all three. `GET /install.sh` serves the script the image
+ships (`COPY scripts/install.sh`) with this deployment's origin and the token
+substituted in.
+
 ### Email
 
 `SKRIFT_ENV=dev` uses the console backend: outbound mail is logged instead of
@@ -104,6 +142,32 @@ from address must be an address or alias on that account.
 
 The one-time setup is normally the Skrift web wizard (a fresh deploy serves
 `/setup` until completed); the steps above seed it non-interactively.
+
+### Invites
+
+An operator sends invites from **/admin/invites** (Skrift admin nav, behind the
+`administrator` permission): an address in, an email out, and a table of every
+invite with its state — open, redeemed, expired, revoked. `POST /api/invites`
+does the same thing as JSON for scripts. An invite is bound to the address it was
+sent to, works once, and expires after 14 days.
+
+Alpha membership has one definition, in `buildapp/alpha_membership.py`: a
+redeemed invite that has not been revoked. There is no members table — revoking
+someone's redeemed invite from /admin/invites is how they lose access.
+
+Two rules as built differ from the design contract the streams branched from,
+and this is the text to read instead:
+
+- **Redemption.** An invite redeems only when its state is OPEN **and**
+  `canonical_address(user_email) == canonical_address(invite.email)` — casing and
+  whitespace, nothing more (`buildapp/waitlist_address.py`). Issuing an invite
+  still applies the waitlist's deliverability rule, so the stored address is
+  already normalized; *matching* one must not, or a dev or QA account at an
+  address the waitlist refuses (`qa@localhost`) could never redeem the invite the
+  compose stack seeds for it.
+- **Invite mail.** `compose_email` takes one `action=EmailAction(...)` value
+  rather than a separate `action_url=` and `action_label=`, so a link cannot go
+  out with half of it missing (`EmailAction` lives in `buildapp/email_template.py`).
 
 Tests: `uv run --frozen pytest buildapp` (from this directory).
 Lint: `uv run --frozen ruff check buildapp` — correctness plus the C901

@@ -186,6 +186,22 @@ struct RuntimePaths {
 
 fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
     let config = bridge_config();
+    // Placeholders and completed checkouts must hash the same canonical root.
+    std::fs::create_dir_all(&config.worktrees).map_err(|error| {
+        format!(
+            "cannot create worktrees root {}: {error}",
+            config.worktrees.display()
+        )
+    })?;
+    let worktrees = std::fs::canonicalize(&config.worktrees)
+        .map_err(|error| {
+            format!(
+                "cannot resolve worktrees root {}: {error}",
+                config.worktrees.display()
+            )
+        })?
+        .to_string_lossy()
+        .into_owned();
     let device_url = format!("{}/ws/device", config.relay_url.trim_end_matches('/'));
     let qa_agent = matches!(
         std::env::var("BRIDGE_QA_AGENT").as_deref(),
@@ -201,7 +217,7 @@ fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
         .map_err(|error| format!("cannot resolve harness runtime: {error}"))?;
     Ok(RuntimePaths {
         device_url,
-        worktrees: config.worktrees.to_string_lossy().into_owned(),
+        worktrees,
         config_path: env(
             "BRIDGE_CONFIG",
             &format!("{}/.build/config.json", home.display()),

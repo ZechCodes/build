@@ -5,7 +5,9 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { refreshDevices } from "../devices.js";
-import { revokeDevice } from "../api.js";
+import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
+import { currentPlatformKey } from "../core/platform.js";
+import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openBrowser } from "../sheets/browser.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
@@ -16,6 +18,7 @@ import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
 import { chosenProviderId } from "../core/agentChoice.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
+import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
 import { loadModelCatalog } from "../app.js";
 import {
   catalogForProvider,
@@ -66,6 +69,7 @@ export async function renderSettings() {
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
     ${defaultHarnessPanelHtml()}
+    ${isolationPanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -79,6 +83,11 @@ export async function renderSettings() {
         <span class="dim" id="pushstate" style="font-size:13px"></span>
       </div>
       <div class="adderr" id="pusherr"></div>
+    </div>
+    <div class="panel">
+      <h3>⬇️ Downloads</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Install the bridge on another machine, or update this one.</div>
+      ${downloadsPlaceholderHtml()}
     </div>
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
@@ -96,7 +105,7 @@ export async function renderSettings() {
           .map(
             (p) => `
         <div class="projrow"><span class="pname">${esc(p.name)}</span>
-          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)}</span>
+          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)} · ${isolationLabel(p.isolation_effective)}</span>
           <span class="premote">${p.remote ? "⇄ " + esc(p.remote) : '<span class="dim">no remote</span>'}</span>
           <button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button></div>`,
           )
@@ -115,7 +124,9 @@ export async function renderSettings() {
     }
   };
   await refresh();
-  await mountDefaultHarness($("#root"), { callRpc: (method, params) => App.call(method, params) });
+  const callRpc = (method, params) => App.call(method, params);
+  await mountDefaultHarness($("#root"), { callRpc });
+  await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);
@@ -264,7 +275,7 @@ export async function renderSettings() {
           <button class="btn mini revoke" data-id="${esc(d.id)}">Revoke</button></div>`,
             )
             .join("")
-        : '<div class="dim" style="font-size:13px">No devices yet. Start a bridge, then add it with its pairing code.</div>';
+        : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
       $("#devlist").querySelectorAll(".revoke").forEach(
         (btn) =>
           (btn.onclick = async () => {
@@ -285,4 +296,19 @@ export async function renderSettings() {
   };
   await refreshDeviceList();
   $("#adddev").onclick = () => openAddDevice(refreshDeviceList);
+
+  // The same block the first-run gate mounts — one renderer, two hosts. It is
+  // the only thing here that asks the api rather than the bridge, and nothing
+  // on the page depends on its answer, so it goes last and is not awaited: the
+  // page is done when the bridge-side mounts are. It paints itself into the
+  // placeholder when the api answers, and names its own refusal in
+  // #downloadserr, so a slow round trip leaves a "loading…" line — not a page
+  // of dead buttons, and not a caller (renderAccount, which mounts the account
+  // nav next) waiting on the api's clock.
+  void mountDownloads($("#root"), {
+    fetchDownloads,
+    mintInstallCommand,
+    platformKey: currentPlatformKey(),
+    clipboard: navigator.clipboard,
+  });
 }

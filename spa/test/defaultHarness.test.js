@@ -293,6 +293,7 @@ describe("the Settings page", () => {
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
     expect(at("Agent defaults")).toBeGreaterThan(-1);
     expect(at("Fallback agent")).toBe(at("Agent defaults") + 1);
-    expect(at("Appearance")).toBe(at("Fallback agent") + 1);
+    expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
+    expect(at("Appearance")).toBe(at("Work isolation") + 1);
   }, SLOW_IMPORT_MS);
 });

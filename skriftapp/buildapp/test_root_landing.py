@@ -1031,3 +1031,5 @@ def test_every_markup_class_has_a_rule_and_every_rule_class_is_applied():
     assert markup_classes <= styled_classes
     for styled_class in styled_classes - markup_classes:
         assert f'"{styled_class}"' in module_sources
+
+

@@ -24,9 +24,13 @@ import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import {
+  AGENT_STARTING,
   QUIET_SHAPE,
   agentCanInterrupt,
   agentHasTerminal,
+  agentIsUp,
+  agentSessionAnswered,
+  agentStartFailure,
   agentTitle,
   canRemoveAgent,
   providerLabel,
@@ -36,6 +40,7 @@ import {
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  startFailuresLearned,
 } from "./agentRailModel.js";
 import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
 import { createAgentSelection } from "./agentSelection.js";
@@ -63,6 +68,7 @@ import { notifyError } from "./notify.js";
 import { cacheDeviceId } from "./cacheScope.js";
 import { createConversationCache } from "./conversationCache.js";
 import { entityIdOf } from "./entityId.js";
+import { replyOrNothing } from "./session.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
@@ -200,6 +206,7 @@ export function bubbleHtml(bubble) {
   const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
   if (bubble.active) classes.push("active");
   if (bubble.working) classes.push("working");
+  if (bubble.starting) classes.push("starting");
   // A pattern IS the bubble's face, so it takes the label's place: a canvas
   // for core/agentCanvas.js to paint into, named by the ordinal it wears.
   // The `+` and anything else that speaks in a glyph keeps a label.
@@ -579,6 +586,12 @@ export function mountAgentRail(host, context) {
     if (asked !== selectedId) return;
     const answered = railEntity(payload, context.kind);
     if (answerLostTheAgents(answered)) return;
+    // A start that never reached a harness is answered here and nowhere else:
+    // the daemon replied to the press long before the spawn, so this push is
+    // the first word about it. Said once, where the throw used to land.
+    for (const failed of startFailuresLearned(entity.agents, answered.agents)) {
+      notifyError("Could not start the agent", agentStartFailure(failed));
+    }
     agentlessOnce = false;
     entity = answered;
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
@@ -1179,17 +1192,45 @@ export function mountAgentRail(host, context) {
     else handle.rekey(messageKey, String(sequence), { ...provisional, data: { ...provisional.data, sequence } });
   };
 
+  /** Put the message on the conversation, and settle the provisional row under
+   *  the sequence the daemon gave it.
+   *
+   *  A post the browser stopped waiting for is not a refusal: the turn is
+   *  durable on the daemon's side, and reverting it here would hand the draft
+   *  back and have the human send the same turn twice. The provisional row
+   *  stands instead, and the next thread read replaces it with the real
+   *  message. */
   const postMessage = async (handle, { entityId, addressed, message, messageKey, provisionalMessage }) => {
-    const posted = await App.call("thread.post", {
-      entity_id: entityId,
-      ...addressed,
-      ...message,
-      ...MUTATION_THREAD_PAGE,
-    });
-    rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+    const posted = await replyOrNothing(
+      App.call("thread.post", {
+        entity_id: entityId,
+        ...addressed,
+        ...message,
+        ...MUTATION_THREAD_PAGE,
+      }),
+    );
+    if (posted) rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
   };
 
-  const wakeAgent = (entityId, addressed) => App.call("agent.start", { id: entityId, ...addressed });
+  /** Put an agent on this entity's message, and say which agent got it.
+   *
+   *  The daemon answers a start before the harness exists and need not name the
+   *  agent it opened; the entity does, on its next answer, so a reply without
+   *  one — or no reply at all, when the start outlives the timer — is read
+   *  there instead. */
+  const wakeAgent = async (entityId, addressed) => {
+    const started = await replyOrNothing(App.call("agent.start", { id: entityId, ...addressed }));
+    if (started && started.agent_id) return started.agent_id;
+    if (addressed.agent_id) return addressed.agent_id;
+    await refresh();
+    return selectAgentId(visibleAgents(), selectedId);
+  };
+
+  /** The state a row wears from the moment a session is asked for until the
+   *  entity answers — one record, whichever verb asked: the Resume press or
+   *  the message that wakes the agent behind it. */
+  const startingRecord = (agentId) =>
+    patchRecord(agentId, { state: AGENT_STARTING }, { scope: pendingAgentsScope(), clearedBy: agentSessionAnswered });
 
   const createAgentWithMessage = async (message) => {
     const provisionalAgentId = provisionalKey("agent");
@@ -1272,27 +1313,31 @@ export function mountAgentRail(host, context) {
     const messageKey = provisionalKey("message");
     const provisionalMessage = provisionalMessageEntry(messageKey, message);
     const addressedAgentId = selectedId;
+    const agent = agentInFocus();
+    const wakesAgent = entity.kind === "branch" && !agentIsUp(agent);
 
     let messageDelivered = false;
 
     const call = async (handle) => {
       const entityId = await ensureEntity();
-      const agent = agentInFocus();
       const addressed = agent ? { agent_id: agent.id } : {};
       await postMessage(handle, { entityId, addressed, message, messageKey, provisionalMessage });
       messageDelivered = true;
-      if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
-        const started = await wakeAgent(entityId, addressed);
-        if (started && started.agent_id) {
-          handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(started.agent_id));
-          openConversation(started.agent_id);
+      if (wakesAgent) {
+        const startedAgentId = await wakeAgent(entityId, addressed);
+        if (startedAgentId && startedAgentId !== addressedAgentId) {
+          handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(startedAgentId));
+          openConversation(startedAgentId);
         }
       }
     };
 
     runOptimistic({
       scope: pendingThreadScope(addressedAgentId),
-      records: [insertRecord(messageKey, provisionalMessage)],
+      records: [
+        insertRecord(messageKey, provisionalMessage),
+        ...(wakesAgent && agent ? [startingRecord(agent.id)] : []),
+      ],
       call,
       failureSummary: "Message failed",
       onRevert: () => {
@@ -1446,20 +1491,28 @@ export function mountAgentRail(host, context) {
 
   /** Put the open agent back on its screen. It names no harness: the agent is
    *  locked to the one it was created on, and its conversation is waiting
-   *  there. */
+   *  there.
+   *
+   *  The daemon answers the start before the harness exists, so the row wears
+   *  AGENT_STARTING from the press: the answer to a start is the entity's own
+   *  next word about the session, never this reply. A start that outlives the
+   *  timer settles the same way — the patch stands, and nothing is thrown at
+   *  the pane that would paint a refusal over a session coming up. */
   const startAgent = async () => {
     const agent = agentOf(selectedId);
     let started = null;
     let refusal = null;
     const settled = await runOptimistic({
       scope: pendingAgentsScope(),
-      records: agent ? [patchRecord(agent.id, { state: "live" })] : [],
+      records: agent ? [startingRecord(agent.id)] : [],
       call: async () => {
         const entityId = await ensureEntity();
-        started = await App.call("agent.start", {
-          id: entityId,
-          ...(agent ? { agent_id: agent.id } : {}),
-        });
+        started = await replyOrNothing(
+          App.call("agent.start", {
+            id: entityId,
+            ...(agent ? { agent_id: agent.id } : {}),
+          }),
+        );
       },
       notify: false,
       onRevert: (error) => {

@@ -87,6 +87,80 @@ export function unreadReasonText(reason, kind) {
   return REASON_COPY[reason] || "Something needs you";
 }
 
+// ---- lifecycle verbs in flight -------------------------------------------------
+//
+// The daemon runs a create, an adopt or a discard with its state lock released
+// and puts a row on the board for the length of that git (`board.list`'s
+// `pending`). The row stands where the record will be, under the id the record
+// will carry, so the list never goes quiet while work is being made — and the
+// record replaces it in place when it lands.
+
+/** What a row in flight says on its second line. A state this client has never
+ *  heard of still reads as work — the dot says so — it just has no line of its
+ *  own to say. */
+const PENDING_LINE = {
+  creating: "Creating…",
+  discarding: "Removing…",
+  updating: "Updating…",
+};
+
+/** One pending row as a feed row: a branch under the id its record will settle
+ *  as, working, dated by nothing — an anchor it has not earned would put it
+ *  somewhere in the list it has no claim to.
+ *
+ *  `placeholder` is what tells this row apart from a card the same verb is
+ *  running ON: there is nothing behind it yet, so it opens nowhere until its
+ *  record lands under the same key. A standing card keeps its own surface for
+ *  the whole of the verb — the reader's issue or run does not stop opening
+ *  because a plan workspace is being cut in it. */
+const pendingItem = (row) => ({
+  kind: "branch",
+  entity_id: row.entity_id,
+  project_id: row.project_id,
+  project: row.project,
+  title: row.title,
+  branch: row.branch || null,
+  // How the checkout being cut is isolated, said the way the card that lands
+  // in this row's place says it. A verb cutting nothing names none.
+  isolation: row.isolation || null,
+  pending: row.state,
+  placeholder: true,
+  working: true,
+});
+
+/**
+ * The board's rows for the lifecycle verbs running right now, merged into the
+ * rows the daemon already has.
+ *
+ * A row names two ids and a card may be listed under either: the record it will
+ * settle as (`entity_id` — a run, an issue) and the checkout it holds
+ * (`checkout_id`, a worktree hash). An adopt leaves the run on the board while
+ * it claims the checkout, and a planning workspace holds no checkout at all, so
+ * a card matching either id is the card this verb is running on and is said ON —
+ * one piece of work, one row. A verb making a card that is not there yet stands
+ * on its own until its record lands under the same id, at which point the record
+ * is the row and the placeholder is gone.
+ *
+ * One card is listed under no id at all: a project's primary checkout is the
+ * repository, and it carries a null `worktree_id`, `run_id` and `issue_id`.
+ * Adopting it is the verb that acts on that card, so its row names the primary
+ * of a project instead, and that is the third way a row finds its card.
+ */
+export function mergePendingRows(items = [], pending = []) {
+  const rows = [...(items || [])];
+  const cardOf = (row) => (item) => {
+    if (row.primary) return !!item.primary && item.project_id === row.project_id;
+    const id = entityIdOf(item);
+    return id !== null && (id === row.entity_id || id === row.checkout_id);
+  };
+  for (const row of pending || []) {
+    const standing = rows.findIndex(cardOf(row));
+    if (standing < 0) rows.push(pendingItem(row));
+    else rows[standing] = { ...rows[standing], pending: row.state, working: true };
+  }
+  return rows;
+}
+
 /** Where an entry opens. A branch is (project, branch name); an issue is its
  *  own surface. A checkout with no branch is nameable by no URL, so it opens
  *  nowhere until it is on one.
@@ -96,6 +170,11 @@ export function unreadReasonText(reason, kind) {
  *  surface. One this client is still holding has no record to decide about, so
  *  it opens nowhere. */
 export function entryRoute(item) {
+  // A row standing in for a card that does not exist yet opens nowhere: there
+  // is nothing on the other side of it. It opens itself the moment its record
+  // lands under the same key. A card that is already there keeps its surface
+  // however busy the daemon is with it.
+  if (item.placeholder) return null;
   if (item.kind === "capture") {
     if (item.routing) {
       return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
@@ -151,6 +230,9 @@ export function dismissParamsOf(entry) {
  */
 // eslint-disable-next-line complexity -- ratchet: entryFactsText is at 14, cap 10 — reduce it, then drop this line
 export function entryFactsText(item) {
+  // What is being done to the row outranks what it weighs: a checkout being cut
+  // has nothing to weigh, and one being removed is about to have nothing.
+  if (item && item.pending) return PENDING_LINE[item.pending] || "";
   const stat = item && item.stat;
   if (!stat) return "";
   const uncommitted = stat.uncommitted || {};
@@ -264,6 +346,12 @@ function toEntry(item) {
     // happened since". It is not mute and not Done: the row is simply absent
     // until an attention event later than the dismissal brings it back.
     dismissed: !!item.dismissed,
+    // What the daemon is doing to this row right now, if anything. A row with
+    // a verb in flight is not the reader's to act on until that verb settles.
+    pending: item.pending || null,
+    // Whether this row IS the verb in flight rather than a card it is running
+    // on. Only a placeholder has nothing to open.
+    placeholder: !!item.placeholder,
     // Done destroys an entity — a branch's records, an issue's plans — and it
     // is spoken in that entity's name. A row that names none has nothing to
     // finish and no way to say it, so it is never offered Done however
@@ -381,6 +469,10 @@ export function activeEntryKey(route, entries) {
  *  to take. A row with neither Done nor Mute still has its menu — Clear is
  *  what it is for. */
 function menuHtml(entry, open) {
+  // A row the daemon is in the middle of making or removing is not the
+  // reader's to act on: every verb here would race the one already running,
+  // and the daemon refuses a second claim on the same thing anyway.
+  if (entry.pending) return "";
   const items = [];
   if (entry.canFinish) {
     items.push(

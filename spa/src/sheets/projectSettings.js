@@ -1,10 +1,13 @@
 // A project's settings, from the ⋯ menu on any project surface. The bridge holds
 // a project's name, path and base branch as facts of the repo it was registered
-// from — none of them are editable — and exposes exactly one mutation for an
-// existing project: project.set_remote. So that is the whole sheet.
+// from — none of them are editable — so the sheet is the two choices a
+// registered project still has: how its work is isolated, and where it pushes.
+// The isolation control is mounted, not written here: which isolations exist,
+// what they are called and how one is saved are core/isolation.js's facts.
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
+import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
 import { App } from "../app.js";
 
 const field = (label, id, value) =>
@@ -32,11 +35,13 @@ export function openProjectSettings(projectId, { callRpc = (method, params) => A
       ${field("Name", "psname", project.name)}
       ${field("Repository path", "pspath", project.path)}
       ${field("Base branch", "psbranch", project.base_branch)}
+      ${isolationFieldHtml()}
       <div class="field"><label>Origin remote</label>
         <input id="psremote" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(project.remote || "")}" /></div>
       <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button>
         <button class="btn primary" id="pssave">Save remote</button></div>
       <div class="adderr" id="pserr"></div>`;
+    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), settings: project });
     $("#pscancel").onclick = close;
     $("#pssave").onclick = async () => {
       const save = $("#pssave");

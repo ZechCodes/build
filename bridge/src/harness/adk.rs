@@ -132,9 +132,10 @@ impl Harness for AdkHarness {
 
     fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
         let (session, activity) = AdkSession::spawn(&request.spec, Some(request.root))?;
+        let surfaces = session.surfaces_changed();
         Ok(OpenedSession {
             session: Arc::new(session),
-            output: SessionOutput::reporting(activity),
+            output: SessionOutput::reporting(activity, surfaces),
         })
     }
 

@@ -12,10 +12,11 @@ from pathlib import Path
 
 BUILDAPP = Path(__file__).parent
 
-# Two, both on the transport-report path, both measured when the gate landed:
+# Measured at two when the gate landed, both on the transport-report path:
 # transport_controller.TransportController.report (11) and
-# transport_report.apply_event (13).
-RATCHETED_FUNCTIONS = 2
+# transport_report.apply_event (13). `report` was split under the cap when the
+# invites branch gave every JSON route one body reader, so one remains.
+RATCHETED_FUNCTIONS = 1
 
 
 def test_no_new_c901_suppressions():

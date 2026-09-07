@@ -69,16 +69,22 @@ pub fn client_request(
 /// own handler here.
 pub fn reporting(handler: FrameHandler) -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
     let (reported, reports) = mpsc::unbounded_channel();
-    let watched: FrameHandler = Arc::new(move |sender: SessionSender, frame: Frame| {
-        let _ = reported.send(format!("{}:{}", frame.frame_type, frame.session_id));
-        handler(sender, frame)
-    });
+    let watched = FrameHandler::new(
+        Arc::clone(&handler.clock),
+        move |sender: SessionSender, frame: Frame, timer| {
+            let _ = reported.send(format!("{}:{}", frame.frame_type, frame.session_id));
+            (handler.dispatch)(sender, frame, timer)
+        },
+    );
     (watched, reports)
 }
 
 /// [`reporting`] over a handler that answers and does nothing else.
 pub fn reporting_handler() -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
-    reporting(Arc::new(|_sender, _frame| json!({ "ok": true })))
+    reporting(FrameHandler::new(
+        crate::timing::FrameClock::new(),
+        |_sender, _frame, _timer| json!({ "ok": true }),
+    ))
 }
 
 /// How long a test waits on the code under test before the run has hung rather

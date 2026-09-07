@@ -11,6 +11,7 @@ writes is one per ``(device, session)``, absorbing events in any order through
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -22,8 +23,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import pairing_crypto, transport_report
+from buildapp.clock import utc_now
 from buildapp.models import Device, TransportSession
-from buildapp.request_body import require_json_object
+from buildapp.request_body import read_json_object
 
 REPORT_ROUTE_PATH = "/api/transport/report"
 
@@ -36,8 +38,46 @@ def reset_replay_guard_for_tests() -> None:
     _replay_guard = transport_report.replay_guard()
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
+MAX_SESSION_ID_LENGTH = 64
+
+
+@dataclass(frozen=True)
+class ReportedEvent:
+    """One well-formed report, read out of the body. Every field is the shape the
+    challenge and the row expect, so the handler that has one may stop checking."""
+
+    device_id: UUID
+    session_id: str
+    event: str
+    path: str
+    timestamp: int
+    signature: str
+
+
+def read_reported_event(body: dict) -> ReportedEvent:
+    """Everything a malformed body can be refused for, in one place — so the handler
+    below only authorizes and delegates."""
+    try:
+        reported = ReportedEvent(
+            device_id=UUID(str(body["device_id"])),
+            session_id=str(body["session_id"]),
+            event=str(body["event"]),
+            path=str(body["path"]),
+            timestamp=int(body["timestamp"]),
+            signature=str(body["signature_b64"]),
+        )
+    except (KeyError, ValueError, TypeError) as malformed:
+        raise ClientException("malformed transport report") from malformed
+    if reported.event not in transport_report.ALLOWED_EVENTS:
+        raise ClientException("unknown transport event")
+    if (
+        reported.path != transport_report.NO_PATH
+        and reported.path not in transport_report.ALLOWED_PATHS
+    ):
+        raise ClientException("unknown transport path")
+    if not reported.session_id or len(reported.session_id) > MAX_SESSION_ID_LENGTH:
+        raise ClientException("malformed session id")
+    return reported
 
 
 class TransportController(Controller):
@@ -48,40 +88,28 @@ class TransportController(Controller):
     # 200, not Litestar's 201: nothing is created for the caller to find, and the
     # bridge treats any 2xx as delivered.
     @post(REPORT_ROUTE_PATH, status_code=HTTP_200_OK)
-    async def report(  # noqa: C901 — ratchet: at 11, cap 10; split out the parse and the authorize, then drop this
-        self, request: Request, db_session: AsyncSession
-    ) -> Response:
-        body = require_json_object(await request.json())
-        try:
-            device_id = UUID(str(body["device_id"]))
-            session_id = str(body["session_id"])
-            event = str(body["event"])
-            path = str(body["path"])
-            timestamp = int(body["timestamp"])
-            signature = str(body["signature_b64"])
-        except (KeyError, ValueError, TypeError):
-            raise ClientException("malformed transport report")
-        if event not in transport_report.ALLOWED_EVENTS:
-            raise ClientException("unknown transport event")
-        if path != transport_report.NO_PATH and path not in transport_report.ALLOWED_PATHS:
-            raise ClientException("unknown transport path")
-        if not session_id or len(session_id) > 64:
-            raise ClientException("malformed session id")
+    async def report(self, request: Request, db_session: AsyncSession) -> Response:
+        reported = read_reported_event(await read_json_object(request))
+        device_id = reported.device_id
+        session_id = reported.session_id
+        timestamp = reported.timestamp
 
         device = await db_session.get(Device, device_id)
         if device is None or not device.approved or device.owner_user_id is None:
             raise NotAuthorizedException("transport report not authorized")
         challenge = transport_report.report_challenge(
-            str(device_id), session_id, event, path, timestamp
+            str(device_id), session_id, reported.event, reported.path, timestamp
         )
         if not pairing_crypto.verify_registration(
-            device.identity_public_key_b64, challenge, signature
+            device.identity_public_key_b64, challenge, reported.signature
         ):
             raise NotAuthorizedException("transport report signature invalid")
-        now = _now()
+        now = utc_now()
         if not transport_report.report_timestamp_fresh(timestamp, now):
             raise NotAuthorizedException("transport report timestamp out of window")
-        if not _replay_guard.check_and_record(str(device_id), timestamp, signature, now):
+        if not _replay_guard.check_and_record(
+            str(device_id), timestamp, reported.signature, now
+        ):
             raise NotAuthorizedException("transport report replayed")
 
         row = (
@@ -107,7 +135,7 @@ class TransportController(Controller):
             db_session.add(row)
         at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
         try:
-            transport_report.apply_event(row, event, path, at)
+            transport_report.apply_event(row, reported.event, reported.path, at)
         except ValueError as error:
             raise ClientException(str(error)) from error
         await db_session.commit()

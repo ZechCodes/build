@@ -14,6 +14,9 @@ import { loginWithDummy } from "./skrift-auth.mjs";
 const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
 const pairingCode = process.env.PAIRING_CODE;
 const email = process.env.QA_EMAIL || "qa@localhost";
+const inviteToken = process.env.INVITE_TOKEN || "COMPOSE-INVITE";
+// Where a successful redemption lands (C2.d). Anything else behind a 302 is not one.
+const REDEEMED_LOCATION = "/app/";
 const deadlineMs = Number(process.env.PAIR_TIMEOUT_MS || 60000);
 
 if (!pairingCode) {
@@ -34,9 +37,32 @@ async function waitForApi(cookieless = `${apiUrl}/auth/dummy/login`, deadline = 
   }
 }
 
+// Build is invite-only: every device route sits behind alpha membership, so the QA
+// user must redeem the invite the dev entrypoint seeded before it may approve
+// anything. Redeeming is idempotent across runs — the second visit answers 200 with
+// the "already used" page instead of the 302 the first one gets.
+async function redeemInvite(cookie) {
+  const response = await fetch(`${apiUrl}/invite/${inviteToken}`, {
+    redirect: "manual",
+    headers: { Cookie: cookie },
+  });
+  // Only a 302 to the app means redeemed. A 302 anywhere else is the login redirect
+  // an unauthenticated visit gets, which would otherwise pass here and fail later as
+  // a 403 on the first device route, far from the seam that actually broke.
+  const location = response.headers.get("location");
+  if ((response.status === 302 && location === REDEEMED_LOCATION) || response.status === 200) {
+    console.log(`pair.mjs: invite ${inviteToken} redeemed for ${email} (HTTP ${response.status})`);
+    return;
+  }
+  throw new Error(
+    `invite ${inviteToken} was not redeemable: HTTP ${response.status} (location ${location}) — is BUILD_DEV_INVITE_TOKEN seeded on the app container, does it match INVITE_TOKEN here, and did the session cookie carry?`,
+  );
+}
+
 async function main() {
   await waitForApi();
   const { cookie } = await loginWithDummy(apiUrl, { email, name: "QA" });
+  await redeemInvite(cookie);
   const authed = (path, init = {}) =>
     fetch(`${apiUrl}${path}`, {
       ...init,

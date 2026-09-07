@@ -374,6 +374,24 @@ describe("the advanced panel", () => {
     expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
   });
 
+  // A dispatch the browser stopped waiting for is still running, and its row is
+  // on the board. The box shuts on it rather than accusing the daemon of a
+  // refusal it never made.
+  it("shuts on a dispatch that outlives the browser's timer, saying nothing about it", async () => {
+    App.call = vi.fn(async () => {
+      const timedOut = new Error("branch.dispatch timed out");
+      timedOut.timedOut = true;
+      throw timedOut;
+    });
+    openAdvanced();
+    type("#compose-text", "finish the redirect");
+    $('[data-compose-kind="branch"]').click();
+    $("#compose-manual-go").click();
+    await flush();
+    expect($(".compose-box")).toBeNull();
+    expect(location.hash).toBe("");
+  });
+
   it("dispatches an untouched branch with the agent displayed when the account default is not offered", async () => {
     App.modelCatalog = {
       default_provider: "pi",

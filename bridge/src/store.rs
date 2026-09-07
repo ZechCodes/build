@@ -1982,20 +1982,23 @@ fn is_json_record(path: &Path) -> bool {
 /// The worktree-relative dir multi-stage plan docs live in.
 const STAGE_PLAN_DIR: &str = ".build/plan";
 
-/// [`write_record_atomically`] for a JSON file that is not a store record.
-///
-/// The one caller is `.build/review-rules.json`, which lives in the user's own
-/// checkout rather than the store — and wants exactly the same durability, for
-/// exactly the same reason: a half-written file is one a human has to repair.
-pub(crate) fn write_json_atomically(path: &Path, json: &str) -> Result<(), StoreError> {
-    write_record_atomically(path, json)
+/// [`write_record_atomically`] for a file that is not a store record but lives
+/// in the user's own checkout — `.build/review-rules.json`, the repository's
+/// `.git/info/exclude` — and wants exactly the same guarantee, for exactly the
+/// same reason: a half-written file is one a human has to repair. Safe for
+/// writers running at once: each stages its own sibling, so a reader sees the
+/// old file whole or the new one whole, never a prefix of either.
+pub(crate) fn write_file_atomically(path: &Path, contents: &str) -> Result<(), StoreError> {
+    write_record_atomically(path, contents)
 }
 
 /// Persist one JSON record atomically **and durably**: write to a `.tmp`
-/// sibling, fsync it, rename over the final path, then fsync the directory.
-/// The fsyncs matter: rename-without-fsync is atomic against a process crash
-/// but not against power loss — the rename can become durable before the data
-/// blocks, leaving a zero-length record that blocks the next boot.
+/// sibling of its own, fsync it, rename over the final path, then fsync the
+/// directory. The fsyncs matter: rename-without-fsync is atomic against a
+/// process crash but not against power loss — the rename can become durable
+/// before the data blocks, leaving a zero-length record that blocks the next
+/// boot. The sibling is named per call, so two writers of one path never
+/// truncate each other's staging file.
 fn write_record_atomically(final_path: &Path, json: &str) -> Result<(), StoreError> {
     use std::io::Write;
 
@@ -2007,7 +2010,7 @@ fn write_record_atomically(final_path: &Path, json: &str) -> Result<(), StoreErr
         .file_name()
         .expect("record paths always name a file")
         .to_os_string();
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
     let tmp_path = dir.join(tmp_name);
     let mut tmp_file = std::fs::File::create(&tmp_path)?;
     tmp_file.write_all(json.as_bytes())?;
@@ -2174,6 +2177,49 @@ mod tests {
     use crate::models::ModelChoice;
 
     const NOW: &str = "2026-08-21T10:00:00Z";
+
+    /// Two writers replacing one file at once — two planning workspaces
+    /// appending to one `.git/info/exclude` — must each stage their own
+    /// sibling: a shared temp name has the second `create` truncate the first
+    /// writer's bytes and the second `rename` find nothing to rename.
+    #[test]
+    fn two_writers_of_one_file_never_share_a_temp_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exclude");
+        let contents = [
+            "first writer\n".repeat(2048),
+            "second writer\n".repeat(2048),
+        ];
+        let writers: Vec<_> = contents
+            .iter()
+            .map(|contents| {
+                let path = path.clone();
+                let contents = contents.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..200 {
+                        write_file_atomically(&path, &contents).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let settled = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains(&settled),
+            "the file is neither writer's whole text"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != "exclude")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left beside the target: {leftovers:?}"
+        );
+    }
 
     fn run_record(id: &str, plan_id: Option<&str>, created_at: &str) -> PersistedRun {
         PersistedRun {

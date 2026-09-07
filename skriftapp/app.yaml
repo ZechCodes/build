@@ -24,6 +24,8 @@ controllers:
   - buildapp.transport_controller:TransportController
   - buildapp.transport_admin:TransportAdminController
   - buildapp.waitlist_controller:WaitlistController
+  - buildapp.invites_controller:InvitesController
+  - buildapp.invites_admin:InvitesAdminController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:
@@ -52,6 +54,17 @@ rate_limit:
           per: minute
         - limit: 100
           per: day
+    # An invite link is a secret; a caller walking the token space gets 30 tries a
+    # minute and nothing else.
+    - name: invite_open
+      match:
+        path: /invite/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 30
+          per: minute
 email:
   backend: skrift.lib.email_backends:SMTPEmailBackend
   from_address: $SMTP_FROM_ADDRESS

@@ -8,18 +8,21 @@
 //!
 //! - An [`ActivePlan`] (project-scoped) is authored by an agent running in the
 //!   project's PRIMARY checkout, writing into a scratch docs dir outside the
-//!   repo; its canonical docs live in the store. Its seams: `dispatch_plan`,
+//!   repo; its canonical docs live in the store. Its seams: `create_plan` +
+//!   `prepare_plan_workspace` / `open_plan_drafting`,
 //!   `on_plan_done`, the plan-review gates (`approve_plan`, `send_plan_notes`,
 //!   the per-stage `approve_plan_stage` / `send_plan_stage_notes`), and the
 //!   interaction verbs (`message_plan` / `resume_plan` / `abandon_plan`).
 //! - An [`ActiveRun`] (worktree-scoped) is one implementation attempt on a
-//!   `build/<slug>` branch. Its seams: `dispatch_run`, `on_run_done` (build +
+//!   `build/<slug>` branch. Its seams: `prepare_run_checkout` +
+//!   `open_prepared_run` (and `open_adopted_implementation` on a checkout that
+//!   already exists), `on_run_done` (build +
 //!   validation, plus the sequential stage gate `dispatch_run_stage` /
 //!   `fix_run_stage`), `run_diff`, the interaction verbs (`message_run` /
 //!   `resume_run` / `run_request_changes`), the git finishers
 //!   (`run_approve_merge` / `run_commit` / `run_push` / `run_merge_and_push`),
-//!   `abandon_run`, and `adopt_run` (a run minted around a pre-existing
-//!   worktree, `plan_id` `None` — the only plan-less runs left).
+//!   `abandon_run_keeping_checkout`, and `adopt_run` (a run minted around a
+//!   pre-existing worktree, `plan_id` `None` — the only plan-less runs left).
 //!
 //! The caller owns each active entity and hands it back by `&mut` for each
 //! transition, so the orchestrator never hides state. The cross-entity seams —
@@ -37,13 +40,14 @@
 //! forwards (the caller routes each report by owner lookup).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use portable_pty::PtySize;
 
 use crate::agent::AgentRoster;
 use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, WorktreeDiff};
+use crate::git_process::{run_git, GitError};
 use crate::harness::HarnessError;
+use crate::isolation::Isolation;
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{
@@ -101,11 +105,23 @@ pub enum OrchestratorError {
     MergeFailed(String),
 }
 
+impl From<GitError> for OrchestratorError {
+    fn from(error: GitError) -> Self {
+        match error {
+            GitError::Unstartable(io) => OrchestratorError::Io(io),
+            GitError::Failed(detail) => OrchestratorError::Git(detail),
+        }
+    }
+}
+
 /// Convert any git failure hit during a merge approval into [`OrchestratorError::MergeFailed`]
 /// so the RPC message carries the contract's `merge_failed:` prefix.
 fn as_merge_failure(error: OrchestratorError) -> OrchestratorError {
     match error {
         OrchestratorError::Git(reason) => OrchestratorError::MergeFailed(reason),
+        OrchestratorError::Worktree(WorktreeError::Command(reason)) => {
+            OrchestratorError::MergeFailed(reason)
+        }
         already @ OrchestratorError::MergeFailed(_) => already,
         other => OrchestratorError::MergeFailed(other.to_string()),
     }
@@ -404,6 +420,74 @@ pub enum AdoptionScope {
     PrimaryCheckout,
 }
 
+/// A checkout that passed every refusal adoption makes. Construction IS the
+/// validation, so nothing downstream can refuse a checkout it has already
+/// written a checkpoint commit into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptableCheckout {
+    /// Git's internal worktree name, so teardown understands the checkout.
+    pub name: String,
+    /// Canonical absolute path of the working directory.
+    pub path: PathBuf,
+    /// The branch it has checked out. Never detached, never the base branch of
+    /// an external worktree, never option-shaped.
+    pub branch: String,
+    /// HEAD commit subject. UNTRUSTED display text, and what names the run when
+    /// the branch name says nothing.
+    pub head_subject: String,
+}
+
+impl AdoptableCheckout {
+    /// The three refusals, all of them pure. A checkout that fails one is
+    /// refused with nothing on disk touched and nothing persisted.
+    pub fn judge(
+        checkout: &ExternalWorktree,
+        base_branch: &str,
+        scope: AdoptionScope,
+    ) -> Result<AdoptableCheckout, OrchestratorError> {
+        let Some(branch) = checkout.branch.clone() else {
+            return Err(OrchestratorError::Gate(
+                "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
+            ));
+        };
+        // A worktree sitting on the base branch is a mistake to adopt; the
+        // primary checkout sitting on it is the normal case (it is the base
+        // checkout), which is why the scopes are told apart here at all.
+        if scope == AdoptionScope::ExternalWorktree && branch == base_branch {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree with the base branch {base_branch:?} checked out"
+            )));
+        }
+        // The branch name is an EXTERNAL, untrusted string handed to `git merge`
+        // / `git push` as a bare argv element later; a leading `-` would be read
+        // as an option (arbitrary code execution). Native branches are always
+        // `build/<slug>` and can never trip this.
+        if branch.starts_with('-') {
+            return Err(OrchestratorError::Gate(format!(
+                "cannot adopt a worktree whose branch name {branch:?} looks like a command-line \
+                 option — rename the branch first"
+            )));
+        }
+        Ok(AdoptableCheckout {
+            name: checkout.name.clone(),
+            path: checkout.path.clone(),
+            branch,
+            head_subject: checkout.head_subject.clone(),
+        })
+    }
+
+    /// The checkout as Build records it. One shape, read by the scaffold and by
+    /// the run alike, so the two can never disagree about what was adopted.
+    pub fn worktree(&self, base_branch: &str) -> Worktree {
+        Worktree {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            recorded_branch: self.branch.clone(),
+            base_branch: base_branch.to_string(),
+        }
+    }
+}
+
 /// One run in flight: one implementation attempt — a worktree on a
 /// `build/<slug>` branch, its lifecycle state, per-stage execution progress,
 /// and the warm session. An adopted run is one whose `run.plan_id` is `None`.
@@ -518,40 +602,77 @@ pub struct RunSource<'a> {
     pub has_active_run: bool,
 }
 
-/// What every implementation of an Issue must be true of before any checkout is
-/// touched, whichever worktree it is going to run in: the plan is ready, nobody
-/// else is writing for it, and the stage the first session would build is one
-/// the human approved.
-fn gate_implementation(
-    plan_link: &ActivePlan,
-    has_active_run: bool,
-) -> Result<(), OrchestratorError> {
-    if plan_link.plan.state != PlanState::Approved {
-        return Err(OrchestratorError::Gate(format!(
-            "only an approved plan can be implemented (plan {} is {:?})",
-            plan_link.plan.id.0, plan_link.plan.state
-        )));
-    }
-    if has_active_run {
-        return Err(OrchestratorError::Gate(format!(
-            "plan {} already has an active run — a second concurrent run is \
-             rejected (single-active-writer)",
-            plan_link.plan.id.0
-        )));
-    }
-    // Dispatch spawns the first stage's build session immediately, so its doc
-    // must carry a live approval. `approve_plan` already guarantees this for
-    // natively approved plans; migrated plans (and revision-staled docs on a
-    // re-run) are re-gated here.
-    if let Some(first_stage) = plan_link.stages.first() {
-        if first_stage.state != StageDocState::Approved {
+/// The checkout an implementation opens in, as the git left it: on its own
+/// branch, scaffolded, with the Issue's canonical docs committed. `base_sha` is
+/// that commit — the baseline the review diff is read against.
+pub struct PreparedImplementation {
+    pub worktree: Worktree,
+    pub base_sha: String,
+}
+
+/// An Issue cleared to have an implementation opened for it, and everything
+/// opening one needs before any git runs: the words its checkout is named
+/// after, and the plan whose canonical docs are committed into it as the
+/// review baseline.
+///
+/// Construction IS the gate — a plan that is not ready, one somebody else is
+/// already writing for, or one whose first stage the human has not approved
+/// never becomes one — so nothing downstream can cut a checkout for work that
+/// was refused.
+pub struct ImplementableIssue {
+    plan_id: String,
+    goal: String,
+    slug: String,
+}
+
+impl ImplementableIssue {
+    /// What every implementation of an Issue must be true of before any
+    /// checkout is touched, whichever worktree it is going to run in: the plan
+    /// is ready, nobody else is writing for it, and the stage the first session
+    /// would build is one the human approved.
+    pub fn judge(source: RunSource<'_>) -> Result<ImplementableIssue, OrchestratorError> {
+        let RunSource {
+            plan: plan_link,
+            has_active_run,
+        } = source;
+        if plan_link.plan.state != PlanState::Approved {
             return Err(OrchestratorError::Gate(format!(
-                "cannot implement plan {}: stage {:?} is not approved",
-                plan_link.plan.id.0, first_stage.id
+                "only an approved plan can be implemented (plan {} is {:?})",
+                plan_link.plan.id.0, plan_link.plan.state
             )));
         }
+        if has_active_run {
+            return Err(OrchestratorError::Gate(format!(
+                "plan {} already has an active run — a second concurrent run is \
+                 rejected (single-active-writer)",
+                plan_link.plan.id.0
+            )));
+        }
+        // Dispatch spawns the first stage's build session immediately, so its doc
+        // must carry a live approval. `approve_plan` already guarantees this for
+        // natively approved plans; migrated plans (and revision-staled docs on a
+        // re-run) are re-gated here.
+        if let Some(first_stage) = plan_link.stages.first() {
+            if first_stage.state != StageDocState::Approved {
+                return Err(OrchestratorError::Gate(format!(
+                    "cannot implement plan {}: stage {:?} is not approved",
+                    plan_link.plan.id.0, first_stage.id
+                )));
+            }
+        }
+        Ok(ImplementableIssue {
+            plan_id: plan_link.plan.id.0.clone(),
+            goal: plan_link.plan.goal.clone(),
+            slug: slugify(&plan_link.plan.goal),
+        })
     }
-    Ok(())
+
+    /// What the checkout this implementation cuts is named after — the board's
+    /// placeholder id is hashed from the path it makes, so the decide phase and
+    /// the git that follows it must read the slug from one place.
+    pub fn slug(&self) -> &str {
+        &self.slug
+    }
 }
 
 /// Per-spawn context an interactive harness builder may honor.
@@ -643,6 +764,16 @@ pub(crate) const PROMPT_WRITE_EXIT_GRACE: std::time::Duration =
 /// so the old 6s bound left no margin at all under load — and an expired wait
 /// writes into the startup screen, where the alternate-screen clear eats it.
 pub(crate) const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(20000);
+
+/// How long a checkout's removal waits for the agents that were writing into it
+/// to die.
+///
+/// `remove_dir_all` walking a directory a child is still creating files in
+/// fails the walk, so kill, reap, THEN remove is the order that makes the
+/// removal reliable. A SIGKILLed harness reaps in milliseconds; this is the
+/// bound on one wedged in uninterruptible I/O, after which the removal is
+/// attempted anyway — best-effort, as it has always been.
+pub(crate) const CHECKOUT_REAP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How many messages a resumed agent's catch-up packet carries.
 ///
@@ -746,6 +877,58 @@ fn plan_docs_dir_display(active: &ActivePlan) -> String {
         .unwrap_or_default()
 }
 
+/// What a stage revision needs to be legal, and the doc it is against.
+/// Pure, and checked before any disk work: nothing is scaffolded for a
+/// revise that will be refused.
+pub fn gate_plan_stage_notes(
+    active: &ActivePlan,
+    stage_id: &str,
+) -> Result<usize, OrchestratorError> {
+    let index = active
+        .stage_doc_index(stage_id)
+        .map_err(OrchestratorError::Gate)?;
+    plan_transition(&active.plan.state, PlanEvent::SendNotes)
+        .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
+    if active.open_comments_for(stage_id).is_empty() {
+        return Err(OrchestratorError::Gate(format!(
+            "no open comments on stage {stage_id}"
+        )));
+    }
+    Ok(index)
+}
+
+/// What a freeform message costs the plan machine: nothing while it is
+/// drafting, a `Reply` out of a parked state. Pure, and the refusals are
+/// made here — before any disk work, and before the caller has anything to
+/// persist but the message itself.
+pub fn gate_plan_message(
+    active: &ActivePlan,
+    message: &str,
+) -> Result<Option<PlanEvent>, OrchestratorError> {
+    if message.trim().is_empty() {
+        return Err(OrchestratorError::Gate("message must not be empty".into()));
+    }
+    use crate::plan::PlanState as S;
+    let event = match active.plan.state {
+        S::Drafting => None,
+        S::Blocked | S::Failed | S::IdleUnreported | S::Interrupted => Some(PlanEvent::Reply),
+        S::PlanReview => {
+            return Err(OrchestratorError::Gate(
+                "the plan is at the review gate — use send notes there".into(),
+            ))
+        }
+        S::Created | S::Approved | S::Abandoned => {
+            return Err(OrchestratorError::Gate(
+                "no plan agent session to message".into(),
+            ))
+        }
+    };
+    if let Some(event) = event {
+        plan_transition(&active.plan.state, event)?;
+    }
+    Ok(event)
+}
+
 /// Whether a directory holds at least one file, at any depth. A scratch docs
 /// dir that holds nothing is one the canonical docs must be restored into.
 fn dir_holds_a_file(dir: &Path) -> bool {
@@ -790,23 +973,6 @@ pub enum Agent {
     /// A provider/model-aware warm interactive session. The builder supplies
     /// argv and environment; Build still injects the prompt through the PTY.
     WarmBuilder(WarmBuilder),
-}
-
-fn run_git(dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
-    let out = Command::new("git").args(args).current_dir(dir).output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-            .into_iter()
-            .filter(|line| !line.is_empty())
-            .collect();
-        return Err(OrchestratorError::Git(format!(
-            "git {args:?}: {}",
-            detail.join("\n")
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Owned inputs for constructing one agent process. Cloning this under the app
@@ -899,7 +1065,7 @@ impl AgentLaunch {
             updated.push_str(rule);
             updated.push('\n');
         }
-        std::fs::write(&exclude_path, updated)?;
+        crate::store::write_file_atomically(&exclude_path, &updated)?;
         Ok(())
     }
 
@@ -908,6 +1074,13 @@ impl AgentLaunch {
         worktree_path: &Path,
         owner_id: &str,
     ) -> Result<(), OrchestratorError> {
+        if !worktree_path.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("no checkout at {}", worktree_path.display()),
+            )
+            .into());
+        }
         let build_dir = worktree_path.join(".build");
         std::fs::create_dir_all(&build_dir)?;
         if self.is_primary_checkout(worktree_path) {
@@ -933,6 +1106,10 @@ impl AgentLaunch {
 
 /// Owns project configuration and drives plans and runs through their
 /// lifecycles.
+///
+/// Cloneable, and cheaply: a verb clones its project's orchestrator under the
+/// app mutex and then runs the git with the mutex released.
+#[derive(Clone)]
 pub struct Orchestrator {
     repo_path: PathBuf,
     /// Run (and legacy task) worktrees: `build/<slug>` branches.
@@ -976,6 +1153,12 @@ impl Orchestrator {
         }
     }
 
+    /// The one seam every checkout operation goes through, for callers that
+    /// hold the orchestrator rather than the manager.
+    pub fn worktrees(&self) -> &WorktreeManager {
+        &self.worktrees
+    }
+
     pub(crate) fn agent_launch(&self) -> AgentLaunch {
         self.launch.clone()
     }
@@ -1017,23 +1200,25 @@ impl Orchestrator {
         }
     }
 
-    /// Start the planning session for a plan that has none: prepare the
-    /// planning workspace (the primary checkout plus a scratch docs dir),
-    /// scaffold `.build/` there (the MCP config carries the plan id so `done`
-    /// reports route back to this plan), transition out of `Created`, and
-    /// render the turn that spawns it.
+    /// Start the planning session for a plan that has none, once its workspace
+    /// is real: the plan leaves
+    /// `Created`, reads everything the human has said to it so far, and the
+    /// turn that spawns its session is rendered.
     ///
     /// The docs dir is throwaway — the canonical docs land in the store at each
     /// plan/revise `done` — but the session stays warm through the
     /// notes/revision loop (the scope doc's warm-session property).
     ///
-    /// Workspace first, state second: a failed prepare leaves the plan inert
-    /// and re-startable rather than `Drafting` with nothing drafting.
-    pub fn start_plan_drafting(
+    /// Pure bookkeeping: the disk work was
+    /// [`prepare_plan_workspace`](Self::prepare_plan_workspace), and it ran
+    /// with the app mutex released. Workspace first, state second — a failed
+    /// prepare leaves the plan inert and re-startable rather than `Drafting`
+    /// with nothing drafting.
+    pub fn open_plan_drafting(
         &self,
         active: &mut ActivePlan,
+        workspace: PlanWorkspace,
     ) -> Result<AgentTurn, OrchestratorError> {
-        let workspace = self.prepare_plan_workspace(&active.plan.id.0)?;
         active.plan.apply(PlanEvent::Dispatch)?;
         active.workspace = Some(workspace);
         // Everything the user said before this moment is what the session is
@@ -1055,31 +1240,39 @@ impl Orchestrator {
         }
     }
 
-    /// Make that workspace real: the scratch docs dir exists, and the primary
-    /// checkout carries this issue's MCP config so its `done` reports route
-    /// back here.
-    fn prepare_plan_workspace(&self, plan_id: &str) -> Result<PlanWorkspace, OrchestratorError> {
+    /// Make that workspace real, and hold every disk touch a planning workspace
+    /// needs: the scratch docs dir exists, it holds the docs as they stand, and
+    /// the primary checkout carries this issue's MCP config so its `done`
+    /// reports route back here.
+    ///
+    /// An empty docs dir — a restart, a workspace dropped at approve, a plan
+    /// being drafted for the first time — is filled from the canonical store;
+    /// a plan the store holds no docs for simply starts from the empty one. A
+    /// dir the agent is already working in is left exactly as it is:
+    /// re-materializing would overwrite the revision in flight.
+    ///
+    /// This is the only way a planning workspace is written, and it is a
+    /// [`WorktreeMutation`](crate::lifecycle::WorktreeMutation)'s work — every
+    /// door to an Issue's planning agent reaches it with the app mutex
+    /// released.
+    pub fn prepare_plan_workspace(
+        &self,
+        plan_id: &str,
+        store: &Store,
+    ) -> Result<PlanWorkspace, OrchestratorError> {
         let workspace = self.plan_workspace(plan_id);
         // The stage-doc directory is made up front so the agent only ever has
         // to write files into a directory that is already there.
         std::fs::create_dir_all(workspace.docs_dir.join(templates::STAGES_DIR))?;
         self.launch
             .scaffold_agent_worktree(&workspace.checkout, plan_id)?;
+        if !dir_holds_a_file(&workspace.docs_dir) {
+            match store.materialize_plan_docs(plan_id, &workspace.docs_dir) {
+                Ok(()) | Err(crate::store::StoreError::NoStoredDocs { .. }) => {}
+                Err(error) => return Err(OrchestratorError::Store(error)),
+            }
+        }
         Ok(workspace)
-    }
-
-    /// File a plan and start its session in one act — what `plan.create` does
-    /// when it is not asked for an inert record.
-    pub fn dispatch_plan(
-        &self,
-        id: PlanId,
-        goal: impl Into<String>,
-        base_branch: &str,
-        model_choice: ModelChoice,
-    ) -> Result<(ActivePlan, AgentTurn), OrchestratorError> {
-        let mut active = self.create_plan(id, goal, base_branch, model_choice);
-        let turn = self.start_plan_drafting(&mut active)?;
-        Ok((active, turn))
     }
 
     /// Consume a plan agent's `done` report. Doc persistence is TRANSACTIONAL:
@@ -1267,44 +1460,19 @@ impl Orchestrator {
     /// Submit a batch of plan notes: re-plan against them and hand the caller
     /// the turn to deliver. An issue hosts exactly one agent, so the notes
     /// reach the process the reviewer has been reading, never a replacement.
-    /// The workspace is kept through the notes loop; when its scratch docs dir
-    /// was dropped or vanished (interrupted plans), it is re-made with the
-    /// canonical docs materialized from the store first.
-    pub fn send_plan_notes(
+    /// The workspace is kept through the notes loop — this is handed the one
+    /// [`prepare_plan_workspace`](Self::prepare_plan_workspace) just made.
+    pub fn open_plan_notes(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
         notes: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
-        plan_transition(&active.plan.state, PlanEvent::SendNotes)?;
-        self.ensure_plan_workspace(active, store)?;
         active.plan.apply(PlanEvent::SendNotes)?;
+        active.workspace = Some(workspace);
         active.last_error = None;
         let prompt = self.render_plan(&self.templates.revise, active, notes);
         Ok(AgentTurn::posted(prompt, notes, "revise"))
-    }
-
-    /// Make sure the plan has a workspace its agent can work in: the primary
-    /// checkout scaffolded, and a scratch docs dir holding the docs as they
-    /// stand. An empty docs dir (a restart, or a workspace dropped at approve)
-    /// is refilled from the canonical store; a plan the store holds no docs
-    /// for yet simply starts from an empty one. A dir the agent is already
-    /// working in is left exactly as it is — re-materializing would overwrite
-    /// the revision in flight.
-    fn ensure_plan_workspace(
-        &self,
-        active: &mut ActivePlan,
-        store: &Store,
-    ) -> Result<(), OrchestratorError> {
-        let workspace = self.prepare_plan_workspace(&active.plan.id.0)?;
-        if !dir_holds_a_file(&workspace.docs_dir) {
-            match store.materialize_plan_docs(&active.plan.id.0, &workspace.docs_dir) {
-                Ok(()) | Err(crate::store::StoreError::NoStoredDocs { .. }) => {}
-                Err(error) => return Err(OrchestratorError::Store(error)),
-            }
-        }
-        active.workspace = Some(workspace);
-        Ok(())
     }
 
     /// Approve one stage's doc: `Planned` → `Approved`. Pure bookkeeping, no
@@ -1338,26 +1506,15 @@ impl Orchestrator {
     /// the canonical docs materialized when it was torn down/vanished — and
     /// `revising_stage_id` routes the resulting `done(revise)` through
     /// [`consume_plan_stage_revision`](Self::consume_plan_stage_revision).
-    pub fn send_plan_stage_notes(
+    pub fn open_plan_stage_notes(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
         stage_id: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
-        let index = active
-            .stage_doc_index(stage_id)
-            .map_err(OrchestratorError::Gate)?;
-        // Pure legality first — nothing is dispatched for an illegal revise.
-        plan_transition(&active.plan.state, PlanEvent::SendNotes)
-            .map_err(|e| OrchestratorError::Gate(format!("cannot send stage notes: {e}")))?;
-        let open = active.open_comments_for(stage_id);
-        if open.is_empty() {
-            return Err(OrchestratorError::Gate(format!(
-                "no open comments on stage {stage_id}"
-            )));
-        }
-        self.ensure_plan_workspace(active, store)?;
+        let index = gate_plan_stage_notes(active, stage_id)?;
         active.plan.apply(PlanEvent::SendNotes)?;
+        active.workspace = Some(workspace);
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
         let prompt = self.render_plan_stage(
@@ -1376,37 +1533,16 @@ impl Orchestrator {
     /// verb, and a freeform channel that moved the plan back to drafting would
     /// bypass the batched-review contract (`thread.post` is how you reach a
     /// plan agent at its gate without moving anything).
-    pub fn message_plan(
+    pub fn open_plan_message(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
         message: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
-        if message.trim().is_empty() {
-            return Err(OrchestratorError::Gate("message must not be empty".into()));
-        }
-        use crate::plan::PlanState as S;
-        let event = match active.plan.state {
-            S::Drafting => None,
-            S::Blocked | S::Failed | S::IdleUnreported | S::Interrupted => Some(PlanEvent::Reply),
-            S::PlanReview => {
-                return Err(OrchestratorError::Gate(
-                    "the plan is at the review gate — use send notes there".into(),
-                ))
-            }
-            S::Created | S::Approved | S::Abandoned => {
-                return Err(OrchestratorError::Gate(
-                    "no plan agent session to message".into(),
-                ))
-            }
-        };
-        // Pure legality first — the caller persists the plan even on Err.
-        if let Some(event) = event {
-            plan_transition(&active.plan.state, event)?;
-        }
-        // An interrupted plan lost its worktree; re-create it (docs
-        // materialized) before the session can run.
-        self.ensure_plan_workspace(active, store)?;
+        let event = gate_plan_message(active, message)?;
+        // An interrupted plan lost its workspace; this is the one that was
+        // re-made for it, docs and all.
+        active.workspace = Some(workspace);
         let prompt = self.render_plan(&self.templates.message, active, message);
         if let Some(event) = event {
             active.plan.apply(event)?;
@@ -1422,13 +1558,13 @@ impl Orchestrator {
     /// a full (re-)plan. The prompt is routed BEFORE the `Reply` transition
     /// commits, so a routing failure never strands the plan out of its
     /// interrupted state (the caller persists it even on Err).
-    pub fn resume_plan(
+    pub fn open_plan_resume(
         &self,
         active: &mut ActivePlan,
-        store: &Store,
+        workspace: PlanWorkspace,
     ) -> Result<AgentTurn, OrchestratorError> {
         plan_transition(&active.plan.state, PlanEvent::Reply)?;
-        self.ensure_plan_workspace(active, store)?;
+        active.workspace = Some(workspace);
         let prompt = match active.revising_stage_id.clone() {
             Some(stage_id) => {
                 let index = active
@@ -1509,8 +1645,9 @@ impl Orchestrator {
         &self,
         slug: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self.worktrees.create(slug, base_branch)?)
+        Ok(self.worktrees.create(slug, base_branch, isolation)?)
     }
 
     /// The same bare checkout, on a branch that already exists — here or on a
@@ -1519,10 +1656,11 @@ impl Orchestrator {
         &self,
         branch: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
         Ok(self
             .worktrees
-            .create_on_existing_branch(branch, base_branch)?)
+            .create_on_existing_branch(branch, base_branch, isolation)?)
     }
 
     /// The same bare checkout, on a branch the caller named in full and means
@@ -1533,58 +1671,131 @@ impl Orchestrator {
         &self,
         branch: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self.worktrees.create_cutting_branch(branch, base_branch)?)
+        Ok(self
+            .worktrees
+            .create_cutting_branch(branch, base_branch, isolation)?)
     }
 
-    /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
-    /// (the MCP config carries the run id), and spawn the first build session.
+    /// Where the checkout for `slug` will go if nothing is in its way. The
+    /// decide phase of a create has no directory to hash an id out of yet, and
+    /// this is the path it expects one at.
+    pub fn planned_checkout_path(&self, slug: &str) -> PathBuf {
+        self.worktrees.path_for(slug)
+    }
+
+    /// One checkout of this repository, described the way the board's scan
+    /// describes it. A git walk of that one directory: off the app mutex.
+    pub fn describe_checkout(
+        &self,
+        path: &Path,
+        base_branch: &str,
+    ) -> Result<ExternalWorktree, OrchestratorError> {
+        crate::worktree::describe_checkout(path, base_branch, crate::worktree::unix_now())
+            .ok_or_else(|| {
+                OrchestratorError::Git(format!(
+                    "{} is not a checkout this project can describe",
+                    path.display()
+                ))
+            })
+    }
+
+    /// Every checkout of this repository no run owns, as they stand right now.
+    /// The whole-repository walk a dispatch or an adoption resolves against,
+    /// and seconds of git on a repository with many worktrees: off the app
+    /// mutex, always.
+    pub fn scan_checkouts(
+        &self,
+        base_branch: &str,
+        excluded: &std::collections::HashSet<PathBuf>,
+    ) -> Result<Vec<ExternalWorktree>, OrchestratorError> {
+        Ok(self.worktrees.discover(base_branch, excluded)?)
+    }
+
+    /// Cut the checkout an Issue's implementation works in and make it ready
+    /// to be worked in: `build/<slug>` off the base branch, `.build/`
+    /// scaffolded (the MCP config carries the run id), the plan's canonical
+    /// docs materialized out of the store and committed ("plan: <goal>" — the
+    /// intent record the scope doc keeps through merge).
     ///
-    /// The run materializes the plan's canonical docs from the store into the
-    /// fresh worktree and commits them ("plan: <goal>" — the intent record the
-    /// scope doc keeps through merge); that commit is recorded as the run's
-    /// `base_sha`, the baseline of the review diff, so the materialized docs
-    /// never show up as review noise.
+    /// That commit is the answer's `base_sha`, the baseline of the review diff,
+    /// so the materialized docs never show up as review noise.
     ///
-    /// Single-active-writer: at most one active run per plan. The caller owns
-    /// the runs map, so it passes its view via [`RunSource::has_active_run`];
-    /// `true` rejects the dispatch before anything is created.
+    /// Git and disk from end to end, seconds of it on a large repository: off
+    /// the app mutex, always. A failure after the checkout exists removes it,
+    /// so a preparation nobody can be handed leaves nothing behind.
+    pub fn prepare_run_checkout(
+        &self,
+        issue: &ImplementableIssue,
+        base_branch: &str,
+        run_id: &str,
+        isolation: Isolation,
+        store: &Store,
+    ) -> Result<PreparedImplementation, OrchestratorError> {
+        let worktree = self
+            .worktrees
+            .create(&issue.slug, base_branch, isolation)?
+            .worktree;
+        let prepared = self.scaffold_build_dir(&worktree, run_id).and_then(|()| {
+            self.materialize_and_commit_plan_docs(
+                &issue.plan_id,
+                &worktree.path,
+                &issue.goal,
+                store,
+            )
+        });
+        match prepared {
+            Ok(base_sha) => Ok(PreparedImplementation { worktree, base_sha }),
+            Err(error) => {
+                self.discard_checkout(&worktree, /* keep_branch */ false);
+                Err(error)
+            }
+        }
+    }
+
+    /// The same preparation on a checkout that already exists — the branch's
+    /// own uncommitted work is not part of what the implementation does, and it
+    /// must not vanish under the baseline either, so it lands as its own commit
+    /// below the docs commit.
+    ///
+    /// Two commits and a store read: off the app mutex, always.
+    pub fn prepare_adopted_checkout(
+        &self,
+        issue: &ImplementableIssue,
+        checkout: &Path,
+        store: &Store,
+    ) -> Result<String, OrchestratorError> {
+        self.commit_all_with_message(
+            checkout,
+            "Checkpoint: before Build implements an Issue here",
+        )?;
+        self.materialize_and_commit_plan_docs(&issue.plan_id, checkout, &issue.goal, store)
+    }
+
+    /// Open the run that stands for a prepared checkout: the record, the agent
+    /// that will do the work, and the turn that starts it.
+    ///
+    /// Pure bookkeeping — the git ran in [`prepare_run_checkout`], and the
+    /// refusals were made when the [`ImplementableIssue`] was judged.
     ///
     /// A multi-stage plan's first session is its first stage's build — the
     /// plan-level `Approved` gate covers starting stage one; later stages
     /// dispatch from the stage gate.
-    /// PERIPHERY: the stage-gate dispatch (StageGate → next stage / fix
-    /// session) lands with the stage flows.
-    pub fn dispatch_run(
+    ///
+    /// [`prepare_run_checkout`]: Self::prepare_run_checkout
+    pub fn open_prepared_run(
         &self,
         id: RunId,
-        source: RunSource<'_>,
-        base_branch: &str,
+        plan_link: &ActivePlan,
+        prepared: PreparedImplementation,
         model_choice: ModelChoice,
-        store: &Store,
     ) -> Result<(ActiveRun, AgentTurn), OrchestratorError> {
-        let RunSource {
-            plan: plan_link,
-            has_active_run,
-        } = source;
-        gate_implementation(plan_link, has_active_run)?;
-        let goal = plan_link.plan.goal.clone();
-
-        let slug = slugify(&goal);
-        let worktree = self.worktrees.create(&slug, base_branch)?.worktree;
-        self.scaffold_build_dir(&worktree, &id.0)?;
-        let base_sha =
-            match self.materialize_and_commit_plan_docs(plan_link, &worktree, &goal, store) {
-                Ok(sha) => Some(sha),
-                Err(error) => {
-                    // Nothing has been handed to the caller; don't leak the
-                    // half-prepared worktree.
-                    self.discard_checkout(&worktree);
-                    return Err(error);
-                }
-            };
-
-        let mut run = Run::new(id, Some(plan_link.plan.id.clone()), goal);
+        let mut run = Run::new(
+            id,
+            Some(plan_link.plan.id.clone()),
+            plan_link.plan.goal.clone(),
+        );
         run.apply(RunEvent::Dispatch)?;
 
         let agents = AgentRoster::with_first(
@@ -1594,8 +1805,8 @@ impl Orchestrator {
         );
         let mut active = ActiveRun {
             run,
-            worktree,
-            base_sha,
+            worktree: prepared.worktree,
+            base_sha: Some(prepared.base_sha),
             plan_path: plan_link.plan_path.clone(),
             stages: Vec::new(),
             current_stage_id: None,
@@ -1617,8 +1828,8 @@ impl Orchestrator {
 
     /// Bind an Issue's implementation to a checkout that already exists,
     /// instead of cutting `build/<slug>` for it. The branch's run adopts the
-    /// implementation: whatever the branch was carrying is checkpointed under
-    /// its own message, the stage docs are committed on top, and THAT commit is
+    /// implementation: whatever the branch was carrying was checkpointed under
+    /// its own message, the stage docs were committed on top, and THAT commit is
     /// the review baseline — so the diff the human reviews is exactly what the
     /// implementation adds to the branch.
     ///
@@ -1626,34 +1837,21 @@ impl Orchestrator {
     /// implementation stays a handoff), which is why the caller gets the new
     /// agent's id back: the turn is addressed to it, not to whatever agent was
     /// already talking on this branch.
-    pub fn adopt_implementation(
+    ///
+    /// Pure bookkeeping: `base_sha` is what
+    /// [`prepare_adopted_checkout`](Self::prepare_adopted_checkout) committed,
+    /// and the refusals were made when the [`ImplementableIssue`] was judged.
+    pub fn open_adopted_implementation(
         &self,
         active: &mut ActiveRun,
-        source: RunSource<'_>,
+        plan_link: &ActivePlan,
+        base_sha: String,
         model_choice: ModelChoice,
-        store: &Store,
     ) -> Result<(AgentTurn, String), OrchestratorError> {
-        let RunSource {
-            plan: plan_link,
-            has_active_run,
-        } = source;
-        gate_implementation(plan_link, has_active_run)?;
-        let goal = plan_link.plan.goal.clone();
-
-        // The branch's own uncommitted work is not part of what the
-        // implementation does, and it must not vanish under the baseline
-        // either: it lands as its own commit, below the docs commit.
-        self.commit_all_with_message(
-            &active.worktree.path,
-            "Checkpoint: before Build implements an Issue here",
-        )?;
-        let base_sha =
-            self.materialize_and_commit_plan_docs(plan_link, &active.worktree, &goal, store)?;
-
         let mut run = Run::new(
             active.run.id.clone(),
             Some(plan_link.plan.id.clone()),
-            goal.clone(),
+            plan_link.plan.goal.clone(),
         );
         run.apply(RunEvent::Dispatch)?;
         active.run = run;
@@ -1709,15 +1907,14 @@ impl Orchestrator {
     /// diff.
     fn materialize_and_commit_plan_docs(
         &self,
-        plan: &ActivePlan,
-        worktree: &Worktree,
+        plan_id: &str,
+        checkout: &Path,
         goal: &str,
         store: &Store,
     ) -> Result<String, OrchestratorError> {
-        store.materialize_plan_docs(&plan.plan.id.0, &worktree.path)?;
-        self.commit_all_with_message(&worktree.path, &format!("plan: {goal}"))?;
-        Ok(self
-            .git(&worktree.path, &["rev-parse", "HEAD"])?
+        store.materialize_plan_docs(plan_id, checkout)?;
+        self.commit_all_with_message(checkout, &format!("plan: {goal}"))?;
+        Ok(run_git(checkout, &["rev-parse", "HEAD"])?
             .trim()
             .to_string())
     }
@@ -2002,8 +2199,7 @@ impl Orchestrator {
             &active.worktree.path,
             &format!("Build: stage {stage_id} — checkpoint (swept by Build)"),
         )?;
-        let built_sha = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let built_sha = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
         // Commit/rev-parse are fallible. Only move Building → Built after both
@@ -2092,11 +2288,10 @@ impl Orchestrator {
                     "stage {stage_id} has no pinned built_sha; validation cannot establish a stable boundary"
                 ))
             })?;
-        let head = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let head = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
-        let dirty = self.git(
+        let dirty = run_git(
             &active.worktree.path,
             &["status", "--porcelain", "--untracked-files=all"],
         )?;
@@ -2182,7 +2377,7 @@ impl Orchestrator {
                 OrchestratorError::Gate(format!("stage {stage_id} is not in the plan's stage docs"))
             })?;
         // Run coarse-state legality first (Dispatch is legal from StageGate; the
-        // very first stage comes through `dispatch_run` instead) — nothing is
+        // very first stage comes through `open_prepared_run` instead) — nothing is
         // spawned for an illegal dispatch.
         run_transition(&active.run.state, RunEvent::Dispatch)
             .map_err(|e| OrchestratorError::Gate(format!("cannot dispatch a stage: {e}")))?;
@@ -2209,8 +2404,7 @@ impl Orchestrator {
 
         // Probe the candidate boundary before mutating the run machine. A
         // vanished/corrupt checkout must leave StageGate intact for recovery.
-        let start_sha = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let start_sha = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
         active.run.apply(RunEvent::Dispatch)?;
@@ -2492,54 +2686,41 @@ impl Orchestrator {
         }
     }
 
-    /// Mint a plan-less run around an existing checkout (the run-side `adopt`;
-    /// `plan_id` is `None`). No agent session is spawned — the run lands in
-    /// `Review` (there is work to review). Order matches the fused path:
-    /// checkpoint FIRST (pre-Build work stays its own legible commit), then
-    /// scaffold `.build/mcp.json` (left uncommitted). Any error aborts with
-    /// nothing persisted — the caller only persists on `Ok`.
+    /// Write Build's ownership into a checkout it is about to adopt: the
+    /// checkpoint commit that keeps pre-Build work its own legible commit, then
+    /// the `.build/mcp.json` scaffold (left uncommitted). The disk half of an
+    /// adoption, and the half that must run with the app mutex released.
+    ///
+    /// Ordered as the fused dispatch path is, and separated from
+    /// [`adopt_run`](Self::adopt_run) so the verdict — which cannot fail once
+    /// the checkout is an [`AdoptableCheckout`] — is written down under the
+    /// same lock acquisition as everything else it settles.
+    pub fn prepare_adoption(
+        &self,
+        checkout: &AdoptableCheckout,
+        base_branch: &str,
+        owner_id: &str,
+    ) -> Result<(), OrchestratorError> {
+        self.commit_all_with_message(&checkout.path, "Checkpoint: adopted by Build")?;
+        self.scaffold_build_dir(&checkout.worktree(base_branch), owner_id)
+    }
+
+    /// Mint a plan-less run around a checkout [`prepare_adoption`] has already
+    /// written to (the run-side `adopt`; `plan_id` is `None`). No agent session
+    /// is spawned — the run lands in `Review` (there is work to review). Pure
+    /// bookkeeping: every refusal was spent judging the checkout, and no disk
+    /// is touched here.
+    ///
+    /// [`prepare_adoption`]: Self::prepare_adoption
     pub fn adopt_run(
         &self,
         id: RunId,
-        checkout: &ExternalWorktree,
+        checkout: &AdoptableCheckout,
         base_branch: &str,
         model_choice: ModelChoice,
-        scope: AdoptionScope,
     ) -> Result<ActiveRun, OrchestratorError> {
-        let Some(branch) = checkout.branch.clone() else {
-            return Err(OrchestratorError::Gate(
-                "cannot adopt a detached-HEAD worktree — check out a branch first".to_string(),
-            ));
-        };
-        // A worktree sitting on the base branch is a mistake to adopt; the
-        // primary checkout sitting on it is the normal case (it is the base
-        // checkout), which is why the scopes are told apart here at all.
-        if scope == AdoptionScope::ExternalWorktree && branch == base_branch {
-            return Err(OrchestratorError::Gate(format!(
-                "cannot adopt a worktree with the base branch {base_branch:?} checked out"
-            )));
-        }
-        // The branch name is an EXTERNAL, untrusted string handed to `git merge`
-        // / `git push` as a bare argv element later; a leading `-` would be read
-        // as an option (arbitrary code execution). Native branches are always
-        // `build/<slug>` and can never trip this.
-        if branch.starts_with('-') {
-            return Err(OrchestratorError::Gate(format!(
-                "cannot adopt a worktree whose branch name {branch:?} looks like a command-line \
-                 option — rename the branch first"
-            )));
-        }
-
-        self.commit_all_with_message(&checkout.path, "Checkpoint: adopted by Build")?;
-
-        let worktree = Worktree {
-            name: checkout.name.clone(),
-            path: checkout.path.clone(),
-            recorded_branch: branch.clone(),
-            base_branch: base_branch.to_string(),
-        };
-        self.scaffold_build_dir(&worktree, &id.0)?;
-
+        let branch = checkout.branch.clone();
+        let worktree = checkout.worktree(base_branch);
         let goal = derive_adoption_goal(&branch, &checkout.head_subject);
         let mut run = Run::new(id, None, goal);
         run.apply(RunEvent::Dispatch)?;
@@ -2582,8 +2763,13 @@ impl Orchestrator {
         run_transition(&active.run.state, RunEvent::ApproveMerge)?;
         self.commit_all(&active.worktree.path, &active.run.goal)
             .map_err(as_merge_failure)?;
-        self.merge_into_base(&active.worktree.branch(), &active.worktree.base_branch)
-            .map_err(as_merge_failure)?;
+        self.worktrees
+            .merge_into_base(
+                &active.worktree.path,
+                &active.worktree.branch(),
+                &active.worktree.base_branch,
+            )
+            .map_err(|error| as_merge_failure(error.into()))?;
         active.run.apply(RunEvent::ApproveMerge)?;
         active.last_error = None;
         Ok(())
@@ -2603,7 +2789,7 @@ impl Orchestrator {
             .map_err(|error| OrchestratorError::Git(error.to_string()))?;
         let remote = configured_remote_for_branch(&repo, &active.worktree.branch())
             .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
-        self.git(
+        run_git(
             &active.worktree.path,
             // `--` stops option parsing so option-shaped names remain opaque.
             &["push", "-u", &remote, "--", &active.worktree.branch()],
@@ -2620,26 +2806,7 @@ impl Orchestrator {
             .map_err(|error| OrchestratorError::Git(error.to_string()))?;
         let remote = configured_remote_for_branch(&repo, &base)
             .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
-        self.git(&self.repo_path, &["push", &remote, &base])?;
-        Ok(())
-    }
-
-    /// Abandon a run from any non-terminal state: mark the run `Abandoned` and
-    /// remove its worktree. The worktree's agent is NOT this call's to kill —
-    /// an agent belongs to the worktree, not to the run, so the caller closes
-    /// the agent tab (see `run_abandon`). Per the run entity's contract the
-    /// BRANCH is kept — a run's work survives an abandon so it can be
-    /// re-attempted — unlike the fused path, which pruned both. Cleanup is
-    /// best-effort: a leftover worktree is logged, never a reason to fail the
-    /// abandon (the lifecycle verdict is what must persist).
-    pub fn abandon_run(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
-        self.abandon_run_keeping_checkout(active)?;
-        if let Err(cleanup) = self.worktrees.remove_keeping_branch(&active.worktree) {
-            eprintln!(
-                "abandon run {}: run abandoned but worktree cleanup failed: {cleanup}",
-                active.worktree.name
-            );
-        }
+        run_git(&self.repo_path, &["push", &remote, &base])?;
         Ok(())
     }
 
@@ -2762,22 +2929,32 @@ impl Orchestrator {
         &self,
         worktree: &Worktree,
         when_unregistered: crate::worktree::UnregisteredRestore,
+        isolation: Isolation,
     ) -> Result<Worktree, OrchestratorError> {
-        Ok(self.worktrees.restore(worktree, when_unregistered)?)
+        Ok(self
+            .worktrees
+            .restore(worktree, when_unregistered, isolation)?)
     }
 
-    /// Best-effort teardown of a leftover checkout for work being removed from
-    /// the board. The checkout itself says whether its branch goes with it: one
-    /// Build cut a branch for takes that branch, and one that was only checked
-    /// out over somebody else's branch hands it back whole.
+    /// Best-effort teardown of a leftover checkout: the directory always, and
+    /// the branch under it unless the caller is handing that back. A failed
+    /// cleanup is logged, never fatal — a stray worktree is only clutter, and
+    /// what removes a card is the record, not the directory.
     ///
-    /// Failure is logged, never fatal — removing the record is what removes the
-    /// work, and a stray directory is only clutter.
-    pub fn discard_checkout(&self, worktree: &Worktree) {
-        if let Err(e) = self.worktrees.remove(worktree) {
+    /// `keep_branch` is the caller's own fact and never derivable here: a run's
+    /// work outlives an abandon so it can be re-attempted, and a dispatch that
+    /// checked out a branch somebody else made must hand that branch back
+    /// whole.
+    pub fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
+        let removed = if keep_branch {
+            self.worktrees.remove_keeping_branch(worktree)
+        } else {
+            self.worktrees.remove(worktree)
+        };
+        if let Err(e) = removed {
             eprintln!(
-                "discard_checkout {}: {e}; branch {} is left standing",
-                worktree.name, worktree.recorded_branch
+                "discard_checkout {} (keep_branch {keep_branch}): {e}",
+                worktree.name
             );
         }
     }
@@ -2920,78 +3097,23 @@ impl Orchestrator {
         // time), which `git add -A` honors silently — and which also guards the
         // agent's own commits. (A `:(exclude)` pathspec here would instead ERROR,
         // since it names an ignored path explicitly.)
-        self.git(worktree_path, &["add", "-A", "--", "."])?;
+        run_git(worktree_path, &["add", "-A", "--", "."])?;
         // Only commit if something is staged (the MCP config alone must not
         // produce a commit).
-        let staged = self.git(worktree_path, &["diff", "--cached", "--name-only"])?;
+        let staged = run_git(worktree_path, &["diff", "--cached", "--name-only"])?;
         if !staged.trim().is_empty() {
-            self.git(worktree_path, &["commit", "-m", message])?;
+            run_git(worktree_path, &["commit", "-m", message])?;
         }
         Ok(())
-    }
-
-    /// Merge the task branch into `base_branch` via the primary checkout. The
-    /// primary repo is the user's live checkout, so first verify it actually has
-    /// the base branch checked out — merging into whatever happens to be at HEAD
-    /// would land the task on the wrong branch (and a later push of the base
-    /// branch would silently publish nothing).
-    fn merge_into_base(&self, branch: &str, base_branch: &str) -> Result<(), OrchestratorError> {
-        let head = self
-            .git(&self.repo_path, &["symbolic-ref", "--short", "HEAD"])?
-            .trim()
-            .to_string();
-        if head != base_branch {
-            return Err(OrchestratorError::Git(format!(
-                "primary checkout is on {head:?}, not the base branch {base_branch:?} — \
-                 check out {base_branch:?} (or commit/stash your work) and approve again"
-            )));
-        }
-        // `--` stops option parsing so an option-shaped branch name can never be
-        // read by git as a flag (defense in depth alongside the adopt-time guard).
-        if let Err(merge_error) = self.git(&self.repo_path, &["merge", "--no-edit", "--", branch]) {
-            // A conflict leaves the primary checkout wedged mid-merge; abort it so
-            // the checkout returns to a clean base and later merges aren't poisoned.
-            // Best-effort — the merge failure is the error we surface either way.
-            if let Err(abort_error) = self.git(&self.repo_path, &["merge", "--abort"]) {
-                eprintln!(
-                    "merge_into_base {branch}: merge failed and abort also failed: {abort_error}"
-                );
-            }
-            return Err(merge_error);
-        }
-        Ok(())
-    }
-
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
-        run_git(dir, args)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_fixture::init_repo;
     use crate::mcp::DoneOutputs;
-
-    fn init_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@build.ing"]);
-        git(&["config", "user.name", "T"]);
-        std::fs::write(repo.join("README.md"), "# project\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
-        (dir, repo)
-    }
+    use std::process::Command;
 
     /// A warm "harness" that stays alive and drains stdin (it discards the
     /// prompt), like a real interactive CLI. Draining matters: a child that never
@@ -3016,6 +3138,73 @@ mod tests {
         )
     }
 
+    /// `.git/info/exclude` is the human's own file, and every planning
+    /// workspace of the same project appends Build's two rules to it with the
+    /// app mutex released — so two Issues planned at once are two writers.
+    /// A reader must see the file whole at every instant, and the human's own
+    /// rules must be there, once, when the writers are done.
+    #[test]
+    fn concurrent_planning_workspaces_never_shorten_the_humans_exclude_file() {
+        let (dir, repo) = init_repo();
+        let orch = std::sync::Arc::new(orchestrator(&dir, &repo));
+        let info = repo.join(".git").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        let exclude = info.join("exclude");
+        let human_rules: String = (0..4096)
+            .map(|i| format!("scratch/notes-{i:04}.md\n"))
+            .collect();
+        std::fs::write(&exclude, &human_rules).unwrap();
+        let expected = format!(
+            "{human_rules}# Build's machine-local agent plumbing\n.build/mcp*.json\n.build/attachments/\n"
+        );
+
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let orch = std::sync::Arc::clone(&orch);
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    orch.launch
+                        .write_build_dir(&repo, &format!("plan-{i}"))
+                        .unwrap();
+                })
+            })
+            .collect();
+        let torn = {
+            let exclude = exclude.clone();
+            let human_rules = human_rules.clone();
+            let expected = expected.clone();
+            std::thread::spawn(move || {
+                let mut torn = Vec::new();
+                for _ in 0..2000 {
+                    let seen = std::fs::read_to_string(&exclude).unwrap();
+                    if seen != human_rules && seen != expected {
+                        torn.push(seen.len());
+                    }
+                }
+                torn
+            })
+        };
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let torn = torn.join().unwrap();
+
+        assert!(
+            torn.is_empty(),
+            "a reader saw the exclude file part-written, at these lengths: {torn:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), expected);
+        let leftovers: Vec<_> = std::fs::read_dir(&info)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != "exclude")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left beside exclude: {leftovers:?}"
+        );
+    }
+
     /// A checkout whose directory a human already removed still says whose
     /// branch it is: the answer lives beside the registration in the main
     /// repository, not behind the pointer in the missing directory. Reading it
@@ -3025,12 +3214,12 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let worktree = orch
-            .create_bare_worktree("vanished", "main")
+            .create_bare_worktree("vanished", "main", Isolation::Worktree)
             .unwrap()
             .worktree;
         std::fs::remove_dir_all(&worktree.path).unwrap();
 
-        orch.discard_checkout(&worktree);
+        orch.discard_checkout(&worktree, false);
 
         let r = git2::Repository::open(&repo).unwrap();
         assert!(
@@ -3134,8 +3323,6 @@ mod tests {
 
     // ---- Worktree adoption ----
 
-    use crate::worktree::discover_external_worktrees;
-
     /// Create a user worktree at `dir/<name>` on a new `branch` (cut from the
     /// primary HEAD) and return its discovered summary — the same shape the
     /// app layer resolves a `worktree_id` to.
@@ -3152,7 +3339,8 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        discover_external_worktrees(repo, "main", &std::collections::HashSet::new())
+        WorktreeManager::new(repo, dir.path().join("worktrees"))
+            .discover("main", &std::collections::HashSet::new())
             .unwrap()
             .into_iter()
             .find(|w| w.branch.as_deref() == Some(branch))
@@ -3274,8 +3462,8 @@ mod tests {
             .clone()
     }
 
-    fn drafting_plan(orch: &Orchestrator, id: &str, goal: &str) -> ActivePlan {
-        drafting_plan_and_turn(orch, id, goal).0
+    fn drafting_plan(orch: &Orchestrator, store: &Store, id: &str, goal: &str) -> ActivePlan {
+        drafting_plan_and_turn(orch, store, id, goal).0
     }
 
     /// Assert both halves of the cold/warm rule on a DISPATCHED turn (one whose
@@ -3334,15 +3522,73 @@ mod tests {
         turn.cold.clone()
     }
 
+    /// A door to an Issue's planning agent, driven the way the app drives it:
+    /// gate it, prepare the workspace (the app does that with its mutex
+    /// released), open the session. One helper per door, so a test says which
+    /// door it is knocking on and nothing else has to know the order.
+    fn start_plan_drafting(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_drafting(active, workspace)
+    }
+
+    fn send_plan_notes(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+        notes: &str,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        plan_transition(&active.plan.state, PlanEvent::SendNotes)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_notes(active, workspace, notes)
+    }
+
+    fn send_plan_stage_notes(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+        stage_id: &str,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        gate_plan_stage_notes(active, stage_id)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_stage_notes(active, workspace, stage_id)
+    }
+
+    fn message_plan(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+        message: &str,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        gate_plan_message(active, message)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_message(active, workspace, message)
+    }
+
+    fn resume_plan(
+        orch: &Orchestrator,
+        active: &mut ActivePlan,
+        store: &Store,
+    ) -> Result<AgentTurn, OrchestratorError> {
+        plan_transition(&active.plan.state, PlanEvent::Reply)?;
+        let workspace = orch.prepare_plan_workspace(&active.plan.id.0, store)?;
+        orch.open_plan_resume(active, workspace)
+    }
+
     /// A dispatched plan plus the turn the dispatch wants said to its agent —
     /// the orchestrator's whole output now that it owns no process.
     fn drafting_plan_and_turn(
         orch: &Orchestrator,
+        store: &Store,
         id: &str,
         goal: &str,
     ) -> (ActivePlan, AgentTurn) {
-        orch.dispatch_plan(PlanId::new(id), goal, "main", Default::default())
-            .unwrap()
+        let mut active = orch.create_plan(PlanId::new(id), goal, "main", Default::default());
+        let turn = start_plan_drafting(orch, &mut active, store).unwrap();
+        (active, turn)
     }
 
     /// Play the plan agent: write a single plan doc and report done, landing
@@ -3357,7 +3603,7 @@ mod tests {
         id: &str,
         goal: &str,
     ) -> ActivePlan {
-        let mut plan = drafting_plan(orch, id, goal);
+        let mut plan = drafting_plan(orch, store, id, goal);
         let worktree_path = plan_docs_dir(&plan);
         std::fs::write(worktree_path.join(".build/plan.md"), "# Plan v1\n").unwrap();
         orch.on_plan_done(
@@ -3398,7 +3644,7 @@ mod tests {
         stage_count: usize,
     ) -> ActivePlan {
         let titles = ["First", "Second", "Third"];
-        let mut plan = drafting_plan(orch, id, "Add greetings");
+        let mut plan = drafting_plan(orch, store, id, "Add greetings");
         let plan_dir = plan_docs_dir(&plan).join(".build/plan");
         std::fs::create_dir_all(&plan_dir).unwrap();
         let mut entries = Vec::new();
@@ -3449,17 +3695,16 @@ mod tests {
         plan: &ActivePlan,
         id: &str,
     ) -> (ActiveRun, AgentTurn) {
-        orch.dispatch_run(
-            RunId::new(id),
-            RunSource {
-                plan,
-                has_active_run: false,
-            },
-            "main",
-            Default::default(),
-            store,
-        )
-        .unwrap()
+        let issue = ImplementableIssue::judge(RunSource {
+            plan,
+            has_active_run: false,
+        })
+        .unwrap();
+        let prepared = orch
+            .prepare_run_checkout(&issue, "main", id, Isolation::Worktree, store)
+            .unwrap();
+        orch.open_prepared_run(RunId::new(id), plan, prepared, Default::default())
+            .unwrap()
     }
 
     /// A run implementing a single-doc plan: one build session, no stage
@@ -3491,11 +3736,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
+    async fn a_drafting_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
 
-        let plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
         assert_eq!(plan.plan.state, PlanState::Drafting);
         let workspace = plan.workspace.as_ref().expect("a planning workspace");
         assert_eq!(
@@ -3534,8 +3780,9 @@ mod tests {
     async fn planning_leaves_the_primary_checkout_clean() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
 
-        let _first = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let _first = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         assert!(
             !repo.join(".build/.gitignore").exists(),
@@ -3557,7 +3804,7 @@ mod tests {
         );
 
         // A second issue writes its own config and repeats no rule.
-        let _second = drafting_plan(&orch, "plan-2", "Add a farewell");
+        let _second = drafting_plan(&orch, &store, "plan-2", "Add a farewell");
         let exclude = std::fs::read_to_string(&exclude_path).unwrap();
         assert_eq!(
             exclude
@@ -3591,7 +3838,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         // The agent reports done but wrote NO docs: the ingest is transactional,
         // so the done errors and the plan never advances with unpersisted docs.
@@ -3624,7 +3871,7 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        let mut blocked = drafting_plan(&orch, "plan-b", "goal b");
+        let mut blocked = drafting_plan(&orch, &store, "plan-b", "goal b");
         orch.on_plan_done(
             &mut blocked,
             &store,
@@ -3634,7 +3881,7 @@ mod tests {
         assert_eq!(blocked.plan.state, PlanState::Blocked);
         assert_eq!(blocked.last_summary.as_deref(), Some("summary"));
 
-        let mut failed = drafting_plan(&orch, "plan-f", "goal f");
+        let mut failed = drafting_plan(&orch, &store, "plan-f", "goal f");
         orch.on_plan_done(
             &mut failed,
             &store,
@@ -3649,7 +3896,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         orch.on_plan_idle(&mut plan).unwrap();
         assert_eq!(plan.plan.state, PlanState::IdleUnreported);
@@ -3678,7 +3925,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
 
         for phase in [DonePhase::Build, DonePhase::Validate] {
             let err = orch
@@ -3715,8 +3962,7 @@ mod tests {
         // appends "third" — the plan side only carries doc review, so a
         // dropped id simply disappears (run progress is never deleted).
         plan.stages[1].state = StageDocState::Approved;
-        orch.send_plan_notes(&mut plan, &store, "restructure")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "restructure").unwrap();
         std::fs::write(
             plan_docs_dir(&plan).join(".build/plan/03-third.md"),
             "# Stage: Third\n",
@@ -3750,9 +3996,7 @@ mod tests {
         let mut plan = plan_in_review(&orch, &store, "plan-1");
         let worktree_path = plan_docs_dir(&plan);
 
-        let turn = orch
-            .send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        let turn = send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(
             plan_docs_dir(&plan),
@@ -3797,8 +4041,7 @@ mod tests {
         // are canonical in the store, so a revision just refills it.
         let docs_dir = plan_docs_dir(&plan);
         std::fs::remove_dir_all(&docs_dir).unwrap();
-        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(plan_docs_dir(&plan), docs_dir, "the same docs dir");
         assert_eq!(
@@ -3820,8 +4063,7 @@ mod tests {
         let docs_dir = plan_docs_dir(&plan);
         std::fs::remove_dir_all(&docs_dir).unwrap();
         plan.workspace = None;
-        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         let workspace = plan.workspace.as_ref().expect("a workspace was remade");
         assert_eq!(workspace.checkout, repo, "still the primary checkout");
@@ -3844,8 +4086,7 @@ mod tests {
 
         let docs_dir = plan_docs_dir(&plan);
         std::fs::write(docs_dir.join(".build/plan.md"), "# Plan being revised\n").unwrap();
-        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
-            .unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "tighten step 2").unwrap();
 
         assert_eq!(
             std::fs::read_to_string(docs_dir.join(".build/plan.md")).unwrap(),
@@ -3899,7 +4140,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_run_rejects_a_plan_whose_first_stage_doc_is_unapproved() {
+    async fn an_implementable_issue_rejects_one_whose_first_stage_doc_is_unapproved() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
@@ -3908,16 +4149,10 @@ mod tests {
         let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
         plan.stages[0].state = StageDocState::Planned;
 
-        let Err(error) = orch.dispatch_run(
-            RunId::new("run-1"),
-            RunSource {
-                plan: &plan,
-                has_active_run: false,
-            },
-            "main",
-            Default::default(),
-            &store,
-        ) else {
+        let Err(error) = ImplementableIssue::judge(RunSource {
+            plan: &plan,
+            has_active_run: false,
+        }) else {
             panic!("stage 0 must be approved before its build session spawns");
         };
         assert!(
@@ -4483,22 +4718,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_run_enforces_the_single_active_writer_rule() {
+    async fn an_implementable_issue_enforces_the_single_active_writer_rule() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = approved_plan(&orch, &store, "plan-1");
 
-        let err = match orch.dispatch_run(
-            RunId::new("run-2"),
-            RunSource {
-                plan: &plan,
-                has_active_run: true,
-            },
-            "main",
-            Default::default(),
-            &store,
-        ) {
+        let err = match ImplementableIssue::judge(RunSource {
+            plan: &plan,
+            has_active_run: true,
+        }) {
             Ok(_) => panic!("a second concurrent run of the same plan must be rejected"),
             Err(e) => e,
         };
@@ -4506,22 +4735,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_run_requires_an_approved_plan() {
+    async fn an_implementable_issue_requires_an_approved_plan() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let plan = plan_in_review(&orch, &store, "plan-1");
 
-        let err = match orch.dispatch_run(
-            RunId::new("run-1"),
-            RunSource {
-                plan: &plan,
-                has_active_run: false,
-            },
-            "main",
-            Default::default(),
-            &store,
-        ) {
+        let err = match ImplementableIssue::judge(RunSource {
+            plan: &plan,
+            has_active_run: false,
+        }) {
             Ok(_) => panic!("only an approved plan can be implemented"),
             Err(e) => e,
         };
@@ -4913,9 +5136,7 @@ mod tests {
         let first_comment = comment_on(&mut plan, "first");
         comment_on(&mut plan, "second");
 
-        let turn = orch
-            .send_plan_stage_notes(&mut plan, &store, "first")
-            .unwrap();
+        let turn = send_plan_stage_notes(&orch, &mut plan, &store, "first").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
         let prompt = posted_turn_halves(&turn, "revise", THREAD_NOTIFICATION);
@@ -4977,17 +5198,15 @@ mod tests {
         let mut plan = multi_stage_plan_in_review(&orch, &store, "plan-1", 2);
 
         // No open comments on the stage.
-        let err = orch
-            .send_plan_stage_notes(&mut plan, &store, "first")
-            .expect_err("no open comments");
+        let err =
+            send_plan_stage_notes(&orch, &mut plan, &store, "first").expect_err("no open comments");
         assert!(err.to_string().contains("no open comments"), "{err}");
         assert_eq!(plan.plan.state, PlanState::PlanReview);
 
         // Not at the review gate (approved) → the transition is rejected.
         orch.approve_plan(&mut plan).unwrap();
         comment_on(&mut plan, "first");
-        let err = orch
-            .send_plan_stage_notes(&mut plan, &store, "first")
+        let err = send_plan_stage_notes(&orch, &mut plan, &store, "first")
             .expect_err("an approved plan is past the review gate");
         assert!(err.to_string().contains("cannot send stage notes"), "{err}");
     }
@@ -4999,18 +5218,15 @@ mod tests {
         let store = split_store(&dir);
 
         // Empty message is refused before any state is touched.
-        let mut plan = drafting_plan(&orch, "plan-1", "Add a greeting");
-        assert!(orch
-            .message_plan(&mut plan, &store, "   ")
+        let mut plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
+        assert!(message_plan(&orch, &mut plan, &store, "   ")
             .unwrap_err()
             .to_string()
             .contains("empty"));
 
         // Drafting → a live redirect (no state change): the message is a turn
         // for the agent already drafting, never a replacement session.
-        let turn = orch
-            .message_plan(&mut plan, &store, "focus on error paths")
-            .unwrap();
+        let turn = message_plan(&orch, &mut plan, &store, "focus on error paths").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         posted_turn_halves(&turn, "message", "focus on error paths");
 
@@ -5022,16 +5238,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.plan.state, PlanState::Blocked);
-        let turn = orch
-            .message_plan(&mut plan, &store, "here is the missing detail")
-            .unwrap();
+        let turn = message_plan(&orch, &mut plan, &store, "here is the missing detail").unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         posted_turn_halves(&turn, "message", "here is the missing detail");
 
         // The review gate refuses a side-channel message.
         let mut in_review = plan_in_review(&orch, &store, "plan-2");
-        let err = orch
-            .message_plan(&mut in_review, &store, "sneak past the gate")
+        let err = message_plan(&orch, &mut in_review, &store, "sneak past the gate")
             .expect_err("review gate has send-notes");
         assert!(err.to_string().contains("review gate"), "{err}");
     }
@@ -5046,12 +5259,12 @@ mod tests {
         // docs dir is gone (what a restart leaves behind).
         let mut plan = plan_in_review(&orch, &store, "plan-1");
         // Move it back to a working phase then interrupt it.
-        orch.send_plan_notes(&mut plan, &store, "revise").unwrap();
+        send_plan_notes(&orch, &mut plan, &store, "revise").unwrap();
         plan.plan.apply(crate::plan::PlanEvent::Interrupt).unwrap();
         let stale = plan.workspace.take().unwrap();
         std::fs::remove_dir_all(&stale.docs_dir).unwrap();
 
-        let turn = orch.resume_plan(&mut plan, &store).unwrap();
+        let turn = resume_plan(&orch, &mut plan, &store).unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         let workspace = plan
             .workspace
@@ -5415,7 +5628,7 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        let (_, plan_turn) = drafting_plan_and_turn(&orch, "plan-1", "Add a greeting");
+        let (_, plan_turn) = drafting_plan_and_turn(&orch, &store, "plan-1", "Add a greeting");
         dispatch_turn_halves(&plan_turn, "plan");
         let plan_prompt = plan_turn.cold;
         let plan = approved_plan(&orch, &store, "plan-of-run-1");
@@ -5497,14 +5710,11 @@ mod tests {
         let external = user_worktree(&dir, &repo, "wt-user", "user/thing");
         std::fs::write(external.path.join("notes.txt"), "pre-Build work\n").unwrap();
 
+        let adoptable =
+            AdoptableCheckout::judge(&external, "main", AdoptionScope::ExternalWorktree).unwrap();
+        orch.prepare_adoption(&adoptable, "main", "run-ad").unwrap();
         let run = orch
-            .adopt_run(
-                RunId::new("run-ad"),
-                &external,
-                "main",
-                Default::default(),
-                AdoptionScope::ExternalWorktree,
-            )
+            .adopt_run(RunId::new("run-ad"), &adoptable, "main", Default::default())
             .unwrap();
         assert_eq!(run.run.state, RunState::Review);
         assert_eq!(run.run.plan_id, None, "an adopted run has no plan");
@@ -5517,6 +5727,35 @@ mod tests {
         assert_eq!(
             last_commit_subject(&external.path),
             "Checkpoint: adopted by Build"
+        );
+    }
+
+    /// git's failures reach the orchestrator through one door, keeping the
+    /// message the RPC surfaces the same one the child gave.
+    #[test]
+    fn a_failed_git_child_arrives_as_a_git_failure() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let failure: OrchestratorError = run_git(dir.path(), &["rev-parse", "--verify", "HEAD"])
+            .unwrap_err()
+            .into();
+
+        assert!(matches!(failure, OrchestratorError::Git(_)), "{failure}");
+        assert!(failure.to_string().contains("rev-parse"), "{failure}");
+    }
+
+    /// A refusal the manager composed itself is already the sentence to show:
+    /// wrapping it in a merge failure adds the prefix the web client keys on
+    /// and nothing else.
+    #[test]
+    fn a_refused_merge_reads_as_the_refusal_itself() {
+        let refusal = OrchestratorError::Worktree(WorktreeError::Refused(
+            "primary checkout is on \"elsewhere\"".to_string(),
+        ));
+
+        assert_eq!(
+            as_merge_failure(refusal).to_string(),
+            "merge_failed: primary checkout is on \"elsewhere\""
         );
     }
 
@@ -5565,6 +5804,14 @@ mod tests {
             .run_approve_merge(&mut second)
             .expect_err("the second write conflicts");
         assert!(err.to_string().starts_with("merge_failed:"), "{err}");
+        assert!(
+            err.to_string().contains("CONFLICT"),
+            "a failed merge carries git's own words: {err}"
+        );
+        assert!(
+            !err.to_string().contains("git command failed"),
+            "the banner carries git's words alone, not the façade's prefix: {err}"
+        );
         assert_eq!(second.run.state, RunState::Review);
         assert!(
             !repo.join(".git/MERGE_HEAD").exists(),
@@ -5581,7 +5828,8 @@ mod tests {
         let branch = run.worktree.branch();
         let path = run.worktree.path.clone();
 
-        orch.abandon_run(&mut run).unwrap();
+        orch.abandon_run_keeping_checkout(&mut run).unwrap();
+        orch.discard_checkout(&run.worktree, /* keep_branch */ true);
         assert_eq!(run.run.state, RunState::Abandoned);
         assert!(!path.exists(), "the worktree is removed");
         // The branch survives — a run's work outlives an abandon so it can be

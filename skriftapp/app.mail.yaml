@@ -10,6 +10,8 @@ controllers:
   - buildapp.transport_controller:TransportController
   - buildapp.transport_admin:TransportAdminController
   - buildapp.waitlist_controller:WaitlistController
+  - buildapp.invites_controller:InvitesController
+  - buildapp.invites_admin:InvitesAdminController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:

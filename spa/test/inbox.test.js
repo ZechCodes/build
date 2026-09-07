@@ -14,6 +14,7 @@ import {
   inboxEntries,
   inboxRowHtml,
   issueDoneConfirm,
+  mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
   cacheableEntityIds,
@@ -225,6 +226,182 @@ describe("what the inbox lists", () => {
 
   it("has nowhere to send a detached checkout — it has no branch to name", () => {
     expect(entryRoute(branch({ branch: null, run_id: null }))).toBeNull();
+  });
+});
+
+// ---- lifecycle verbs in flight ---------------------------------------------------
+// The daemon puts a row on the board the moment a verb reaches for git and takes
+// it off when the record lands (`board.list`'s `pending`). A checkout being cut
+// is on the inbox from the moment it is asked for, under the id it will settle
+// as, so the list never goes quiet while the work is being made.
+
+describe("the rows a lifecycle verb in flight leaves", () => {
+  const creating = (over = {}) => ({
+    entity_id: "wt-new",
+    project_id: "p1",
+    project: "relaydb",
+    title: "mascot spike",
+    branch: "build/mascot-spike",
+    state: "creating",
+    checkout_id: null,
+    implements: null,
+    pending_seconds: 1,
+    ...over,
+  });
+
+  it("lists a checkout being cut, under the id it will settle as", () => {
+    const entries = listed(mergePendingRows([branch()], [creating()]));
+    const pending = entries.find((entry) => entry.key === "wt-new");
+    expect(pending.kind).toBe("branch");
+    expect(pending.project).toBe("relaydb");
+    expect(pending.name).toBe("build/mascot-spike");
+    expect(pending.state).toBe("working");
+    expect(pending.facts).toBe("Creating…");
+    // Nothing is there to open yet, so the row opens nowhere — it opens itself
+    // the moment the record lands under the same key.
+    expect(pending.route).toBeNull();
+    expect(pending.canFinish).toBe(false);
+  });
+
+  // The wire's real shape: the row names the run it settles as (`entity_id`)
+  // and the checkout it holds (`checkout_id`, a worktree hash). The run's card
+  // carries both, under its run id.
+  it("says what is happening to a card that is already there, rather than adding a second row", () => {
+    const items = mergePendingRows(
+      [branch()],
+      [creating({ entity_id: "run-1", state: "discarding", checkout_id: "wt-1", title: "build/login" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entityId).toBe("run-1");
+    expect(entries[0].facts).toBe("Removing…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  // An adopt leaves the run on the board and publishes a pending row for it, so
+  // both are in the same snapshot. Two rows under one key is one row painted
+  // twice, which loses the state the second write did not carry.
+  it("keeps a run whose checkout is being claimed to one row", () => {
+    const items = mergePendingRows(
+      [branch()],
+      [creating({ entity_id: "run-1", checkout_id: "wt-1", implements: "iss-1", title: "build/login" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("run-1");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  // A planning workspace holds no checkout — it is written against the primary
+  // one — so its row names the issue and nothing else. The issue card is
+  // already listed, and that is where it is said.
+  it("says on an issue's own card that its planning workspace is being cut", () => {
+    const items = mergePendingRows(
+      [issue()],
+      [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("iss-1");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].state).toBe("working");
+  });
+
+  // Three verbs put `creating` on a card that is already there and already
+  // openable: a plan workspace on its issue, an implementation on the run that
+  // owns the checkout, and a restore on its run. The card is the reader's, and
+  // it keeps opening for the whole of that git.
+  it("keeps a standing card openable while a verb runs on it", () => {
+    const [entry] = listed(
+      mergePendingRows([issue()], [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })]),
+    );
+    expect(entry.facts).toBe("Creating…");
+    expect(entry.placeholder).toBe(false);
+    expect(entry.route).toEqual({ name: "issue", projectId: "p2", id: "iss-1" });
+  });
+
+  // The bridge says how the checkout a verb is cutting is isolated from the
+  // moment it is asked for, so the row stands for the card in that too: a
+  // reader of a row's isolation gets the same answer before and after the git.
+  it("carries the isolation the checkout is being made as", () => {
+    const [entry] = mergePendingRows([], [creating({ isolation: "cow" })]);
+    expect(entry.isolation).toBe("cow");
+  });
+
+  // A verb that cuts nothing — a discard, an adoption of a checkout already on
+  // disk — names no isolation, and a bridge that predates the field names none
+  // either.
+  it("names no isolation for a verb that makes no checkout", () => {
+    const [entry] = mergePendingRows([], [creating({ isolation: null })]);
+    expect(entry.isolation).toBeNull();
+  });
+
+  it("sends a row with nothing behind it nowhere, whatever the verb is called", () => {
+    const [entry] = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
+    expect(entry.placeholder).toBe(true);
+    expect(entry.route).toBeNull();
+  });
+
+  // The project's own checkout is the one listed card with no id of its own:
+  // adopting it publishes a row naming the primary of the project, and the card
+  // it is running on is right there on the board.
+  it("says on a project's primary card that its checkout is being adopted", () => {
+    const primary = branch({
+      branch: "main",
+      run_id: null,
+      worktree_id: null,
+      primary: true,
+      can_finish: false,
+      anchor: ago(1),
+    });
+    const items = mergePendingRows(
+      [primary],
+      [creating({ entity_id: "run-new", checkout_id: "wt-repo-root", primary: true, title: "relaydb" })],
+    );
+    expect(items).toHaveLength(1);
+    const entries = listed(items);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].key).toBe("branch:p1:main");
+    expect(entries[0].facts).toBe("Creating…");
+    expect(entries[0].placeholder).toBe(false);
+  });
+
+  it("reads a state it has never heard of as work in flight, not as nothing", () => {
+    const entries = listed(mergePendingRows([], [creating({ state: "resurrecting" })]));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].state).toBe("working");
+    expect(entries[0].facts).toBe("");
+  });
+
+  // The verb in flight is said in one place, `pending`. A row's `state` is the
+  // run vocabulary the list filters on, and a verb name that happened to match
+  // a finished state would have dropped the row out of the list.
+  it("keeps a row listed and unfinished whatever its verb is called", () => {
+    const entries = listed(mergePendingRows([], [creating({ state: "merged" })]));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].state).toBe("working");
+    expect(entries[0].merged).toBe(false);
+    expect(entries[0].pending).toBe("merged");
+  });
+
+  // Every verb in that menu would race the one the daemon is already running,
+  // which it refuses anyway. The row says what is happening and offers nothing.
+  it("offers no verbs on a row a verb is already running on", () => {
+    const [pending] = listed(mergePendingRows([], [creating()]));
+    const html = inboxRowHtml(pending, {});
+    expect(html).not.toContain("data-menu");
+    expect(html).not.toContain("data-done=");
+    expect(html).not.toContain("data-dismiss=");
+    expect(html).toContain("Creating…");
+  });
+
+  it("takes no pending rows at all in its stride", () => {
+    expect(mergePendingRows([branch()], [])).toEqual([branch()]);
+    expect(mergePendingRows(undefined, undefined)).toEqual([]);
   });
 });
 

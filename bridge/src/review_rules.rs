@@ -134,7 +134,7 @@ pub fn write(checkout: &std::path::Path, document: &Value) -> Result<(), String>
     let path = checkout.join(REVIEW_RULES_PATH);
     let json = serde_json::to_string_pretty(document)
         .map_err(|error| format!("serializing {REVIEW_RULES_PATH}: {error}"))?;
-    crate::store::write_json_atomically(&path, &format!("{json}\n"))
+    crate::store::write_file_atomically(&path, &format!("{json}\n"))
         .map_err(|error| format!("writing {}: {error}", path.display()))
 }
 

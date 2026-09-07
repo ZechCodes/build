@@ -68,7 +68,7 @@ jobs:
             [ "$files" = "ALL" ] && return 0
             printf '%s\n' "$files" | grep -Eq "$1"
           }
-          touched '^(spa|skriftapp)/|^deploy/k8s/app\.yaml$' && app=true || app=false
+          touched '^(spa|skriftapp)/|^deploy/k8s/app\.yaml$|^scripts/install\.sh$' && app=true || app=false
           touched '^bridge/|^deploy/k8s/relay\.yaml$' && relay=true || relay=false
           touched '^desktop/' && desktop=true || desktop=false
           touched '^scripts/' && scripts=true || scripts=false

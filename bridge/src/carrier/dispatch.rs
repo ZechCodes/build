@@ -10,8 +10,43 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use super::{FrameHandler, SessionSender};
+use super::SessionSender;
+use crate::timing::{FrameClock, FrameTimer, QueuedFrame};
 use crate::transport::{Frame, CLOSE_FRAME_TYPE, SENDER_DEVICE};
+
+/// A frame's dispatcher and the clock shared by its queue and app-lock phases.
+#[derive(Clone)]
+pub struct FrameHandler {
+    pub(super) clock: Arc<FrameClock>,
+    pub(super) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
+}
+
+impl FrameHandler {
+    pub fn new(
+        clock: Arc<FrameClock>,
+        dispatch: impl Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            clock,
+            dispatch: Arc::new(dispatch),
+        }
+    }
+
+    /// Run a frame that never waited in the dispatcher, including session close.
+    pub fn call(&self, sender: SessionSender, frame: Frame) -> Value {
+        self.run(self.clock.queued(), sender, frame)
+    }
+
+    fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+        let method = frame
+            .payload
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or(&frame.frame_type);
+        let timer = queued.start(method);
+        (self.dispatch)(sender, frame, timer)
+    }
+}
 
 /// How many handlers may run at once. Handlers are blocking (they take the app
 /// mutex, and some of them walk a worktree with libgit2), so they run on the
@@ -60,6 +95,7 @@ const MAX_FOLDED_READS: usize = 256;
 struct Job {
     sender: SessionSender,
     frame: Frame,
+    queued: QueuedFrame,
 }
 
 /// What identifies a read that can stand in for another: one client asking one
@@ -78,6 +114,7 @@ struct FoldedRead {
     /// The request id of every folded frame, in arrival order. Each one is
     /// answered — see [`Dispatcher`] on why none of them may simply be dropped.
     ids: Vec<Value>,
+    queued: QueuedFrame,
 }
 
 /// What became of a read offered to the fold.
@@ -201,9 +238,10 @@ impl Dispatcher {
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
+        let queued = self.handler.clock.queued();
         match ordered_lane(&sender, &frame) {
-            Some(key) => self.dispatch_in_order(key, sender, frame).await,
-            None => self.dispatch_to_pool(sender, frame).await,
+            Some(key) => self.dispatch_in_order(key, sender, frame, queued).await,
+            None => self.dispatch_to_pool(sender, frame, queued).await,
         }
     }
 
@@ -211,12 +249,22 @@ impl Dispatcher {
     /// once and never reused, so its close is the last frame its lane can
     /// carry: letting the lane's sender go ends the lane once that close has
     /// run.
-    async fn dispatch_in_order(&self, key: (String, String), sender: SessionSender, frame: Frame) {
+    async fn dispatch_in_order(
+        &self,
+        key: (String, String),
+        sender: SessionSender,
+        frame: Frame,
+        queued: QueuedFrame,
+    ) {
         let closing =
             frame.payload.get("method").and_then(Value::as_str) == Some(TERMINAL_CLOSE_METHOD);
         let _ = self
             .lane(key.clone())
-            .send(LaneMessage::Run(Box::new(Job { sender, frame })))
+            .send(LaneMessage::Run(Box::new(Job {
+                sender,
+                frame,
+                queued,
+            })))
             .await;
         if closing {
             self.lanes.lock().unwrap().remove(&key);
@@ -227,10 +275,14 @@ impl Dispatcher {
     /// identical read already waiting if there is one. A fold that heads the
     /// queue and finds no worker left to take it is unparked again, so no frame
     /// waits in a map nothing will ever drain.
-    async fn dispatch_to_pool(&self, sender: SessionSender, frame: Frame) {
+    async fn dispatch_to_pool(&self, sender: SessionSender, frame: Frame, queued: QueuedFrame) {
         let work = match read_key(&sender, &frame) {
-            None => QueuedWork::Frame(Job { sender, frame }),
-            Some(key) => match self.fold_into_queued_read(key.clone(), sender, frame) {
+            None => QueuedWork::Frame(Job {
+                sender,
+                frame,
+                queued,
+            }),
+            Some(key) => match self.fold_into_queued_read(key.clone(), sender, frame, queued) {
                 Folded::Joined => return,
                 Folded::Heads => QueuedWork::FoldedRead(key),
                 Folded::Overflowed(job) => QueuedWork::Frame(*job),
@@ -244,7 +296,13 @@ impl Dispatcher {
 
     /// Join a read to an identical one already waiting for a worker, if there is
     /// one and it has room.
-    fn fold_into_queued_read(&self, key: ReadKey, sender: SessionSender, frame: Frame) -> Folded {
+    fn fold_into_queued_read(
+        &self,
+        key: ReadKey,
+        sender: SessionSender,
+        frame: Frame,
+        queued: QueuedFrame,
+    ) -> Folded {
         let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
         let mut folded_reads = self.folded_reads.lock().unwrap();
         match folded_reads.get_mut(&key) {
@@ -258,7 +316,11 @@ impl Dispatcher {
             }
             // A full fold: this read takes a queue slot of its own, which is what
             // puts the caller back under the queue's bound.
-            Some(_) => Folded::Overflowed(Box::new(Job { sender, frame })),
+            Some(_) => Folded::Overflowed(Box::new(Job {
+                sender,
+                frame,
+                queued,
+            })),
             None => {
                 folded_reads.insert(
                     key,
@@ -266,6 +328,7 @@ impl Dispatcher {
                         sender,
                         frame,
                         ids: vec![id],
+                        queued,
                     },
                 );
                 Folded::Heads
@@ -334,7 +397,7 @@ impl Dispatcher {
             };
             let sender = SessionSender::detached(&session_id);
             // No response: nobody is left to read one.
-            let _ = tokio::task::spawn_blocking(move || handler(sender, closed)).await;
+            let _ = tokio::task::spawn_blocking(move || handler.call(sender, closed)).await;
         });
     }
 }
@@ -396,8 +459,13 @@ fn read_key(sender: &SessionSender, frame: &Frame) -> Option<ReadKey> {
 /// Run one read for every caller that asked it: compute once, then push that one
 /// result back under each waiting request id.
 async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
-    let FoldedRead { sender, frame, ids } = folded;
-    let answer = match run_handler(handler, &sender, frame).await {
+    let FoldedRead {
+        sender,
+        frame,
+        ids,
+        queued,
+    } = folded;
+    let answer = match run_handler(handler, &sender, frame, queued).await {
         None => return,
         Some(Ok(payload)) => payload,
         Some(Err(_)) => json!({ "ok": false, "error": "handler failed" }),
@@ -420,9 +488,13 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
 /// runtime shutting down) is answered too: a client that never hears back
 /// waits forever.
 async fn run_job(handler: &FrameHandler, job: Job) {
-    let Job { sender, frame } = job;
+    let Job {
+        sender,
+        frame,
+        queued,
+    } = job;
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
-    match run_handler(handler, &sender, frame).await {
+    match run_handler(handler, &sender, frame, queued).await {
         None => {}
         Some(Ok(payload)) => {
             sender.push(payload);
@@ -450,13 +522,14 @@ async fn run_handler(
     handler: &FrameHandler,
     sender: &SessionSender,
     frame: Frame,
+    queued: QueuedFrame,
 ) -> Option<Result<Value, tokio::task::JoinError>> {
     if !sender.session_is_open() {
         return None;
     }
     let handler = handler.clone();
     let answering = sender.clone();
-    Some(tokio::task::spawn_blocking(move || handler(answering, frame)).await)
+    Some(tokio::task::spawn_blocking(move || handler.run(queued, answering, frame)).await)
 }
 
 #[cfg(test)]
@@ -563,14 +636,17 @@ mod dispatcher_tests {
         let closed = Arc::new(AtomicBool::new(false));
         let handler: FrameHandler = {
             let closed = closed.clone();
-            Arc::new(move |_sender, frame| {
-                if frame.frame_type == CLOSE_FRAME_TYPE {
-                    closed.store(true, Ordering::SeqCst);
-                } else if frame.payload["id"] == 0 {
-                    gated.hold();
-                }
-                json!({ "ok": true })
-            })
+            FrameHandler::new(
+                crate::timing::FrameClock::new(),
+                move |_sender, frame, _timer| {
+                    if frame.frame_type == CLOSE_FRAME_TYPE {
+                        closed.store(true, Ordering::SeqCst);
+                    } else if frame.payload["id"] == 0 {
+                        gated.hold();
+                    }
+                    json!({ "ok": true })
+                },
+            )
         };
         let dispatcher = Arc::new(Dispatcher::with_capacity(handler, 16, 4));
         let (sender, _rx, _key) = SessionSender::observable("s-wedged");
@@ -626,12 +702,15 @@ mod dispatcher_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_slow_handler_does_not_hold_up_the_next_frame() {
         let (gate, gated) = HandlerGate::new();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            if frame.payload["method"] == "slow" {
-                gated.hold();
-            }
-            json!({ "id": frame.payload["id"], "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                if frame.payload["method"] == "slow" {
+                    gated.hold();
+                }
+                json!({ "id": frame.payload["id"], "ok": true })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 8, 4);
 
         let (slow_sender, mut slow_rx, slow_key) = SessionSender::observable("s-slow");
@@ -668,16 +747,19 @@ mod dispatcher_tests {
         let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
         let (gate, gated) = HandlerGate::new();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            let id = frame.payload["id"].as_u64().unwrap_or_default();
-            // The first frame is the held one: without a serial lane the ones
-            // behind it would finish first and record out of order.
-            if id == 0 {
-                gated.hold();
-            }
-            recorder.lock().unwrap().push(id);
-            json!({ "id": id, "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                let id = frame.payload["id"].as_u64().unwrap_or_default();
+                // The first frame is the held one: without a serial lane the ones
+                // behind it would finish first and record out of order.
+                if id == 0 {
+                    gated.hold();
+                }
+                recorder.lock().unwrap().push(id);
+                json!({ "id": id, "ok": true })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 64, 8);
 
         let (sender, mut rx, key) = SessionSender::observable("s-1");
@@ -738,17 +820,20 @@ mod dispatcher_tests {
     async fn input_and_ack_on_one_terminal_stay_in_arrival_order() {
         let seen: Arc<Mutex<Vec<(u64, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            let id = frame.payload["id"].as_u64().unwrap_or_default();
-            let method = frame.payload["method"].as_str().unwrap_or_default();
-            // The input at the head is slow: were the acks behind it dispatched
-            // to the shared pool, the idle workers would record them first.
-            if id == 0 {
-                std::thread::sleep(Duration::from_millis(300));
-            }
-            recorder.lock().unwrap().push((id, method.to_string()));
-            json!({ "id": id, "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                let id = frame.payload["id"].as_u64().unwrap_or_default();
+                let method = frame.payload["method"].as_str().unwrap_or_default();
+                // The input at the head is slow: were the acks behind it dispatched
+                // to the shared pool, the idle workers would record them first.
+                if id == 0 {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                recorder.lock().unwrap().push((id, method.to_string()));
+                json!({ "id": id, "ok": true })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 64, 8);
 
         let (sender, mut rx, key) = SessionSender::observable("s-1");
@@ -791,12 +876,15 @@ mod dispatcher_tests {
     async fn a_full_queue_makes_the_caller_wait() {
         let blocked = Arc::new(AtomicBool::new(true));
         let gate = blocked.clone();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            while gate.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            json!({ "id": frame.payload["id"], "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                while gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                json!({ "id": frame.payload["id"], "ok": true })
+            },
+        );
         // One worker, two waiting slots: the fourth frame has nowhere to go.
         let dispatcher = Dispatcher::with_capacity(handler, 2, 1);
         let (sender, mut rx, key) = SessionSender::observable("s-flood");
@@ -894,10 +982,13 @@ mod dispatcher_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_closed_terminal_leaves_no_lane_behind() {
         let (ran, mut ran_rx) = mpsc::unbounded_channel::<u64>();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            let _ = ran.send(frame.payload["id"].as_u64().unwrap_or_default());
-            json!({ "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                let _ = ran.send(frame.payload["id"].as_u64().unwrap_or_default());
+                json!({ "ok": true })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 8, 2);
         let (sender, _rx, _key) = SessionSender::observable("s-term");
 
@@ -943,16 +1034,19 @@ mod dispatcher_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_handler_can_still_spawn_onto_the_runtime() {
         let (spawned, mut spawned_rx) = mpsc::unbounded_channel::<&'static str>();
-        let handler: FrameHandler = Arc::new(move |_sender, _frame| {
-            let reachable = tokio::runtime::Handle::try_current().is_ok();
-            if reachable {
-                let spawned = spawned.clone();
-                tokio::spawn(async move {
-                    let _ = spawned.send("pump");
-                });
-            }
-            json!({ "ok": reachable })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, _frame, _timer| {
+                let reachable = tokio::runtime::Handle::try_current().is_ok();
+                if reachable {
+                    let spawned = spawned.clone();
+                    tokio::spawn(async move {
+                        let _ = spawned.send("pump");
+                    });
+                }
+                json!({ "ok": reachable })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 4, 2);
 
         let (sender, mut rx, key) = SessionSender::observable("s-pump");
@@ -980,19 +1074,22 @@ mod dispatcher_tests {
         computed: Arc<Mutex<Vec<(String, Value)>>>,
         started: mpsc::UnboundedSender<()>,
     ) -> FrameHandler {
-        Arc::new(move |_sender, frame| {
-            let method = frame.payload["method"].as_str().unwrap_or("").to_string();
-            let params = frame.payload["params"].clone();
-            if method == "hold" {
-                let _ = started.send(());
-                while gate.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(5));
+        FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                let method = frame.payload["method"].as_str().unwrap_or("").to_string();
+                let params = frame.payload["params"].clone();
+                if method == "hold" {
+                    let _ = started.send(());
+                    while gate.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                } else {
+                    computed.lock().unwrap().push((method, params));
                 }
-            } else {
-                computed.lock().unwrap().push((method, params));
-            }
-            json!({ "id": frame.payload["id"], "ok": true, "result": { "served": true } })
-        })
+                json!({ "id": frame.payload["id"], "ok": true, "result": { "served": true } })
+            },
+        )
     }
 
     /// Collect `count` answers off one session, as ids.
@@ -1172,18 +1269,21 @@ mod dispatcher_tests {
     async fn a_close_waits_for_the_frames_ahead_of_it() {
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            if frame.frame_type == CLOSE_FRAME_TYPE {
-                recorder.lock().unwrap().push(CLOSE_FRAME_TYPE.into());
-                return json!({ "ok": true });
-            }
-            std::thread::sleep(Duration::from_millis(200));
-            recorder
-                .lock()
-                .unwrap()
-                .push(frame.payload["id"].to_string());
-            json!({ "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                if frame.frame_type == CLOSE_FRAME_TYPE {
+                    recorder.lock().unwrap().push(CLOSE_FRAME_TYPE.into());
+                    return json!({ "ok": true });
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                recorder
+                    .lock()
+                    .unwrap()
+                    .push(frame.payload["id"].to_string());
+                json!({ "ok": true })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 16, 4);
 
         let (sender, _rx, _key) = SessionSender::observable("s-closing");
@@ -1217,15 +1317,18 @@ mod dispatcher_tests {
     async fn a_lane_frame_admitted_before_the_end_never_runs_after_it() {
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
-                CLOSE_FRAME_TYPE.to_string()
-            } else {
-                frame.payload["id"].to_string()
-            };
-            recorder.lock().unwrap().push(ran);
-            json!({ "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
+                    CLOSE_FRAME_TYPE.to_string()
+                } else {
+                    frame.payload["id"].to_string()
+                };
+                recorder.lock().unwrap().push(ran);
+                json!({ "ok": true })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 16, 4);
         let (sender, _rx, _key) = SessionSender::observable("s-ended");
         dispatcher
@@ -1286,18 +1389,21 @@ mod dispatcher_tests {
         let (gate, gated) = HandlerGate::new();
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            if frame.payload["method"] == "hold" {
-                gated.hold();
-            }
-            let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
-                CLOSE_FRAME_TYPE.to_string()
-            } else {
-                frame.payload["method"].as_str().unwrap_or("").to_string()
-            };
-            recorder.lock().unwrap().push(ran);
-            json!({ "ok": true })
-        });
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                if frame.payload["method"] == "hold" {
+                    gated.hold();
+                }
+                let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
+                    CLOSE_FRAME_TYPE.to_string()
+                } else {
+                    frame.payload["method"].as_str().unwrap_or("").to_string()
+                };
+                recorder.lock().unwrap().push(ran);
+                json!({ "ok": true })
+            },
+        );
         let dispatcher = Dispatcher::with_capacity(handler, 16, 1);
         let (sender, _rx, _key) = SessionSender::observable("s-ended");
         dispatcher
@@ -1325,6 +1431,129 @@ mod dispatcher_tests {
             ran,
             vec![CLOSE_FRAME_TYPE.to_string(), "hold".to_string()],
             "the {method} queued behind the close never ran"
+        );
+    }
+
+    use crate::timing::{recording_clock, SLOW_FRAME};
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stats_count_the_frames_waiting_for_a_worker() {
+        let (gate, gated) = HandlerGate::new();
+        let handler = FrameHandler::new(FrameClock::new(), move |_sender, frame, _timer| {
+            if frame.payload["method"] == "held" {
+                gated.hold();
+            }
+            json!({ "id": frame.payload["id"], "ok": true })
+        });
+        let clock = Arc::clone(&handler.clock);
+        // One worker: everything behind the held frame waits.
+        let dispatcher = Dispatcher::with_capacity(handler, 8, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-depth");
+
+        dispatcher
+            .dispatch(sender.clone(), request(1, "held", json!({})))
+            .await;
+        gate.wait_until_held();
+        assert_eq!(clock.stats()["queue_depth"], 0, "the held frame is running");
+
+        for id in 2..5u64 {
+            dispatcher
+                .dispatch(sender.clone(), request(id, "waiting", json!({ "n": id })))
+                .await;
+        }
+        assert_eq!(clock.stats()["queue_depth"], 3);
+
+        gate.release();
+        for _ in 0..4 {
+            next_push(&mut rx, &key, PATIENTLY).await;
+        }
+        assert_eq!(clock.stats()["queue_depth"], 0, "the queue drained");
+        assert_eq!(clock.stats()["frames_served"], 4);
+    }
+
+    /// The browser's clock starts when it sends, so a frame that sat in the queue
+    /// is slow however fast its handler was. Its record — and its one line — must
+    /// say so, or every stall reads as "the handler was fine".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_frame_that_waited_for_a_worker_counts_the_wait_as_its_own() {
+        let (clock, lines) = recording_clock();
+        let (gate, gated) = HandlerGate::new();
+        let handler = FrameHandler::new(clock.clone(), move |_sender, frame, _timer| {
+            if frame.payload["method"] == "held" {
+                gated.hold();
+            }
+            json!({ "id": frame.payload["id"], "ok": true })
+        });
+        let dispatcher = Dispatcher::with_capacity(handler, 8, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-queued");
+
+        dispatcher
+            .dispatch(sender.clone(), request(1, "held", json!({})))
+            .await;
+        gate.wait_until_held();
+        dispatcher
+            .dispatch(sender.clone(), request(2, "quick", json!({})))
+            .await;
+        // Longer than SLOW_FRAME, and spent entirely in the queue: the `quick`
+        // handler itself does nothing but answer.
+        tokio::time::sleep(SLOW_FRAME + Duration::from_millis(20)).await;
+        gate.release();
+        for _ in 0..2 {
+            next_push(&mut rx, &key, PATIENTLY).await;
+        }
+
+        let stats = clock.stats();
+        assert!(
+            stats["methods"]["quick"]["max_ms"].as_f64().unwrap() >= 200.0,
+            "the queue wait belongs to the frame that waited: {stats}"
+        );
+        let lines = lines.lock().unwrap();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("slow frame quick ")),
+            "the frame that waited logged its own line: {lines:?}"
+        );
+    }
+
+    /// A read that folds into one already waiting costs the queue nothing — the
+    /// depth must report the one slot they share, not one per caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn folded_reads_cost_the_queue_one_slot() {
+        let (gate, gated) = HandlerGate::new();
+        let handler = FrameHandler::new(FrameClock::new(), move |_sender, frame, _timer| {
+            if frame.payload["method"] == "held" {
+                gated.hold();
+            }
+            json!({ "id": frame.payload["id"], "ok": true })
+        });
+        let clock = Arc::clone(&handler.clock);
+        let dispatcher = Dispatcher::with_capacity(handler, 8, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-fold");
+
+        dispatcher
+            .dispatch(sender.clone(), request(1, "held", json!({})))
+            .await;
+        gate.wait_until_held();
+        for id in 2..6u64 {
+            dispatcher
+                .dispatch(sender.clone(), request(id, "board.list", json!({})))
+                .await;
+        }
+        assert_eq!(
+            clock.stats()["queue_depth"],
+            1,
+            "four identical reads wait on one queue slot"
+        );
+
+        gate.release();
+        for _ in 0..5 {
+            next_push(&mut rx, &key, PATIENTLY).await;
+        }
+        assert_eq!(clock.stats()["queue_depth"], 0);
+        assert_eq!(
+            clock.stats()["methods"]["board.list"]["served"],
+            1,
+            "one compute answered all four"
         );
     }
 }

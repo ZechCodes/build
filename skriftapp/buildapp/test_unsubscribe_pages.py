@@ -14,12 +14,12 @@ from buildapp.test_root_landing import (
     FOOTER_COPYRIGHT_COPY,
     STYLESHEET_LINK,
 )
+from buildapp.landing_page import HOME_LINK, HOME_LINK_LABEL
 from buildapp.unsubscribe_pages import (
     CONFIRM_BUTTON_LABEL,
     CONFIRM_HEADING_TEMPLATE,
     CONFIRM_MESSAGE,
     CONFIRM_TITLE,
-    HOME_LINK_LABEL,
     INVALID_HEADING,
     INVALID_MESSAGE,
     INVALID_TITLE,
@@ -40,7 +40,7 @@ BUTTON_MARKUP = f'<button class="button-primary" type="submit">{CONFIRM_BUTTON_L
 ADDRESS_MARKUP = (
     f'<span class="title-accent unsubscribe-address">{SIGNER_ADDRESS}</span>'
 )
-HOME_LINK_MARKUP = f'<a href="/">{HOME_LINK_LABEL}</a>'
+HOME_LINK_MARKUP = HOME_LINK.render()
 MODULE_DOCSTRING_DELIMITER = '"""'
 UNSUBSCRIBE_PAGES_SOURCE_PATH = Path(unsubscribe_pages.__file__)
 MARKUP_INJECTION = "<b>"

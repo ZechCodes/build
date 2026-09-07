@@ -468,6 +468,11 @@ pub fn new_capture_id() -> String {
     format!("{CAPTURE_ID_PREFIX}{}", uuid::Uuid::new_v4())
 }
 
+/// Whether `id` names a capture — the owner a router's turn is queued under.
+pub fn is_capture_id(id: &str) -> bool {
+    id.starts_with(CAPTURE_ID_PREFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,6 +992,8 @@ mod tests {
     fn a_capture_id_says_what_it_names() {
         let id = new_capture_id();
         assert!(id.starts_with(CAPTURE_ID_PREFIX), "{id}");
+        assert!(is_capture_id(&id), "{id}");
+        assert!(!is_capture_id(&crate::router::new_router_agent_id()));
         assert_ne!(id, new_capture_id());
     }
 }

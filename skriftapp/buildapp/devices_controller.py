@@ -12,9 +12,7 @@ Three audiences, three guard styles:
 
 from __future__ import annotations
 
-import hashlib
-import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from uuid import UUID
 
 from litestar import Controller, Request, get, post
@@ -29,25 +27,20 @@ from litestar.status_codes import HTTP_409_CONFLICT
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp import pairing_crypto
+from buildapp import ephemeral_tokens, pairing_crypto
+from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.internal_auth import internal_auth_guard
-from buildapp.models import Device, EphemeralToken
-from buildapp.request_body import require_json_object
+from buildapp.models import Device
+from buildapp.request_body import read_json_object
 from buildapp.session_auth import require_user
 
 # Pending registrations that are never approved get cleaned up after this long.
 PENDING_TTL = timedelta(minutes=15)
 # Gateway tokens are short-lived; the SPA re-mints on (re)connect.
 GATEWAY_TOKEN_TTL = timedelta(minutes=5)
-
-
-def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
-
-
-def _token_hash(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+GATEWAY_TOKEN_PURPOSE = "gateway"
+GATEWAY_TOKEN_PREFIX = "gw_"
 
 
 def device_summary(device: Device) -> dict:
@@ -87,7 +80,7 @@ class DevicesController(Controller):
     async def register(self, request: Request, db_session: AsyncSession) -> Response:
         """A bridge self-registers as *pending*. Verifies the Ed25519 signature over the
         registration challenge (proof of key possession) before storing anything."""
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         try:
             device_id = UUID(str(body["device_id"]))
             name = str(body["name"]).strip() or "device"
@@ -108,7 +101,7 @@ class DevicesController(Controller):
         await db_session.execute(
             delete(Device).where(
                 Device.approved.is_(False),
-                Device.created_at < _now() - PENDING_TTL,
+                Device.created_at < utc_now() - PENDING_TTL,
             )
         )
 
@@ -156,7 +149,7 @@ class DevicesController(Controller):
         """Resolve a pairing code to a pending device so the human can compare its
         fingerprint before approving."""
         require_user(request)
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         code = str(body.get("code", "")).strip()
         if not code:
             raise ClientException("code required")
@@ -180,7 +173,7 @@ class DevicesController(Controller):
         cap is checked here, the one moment a device becomes an account's, so a
         revoked device frees its slot and a pending one waits for it."""
         user_id = require_user(request)
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         code = str(body.get("code", "")).strip()
         if not code:
             raise ClientException("code required")
@@ -237,23 +230,14 @@ class DevicesController(Controller):
     async def gateway_token(self, request: Request, db_session: AsyncSession) -> Response:
         """Mint a short-TTL token the browser presents to the relay so it can be scoped
         to this user's devices."""
-        user_id = require_user(request)
-        # Opportunistically purge expired tokens (mirrors register's pending-device
-        # purge): every reconnect mints a 5-minute token, and nothing else ever
-        # deletes them — without this the table grows forever.
-        await db_session.execute(
-            delete(EphemeralToken).where(EphemeralToken.expires_at < _now())
+        raw = await ephemeral_tokens.mint(
+            db_session,
+            purpose=GATEWAY_TOKEN_PURPOSE,
+            prefix=GATEWAY_TOKEN_PREFIX,
+            user_id=require_user(request),
+            ttl=GATEWAY_TOKEN_TTL,
+            now=utc_now(),
         )
-        raw = "gw_" + secrets.token_urlsafe(24)
-        db_session.add(
-            EphemeralToken(
-                token_hash=_token_hash(raw),
-                purpose="gateway",
-                user_id=user_id,
-                expires_at=_now() + GATEWAY_TOKEN_TTL,
-            )
-        )
-        await db_session.commit()
         return Response({"token": raw, "expires_in_s": int(GATEWAY_TOKEN_TTL.total_seconds())})
 
     # ----- internal (relay-facing, shared-secret guarded) ---------------------
@@ -282,32 +266,26 @@ class DevicesController(Controller):
         self, token: str, db_session: AsyncSession
     ) -> Response:
         """The relay validates a browser's gateway token → the owning user id."""
-        row = (
-            await db_session.execute(
-                select(EphemeralToken).where(
-                    EphemeralToken.token_hash == _token_hash(token),
-                    EphemeralToken.purpose == "gateway",
-                    EphemeralToken.expires_at > _now(),
-                )
-            )
-        ).scalar_one_or_none()
-        if row is None:
+        user_id = await ephemeral_tokens.holder_of(
+            db_session, purpose=GATEWAY_TOKEN_PURPOSE, raw=token, now=utc_now()
+        )
+        if user_id is None:
             raise NotFoundException()
-        return Response({"user_id": str(row.user_id)})
+        return Response({"user_id": str(user_id)})
 
     @post("/internal/devices/{device_id:uuid}/status", guards=[internal_auth_guard])
     async def internal_set_status(
         self, device_id: UUID, request: Request, db_session: AsyncSession
     ) -> Response:
         """The relay reports a device online/offline so the SPA can show a status dot."""
-        body = require_json_object(await request.json())
+        body = await read_json_object(request)
         online = bool(body.get("online", False))
         device = await db_session.get(Device, device_id)
         if device is None:
             raise NotFoundException()
         device.status = "online" if online else "offline"
         if online:
-            device.last_seen_at = _now()
+            device.last_seen_at = utc_now()
         await db_session.commit()
         return Response({"ok": True})
 
@@ -320,7 +298,7 @@ class DevicesController(Controller):
                 select(Device).where(
                     Device.pairing_code_hash == code_hash,
                     Device.approved.is_(False),
-                    Device.created_at >= _now() - PENDING_TTL,
+                    Device.created_at >= utc_now() - PENDING_TTL,
                 )
             )
         ).scalar_one_or_none()

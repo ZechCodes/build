@@ -39,7 +39,14 @@ describe("the records and the projection", () => {
     ];
     expect(records[0]).toEqual({ kind: "insert", key: "c", entry: agent("c"), scope: null, settledAt: null });
     expect(records[1]).toEqual({ kind: "remove", key: "a", scope: null, settledAt: null });
-    expect(records[2]).toEqual({ kind: "patch", key: "b", fields: { working: true }, scope: null, settledAt: null });
+    expect(records[2]).toEqual({
+      kind: "patch",
+      key: "b",
+      fields: { working: true },
+      scope: null,
+      clearedBy: expect.any(Function),
+      settledAt: null,
+    });
 
     const projected = projectPending([agent("a"), agent("b")], records, { keyOf });
     expect(projected.map(keyOf)).toEqual(["b", "c"]);
@@ -98,6 +105,19 @@ describe("the records and the projection", () => {
     expect(retirePending([patchRecord("b", { working: true })], [agent("a")], { keyOf, nowMs })).toEqual([
       patchRecord("b", { working: true }),
     ]);
+  });
+
+  // A reply that answers before the work behind it is done (the bridge spawns a
+  // harness behind its own answer) leaves the row saying something the entity
+  // will never carry as a field. Such a patch names what settles it instead,
+  // and stands until the pushed entry says so.
+  it("keeps a patch the entry cannot carry until its own answer arrives", () => {
+    const nowMs = 1000;
+    const isLive = (entry) => entry.state === "live";
+    const starting = settled(patchRecord("b", { state: "starting" }, { clearedBy: isLive }), nowMs);
+    expect(retirePending([starting], [agent("b", { state: "idle" })], { keyOf, nowMs })).toEqual([starting]);
+    expect(retirePending([starting], [agent("b", { state: "starting" })], { keyOf, nowMs })).toEqual([starting]);
+    expect(retirePending([starting], [agent("b", { state: "live" })], { keyOf, nowMs })).toEqual([]);
   });
 
   it("lets a settled record go once the grace runs out", () => {

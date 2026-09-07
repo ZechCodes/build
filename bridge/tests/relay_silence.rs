@@ -22,7 +22,10 @@ fn idle_intake() -> Arc<FrameIntake> {
 }
 
 fn idle_handler() -> FrameHandler {
-    Arc::new(|_sender, frame| json!({ "echo": frame.payload }))
+    FrameHandler::new(
+        build_bridge::timing::FrameClock::new(),
+        |_sender, frame, _timer| json!({ "echo": frame.payload }),
+    )
 }
 
 async fn relay_that_stops_reading(listener: TcpListener) {

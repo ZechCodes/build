@@ -59,6 +59,7 @@ import { refreshFeed } from "./taskFeed.js";
 import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { removeRecord, runOptimistic } from "./optimistic.js";
+import { replyOrNothing } from "./session.js";
 
 export const ISSUE_VIEW_POLL_MS = 1600;
 
@@ -186,13 +187,19 @@ export function mountIssueView(
           anchor: docCommentAnchor(comment),
         });
       }
+      // The general note is a turn like any other: durable on the daemon's side
+      // the moment it answers, and answered before the agent it wakes exists.
+      // A reply that outlives the browser's timer leaves the comment posted, so
+      // raising here would only have the human write it again.
       if (general)
-        await callRpc("thread.post", {
-          entity_id: issueId,
-          ...agentSelection.scope(),
-          body: general,
-          ...MUTATION_THREAD_PAGE,
-        });
+        await replyOrNothing(
+          callRpc("thread.post", {
+            entity_id: issueId,
+            ...agentSelection.scope(),
+            body: general,
+            ...MUTATION_THREAD_PAGE,
+          }),
+        );
       renderedKey = null;
       await refresh();
     },
@@ -417,13 +424,7 @@ export function mountIssueView(
           ))
         )
           throw new Error("cancelled");
-        const result = await guarded(() =>
-          callRpc("issue.implement_all", {
-            ...implementParams(issueId, assignment, { catalog }),
-            ...MUTATION_THREAD_PAGE,
-          }),
-        );
-        afterDispatch(result);
+        afterDispatch(await openImplementation("issue.implement_all", implementParams(issueId, assignment, { catalog })));
       });
     }
     wireAssignment(listHost);
@@ -561,13 +562,9 @@ export function mountIssueView(
       await refresh();
     });
     bindAction(viewerHost.querySelector("#implementstage"), "starting…", async () => {
-      const result = await guarded(() =>
-        callRpc("issue.implement_stage", {
-          ...implementParams(issueId, assignment, { catalog, stageId: stage.id }),
-          ...MUTATION_THREAD_PAGE,
-        }),
+      afterDispatch(
+        await openImplementation("issue.implement_stage", implementParams(issueId, assignment, { catalog, stageId: stage.id })),
       );
-      afterDispatch(result);
     });
     bindAction(viewerHost.querySelector("#fixstage"), "sending…", async () => {
       await guarded(() =>
@@ -614,6 +611,12 @@ export function mountIssueView(
     const index = list.findIndex((candidate) => candidate.id === stage.id);
     return index >= 0 && list.slice(0, index).every((candidate) => stageStateToken(candidate) === "validated");
   };
+
+  /** Ask the daemon to open an implementation, and answer with what it opened —
+   *  or nothing, when the reply outlives the browser's timer. The issue's own
+   *  next answer names the run either way. */
+  const openImplementation = (method, params) =>
+    replyOrNothing(guarded(() => callRpc(method, { ...params, ...MUTATION_THREAD_PAGE })));
 
   const afterDispatch = (result) => {
     const runId = result && result.run_id;

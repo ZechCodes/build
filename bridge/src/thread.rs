@@ -1210,6 +1210,23 @@ pub const MAX_THREAD_PAGE: usize = 200;
 /// is why a page is not a contiguous run of sequences.
 pub const PAGE_ACTIVITY_RUN_CAP: usize = 100;
 
+/// How many activity items a page may ship per message of its limit: a page of
+/// 1 ships at most 10 activity items, so the smallest polls — the branch
+/// surface and console poll `thread_limit` 1 every tick and read none of it —
+/// stay small; the default 20 ships at most 200.
+pub const PAGE_ACTIVITY_PER_MESSAGE: usize = 10;
+
+/// The whole-page activity budget a limit buys.
+///
+/// The per-run cap bounds one run; this bounds the page. Twenty runs each
+/// capped at a hundred is still two thousand rows for twenty messages, which
+/// is the shape the cap alone leaves behind — so the budget is spent
+/// newest-first and the runs a reviewer has not scrolled to fold down to their
+/// digests.
+pub fn page_activity_budget(limit: usize) -> usize {
+    limit * PAGE_ACTIVITY_PER_MESSAGE
+}
+
 /// The newest tool call of an activity run, as a folded row prints it.
 ///
 /// A fixed shape: `summary` and `outcome` serialize as `null` when the call
@@ -1256,8 +1273,18 @@ pub struct PageCut<T> {
 }
 
 /// Cut a page out of the span it reaches over: keep everything that is not
-/// activity, keep the newest [`PAGE_ACTIVITY_RUN_CAP`] of every run that is,
-/// and answer for each run with a digest.
+/// activity, keep the newest of every run that is, and answer for each run
+/// with a digest.
+///
+/// Two bounds hold the activity down, and a run keeps the smaller of them: the
+/// per-run [`PAGE_ACTIVITY_RUN_CAP`], and what is left of the whole page's
+/// [`page_activity_budget`]. The walk is newest-first, so the runs a reviewer
+/// opens on are whole and the ones above them fold to their digests. Messages
+/// and every other non-activity item ship whatever the budget has left — the
+/// limit bought them, and they are what the page is FOR.
+///
+/// The digests are exact either way. Their counts come from the census over
+/// each run's whole span, never from what shipped.
 ///
 /// Generic over how the caller holds an item, so neither page path has to take
 /// its span apart and put it back together: memory passes borrows off its
@@ -1273,14 +1300,18 @@ pub struct PageCut<T> {
 /// run.
 pub fn cut_activity_runs<T, E>(
     span_newest_first: Vec<T>,
+    limit: usize,
     tool_calls_between: impl Fn(u64, u64) -> Result<u64, E>,
 ) -> Result<PageCut<T>, E>
 where
     T: Borrow<ThreadItem>,
 {
-    let mut cut = PageCut {
-        items: Vec::with_capacity(span_newest_first.len()),
-        digests: Vec::new(),
+    let mut page = PageBeingCut {
+        cut: PageCut {
+            items: Vec::with_capacity(span_newest_first.len()),
+            digests: Vec::new(),
+        },
+        activity_left: page_activity_budget(limit),
     };
     let mut run: Vec<T> = Vec::new();
     for item in span_newest_first {
@@ -1288,32 +1319,41 @@ where
             run.push(item);
             continue;
         }
-        cut = fold_activity_run(cut, std::mem::take(&mut run), &tool_calls_between)?;
-        cut.items.push(item);
+        page = fold_activity_run(page, std::mem::take(&mut run), &tool_calls_between)?;
+        page.cut.items.push(item);
     }
-    let mut cut = fold_activity_run(cut, run, &tool_calls_between)?;
+    let mut cut = fold_activity_run(page, run, &tool_calls_between)?.cut;
     cut.items.reverse();
     cut.digests.reverse();
     Ok(cut)
 }
 
-/// Close one run onto the cut: its digest, then the newest of its items. Both
-/// the run and the cut being built are newest-first, so the caller reverses
-/// once at the end rather than per run.
+/// A page part-way through being cut: the answer so far, and how much activity
+/// it may still ship. Held together so the budget cannot be spent by anything
+/// that is not also adding to the page.
+struct PageBeingCut<T> {
+    cut: PageCut<T>,
+    activity_left: usize,
+}
+
+/// Close one run onto the page: its digest, then as much of its newest as the
+/// per-run cap and the page's remaining budget allow. Both the run and the
+/// page being cut are newest-first, so the caller reverses once at the end
+/// rather than per run.
 fn fold_activity_run<T, E>(
-    mut cut: PageCut<T>,
+    mut page: PageBeingCut<T>,
     run_newest_first: Vec<T>,
     tool_calls_between: &impl Fn(u64, u64) -> Result<u64, E>,
-) -> Result<PageCut<T>, E>
+) -> Result<PageBeingCut<T>, E>
 where
     T: Borrow<ThreadItem>,
 {
     let (Some(newest), Some(oldest)) = (run_newest_first.first(), run_newest_first.last()) else {
-        return Ok(cut);
+        return Ok(page);
     };
     let from_sequence = oldest.borrow().sequence();
     let through_sequence = newest.borrow().sequence();
-    cut.digests.push(ActivityDigest {
+    page.cut.digests.push(ActivityDigest {
         from_sequence,
         through_sequence,
         tool_calls: tool_calls_between(from_sequence, through_sequence)?,
@@ -1321,9 +1361,15 @@ where
             .iter()
             .find_map(|item| item.borrow().tool_call().map(LastToolCall::of)),
     });
-    cut.items
-        .extend(run_newest_first.into_iter().take(PAGE_ACTIVITY_RUN_CAP));
-    Ok(cut)
+    let ships = run_newest_first
+        .len()
+        .min(PAGE_ACTIVITY_RUN_CAP)
+        .min(page.activity_left);
+    page.activity_left -= ships;
+    page.cut
+        .items
+        .extend(run_newest_first.into_iter().take(ships));
+    Ok(page)
 }
 
 /// How many hits a query returns when it does not say.
@@ -2669,7 +2715,7 @@ impl Thread {
         let census = |from: u64, through: u64| {
             Ok::<u64, std::convert::Infallible>(self.tool_calls_between(from, through))
         };
-        let cut = match cut_activity_runs(span, census) {
+        let cut = match cut_activity_runs(span, limit, census) {
             Ok(cut) => cut,
             Err(impossible) => match impossible {},
         };
@@ -3488,6 +3534,9 @@ mod counted_page_tests {
     /// The cap. An all-activity stretch cannot make a page unbounded: the run
     /// ships its newest hundred and the digest beside it says how many there
     /// really were, so the reviewer is told a thousand without being sent one.
+    ///
+    /// The limit is the one that buys a budget of exactly the cap, so what
+    /// bounds this page is the cap and nothing else.
     #[test]
     fn an_all_activity_stretch_is_bounded_by_the_run_cap() {
         let mut thread = Thread::new("run-busy");
@@ -3502,7 +3551,7 @@ mod counted_page_tests {
             );
         }
 
-        let page = thread.wire_value_page(None, 5);
+        let page = thread.wire_value_page(None, PAGE_ACTIVITY_RUN_CAP / PAGE_ACTIVITY_PER_MESSAGE);
         let shipped = page_items(&page);
         assert_eq!(
             shipped.len(),
@@ -3526,6 +3575,118 @@ mod counted_page_tests {
         assert_eq!(
             digests[0]["last_tool_call"]["summary"], "Read file-999.rs",
             "{digests:?}"
+        );
+    }
+
+    /// The smallest poll there is. The branch surface and the console ask for
+    /// one message a tick and read none of the work between them, so a page of
+    /// 1 over an open run of a thousand calls ships the message, ten rows of
+    /// activity, and a digest that says a thousand.
+    #[test]
+    fn a_page_of_one_message_ships_ten_activity_items_and_counts_the_rest() {
+        let mut thread = Thread::new("run-busy");
+        thread.post_user("please rename the helper", None, NOW);
+        for index in 0..1000 {
+            thread.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+
+        let page = thread.wire_value_page(None, 1);
+        let shipped = page_items(&page);
+        assert_eq!(counted_in_page(&page), 1, "the one thing said is on it");
+        assert_eq!(
+            shipped.len(),
+            1 + page_activity_budget(1),
+            "a page of one buys ten items of work: {}",
+            shipped.len()
+        );
+
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 1, "{digests:?}");
+        assert_eq!(
+            digests[0]["tool_calls"], 1000,
+            "the digest is exact whatever the page shipped"
+        );
+        assert_eq!(digests[0]["last_tool_call"]["sequence"], 1001);
+    }
+
+    /// The whole-page budget. The per-run cap bounds ONE run, and twenty
+    /// capped runs on one page is still two thousand rows — so a page spends a
+    /// budget across all of its runs, newest first. The newest runs are whole,
+    /// the oldest shrink to their digest, and every digest still counts its
+    /// whole run.
+    #[test]
+    fn a_page_of_many_runs_spends_its_budget_newest_first() {
+        let mut thread = Thread::new("run-long");
+        for turn in 0..DEFAULT_THREAD_PAGE {
+            thread.post_user(format!("ask {turn}"), None, NOW);
+            for index in 0..PAGE_ACTIVITY_RUN_CAP {
+                thread.push_event(
+                    ThreadEventKind::ToolUse,
+                    Some(format!("Read file-{turn}-{index}.rs")),
+                    None,
+                    None,
+                    NOW,
+                );
+            }
+        }
+
+        let budget = page_activity_budget(DEFAULT_THREAD_PAGE);
+        let page = thread.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        let shipped = page_items(&page);
+        assert_eq!(
+            counted_in_page(&page),
+            DEFAULT_THREAD_PAGE,
+            "the limit still buys every message it asked for"
+        );
+        assert_eq!(
+            shipped.len(),
+            DEFAULT_THREAD_PAGE + budget,
+            "and the work beside them is the budget, no more: {}",
+            shipped.len()
+        );
+
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(
+            digests.len(),
+            DEFAULT_THREAD_PAGE,
+            "one per run, whatever the run shipped: {}",
+            digests.len()
+        );
+        assert!(
+            digests
+                .iter()
+                .all(|digest| digest["tool_calls"] == PAGE_ACTIVITY_RUN_CAP),
+            "every digest is exact over its whole run: {digests:?}"
+        );
+        let shipped_per_run: Vec<usize> = digests
+            .iter()
+            .map(|digest| {
+                let span = digest["from_sequence"].as_u64().unwrap()
+                    ..=digest["through_sequence"].as_u64().unwrap();
+                shipped.iter().filter(|item| span.contains(item)).count()
+            })
+            .collect();
+        assert_eq!(
+            shipped_per_run
+                .iter()
+                .rev()
+                .take(2)
+                .copied()
+                .collect::<Vec<usize>>(),
+            vec![PAGE_ACTIVITY_RUN_CAP; 2],
+            "the newest runs are whole: {shipped_per_run:?}"
+        );
+        assert!(
+            shipped_per_run[..DEFAULT_THREAD_PAGE - 2]
+                .iter()
+                .all(|count| *count == 0),
+            "the older ones are their digest and nothing else: {shipped_per_run:?}"
         );
     }
 
@@ -3837,14 +3998,15 @@ mod activity_cut_tests {
 
     const NOW: &str = "2026-09-06T18:03:11.412Z";
 
-    /// The cut as a page takes it: the whole conversation newest-first, with a
-    /// census that counts the tool calls of a span exactly.
+    /// The cut as a default page takes it: the whole conversation newest-first,
+    /// under the budget [`DEFAULT_THREAD_PAGE`] buys, with a census that counts
+    /// the tool calls of a span exactly.
     fn cut_over(thread: &Thread) -> PageCut<&ThreadItem> {
         let span: Vec<&ThreadItem> = thread.items.iter().rev().collect();
         let census = |from: u64, through: u64| {
             Ok::<u64, std::convert::Infallible>(thread.tool_calls_between(from, through))
         };
-        match cut_activity_runs(span, census) {
+        match cut_activity_runs(span, DEFAULT_THREAD_PAGE, census) {
             Ok(cut) => cut,
             Err(impossible) => match impossible {},
         }

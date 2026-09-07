@@ -1172,7 +1172,7 @@ impl Store {
         limit: usize,
     ) -> Result<(PageCut<ThreadItem>, bool), StoreError> {
         let span = self.conversation_span(agent_id, before_sequence, limit)?;
-        let cut = cut_activity_runs(span, |from, through| {
+        let cut = cut_activity_runs(span, limit, |from, through| {
             self.tool_calls_between(agent_id, from, through)
         })?;
         // Off the page's own oldest item, never off the floor: the cap may have
@@ -3173,7 +3173,8 @@ mod tests {
     }
 
     /// The cap holds in SQL too: an all-activity stretch ships its newest
-    /// hundred and the digest beside it counts the rest.
+    /// hundred and the digest beside it counts the rest. The limit is the one
+    /// that buys a budget of exactly the cap, so the cap is what bounds it.
     #[test]
     fn a_stored_page_of_pure_activity_ships_its_newest_and_counts_them_all() {
         let dir = tempfile::tempdir().unwrap();
@@ -3192,7 +3193,11 @@ mod tests {
         store.save_run(&record).expect("the conversation saves");
 
         let (cut, has_more) = store
-            .thread_conversation_page(&record.agents[0].id, None, 4)
+            .thread_conversation_page(
+                &record.agents[0].id,
+                None,
+                crate::thread::PAGE_ACTIVITY_RUN_CAP / crate::thread::PAGE_ACTIVITY_PER_MESSAGE,
+            )
             .expect("a page reads");
         assert_eq!(cut.items.len(), 1 + crate::thread::PAGE_ACTIVITY_RUN_CAP);
         assert!(!has_more, "nothing sits below the page's oldest item");
@@ -3207,6 +3212,9 @@ mod tests {
     /// The two page paths are one rule. The same conversation, read out of
     /// memory and read back out of SQLite, ships the same items and the same
     /// digests — the only difference between them is where the census counted.
+    ///
+    /// The fixture's runs are all past the per-run cap and together past the
+    /// page budget, so both bounds are exercised on both sides of the seam.
     #[test]
     fn the_stored_page_and_the_resident_page_are_the_same_page() {
         let dir = tempfile::tempdir().unwrap();
@@ -3236,11 +3244,18 @@ mod tests {
         store.save_run(&record).expect("the conversation saves");
         let thread = &record.agents[0].thread;
 
+        let limit = 3;
         let (cut, has_more) = store
-            .thread_conversation_page(&record.agents[0].id, None, 3)
+            .thread_conversation_page(&record.agents[0].id, None, limit)
             .expect("a page reads");
         let from_store = thread.wire_value_of_page(&cut, has_more);
-        let from_memory = thread.wire_value_page(None, 3);
+        let from_memory = thread.wire_value_page(None, limit);
+
+        assert_eq!(
+            cut.items.iter().filter(|item| item.is_activity()).count(),
+            crate::thread::page_activity_budget(limit),
+            "the page spends its budget and stops"
+        );
 
         assert_eq!(from_store["items"], from_memory["items"]);
         assert_eq!(

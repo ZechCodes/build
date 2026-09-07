@@ -30,7 +30,18 @@ const sameAttachment = (live, next) =>
   live.tagName === "IMG" &&
   live.getAttribute("data-attachment-path") === next.getAttribute("data-attachment-path");
 
-const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === "DETAILS";
+/** Marks a `<details>` whose renderer owns the fold outright — see
+ *  `foldTheRenderOwns`. */
+export const RENDERED_FOLD_ATTRIBUTE = "data-rendered-fold";
+
+/** Whether the render, rather than the reader, is what says this fold is open.
+ *  A run of activity is one such fold: what it holds is fetched on the press
+ *  and drawn on the repaint, so the render is its only writer and shutting one
+ *  means taking `open` back off. */
+const foldTheRenderOwns = (live) => live.hasAttribute(RENDERED_FOLD_ATTRIBUTE);
+
+const foldTheReaderOpened = (live, name) =>
+  name === "open" && live.tagName === "DETAILS" && !foldTheRenderOwns(live);
 
 const EXPANSION_MARKS = [EXPANDED_ATTRIBUTE, "aria-expanded"];
 

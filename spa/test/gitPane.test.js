@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   gitPollKey,
+  ifStatusKey,
+  statusAfterPoll,
   commitSplitOptions,
   taskAgentCommitOptions,
   gitDraftKey,
@@ -11,14 +13,16 @@ import {
   pollRenderFrozen,
 } from "../src/core/gitPane.js";
 
+// The v2 status: shape only. Everything a repaint depends on — branch, HEAD,
+// repo state, every file's stage state and content key — is hashed by the
+// bridge into status_key, so that one field is what the poll key reads.
 const status = (overrides = {}) => ({
   branch: "main",
   path: "/repo",
   head: "f".repeat(40),
-  files: [{ path: "a.js", staged: "none", index_status: "M", worktree_status: "M" }],
+  files: [{ path: "a.js", staged: "none", index_status: "M", worktree_status: "M", content_key: "content-1", added: 1, deleted: 0 }],
   stat: { files_changed: 1, insertions: 1, deletions: 0 },
-  patch: "diff --git a/a.js b/a.js\n",
-  truncated: false,
+  status_key: "shape-1",
   ...overrides,
 });
 
@@ -36,21 +40,8 @@ describe("gitPollKey", () => {
     expect(gitPollKey(status(), log(), NOW)).toBe(gitPollKey(status(), log(), NOW));
   });
 
-  it("changes when HEAD moves", () => {
-    expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status({ head: "e".repeat(40) }), log(), NOW));
-  });
-
-  it("changes when a file's staged state flips", () => {
-    const restaged = status({ files: [{ path: "a.js", staged: "full", index_status: "M", worktree_status: "-" }] });
-    expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(restaged, log(), NOW));
-  });
-
-  it("changes when the patch changes", () => {
-    expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status({ patch: "diff --git a/b b/b\n" }), log(), NOW));
-  });
-
-  it("changes when the branch changes", () => {
-    expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status({ branch: "dev" }), log(), NOW));
+  it("changes when the bridge's status key moves", () => {
+    expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status({ status_key: "shape-2" }), log(), NOW));
   });
 
   it("changes when the commit list changes", () => {
@@ -62,26 +53,33 @@ describe("gitPollKey", () => {
     expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status(), log({ more: true }), NOW));
   });
 
-  it("changes when the file list truncation flag flips", () => {
-    expect(gitPollKey(status(), log(), NOW)).not.toBe(gitPollKey(status({ files_truncated: true }), log(), NOW));
-  });
-
-  it.each([
-    ["repo_state", { repo_state: "clean" }, { repo_state: "merging" }],
-    ["upstream", { upstream: "origin/main" }, { upstream: "origin/dev" }],
-    ["ahead", { ahead: 0 }, { ahead: 3 }],
-    ["behind", { behind: 0 }, { behind: 3 }],
-    ["stash_count", { stash_count: 0 }, { stash_count: 2 }],
-  ])("changes when the additive sync field %s changes", (_field, before, after) => {
-    // An out-of-band ref move (a terminal `git fetch` shifting `behind`) must
-    // repaint the toolbar chips even when HEAD/files/patch are untouched.
-    expect(gitPollKey(status(before), log(), NOW)).not.toBe(gitPollKey(status(after), log(), NOW));
-  });
-
   it("stays stable within a minute but rolls over across minute buckets", () => {
     const minuteStart = Math.floor(NOW / 60) * 60;
     expect(gitPollKey(status(), log(), minuteStart)).toBe(gitPollKey(status(), log(), minuteStart + 30));
     expect(gitPollKey(status(), log(), minuteStart)).not.toBe(gitPollKey(status(), log(), minuteStart + 61));
+  });
+});
+
+describe("ifStatusKey", () => {
+  it("sends the key the pane holds, so an unmoved repo answers with a key not a diff", () => {
+    expect(ifStatusKey(status())).toEqual({ if_status_key: "shape-1" });
+  });
+
+  it("asks for the whole shape when the pane holds none, or an older bridge shipped no key", () => {
+    expect(ifStatusKey(null)).toEqual({});
+    expect(ifStatusKey(status({ status_key: undefined }))).toEqual({});
+  });
+});
+
+describe("statusAfterPoll", () => {
+  it("keeps the shape it holds when the bridge says the key still stands", () => {
+    const held = status();
+    expect(statusAfterPoll({ unchanged: true, status_key: "shape-1" }, held)).toBe(held);
+  });
+
+  it("takes the fresh shape otherwise", () => {
+    const moved = status({ status_key: "shape-2" });
+    expect(statusAfterPoll(moved, status())).toBe(moved);
   });
 });
 

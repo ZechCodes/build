@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane, GIT_PANE_POLL_MS } from "../src/core/gitPane.js";
 import { patchHunks } from "../src/core/diff.js";
 import { createReviewPlug } from "../src/core/changesReview.js";
+import { worktreeOf } from "./gitWireFixture.js";
 
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n context\n`;
@@ -25,34 +26,27 @@ const TRIAGE = {
   ],
 };
 
-const dirtyStatus = () => ({
-  branch: "build/x",
-  path: "/repo",
-  head: "f".repeat(40),
-  repo_state: "clean",
-  upstream: "origin/build/x",
-  ahead: 0,
-  behind: 0,
-  stash_count: 0,
-  files: [
-    { path: "src/crypto.rs", staged: "none", index_status: "M", worktree_status: "M" },
-    { path: "Cargo.toml", staged: "none", index_status: "M", worktree_status: "M" },
-  ],
-  files_truncated: false,
-  stat: { files_changed: 2, insertions: 2, deletions: 2 },
-  patch: DIRTY_PATCH,
-  truncated: false,
-});
+// The same two files as a v2 worktree: the shape names them and their content
+// keys, and each body comes back from git.diff as the patch the ids above were
+// derived from.
+const tree = worktreeOf(
+  { "src/crypto.rs": "seal(key)", "Cargo.toml": 'v = "2"' },
+  { patchOf: patchFor, base: { branch: "build/x", upstream: "origin/build/x" } },
+);
+const dirtyStatus = () => tree.status({ stat: { files_changed: 2, insertions: 2, deletions: 2 } });
 
 const log = () => ({ branch: "build/x", commits: [], more: false });
 
 const settle = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let i = 0; i < 8; i++) await Promise.resolve();
 };
 
 async function mount({ triage = TRIAGE, projectId = "proj-1" } = {}) {
-  const callRpc = vi.fn(async (method) => {
+  const callRpc = vi.fn(async (method, params) => {
     if (method === "git.status") return dirtyStatus();
+    if (method === "git.diff") return tree.diff(params);
     if (method === "git.log") return log();
     return {};
   });
@@ -154,8 +148,9 @@ describe("the triage overlay in the Changes pane", () => {
 
   it("re-orders the open stack when a pass lands under it, repo untouched", async () => {
     let pass = null;
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return dirtyStatus();
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       return {};
     });
@@ -178,8 +173,9 @@ describe("the triage overlay in the Changes pane", () => {
   });
 
   it("leaves a surface with no triage to read exactly as it was", async () => {
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return dirtyStatus();
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       return {};
     });
@@ -203,6 +199,7 @@ describe("disagreeing with the pass in the Changes pane", () => {
     const calls = [];
     const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return dirtyStatus();
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       if (method === "triage.override") {
         calls.push(params);
@@ -344,8 +341,9 @@ describe("disagreeing with the pass in the Changes pane", () => {
   });
 
   it("offers nothing on a surface with no run to disagree on behalf of", async () => {
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return dirtyStatus();
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       return {};
     });

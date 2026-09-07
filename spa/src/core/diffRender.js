@@ -114,38 +114,95 @@ function overrideButtonHtml(mark) {
  *  is commit-all). It is `{ openPath, pendingConfirm }`: only the named file's
  *  menu is open, and a matching `discard:<path>` confirm renders armed, so the
  *  existing two-click confirm idiom is what fires it. */
+/** How one file of a stack is rendered: the caller's own entry renderer where
+ *  it has one (the fold-aware entry), the whole diff otherwise. */
+const fileHtmlFor = (options) => options.renderFile || diffFileHtml;
+
 export function diffFilesHtml(files, options = {}) {
-  return files.map((file) => diffFileHtml(file, options)).join("");
+  const renderFile = fileHtmlFor(options);
+  return files.map((file) => renderFile(file, options)).join("");
 }
 
 const FOLD_CLASS = { open: "", shut: "collapsed", capped: "capped" };
 
-function foldClassOf(file, { folds, viewed }) {
+/** Which of the three folds a file is in: the one the caller has already
+ *  decided, else what the reader last pressed, else the untouched default
+ *  (capped, or shut for a file they have ticked off). One rule, so a file's
+ *  class and its body can never disagree about how folded it is. */
+export function fileFoldOf(file, { fold = null, folds = null, viewed = null } = {}) {
+  if (fold) return fold;
   const key = fileKey(file);
-  return FOLD_CLASS[folds ? folds.foldOf(key, { viewed }) : untouchedFold(key, viewed)];
+  return folds ? folds.foldOf(key, { viewed }) : untouchedFold(key, viewed);
 }
 
-// eslint-disable-next-line complexity -- ratchet: diffFileHtml is at 17, cap 10 — reduce it, then drop this line
-export function diffFileHtml(file, options = {}) {
-  const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false, openable = false, sectionClass = "" } = options;
-  const lang = langForPath(file.path);
-  const key = fileKey(file);
-  const isViewed = viewed ? viewed.has(file.path) : false;
-  const classes = ["file", foldClassOf(file, options), sectionClass].filter(Boolean).join(" ");
-  const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
-  const changedChip = changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
-  const viewedToggle = withViewedToggle
-    ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-key="${esc(key)}"${isViewed ? " checked" : ""}/> Viewed</label>`
-    : "";
-  return `
-      <div class="${classes}" data-key="${esc(key)}"><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
-        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${openFileButtonHtml(file, openable)}${commentButton}${fileMenuHtml(file, fileMenu)}</div>
-        <div class="dscroll"><table>${diffRowsHtml(file.rows, lang, {
+function foldClassOf(file, options) {
+  return FOLD_CLASS[fileFoldOf(file, options)];
+}
+
+function commentButtonHtml(commentable) {
+  return commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
+}
+
+function changedChipHtml(file, changedSince) {
+  return changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
+}
+
+function viewedToggleHtml(file, { withViewedToggle, viewed }) {
+  if (!withViewedToggle) return "";
+  const checked = viewed && viewed.has(file.path) ? " checked" : "";
+  return `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-key="${esc(fileKey(file))}"${checked}/> Viewed</label>`;
+}
+
+/** One file's header: its path, its status, its weights, and every affordance
+ *  the surface offers on it. */
+export function fileHeadHtml(file, options) {
+  return `<div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChipHtml(file, options.changedSince)}${viewedToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</div>`;
+}
+
+// The two boxes a file's body can sit in: the scrolling one the collapse rule
+// hides, and the peek it leaves on screen.
+const BODY_BOX = "dscroll";
+const PEEK_BOX = "dpeek";
+
+function diffTableBoxHtml(boxClass, file, options) {
+  return `<div class="${boxClass}"><table>${diffRowsHtml(file.rows, langForPath(file.path), {
           maskDotenv: isDotenvPath(file.path),
           hunkMarks: file.triageHunks || null,
-          overridable,
-        })}</table></div>
+          overridable: options.overridable,
+        })}</table></div>`;
+}
+
+/** One file's diff table, every row of it, in the box the collapse rule hides. */
+export function fileBodyHtml(file, options) {
+  return diffTableBoxHtml(BODY_BOX, file, options);
+}
+
+/** The rows a collapsed file keeps on screen: the same table in the box that
+ *  survives the collapse — a peek is what a folded file is for. */
+export function filePeekHtml(file, options) {
+  return diffTableBoxHtml(PEEK_BOX, file, options);
+}
+
+/** What a file shows where its rows are not there to show: one dim line, in the
+ *  peek's box, so a collapsed file says how to get them. */
+export function fileNoticeHtml(label) {
+  return `<div class="${PEEK_BOX}"><div class="dload">${esc(label)}</div></div>`;
+}
+
+/** A file's header and the caller's choice of body, in the fold the reader put
+ *  it in. The fold-aware entry (core/fileEntries.js) hands a preview or a
+ *  loading line where this module hands the whole diff. */
+export function fileFrameHtml(file, options, bodyHtml) {
+  const classes = ["file", foldClassOf(file, options), options.sectionClass].filter(Boolean).join(" ");
+  return `
+      <div class="${classes}" data-key="${esc(fileKey(file))}">${fileHeadHtml(file, options)}
+        ${bodyHtml}
         <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
+}
+
+export function diffFileHtml(file, options = {}) {
+  return fileFrameHtml(file, options, fileBodyHtml(file, options));
 }
 
 function openFileButtonHtml(file, openable) {
@@ -247,7 +304,7 @@ function triageGroupHtml(section, fileOptions) {
 
 function reviewStackEntries(files, review, options) {
   const fileEntries = (list, fileOptions) =>
-    list.map((file) => ({ key: fileKey(file), html: diffFileHtml(file, fileOptions) }));
+    list.map((file) => ({ key: fileKey(file), html: fileHtmlFor(fileOptions)(file, fileOptions) }));
   if (!review) return fileEntries(files, options);
   const { triage = null, patch = "", dial = false, expandedGroups = null, overridable = false } = review;
   const fileOptions = { ...options, overridable };

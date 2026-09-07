@@ -461,7 +461,7 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Identity, not integrity. A cryptographic digest would have to be reachable
 /// from the browser too, and the only one there (`crypto.subtle`) is async —
 /// hunk ids have to be assignable inside a synchronous render.
-fn fnv1a64_hex(text: &str) -> String {
+pub(crate) fn fnv1a64_hex(text: &str) -> String {
     let mut hash = FNV_OFFSET_BASIS;
     for byte in text.as_bytes() {
         hash ^= *byte as u64;
@@ -691,6 +691,121 @@ pub fn stat_uncommitted(repo_path: &Path) -> Result<DiffStat, DiffError> {
     stat_tree_to_dirty_workdir(&repo, head_tree.as_ref())
 }
 
+/// One changed path's line counts, without its patch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDelta {
+    pub path: String,
+    pub added: usize,
+    pub deleted: usize,
+    pub binary: bool,
+}
+
+/// One changed path's rendered patch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePatch {
+    pub path: String,
+    pub patch: String,
+}
+
+/// Every uncommitted path's line counts, in one walk that renders no patch.
+///
+/// This is [`stat_uncommitted`]'s census per file rather than rolled up — the
+/// same [`LARGE_FILE_BYTES`] threshold, the same off-disk count for untracked
+/// content, the same excluded MCP config — so the list's totals ARE that stat.
+pub fn uncommitted_file_deltas(repo_path: &Path) -> Result<Vec<FileDelta>, DiffError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let head_tree = head_tree_if_born(&repo)?;
+    let mut opts = dirty_workdir_options(false);
+    let diff = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
+    let mut deltas = Vec::new();
+    for (index, delta) in diff.deltas().enumerate() {
+        let path = delta_path(&delta);
+        if is_mcp_config(&path) {
+            continue;
+        }
+        deltas.push(if delta.status() == git2::Delta::Untracked {
+            untracked_file_delta(repo.workdir(), path)
+        } else {
+            tracked_file_delta(&diff, index, path)?
+        });
+    }
+    Ok(deltas)
+}
+
+/// An untracked file's lines, counted off disk because its content was never
+/// loaded into the diff. A file with bytes but no countable line is what
+/// libgit2 would print as `Binary files … differ`.
+fn untracked_file_delta(workdir: Option<&Path>, path: String) -> FileDelta {
+    let absolute = workdir.map(|root| root.join(&path));
+    let added = absolute.as_deref().map(added_lines).unwrap_or(0);
+    let bytes = absolute
+        .and_then(|file| std::fs::symlink_metadata(file).ok())
+        .map_or(0, |metadata| metadata.len());
+    FileDelta {
+        path,
+        added,
+        deleted: 0,
+        binary: added == 0 && bytes > 0,
+    }
+}
+
+/// A tracked path's lines, from libgit2's own count for that delta. A delta
+/// libgit2 will not hand over line by line is binary.
+fn tracked_file_delta(
+    diff: &git2::Diff<'_>,
+    index: usize,
+    path: String,
+) -> Result<FileDelta, DiffError> {
+    let Some(patch) = git2::Patch::from_diff(diff, index)? else {
+        return Ok(FileDelta {
+            path,
+            added: 0,
+            deleted: 0,
+            binary: true,
+        });
+    };
+    let (_context, added, deleted) = patch.line_stats()?;
+    Ok(FileDelta {
+        path,
+        added,
+        deleted,
+        binary: patch.delta().flags().is_binary(),
+    })
+}
+
+/// The uncommitted patch of each of `paths`, rendered one file at a time.
+///
+/// An untracked file prints as all additions, a deleted one as all deletions,
+/// and the machine-local MCP config prints not at all. Paths match literally,
+/// never as globs, so a path holding `*` means the file with that name. A path
+/// with no uncommitted change — and a binary one, which has no lines to print
+/// — is absent from the answer.
+pub fn patch_for_paths(repo_path: &Path, paths: &[String]) -> Result<Vec<FilePatch>, DiffError> {
+    let repo = git2::Repository::open(repo_path)?;
+    let head_tree = head_tree_if_born(&repo)?;
+    let mut opts = dirty_workdir_options(true);
+    opts.disable_pathspec_match(true);
+    for path in paths {
+        opts.pathspec(path);
+    }
+    let diff = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
+    let mut rendered = Vec::new();
+    for (index, delta) in diff.deltas().enumerate() {
+        let path = delta_path(&delta);
+        if is_mcp_config(&path) {
+            continue;
+        }
+        let Some(mut patch) = git2::Patch::from_diff(&diff, index)? else {
+            continue;
+        };
+        rendered.push(FilePatch {
+            path,
+            patch: String::from_utf8_lossy(&patch.to_buf()?).into_owned(),
+        });
+    }
+    Ok(rendered)
+}
+
 /// HEAD's tree, or `None` in a repository that has no commits yet.
 fn head_tree_if_born(repo: &git2::Repository) -> Result<Option<git2::Tree<'_>>, DiffError> {
     match repo.head() {
@@ -800,6 +915,101 @@ mod tests {
         // The spy is wired up: the render path does move it.
         diff_uncommitted(&repo).unwrap();
         assert_eq!(patch_prints_on_this_thread(), 1);
+    }
+
+    /// The per-file census is the same census as the roll-up: the file list
+    /// carries one entry per changed path, and the entries add up to the stat.
+    #[test]
+    fn file_deltas_carry_each_paths_lines_and_sum_to_the_stat() {
+        let (_dir, repo) = mixed_fixture();
+
+        let deltas = uncommitted_file_deltas(&repo).unwrap();
+        let by_path = |path: &str| -> FileDelta {
+            deltas
+                .iter()
+                .find(|delta| delta.path == path)
+                .unwrap_or_else(|| panic!("{path} missing from {deltas:?}"))
+                .clone()
+        };
+
+        assert!(
+            !deltas.iter().any(|delta| delta.path.contains("mcp.json")),
+            "the MCP config counts for nothing: {deltas:?}"
+        );
+        assert_eq!(by_path("tracked-modify.txt").added, 1);
+        assert_eq!(by_path("tracked-modify.txt").deleted, 0);
+        assert!(!by_path("tracked-modify.txt").binary);
+        assert_eq!(by_path("tracked-delete.txt").deleted, 2);
+        assert_eq!(by_path("staged-add.txt").added, 1);
+        assert_eq!(by_path("untracked.txt").added, 3);
+        assert!(by_path("untracked.bin").binary);
+        assert_eq!(by_path("untracked.bin").added, 0);
+        assert!(by_path("huge.txt").binary);
+
+        let stat = stat_uncommitted(&repo).unwrap();
+        assert_eq!(deltas.len(), stat.files_changed);
+        assert_eq!(
+            deltas.iter().map(|delta| delta.added).sum::<usize>(),
+            stat.insertions
+        );
+        assert_eq!(
+            deltas.iter().map(|delta| delta.deleted).sum::<usize>(),
+            stat.deletions
+        );
+    }
+
+    #[test]
+    fn a_patch_is_rendered_for_the_asked_paths_alone() {
+        let (_dir, repo) = mixed_fixture();
+
+        let patches = patch_for_paths(
+            &repo,
+            &[
+                "untracked.txt".to_string(),
+                "tracked-delete.txt".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let paths: Vec<&str> = patches.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, vec!["tracked-delete.txt", "untracked.txt"]);
+        let untracked = &patches[1].patch;
+        assert!(untracked.contains("diff --git a/untracked.txt b/untracked.txt"));
+        assert!(untracked.contains("+alpha"));
+        assert!(
+            !untracked.contains("+one"),
+            "a path nobody asked for: {untracked}"
+        );
+        assert!(patches[0].patch.contains("-gone"));
+    }
+
+    #[test]
+    fn the_mcp_config_is_never_rendered_even_when_asked_for() {
+        let (_dir, repo) = mixed_fixture();
+
+        assert!(patch_for_paths(&repo, &[".build/mcp.json".to_string()])
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A pathspec is a literal path, never a glob: asking for `*` asks for the
+    /// file actually named `*`.
+    #[test]
+    fn a_pathspec_never_globs() {
+        let (_dir, repo) = mixed_fixture();
+
+        assert!(patch_for_paths(&repo, &["*".to_string()])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_path_renders_no_patch() {
+        let (_dir, repo) = mixed_fixture();
+
+        assert!(patch_for_paths(&repo, &["README.md".to_string()])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

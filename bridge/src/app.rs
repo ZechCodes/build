@@ -4740,8 +4740,9 @@ impl AppState {
                 .insert(run_id.clone(), now_rfc3339());
             // This cache IS the git watcher: two computes that disagree are
             // files that landed in the checkout, which is exactly what an
-            // entity's diff surface is showing.
-            self.note_entity_changed(&run_id);
+            // entity's diff surface is showing. It fires as fast as an agent
+            // writes files, so the entity's own event is paced.
+            self.note_entity_settled(&run_id);
         }
         self.run_stat_cache.insert(run_id, (now, stat));
         // A board answered `stat: null` for this run and claimed this refresh;
@@ -5073,6 +5074,12 @@ impl AppState {
         self.changes.note_entity(entity_id);
     }
 
+    /// The same, from an origin that fires on every file an agent writes: the
+    /// entity's event is paced at [`crate::changes::ENTITY_SETTLE_WINDOW`].
+    fn note_entity_settled(&self, entity_id: &str) {
+        self.changes.note_entity_settled(entity_id);
+    }
+
     /// The relay's frame handler over a shared state. `stream.start`/`term.attach`
     /// need the shared handle (background producers/pumps), so it dispatches
     /// through [`dispatch_frame`].
@@ -5210,6 +5217,15 @@ impl AppState {
     ///
     /// Borrows what is already held whenever that is the whole conversation —
     /// which it is for every conversation this process wrote itself — and goes
+    /// The conversation store, or the one refusal every history read gives
+    /// when this bridge keeps no store: a bounded load left part of the
+    /// conversation on disk, and without a store that part cannot be read.
+    fn history_store(&self) -> Result<&Store, String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "this conversation's history is not stored".to_string())
+    }
+
     /// to the store only for the history a bounded load left there.
     fn whole_conversation<'a>(
         &self,
@@ -5218,10 +5234,7 @@ impl AppState {
         if thread.total_item_count() == thread.items.len() as u64 {
             return Ok(std::borrow::Cow::Borrowed(&thread.items));
         }
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("this conversation's history is not stored")?;
+        let store = self.history_store()?;
         store
             .thread_items(&thread.agent.id)
             .map(std::borrow::Cow::Owned)
@@ -6564,6 +6577,7 @@ impl AppState {
             })),
             "thread.revision" => self.thread_revision(params),
             "thread.page" => self.thread_page(params),
+            "thread.activity" => self.thread_activity(params),
             "thread.post" => self.thread_post(params),
             "thread.attach" => self.thread_attach(params),
             "thread.attachment" => self.thread_attachment(params),
@@ -6574,6 +6588,7 @@ impl AppState {
             "git.log" => self.git_log(params),
             "git.show" => self.git_show(params),
             "git.status" => self.git_status(params),
+            "git.diff" => self.git_diff(params),
             "git.stage" => self.git_stage(params),
             "git.unstage" => self.git_unstage(params),
             "git.commit" => self.git_commit(params),
@@ -7932,11 +7947,25 @@ impl AppState {
         })
     }
 
-    /// `git.status` — branch/head plus per-file staging tri-state and the
-    /// uncommitted patch for the scoped checkout.
+    /// `git.status` — branch/head, per-file staging tri-state, content keys and
+    /// line counts for the scoped checkout. No patch: a file's body comes from
+    /// `git.diff`, per path.
+    ///
+    /// `if_status_key` is what the browser is already painting; when it still
+    /// names the working tree the answer is `{"unchanged": true}` and its key.
     fn git_status(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, _| {
-            crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, false, |scope, params| {
+            let if_status_key = params.get("if_status_key").and_then(Value::as_str);
+            crate::gitgui::status_payload_unless(&scope.repo_path, if_status_key)
+        })
+    }
+
+    /// `git.diff` — the uncommitted patch of the named paths, one entry each,
+    /// keyed by content so a browser caches a body until that file moves.
+    fn git_diff(&mut self, params: &Value) -> Result<Value, String> {
+        self.defer_git(params, false, |scope, params| {
+            let paths = require_path_list(params)?;
+            crate::gitgui::file_patches(&scope.repo_path, &paths)
         })
     }
 
@@ -12488,6 +12517,65 @@ impl AppState {
         self.thread_page_at(thread, before, thread_page_limit(params))
     }
 
+    /// The activity of one folded run, wherever it lives — what a client asks
+    /// for when a reviewer opens a run a page shipped only the digest of.
+    ///
+    /// A run older than the newest message never changes: the agent that made
+    /// it has moved on, and nothing appends inside a closed run. So a client
+    /// may cache what this answers under the run's `from_sequence` until the
+    /// entity is evicted. Only the tail run is live, and that one is not
+    /// fetched at all — it arrives as the forward deltas a poll already
+    /// carries.
+    fn thread_activity(&self, params: &Value) -> Result<Value, String> {
+        let entity_id = conversation_owner_param(params)?;
+        let thread = self.agent_conversation(&entity_id, named_agent_id(params).as_deref())?;
+        let (from, through) = activity_span_params(params, thread)?;
+        self.activity_span(
+            thread,
+            from,
+            through,
+            params.get("before_sequence").and_then(Value::as_u64),
+            activity_page_limit(params),
+        )
+    }
+
+    /// One page of a span of activity, out of memory or out of the store — the
+    /// one place that choice is made, and the one place the bounds a span is
+    /// asked for become the bounds a read takes.
+    ///
+    /// The store's range is exclusive at both ends because a page's own run
+    /// read is; a span named by a digest is inclusive, and `before_sequence` is
+    /// a third bound on the same end as `through`. So both arrive here as
+    /// named numbers and leave as the two the statement takes.
+    fn activity_span(
+        &self,
+        thread: &crate::thread::Thread,
+        from_sequence: u64,
+        through_sequence: u64,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Value, String> {
+        let rows = crate::thread::activity_rows_read(limit);
+        if thread.resident_from_sequence() <= from_sequence {
+            let span =
+                thread.activity_between(from_sequence, through_sequence, before_sequence, rows);
+            return Ok(crate::thread::wire_value_activity_page(&span, limit));
+        }
+        let store = self.history_store()?;
+        let below = before_sequence
+            .unwrap_or(u64::MAX)
+            .min(through_sequence.saturating_add(1));
+        let span = store
+            .thread_activity_range(
+                &thread.agent.id,
+                from_sequence.saturating_sub(1),
+                below,
+                rows,
+            )
+            .map_err(|error| format!("conversation store: {error}"))?;
+        Ok(crate::thread::wire_value_activity_page(&span, limit))
+    }
+
     /// One page of a conversation, wherever the page lives.
     ///
     /// A conversation is loaded as its tail, so a page far enough up one — or
@@ -12547,10 +12635,7 @@ impl AppState {
         before_sequence: Option<u64>,
         limit: usize,
     ) -> Result<Value, String> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("this conversation's history is not stored")?;
+        let store = self.history_store()?;
         let (cut, has_more) = store
             .thread_conversation_page(&thread.agent.id, before_sequence, limit)
             .map_err(|error| format!("conversation store: {error}"))?;
@@ -12570,10 +12655,7 @@ impl AppState {
         thread: &crate::thread::Thread,
         after_sequence: u64,
     ) -> Result<Value, String> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("this conversation's history is not stored")?;
+        let store = self.history_store()?;
         let history = store
             .thread_items_after(&thread.agent.id, after_sequence)
             .map_err(|error| format!("conversation store: {error}"))?;
@@ -16895,17 +16977,70 @@ enum DigestScope {
     Detail,
 }
 
-/// How much of a conversation a `thread.page` call asked for. Absent means a
-/// first load's page; a limit larger than one page could sanely carry is
-/// clamped rather than refused, since the caller still wants conversation
-/// back — and shipping the whole of a long one is the thing paging exists to
-/// prevent.
-fn thread_page_limit(params: &Value) -> usize {
+/// How much a paged verb asked for. Absent means the default; a limit larger
+/// than one page could sanely carry is clamped rather than refused, since the
+/// caller still wants an answer back — and shipping the whole of a long
+/// conversation is the thing paging exists to prevent.
+fn page_limit_param(params: &Value, default: usize, most: usize) -> usize {
     params
         .get("limit")
         .and_then(thread_limit_size)
-        .map(|limit| limit.clamp(1, crate::thread::MAX_THREAD_PAGE))
-        .unwrap_or(crate::thread::DEFAULT_THREAD_PAGE)
+        .map(|limit| limit.clamp(1, most))
+        .unwrap_or(default)
+}
+
+/// How much of a conversation a `thread.page` call asked for.
+fn thread_page_limit(params: &Value) -> usize {
+    page_limit_param(
+        params,
+        crate::thread::DEFAULT_THREAD_PAGE,
+        crate::thread::MAX_THREAD_PAGE,
+    )
+}
+
+/// How much of one run's activity a `thread.activity` call asked for.
+fn activity_page_limit(params: &Value) -> usize {
+    page_limit_param(
+        params,
+        crate::thread::DEFAULT_ACTIVITY_PAGE,
+        crate::thread::MAX_ACTIVITY_PAGE,
+    )
+}
+
+/// The span a `thread.activity` call names, read against the conversation it
+/// names it in.
+///
+/// A span that runs backwards, or that reaches past anything this conversation
+/// has ever said, is a client asking about work that never happened — an error
+/// rather than an empty page, because an empty page is an answer a client
+/// caches.
+fn activity_span_params(
+    params: &Value,
+    thread: &crate::thread::Thread,
+) -> Result<(u64, u64), String> {
+    let from = required_sequence_param(params, "from_sequence")?;
+    let through = required_sequence_param(params, "through_sequence")?;
+    if from > through {
+        return Err(format!(
+            "from_sequence {from} is above through_sequence {through}"
+        ));
+    }
+    let last = thread.last_sequence();
+    if through > last {
+        return Err(format!(
+            "this conversation reaches sequence {last}, not {through}"
+        ));
+    }
+    Ok((from, through))
+}
+
+/// A sequence bound a verb cannot do without, named in the refusal so a client
+/// that sent the wrong shape is told which one.
+fn required_sequence_param(params: &Value, key: &str) -> Result<u64, String> {
+    params
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("missing required param: {key}"))
 }
 
 /// The conversation owner a thread verb names. `entity_id` is the canonical
@@ -29080,7 +29215,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cognitive_complexity)] // ratchet: git_status_reports_tristate_staging_and_excludes_the_mcp_config is at 19, threshold 15 — bring it under, then remove
+    #[allow(clippy::cognitive_complexity)] // ratchet: git_status_reports_tristate_staging_and_excludes_the_mcp_config is at 16, threshold 15 — bring it under, then remove
     fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);
@@ -29124,11 +29259,69 @@ mod tests {
         assert!(!has_file_entry(status, ".build/mcp.json"));
 
         assert_eq!(status["stat"]["files_changed"], 3);
-        let patch = status["patch"].as_str().unwrap();
-        assert!(patch.contains("+loose"));
-        assert!(!patch.contains("mcp.json"));
-        assert_eq!(status["truncated"], false);
         assert_eq!(status["files_truncated"], false);
+    }
+
+    /// The poll's cheap turn: a browser that names the key it holds is told
+    /// only that it still holds it, and hears the whole shape the moment the
+    /// working tree moves under it.
+    #[test]
+    fn a_held_status_key_answers_unchanged_over_the_wire() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
+
+        let first = state.handle(req("git.status", json!({ "project_id": project_id })));
+        let held = first["result"]["status_key"].as_str().unwrap().to_string();
+
+        let unchanged = state.handle(req(
+            "git.status",
+            json!({ "project_id": project_id, "if_status_key": held }),
+        ));
+        assert_eq!(
+            unchanged["result"],
+            json!({ "unchanged": true, "status_key": held })
+        );
+
+        std::fs::write(repo.join("loose.txt"), "loose and then some\n").unwrap();
+        let moved = state.handle(req(
+            "git.status",
+            json!({ "project_id": project_id, "if_status_key": held }),
+        ));
+        assert_ne!(moved["result"]["status_key"].as_str().unwrap(), held);
+        assert_eq!(file_entry(&moved["result"], "loose.txt")["added"], 1);
+    }
+
+    /// The per-file census the browser draws a row from before it asks for any
+    /// body: how many lines moved, whether there is a body worth asking for,
+    /// and the key that says a held body is still the current one.
+    #[test]
+    fn git_status_carries_a_content_key_and_counts_per_file() {
+        let (dir, repo) = init_repo();
+        std::fs::write(repo.join("gone.txt"), "one\ntwo\n").unwrap();
+        git_in(&repo, &["add", "gone.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "fixture"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        std::fs::remove_file(repo.join("gone.txt")).unwrap();
+        std::fs::write(repo.join("README.md"), "# project\nsecond\n").unwrap();
+        std::fs::write(repo.join("logo.bin"), [0u8, 1, 2, 0, 255, b'\n']).unwrap();
+
+        let res = state.handle(req("git.status", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let status = &res["result"];
+
+        let edited = file_entry(status, "README.md");
+        assert_eq!(edited["added"], 1);
+        assert_eq!(edited["deleted"], 0);
+        assert_eq!(edited["binary"], false);
+        assert!(!edited["content_key"].as_str().unwrap().is_empty());
+        assert_eq!(file_entry(status, "gone.txt")["content_key"], "deleted");
+        assert_eq!(file_entry(status, "logo.bin")["binary"], true);
+        assert!(status.get("patch").is_none(), "{status}");
+        assert_eq!(status["status_key"].as_str().unwrap().len(), 16);
     }
 
     #[test]
@@ -29202,6 +29395,41 @@ mod tests {
         assert_eq!(new["index_status"], "?");
     }
 
+    /// `git.diff` is where a body comes from now that `git.status` carries
+    /// only shape: the patch of the asked path, under the key the status shape
+    /// gave it, and an error for a path it may not read.
+    #[test]
+    fn git_diff_answers_the_asked_paths_body_under_its_status_key() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
+
+        let status = state.handle(req("git.status", json!({ "project_id": project_id })));
+        let key = file_entry(&status["result"], "loose.txt")["content_key"].clone();
+
+        let res = state.handle(req(
+            "git.diff",
+            json!({ "project_id": project_id, "paths": ["loose.txt"] }),
+        ));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let file = &res["result"]["files"][0];
+        assert_eq!(file["path"], "loose.txt");
+        assert_eq!(file["content_key"], key);
+        assert!(file["patch"].as_str().unwrap().contains("+loose"));
+        assert_eq!(file["truncated"], false);
+
+        for bad in [json!(["../evil"]), json!([".build/mcp.json"]), json!([])] {
+            let refused = state.handle(req(
+                "git.diff",
+                json!({ "project_id": project_id, "paths": bad }),
+            ));
+            assert_eq!(refused["ok"], false, "paths {bad:?}: {refused:?}");
+        }
+        let missing = state.handle(req("git.diff", json!({ "project_id": project_id })));
+        assert_eq!(missing["ok"], false, "{missing:?}");
+    }
+
     #[test]
     fn git_status_on_an_unborn_head_has_a_null_head() {
         let (dir, repo) = init_unborn_repo();
@@ -29216,7 +29444,7 @@ mod tests {
         let untracked = file_entry(&res["result"], "first.txt");
         assert_eq!(untracked["staged"], "none");
         assert_eq!(untracked["index_status"], "?");
-        assert!(res["result"]["patch"].as_str().unwrap().contains("+hello"));
+        assert_eq!(untracked["added"], 1);
     }
 
     #[test]
@@ -36229,6 +36457,271 @@ mod tests {
 
         let nameless = state.handle(req("thread.page", json!({})));
         assert_eq!(nameless["ok"], false, "{nameless:?}");
+    }
+
+    /// A conversation with one long run of work in it — the fixture both
+    /// `thread.activity` paths read — with the run's own span, which is what a
+    /// client asks for and what the entity's own lifecycle events shift.
+    fn conversation_with_a_long_run(state: &mut AppState, calls: usize) -> (String, u64, u64) {
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "trim the retry loop", "dispatch": false }),
+        )));
+        let agent_id = primary_agent_id(state, &issue_id);
+        state
+            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                thread.post_user("go on then", None, "2026-08-29T09:00:00Z");
+                for index in 0..calls {
+                    thread.push_event(
+                        crate::thread::ThreadEventKind::ToolUse,
+                        Some(format!("Read file-{index}.rs")),
+                        None,
+                        None,
+                        "2026-08-29T09:01:00Z",
+                    );
+                }
+                Ok(())
+            })
+            .expect("the conversation is written");
+        let run: Vec<u64> = state
+            .agent_conversation(&issue_id, None)
+            .expect("the conversation")
+            .items
+            .iter()
+            .filter(|item| item.is_activity())
+            .map(crate::thread::ThreadItem::sequence)
+            .collect();
+        (issue_id, run[0], run[run.len() - 1])
+    }
+
+    /// The span a folded run opens onto, answered the same way wherever the
+    /// run lives. A client caches a historical run by its `from_sequence`, so
+    /// the answer cannot depend on how much of the conversation this process
+    /// happens to hold.
+    #[test]
+    fn thread_activity_answers_one_span_the_same_from_memory_and_from_the_store() {
+        let (dir, repo) = init_repo();
+        let mut resident = qa_state(&repo, dir.path());
+        let (issue_id, first_call, _) = conversation_with_a_long_run(&mut resident, 400);
+        let through = first_call + 98;
+        assert_eq!(
+            resident
+                .agent_conversation(&issue_id, None)
+                .expect("the conversation")
+                .resident_from_sequence(),
+            0,
+            "the state that wrote the conversation holds the whole of it"
+        );
+
+        let span = json!({
+            "entity_id": issue_id,
+            "from_sequence": first_call,
+            "through_sequence": through,
+        });
+        let from_memory = resident.handle(req("thread.activity", span.clone()));
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        assert!(
+            reloaded
+                .agent_conversation(&issue_id, None)
+                .expect("the conversation")
+                .resident_from_sequence()
+                > first_call,
+            "the fixture has to put the span under the reloaded tail"
+        );
+        let from_store = reloaded.handle(req("thread.activity", span));
+
+        assert_eq!(from_memory["ok"], true, "{from_memory:?}");
+        assert_eq!(from_store["result"], from_memory["result"]);
+        let items = from_store["result"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 99, "the whole span, oldest-first");
+        assert_eq!(items[0]["data"]["sequence"], json!(first_call));
+        assert_eq!(items[98]["data"]["sequence"], json!(through));
+        assert_eq!(from_store["result"]["oldest_sequence"], json!(first_call));
+        assert_eq!(from_store["result"]["has_more"], json!(false));
+    }
+
+    /// Paging inside one open run, and what it costs: a span far longer than a
+    /// page walks backward through `before_sequence`, hands every item back
+    /// exactly once, and never reads the span it is walking.
+    #[test]
+    fn thread_activity_pages_backward_through_a_span_without_reading_it_whole() {
+        let (dir, repo) = init_repo();
+        let (issue_id, first_call, last_call) = {
+            let mut writing = qa_state(&repo, dir.path());
+            conversation_with_a_long_run(&mut writing, 400)
+        };
+        let mut state = qa_state(&repo, dir.path());
+
+        let limit = 20;
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let mut params = json!({
+                "entity_id": issue_id,
+                "from_sequence": first_call,
+                "through_sequence": last_call,
+                "limit": limit,
+            });
+            if let Some(seek) = before {
+                params["before_sequence"] = json!(seek);
+            }
+            let decoded_before = crate::store::items_decoded();
+            let answer = state.handle(req("thread.activity", params));
+            let page = &answer["result"];
+            let shipped: Vec<u64> = page["items"]
+                .as_array()
+                .unwrap_or_else(|| panic!("a page came back: {answer:?}"))
+                .iter()
+                .map(|item| item["data"]["sequence"].as_u64().unwrap())
+                .collect();
+            assert!(
+                crate::store::items_decoded() - decoded_before <= limit + 1,
+                "a page of {limit} read {} rows: the span is never read whole",
+                crate::store::items_decoded() - decoded_before
+            );
+            assert!(
+                !shipped.is_empty(),
+                "an empty page below {before:?}: {page}"
+            );
+            assert!(shipped.len() <= limit, "a page over its limit: {page}");
+            assert_eq!(page["oldest_sequence"].as_u64(), shipped.first().copied());
+            walked.splice(0..0, shipped);
+            if !page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            before = walked.first().copied();
+        }
+        assert_eq!(walked, (first_call..=last_call).collect::<Vec<u64>>());
+    }
+
+    /// What a page costs is the bridge's to decide, not the caller's: a call
+    /// that names no limit gets the default page, and one that names a huge
+    /// limit gets the cap. Either way the rest of the span is still there.
+    #[test]
+    fn thread_activity_ships_the_default_page_and_clamps_a_greedy_one() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 700);
+
+        let span = json!({
+            "entity_id": issue_id,
+            "from_sequence": first_call,
+            "through_sequence": last_call,
+        });
+
+        let unnamed = state.handle(req("thread.activity", span.clone()));
+        let default_page = &unnamed["result"];
+        assert_eq!(
+            default_page["items"].as_array().map(Vec::len),
+            Some(crate::thread::DEFAULT_ACTIVITY_PAGE),
+            "{unnamed:?}"
+        );
+        assert_eq!(default_page["has_more"], json!(true), "{unnamed:?}");
+
+        let mut greedy = span;
+        greedy["limit"] = json!(5000);
+        let clamped = state.handle(req("thread.activity", greedy));
+        let capped_page = &clamped["result"];
+        assert_eq!(
+            capped_page["items"].as_array().map(Vec::len),
+            Some(crate::thread::MAX_ACTIVITY_PAGE),
+            "{clamped:?}"
+        );
+        assert_eq!(capped_page["has_more"], json!(true), "{clamped:?}");
+    }
+
+    /// The two ways a client can ask for work that never happened: on an
+    /// entity that is not there, and over a span this conversation never
+    /// reached. Both are errors rather than an empty page, because an empty
+    /// page is a cacheable answer.
+    #[test]
+    fn thread_activity_refuses_an_unknown_entity_and_a_span_off_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 4);
+
+        let missing = state.handle(req(
+            "thread.activity",
+            json!({
+                "entity_id": "run-that-never-was",
+                "from_sequence": first_call,
+                "through_sequence": last_call,
+            }),
+        ));
+        assert_eq!(missing["ok"], false, "{missing:?}");
+        assert_eq!(missing["error"], "unknown id", "{missing:?}");
+
+        let past_the_end = state.handle(req(
+            "thread.activity",
+            json!({
+                "entity_id": issue_id,
+                "from_sequence": first_call,
+                "through_sequence": last_call + 500,
+            }),
+        ));
+        assert_eq!(past_the_end["ok"], false, "{past_the_end:?}");
+        assert!(
+            past_the_end["error"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("reaches sequence {last_call}")),
+            "{past_the_end:?}"
+        );
+
+        let backwards = state.handle(req(
+            "thread.activity",
+            json!({
+                "entity_id": issue_id,
+                "from_sequence": last_call,
+                "through_sequence": first_call,
+            }),
+        ));
+        assert_eq!(backwards["ok"], false, "{backwards:?}");
+
+        let nameless = state.handle(req(
+            "thread.activity",
+            json!({ "entity_id": issue_id, "through_sequence": last_call }),
+        ));
+        assert_eq!(nameless["ok"], false, "{nameless:?}");
+        assert_eq!(
+            nameless["error"], "missing required param: from_sequence",
+            "{nameless:?}"
+        );
+    }
+
+    /// The failure a client has to be able to tell from an empty run: the span
+    /// is under this process's tail and the history that holds it cannot be
+    /// read. An empty page would be cached as "this run had no work in it".
+    #[test]
+    fn thread_activity_says_so_when_the_history_it_needs_is_not_stored() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 12);
+        let agent_id = primary_agent_id(&state, &issue_id);
+        state
+            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                let tail = thread.items[4..].to_vec();
+                let last = thread.last_sequence();
+                thread.adopt_stored_tail(tail, 400, last);
+                Ok(())
+            })
+            .expect("the conversation is written");
+        state.store = None;
+
+        let answer = state.handle(req(
+            "thread.activity",
+            json!({
+                "entity_id": issue_id,
+                "from_sequence": first_call,
+                "through_sequence": last_call,
+            }),
+        ));
+        assert_eq!(answer["ok"], false, "{answer:?}");
+        assert_eq!(
+            answer["error"], "this conversation's history is not stored",
+            "{answer:?}"
+        );
     }
 
     // ---- thread.attach: files sent with a conversation message -------------

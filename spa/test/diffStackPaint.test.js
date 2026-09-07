@@ -8,29 +8,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { createReviewPlug, REVIEW_POLL_MS } from "../src/core/changesReview.js";
 
-const patchFor = (path, line) =>
-  `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n`;
+import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
 const TWO_FILES = patchFor("src/a.js", "first") + patchFor("src/b.js", "second");
 
-const status = (over = {}) => ({
-  branch: "main",
-  head: "f".repeat(40),
-  repo_state: "clean",
-  upstream: "origin/main",
-  ahead: 0,
-  behind: 0,
-  stash_count: 0,
-  files: [
-    { path: "src/a.js", staged: "none", index_status: "M", worktree_status: "M" },
-    { path: "src/b.js", staged: "none", index_status: "M", worktree_status: "M" },
-  ],
-  files_truncated: false,
-  stat: { files_changed: 2, insertions: 2, deletions: 2 },
-  patch: TWO_FILES,
-  truncated: false,
-  ...over,
-});
+let tree = worktreeOf({ "src/a.js": "first", "src/b.js": "second" });
+const status = (over = {}) => tree.status(over);
 
 const log = () => ({ branch: "main", commits: [], more: false });
 
@@ -69,6 +52,7 @@ function watchScrollTop(element) {
 const fileOf = (root, path) => root.querySelector(`.file[data-key$=":${path}"]`);
 
 beforeEach(() => {
+  tree = worktreeOf({ "src/a.js": "first", "src/b.js": "second" });
   document.body.innerHTML = "";
 });
 
@@ -81,8 +65,9 @@ describe("the Changes pane's stack", () => {
   const mount = async (served, scope = { project_id: "p1" }) => {
     const container = document.createElement("div");
     document.body.appendChild(container);
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return served.status;
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       return {};
     });
@@ -111,7 +96,8 @@ describe("the Changes pane's stack", () => {
     ]);
     const held = fileOf(container, "src/b.js");
 
-    served.status = status({ patch: patchFor("src/0.js", "arrived") + TWO_FILES, head: "e".repeat(40) });
+    tree = worktreeOf({ "src/0.js": "arrived", "src/a.js": "first", "src/b.js": "second" });
+    served.status = tree.status({ head: "e".repeat(40) });
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
     expect([...stack.children].map((child) => child.dataset.key)).toEqual([
@@ -146,7 +132,8 @@ describe("the Changes pane's stack", () => {
     const served = { status: status() };
     const { container, pane } = await mount(served);
     const held = fileOf(container, "src/b.js");
-    served.status = status({ patch: patchFor("src/a.js", "the agent moved on") + patchFor("src/b.js", "second") });
+    tree.write("src/a.js", "the agent moved on");
+    served.status = status();
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
     expect(container.textContent).toContain("the agent moved on");
@@ -176,7 +163,8 @@ describe("the Changes pane's stack", () => {
     };
     try {
       scroller.scrollTop = 400; // the reader is at the head of b
-      served.status = status({ patch: patchFor("src/a.js", "the agent moved on") + patchFor("src/b.js", "second") });
+      tree.write("src/a.js", "the agent moved on");
+    served.status = status();
       await vi.advanceTimersByTimeAsync(2000);
       await settle();
       expect(scroller.scrollTop).toBe(600);

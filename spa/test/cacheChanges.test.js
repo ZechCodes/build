@@ -1,31 +1,16 @@
 // @vitest-environment jsdom
 // The Changes surface against the local cache: the synced status and commit
-// list paint before the bridge answers, every live poll writes through (with
-// the uncommitted patch emptied — it loads on demand), and a commit's detail
-// is served from the cache without asking twice for what cannot change.
+// list paint before the bridge answers, every live poll writes the shape
+// through as received (each file's body is its own record), and a commit's
+// detail is served from the cache without asking twice for what cannot change.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-const patchFor = (path, line) =>
-  `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n`;
+import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
-const status = (overrides = {}) => ({
-  branch: "main",
-  path: "/repo",
-  head: "f".repeat(40),
-  repo_state: "clean",
-  upstream: "origin/main",
-  ahead: 0,
-  behind: 0,
-  stash_count: 0,
-  files: [{ path: "src/a.js", staged: "none", index_status: "M", worktree_status: "M" }],
-  files_truncated: false,
-  stat: { files_changed: 1, insertions: 6, deletions: 3 },
-  patch: patchFor("src/a.js", "new line"),
-  truncated: false,
-  ...overrides,
-});
+const tree = worktreeOf({ "src/a.js": "new line" });
+const status = (overrides = {}) => tree.status(overrides);
 
 const log = () => ({
   branch: "main",
@@ -71,8 +56,9 @@ const mountPane = async (callRpc) => {
 };
 
 const liveRpc = () =>
-  vi.fn(async (method) => {
+  vi.fn(async (method, params) => {
     if (method === "git.status") return status();
+    if (method === "git.diff") return tree.diff(params);
     if (method === "git.log") return log();
     if (method === "git.show") return show();
     return {};
@@ -80,12 +66,12 @@ const liveRpc = () =>
 
 describe("the cached first paint", () => {
   it("paints the synced status and commit list before the bridge answers", async () => {
-    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { ...status(), patch: "" });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
     const never = vi.fn(() => new Promise(() => {}));
     const { container, pane } = await mountPane(never);
     expect(container.textContent).toContain("earlier work");
-    expect(container.textContent).not.toContain("loading…");
+    expect(container.querySelector(".changes2")).not.toBe(null); // the pane, not its loading placeholder
     pane.dispose();
   });
 
@@ -98,15 +84,39 @@ describe("the cached first paint", () => {
 });
 
 describe("the live write-through", () => {
-  it("persists each poll's status and log, the uncommitted patch emptied", async () => {
+  it("persists each poll's status and log — the shape as received, no patch to strip", async () => {
     const { pane } = await mountPane(liveRpc());
     await settle();
     const cachedStatus = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" });
     expect(cachedStatus.value.head).toBe("f".repeat(40));
-    expect(cachedStatus.value.patch).toBe("");
+    expect(cachedStatus.value.patch).toBeUndefined();
+    expect(cachedStatus.value.status_key).toBe(status().status_key);
     expect(cachedStatus.value.files).toHaveLength(1);
     const cachedLog = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" });
     expect(cachedLog.value.commits[0].subject).toBe("earlier work");
+    pane.dispose();
+  });
+
+  it("persists each file's body under its own path, so a revisit expands offline", async () => {
+    const { pane } = await mountPane(liveRpc());
+    await settle();
+    const body = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" });
+    expect(body.value.patch).toBe(patchFor("src/a.js", "new line"));
+    expect(body.value.content_key).toBe(status().files[0].content_key);
+    pane.dispose();
+  });
+
+  it("paints a cached body without asking the bridge for it again", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" },
+      { content_key: status().files[0].content_key, patch: patchFor("src/a.js", "new line"), truncated: false },
+    );
+    const never = vi.fn(() => new Promise(() => {}));
+    const { container, pane } = await mountPane(never);
+    expect(container.textContent).toContain("new line");
+    expect(never.mock.calls.some(([method]) => method === "git.diff")).toBe(false);
     pane.dispose();
   });
 });

@@ -1227,6 +1227,36 @@ pub fn page_activity_budget(limit: usize) -> usize {
     limit * PAGE_ACTIVITY_PER_MESSAGE
 }
 
+/// How many items of one run a page ships: the shortest of the run itself, the
+/// per-run [`PAGE_ACTIVITY_RUN_CAP`] and what is left of the page's
+/// [`page_activity_budget`].
+///
+/// One rule in one place, because two readers spend the budget. The cut spends
+/// it over a span it already holds; the store spends it deciding how much of a
+/// run to read at all, and a run it reads more of than it ships is exactly the
+/// cost the bounded read exists to remove.
+pub fn run_items_shipped(run_len: usize, activity_left: usize) -> usize {
+    run_len.min(PAGE_ACTIVITY_RUN_CAP).min(activity_left)
+}
+
+/// How much of one run's activity a `thread.activity` call ships when it does
+/// not say: a whole fold's worth, so opening a run of ordinary size is one
+/// call.
+pub const DEFAULT_ACTIVITY_PAGE: usize = 200;
+
+/// The most one `thread.activity` call ships, however large a limit it asks
+/// for. A client that wants the whole of a five-thousand-call run walks it.
+pub const MAX_ACTIVITY_PAGE: usize = 500;
+
+/// How many rows a page of activity READS: one more than it ships.
+///
+/// That row is the answer to `has_more` — it exists or it does not — which is
+/// a row rather than a second query, and it is the same row whether the span
+/// came out of memory or out of SQLite.
+pub fn activity_rows_read(limit: usize) -> usize {
+    limit + 1
+}
+
 /// The newest tool call of an activity run, as a folded row prints it.
 ///
 /// A fixed shape: `summary` and `outcome` serialize as `null` when the call
@@ -1361,15 +1391,41 @@ where
             .iter()
             .find_map(|item| item.borrow().tool_call().map(LastToolCall::of)),
     });
-    let ships = run_newest_first
-        .len()
-        .min(PAGE_ACTIVITY_RUN_CAP)
-        .min(page.activity_left);
+    let ships = run_items_shipped(run_newest_first.len(), page.activity_left);
     page.activity_left -= ships;
     page.cut
         .items
         .extend(run_newest_first.into_iter().take(ships));
     Ok(page)
+}
+
+/// One page of one run's activity: the items, where they start, and whether
+/// the span holds older ones.
+///
+/// Takes the span oldest-first with the one row of overflow
+/// [`activity_rows_read`] asked for, and ships everything but that row.
+/// Generic over how the caller holds an item so the two readers — the resident
+/// tail, which borrows, and the store, which owns what it decoded — build one
+/// answer rather than two that have to be kept equal.
+///
+/// No digests: a client asks for this span because it already holds the digest
+/// that named it.
+pub fn wire_value_activity_page<T: Borrow<ThreadItem>>(
+    span_oldest_first: &[T],
+    limit: usize,
+) -> Value {
+    let has_more = span_oldest_first.len() > limit;
+    let page: Vec<&ThreadItem> = span_oldest_first
+        .iter()
+        .skip(usize::from(has_more))
+        .map(Borrow::borrow)
+        .collect();
+    count_serialized_items(page.len());
+    json!({
+        "items": page,
+        "oldest_sequence": page.first().map(|item| item.sequence()),
+        "has_more": has_more,
+    })
 }
 
 /// How many hits a query returns when it does not say.
@@ -2440,6 +2496,34 @@ impl Thread {
                 item.is_tool_call() && (from_sequence..=through_sequence).contains(&item.sequence())
             })
             .count() as u64
+    }
+
+    /// The newest activity of a span the tail holds, oldest-first — what an
+    /// opened run renders, read out of memory.
+    ///
+    /// The span is inclusive at both ends, because it is a digest's own
+    /// `[from_sequence, through_sequence]`; `before_sequence` is the backward
+    /// walk's seek and is exclusive, the way every other page's is. The exact
+    /// sibling of the store's `thread_activity_range`, and the caller picks
+    /// between them by whether the tail reaches the span at all.
+    pub fn activity_between(
+        &self,
+        from_sequence: u64,
+        through_sequence: u64,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Vec<&ThreadItem> {
+        let below = before_sequence.unwrap_or(u64::MAX);
+        let span: Vec<&ThreadItem> = self
+            .items
+            .iter()
+            .filter(|item| {
+                item.is_activity()
+                    && item.sequence() < below
+                    && (from_sequence..=through_sequence).contains(&item.sequence())
+            })
+            .collect();
+        span[span.len().saturating_sub(limit)..].to_vec()
     }
 
     /// Whether a cursor this far back reaches under the tail this process

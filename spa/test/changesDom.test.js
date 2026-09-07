@@ -7,33 +7,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountGitPane, taskAgentCommitOptions } from "../src/core/gitPane.js";
 
-const patchFor = (path, line) =>
-  `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n`;
+import { patchFor, worktreeOf } from "./gitWireFixture.js";
 
-const DIRTY_PATCH = patchFor("src/a.js", "new line") + patchFor("uv.lock", "locked");
+// The working tree the pane reads: two dirty files, one of them noise. An edit
+// is `tree.write(path, line)` — the file's content key moves with it, and so
+// does the shape's status_key, exactly as the bridge would.
+let tree = worktreeOf({ "src/a.js": "new line", "uv.lock": "locked" });
 
-const dirtyStatus = (overrides = {}) => ({
-  branch: "main",
-  path: "/repo",
-  head: "f".repeat(40),
-  repo_state: "clean",
-  upstream: "origin/main",
-  ahead: 0,
-  behind: 0,
-  stash_count: 0,
-  files: [
-    { path: "src/a.js", staged: "none", index_status: "M", worktree_status: "M" },
-    { path: "uv.lock", staged: "none", index_status: "M", worktree_status: "M" },
-  ],
-  files_truncated: false,
-  stat: { files_changed: 2, insertions: 6, deletions: 3 },
-  patch: DIRTY_PATCH,
-  truncated: false,
-  ...overrides,
-});
+const dirtyStatus = (overrides = {}) => tree.status({ stat: { files_changed: 2, insertions: 6, deletions: 3 }, ...overrides });
 
 const cleanStatus = () =>
-  dirtyStatus({ files: [], patch: "", stat: { files_changed: 0, insertions: 0, deletions: 0 } });
+  dirtyStatus({ files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 } });
 
 const log = () => ({
   branch: "main",
@@ -61,6 +45,7 @@ async function mount({ status = dirtyStatus(), scope = { run_id: "run-1" }, rpc 
     calls.push({ method, params });
     if (rpc[method]) return rpc[method](params);
     if (method === "git.status") return currentStatus;
+    if (method === "git.diff") return tree.diff(params);
     if (method === "git.log") return log();
     if (method === "git.show") return show();
     if (method === "git.stage") return currentStatus;
@@ -87,6 +72,7 @@ const click = async (element) => {
 };
 
 beforeEach(() => {
+  tree = worktreeOf({ "src/a.js": "new line", "uv.lock": "locked" });
   document.body.innerHTML = "";
 });
 
@@ -201,8 +187,9 @@ describe("the rail's paint", () => {
   const mountLive = async (served) => {
     const container = document.createElement("div");
     document.body.appendChild(container);
-    const callRpc = vi.fn(async (method) => {
+    const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return served.status;
+      if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return served.log;
       if (method === "git.show") return show();
       return {};
@@ -220,7 +207,8 @@ describe("the rail's paint", () => {
       const rail = container.querySelector(".crail");
       const rows = [...rail.children];
       const records = await churn(rail, async () => {
-        served.status = dirtyStatus({ patch: patchFor("src/a.js", "the agent moved on"), head: "e".repeat(40) });
+        tree.write("src/a.js", "the agent moved on");
+        served.status = dirtyStatus({ head: "e".repeat(40) });
         await vi.advanceTimersByTimeAsync(2000);
         await settle();
       });
@@ -387,8 +375,9 @@ describe("the poll freeze holds a review in progress", () => {
       let served = dirtyStatus();
       const container = document.createElement("div");
       document.body.appendChild(container);
-      const callRpc = vi.fn(async (method) => {
+      const callRpc = vi.fn(async (method, params) => {
         if (method === "git.status") return served;
+        if (method === "git.diff") return tree.diff(params);
         if (method === "git.log") return log();
         if (method === "run.request_changes") return { ok: true };
         return {};
@@ -403,7 +392,8 @@ describe("the poll freeze holds a review in progress", () => {
 
       // The agent commits underneath the reviewer: the poll must not rebuild
       // the changeset out from under the pending comment.
-      served = dirtyStatus({ patch: patchFor("src/a.js", "the agent moved on"), head: "e".repeat(40) });
+      tree.write("src/a.js", "the agent moved on");
+      served = dirtyStatus({ head: "e".repeat(40) });
       await vi.advanceTimersByTimeAsync(2000);
       await settle();
       expect(container.querySelector(".pcomment").textContent).toContain("hold this thought");
@@ -425,8 +415,9 @@ describe("the poll freeze holds an open menu", () => {
       let served = dirtyStatus();
       const container = document.createElement("div");
       document.body.appendChild(container);
-      const callRpc = vi.fn(async (method) => {
+      const callRpc = vi.fn(async (method, params) => {
         if (method === "git.status") return served;
+        if (method === "git.diff") return tree.diff(params);
         if (method === "git.log") return log();
         return {};
       });
@@ -461,8 +452,9 @@ describe("re-review memory on every stack", () => {
       let served = dirtyStatus();
       const container = document.createElement("div");
       document.body.appendChild(container);
-      const callRpc = vi.fn(async (method) => {
+      const callRpc = vi.fn(async (method, params) => {
         if (method === "git.status") return served;
+        if (method === "git.diff") return tree.diff(params);
         if (method === "git.log") return log();
         if (method === "git.show") return show();
         if (method === "run.request_changes") return { ok: true };
@@ -477,7 +469,8 @@ describe("re-review memory on every stack", () => {
       await click(container.querySelector(".cssend"));
       expect(container.querySelector(".fchanged")).toBe(null); // nothing has moved yet
 
-      served = dirtyStatus({ patch: patchFor("src/a.js", "the agent moved on") + patchFor("uv.lock", "locked") });
+      tree.write("src/a.js", "the agent moved on");
+      served = dirtyStatus();
       await vi.advanceTimersByTimeAsync(2000);
       await settle();
       const changed = container.querySelector('.file[data-key$=":src/a.js"] .fchanged');

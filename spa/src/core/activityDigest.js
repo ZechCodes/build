@@ -36,6 +36,45 @@ export function mergeActivityDigests(held = [], payload) {
   return [...byRun.values()].sort((a, b) => a.from_sequence - b.from_sequence);
 }
 
+/// The digest whose run covers a sequence, or nothing.
+///
+/// A run is keyed in the timeline by the oldest sequence the WINDOW holds of
+/// it, which is not where the run started whenever the page cut one — so what
+/// a run's digest is found by is the span it covers, never its first sequence.
+export function digestCovering(digests, sequence) {
+  return (
+    (digests || []).find(
+      (digest) => digest.from_sequence <= sequence && digest.through_sequence >= sequence,
+    ) || null
+  );
+}
+
+/// The digest a pressed run must be fetched over, or nothing.
+///
+/// Two kinds of run are drawn from the window instead. One the page shipped
+/// whole — its digest starts no earlier than the oldest row in hand, so there
+/// is nothing missing to ask for. And the TAIL run, the one that reaches the
+/// end of the conversation: it is still being written, and the window is where
+/// its newest rows land. Fetching it would freeze a moving run into a record
+/// kept until the entity is evicted, and every call it grew afterwards would
+/// fall between that record's end and the window's oldest row, unseen and never
+/// asked for again.
+///
+/// Which run is the tail is answered by everything the client holds about it,
+/// never by the digest alone. A digest is cut on a PAGED answer and no forward
+/// delta refreshes one, while the conversation's newest sequence moves on every
+/// delta — so one call landing on the live tail leaves its digest short of the
+/// end while the run is still being written. `runThrough` is the other half of
+/// the answer: the newest sequence the window holds for the run, its folded
+/// calls included, which is what the run's own box says about itself.
+export function runDigestToFetch(digests, runKey, threadLastSequence, runThrough = 0) {
+  const key = Number(runKey);
+  const digest = digestCovering(digests, key);
+  if (!digest || digest.from_sequence >= key) return null;
+  const runReaches = Math.max(digest.through_sequence, Number(runThrough) || 0);
+  return runReaches >= Number(threadLastSequence) ? null : digest;
+}
+
 const sequenceOf = (activity) => (Number.isFinite(activity.sequence) ? activity.sequence : null);
 
 /// The span of the conversation a run in hand covers, or nothing for a run

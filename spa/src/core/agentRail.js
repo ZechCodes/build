@@ -74,18 +74,27 @@ import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
   MUTATION_THREAD_PAGE,
+  activityRunKeyAt,
+  activityRunThroughAt,
+  chatPaintFingerprint,
   createThreadCache,
+  digestsOf,
+  paintThreadEntries,
   paintThreadKeepingPlace,
+  pressedActivityRunKey,
   revealThreadSequence,
-  threadHtml,
+  threadOfferState,
+  timelineEntries,
   wireThreadAttachments,
   wireThreadOptions,
   wireThreadComposer,
   threadItemKey,
   wireThreadLinks,
   wireThreadRevisionLinks,
-  writeThreadKeepingComposer,
 } from "./thread.js";
+import { createActivityRuns } from "./activityRuns.js";
+import { runDigestToFetch } from "./activityDigest.js";
+import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
@@ -334,6 +343,10 @@ export function mountAgentRail(host, context) {
   let addingAgent = false;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
+  let activityRuns = null; // the open runs of the conversation in the panel
+  let activityRunsFor = null; // whose conversation those runs belong to
+  let paintedChat = null; // what the timeline in the panel was drawn from
+  let paintedDigests = []; // the run totals that timeline was drawn with
   let seededSurfaces = null;
 
   const cacheIdentity = () => {
@@ -866,6 +879,92 @@ export function mountAgentRail(host, context) {
     };
   };
 
+  /// The open runs of the conversation the panel is showing.
+  ///
+  /// One handle per conversation: switching bubbles is a different thread, with
+  /// its own sequences and its own folds, so the runs the reader had open in
+  /// the one they left do not follow them into the next.
+  const conversationRuns = () => {
+    const runsFor = `${entity.entityId || ""}:${selectedId || ""}`;
+    if (!activityRuns || activityRunsFor !== runsFor) {
+      activityRunsFor = runsFor;
+      activityRuns = createActivityRuns({
+        deviceId: cacheDeviceId(),
+        entityId: entity.entityId,
+        agentId: selectedId,
+        call: (method, params) => App.call(method, params),
+      });
+    }
+    return activityRuns;
+  };
+
+  /// What the daemon last said each run over this window totals: the digests
+  /// the timeline on screen was drawn with.
+  ///
+  /// The paint is what holds them rather than the cache, because the two part
+  /// company — a tick that lets a broken window go still paints the rows and
+  /// digests it was drawn from — and a run is pressed on the timeline the
+  /// reader is looking at, not on the window behind it.
+  const digestsInHand = () => paintedDigests;
+
+  /// The items fetched for a run, by the key the fold names it with — the runs
+  /// hold the span each fetch covered, so there is nothing to translate here.
+  const fetchedRunItems = (runKey) => conversationRuns().itemsOf(runKey);
+
+  /// The newest sequence the conversation has reached — the end a run has to
+  /// touch to be the live tail.
+  const lastSequenceOf = (thread) => (thread && thread.thread_last_sequence) || 0;
+
+  /// How far the window has taken delivery of the conversation. The one number
+  /// that moves for an item mutated in place — a call answered, a message
+  /// marked seen — which changes what a row says without changing how many
+  /// rows there are.
+  const deliveredSequenceOf = (thread) => {
+    const held = threadCache.readWindow();
+    return Math.max(held ? held.deliveredSequence : 0, lastSequenceOf(thread));
+  };
+
+  const threadItems = (thread) => (thread && thread.items) || [];
+
+  const chatFingerprintOf = (thread, agentLabel) => {
+    const openRuns = conversationRuns().openKeys();
+    return chatPaintFingerprint({
+      deliveredSequence: deliveredSequenceOf(thread),
+      itemCount: threadItems(thread).length,
+      digests: digestsOf(thread),
+      openRunKeys: openRuns,
+      fetchedRunKeys: [...openRuns].filter((key) => fetchedRunItems(key)),
+      selectedAgentId: selectedId,
+      agentLabel,
+      ...threadOfferState(),
+    });
+  };
+
+  /// The conversation, unless nothing it is drawn from has moved.
+  ///
+  /// Everything else the panel shows — the composer, the pills, the read report
+  /// — is about the agent rather than about what it said, so a skipped timeline
+  /// never skips those.
+  const paintTimeline = (body, thread, olderItemsPrepended) => {
+    const agentLabel = providerLabel((agentOf(selectedId) || {}).provider);
+    const fingerprint = chatFingerprintOf(thread, agentLabel);
+    if (fingerprint === paintedChat && body.querySelector(".thread-items")) return;
+    paintedChat = fingerprint;
+    paintedDigests = digestsOf(thread);
+    const built = timelineEntries(threadItems(thread), agentLabel, thread && thread.id, paintedDigests, {
+      openRuns: conversationRuns().openKeys(),
+      runItemsOf: fetchedRunItems,
+    });
+    // No composer in here: the box is pinned below this scroller, so what the
+    // poll repaints is the timeline and only the timeline.
+    timedPaint("chat", () =>
+      paintThreadKeepingPlace(body, () => {
+        paintThreadEntries(body, built);
+        wireTimeline(body);
+      }, { olderItemsPrepended }),
+    );
+  };
+
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
@@ -875,17 +974,7 @@ export function mountAgentRail(host, context) {
       syncSurfaces();
       return;
     }
-    const thread = threadFor();
-    const agent = agentOf(selectedId);
-    paintThreadKeepingPlace(body, () => {
-      // No composer in here: the box is pinned below this scroller, so what the
-      // poll repaints is the timeline and only the timeline.
-      const html = threadHtml(thread || { items: [] }, {
-        agentLabel: providerLabel(agent && agent.provider),
-      });
-      writeThreadKeepingComposer(body, html);
-      wireTimeline(body);
-    }, { olderItemsPrepended });
+    paintTimeline(body, threadFor(), olderItemsPrepended);
     // Assignment rather than a listener: the scroller outlives every repaint,
     // and adding one per paint would ask for the same page once per tick.
     body.onscroll = () => {
@@ -894,6 +983,35 @@ export function mountAgentRail(host, context) {
     syncComposer();
     syncSurfaces();
     reportRead(body);
+  };
+
+  /// The reader pressing a folded run, settled: the fold has flipped, and
+  /// whatever the new side needed fetching has landed.
+  ///
+  /// The repaint is what draws the box open or shut — the press's own
+  /// activation is cancelled where it is wired, so `open` says what this says.
+  /// A run the window holds whole is drawn from the window, and one the page cut
+  /// is asked for; the daemon holds the half that never travelled.
+  ///
+  /// The pressed box says how far the run reaches on this side, which is what
+  /// keeps the live tail out of the cache: its digest stops where the last page
+  /// cut it, and every delta since has landed on the run without moving it.
+  const pressActivityRun = async (runKey) => {
+    const runs = conversationRuns();
+    const runThrough = activityRunThroughAt(host.querySelector("#rail-body"), runKey);
+    const opened = runs.toggle(runKey);
+    // Decided against the timeline the press landed on, before the repaint
+    // draws the next one over it.
+    const digest = opened
+      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(threadFor()), runThrough)
+      : null;
+    paintChat();
+    if (!digest) return;
+    const filled = await runs.open(digest).catch((error) => {
+      notifyError("Could not load this activity", error.message);
+      return false;
+    });
+    if (filled && !disposed) paintChat();
   };
 
   const composerPlaceholder = () =>
@@ -987,6 +1105,19 @@ export function mountAgentRail(host, context) {
       notifyError("Choice failed", error.message);
       throw error;
     }));
+    // Delegated, because the row a press lands on is redrawn under it: the
+    // scroller outlives every repaint, and the run names itself on the head.
+    //
+    // The default is cancelled so the browser never toggles the `<details>`
+    // itself. It would do so AFTER this handler, undoing whatever the repaint
+    // wrote, and a run that opens onto rows it has to fetch cannot be a fold
+    // two writers share.
+    body.onclick = (event) => {
+      const runKey = pressedActivityRunKey(event.target);
+      if (!runKey) return;
+      event.preventDefault();
+      pressActivityRun(runKey);
+    };
   };
 
   /// Wire the pinned box. `panel` rather than the composer row itself, so a file
@@ -1021,10 +1152,22 @@ export function mountAgentRail(host, context) {
     return activeModelLabel(catalog, agent ? agent.provider : "", modelId);
   };
 
+  /// A reference from a surface points at a call, and a call folded into a shut
+  /// run has no row to point at — so the run it sits in is opened first, and
+  /// waited for: the half of a cut run the window never held is a fetch away,
+  /// and reaching for the row before it lands finds nothing.
+  const openRunHolding = async (body, sequence) => {
+    const runKey = activityRunKeyAt(body, sequence);
+    if (!runKey || conversationRuns().isOpen(runKey)) return;
+    await pressActivityRun(runKey);
+  };
+
   const surfaceViewerCallbacks = () => ({
     modelLabel: surfaceModelLabel,
-    onOpenThreadItem: (sequence) => {
-      if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
+    onOpenThreadItem: async (sequence) => {
+      const body = host.querySelector("#rail-body");
+      await openRunHolding(body, sequence);
+      if (revealThreadSequence(body, sequence)) return;
       notifyError(
         "That call is not in the loaded conversation",
         "Scroll back to load older items, then press the row again.",

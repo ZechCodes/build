@@ -12,23 +12,32 @@ import { describe, expect, it } from "vitest";
 import { threadHtml } from "../src/core/thread.js";
 import { patchElement } from "../src/core/domPatch.js";
 
-const activity = () =>
-  threadHtml({
-    items: [
-      { type: "event", data: { event: "reasoning", summary: "The parser is re-entrant, so the lock has to move.", created_at: "2026-08-23T12:00:00Z" } },
-      { type: "event", data: { event: "tool_use", summary: "Read bridge/src/app.rs", created_at: "2026-08-23T12:00:01Z" } },
-      { type: "event", data: { event: "tool_result", summary: "17 matches", created_at: "2026-08-23T12:00:02Z" } },
-      { type: "event", data: { event: "narration", summary: "Running the suite once more.", created_at: "2026-08-23T12:00:03Z" } },
-      { type: "event", data: { event: "task_update", summary: "started — run the full suite", created_at: "2026-08-23T12:00:04Z" } },
-    ],
-  });
+// A run draws what it stands for only when the reader has it open — a shut one
+// is a head (core/thread.js `activityRunHtml`), and which runs are open is the
+// pane's to say. Where a test is about the rows INSIDE a run, it renders with
+// every run open.
+const EVERY_RUN_OPEN = { has: () => true };
+
+const openThreadHtml = (thread) => threadHtml(thread, { openRuns: EVERY_RUN_OPEN });
+
+const ACTIVITY_ITEMS = [
+  { type: "event", data: { event: "reasoning", summary: "The parser is re-entrant, so the lock has to move.", created_at: "2026-08-23T12:00:00Z" } },
+  { type: "event", data: { event: "tool_use", summary: "Read bridge/src/app.rs", created_at: "2026-08-23T12:00:01Z" } },
+  { type: "event", data: { event: "tool_result", summary: "17 matches", created_at: "2026-08-23T12:00:02Z" } },
+  { type: "event", data: { event: "narration", summary: "Running the suite once more.", created_at: "2026-08-23T12:00:03Z" } },
+  { type: "event", data: { event: "task_update", summary: "started — run the full suite", created_at: "2026-08-23T12:00:04Z" } },
+];
+
+const activity = () => threadHtml({ items: ACTIVITY_ITEMS });
+
+const openActivity = () => openThreadHtml({ items: ACTIVITY_ITEMS });
 
 describe("activity in the timeline", () => {
   // A row is its content. The kind is not spent on the line — the icon carries
   // it, and carries it as an `aria-label` so a reader who cannot see the icon
   // still hears which kind the row is.
   it("renders the five kinds folded, and says which is which on the icon alone", () => {
-    document.body.innerHTML = activity();
+    document.body.innerHTML = openActivity();
 
     const folds = [...document.querySelectorAll(".thread-activity")];
     expect(folds).toHaveLength(5);
@@ -58,7 +67,7 @@ describe("activity in the timeline", () => {
   // background task is not the agent speaking, and the provider's name in front
   // of it would say nothing.
   it("folds a background task shut, and gives the line to what the task is", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [{ type: "event", data: { event: "task_update", summary: "finished — run the full suite\n\n412 passed" } }],
       sessions: [{ provider: "claude_adk" }],
     });
@@ -79,7 +88,7 @@ describe("activity in the timeline", () => {
   // reads exactly as it was stored — no display-time prettifying, which would
   // be a second half-copy of the mint that has to agree with it forever.
   it("renders a row minted by an older daemon verbatim", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [{ type: "event", data: { event: "tool_use", summary: 'Tool {"a":1}' } }],
     });
 
@@ -90,7 +99,7 @@ describe("activity in the timeline", () => {
   // "Agent called a tool" says nothing; the first line of what the agent
   // actually did is the whole value of the row.
   it("carries the summary's first line in the fold's head, and the whole of it inside", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [{ type: "event", data: { event: "tool_use", summary: "Read bridge/src/app.rs\n\nlines 7601-7640" } }],
     });
 
@@ -102,7 +111,7 @@ describe("activity in the timeline", () => {
   // Quieter than a message: activity is not somebody speaking, so it keeps the
   // event's own dim row rather than a message's card, avatar and head.
   it("is quieter than a message", () => {
-    document.body.innerHTML = activity();
+    document.body.innerHTML = openActivity();
 
     expect(document.querySelectorAll(".thread-comment")).toHaveLength(0);
     expect(document.querySelectorAll(".thread-avatar")).toHaveLength(0);
@@ -115,7 +124,7 @@ describe("activity in the timeline", () => {
   // It is also the one row with no content of its own, so the kind is what it
   // shows: a blank line is worse than the label.
   it("does not offer a fold with nothing behind it, and shows the kind in place of the line", () => {
-    document.body.innerHTML = threadHtml({ items: [{ type: "event", data: { event: "reasoning" } }] });
+    document.body.innerHTML = openThreadHtml({ items: [{ type: "event", data: { event: "reasoning" } }] });
 
     const row = document.querySelector(".thread-activity");
     expect(row.tagName).toBe("DIV");
@@ -123,7 +132,7 @@ describe("activity in the timeline", () => {
   });
 
   it("names the harness the way every other event does", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [{ type: "event", data: { event: "reasoning" } }],
       sessions: [{ provider: "claude_adk" }],
     });
@@ -137,7 +146,7 @@ describe("activity in the timeline", () => {
   // ones that fold; a kind this client has never heard of still renders as the
   // plain row it always did, rather than being swept in with them.
   it("leaves every other event exactly as it was", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [
         { type: "event", data: { event: "done", summary: "Implemented the requested change." } },
         { type: "event", data: { event: "some_new_kind", summary: "Something happened." } },
@@ -159,7 +168,7 @@ describe("activity in the timeline", () => {
 // with a mark on its own head rather than with a second row underneath.
 describe("a tool call's own row", () => {
   const toolCall = (data) =>
-    threadHtml({ items: [{ type: "event", data: { event: "tool_use", ...data } }] });
+    openThreadHtml({ items: [{ type: "event", data: { event: "tool_use", ...data } }] });
 
   // Absence is the pending state. It is what a call that has not been answered
   // yet carries, and also what every row written before calls and answers were
@@ -235,7 +244,7 @@ describe("a tool call's own row", () => {
   // Stored rows must render forever, and the orphan fallback still mints them:
   // a `tool_result` row is its own row, with no mark and its own kind.
   it("leaves a standalone tool_result row exactly as it was", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [{ type: "event", data: { event: "tool_result", summary: "17 matches" } }],
     });
 
@@ -249,7 +258,7 @@ describe("a tool call's own row", () => {
   // content — and the timestamp goes back to being the line's quiet right edge,
   // on the row and on the run's line alike.
   it("puts the mark on the line after the content, and the time last", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [{ type: "event", data: { event: "tool_use", summary: "Bash cargo test", outcome: "ok", created_at: "2026-08-23T12:00:00Z" } }],
     });
 
@@ -273,12 +282,12 @@ describe("a tool call's own row", () => {
 // every fold the reader opened, once every 1.6 seconds.
 describe("a fold the reader opened", () => {
   it("survives the repaint under it", () => {
-    document.body.innerHTML = activity();
+    document.body.innerHTML = openActivity();
     const live = document.querySelector(".thread-items");
     live.querySelector(".thread-activity").open = true;
 
     const rendered = document.createElement("div");
-    rendered.innerHTML = activity();
+    rendered.innerHTML = openActivity();
     patchElement(live, rendered.querySelector(".thread-items"));
 
     expect(live.querySelector(".thread-activity").open).toBe(true);
@@ -289,10 +298,10 @@ describe("a fold the reader opened", () => {
   // the fold stays open — otherwise watching a call run would shut the fold at
   // the exact moment it had something to show.
   it("stays open when the call's answer lands under it", () => {
-    const pending = threadHtml({
+    const pending = openThreadHtml({
       items: [{ type: "event", data: { sequence: 2, event: "tool_use", summary: "Bash npm test" } }],
     });
-    const answered = threadHtml({
+    const answered = openThreadHtml({
       items: [{
         type: "event",
         data: {
@@ -366,7 +375,7 @@ describe("a run of activity between messages", () => {
   // that were said, and the point of collapsing it is that the saying stays
   // findable.
   it("starts a new run after a message", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [
         event({ event: "reasoning", summary: "Checking the lock order." }),
         event({ event: "tool_use", summary: "Read bridge/src/app.rs" }),
@@ -388,7 +397,7 @@ describe("a run of activity between messages", () => {
   // A lifecycle row is not activity — it is something that HAPPENED, and it
   // carries a tone and a summons. It ends the run like a message does.
   it("starts a new run after a lifecycle event", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [
         event({ event: "narration", summary: "Running the suite." }),
         event({ event: "done", summary: "Implemented the requested change." }),
@@ -405,7 +414,7 @@ describe("a run of activity between messages", () => {
   // it renders as the plain row it always did, and it ends the run, exactly as
   // the timeline treated it before runs existed.
   it("leaves an unknown kind out of the run, and ends the run with it", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [
         event({ event: "tool_use", summary: "Read bridge/src/app.rs" }),
         event({ event: "some_new_kind", summary: "Something happened." }),
@@ -424,7 +433,7 @@ describe("a run of activity between messages", () => {
   // under a reader watching it never changes shape — and the row underneath is
   // one press away either way.
   it("collapses a run of one", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [event({ event: "tool_use", summary: "Read bridge/src/app.rs\n\nlines 1-40" })],
     });
 
@@ -437,7 +446,7 @@ describe("a run of activity between messages", () => {
   // sees the last thing tried and whether it worked, which is the whole of what
   // a ticker is for.
   it("carries the latest call's mark on the line", () => {
-    document.body.innerHTML = threadHtml({
+    document.body.innerHTML = openThreadHtml({
       items: [
         event({ event: "reasoning", summary: "The suite should be green." }),
         event({ event: "tool_use", summary: "Bash npm test\n→ 3 tests failed", outcome: "error" }),
@@ -458,12 +467,12 @@ describe("a run of activity between messages", () => {
   });
 });
 
-describe("opening a run", () => {
+// A run the pane has open. The press that opens one is the pane's to hear —
+// what it draws once it is open is here.
+describe("an open run", () => {
   it("shows every row in it, exactly as activity renders on its own", () => {
-    document.body.innerHTML = activity();
+    document.body.innerHTML = openActivity();
     const group = document.querySelector(".thread-activity-group");
-
-    group.querySelector(".thread-activity-head").click();
 
     expect(group.open).toBe(true);
     const list = group.querySelector(".thread-activity-group-list");
@@ -479,15 +488,25 @@ describe("opening a run", () => {
     expect(rows[1].querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
   });
 
+  // The head is a `<summary>`, so the press that shuts a run is the browser's
+  // own — the pane hears it and stops drawing the children, but the box the
+  // reader pressed shuts under their finger either way.
   it("shuts again on the line that opened it", () => {
-    document.body.innerHTML = activity();
+    document.body.innerHTML = openActivity();
     const group = document.querySelector(".thread-activity-group");
-    const head = group.querySelector(".thread-activity-head");
 
-    head.click();
-    head.click();
+    group.querySelector(".thread-activity-head").click();
 
     expect(group.open).toBe(false);
+  });
+
+  // A shut run holds nothing: the whole point of the fold is that a thousand
+  // calls nobody asked to see are a thousand rows the document never holds.
+  it("draws nothing under a run the reader has not opened", () => {
+    document.body.innerHTML = activity();
+
+    expect(document.querySelector(".thread-activity-group-list")).toBe(null);
+    expect(document.querySelectorAll(".thread-activity")).toHaveLength(0);
   });
 });
 
@@ -500,7 +519,7 @@ describe("a run the reader opened", () => {
     type: "event",
     data: { sequence, event: "tool_use", summary: `Read src/a${sequence}.js` },
   });
-  const run = (calls) => threadHtml({ items: calls.map((sequence) => toolCall(sequence)) });
+  const run = (calls) => openThreadHtml({ items: calls.map((sequence) => toolCall(sequence)) });
 
   it("stays open across the repaint, and takes in what arrived", () => {
     document.body.innerHTML = run([1, 2, 3]);

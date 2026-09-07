@@ -76,6 +76,16 @@ function digestLastCall(covering) {
   return { meat: firstLine(newest.summary), outcome: newest.outcome, createdAt: newest.created_at };
 }
 
+/// The newest call the run holds, by sequence rather than by position.
+///
+/// A call that spawned a subagent stands for everything that subagent did, so
+/// the calls of two subagents working at once interleave: the last call in the
+/// list is not the last call the agent made.
+function newestHeldCall(toolCalls) {
+  if (!toolCalls.length) return null;
+  return toolCalls.reduce((latest, call) => (call.sequence > latest.sequence ? call : latest));
+}
+
 const lineOf = (source) => ({
   meat: (source && source.meat) || "",
   outcome: source && source.outcome,
@@ -101,6 +111,6 @@ export function activityRunSummary(digests, runEntries) {
   const counted = covering.reduce((total, digest) => total + (digest.tool_calls || 0), 0);
   const count = counted + arrivedAfterTheDigest(toolCalls, newestCovered(covering)).length;
   const latest = activities.at(-1);
-  const line = count ? toolCalls.at(-1) || digestLastCall(covering) || latest : latest;
+  const line = count ? newestHeldCall(toolCalls) || digestLastCall(covering) || latest : latest;
   return { count: count || runEntries.length, ...lineOf(line) };
 }

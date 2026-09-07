@@ -141,6 +141,31 @@ describe("what a folded run says", () => {
     expect(activityRunSummary([], run).meat).toBe("Bash(npm test)");
   });
 
+  // Two subagents working at once interleave their calls in the run: the
+  // subtree of the one that started first holds the newest call, and it sits
+  // in the middle of the list rather than at the end of it.
+  it("takes the newest call by sequence, not the last one in the list", () => {
+    const run = [
+      spawningEntry(2, "Task(review the parser)", [
+        call(5, "Read spa/src/core/thread.js"),
+        call(7, "Grep patchList"),
+        call(9, "Bash(npm test)", { outcome: "ok", createdAt: "2026-09-06T18:09:00.000Z" }),
+      ]),
+      spawningEntry(3, "Task(review the lexer)", [
+        call(4, "Read bridge/src/app.rs"),
+        call(6, "Grep tool_call"),
+        call(8, "Bash(cargo test)", { outcome: "error", createdAt: "2026-09-06T18:08:00.000Z" }),
+      ]),
+    ];
+
+    const summary = activityRunSummary([], run);
+
+    expect(summary.count).toBe(8);
+    expect(summary.meat).toBe("Bash(npm test)");
+    expect(summary.outcome).toBe("ok");
+    expect(summary.createdAt).toBe("2026-09-06T18:09:00.000Z");
+  });
+
   it("tops a digest up with the folded calls that arrived after it", () => {
     const run = [
       spawningEntry(2, "Task(review the parser)", [

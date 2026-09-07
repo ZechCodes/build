@@ -3497,7 +3497,12 @@ mod counted_page_tests {
 
         let page = thread.wire_value_page(None, 5);
         let shipped = page_items(&page);
-        assert_eq!(shipped.len(), 1 + PAGE_ACTIVITY_RUN_CAP, "{}", shipped.len());
+        assert_eq!(
+            shipped.len(),
+            1 + PAGE_ACTIVITY_RUN_CAP,
+            "{}",
+            shipped.len()
+        );
         assert_eq!(counted_in_page(&page), 1, "the one thing said is on it");
         assert_eq!(
             page["has_more"], false,

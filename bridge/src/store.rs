@@ -1210,12 +1210,11 @@ impl Store {
             .optional()?
             .unwrap_or(0);
         let mut statement = connection.prepare(THREAD_CONVERSATION_PAGE_SQL)?;
-        decode_thread_items(
-            agent_id,
-            statement.query_map(rusqlite::params![agent_id, before, floor], |row| {
-                row.get::<_, String>(0)
-            })?,
-        )
+        let rows = statement.query_map(rusqlite::params![agent_id, before, floor], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let span = decode_thread_items(agent_id, rows)?;
+        Ok(span)
     }
 
     /// How many tool calls a conversation holds between two sequences,
@@ -3026,9 +3025,12 @@ mod tests {
         let (page, has_more) = store
             .thread_conversation_page(&record.agents[0].id, None, 3)
             .expect("a page reads");
-        let shipped = sequences(&page);
+        let shipped = sequences(&page.items);
         assert_eq!(
-            page.iter().filter(|item| item.counts_toward_page()).count(),
+            page.items
+                .iter()
+                .filter(|item| item.counts_toward_page())
+                .count(),
             3,
             "the limit counts messages: {shipped:?}"
         );
@@ -3068,9 +3070,9 @@ mod tests {
         let (page, has_more) = store
             .thread_conversation_page(&agent_id, None, 3)
             .expect("a page reads");
-        let shipped = sequences(&page);
+        let shipped = sequences(&page.items);
         assert_eq!(
-            page.iter().filter(|item| item.counted()).count(),
+            page.items.iter().filter(|item| item.counted()).count(),
             3,
             "the limit counts conversation: {shipped:?}"
         );
@@ -3092,7 +3094,7 @@ mod tests {
             let (page, has_more) = store
                 .thread_conversation_page(&agent_id, before, 3)
                 .expect("a page reads");
-            let shipped = sequences(&page);
+            let shipped = sequences(&page.items);
             assert!(
                 !shipped.is_empty(),
                 "a page below {before:?} came back empty"

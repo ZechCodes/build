@@ -139,6 +139,30 @@ describe("fetching what a run holds", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("asks once for a run pressed twice before the answer lands", async () => {
+    const calls = [];
+    let answer = null;
+    const runs = createActivityRuns({
+      deviceId: "dev-1",
+      entityId: "run-3",
+      agentId: "ag-1",
+      call: async (method, params) => {
+        calls.push({ method, params });
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      },
+    });
+
+    const first = runs.open(DIGEST);
+    expect(await runs.open(DIGEST)).toBe(false);
+    await new Promise((tick) => setTimeout(tick, 0)); // the local cache is asked first
+
+    answer(page([121]));
+    expect(await first).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
   it("asks for nothing at all where there is no entity to ask about", async () => {
     const calls = [];
     const runs = runsOver([], calls, { entityId: "" });

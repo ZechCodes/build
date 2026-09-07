@@ -37,6 +37,9 @@ export function createActivityRuns({ deviceId, entityId, agentId, call }) {
   const openRuns = new Set();
   // The span each fetched run covers, learned from the digest that opened it.
   const spans = new Map();
+  // The runs being fetched right now. A reader pressing the same fold twice
+  // while the first answer is still on its way is one ask, not two.
+  const asking = new Set();
 
   const activityPage = (fromSequence, beforeSequence) =>
     call("thread.activity", {
@@ -81,9 +84,14 @@ export function createActivityRuns({ deviceId, entityId, agentId, call }) {
      *  have changed. An entity with no id has no conversation to ask about. */
     async open(digest) {
       const key = String(digest.from_sequence);
-      if (!entityId || bodies.has(key)) return false;
+      if (!entityId || bodies.has(key) || asking.has(key)) return false;
       spans.set(digest.from_sequence, digest.through_sequence);
-      return (await bodies.ensure([key])).length > 0;
+      asking.add(key);
+      try {
+        return (await bodies.ensure([key])).length > 0;
+      } finally {
+        asking.delete(key);
+      }
     },
 
     isOpen: (key) => openRuns.has(String(key)),

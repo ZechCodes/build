@@ -89,6 +89,7 @@ const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfa
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
+const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
 
 const agent = (over = {}) => ({
   id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live",
@@ -3040,6 +3041,37 @@ describe("a run of activity in the rail", () => {
 
     expect(callsTo("thread.activity")).toEqual([]);
     expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51"]);
+  });
+
+  // The digest that says how far a run reaches is cut on a PAGED answer, and no
+  // forward delta refreshes it — while the newest sequence of the conversation
+  // moves on every delta. So one tool call landing on the live tail run leaves
+  // the digest behind the end of the conversation, and the digest alone would
+  // then call a run that is still being written historical.
+  it("never asks for a tail run one delta has grown past its digest", async () => {
+    payload = conversation([said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js")], [
+      { from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null },
+    ]);
+    answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
+    await mount();
+
+    payload = branchRow({
+      run: {
+        run_id: "run-3",
+        thread: { sessions: [], items: [toolCall(52, "Read q.js")], thread_total: 4, thread_last_sequence: 52 },
+      },
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    runHead().click();
+    await flush();
+
+    expect(callsTo("thread.activity")).toEqual([]);
+    expect(
+      await readCached({ deviceId: "dev-1", entityId: "run-3", kind: ACTIVITY_RECORD_KIND, sub: "ag-1:10" }),
+    ).toBeUndefined();
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51", "52"]);
   });
 
   it("opens the run a surface's call is folded into before reaching for the row", async () => {

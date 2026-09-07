@@ -857,6 +857,18 @@ export function activityRunKeyAt(scroller, sequence) {
   return run ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
 }
 
+/// The newest sequence a run's box stands for — its own rows and the calls they
+/// fold — read back off the document, and 0 for a run that is not drawn.
+///
+/// This is what the client holds about a run, as against what the daemon last
+/// said about it in a digest: a delta lands rows on the live tail run without
+/// ever refreshing its digest, so the box is the only thing that knows the run
+/// has grown.
+export function activityRunThroughAt(scroller, runKey) {
+  const run = scroller ? scroller.querySelector(`[${ACTIVITY_RUN_ATTRIBUTE}="${runKey}"]`) : null;
+  return run ? runSpanAttribute(run, ACTIVITY_RUN_THROUGH_ATTRIBUTE) : 0;
+}
+
 /// A run of activity, collapsed to one line.
 ///
 /// Everything between two things somebody SAID is one row here: how many tools

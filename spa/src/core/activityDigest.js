@@ -59,11 +59,20 @@ export function digestCovering(digests, sequence) {
 /// kept until the entity is evicted, and every call it grew afterwards would
 /// fall between that record's end and the window's oldest row, unseen and never
 /// asked for again.
-export function runDigestToFetch(digests, runKey, threadLastSequence) {
+///
+/// Which run is the tail is answered by everything the client holds about it,
+/// never by the digest alone. A digest is cut on a PAGED answer and no forward
+/// delta refreshes one, while the conversation's newest sequence moves on every
+/// delta — so one call landing on the live tail leaves its digest short of the
+/// end while the run is still being written. `runThrough` is the other half of
+/// the answer: the newest sequence the window holds for the run, its folded
+/// calls included, which is what the run's own box says about itself.
+export function runDigestToFetch(digests, runKey, threadLastSequence, runThrough = 0) {
   const key = Number(runKey);
   const digest = digestCovering(digests, key);
   if (!digest || digest.from_sequence >= key) return null;
-  return digest.through_sequence >= Number(threadLastSequence) ? null : digest;
+  const runReaches = Math.max(digest.through_sequence, Number(runThrough) || 0);
+  return runReaches >= Number(threadLastSequence) ? null : digest;
 }
 
 const sequenceOf = (activity) => (Number.isFinite(activity.sequence) ? activity.sequence : null);

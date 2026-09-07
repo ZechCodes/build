@@ -75,6 +75,7 @@ import { esc } from "./text.js";
 import {
   MUTATION_THREAD_PAGE,
   activityRunKeyAt,
+  activityRunThroughAt,
   chatPaintFingerprint,
   createThreadCache,
   paintThreadEntries,
@@ -989,12 +990,17 @@ export function mountAgentRail(host, context) {
   /// activation is cancelled where it is wired, so `open` says what this says.
   /// A run the window holds whole is drawn from the window, and one the page cut
   /// is asked for; the daemon holds the half that never travelled.
+  ///
+  /// The pressed box says how far the run reaches on this side, which is what
+  /// keeps the live tail out of the cache: its digest stops where the last page
+  /// cut it, and every delta since has landed on the run without moving it.
   const pressActivityRun = async (runKey) => {
     const runs = conversationRuns();
+    const runThrough = activityRunThroughAt(host.querySelector("#rail-body"), runKey);
     const opened = runs.toggle(runKey);
     paintChat();
     const digest = opened
-      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(threadFor()))
+      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(threadFor()), runThrough)
       : null;
     if (!digest) return;
     const filled = await runs.open(digest).catch((error) => {

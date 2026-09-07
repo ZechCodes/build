@@ -335,6 +335,19 @@ describe("the run a press has to fetch", () => {
     expect(runDigestToFetch(digests, 50, 51)).toBe(null);
   });
 
+  // A digest is cut on a paged answer, and no forward delta refreshes it —
+  // while the conversation's newest sequence moves on every one of them. So a
+  // single call landing on the live tail run would put the digest behind the
+  // end of the conversation, and the run still being written would be frozen
+  // into a record kept until the entity is evicted.
+  it("asks for nothing when the run itself has grown to the end of the conversation", () => {
+    expect(runDigestToFetch(digests, 50, 55, 55)).toBe(null);
+  });
+
+  it("asks over a historical run whose newest held row is short of the end", () => {
+    expect(runDigestToFetch(digests, 50, 200, 55)).toEqual(digests[0]);
+  });
+
   it("asks for nothing for a sequence no digest covers", () => {
     expect(runDigestToFetch(digests, 55, 200)).toBe(null);
   });

@@ -5217,6 +5217,15 @@ impl AppState {
     ///
     /// Borrows what is already held whenever that is the whole conversation —
     /// which it is for every conversation this process wrote itself — and goes
+    /// The conversation store, or the one refusal every history read gives
+    /// when this bridge keeps no store: a bounded load left part of the
+    /// conversation on disk, and without a store that part cannot be read.
+    fn history_store(&self) -> Result<&Store, String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "this conversation's history is not stored".to_string())
+    }
+
     /// to the store only for the history a bounded load left there.
     fn whole_conversation<'a>(
         &self,
@@ -5225,10 +5234,7 @@ impl AppState {
         if thread.total_item_count() == thread.items.len() as u64 {
             return Ok(std::borrow::Cow::Borrowed(&thread.items));
         }
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("this conversation's history is not stored")?;
+        let store = self.history_store()?;
         store
             .thread_items(&thread.agent.id)
             .map(std::borrow::Cow::Owned)
@@ -12555,10 +12561,7 @@ impl AppState {
                 thread.activity_between(from_sequence, through_sequence, before_sequence, rows);
             return Ok(crate::thread::wire_value_activity_page(&span, limit));
         }
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("this conversation's history is not stored")?;
+        let store = self.history_store()?;
         let below = before_sequence
             .unwrap_or(u64::MAX)
             .min(through_sequence.saturating_add(1));
@@ -12632,10 +12635,7 @@ impl AppState {
         before_sequence: Option<u64>,
         limit: usize,
     ) -> Result<Value, String> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("this conversation's history is not stored")?;
+        let store = self.history_store()?;
         let (cut, has_more) = store
             .thread_conversation_page(&thread.agent.id, before_sequence, limit)
             .map_err(|error| format!("conversation store: {error}"))?;
@@ -12655,10 +12655,7 @@ impl AppState {
         thread: &crate::thread::Thread,
         after_sequence: u64,
     ) -> Result<Value, String> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("this conversation's history is not stored")?;
+        let store = self.history_store()?;
         let history = store
             .thread_items_after(&thread.agent.id, after_sequence)
             .map_err(|error| format!("conversation store: {error}"))?;

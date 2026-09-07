@@ -431,6 +431,13 @@ CREATE TABLE IF NOT EXISTS thread_items (
     -- calls it made, and the calls a page did not ship can only be counted by
     -- the database.
     tool_call        INTEGER NOT NULL DEFAULT 0,
+    -- 1 when this item is the agent working rather than something said or
+    -- decided. Hoisted because a page reads the conversation and the newest of
+    -- each run between it: without the column the read has to fetch a run to
+    -- find out where it ends, which is the cost the bounded read exists to
+    -- skip. `message = 1 OR attention = 1` is not this rule read backwards --
+    -- a lifecycle marker is neither conversation nor activity.
+    activity         INTEGER NOT NULL DEFAULT 0,
     item             TEXT NOT NULL,
     PRIMARY KEY (agent_id, sequence)
 );
@@ -453,6 +460,11 @@ CREATE INDEX IF NOT EXISTS thread_items_messages
 -- so the count is a seek down the calls themselves and never reads a row.
 CREATE INDEX IF NOT EXISTS thread_items_tool_calls
     ON thread_items(agent_id, sequence) WHERE tool_call = 1;
+-- The runs, indexed: a page reads the newest of each run between two things
+-- somebody said, and the span above a page's floor holds far more work than
+-- conversation. Partial, so the seek that bounds a run walks the work itself.
+CREATE INDEX IF NOT EXISTS thread_items_activity
+    ON thread_items(agent_id, sequence) WHERE activity = 1;
 
 CREATE TABLE IF NOT EXISTS captures (
     id     TEXT PRIMARY KEY,
@@ -561,10 +573,25 @@ const THREAD_CURSOR_SQL: &str = "SELECT item FROM thread_items \
 const THREAD_LAST_SEQUENCE_SQL: &str =
     "SELECT COALESCE(MAX(updated_sequence), 0) FROM thread_items WHERE agent_id = ?1";
 
+/// The classification columns hoisted out of an item's JSON, each with the
+/// schema version it arrived in: a stored database older than that version is
+/// missing the column, and [`classify_stored_items`](Store::classify_stored_items)
+/// fills it in.
+///
+/// One list rather than one migration step per column, because every one of
+/// them is the same upgrade — an integer flag, defaulted to zero, backfilled
+/// from the items already stored.
+const HOISTED_ITEM_COLUMNS: [(i64, &str); 4] = [
+    (2, "attention"),
+    (3, "message"),
+    (4, "tool_call"),
+    (5, "activity"),
+];
+
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -643,18 +670,14 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         // The columns BEFORE the schema batch: `SCHEMA` indexes them, and an
         // older table has no such column for an index to name. A v1 database
-        // arrives here needing all three, and reaches v4 in one open.
-        if stored == Some(1) {
-            Store::add_attention_column(&conn)?;
-        }
-        if matches!(stored, Some(1 | 2)) {
-            Store::add_message_column(&conn)?;
-        }
-        if matches!(stored, Some(1..=3)) {
-            Store::add_tool_call_column(&conn)?;
+        // arrives here needing all four, and reaches v5 in one open.
+        for (arrived_in, column) in HOISTED_ITEM_COLUMNS {
+            if stored.is_some_and(|found| found < arrived_in) {
+                Store::add_hoisted_column(&conn, column)?;
+            }
         }
         conn.execute_batch(SCHEMA)?;
-        if matches!(stored, Some(1..=3)) {
+        if stored.is_some_and(|found| found < SCHEMA_VERSION) {
             Store::classify_stored_items(&conn)?;
         }
         if stored.unwrap_or(0) < SCHEMA_VERSION {
@@ -688,58 +711,21 @@ impl Store {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Add the v2 `attention` column to a v1 table.
+    /// Add one of the [`HOISTED_ITEM_COLUMNS`] to a table written before it
+    /// existed.
     ///
     /// `CREATE TABLE IF NOT EXISTS` does not alter a table that already exists,
-    /// so a database written by v1 needs the column added by hand — and needs
-    /// it before the schema batch, which indexes it.
-    fn add_attention_column(conn: &Connection) -> Result<(), StoreError> {
+    /// so a column an older bridge never wrote has to be added by hand — and
+    /// added before the schema batch, whose partial indexes name it.
+    fn add_hoisted_column(conn: &Connection, column: &str) -> Result<(), StoreError> {
         if conn
-            .prepare("SELECT attention FROM thread_items LIMIT 1")
+            .prepare(&format!("SELECT {column} FROM thread_items LIMIT 1"))
             .is_ok()
         {
             return Ok(());
         }
         conn.execute(
-            "ALTER TABLE thread_items ADD COLUMN attention INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-        Ok(())
-    }
-
-    /// Add the v3 `message` column to an older table.
-    ///
-    /// The v1→v2 precedent exactly: `CREATE TABLE IF NOT EXISTS` does not alter
-    /// a table that already exists, and the column has to be there before the
-    /// schema batch, whose partial index names it.
-    fn add_message_column(conn: &Connection) -> Result<(), StoreError> {
-        if conn
-            .prepare("SELECT message FROM thread_items LIMIT 1")
-            .is_ok()
-        {
-            return Ok(());
-        }
-        conn.execute(
-            "ALTER TABLE thread_items ADD COLUMN message INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-        Ok(())
-    }
-
-    /// Add the v4 `tool_call` column to an older table.
-    ///
-    /// The v2→v3 precedent exactly: `CREATE TABLE IF NOT EXISTS` does not alter
-    /// a table that already exists, and the column has to be there before the
-    /// schema batch runs over it.
-    fn add_tool_call_column(conn: &Connection) -> Result<(), StoreError> {
-        if conn
-            .prepare("SELECT tool_call FROM thread_items LIMIT 1")
-            .is_ok()
-        {
-            return Ok(());
-        }
-        conn.execute(
-            "ALTER TABLE thread_items ADD COLUMN tool_call INTEGER NOT NULL DEFAULT 0",
+            &format!("ALTER TABLE thread_items ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"),
             [],
         )?;
         Ok(())
@@ -763,7 +749,8 @@ impl Store {
             read.collect::<Result<_, _>>()?
         };
         let mut set = conn.prepare(
-            "UPDATE thread_items SET attention = ?3, message = ?4, tool_call = ?5 \
+            "UPDATE thread_items SET attention = ?3, message = ?4, tool_call = ?5, \
+                                     activity = ?6 \
              WHERE agent_id = ?1 AND sequence = ?2",
         )?;
         for (agent_id, sequence, raw) in rows {
@@ -775,7 +762,8 @@ impl Store {
                 sequence,
                 i64::from(item.attention_reason().is_some()),
                 i64::from(item.counts_toward_page()),
-                i64::from(item.is_tool_call())
+                i64::from(item.is_tool_call()),
+                i64::from(item.is_activity())
             ])?;
         }
         Ok(())
@@ -870,9 +858,11 @@ impl Store {
              DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
+             DROP INDEX IF EXISTS thread_items_activity;
              ALTER TABLE thread_items DROP COLUMN attention;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
+             ALTER TABLE thread_items DROP COLUMN activity;
              UPDATE meta SET value = '1' WHERE key = 'schema_version';",
         )
         .expect("the v1 shape is staged");
@@ -886,23 +876,39 @@ impl Store {
             "DROP INDEX IF EXISTS thread_items_conversation;
              DROP INDEX IF EXISTS thread_items_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
+             DROP INDEX IF EXISTS thread_items_activity;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
+             ALTER TABLE thread_items DROP COLUMN activity;
              UPDATE meta SET value = '2' WHERE key = 'schema_version';",
         )
         .expect("the v2 shape is staged");
     }
 
-    /// Test-only: the v3 shape — attention and message hoisted, tool_call not.
+    /// Test-only: the v3 shape — attention and message hoisted, the rest not.
     #[cfg(test)]
     pub fn pretend_to_be_v3(&self) {
         let conn = self.connection();
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_tool_calls;
+             DROP INDEX IF EXISTS thread_items_activity;
              ALTER TABLE thread_items DROP COLUMN tool_call;
+             ALTER TABLE thread_items DROP COLUMN activity;
              UPDATE meta SET value = '3' WHERE key = 'schema_version';",
         )
         .expect("the v3 shape is staged");
+    }
+
+    /// Test-only: the v4 shape — everything hoisted but the runs.
+    #[cfg(test)]
+    pub fn pretend_to_be_v4(&self) {
+        let conn = self.connection();
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS thread_items_activity;
+             ALTER TABLE thread_items DROP COLUMN activity;
+             UPDATE meta SET value = '4' WHERE key = 'schema_version';",
+        )
+        .expect("the v4 shape is staged");
     }
 
     /// Test-only: make the next write fail once, then behave normally.
@@ -1029,11 +1035,12 @@ impl Store {
         )?;
         let mut upsert_item = tx.prepare(
             "INSERT INTO thread_items \
-             (agent_id, sequence, updated_sequence, attention, message, tool_call, item)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             (agent_id, sequence, updated_sequence, attention, message, tool_call, \
+              activity, item)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(agent_id, sequence)
              DO UPDATE SET updated_sequence = ?3, attention = ?4, message = ?5, \
-                           tool_call = ?6, item = ?7",
+                           tool_call = ?6, activity = ?7, item = ?8",
         )?;
         let mut delete_item =
             tx.prepare("DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2")?;
@@ -1082,6 +1089,7 @@ impl Store {
                     i64::from(item.attention_reason().is_some()),
                     i64::from(item.counts_toward_page()),
                     i64::from(item.is_tool_call()),
+                    i64::from(item.is_activity()),
                     serde_json::to_string(item).expect("a thread item always serializes")
                 ])?;
             }
@@ -3105,6 +3113,100 @@ mod tests {
 
         assert!(!counted_in_rust.is_empty(), "the fixture counts nothing");
         assert_eq!(counted_in_sql, counted_in_rust);
+    }
+
+    /// The two readings of the activity rule — `ThreadItem::is_activity()` and
+    /// the store's `activity = 1` — held equal over every kind there is. The
+    /// bounded page read seeks down this column, so a column that drifted from
+    /// the enum would cut runs where no run ends.
+    #[test]
+    fn the_hoisted_activity_column_agrees_with_the_activity_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for kind in crate::thread::ThreadEventKind::ALL {
+            record.agents[0].thread.push_event(
+                kind,
+                Some(kind.as_str().to_string()),
+                None,
+                None,
+                NOW,
+            );
+        }
+        record.agents[0].thread.post_user("a question", None, NOW);
+        record.agents[0].thread.post_agent("an answer", None, NOW);
+        store.save_run(&record).expect("the conversation saves");
+
+        let activity_in_rust: Vec<u64> = record.agents[0]
+            .thread
+            .items
+            .iter()
+            .filter(|item| item.is_activity())
+            .map(ThreadItem::sequence)
+            .collect();
+
+        assert!(!activity_in_rust.is_empty(), "the fixture folds nothing");
+        assert_eq!(
+            stored_activity_sequences(&store, &record.agents[0].id),
+            activity_in_rust
+        );
+    }
+
+    /// A v4 database gains the activity column and is classified in place, the
+    /// way v3 gained tool_call. Nobody's stored conversation has to be
+    /// rewritten for a page to read past the work in it.
+    #[test]
+    fn a_v4_database_is_migrated_and_its_activity_classified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let agent_id;
+        {
+            let store = Store::new(&root).expect("store opens");
+            let mut record = run_record("run-1", None, NOW);
+            agent_id = record.agents[0].id.clone();
+            record.agents[0].thread.post_user("said before", None, NOW);
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some("Read a file".to_string()),
+                None,
+                None,
+                NOW,
+            );
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Done,
+                Some("finished".to_string()),
+                None,
+                None,
+                NOW,
+            );
+            store.save_run(&record).expect("the run saves");
+            store.pretend_to_be_v4();
+        }
+        let migrated = Store::new(&root).expect("a v4 store opens");
+
+        assert_eq!(
+            stored_activity_sequences(&migrated, &agent_id),
+            vec![2],
+            "the backfill classified the items already stored"
+        );
+    }
+
+    /// The sequences the store believes are activity — read off the column
+    /// rather than off the items, which is the whole point of hoisting it.
+    fn stored_activity_sequences(store: &Store, agent_id: &str) -> Vec<u64> {
+        let connection = store.connection();
+        let mut statement = connection
+            .prepare(
+                "SELECT sequence FROM thread_items \
+                 WHERE agent_id = ?1 AND activity = 1 ORDER BY sequence",
+            )
+            .expect("the predicate prepares");
+        let read = statement
+            .query_map([agent_id], |row| row.get::<_, i64>(0))
+            .expect("the predicate reads")
+            .map(|sequence| sequence.expect("a row reads") as u64)
+            .collect();
+        read
     }
 
     /// A stored page reaches back to the `limit`-th MESSAGE, the way a

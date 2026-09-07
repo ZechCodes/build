@@ -230,6 +230,39 @@ describe("what a folded run says", () => {
     expect(summary.createdAt).toBe("2026-09-06T19:00:00.000Z");
   });
 
+  // The head's line, mark, time and glyph are one reading of one thing. A run
+  // that ends in a thought still says what the agent last DID, so the glyph
+  // beside that line is a tool call's and not the thought's.
+  it("says a tool call's glyph whenever the line came from a call", () => {
+    const heldCall = [
+      entry(1530, "tool_use", "Bash(cargo test)", { outcome: "ok", createdAt: "2026-09-06T18:03:11.412Z" }),
+      entry(1531, "reasoning", "The suite is green.", { icon: "\u25cc" }),
+    ];
+
+    expect(activityRunSummary([], heldCall).icon).toBe("\u25b8");
+
+    const digestedCall = [entry(1600, "reasoning", "Reading the review.", { icon: "\u25cc" })];
+
+    expect(
+      activityRunSummary([digest(412, 1600, 1000, lastCall(1530, "Bash(cargo test)"))], digestedCall).icon,
+    ).toBe("\u25b8");
+  });
+
+  it("says the latest row's own glyph when the line fell back to that row", () => {
+    const noCall = [
+      entry(1600, "tool_use", "Read a.js", { icon: "\u25b8" }),
+      entry(1601, "narration", "Running the suite.", { icon: "\u25e6", toolCalls: [] }),
+    ];
+
+    expect(activityRunSummary([digest(1600, 1601, 0, null)], noCall).icon).toBe("\u25e6");
+
+    const wordlessDigest = [entry(1600, "reasoning", "Reading the review.", { icon: "\u25cc" })];
+
+    expect(activityRunSummary([digest(412, 1600, 4, lastCall(1530, null, null, null))], wordlessDigest).icon).toBe(
+      "\u25cc",
+    );
+  });
+
   it("keeps the old look for a run that called no tool at all", () => {
     const run = [
       entry(1600, "reasoning", "Reading the review."),

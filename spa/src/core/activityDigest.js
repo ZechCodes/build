@@ -10,6 +10,8 @@
 ///
 /// Nothing here touches the DOM. The renderer is handed four printed values.
 
+import { EVENT_META } from "./threadEvents.js";
+
 /// The first line of a summary, which is what a row's head shows.
 ///
 /// A row that says only "Agent called a tool" is a row nobody can scan; what
@@ -92,6 +94,18 @@ const lineOf = (source) => ({
   createdAt: (source && source.createdAt) ?? null,
 });
 
+/// The four printed values of a head, which are one reading of one thing.
+///
+/// A call's line wears a call's glyph wherever the line came from — the run's
+/// own rows or a digest — because a run that trails off into thinking still
+/// says what the agent last DID, and the thought's glyph beside a Bash line
+/// reads as the wrong row. A run with no call to name falls back to its latest
+/// row whole: that row's words, and that row's glyph.
+function headOf(call, latest) {
+  if (call) return { icon: EVENT_META.tool_use.icon, ...lineOf(call) };
+  return { icon: (latest && latest.icon) || "", ...lineOf(latest) };
+}
+
 /// What one folded run prints: how many tools it called, and the last call's
 /// line, mark and time.
 ///
@@ -111,6 +125,6 @@ export function activityRunSummary(digests, runEntries) {
   const counted = covering.reduce((total, digest) => total + (digest.tool_calls || 0), 0);
   const count = counted + arrivedAfterTheDigest(toolCalls, newestCovered(covering)).length;
   const latest = activities.at(-1);
-  const line = count ? newestHeldCall(toolCalls) || digestLastCall(covering) || latest : latest;
-  return { count: count || runEntries.length, ...lineOf(line) };
+  const call = count ? newestHeldCall(toolCalls) || digestLastCall(covering) : null;
+  return { count: count || runEntries.length, ...headOf(call, latest) };
 }

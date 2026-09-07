@@ -28,6 +28,7 @@ const paint = (thread) => {
 
 const countOn = (group) => group.querySelector(".thread-activity-count").textContent;
 const previewOn = (group) => group.querySelector(".thread-activity-preview").textContent;
+const iconOn = (group) => group.querySelector(".thread-activity-group-head .thread-event-icon").textContent;
 
 describe("a folded run drawn from its digest", () => {
   const digest = (from, through, toolCalls, lastToolCall = null) => ({
@@ -139,6 +140,24 @@ describe("a folded run drawn from its digest", () => {
     });
 
     expect(countOn(group)).toBe("4");
+  });
+
+  // The head is one reading: the line, the mark, the time and the glyph all
+  // say the same call. A run that trails off into thinking still shows what
+  // the agent last did, so the glyph beside it is a call's.
+  it("wears the glyph of the call it names, not of the row it ends on", () => {
+    const group = paint({
+      items: [toolCall(1530, "Bash(cargo test)", { outcome: "ok" }), reasoning(1531, "The suite is green.")],
+    });
+
+    expect(iconOn(group)).toBe("\u25b8");
+    expect(previewOn(group)).toBe("Bash(cargo test)");
+  });
+
+  it("wears the thinking glyph when a run that called nothing ends on a thought", () => {
+    const group = paint({ items: [reasoning(1, "Thinking."), reasoning(2, "Still thinking.")] });
+
+    expect(iconOn(group)).toBe("\u25cc");
   });
 
   it("keeps the old look for a run that called no tool", () => {

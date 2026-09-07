@@ -838,7 +838,7 @@ function activityMeat(event, meta, agentLabel) {
 function activityRunHtml(run, summary) {
   return `<details class="thread-activity-group" data-activity-run="${esc(String(run[0].key))}">
     <summary class="thread-activity-head thread-activity-group-head">
-      <span class="thread-event-icon" aria-hidden="true">${esc(run.at(-1).activity.icon)}</span>
+      <span class="thread-event-icon" aria-hidden="true">${esc(summary.icon)}</span>
       <span class="thread-activity-count">${summary.count}</span>
       <span class="thread-activity-preview">${esc(summary.meat)}</span>
       ${toolOutcomeHtml(summary.outcome)}

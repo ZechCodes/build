@@ -59,7 +59,9 @@ use crate::attention::Attention;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc};
 use crate::run::{RunState, StageProgress};
-use crate::thread::{cut_activity_runs, PageCut, Thread, ThreadItem};
+use crate::thread::{
+    cut_activity_runs, page_activity_budget, run_items_shipped, PageCut, Thread, ThreadItem,
+};
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -521,19 +523,51 @@ const THREAD_CONVERSATION_FLOOR_SQL: &str = "SELECT sequence FROM thread_items \
      WHERE agent_id = ?1 AND message = 1 AND sequence < ?2 \
      ORDER BY sequence DESC LIMIT 1 OFFSET ?3";
 
-/// The span the page reaches over: every item between the floor and the seek,
-/// newest-first — so the activity between two messages travels with them, and
-/// the runs of it are whole, which is what makes their digests countable.
+/// What a page is made of, newest-first: everything between the floor and the
+/// seek that is not the agent working — the conversation, and the quiet
+/// lifecycle markers beside it.
 ///
-/// Bounded in MESSAGES rather than in items, so the read itself is unbounded
-/// in activity: a turn of a thousand tool calls is a thousand rows read to
-/// answer a page. What the page SHIPS is bounded anyway, by the cut, and the
-/// count each folded run reports comes from the census rather than from these
-/// rows — so the rows a run contributes past the cut are read, decoded and
-/// dropped. That is the cost this read still carries.
-const THREAD_CONVERSATION_PAGE_SQL: &str = "SELECT item FROM thread_items \
-     WHERE agent_id = ?1 AND sequence < ?2 AND sequence >= ?3 \
+/// The runs of activity between these items are read one at a time, bounded,
+/// through [`THREAD_ACTIVITY_RANGE_SQL`]. So a page's cost is its own size
+/// rather than the size of the work it reaches over: a turn of five thousand
+/// tool calls contributes the hundred rows the page ships, not five thousand
+/// rows read, deserialized and dropped.
+const THREAD_CONVERSATION_STRUCTURE_SQL: &str = "SELECT sequence, item FROM thread_items \
+     WHERE agent_id = ?1 AND activity = 0 AND sequence < ?2 AND sequence >= ?3 \
      ORDER BY sequence DESC";
+
+/// The newest activity between two sequences, exclusive at both ends and
+/// bounded by a limit — the run read, and the whole of what `thread.activity`
+/// answers with.
+///
+/// Exclusive on both ends because the run read's bounds ARE the items that end
+/// the run on either side, and a verb whose span is inclusive says so at its
+/// own call site rather than here. One statement, two readers, so a page and a
+/// client scrolling one open run read the conversation the same way.
+const THREAD_ACTIVITY_RANGE_SQL: &str = "SELECT sequence, item FROM thread_items \
+     WHERE agent_id = ?1 AND activity = 1 AND sequence > ?2 AND sequence < ?3 \
+     ORDER BY sequence DESC LIMIT ?4";
+
+/// Where a run of activity starts — the row a folded run's digest names as its
+/// `from_sequence`.
+///
+/// Read on its own because the page ships a run's NEWEST items: without it a
+/// bounded read would name the oldest row it happened to fetch, and a client
+/// would cache the run under a span it never had.
+const THREAD_RUN_OLDEST_SQL: &str = "SELECT sequence, item FROM thread_items \
+     WHERE agent_id = ?1 AND activity = 1 AND sequence > ?2 AND sequence < ?3 \
+     ORDER BY sequence ASC LIMIT 1";
+
+/// The last call a run made — the row a folded run prints beside its count.
+///
+/// Read on its own for the same reason the oldest row is: a run that ended in
+/// a hundred thoughts keeps its last call under everything the page ships, and
+/// a digest is answered off the span it was handed. Memory sees the whole run
+/// and names the call, so a stored page that did not go looking for it would
+/// print a different row from the same conversation.
+const THREAD_RUN_LAST_CALL_SQL: &str = "SELECT sequence, item FROM thread_items \
+     WHERE agent_id = ?1 AND tool_call = 1 AND sequence > ?2 AND sequence < ?3 \
+     ORDER BY sequence DESC LIMIT 1";
 
 /// How much of a conversation a load reads and the daemon then holds.
 ///
@@ -1201,15 +1235,20 @@ impl Store {
         Ok((cut, has_more))
     }
 
-    /// The span a page reaches over, newest-first: two seeks and no scan. One
-    /// finds the `limit`-th message below the seek, the other reads everything
-    /// from there up.
+    /// The span a page reaches over, newest-first: the conversation between the
+    /// floor and the seek, with the newest of each run of activity between two
+    /// of its items woven back in.
     ///
     /// The floor is a message, so the span's oldest item ends whatever run sits
-    /// above it — which is what lets the cut count a run it can see the whole
+    /// above it — which is what lets the cut count a run it can see the edges
     /// of.
     ///
-    /// The connection is held for the two reads and let go before the JSON is
+    /// Nothing here reads a whole run. What comes back is what the page ships
+    /// plus each run's edge rows, so the cut has the same items and the same
+    /// digests to work from as a page cut out of memory, and the rows past the
+    /// cap are never fetched at all.
+    ///
+    /// The connection is held for the reads and let go before the JSON is
     /// parsed. Deserializing a page of items is the expensive half of this
     /// call, and every other store call — an append, a poll, another
     /// conversation's page — waits behind the same mutex while it runs.
@@ -1233,13 +1272,12 @@ impl Store {
             )
             .optional()?
             .unwrap_or(0);
-        let mut statement = connection.prepare(THREAD_CONVERSATION_PAGE_SQL)?;
-        let raw_items = statement
-            .query_map(rusqlite::params![agent_id, before, floor], |row| {
-                row.get::<_, String>(0)
-            })?
-            .collect::<Result<Vec<String>, _>>()?;
-        drop(statement);
+        let structure = read_sequenced_rows(
+            &mut connection.prepare(THREAD_CONVERSATION_STRUCTURE_SQL)?,
+            rusqlite::params![agent_id, before, floor],
+        )?;
+        let raw_items = RunReader::new(&connection, agent_id, page_activity_budget(limit))?
+            .span(structure, before, floor)?;
         drop(connection);
         decode_thread_item_text(agent_id, raw_items)
     }
@@ -2138,6 +2176,109 @@ fn read_thread_page(
     Ok(page)
 }
 
+/// The runs of one page's span, read one at a time and never whole.
+///
+/// Holds what the page may still ship, because that is what says how much of
+/// the next run to read: a page that has spent its budget reads a run's edges
+/// and nothing else. Statements are prepared once and stepped per run, so a
+/// page over a conversation of many turns still prepares three.
+struct RunReader<'a> {
+    agent_id: &'a str,
+    newest: rusqlite::Statement<'a>,
+    oldest: rusqlite::Statement<'a>,
+    last_call: rusqlite::Statement<'a>,
+    activity_left: usize,
+}
+
+impl<'a> RunReader<'a> {
+    fn new(
+        connection: &'a Connection,
+        agent_id: &'a str,
+        activity_left: usize,
+    ) -> Result<Self, StoreError> {
+        Ok(RunReader {
+            agent_id,
+            newest: connection.prepare(THREAD_ACTIVITY_RANGE_SQL)?,
+            oldest: connection.prepare(THREAD_RUN_OLDEST_SQL)?,
+            last_call: connection.prepare(THREAD_RUN_LAST_CALL_SQL)?,
+            activity_left,
+        })
+    }
+
+    /// The span, newest-first: each of the page's own items with the run that
+    /// sits above it read in first.
+    ///
+    /// `before` bounds the newest run and `floor` the oldest. Both are
+    /// exclusive of the item that ends the run, which is why the floor is
+    /// stepped down: the floor row itself is a message, and a page that reaches
+    /// the start of a conversation has no message under its oldest run at all.
+    fn span(
+        mut self,
+        structure: Vec<(i64, String)>,
+        before: i64,
+        floor: i64,
+    ) -> Result<Vec<String>, StoreError> {
+        let mut span = Vec::with_capacity(structure.len());
+        let mut above = before;
+        for (sequence, item) in structure {
+            span.extend(self.run_between(sequence, above)?);
+            span.push(item);
+            above = sequence;
+        }
+        span.extend(self.run_between(floor - 1, above)?);
+        Ok(span)
+    }
+
+    /// One run, newest-first: as much of its newest as the page can still
+    /// ship, plus the two rows its digest is written off — where the run
+    /// starts, and the last call it made.
+    ///
+    /// Those two are what make the digest the run's own rather than the read's,
+    /// and the cut drops them again under the cap — so a run reads at most two
+    /// rows more than it ships, whatever else happened inside it.
+    fn run_between(&mut self, after: i64, below: i64) -> Result<Vec<String>, StoreError> {
+        if after + 1 >= below {
+            return Ok(Vec::new());
+        }
+        let agent_id = self.agent_id;
+        let wanted = self.newest_rows_wanted() as i64;
+        let newest = read_sequenced_rows(
+            &mut self.newest,
+            rusqlite::params![agent_id, after, below, wanted],
+        )?;
+        self.activity_left -= run_items_shipped(newest.len(), self.activity_left);
+        let mut run: std::collections::BTreeMap<i64, String> = newest.into_iter().collect();
+        for edge in [&mut self.oldest, &mut self.last_call] {
+            for (sequence, item) in
+                read_sequenced_rows(edge, rusqlite::params![agent_id, after, below])?
+            {
+                run.entry(sequence).or_insert(item);
+            }
+        }
+        Ok(run.into_values().rev().collect())
+    }
+
+    /// How many of a run's newest rows to read: what the page could still ship
+    /// of it, and never fewer than one.
+    ///
+    /// The newest row is the digest's `through_sequence`, which a run prints
+    /// whether or not the page has anything left to spend on it.
+    fn newest_rows_wanted(&self) -> usize {
+        run_items_shipped(usize::MAX, self.activity_left).max(1)
+    }
+}
+
+/// The `(sequence, item)` rows of a prepared conversation read, in the order
+/// the statement returns them — the shape every read of the span speaks in,
+/// so a run's rows can be merged with its edges by sequence.
+fn read_sequenced_rows(
+    statement: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Vec<(i64, String)>, StoreError> {
+    let rows = statement.query_map(params, |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// Turn stored item rows into conversation items. Reads the rows off the
 /// statement — so the caller is still holding the connection — and decodes
 /// them in the same breath.
@@ -2157,6 +2298,7 @@ fn decode_thread_item_text(
     agent_id: &str,
     raw_items: Vec<String>,
 ) -> Result<Vec<ThreadItem>, StoreError> {
+    count_decoded_items(raw_items.len());
     raw_items
         .into_iter()
         .map(|raw| serde_json::from_str(&raw))
@@ -2168,6 +2310,35 @@ fn decode_thread_item_text(
 }
 
 // ---- Legacy → split mapping (pure; the migration's translation table) ----
+
+#[cfg(test)]
+thread_local! {
+    /// Stored rows this OS thread has put through serde on their way out of
+    /// the database, since the process started.
+    ///
+    /// A page built by reading a whole run and dropping most of it is
+    /// byte-identical to one built by reading what it ships, so nothing about
+    /// the answer can tell the two apart — only the count can. Per-OS-thread
+    /// rather than global so tests running side by side do not read each
+    /// other's reads.
+    static ITEMS_DECODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many stored rows this OS thread has deserialized — read before and
+/// after a call to measure what it cost.
+#[cfg(test)]
+pub fn items_decoded() -> usize {
+    ITEMS_DECODED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn count_decoded_items(count: usize) {
+    ITEMS_DECODED.with(|counter| counter.set(counter.get() + count));
+}
+
+/// Nothing is counted outside the tests: only they ask what a read cost.
+#[cfg(not(test))]
+fn count_decoded_items(_count: usize) {}
 
 /// The current time as an RFC 3339 UTC string (the store's timestamp format).
 pub fn now_rfc3339() -> String {
@@ -2631,6 +2802,24 @@ mod tests {
         );
     }
 
+    /// How SQLite says it will answer a statement. The plan does not depend on
+    /// what the parameters hold, only on how many there are, so every pinning
+    /// test below binds ones.
+    fn query_plan(connection: &Connection, statement: &str) -> Vec<String> {
+        let mut explain = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
+            .expect("the statement prepares");
+        let placeholders = vec![1_i64; explain.parameter_count()];
+        let plan = explain
+            .query_map(rusqlite::params_from_iter(placeholders), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("the plan reads")
+            .collect::<Result<_, _>>()
+            .expect("the plan reads");
+        plan
+    }
+
     /// The contract underneath every paging test above: both reads seek into
     /// the conversation rather than walking it. A predicate SQLite cannot
     /// answer from an index — or an `ORDER BY` it has to satisfy with a sort —
@@ -2646,23 +2835,13 @@ mod tests {
             THREAD_CURSOR_SQL,
             THREAD_MESSAGE_PAGE_SQL,
             THREAD_CONVERSATION_FLOOR_SQL,
-            THREAD_CONVERSATION_PAGE_SQL,
+            THREAD_CONVERSATION_STRUCTURE_SQL,
+            THREAD_ACTIVITY_RANGE_SQL,
+            THREAD_RUN_OLDEST_SQL,
+            THREAD_RUN_LAST_CALL_SQL,
             THREAD_TOOL_CALL_COUNT_SQL,
         ] {
-            let mut explain = connection
-                .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
-                .expect("the statement prepares");
-            // The plan does not depend on what the parameters hold, only on
-            // how many there are.
-            let placeholders = vec![1_i64; explain.parameter_count()];
-            let plan: Vec<String> = explain
-                .query_map(rusqlite::params_from_iter(placeholders), |row| {
-                    row.get::<_, String>(3)
-                })
-                .expect("the plan reads")
-                .collect::<Result<_, _>>()
-                .expect("the plan reads");
-
+            let plan = query_plan(&connection, statement);
             assert!(
                 plan.iter().any(|step| step.contains("SEARCH")),
                 "{statement} does not seek: {plan:?}"
@@ -2718,17 +2897,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let connection = store.connection();
-        let mut explain = connection
-            .prepare(&format!("EXPLAIN QUERY PLAN {THREAD_CURSOR_SQL}"))
-            .expect("the statement prepares");
-        let placeholders = vec![1_i64; explain.parameter_count()];
-        let plan: Vec<String> = explain
-            .query_map(rusqlite::params_from_iter(placeholders), |row| {
-                row.get::<_, String>(3)
-            })
-            .expect("the plan reads")
-            .collect::<Result<_, _>>()
-            .expect("the plan reads");
+        let plan = query_plan(&connection, THREAD_CURSOR_SQL);
         assert!(
             plan.iter().any(|step| step.contains("thread_items_cursor")),
             "the forward cursor does not use thread_items_cursor: {plan:?}"
@@ -2745,21 +2914,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let connection = store.connection();
-        let mut explain = connection
-            .prepare(&format!("EXPLAIN QUERY PLAN {THREAD_TOOL_CALL_COUNT_SQL}"))
-            .expect("the statement prepares");
-        let placeholders = vec![1_i64; explain.parameter_count()];
-        let plan: Vec<String> = explain
-            .query_map(rusqlite::params_from_iter(placeholders), |row| {
-                row.get::<_, String>(3)
-            })
-            .expect("the plan reads")
-            .collect::<Result<_, _>>()
-            .expect("the plan reads");
+        let plan = query_plan(&connection, THREAD_TOOL_CALL_COUNT_SQL);
         assert!(
             plan.iter()
                 .any(|step| step.contains("COVERING INDEX thread_items_tool_calls")),
             "the census does not use thread_items_tool_calls: {plan:?}"
+        );
+    }
+
+    /// The run reads' index by name. A page reads the newest of each run
+    /// between two things somebody said, and the span above a page's floor
+    /// holds far more work than conversation — so a run read answered off the
+    /// primary key would step over every row of the span to find the activity
+    /// in it, which is the walk the bounded read exists to stop.
+    #[test]
+    fn the_run_reads_seek_through_the_activity_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let connection = store.connection();
+        for statement in [THREAD_ACTIVITY_RANGE_SQL, THREAD_RUN_OLDEST_SQL] {
+            let plan = query_plan(&connection, statement);
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("thread_items_activity")),
+                "{statement} does not use thread_items_activity: {plan:?}"
+            );
+        }
+        let plan = query_plan(&connection, THREAD_RUN_LAST_CALL_SQL);
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("thread_items_tool_calls")),
+            "the run's last call does not use thread_items_tool_calls: {plan:?}"
         );
     }
 
@@ -2773,17 +2958,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let connection = store.connection();
-        let mut explain = connection
-            .prepare(&format!("EXPLAIN QUERY PLAN {THREAD_MESSAGE_PAGE_SQL}"))
-            .expect("the statement prepares");
-        let placeholders = vec![1_i64; explain.parameter_count()];
-        let plan: Vec<String> = explain
-            .query_map(rusqlite::params_from_iter(placeholders), |row| {
-                row.get::<_, String>(3)
-            })
-            .expect("the plan reads")
-            .collect::<Result<_, _>>()
-            .expect("the plan reads");
+        let plan = query_plan(&connection, THREAD_MESSAGE_PAGE_SQL);
         assert!(
             plan.iter()
                 .any(|step| step.contains("thread_items_messages")),
@@ -2792,19 +2967,7 @@ mod tests {
 
         // The same for the seek that finds where a page reaches back to: on
         // the primary key it would count every tool call on the way down.
-        let mut explain = connection
-            .prepare(&format!(
-                "EXPLAIN QUERY PLAN {THREAD_CONVERSATION_FLOOR_SQL}"
-            ))
-            .expect("the statement prepares");
-        let placeholders = vec![1_i64; explain.parameter_count()];
-        let plan: Vec<String> = explain
-            .query_map(rusqlite::params_from_iter(placeholders), |row| {
-                row.get::<_, String>(3)
-            })
-            .expect("the plan reads")
-            .collect::<Result<_, _>>()
-            .expect("the plan reads");
+        let plan = query_plan(&connection, THREAD_CONVERSATION_FLOOR_SQL);
         assert!(
             plan.iter()
                 .any(|step| step.contains("thread_items_messages")),
@@ -3420,6 +3583,123 @@ mod tests {
                 .collect::<Vec<u64>>(),
             vec![crate::thread::PAGE_ACTIVITY_RUN_CAP as u64 + 20; 3],
             "{from_store:?}"
+        );
+    }
+
+    /// The cost of a page over a long run: the newest of it, and never the run.
+    ///
+    /// Five thousand calls between two messages is the shape that made the old
+    /// read expensive — every row of the span was fetched and deserialized to
+    /// build a page that ships a hundred of them. The bounded read fetches what
+    /// it ships plus the run's oldest row, which is what the digest's
+    /// `from_sequence` names, so the decode count is the cap rather than the
+    /// run.
+    #[test]
+    fn a_page_over_a_long_run_decodes_its_cap_and_not_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0]
+            .thread
+            .post_user("rewrite it all", None, NOW);
+        for index in 0..5_000 {
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+
+        let before = items_decoded();
+        let (cut, _) = store
+            .thread_conversation_page(&record.agents[0].id, None, 20)
+            .expect("a page reads");
+        let decoded = items_decoded() - before;
+
+        assert_eq!(
+            cut.items.iter().filter(|item| item.is_activity()).count(),
+            crate::thread::PAGE_ACTIVITY_RUN_CAP
+        );
+        assert_eq!(
+            cut.digests
+                .first()
+                .expect("the run has a digest")
+                .tool_calls,
+            5_000,
+            "the census still counts every call"
+        );
+        assert!(
+            decoded <= crate::thread::PAGE_ACTIVITY_RUN_CAP + 2,
+            "the page decoded {decoded} rows: the cap, the run's oldest row and \
+             the message it hangs under is all it may read"
+        );
+    }
+
+    /// A folded run names the last call it made, however much thinking came
+    /// after it — the row the client prints beside the count.
+    ///
+    /// The bounded read fetches the newest of a run, so a run that ends in a
+    /// hundred thoughts has its last call under what was fetched. Memory sees
+    /// the whole run and names it, so a stored page that did not go looking
+    /// for it would print a different row from the same conversation.
+    #[test]
+    fn a_stored_page_names_the_last_call_of_a_run_that_ends_in_thinking() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0]
+            .thread
+            .post_user("think it through", None, NOW);
+        record.agents[0].thread.push_event(
+            crate::thread::ThreadEventKind::Reasoning,
+            Some("where to start".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        record.agents[0].thread.push_event(
+            crate::thread::ThreadEventKind::ToolUse,
+            Some("Read lib.rs".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        for index in 0..150 {
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Reasoning,
+                Some(format!("thought {index}")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+        let thread = &record.agents[0].thread;
+
+        let limit = 1;
+        let (cut, has_more) = store
+            .thread_conversation_page(&record.agents[0].id, None, limit)
+            .expect("a page reads");
+        let from_store = thread.wire_value_of_page(&cut, has_more);
+        let from_memory = thread.wire_value_page(None, limit);
+
+        assert_eq!(
+            cut.digests
+                .first()
+                .expect("the run has a digest")
+                .last_tool_call
+                .as_ref()
+                .map(|last| last.sequence),
+            Some(3),
+            "the call under the thinking is the one the row prints"
+        );
+        assert_eq!(from_store["items"], from_memory["items"]);
+        assert_eq!(
+            from_store["activity_digests"],
+            from_memory["activity_digests"]
         );
     }
 

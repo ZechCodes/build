@@ -1227,6 +1227,18 @@ pub fn page_activity_budget(limit: usize) -> usize {
     limit * PAGE_ACTIVITY_PER_MESSAGE
 }
 
+/// How many items of one run a page ships: the shortest of the run itself, the
+/// per-run [`PAGE_ACTIVITY_RUN_CAP`] and what is left of the page's
+/// [`page_activity_budget`].
+///
+/// One rule in one place, because two readers spend the budget. The cut spends
+/// it over a span it already holds; the store spends it deciding how much of a
+/// run to read at all, and a run it reads more of than it ships is exactly the
+/// cost the bounded read exists to remove.
+pub fn run_items_shipped(run_len: usize, activity_left: usize) -> usize {
+    run_len.min(PAGE_ACTIVITY_RUN_CAP).min(activity_left)
+}
+
 /// The newest tool call of an activity run, as a folded row prints it.
 ///
 /// A fixed shape: `summary` and `outcome` serialize as `null` when the call
@@ -1361,10 +1373,7 @@ where
             .iter()
             .find_map(|item| item.borrow().tool_call().map(LastToolCall::of)),
     });
-    let ships = run_newest_first
-        .len()
-        .min(PAGE_ACTIVITY_RUN_CAP)
-        .min(page.activity_left);
+    let ships = run_items_shipped(run_newest_first.len(), page.activity_left);
     page.activity_left -= ships;
     page.cut
         .items

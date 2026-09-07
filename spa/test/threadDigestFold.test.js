@@ -1,0 +1,172 @@
+// @vitest-environment jsdom
+// The number on a folded run.
+//
+// A run of a thousand tool calls ships as a hundred: the bridge caps how much
+// of one run travels and sends the run's total beside it. So the row counts
+// TOOL CALLS, from the digest, and shows the last call the agent made — never
+// how many rows happened to arrive.
+
+import { describe, expect, it } from "vitest";
+import { threadHtml } from "../src/core/thread.js";
+
+const toolCall = (sequence, summary, extra = {}) => ({
+  type: "event",
+  data: { sequence, event: "tool_use", summary, created_at: "2026-09-06T18:03:11.412Z", ...extra },
+});
+
+const reasoning = (sequence, summary) => ({
+  type: "event",
+  data: { sequence, event: "reasoning", summary, created_at: "2026-09-06T18:03:11.412Z" },
+});
+
+const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+
+const paint = (thread) => {
+  document.body.innerHTML = threadHtml(thread);
+  return document.querySelector(".thread-activity-group");
+};
+
+const countOn = (group) => group.querySelector(".thread-activity-count").textContent;
+const previewOn = (group) => group.querySelector(".thread-activity-preview").textContent;
+const iconOn = (group) => group.querySelector(".thread-activity-group-head .thread-event-icon").textContent;
+
+describe("a folded run drawn from its digest", () => {
+  const digest = (from, through, toolCalls, lastToolCall = null) => ({
+    from_sequence: from,
+    through_sequence: through,
+    tool_calls: toolCalls,
+    last_tool_call: lastToolCall,
+  });
+
+  it("says what the bridge counted, not how many rows arrived", () => {
+    const group = paint({
+      items: [toolCall(1529, "Read spa/src/core/thread.js"), toolCall(1530, "Bash(cargo test)", { outcome: "ok" })],
+      activityDigests: [
+        digest(412, 1531, 1000, {
+          sequence: 1530,
+          created_at: "2026-09-06T18:03:11.412Z",
+          summary: "Bash(cargo test)",
+          outcome: "ok",
+        }),
+      ],
+    });
+
+    expect(countOn(group)).toBe("1000");
+    expect(previewOn(group)).toBe("Bash(cargo test)");
+    expect(group.querySelector(".thread-activity-outcome").dataset.outcome).toBe("ok");
+    expect(group.querySelectorAll(".thread-activity-group-list .thread-activity")).toHaveLength(2);
+  });
+
+  it("adds the calls that arrived after the page was cut", () => {
+    const group = paint({
+      items: [toolCall(1530, "Bash(cargo test)"), toolCall(1532, "Edit bridge/src/app.rs")],
+      activityDigests: [digest(412, 1531, 1000, { sequence: 1530, summary: "Bash(cargo test)", outcome: "ok" })],
+    });
+
+    expect(countOn(group)).toBe("1001");
+    expect(previewOn(group)).toBe("Edit bridge/src/app.rs");
+  });
+
+  it("shows the last call the digest recorded when the run holds none", () => {
+    const group = paint({
+      items: [reasoning(1600, "Reading the review.")],
+      activityDigests: [
+        digest(412, 1600, 1000, {
+          sequence: 1530,
+          created_at: "2026-09-06T18:03:11.412Z",
+          summary: "Bash(cargo test)\n→ 412 passed",
+          outcome: "error",
+        }),
+      ],
+    });
+
+    expect(countOn(group)).toBe("1000");
+    expect(previewOn(group)).toBe("Bash(cargo test)");
+    expect(group.querySelector(".thread-activity-outcome").dataset.outcome).toBe("error");
+  });
+
+  it("gives each run between messages its own digest", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        toolCall(10, "Read a.js"),
+        message(11, "Reading the parser."),
+        toolCall(12, "Read b.js"),
+      ],
+      activityDigests: [digest(1, 10, 40), digest(12, 12, 300)],
+    });
+
+    expect(
+      [...document.querySelectorAll(".thread-activity-group")].map((group) => countOn(group)),
+    ).toEqual(["40", "300"]);
+  });
+
+  // A conversation shipped whole, and every run written since the page was
+  // cut: nothing has a digest, so the rows in hand are the count.
+  it("counts the calls in hand when no digest reaches the run", () => {
+    const group = paint({ items: [toolCall(1, "Read a.js"), reasoning(2, "Thinking."), toolCall(3, "Read b.js")] });
+
+    expect(countOn(group)).toBe("2");
+    expect(previewOn(group)).toBe("Read b.js");
+  });
+
+  // A subagent's calls fold under the call that spawned them: they are never
+  // rows of their own, so a count of rows says one where the agent made four.
+  it("counts the calls a subagent made under the call that spawned it", () => {
+    const group = paint({
+      items: [
+        toolCall(2, "Task(review the parser)"),
+        toolCall(3, "Read spa/src/core/thread.js", { parent_sequence: 2 }),
+        toolCall(4, "Grep patchList", { parent_sequence: 2 }),
+        toolCall(5, "Bash(npm test)", { parent_sequence: 2 }),
+      ],
+    });
+
+    expect(group.querySelectorAll(".thread-activity-group-list > .thread-activity")).toHaveLength(1);
+    expect(countOn(group)).toBe("4");
+    expect(previewOn(group)).toBe("Bash(npm test)");
+  });
+
+  it("tops the digest up with the subagent calls that arrived after it", () => {
+    const group = paint({
+      items: [
+        toolCall(2, "Task(review the parser)"),
+        toolCall(3, "Read spa/src/core/thread.js", { parent_sequence: 2 }),
+        toolCall(4, "Grep patchList", { parent_sequence: 2 }),
+        toolCall(5, "Bash(npm test)", { parent_sequence: 2 }),
+      ],
+      activityDigests: [
+        digest(2, 2, 1, { sequence: 2, summary: "Task(review the parser)", outcome: "ok" }),
+      ],
+    });
+
+    expect(countOn(group)).toBe("4");
+  });
+
+  // The head is one reading: the line, the mark, the time and the glyph all
+  // say the same call. A run that trails off into thinking still shows what
+  // the agent last did, so the glyph beside it is a call's.
+  it("wears the glyph of the call it names, not of the row it ends on", () => {
+    const group = paint({
+      items: [toolCall(1530, "Bash(cargo test)", { outcome: "ok" }), reasoning(1531, "The suite is green.")],
+    });
+
+    expect(iconOn(group)).toBe("\u25b8");
+    expect(previewOn(group)).toBe("Bash(cargo test)");
+  });
+
+  it("wears the thinking glyph when a run that called nothing ends on a thought", () => {
+    const group = paint({ items: [reasoning(1, "Thinking."), reasoning(2, "Still thinking.")] });
+
+    expect(iconOn(group)).toBe("\u25cc");
+  });
+
+  it("keeps the old look for a run that called no tool", () => {
+    const group = paint({
+      items: [reasoning(1, "Thinking."), reasoning(2, "Still thinking.")],
+      activityDigests: [digest(1, 2, 0, null)],
+    });
+
+    expect(countOn(group)).toBe("2");
+    expect(previewOn(group)).toBe("Still thinking.");
+  });
+});

@@ -535,7 +535,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
 
   it("resets when an item is deleted from inside a window smaller than the whole", () => {
     const cache = createThreadCache();
-    const newest = Array.from({ length: 60 }, (_, index) => item(41 + index, `m${41 + index}`));
+    const newest = Array.from({ length: FIRST_PAGE_ITEMS }, (_, index) => item(81 + index, `m${81 + index}`));
     cache.absorb(page(newest, { thread_total: 100, has_more: true }));
 
     // The reviewer deleted their own open plan comment. A removal spends no
@@ -556,7 +556,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
 
   it("resets when a tick both deletes an item and posts one, leaving the whole the same length", () => {
     const cache = createThreadCache();
-    const newest = Array.from({ length: 60 }, (_, index) => item(41 + index, `m${41 + index}`));
+    const newest = Array.from({ length: FIRST_PAGE_ITEMS }, (_, index) => item(81 + index, `m${81 + index}`));
     cache.absorb(page(newest, { thread_total: 100, has_more: true }));
 
     // One poll interval is long enough for both, and the count that comes back
@@ -718,18 +718,19 @@ describe("thread cache paging (the window over a long conversation)", () => {
     for (let widening = 0; widening < 3; widening += 1) {
       cache.absorbOlderPage(pageAbove(cache.olderPageParam()), cache.olderPageParam());
     }
-    expect(cache.olderPageParam()).toEqual({ before_sequence: 61 });
+    const windowHeight = FIRST_PAGE_ITEMS * 4;
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 300 - windowHeight + 1 });
 
     // Then a delta goes missing and the window is dropped. Reopening on the
     // newest page alone would take 240 items of history off the reader's
     // screen mid-sentence — the surfaces keep the scroll offset they had, and
     // a timeline a quarter the height clamps it to somewhere they never were.
     cache.absorb({ items: [], thread_total: 300, thread_last_sequence: 305 });
-    expect(cache.cursorParam()).toStrictEqual({ thread_limit: 240 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: windowHeight });
 
-    const reopened = cache.absorb(newestPage(240));
+    const reopened = cache.absorb(newestPage(windowHeight));
     expect(reopened.items.map((i) => i.data.sequence)).toEqual(
-      conversation.slice(-240).map((i) => i.data.sequence),
+      conversation.slice(-windowHeight).map((i) => i.data.sequence),
     );
     expect(cache.hasOlderItems()).toBe(true);
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 300 });
@@ -814,19 +815,19 @@ describe("thread cache paging (the window over a long conversation)", () => {
   });
 });
 
-// The daemon's page stopped being measured in items: a page's `thread_limit`
-// buys CONVERSATION — messages and the events that call the human — and the
-// activity a headless session emits between them rides along uncounted, under
-// a hard ceiling of ten items per unit of budget. So a page routinely carries
-// far more items than it was asked for, which is a shape the merge here had
-// never been handed. No field changed meaning and none was added, so nothing
-// in the cache needed changing; these are what holds that claim.
+// The daemon's page is measured in MESSAGES, and it is not contiguous.
+//
+// A page's `thread_limit` buys messages: the walk always reaches the limit-th
+// of them, and the activity a headless session emits between them rides along
+// uncounted. What bounds a page is a cap per RUN of activity — only the newest
+// hundred items of any one run ship, and the run's digest accounts for the
+// rest. So a page routinely carries far more items than it asked for, with
+// holes inside its runs, and says what each run really came to beside them.
 describe("thread cache paging over an activity-heavy conversation", () => {
-  // The daemon's own bound: at most `limit * THREAD_PAGE_SPAN_FACTOR` items,
-  // factor 10 (bridge/src/thread.rs).
-  const PAGE_SPAN_FACTOR = 10;
+  // bridge/src/thread.rs: PAGE_ACTIVITY_RUN_CAP.
+  const RUN_CAP = 100;
   // `readOlderItems` names no bound, so the daemon's default page is what
-  // answers a scroll back — the same 60 the first load asks for.
+  // answers a scroll back — the same page the first load asks for.
   const DAEMON_PAGE = FIRST_PAGE_ITEMS;
 
   const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
@@ -846,45 +847,63 @@ describe("thread cache paging over an activity-heavy conversation", () => {
     return items;
   };
 
-  // The daemon's page rule, mirrored: walking newest→older from the seek,
-  // every item ships and the walk stops at the `limit`-th counted item or at
-  // the ceiling, whichever comes first. Only messages are counted here —
-  // activity is Status-classed, and Status-classed events ride free.
+  const isActivity = (entry) => entry.type !== "message";
+
+  // The daemon's page rule, mirrored: walk newest→older from the seek until
+  // the limit-th message, then cut each run of activity down to its newest
+  // `RUN_CAP` items and describe the whole of it in a digest.
   const conversationPage = (conversation, { before = Infinity, limit }) => {
     const older = conversation.filter((entry) => entry.data.sequence < before);
-    const ceiling = limit * PAGE_SPAN_FACTOR;
-    let taken = 0;
-    let counted = 0;
+    const span = [];
+    let messages = 0;
     for (const entry of [...older].reverse()) {
-      if (taken === ceiling || counted === limit) break;
-      taken += 1;
-      if (entry.type === "message") counted += 1;
+      if (messages === limit) break;
+      span.push(entry);
+      if (!isActivity(entry)) messages += 1;
     }
-    const items = older.slice(older.length - taken);
+    const shipped = [];
+    const digests = [];
+    for (let at = 0; at < span.length; at += 1) {
+      if (!isActivity(span[at])) {
+        shipped.push(span[at]);
+        continue;
+      }
+      const run = [];
+      while (at < span.length && isActivity(span[at])) run.push(span[at++]);
+      at -= 1;
+      shipped.push(...run.slice(0, RUN_CAP));
+      digests.push({
+        from_sequence: run.at(-1).data.sequence,
+        through_sequence: run[0].data.sequence,
+        tool_calls: run.filter((entry) => entry.data.event === "tool_use").length,
+        last_tool_call: { sequence: run[0].data.sequence, created_at: null, summary: run[0].data.summary, outcome: null },
+      });
+    }
+    const items = shipped.reverse();
     return {
       id: "thread:run-1",
       items,
+      activity_digests: digests.reverse(),
       revisions: [],
       thread_total: conversation.length,
       thread_last_sequence: conversation.at(-1).data.sequence,
       oldest_sequence: items[0]?.data.sequence ?? null,
-      has_more: older.length > taken,
+      has_more: older.length > span.length,
     };
   };
 
   const sequencesOf = (items) => items.map((entry) => entry.data.sequence);
+  const messagesOf = (items) => items.filter((entry) => !isActivity(entry));
 
   it("holds a page carrying far more items than the limit it asked for", () => {
     const cache = createThreadCache();
-    // Sixty turns of five tool calls each: the page buys sixty messages and
-    // three hundred tool calls travel with them, 360 items against a limit of
-    // 60. Before §6.3 the same ask answered with sixty items, of which ten
-    // were conversation.
+    // Twenty turns of five tool calls each: the page buys twenty messages and
+    // a hundred tool calls travel with them, against a limit of twenty.
     const conversation = sessionTranscript(80, 5);
     const opened = cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
 
     expect(opened.items).toHaveLength(FIRST_PAGE_ITEMS * 6);
-    expect(opened.items.filter((entry) => entry.type === "message")).toHaveLength(FIRST_PAGE_ITEMS);
+    expect(messagesOf(opened.items)).toHaveLength(FIRST_PAGE_ITEMS);
     // The window is sound: an oversized page is not a loss, and the forward
     // cursor engages off the newest item it shipped.
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.at(-1).data.sequence });
@@ -892,17 +911,29 @@ describe("thread cache paging over an activity-heavy conversation", () => {
     expect(cache.olderPageParam()).toEqual({ before_sequence: opened.items[0].data.sequence });
   });
 
-  it("walks an oversized window back to the start, seeing every item exactly once", () => {
+  it("holds a page with holes inside its runs, and the digests that account for them", () => {
     const cache = createThreadCache();
-    // Fifteen tool calls a turn, which is where the ceiling bites: sixty units
-    // of budget may ship six hundred items, and six hundred items of this
-    // conversation hold thirty-seven messages, not sixty. The page ends higher
-    // than the budget asked for, `has_more` says so, and the reader scrolls
-    // again — the design working, not a page that lost something.
+    // A hundred and fifty calls to a turn: fifty of each run stay behind, and
+    // the digest is the only word for them.
+    const conversation = sessionTranscript(6, 150);
+    const opened = cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
+
+    expect(messagesOf(opened.items)).toHaveLength(6);
+    expect(opened.items.filter(isActivity)).toHaveLength(6 * RUN_CAP);
+    expect(opened.activityDigests).toHaveLength(6);
+    expect(opened.activityDigests.map((held) => held.tool_calls)).toEqual([150, 150, 150, 150, 150, 150]);
+    // The window is still sound: a page shorter than the conversation is what
+    // paging IS, and the holes are inside it rather than at either end.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.at(-1).data.sequence });
+  });
+
+  it("walks an oversized window back to the start, seeing every message exactly once", () => {
+    const cache = createThreadCache();
+    // Fifteen tool calls a turn over forty turns: no run reaches the cap, so
+    // every page is contiguous and the walk covers the conversation whole.
     const conversation = sessionTranscript(40, 15);
     const first = conversationPage(conversation, { limit: FIRST_PAGE_ITEMS });
-    expect(first.items).toHaveLength(FIRST_PAGE_ITEMS * PAGE_SPAN_FACTOR);
-    expect(first.items.filter((entry) => entry.type === "message").length).toBeLessThan(FIRST_PAGE_ITEMS);
+    expect(messagesOf(first.items)).toHaveLength(FIRST_PAGE_ITEMS);
 
     cache.absorb(first);
     let widened = first;
@@ -925,6 +956,21 @@ describe("thread cache paging over an activity-heavy conversation", () => {
     // Scrolling back never moves the forward cursor: history arriving late is
     // not news.
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.length });
+  });
+
+  it("keeps every run's own digest as the reader walks back through them", () => {
+    const cache = createThreadCache();
+    const conversation = sessionTranscript(6, 150);
+    cache.absorb(conversationPage(conversation, { limit: 2 }));
+    let widened = null;
+    while (cache.hasOlderItems()) {
+      const seek = cache.olderPageParam();
+      widened = cache.absorbOlderPage(conversationPage(conversation, { before: seek.before_sequence, limit: 2 }), seek);
+    }
+
+    expect(messagesOf(widened.items)).toHaveLength(6);
+    expect(widened.activityDigests).toHaveLength(6);
+    expect(widened.activityDigests.map((held) => held.tool_calls)).toEqual([150, 150, 150, 150, 150, 150]);
   });
 
   it("keeps the window through a poll that delivers a turn's worth of activity", () => {
@@ -1223,6 +1269,7 @@ describe("the persisted window", () => {
       olderItemsRemain: true,
       deliveredSequence: 5,
       knownTotalItems: 9,
+      activityDigests: [],
     });
     expect(windowFromThreadPayload({ items: [] })).toBeNull();
     expect(windowFromThreadPayload(null)).toBeNull();
@@ -1235,5 +1282,119 @@ describe("naming a thread item", () => {
     expect(threadItemKey({ type: "event", data: { sequence: 0 } })).toBe("0");
     expect(threadItemKey({ type: "message", data: {} })).toBe("");
     expect(threadItemKey({})).toBe("");
+  });
+});
+
+// ---- the digests a window holds --------------------------------------------
+// A page ships a bounded slice of every activity run and a digest for the rest
+// of it. The window holds the digests the same way it holds the items: a page
+// says what a run totals, a forward delta says nothing about one, and an older
+// page reaches back to runs the window had never heard of.
+describe("the activity digests a window holds", () => {
+  const item = (sequence) => ({ id: `m-${sequence}`, data: { sequence } });
+  const digest = (from, through, toolCalls) => ({
+    from_sequence: from,
+    through_sequence: through,
+    tool_calls: toolCalls,
+    last_tool_call: null,
+  });
+
+  it("carries a first page's digests onto the thread it returns", () => {
+    const cache = createThreadCache();
+    const opened = cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    expect(opened.activityDigests).toEqual([digest(4, 9, 1000)]);
+  });
+
+  it("keeps them through a delta that says nothing about a run, and re-cuts one that does", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    const delta = cache.absorb({ items: [item(10)], thread_total: 10, thread_last_sequence: 10 });
+    expect(delta.activityDigests).toEqual([digest(4, 9, 1000)]);
+
+    const recut = cache.absorb({
+      items: [item(9), item(10)],
+      activity_digests: [digest(4, 10, 1001)],
+      has_more: true,
+      thread_total: 10,
+      thread_last_sequence: 10,
+    });
+    expect(recut.activityDigests).toEqual([digest(4, 10, 1001)]);
+  });
+
+  it("takes in the runs an older page reaches back to", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    const widened = cache.absorbOlderPage(
+      { items: [item(6), item(7)], activity_digests: [digest(1, 3, 12)], has_more: false, thread_total: 9 },
+      cache.olderPageParam(),
+    );
+
+    expect(widened.activityDigests.map((held) => held.from_sequence)).toEqual([1, 4]);
+  });
+
+  it("drops them with the window they belong to", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+    cache.reset();
+
+    expect(cache.readWindow()).toBeNull();
+    expect(cache.absorb({ items: [item(9)] }).activityDigests).toEqual([]);
+  });
+
+  it("round-trips them through the saved window", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    const saved = cache.readWindow();
+    expect(saved.activityDigests).toEqual([digest(4, 9, 1000)]);
+
+    const revived = createThreadCache();
+    revived.seedWindow(saved);
+    const folded = revived.absorb({ items: [item(10)], thread_total: 10, thread_last_sequence: 10 });
+    expect(folded.activityDigests).toEqual([digest(4, 9, 1000)]);
+  });
+
+  it("shapes a bare page's digests into the saved window the syncer writes", () => {
+    const shaped = windowFromThreadPayload({
+      items: [item(4), item(5)],
+      activity_digests: [digest(1, 5, 40)],
+      has_more: true,
+      thread_total: 9,
+    });
+
+    expect(shaped.activityDigests).toEqual([digest(1, 5, 40)]);
   });
 });

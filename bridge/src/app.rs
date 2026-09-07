@@ -6194,7 +6194,7 @@ impl AppState {
             }
             Some(after_sequence) => thread.wire_value_after(after_sequence),
             None => match thread_detail(params) {
-                ThreadDetail::Page(limit) => thread.wire_value_page(None, limit),
+                ThreadDetail::Page(limit) => self.thread_page_at(thread, None, limit)?,
                 _ => thread.wire_value(),
             },
         }))
@@ -12485,22 +12485,62 @@ impl AppState {
         let entity_id = conversation_owner_param(params)?;
         let thread = self.agent_conversation(&entity_id, named_agent_id(params).as_deref())?;
         let before = params.get("before_sequence").and_then(Value::as_u64);
-        let limit = thread_page_limit(params);
-        // A conversation is loaded as its tail, so a walk far enough up one
-        // leaves memory. Where it does, the page comes back out of the store —
-        // the same page, in the same shape, off the same seek.
-        if thread.page_reaches_stored_history(before, limit) {
-            return self.stored_thread_page(thread, before, limit);
+        self.thread_page_at(thread, before, thread_page_limit(params))
+    }
+
+    /// One page of a conversation, wherever the page lives.
+    ///
+    /// A conversation is loaded as its tail, so a page far enough up one — or
+    /// a first page of a session that emitted hundreds of tool calls between
+    /// two words — leaves memory. Where it does, the page comes back out of
+    /// the store: the same page, in the same shape, off the same seek, cut by
+    /// the same rule. The one gate every page passes, so the page a reviewer
+    /// opens on and the pages a scroll asks for above it always abut.
+    fn thread_page_at(
+        &self,
+        thread: &crate::thread::Thread,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Value, String> {
+        if thread.page_reaches_stored_history(before_sequence, limit) {
+            return self.stored_thread_page(thread, before_sequence, limit);
         }
-        Ok(thread.wire_value_page(before, limit))
+        Ok(thread.wire_value_page(before_sequence, limit))
+    }
+
+    /// The page a detail poll opens a conversation on.
+    ///
+    /// A detail view is the whole entity, and it renders whether or not the
+    /// store answers: a conversation short of its oldest turn is worth more to
+    /// a reviewer than an error where the view was, so a store that cannot be
+    /// read is reported and the tail memory holds is shipped instead.
+    ///
+    /// The fallback page carries NO activity digests. The gate only sends a
+    /// page to the store when the tail is too short to hold it, so the tail's
+    /// oldest item can sit in the middle of a run whose older half is stored —
+    /// and a census counted off memory would then name an exact number that is
+    /// short. A digest's count is read as fact, so a degraded page ships none
+    /// and the client falls back to counting the rows it was handed.
+    fn first_thread_page(&self, thread: &crate::thread::Thread, limit: usize) -> Value {
+        self.thread_page_at(thread, None, limit)
+            .unwrap_or_else(|error| {
+                eprintln!(
+                    "first_thread_page {}: {error}; shipping the resident tail",
+                    thread.agent.id
+                );
+                let mut page = thread.wire_value_page(None, limit);
+                page["activity_digests"] = json!([]);
+                page
+            })
     }
 
     /// One page of the history no load read, straight off the store.
     ///
-    /// Measured in conversation exactly as a resident page is — the limit buys
-    /// messages and the events that call the human, the activity between them
-    /// rides along — and the store answers `has_more` for items of any kind
-    /// below what it shipped, so a client's backward walk still abuts.
+    /// Cut exactly as a resident page is — the limit buys messages, the
+    /// activity between them rides along folded under its per-run cap, and the
+    /// digests beside it count what the cap left off. The store answers
+    /// `has_more` for items of any kind below what it shipped, so a client's
+    /// backward walk still abuts.
     fn stored_thread_page(
         &self,
         thread: &crate::thread::Thread,
@@ -12511,10 +12551,10 @@ impl AppState {
             .store
             .as_ref()
             .ok_or("this conversation's history is not stored")?;
-        let (page, has_more) = store
+        let (cut, has_more) = store
             .thread_conversation_page(&thread.agent.id, before_sequence, limit)
             .map_err(|error| format!("conversation store: {error}"))?;
-        Ok(thread.wire_value_of_page(&page.iter().collect::<Vec<_>>(), has_more))
+        Ok(thread.wire_value_of_page(&cut, has_more))
     }
 
     /// A cursor's delta completed out of the store: the forward seek answers
@@ -15840,7 +15880,7 @@ impl AppState {
             "thread": match thread_detail {
                 ThreadDetail::Digest => active.agents.sole_thread().digest_value(),
                 ThreadDetail::Full => active.agents.sole_thread().wire_value(),
-                ThreadDetail::Page(limit) => active.agents.sole_thread().wire_value_page(None, limit),
+                ThreadDetail::Page(limit) => self.first_thread_page(active.agents.sole_thread(), limit),
             },
             // The rail's bubble strip: one entry per agent, on every surface
             // that renders an entity, so status stays legible fully collapsed.
@@ -15982,7 +16022,7 @@ impl AppState {
             "thread": match thread_detail {
                 ThreadDetail::Digest => conversation.digest_value(),
                 ThreadDetail::Full => conversation.wire_value(),
-                ThreadDetail::Page(limit) => conversation.wire_value_page(None, limit),
+                ThreadDetail::Page(limit) => self.first_thread_page(conversation, limit),
             },
             // The rail's bubble strip — see `plan_view`.
             "agents": self.agent_digests(run_id, scope),
@@ -35661,7 +35701,7 @@ mod tests {
 
         // A number that went through a URL or an encoder without an integer
         // type still names the page its client typed.
-        for spelling in [json!("60"), json!(60.0)] {
+        for spelling in [json!("20"), json!(20.0)] {
             let thread = page_of(&mut state, spelling.clone());
             assert_eq!(
                 thread["items"].as_array().unwrap().len(),
@@ -35673,7 +35713,7 @@ mod tests {
 
         // A limit nobody can read is still a client saying it can page, so it
         // gets one — the default's worth — rather than the unbounded answer.
-        for nonsense in [json!(-1), json!("sixty"), json!(true), json!([60])] {
+        for nonsense in [json!(-1), json!("twenty"), json!(true), json!([20])] {
             let thread = page_of(&mut state, nonsense.clone());
             assert_eq!(
                 thread["items"].as_array().unwrap().len(),
@@ -43326,6 +43366,61 @@ mod tests {
         issue_id
     }
 
+    /// The page a reviewer OPENS on is cut by the same gate a scroll is. An
+    /// issue whose tail holds nothing but tool calls has its words under the
+    /// tail, so a detail poll that reads only memory hands the reviewer a
+    /// conversation with nothing said in it — and digests a run it can only
+    /// see the newest of.
+    #[test]
+    fn a_detail_polls_page_reaches_the_words_under_a_starved_tail() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            issue_buried_in_activity(
+                &mut state,
+                "fix the login redirect",
+                "the redirect drops the query string",
+            )
+        };
+
+        let mut state = qa_state(&repo, dir.path());
+        let answer = state.handle(req(
+            "issue.get",
+            json!({ "issue_id": issue_id, "thread_limit": 20 }),
+        ));
+        let thread = &answer["result"]["thread"];
+        let said: Vec<&str> = thread["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .map(|item| item["data"]["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                "fix the login redirect",
+                "the redirect drops the query string"
+            ],
+            "the page a reviewer opens on says nothing"
+        );
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            said.len() + crate::thread::PAGE_ACTIVITY_RUN_CAP,
+            "the run ships its newest hundred and no more"
+        );
+
+        // And the digest over the run covers the WHOLE run, not the slice of
+        // it the tail happened to hold.
+        let digests = thread["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 1, "{digests:?}");
+        assert_eq!(
+            digests[0]["tool_calls"],
+            crate::store::RESIDENT_CONVERSATION_TAIL as u64 + 40,
+            "{digests:?}"
+        );
+    }
+
     /// §6.3's first failure. A conversation is loaded as its newest 200 items,
     /// and one session emits hundreds of tool calls — so the agent that boots
     /// onto that tail is exactly the one whose messages-only packet finds no
@@ -43483,6 +43578,15 @@ mod tests {
         );
         assert_eq!(said.last(), Some(&"ask 39"), "{said:?}");
 
+        // And the work between the words is folded rather than shipped row by
+        // row: one digest per run, each counting the calls it made.
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 5, "one per run on the page: {digests:?}");
+        assert!(
+            digests.iter().all(|digest| digest["tool_calls"] == 6),
+            "{digests:?}"
+        );
+
         // And the walk back is whole: every item exactly once, in order, over
         // the seam between the tail and the stored history under it.
         let mut walked: Vec<u64> = Vec::new();
@@ -43517,6 +43621,66 @@ mod tests {
             before = walked.first().copied();
         }
         assert_eq!(walked, (1..=held).collect::<Vec<u64>>());
+    }
+
+    /// The degraded first page. A detail view renders whether or not the store
+    /// answers, so a first page whose gate said "this reaches the stored
+    /// history" and then could not read it ships the resident tail instead —
+    /// and ships it WITHOUT digests. The tail's oldest item can sit mid-run, so
+    /// a census counted off memory would name an exact number that is short,
+    /// and a client prints a digest's count as fact. No digest sends the client
+    /// back to counting the rows it was handed: honest, and visibly a floor.
+    #[test]
+    fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "trim the retry loop", "dispatch": false }),
+        )));
+        let agent_id = primary_agent_id(&state, &issue_id);
+        state
+            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                for index in 0..12 {
+                    thread.push_event(
+                        crate::thread::ThreadEventKind::ToolUse,
+                        Some(format!("Read file-{index}.rs")),
+                        None,
+                        None,
+                        "2026-08-29T09:01:00Z",
+                    );
+                }
+                thread.post_agent("renamed it", None, "2026-08-29T09:02:00Z");
+                // The tail as a load leaves it: history underneath it, and an
+                // oldest item that sits in the middle of a run — the run runs
+                // on below the tail, where only the store can count it.
+                let tail = thread.items[1..].to_vec();
+                let last = thread.last_sequence();
+                thread.adopt_stored_tail(tail, 400, last);
+                Ok(())
+            })
+            .expect("the conversation is written");
+
+        // The store goes away under the page the way a read failure leaves it:
+        // the gate still says the history is down there, and nothing answers.
+        state.store = None;
+        let thread = state
+            .agent_conversation(&issue_id, None)
+            .expect("the conversation");
+        assert!(
+            thread.page_reaches_stored_history(None, 5),
+            "the fixture has to trip the page gate"
+        );
+        let page = state.first_thread_page(thread, 5);
+        assert_eq!(
+            page["activity_digests"],
+            json!([]),
+            "a page the store could not answer counts nothing: {page}"
+        );
+        assert!(
+            !page["items"].as_array().unwrap().is_empty(),
+            "the resident tail still ships: {page}"
+        );
     }
 
     /// The Issue's conversation is where the human follows the work they asked

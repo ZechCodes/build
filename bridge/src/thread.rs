@@ -4,6 +4,7 @@
 //! run), while individual harness processes are recorded as session lineage.
 //! Messages cost agent tokens; events and revision links do not.
 
+use std::borrow::Borrow;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -726,6 +727,25 @@ impl ThreadEventKind {
         ThreadEventKind::TaskUpdate,
     ];
 
+    /// Whether this event is the agent working rather than something said or
+    /// decided.
+    ///
+    /// Activity is what a conversation folds: the thinking, the tool calls and
+    /// their answers, the narration, and the background tasks that outlive a
+    /// turn. Everything else — a message, a lifecycle marker, a call for the
+    /// human — ends a run of it. The web client folds the same five kinds, and
+    /// a test over [`ALL`](Self::ALL) holds the two readings equal.
+    pub fn is_activity(self) -> bool {
+        matches!(
+            self,
+            ThreadEventKind::Reasoning
+                | ThreadEventKind::ToolUse
+                | ThreadEventKind::ToolResult
+                | ThreadEventKind::Narration
+                | ThreadEventKind::TaskUpdate
+        )
+    }
+
     /// Whether this event needs the human, or merely tells them where things
     /// got to.
     ///
@@ -1025,6 +1045,56 @@ impl ThreadItem {
         matches!(self, ThreadItem::Message(_)) || self.attention_reason().is_some()
     }
 
+    /// Whether this item is the agent working — the rule a page's activity
+    /// runs are cut on.
+    ///
+    /// A message is never activity, whoever wrote it: a run of work ends the
+    /// moment somebody says something.
+    pub fn is_activity(&self) -> bool {
+        match self {
+            ThreadItem::Event(event) => event.event.is_activity(),
+            ThreadItem::Message(_) => false,
+        }
+    }
+
+    /// The tool call this item is, or `None` — the one place that answers
+    /// "is this a tool call".
+    ///
+    /// A call and its answer are one row, so the call carries the outcome and
+    /// there is nothing else to join it to.
+    fn tool_call(&self) -> Option<&ThreadEvent> {
+        match self {
+            ThreadItem::Event(event) if event.event == ThreadEventKind::ToolUse => Some(event),
+            _ => None,
+        }
+    }
+
+    /// Whether this item is a tool call — what a folded run of activity counts,
+    /// and what the store hoists into its `tool_call` column.
+    pub fn is_tool_call(&self) -> bool {
+        self.tool_call().is_some()
+    }
+
+    /// Whether this item spends a page's budget — the page measure, and only
+    /// that.
+    ///
+    /// A page's limit buys MESSAGES, either role, an outcome among them since
+    /// an outcome is a message. Everything else on a conversation rides free:
+    /// the activity between two messages, and the lifecycle and attention
+    /// events with it. So the page a reviewer opens on is always the last
+    /// `limit` things anybody said, however much work and however many
+    /// milestones happened between them.
+    ///
+    /// Distinct from [`counted`](Self::counted), which is what an unread badge
+    /// and a catch-up packet measure: an attention event still calls the human
+    /// even though it costs a page nothing.
+    ///
+    /// The store filters the same rule as `message = 1` over the hoisted
+    /// column.
+    pub fn counts_toward_page(&self) -> bool {
+        matches!(self, ThreadItem::Message(_))
+    }
+
     /// What this item referenced, as derived when it was written.
     pub fn metadata(&self) -> &ItemMetadata {
         match self {
@@ -1116,15 +1186,14 @@ pub struct ConversationQuery {
     pub limit: usize,
 }
 
-/// How many conversation items a page carries when the caller asks for one
-/// without saying how large.
+/// How many MESSAGES a page carries when the caller asks for one without
+/// saying how large.
 ///
-/// One sitting at a task — the asks, the agent's replies, and the events
-/// between them — runs to a few dozen items; 60 holds a long one whole, so the
-/// view a reviewer opens onto is already the work they were doing. Everything
-/// older is a page up, which is the point: a conversation of hundreds no longer
-/// ships whole to show its last hour.
-pub const DEFAULT_THREAD_PAGE: usize = 60;
+/// The limit buys what was said, so twenty is twenty turns of conversation —
+/// the sitting a reviewer opens onto — however much work happened between
+/// them. Everything older is a page up, which is the point: a conversation of
+/// hundreds no longer ships whole to show its last hour.
+pub const DEFAULT_THREAD_PAGE: usize = 20;
 
 /// The most conversation one page ships, however large a limit it asks for.
 ///
@@ -1132,17 +1201,176 @@ pub const DEFAULT_THREAD_PAGE: usize = 60;
 /// paging exists to prevent, so the cap holds even when the caller means well.
 pub const MAX_THREAD_PAGE: usize = 200;
 
-/// How many items a page may ship per unit of its limit.
+/// How many items of any ONE run of activity a page ships.
 ///
-/// A page's `limit` buys CONVERSATION — messages and the events that call the
-/// human — and the activity between two messages travels beside them without
-/// being counted, because an agent that spent an hour on tool calls must not
-/// push what was said off the page a reviewer opens on. This is the hard bound
-/// that keeps "rides free" from meaning "unbounded": an all-activity stretch
-/// ends the page early, and `has_more` says so. A multiple of the budget
-/// rather than a flat constant, so the smallest polls stay small — a page of 1
-/// ships at most 10 items, the default 60 at most 600.
-pub const THREAD_PAGE_SPAN_FACTOR: usize = 10;
+/// A run is folded to a single row, so what the wire has to carry is the newest
+/// of it — the last thing the agent did, and enough above it to read as work.
+/// The digest beside the page carries the truth about the rest: how many calls
+/// the run made, and which one was last. Items past the cap are omitted, which
+/// is why a page is not a contiguous run of sequences.
+pub const PAGE_ACTIVITY_RUN_CAP: usize = 100;
+
+/// How many activity items a page may ship per message of its limit: a page of
+/// 1 ships at most 10 activity items, so the smallest polls — the branch
+/// surface and console poll `thread_limit` 1 every tick and read none of it —
+/// stay small; the default 20 ships at most 200.
+pub const PAGE_ACTIVITY_PER_MESSAGE: usize = 10;
+
+/// The whole-page activity budget a limit buys.
+///
+/// The per-run cap bounds one run; this bounds the page. Twenty runs each
+/// capped at a hundred is still two thousand rows for twenty messages, which
+/// is the shape the cap alone leaves behind — so the budget is spent
+/// newest-first and the runs a reviewer has not scrolled to fold down to their
+/// digests.
+pub fn page_activity_budget(limit: usize) -> usize {
+    limit * PAGE_ACTIVITY_PER_MESSAGE
+}
+
+/// The newest tool call of an activity run, as a folded row prints it.
+///
+/// A fixed shape: `summary` and `outcome` serialize as `null` when the call
+/// carries none, so the client falls back rather than reading around an absent
+/// field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LastToolCall {
+    pub sequence: u64,
+    pub created_at: String,
+    pub summary: Option<String>,
+    pub outcome: Option<ToolCallOutcome>,
+}
+
+impl LastToolCall {
+    fn of(event: &ThreadEvent) -> Self {
+        LastToolCall {
+            sequence: event.sequence,
+            created_at: event.created_at.clone(),
+            summary: event.summary.clone(),
+            outcome: event.outcome,
+        }
+    }
+}
+
+/// What one folded run of activity amounts to, whatever a page shipped of it.
+///
+/// The count is the fact only the bridge can see: a client counts the rows it
+/// was handed, and the cap means those are not all the rows there were. So the
+/// span is named — `[from_sequence, through_sequence]`, the run's own first and
+/// last item — and the count is exact over it, cap-omitted items included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivityDigest {
+    pub from_sequence: u64,
+    pub through_sequence: u64,
+    pub tool_calls: u64,
+    pub last_tool_call: Option<LastToolCall>,
+}
+
+/// A page: what ships, and what the runs inside it mean. Held together because
+/// they are one answer — items alone would say a run was a hundred calls long.
+pub struct PageCut<T> {
+    pub items: Vec<T>,
+    pub digests: Vec<ActivityDigest>,
+}
+
+/// Cut a page out of the span it reaches over: keep everything that is not
+/// activity, keep the newest of every run that is, and answer for each run
+/// with a digest.
+///
+/// Two bounds hold the activity down, and a run keeps the smaller of them: the
+/// per-run [`PAGE_ACTIVITY_RUN_CAP`], and what is left of the whole page's
+/// [`page_activity_budget`]. The walk is newest-first, so the runs a reviewer
+/// opens on are whole and the ones above them fold to their digests. Messages
+/// and every other non-activity item ship whatever the budget has left — the
+/// limit bought them, and they are what the page is FOR.
+///
+/// The digests are exact either way. Their counts come from the census over
+/// each run's whole span, never from what shipped.
+///
+/// Generic over how the caller holds an item, so neither page path has to take
+/// its span apart and put it back together: memory passes borrows off its
+/// resident tail, the store passes the items it just decoded, and both get the
+/// same cut back. Takes the span newest-first — the order both paths read in —
+/// and hands the items back oldest-first, the order a conversation is rendered
+/// in.
+///
+/// `tool_calls_between` is the census, and the only thing that differs between
+/// reading memory and reading SQLite. It is asked for the run's whole span,
+/// which both callers can answer exactly: a run on a page never reaches below
+/// the span, because the span's oldest item is a message and a message ends a
+/// run.
+pub fn cut_activity_runs<T, E>(
+    span_newest_first: Vec<T>,
+    limit: usize,
+    tool_calls_between: impl Fn(u64, u64) -> Result<u64, E>,
+) -> Result<PageCut<T>, E>
+where
+    T: Borrow<ThreadItem>,
+{
+    let mut page = PageBeingCut {
+        cut: PageCut {
+            items: Vec::with_capacity(span_newest_first.len()),
+            digests: Vec::new(),
+        },
+        activity_left: page_activity_budget(limit),
+    };
+    let mut run: Vec<T> = Vec::new();
+    for item in span_newest_first {
+        if item.borrow().is_activity() {
+            run.push(item);
+            continue;
+        }
+        page = fold_activity_run(page, std::mem::take(&mut run), &tool_calls_between)?;
+        page.cut.items.push(item);
+    }
+    let mut cut = fold_activity_run(page, run, &tool_calls_between)?.cut;
+    cut.items.reverse();
+    cut.digests.reverse();
+    Ok(cut)
+}
+
+/// A page part-way through being cut: the answer so far, and how much activity
+/// it may still ship. Held together so the budget cannot be spent by anything
+/// that is not also adding to the page.
+struct PageBeingCut<T> {
+    cut: PageCut<T>,
+    activity_left: usize,
+}
+
+/// Close one run onto the page: its digest, then as much of its newest as the
+/// per-run cap and the page's remaining budget allow. Both the run and the
+/// page being cut are newest-first, so the caller reverses once at the end
+/// rather than per run.
+fn fold_activity_run<T, E>(
+    mut page: PageBeingCut<T>,
+    run_newest_first: Vec<T>,
+    tool_calls_between: &impl Fn(u64, u64) -> Result<u64, E>,
+) -> Result<PageBeingCut<T>, E>
+where
+    T: Borrow<ThreadItem>,
+{
+    let (Some(newest), Some(oldest)) = (run_newest_first.first(), run_newest_first.last()) else {
+        return Ok(page);
+    };
+    let from_sequence = oldest.borrow().sequence();
+    let through_sequence = newest.borrow().sequence();
+    page.cut.digests.push(ActivityDigest {
+        from_sequence,
+        through_sequence,
+        tool_calls: tool_calls_between(from_sequence, through_sequence)?,
+        last_tool_call: run_newest_first
+            .iter()
+            .find_map(|item| item.borrow().tool_call().map(LastToolCall::of)),
+    });
+    let ships = run_newest_first
+        .len()
+        .min(PAGE_ACTIVITY_RUN_CAP)
+        .min(page.activity_left);
+    page.activity_left -= ships;
+    page.cut
+        .items
+        .extend(run_newest_first.into_iter().take(ships));
+    Ok(page)
+}
 
 /// How many hits a query returns when it does not say.
 pub const DEFAULT_QUERY_LIMIT: usize = 20;
@@ -2180,22 +2408,38 @@ impl Thread {
     /// Whether the page asked for reaches under the tail this process holds,
     /// and so has to be read from the store instead of out of memory.
     ///
-    /// Counted the way the page is: the tail answers when it holds the page's
-    /// worth of CONVERSATION below the seek, or when it holds the page's
-    /// ceiling in items of any kind — a tail that fills the ceiling is a full
-    /// page whatever is in it, and there is nothing the store could add.
+    /// Measured the way the page is: the tail answers when it holds the page's
+    /// worth of MESSAGES below the seek. A tail of pure activity holds no page
+    /// at all, however many items it holds — which is also what makes a page
+    /// answered from memory able to count its own runs, since its oldest walked
+    /// item is then a resident message.
     pub fn page_reaches_stored_history(&self, before_sequence: Option<u64>, limit: usize) -> bool {
         if self.earlier_item_count == 0 {
             return false;
         }
         let before = before_sequence.unwrap_or(u64::MAX);
-        let below: Vec<&ThreadItem> = self
-            .items
+        self.items
             .iter()
-            .filter(|item| item.sequence() < before)
-            .collect();
-        below.iter().filter(|item| item.counted()).count() < limit
-            && below.len() < page_span_ceiling(limit)
+            .filter(|item| item.sequence() < before && item.counts_toward_page())
+            .count()
+            < limit
+    }
+
+    /// How many tool calls the resident tail holds between two sequences,
+    /// inclusive — the memory census, and the exact sibling of the store's
+    /// `tool_calls_between`.
+    ///
+    /// Exact wherever a page is allowed to ask it: a page answered out of
+    /// memory has `page_reaches_stored_history() == false`, so every run it
+    /// touches is resident whole and nothing in `[from, through]` sits under
+    /// the tail.
+    pub fn tool_calls_between(&self, from_sequence: u64, through_sequence: u64) -> u64 {
+        self.items
+            .iter()
+            .filter(|item| {
+                item.is_tool_call() && (from_sequence..=through_sequence).contains(&item.sequence())
+            })
+            .count() as u64
     }
 
     /// Whether a cursor this far back reaches under the tail this process
@@ -2459,26 +2703,58 @@ impl Thread {
             .iter()
             .filter(|item| item.sequence() < before)
             .collect();
-        let page = &older[older.len() - page_span(older.iter().rev().copied(), limit)..];
-        // What is left above this page, plus the history no load read: both
+        let reached = older.len() - page_span(older.iter().rev().copied(), limit);
+        let span: Vec<&ThreadItem> = older[reached..].iter().rev().copied().collect();
+        // The census is exact over the span every digest NAMES, because the
+        // walk never leaves the resident tail: nothing in `[from, through]`
+        // sits under it. A digest covers a WHOLE run when the walk reached a
+        // message, which is what the page gate buys — a page memory answers
+        // has `page_reaches_stored_history() == false`, so its limit-th
+        // message is resident and a message ends the oldest run. A conversation
+        // shorter than the limit is reached whole and has nothing below it.
+        let census = |from: u64, through: u64| {
+            Ok::<u64, std::convert::Infallible>(self.tool_calls_between(from, through))
+        };
+        let cut = match cut_activity_runs(span, limit, census) {
+            Ok(cut) => cut,
+            Err(impossible) => match impossible {},
+        };
+        // What is left below what shipped, plus the history no load read: both
         // are pages the client can still ask for.
-        let outstanding = older.len() - page.len() + self.earlier_item_count as usize;
-        self.wire_value_of_page(page, outstanding > 0)
+        let outstanding = match cut.items.first().map(|item| item.sequence()) {
+            Some(oldest) => older.iter().filter(|item| item.sequence() < oldest).count(),
+            None => older.len(),
+        } + self.earlier_item_count as usize;
+        self.wire_value_of_page(&cut, outstanding > 0)
     }
 
-    /// The page shape, around items the caller already chose — the tail this
-    /// process holds, or a page read back out of the store.
+    /// The page shape, around the cut the caller already made — off the tail
+    /// this process holds, or off a page read back out of the store. Takes the
+    /// cut whole, borrowed or owned, so items and digests cannot be assembled
+    /// out of sync.
+    ///
+    /// A page is NOT guaranteed contiguous: the per-run cap omits items inside
+    /// a run of activity, and `activity_digests` is what accounts for them —
+    /// one per run the page touches, exact over the whole run. `has_more` is
+    /// unchanged and means what it always did: something sits below the page's
+    /// oldest SHIPPED item.
     ///
     /// `thread_total` still counts the whole conversation, not the page, so the
     /// client can tell "my cache is a bounded window" from "my cache lost
     /// something" — the gap check the forward cursor already relies on.
-    pub fn wire_value_of_page(&self, page: &[&ThreadItem], has_more: bool) -> Value {
+    pub fn wire_value_of_page<T: Borrow<ThreadItem>>(
+        &self,
+        cut: &PageCut<T>,
+        has_more: bool,
+    ) -> Value {
+        let page: Vec<&ThreadItem> = cut.items.iter().map(Borrow::borrow).collect();
         count_serialized_items(page.len());
         json!({
             "id": self.id,
             "agent": self.agent,
             "sessions": self.sessions,
             "items": page,
+            "activity_digests": cut.digests,
             "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
             "thread_total": self.total_item_count(),
@@ -2548,29 +2824,23 @@ impl Thread {
     }
 }
 
-/// The most items a page of `limit` conversation may ship.
-pub fn page_span_ceiling(limit: usize) -> usize {
-    limit.saturating_mul(THREAD_PAGE_SPAN_FACTOR)
-}
-
-/// How many items a page takes, walking newest→older: every item ships, the
-/// walk stops at the `limit`-th counted item, and the ceiling stops it early
-/// however much activity it is walking through.
+/// How far back a page reaches, walking newest→older: to the `limit`-th
+/// message, and no further.
 ///
-/// So activity BETWEEN counted items travels with the page uncounted, folded
-/// beside the messages it sits between, and activity older than the page's
-/// oldest counted item waits for the next page. A page is always one
-/// contiguous run of sequences.
+/// The whole span, not what ships: activity between two messages is the page's
+/// too, and [`cut_activity_runs`] decides how much of each run the wire
+/// carries. A conversation shorter than the limit is reached whole, which is
+/// what makes the oldest walked item either a message or the start of the
+/// conversation — and so what makes a run on a page always countable.
 fn page_span<'a>(newest_first: impl Iterator<Item = &'a ThreadItem>, limit: usize) -> usize {
-    let ceiling = page_span_ceiling(limit);
     let mut taken = 0;
     let mut counted = 0;
     for item in newest_first {
-        if taken == ceiling || counted == limit {
+        if counted == limit {
             break;
         }
         taken += 1;
-        if item.counted() {
+        if item.counts_toward_page() {
             counted += 1;
         }
     }
@@ -3215,6 +3485,34 @@ mod counted_page_tests {
         assert_eq!(page["thread_total"], 60, "the total counts every item");
     }
 
+    /// A page's limit buys MESSAGES, and nothing else on a conversation spends
+    /// it. An outcome, a block, a commit — everything Build records about the
+    /// work — rides beside the words it belongs to, so the page a reviewer
+    /// opens on is always the last twenty things anybody said.
+    #[test]
+    fn a_pages_limit_buys_messages_and_the_lifecycle_rides_beside_them() {
+        let mut thread = Thread::new("run-outcomes");
+        for turn in 0..6 {
+            thread.post_user(format!("ask {turn}"), None, NOW);
+            thread.push_event(
+                ThreadEventKind::Done,
+                Some(format!("finished {turn}")),
+                None,
+                None,
+                NOW,
+            );
+        }
+
+        let page = thread.wire_value_page(None, 3);
+        let shipped = page_items(&page);
+        assert_eq!(counted_in_page(&page), 3, "the limit counts messages");
+        assert_eq!(
+            shipped.len(),
+            6,
+            "each message's attention event rides with it: {shipped:?}"
+        );
+    }
+
     /// The page stops AT the limit-th counted item: activity older than it is
     /// the next page's, so a page is never padded with work nobody asked for.
     #[test]
@@ -3233,11 +3531,14 @@ mod counted_page_tests {
         );
     }
 
-    /// The ceiling. An all-activity stretch cannot make a page unbounded: the
-    /// walk stops at ten items per unit of the budget, the page ends higher,
-    /// and `has_more` says there is more to ask for.
+    /// The cap. An all-activity stretch cannot make a page unbounded: the run
+    /// ships its newest hundred and the digest beside it says how many there
+    /// really were, so the reviewer is told a thousand without being sent one.
+    ///
+    /// The limit is the one that buys a budget of exactly the cap, so what
+    /// bounds this page is the cap and nothing else.
     #[test]
-    fn an_all_activity_stretch_is_bounded_by_the_span_factor() {
+    fn an_all_activity_stretch_is_bounded_by_the_run_cap() {
         let mut thread = Thread::new("run-busy");
         thread.post_user("please rename the helper", None, NOW);
         for index in 0..1000 {
@@ -3250,17 +3551,235 @@ mod counted_page_tests {
             );
         }
 
-        let page = thread.wire_value_page(None, 5);
+        let page = thread.wire_value_page(None, PAGE_ACTIVITY_RUN_CAP / PAGE_ACTIVITY_PER_MESSAGE);
         let shipped = page_items(&page);
         assert_eq!(
             shipped.len(),
-            5 * THREAD_PAGE_SPAN_FACTOR,
+            1 + PAGE_ACTIVITY_RUN_CAP,
             "{}",
             shipped.len()
         );
-        assert_eq!(counted_in_page(&page), 0, "there was nothing said in it");
-        assert_eq!(page["has_more"], true, "the walk stopped early and says so");
+        assert_eq!(counted_in_page(&page), 1, "the one thing said is on it");
+        assert_eq!(
+            page["has_more"], false,
+            "nothing sits below the page's oldest item"
+        );
         assert_eq!(page["oldest_sequence"], shipped[0]);
+
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 1, "{digests:?}");
+        assert_eq!(digests[0]["from_sequence"], 2);
+        assert_eq!(digests[0]["through_sequence"], thread.last_sequence());
+        assert_eq!(digests[0]["tool_calls"], 1000, "the omitted calls counted");
+        assert_eq!(digests[0]["last_tool_call"]["sequence"], 1001);
+        assert_eq!(
+            digests[0]["last_tool_call"]["summary"], "Read file-999.rs",
+            "{digests:?}"
+        );
+    }
+
+    /// The smallest poll there is. The branch surface and the console ask for
+    /// one message a tick and read none of the work between them, so a page of
+    /// 1 over an open run of a thousand calls ships the message, ten rows of
+    /// activity, and a digest that says a thousand.
+    #[test]
+    fn a_page_of_one_message_ships_ten_activity_items_and_counts_the_rest() {
+        let mut thread = Thread::new("run-busy");
+        thread.post_user("please rename the helper", None, NOW);
+        for index in 0..1000 {
+            thread.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+
+        let page = thread.wire_value_page(None, 1);
+        let shipped = page_items(&page);
+        assert_eq!(counted_in_page(&page), 1, "the one thing said is on it");
+        assert_eq!(
+            shipped.len(),
+            1 + page_activity_budget(1),
+            "a page of one buys ten items of work: {}",
+            shipped.len()
+        );
+
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 1, "{digests:?}");
+        assert_eq!(
+            digests[0]["tool_calls"], 1000,
+            "the digest is exact whatever the page shipped"
+        );
+        assert_eq!(digests[0]["last_tool_call"]["sequence"], 1001);
+    }
+
+    /// The whole-page budget. The per-run cap bounds ONE run, and twenty
+    /// capped runs on one page is still two thousand rows — so a page spends a
+    /// budget across all of its runs, newest first. The newest runs are whole,
+    /// the oldest shrink to their digest, and every digest still counts its
+    /// whole run.
+    #[test]
+    fn a_page_of_many_runs_spends_its_budget_newest_first() {
+        let mut thread = Thread::new("run-long");
+        for turn in 0..DEFAULT_THREAD_PAGE {
+            thread.post_user(format!("ask {turn}"), None, NOW);
+            for index in 0..PAGE_ACTIVITY_RUN_CAP {
+                thread.push_event(
+                    ThreadEventKind::ToolUse,
+                    Some(format!("Read file-{turn}-{index}.rs")),
+                    None,
+                    None,
+                    NOW,
+                );
+            }
+        }
+
+        let budget = page_activity_budget(DEFAULT_THREAD_PAGE);
+        let page = thread.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        let shipped = page_items(&page);
+        assert_eq!(
+            counted_in_page(&page),
+            DEFAULT_THREAD_PAGE,
+            "the limit still buys every message it asked for"
+        );
+        assert_eq!(
+            shipped.len(),
+            DEFAULT_THREAD_PAGE + budget,
+            "and the work beside them is the budget, no more: {}",
+            shipped.len()
+        );
+
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(
+            digests.len(),
+            DEFAULT_THREAD_PAGE,
+            "one per run, whatever the run shipped: {}",
+            digests.len()
+        );
+        assert!(
+            digests
+                .iter()
+                .all(|digest| digest["tool_calls"] == PAGE_ACTIVITY_RUN_CAP),
+            "every digest is exact over its whole run: {digests:?}"
+        );
+        let shipped_per_run: Vec<usize> = digests
+            .iter()
+            .map(|digest| {
+                let span = digest["from_sequence"].as_u64().unwrap()
+                    ..=digest["through_sequence"].as_u64().unwrap();
+                shipped.iter().filter(|item| span.contains(item)).count()
+            })
+            .collect();
+        assert_eq!(
+            shipped_per_run
+                .iter()
+                .rev()
+                .take(2)
+                .copied()
+                .collect::<Vec<usize>>(),
+            vec![PAGE_ACTIVITY_RUN_CAP; 2],
+            "the newest runs are whole: {shipped_per_run:?}"
+        );
+        assert!(
+            shipped_per_run[..DEFAULT_THREAD_PAGE - 2]
+                .iter()
+                .all(|count| *count == 0),
+            "the older ones are their digest and nothing else: {shipped_per_run:?}"
+        );
+    }
+
+    /// Every page carries its runs' digests; a forward delta carries none —
+    /// a delta says what arrived, and what arrived is what the client holds.
+    #[test]
+    fn a_page_carries_activity_digests_and_a_delta_carries_none() {
+        let thread = conversation_with_activity(4, 3);
+
+        let page = thread.wire_value_page(None, 2);
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests.len(), 2, "one per run on the page: {digests:?}");
+        assert!(
+            digests
+                .iter()
+                .all(|digest| digest["tool_calls"] == 3 && digest["last_tool_call"].is_object()),
+            "{digests:?}"
+        );
+
+        let delta = thread.wire_value_after(0);
+        assert!(delta.get("activity_digests").is_none(), "{delta:?}");
+    }
+
+    /// A run of nothing but thinking folds to a row with nothing to claim, and
+    /// the fixed shape says so rather than leaving the field out.
+    #[test]
+    fn a_run_without_tool_calls_ships_a_null_last_call() {
+        let mut thread = Thread::new("run-quiet");
+        thread.post_user("what do you make of it", None, NOW);
+        for _ in 0..4 {
+            thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        }
+
+        let page = thread.wire_value_page(None, 5);
+        let digests = page["activity_digests"].as_array().unwrap();
+        assert_eq!(digests[0]["tool_calls"], 0, "{digests:?}");
+        assert!(digests[0]["last_tool_call"].is_null(), "{digests:?}");
+    }
+
+    /// The shape on the wire, whole. A client reads these four names and no
+    /// others, and a digest always carries `last_tool_call` — the object when
+    /// the run made a call, `null` when it made none — so nothing has to read
+    /// around a field that is sometimes absent.
+    #[test]
+    fn an_activity_digest_ships_a_fixed_shape() {
+        let mut thread = Thread::new("run-shape");
+        thread.post_user("rename the helper", None, NOW);
+        thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        let call = thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Bash(cargo test)".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        assert!(thread.resolve_tool_call(call, ToolCallOutcome::Ok, "1735 passed"));
+
+        let page = thread.wire_value_page(None, 5);
+        assert_eq!(
+            page["activity_digests"][0],
+            json!({
+                "from_sequence": 2,
+                "through_sequence": 3,
+                "tool_calls": 1,
+                "last_tool_call": {
+                    "sequence": 3,
+                    "created_at": NOW,
+                    "summary": "Bash(cargo test)\n\u{2192} 1735 passed",
+                    "outcome": "ok"
+                }
+            }),
+            "{page:?}"
+        );
+    }
+
+    /// The run still open at the end of a conversation is digested through the
+    /// thread's last sequence, not through some item inside it: a client
+    /// holding only the page can tell exactly which arrivals the digest has
+    /// already counted and which it must add itself.
+    #[test]
+    fn the_open_tail_runs_digest_reaches_the_threads_last_sequence() {
+        let thread = conversation_with_activity(6, 4);
+
+        let page = thread.wire_value_page(None, 2);
+        let digests = page["activity_digests"].as_array().unwrap();
+        let tail = digests.last().expect("the open run has a digest");
+        assert_eq!(tail["through_sequence"], thread.last_sequence(), "{tail:?}");
+        assert_eq!(tail["tool_calls"], 4, "{tail:?}");
+        assert_eq!(
+            tail["last_tool_call"]["sequence"],
+            thread.last_sequence(),
+            "{tail:?}"
+        );
     }
 
     /// What a sequence-paging client relies on: pages abut at their seeks, so
@@ -3286,12 +3805,12 @@ mod counted_page_tests {
         assert_eq!(walked, (1..=thread.last_sequence()).collect::<Vec<u64>>());
     }
 
-    /// The gate that sends a page to the store is counted too: a tail holding
-    /// only activity cannot answer a page, however many items it holds — and a
-    /// tail that fills the ceiling is a full page from memory whatever it
-    /// holds.
+    /// The gate that sends a page to the store is measured in messages too: a
+    /// tail holding only activity cannot answer a page, however many items it
+    /// holds, and a tail holding the page's worth of words answers it whatever
+    /// else is under it.
     #[test]
-    fn the_stored_page_gate_counts_conversation_and_respects_the_ceiling() {
+    fn the_stored_page_gate_is_measured_in_messages() {
         let mut whole = Thread::new("run-busy");
         whole.post_user("please rename the helper", None, NOW);
         for index in 0..300 {
@@ -3315,11 +3834,22 @@ mod counted_page_tests {
             starved.page_reaches_stored_history(None, 5),
             "a tail of pure activity holds no page of conversation"
         );
-        // A page of one buys ten items at most, and the tail holds twenty:
-        // there is nothing the store could add to it.
         assert!(
-            !starved.page_reaches_stored_history(None, 1),
-            "a tail that fills the ceiling is a full page from memory"
+            starved.page_reaches_stored_history(None, 1),
+            "not even one message: the words are under the tail"
+        );
+
+        whole.post_agent("renamed it", None, NOW);
+        let spoken = whole.items.clone();
+        let mut fed = Thread::new("run-busy");
+        fed.adopt_stored_tail(
+            spoken[spoken.len() - 20..].to_vec(),
+            (spoken.len() - 20) as u64,
+            whole.last_sequence(),
+        );
+        assert!(
+            !fed.page_reaches_stored_history(None, 1),
+            "a tail holding the page's words answers it from memory"
         );
     }
 }
@@ -3395,6 +3925,291 @@ mod counted_item_tests {
             vec![true, false, false, false, false, false, false, true],
             "{:?}",
             thread.items
+        );
+    }
+}
+
+/// Activity is the agent working — what a conversation folds into one row
+/// rather than showing line by line.
+#[cfg(test)]
+mod activity_item_tests {
+    use super::*;
+
+    /// The two readings of the rule, held equal over every kind there is: the
+    /// Rust one here, and the set the web client folds with. A kind added
+    /// later cannot make them disagree without failing here.
+    #[test]
+    fn activity_is_the_five_kinds_the_client_folds() {
+        const FOLDED_BY_THE_CLIENT: [&str; 5] = [
+            "reasoning",
+            "tool_use",
+            "tool_result",
+            "narration",
+            "task_update",
+        ];
+
+        for kind in ThreadEventKind::ALL {
+            assert_eq!(
+                kind.is_activity(),
+                FOLDED_BY_THE_CLIENT.contains(&kind.as_str()),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// A message is never activity, whoever wrote it and whatever it reports —
+    /// a run of work ends the moment somebody says something.
+    #[test]
+    fn no_message_is_activity_and_every_activity_event_is() {
+        let mut thread = Thread::new("run-activity");
+        thread.post_user("please rename the helper", None, "2026-08-29T09:00:00Z");
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Read src/thread.rs".to_string()),
+            None,
+            None,
+            "2026-08-29T09:01:00Z",
+        );
+        thread.push_event(
+            ThreadEventKind::Committed,
+            None,
+            None,
+            None,
+            "2026-08-29T09:02:00Z",
+        );
+        thread.post_agent_progress("still going", None, "2026-08-29T09:03:00Z");
+
+        let folded: Vec<bool> = thread.items.iter().map(ThreadItem::is_activity).collect();
+        assert_eq!(
+            folded,
+            vec![false, true, false, false],
+            "{:?}",
+            thread.items
+        );
+    }
+}
+
+/// The one cut both page paths ship under: maximal runs of activity, capped at
+/// their newest, each answered for by a digest that is exact over the whole
+/// run.
+#[cfg(test)]
+mod activity_cut_tests {
+    use super::*;
+
+    const NOW: &str = "2026-09-06T18:03:11.412Z";
+
+    /// The cut as a default page takes it: the whole conversation newest-first,
+    /// under the budget [`DEFAULT_THREAD_PAGE`] buys, with a census that counts
+    /// the tool calls of a span exactly.
+    fn cut_over(thread: &Thread) -> PageCut<&ThreadItem> {
+        let span: Vec<&ThreadItem> = thread.items.iter().rev().collect();
+        let census = |from: u64, through: u64| {
+            Ok::<u64, std::convert::Infallible>(thread.tool_calls_between(from, through))
+        };
+        match cut_activity_runs(span, DEFAULT_THREAD_PAGE, census) {
+            Ok(cut) => cut,
+            Err(impossible) => match impossible {},
+        }
+    }
+
+    /// The memory census itself: how many tool calls a span of the resident
+    /// tail holds, inclusive at both ends. What a digest's count is when a
+    /// page is answered out of memory, and the sibling of the SQL count the
+    /// store answers with.
+    #[test]
+    fn the_memory_census_counts_the_tool_calls_of_a_span_inclusively() {
+        let mut thread = Thread::new("run-census");
+        thread.post_user("rename the helper", None, NOW);
+        let first = call(&mut thread, "Read one.rs");
+        thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        let last = call(&mut thread, "Read two.rs");
+        thread.post_agent("renamed it", None, NOW);
+
+        assert_eq!(thread.tool_calls_between(first, last), 2, "both ends count");
+        assert_eq!(
+            thread.tool_calls_between(first, first),
+            1,
+            "one item, one call"
+        );
+        assert_eq!(
+            thread.tool_calls_between(1, thread.last_sequence()),
+            2,
+            "nothing but a call is a call: not the words, not the thinking"
+        );
+        assert_eq!(thread.tool_calls_between(last + 1, u64::MAX), 0);
+    }
+
+    fn call(thread: &mut Thread, summary: &str) -> u64 {
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some(summary.to_string()),
+            None,
+            None,
+            NOW,
+        )
+    }
+
+    /// The shape the fold exists for. A thousand calls ship as a hundred, and
+    /// the digest carries the truth about the rest: how many there were, and
+    /// which one was last.
+    #[test]
+    fn a_run_of_a_thousand_calls_ships_its_newest_hundred_and_counts_them_all() {
+        let mut thread = Thread::new("run-busy");
+        thread.post_user("rename the helper", None, NOW);
+        for index in 0..1000 {
+            call(&mut thread, &format!("Read file-{index}.rs"));
+        }
+
+        let cut = cut_over(&thread);
+        let shipped: Vec<u64> = cut.items.iter().map(|item| item.sequence()).collect();
+        assert_eq!(
+            shipped.len(),
+            1 + PAGE_ACTIVITY_RUN_CAP,
+            "{}",
+            shipped.len()
+        );
+        assert_eq!(
+            shipped[0], 1,
+            "the message is not activity and always ships"
+        );
+        assert_eq!(
+            &shipped[1..],
+            (902..=1001).collect::<Vec<u64>>(),
+            "the newest of the run, oldest-first"
+        );
+
+        let digest = cut.digests.first().expect("the run has a digest");
+        assert_eq!(digest.from_sequence, 2);
+        assert_eq!(digest.through_sequence, 1001);
+        assert_eq!(digest.tool_calls, 1000, "exact over the whole run");
+        let last = digest
+            .last_tool_call
+            .as_ref()
+            .expect("the run called tools");
+        assert_eq!(last.sequence, 1001);
+        assert_eq!(last.summary.as_deref(), Some("Read file-999.rs"));
+        assert_eq!(last.created_at, NOW);
+        assert!(last.outcome.is_none(), "{last:?}");
+    }
+
+    /// A run that only thought counts nothing and names no call, so the row it
+    /// folds to has nothing to claim.
+    #[test]
+    fn a_run_of_pure_reasoning_counts_no_calls_and_names_none() {
+        let mut thread = Thread::new("run-quiet");
+        thread.post_user("what do you make of it", None, NOW);
+        for _ in 0..5 {
+            thread.push_event(
+                ThreadEventKind::Reasoning,
+                Some("thinking".to_string()),
+                None,
+                None,
+                NOW,
+            );
+        }
+
+        let cut = cut_over(&thread);
+        let digest = cut.digests.first().expect("the run has a digest");
+        assert_eq!(digest.tool_calls, 0);
+        assert!(digest.last_tool_call.is_none(), "{digest:?}");
+        assert_eq!(cut.items.len(), 6, "nothing was capped");
+    }
+
+    /// The newest call, wherever in the run it sits: the cap keeps the newest
+    /// ITEMS, and a run that thought for a hundred steps after its last call
+    /// still says which call that was.
+    #[test]
+    fn the_last_call_is_named_even_when_the_cap_left_it_off_the_wire() {
+        let mut thread = Thread::new("run-thinky");
+        thread.post_user("rename the helper", None, NOW);
+        let called = call(&mut thread, "Bash(cargo test)");
+        for _ in 0..PAGE_ACTIVITY_RUN_CAP + 20 {
+            thread.push_event(ThreadEventKind::Reasoning, None, None, None, NOW);
+        }
+
+        let cut = cut_over(&thread);
+        let shipped: Vec<u64> = cut.items.iter().map(|item| item.sequence()).collect();
+        assert!(!shipped.contains(&called), "the cap left the call off");
+        let digest = cut.digests.first().expect("the run has a digest");
+        assert_eq!(digest.tool_calls, 1);
+        assert_eq!(
+            digest.last_tool_call.as_ref().map(|last| last.sequence),
+            Some(called)
+        );
+    }
+
+    /// A run is maximal, and anything that is not activity ends one: a message
+    /// or a lifecycle marker both do.
+    #[test]
+    fn every_non_activity_item_ends_a_run() {
+        let mut thread = Thread::new("run-mixed");
+        thread.post_user("rename the helper", None, NOW);
+        call(&mut thread, "Read one.rs");
+        call(&mut thread, "Read two.rs");
+        thread.push_event(ThreadEventKind::Committed, None, None, None, NOW);
+        call(&mut thread, "Read three.rs");
+        thread.post_agent("done", None, NOW);
+        thread.push_event(ThreadEventKind::Narration, None, None, None, NOW);
+
+        let cut = cut_over(&thread);
+        let runs: Vec<(u64, u64, u64)> = cut
+            .digests
+            .iter()
+            .map(|digest| {
+                (
+                    digest.from_sequence,
+                    digest.through_sequence,
+                    digest.tool_calls,
+                )
+            })
+            .collect();
+        assert_eq!(runs, vec![(2, 3, 2), (5, 5, 1), (7, 7, 0)], "{runs:?}");
+        assert_eq!(
+            cut.items
+                .iter()
+                .map(|item| item.sequence())
+                .collect::<Vec<u64>>(),
+            (1..=7).collect::<Vec<u64>>(),
+            "nothing was capped, so the page is whole"
+        );
+    }
+
+    /// The open run at the end of a conversation reaches the newest thing
+    /// there is, so the client knows the digest speaks for everything it holds
+    /// below it.
+    #[test]
+    fn the_open_tail_runs_through_sequence_is_the_last_sequence() {
+        let mut thread = Thread::new("run-live");
+        thread.post_user("rename the helper", None, NOW);
+        for index in 0..300 {
+            call(&mut thread, &format!("Read file-{index}.rs"));
+        }
+
+        let cut = cut_over(&thread);
+        assert_eq!(
+            cut.digests.last().expect("a run").through_sequence,
+            thread.last_sequence()
+        );
+    }
+
+    /// A conversation with no activity in it cuts to itself: every item ships,
+    /// oldest-first, and there is nothing to fold.
+    #[test]
+    fn a_conversation_of_words_alone_cuts_to_itself() {
+        let mut thread = Thread::new("run-talky");
+        for turn in 0..4 {
+            thread.post_user(format!("ask {turn}"), None, NOW);
+            thread.post_agent(format!("answer {turn}"), None, NOW);
+        }
+
+        let cut = cut_over(&thread);
+        assert!(cut.digests.is_empty(), "{:?}", cut.digests);
+        assert_eq!(
+            cut.items
+                .iter()
+                .map(|item| item.sequence())
+                .collect::<Vec<u64>>(),
+            (1..=8).collect::<Vec<u64>>()
         );
     }
 }
@@ -4658,11 +5473,12 @@ mod tests {
 
     #[test]
     fn the_default_page_bounds_a_first_load_without_hiding_a_sitting() {
-        // A long sitting — a few dozen asks, replies and events — opens whole,
-        // so the default is not a bound the reviewer feels.
-        let one_sitting = thread_with_long_conversation(40);
+        // A sitting of the default's worth of messages opens whole, so the
+        // default is not a bound the reviewer feels.
+        let one_sitting = thread_with_long_conversation(DEFAULT_THREAD_PAGE);
         let sitting_page = one_sitting.wire_value_page(None, DEFAULT_THREAD_PAGE);
         assert_eq!(sitting_page["has_more"], false, "{sitting_page:?}");
+        assert_eq!(page_sequences(&sitting_page).len(), DEFAULT_THREAD_PAGE);
 
         // Everything past it is paged, not shipped.
         let long = thread_with_long_conversation(DEFAULT_THREAD_PAGE * 4);

@@ -1,11 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import {
+  EVENT_META,
   STATUS_LINE_EVENTS,
   completionReportSections,
   isStartupEvent,
   startupEventTitle,
 } from "../src/core/threadEvents.js";
+
+// The bridge folds a closed set of kinds into a run and counts the calls in
+// it; this client folds the same set on the way in. The bridge pins its half in
+// `activity_is_the_five_kinds_the_client_folds`, and a kind added on one side
+// alone would put a row in a fold on one side and beside it on the other.
+describe("the kinds that are the agent working rather than the agent speaking", () => {
+  it("is the same five the bridge folds", () => {
+    expect(Object.keys(EVENT_META).filter((kind) => EVENT_META[kind].activity)).toEqual([
+      "reasoning",
+      "tool_use",
+      "tool_result",
+      "narration",
+      "task_update",
+    ]);
+  });
+});
 
 describe("the events a session's start is announced by", () => {
   it("names them the way the timeline used to, in the harness's own name", () => {

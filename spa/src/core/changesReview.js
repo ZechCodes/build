@@ -22,6 +22,7 @@ import { createFileFolds, parseDiff, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
+import { fileViewFromParsedFile } from "./fileEntries.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -127,12 +128,16 @@ export function createReviewPlug({
   const viewedFiles = new Set();
   let changedOnlyFilter = false;
 
+  /** The rendered files as the views a stamp is taken of: a whole patch's file
+   *  wears a hash of its own rows as its content key. */
+  const renderedViews = () => renderedFiles.map(fileViewFromParsedFile);
+
   const commentLayer = submit
     ? createCommentLayer({
         submit: async (messages) => {
           await submit(messages);
           // Stamp what was just reviewed: the next pass marks what moved.
-          reviewStamps = stampReview(renderedFiles);
+          reviewStamps = stampReview(renderedViews());
           diffKey = null; // the stamp changes what is drawn — force the rebuild
         },
         revisionId,
@@ -171,7 +176,7 @@ export function createReviewPlug({
   }
 
   function paintStack() {
-    const changed = changedSinceReview(reviewStamps, renderedFiles);
+    const changed = changedSinceReview(reviewStamps, renderedViews());
     const filesToRender = changedOnlyFilter ? renderedFiles.filter((file) => changed.has(file.path)) : renderedFiles;
     const editable = commentableNow && Boolean(commentLayer);
     trayMounted = editable;

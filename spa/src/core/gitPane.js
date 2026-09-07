@@ -35,6 +35,7 @@ import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.j
 import { createTriageOverrides } from "./triageOverride.js";
 import { createFileFolds, parseDiff, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
+import { fileViewFromParsedFile } from "./fileEntries.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
@@ -553,7 +554,7 @@ export function mountGitPane(
           });
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
-          reviewStamps = stampChangeset(reviewStamps, selected, renderedFiles);
+          reviewStamps = stampChangeset(reviewStamps, selected, renderedFiles.map(fileViewFromParsedFile));
         },
         revisionId,
         onChange: () => render(),
@@ -589,7 +590,7 @@ export function mountGitPane(
       openable: Boolean(openFile),
       noiseExpanded: noiseExpanded.has(String(selected)),
       folds,
-      changedSince: changedSinceChangeset(reviewStamps, selected, files),
+      changedSince: changedSinceChangeset(reviewStamps, selected, files.map(fileViewFromParsedFile)),
       // Review prioritization, on the changeset the reviewer has open — the
       // rail is never reordered, only the stack under it. A surface with no run
       // behind it has no pass to read and takes the plain stack.

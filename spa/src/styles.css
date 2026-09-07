@@ -570,6 +570,8 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
   font-weight:600; pointer-events:none; }
 .file .fhead { cursor:pointer; }
 .file.collapsed .dscroll { display:none; }
+/* a file whose body has not been fetched yet: one dim line where the diff goes */
+.file .dload { padding:10px var(--pane-gutter); color:var(--dim); font-family:var(--mono); font-size:11.5px; }
 .fcmt, .fopen { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
   border-radius:5px; padding:3px 6px; cursor:pointer; margin-left:8px; flex:none; }
 .fcmt:hover, .fopen:hover { background:var(--accent-soft); color:var(--accent); }

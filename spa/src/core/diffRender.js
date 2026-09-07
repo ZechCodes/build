@@ -125,10 +125,12 @@ export function diffFilesHtml(files, options = {}) {
 
 const FOLD_CLASS = { open: "", shut: "collapsed", capped: "capped" };
 
-/** Which of the three folds a file is in: what the reader last pressed, or the
- *  untouched default (capped, or shut for a file they have ticked off). The
- *  fold-aware entry asks this the same way the class does. */
-export function fileFoldOf(file, { folds = null, viewed = null } = {}) {
+/** Which of the three folds a file is in: the one the caller has already
+ *  decided, else what the reader last pressed, else the untouched default
+ *  (capped, or shut for a file they have ticked off). One rule, so a file's
+ *  class and its body can never disagree about how folded it is. */
+export function fileFoldOf(file, { fold = null, folds = null, viewed = null } = {}) {
+  if (fold) return fold;
   const key = fileKey(file);
   return folds ? folds.foldOf(key, { viewed }) : untouchedFold(key, viewed);
 }

@@ -13,6 +13,12 @@ const fileA = { path: "a.js", rows: [{ text: "line 1" }, { text: "line 2" }] };
 const fileB = { path: "b.js", rows: [{ text: "hello" }] };
 const fileAEdited = { path: "a.js", rows: [{ text: "line 1" }, { text: "line CHANGED" }] };
 
+// A file view is what the stack draws and what a stamp is taken of: a path and
+// the content key of what it holds. An uncommitted file wears the bridge's key,
+// a parsed one a hash of its rows (core/fileEntries.js makes both).
+const viewOf = (file) => ({ path: file.path, contentKey: hashFileRows(file) });
+const viewAt = (path, contentKey) => ({ path, contentKey });
+
 describe("hashText", () => {
   it("is stable for the same input", () => {
     expect(hashText("abc")).toBe(hashText("abc"));
@@ -42,7 +48,7 @@ describe("hashFileRows", () => {
 
 describe("stampReview", () => {
   it("maps every file path to its row hash", () => {
-    const stamps = stampReview([fileA, fileB]);
+    const stamps = stampReview([viewOf(fileA), viewOf(fileB)]);
     expect(stamps.get("a.js")).toBe(hashFileRows(fileA));
     expect(stamps.get("b.js")).toBe(hashFileRows(fileB));
     expect(stamps.size).toBe(2);
@@ -54,30 +60,30 @@ describe("stampReview", () => {
 
 describe("changedSinceReview", () => {
   it("flags nothing when the files are identical to the stamp", () => {
-    const stamps = stampReview([fileA, fileB]);
-    expect(changedSinceReview(stamps, [fileA, fileB]).size).toBe(0);
+    const stamps = stampReview([viewOf(fileA), viewOf(fileB)]);
+    expect(changedSinceReview(stamps, [viewOf(fileA), viewOf(fileB)]).size).toBe(0);
   });
   it("flags a file that was edited since the stamp", () => {
-    const stamps = stampReview([fileA, fileB]);
-    const changed = changedSinceReview(stamps, [fileAEdited, fileB]);
+    const stamps = stampReview([viewOf(fileA), viewOf(fileB)]);
+    const changed = changedSinceReview(stamps, [viewOf(fileAEdited), viewOf(fileB)]);
     expect(changed.has("a.js")).toBe(true);
     expect(changed.has("b.js")).toBe(false);
   });
   it("flags a brand-new file once any stamp exists", () => {
-    const stamps = stampReview([fileA]);
+    const stamps = stampReview([viewOf(fileA)]);
     const newFile = { path: "c.js", rows: [{ text: "new" }] };
-    const changed = changedSinceReview(stamps, [fileA, newFile]);
+    const changed = changedSinceReview(stamps, [viewOf(fileA), viewOf(newFile)]);
     expect(changed.has("c.js")).toBe(true);
     expect(changed.has("a.js")).toBe(false);
   });
   it("flags nothing when the stamp is empty (never reviewed)", () => {
-    expect(changedSinceReview(new Map(), [fileA, fileB]).size).toBe(0);
-    expect(changedSinceReview(null, [fileA]).size).toBe(0);
+    expect(changedSinceReview(new Map(), [viewOf(fileA), viewOf(fileB)]).size).toBe(0);
+    expect(changedSinceReview(null, [viewOf(fileA)]).size).toBe(0);
   });
 });
 
 describe("per-changeset review memory", () => {
-  const fileAt = (path, text) => ({ path, rows: [{ text }] });
+  const fileAt = (path, contentKey) => viewAt(path, contentKey);
 
   it("keeps each changeset's baseline apart", () => {
     let stamps = new Map();

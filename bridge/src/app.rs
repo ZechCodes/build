@@ -11519,6 +11519,13 @@ impl AppState {
     /// store answers: a conversation short of its oldest turn is worth more to
     /// a reviewer than an error where the view was, so a store that cannot be
     /// read is reported and the tail memory holds is shipped instead.
+    ///
+    /// The fallback page carries NO activity digests. The gate only sends a
+    /// page to the store when the tail is too short to hold it, so the tail's
+    /// oldest item can sit in the middle of a run whose older half is stored —
+    /// and a census counted off memory would then name an exact number that is
+    /// short. A digest's count is read as fact, so a degraded page ships none
+    /// and the client falls back to counting the rows it was handed.
     fn first_thread_page(&self, thread: &crate::thread::Thread, limit: usize) -> Value {
         self.thread_page_at(thread, None, limit)
             .unwrap_or_else(|error| {
@@ -11526,7 +11533,9 @@ impl AppState {
                     "first_thread_page {}: {error}; shipping the resident tail",
                     thread.agent.id
                 );
-                thread.wire_value_page(None, limit)
+                let mut page = thread.wire_value_page(None, limit);
+                page["activity_digests"] = json!([]);
+                page
             })
     }
 
@@ -37322,6 +37331,66 @@ mod tests {
             before = walked.first().copied();
         }
         assert_eq!(walked, (1..=held).collect::<Vec<u64>>());
+    }
+
+    /// The degraded first page. A detail view renders whether or not the store
+    /// answers, so a first page whose gate said "this reaches the stored
+    /// history" and then could not read it ships the resident tail instead —
+    /// and ships it WITHOUT digests. The tail's oldest item can sit mid-run, so
+    /// a census counted off memory would name an exact number that is short,
+    /// and a client prints a digest's count as fact. No digest sends the client
+    /// back to counting the rows it was handed: honest, and visibly a floor.
+    #[test]
+    fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "trim the retry loop", "dispatch": false }),
+        )));
+        let agent_id = primary_agent_id(&state, &issue_id);
+        state
+            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                for index in 0..12 {
+                    thread.push_event(
+                        crate::thread::ThreadEventKind::ToolUse,
+                        Some(format!("Read file-{index}.rs")),
+                        None,
+                        None,
+                        "2026-08-29T09:01:00Z",
+                    );
+                }
+                thread.post_agent("renamed it", None, "2026-08-29T09:02:00Z");
+                // The tail as a load leaves it: history underneath it, and an
+                // oldest item that sits in the middle of a run — the run runs
+                // on below the tail, where only the store can count it.
+                let tail = thread.items[1..].to_vec();
+                let last = thread.last_sequence();
+                thread.adopt_stored_tail(tail, 400, last);
+                Ok(())
+            })
+            .expect("the conversation is written");
+
+        // The store goes away under the page the way a read failure leaves it:
+        // the gate still says the history is down there, and nothing answers.
+        state.store = None;
+        let thread = state
+            .agent_conversation(&issue_id, None)
+            .expect("the conversation");
+        assert!(
+            thread.page_reaches_stored_history(None, 5),
+            "the fixture has to trip the page gate"
+        );
+        let page = state.first_thread_page(thread, 5);
+        assert_eq!(
+            page["activity_digests"],
+            json!([]),
+            "a page the store could not answer counts nothing: {page}"
+        );
+        assert!(
+            !page["items"].as_array().unwrap().is_empty(),
+            "the resident tail still ships: {page}"
+        );
     }
 
     /// The Issue's conversation is where the human follows the work they asked

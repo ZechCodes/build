@@ -571,11 +571,24 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent);
   mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent); }
 /* Pinned to the row's end, so the ticking timer never shoves the git facts
-   around. */
-.rail-status-git { flex:0 0 auto; margin-left:auto; display:flex; align-items:center; gap:6px;
-  white-space:nowrap; }
+   around, and never wrapped onto a second line however narrow the room gets. */
+.rail-status-git { flex:0 0 auto; margin-left:auto; display:flex; align-items:center;
+  white-space:nowrap; color:var(--dim); }
 .rail-status-git[hidden] { display:none; }
-.rail-status-sync, .rail-status-stat { color:var(--dim); white-space:nowrap; }
+/* One cell per character, so the line can move a character at a time
+   (core/gitStatusTicker.js): the cell holds the place while the glyph inside it
+   rolls up and out of the top, and the next one rolls up into it from below.
+   Tabular digits keep a rolling number from nudging its neighbours, and the gap
+   between sections is the leading glyph's margin rather than a flex gap, which
+   would space every character apart. */
+.rail-status-git .gitcell { position:relative; display:inline-block; overflow:hidden;
+  font-variant-numeric:tabular-nums; }
+.rail-status-git .gitcell[data-slot="glyph"] { margin-left:6px; }
+.rail-status-git .gitcell:first-child { margin-left:0; }
+.rail-status-git .gitglyph { display:inline-block; }
+/* The character rolling in shares the cell with the one rolling out, so the two
+   pass each other in the same place instead of sitting side by side. */
+.rail-status-git .gitglyph-arriving { position:absolute; inset:0; }
 
 /* The viewer a pill opens: the last thing in the conversation column, above the
    line that tops the composer block. Nothing is drawn between it and the

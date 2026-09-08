@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
+import { gitStatusCells } from "../src/core/gitStatusCells.js";
 import {
   AGENT_PATTERN_COUNT,
   AGENT_STARTING,
@@ -9,7 +10,6 @@ import {
   agentSessionIsLive,
   agentPattern,
   agentTitle,
-  aheadBehindText,
   bubbleTip,
   canRemoveAgent,
   providerLabel,
@@ -21,7 +21,6 @@ import {
   selectAgentId,
   startFailuresLearned,
   startupStatusLine,
-  statText,
   elapsedClock,
   workingClock,
   runningClock,
@@ -340,25 +339,14 @@ describe("the pinned status line above the composer", () => {
     expect(elapsedClock(NOW + 5_000, NOW)).toBe("0:00");
   });
 
-  it("says the additions and deletions, and nothing when there are none", () => {
-    expect(statText({ insertions: 42, deletions: 7 })).toBe("+42 −7");
-    expect(statText({ insertions: 0, deletions: 0, files_changed: 0 })).toBe("");
-    expect(statText("+4 −1")).toBe("+4 −1");
-    expect(statText(null)).toBe("");
-  });
-
-  it("says how far the branch stands from upstream, only for the counts that are nonzero", () => {
-    expect(aheadBehindText({ ahead: 2, behind: 1 })).toBe("↑2 ↓1");
-    expect(aheadBehindText({ ahead: 2, behind: 0 })).toBe("↑2");
-    expect(aheadBehindText({ ahead: 0, behind: 0 })).toBe("");
-    expect(aheadBehindText(null)).toBe("");
-  });
-
-  it("reads all three off the row, each blank when the row does not know it", () => {
+  it("reads all three off the row, the git facts as the characters they are drawn from", () => {
     const row = { working_time: { since: ago(750), seconds: 750 }, stat: { insertions: 42, deletions: 7, ahead: 2, behind: 0 } };
-    expect(railWorkStatus(row, NOW)).toEqual({ working: "12:30", starting: "", sync: "↑2", stat: "+42 −7" });
-    expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
-    expect(railWorkStatus(null, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
+    const status = railWorkStatus(row, NOW);
+    expect(status.working).toBe("12:30");
+    expect(status.starting).toBe("");
+    expect(status.git).toEqual(gitStatusCells({ insertions: 42, deletions: 7, ahead: 2, behind: 0 }));
+    expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", starting: "", git: [] });
+    expect(railWorkStatus(null, NOW)).toEqual({ working: "", starting: "", git: [] });
   });
 
   it("names the lead's shape, the working clock winning over the startup line", () => {
@@ -393,14 +381,12 @@ describe("the startup line the status slot borrows from the conversation", () =>
     expect(railWorkStatus({ working_time: null, stat: null }, NOW, items)).toEqual({
       working: "",
       starting: "Agent session started · 2m ago",
-      sync: "",
-      stat: "",
+      git: [],
     });
     expect(railWorkStatus({ working_time: { since: ago(5), seconds: 5 } }, NOW, items)).toEqual({
       working: "0:05",
       starting: "",
-      sync: "",
-      stat: "",
+      git: [],
     });
   });
 

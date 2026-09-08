@@ -60,7 +60,8 @@ use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc};
 use crate::run::{RunState, StageProgress};
 use crate::thread::{
-    cut_activity_runs, page_activity_budget, run_items_shipped, PageCut, Thread, ThreadItem,
+    cut_activity_runs, page_activity_budget, run_items_shipped, PageCut, RunCensus, Thread,
+    ThreadItem,
 };
 
 /// Things that can go wrong reading or writing the store.
@@ -512,6 +513,12 @@ const THREAD_MESSAGE_PAGE_SQL: &str = "SELECT item FROM thread_items \
 /// per-run cap left off the wire.
 const THREAD_TOOL_CALL_COUNT_SQL: &str = "SELECT COUNT(*) FROM thread_items \
      WHERE agent_id = ?1 AND tool_call = 1 AND sequence >= ?2 AND sequence <= ?3";
+
+/// The other half of a run's census: every row of work in the span, the calls
+/// among them. The same seek down the partial `activity` index the page's own
+/// run walk uses.
+const THREAD_ACTIVITY_COUNT_SQL: &str = "SELECT COUNT(*) FROM thread_items \
+     WHERE agent_id = ?1 AND activity = 1 AND sequence >= ?2 AND sequence <= ?3";
 
 /// Where a page reaches back to: the sequence of the `limit`-th MESSAGE below
 /// the seek, found by one seek down the partial index. Nothing found means the
@@ -1215,7 +1222,7 @@ impl Store {
     ) -> Result<(PageCut<ThreadItem>, bool), StoreError> {
         let span = self.conversation_span(agent_id, before_sequence, limit)?;
         let cut = cut_activity_runs(span, limit, |from, through| {
-            self.tool_calls_between(agent_id, from, through)
+            self.run_census(agent_id, from, through)
         })?;
         // Off the page's own oldest item, never off the floor: the cap may have
         // omitted the oldest of a run, and a page that claimed to reach the
@@ -1312,24 +1319,32 @@ impl Store {
         Ok(page)
     }
 
-    /// How many tool calls a conversation holds between two sequences,
-    /// inclusive — the census one activity digest's count is.
+    /// How many rows of work a span of a conversation holds, and how many of
+    /// them are tool calls — the store's census, inclusive at both ends, and
+    /// the exact sibling of the memory one on `Thread`.
     ///
-    /// A count, never a read: a page folds a run of a thousand calls into one
-    /// row that says a thousand, and deserializing the run to size that row
-    /// would undo the cap the page ships under.
-    pub fn tool_calls_between(
+    /// Two seeks down two partial indexes, and never a row read: the counts
+    /// are what a digest says about a run whose items the cap left off the
+    /// wire.
+    pub fn run_census(
         &self,
         agent_id: &str,
         from_sequence: u64,
         through_sequence: u64,
-    ) -> Result<u64, StoreError> {
-        let count: i64 = self.connection().query_row(
-            THREAD_TOOL_CALL_COUNT_SQL,
-            rusqlite::params![agent_id, from_sequence as i64, through_sequence as i64],
-            |row| row.get(0),
-        )?;
-        Ok(count as u64)
+    ) -> Result<RunCensus, StoreError> {
+        let connection = self.connection();
+        let count = |statement: &str| -> Result<u64, StoreError> {
+            let count: i64 = connection.query_row(
+                statement,
+                rusqlite::params![agent_id, from_sequence as i64, through_sequence as i64],
+                |row| row.get(0),
+            )?;
+            Ok(count as u64)
+        };
+        Ok(RunCensus {
+            tool_calls: count(THREAD_TOOL_CALL_COUNT_SQL)?,
+            rows: count(THREAD_ACTIVITY_COUNT_SQL)?,
+        })
     }
 
     /// The newest `limit` **messages** of a conversation, oldest-first — what
@@ -2873,6 +2888,7 @@ mod tests {
             THREAD_RUN_OLDEST_SQL,
             THREAD_RUN_LAST_CALL_SQL,
             THREAD_TOOL_CALL_COUNT_SQL,
+            THREAD_ACTIVITY_COUNT_SQL,
         ] {
             let plan = query_plan(&connection, statement);
             assert!(
@@ -3547,6 +3563,7 @@ mod tests {
         assert!(!has_more, "nothing sits below the page's oldest item");
         let digest = cut.digests.first().expect("the run has a digest");
         assert_eq!(digest.tool_calls, 500, "the omitted calls counted");
+        assert_eq!(digest.rows, 500, "and counted as rows");
         assert_eq!(
             digest.last_tool_call.as_ref().map(|last| last.sequence),
             Some(501)
@@ -3656,14 +3673,12 @@ mod tests {
             cut.items.iter().filter(|item| item.is_activity()).count(),
             crate::thread::PAGE_ACTIVITY_RUN_CAP
         );
+        let digest = cut.digests.first().expect("the run has a digest");
         assert_eq!(
-            cut.digests
-                .first()
-                .expect("the run has a digest")
-                .tool_calls,
-            5_000,
+            digest.tool_calls, 5_000,
             "the census still counts every call"
         );
+        assert_eq!(digest.rows, 5_000, "and every row");
         assert!(
             decoded <= crate::thread::PAGE_ACTIVITY_RUN_CAP + 2,
             "the page decoded {decoded} rows: the cap, the run's oldest row and \
@@ -3823,7 +3838,7 @@ mod tests {
     /// whole run, whatever a page shipped of it, and counted in SQL off the
     /// hoisted column rather than by reading the items back.
     #[test]
-    fn tool_calls_are_counted_in_sql_over_a_span() {
+    fn rows_and_tool_calls_are_counted_in_sql_over_a_span() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
@@ -3850,24 +3865,30 @@ mod tests {
 
         assert_eq!(
             store
-                .tool_calls_between(&agent_id, 2, last)
+                .run_census(&agent_id, 2, last)
                 .expect("the census counts"),
-            40,
-            "every tool call of the run, none of the thinking between them"
+            RunCensus {
+                tool_calls: 40,
+                rows: 80
+            },
+            "every tool call of the run, and the thinking between them is rows"
         );
         // Inclusive at both ends, which is what a digest's span means.
         assert_eq!(
             store
-                .tool_calls_between(&agent_id, 2, 2)
+                .run_census(&agent_id, 2, 2)
                 .expect("the census counts"),
-            1
+            RunCensus {
+                tool_calls: 1,
+                rows: 1
+            }
         );
         assert_eq!(
             store
-                .tool_calls_between(&agent_id, 1, 1)
+                .run_census(&agent_id, 1, 1)
                 .expect("the census counts"),
-            0,
-            "a message is not a tool call"
+            RunCensus::default(),
+            "a message is neither a tool call nor a row of work"
         );
     }
 
@@ -3905,9 +3926,12 @@ mod tests {
 
         assert_eq!(
             migrated
-                .tool_calls_between(&agent_id, 1, 3)
+                .run_census(&agent_id, 1, 3)
                 .expect("the census counts"),
-            1,
+            RunCensus {
+                tool_calls: 1,
+                rows: 2
+            },
             "the backfill classified the items already stored"
         );
     }

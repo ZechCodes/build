@@ -1283,16 +1283,32 @@ impl LastToolCall {
 
 /// What one folded run of activity amounts to, whatever a page shipped of it.
 ///
-/// The count is the fact only the bridge can see: a client counts the rows it
-/// was handed, and the cap means those are not all the rows there were. So the
-/// span is named — `[from_sequence, through_sequence]`, the run's own first and
-/// last item — and the count is exact over it, cap-omitted items included.
+/// The counts are the fact only the bridge can see: a client counts the rows
+/// it was handed, and the cap means those are not all the rows there were. So
+/// the span is named — `[from_sequence, through_sequence]`, the run's own first
+/// and last item — and the census is exact over it, cap-omitted items included:
+/// `rows` is every item of work in the span, which is the number the fold
+/// prints, and `tool_calls` is the calls among them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActivityDigest {
     pub from_sequence: u64,
     pub through_sequence: u64,
     pub tool_calls: u64,
+    pub rows: u64,
     pub last_tool_call: Option<LastToolCall>,
+}
+
+/// The census of one span of a conversation: how many rows of work it holds,
+/// and how many of those are tool calls. Inclusive at both ends, because a
+/// digest's span is.
+///
+/// Memory and the store each answer it over the same rule — `is_activity()`
+/// and `is_tool_call()`, hoisted into the store's `activity` and `tool_call`
+/// columns — so a page reads the same numbers whichever path answered it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunCensus {
+    pub tool_calls: u64,
+    pub rows: u64,
 }
 
 /// A page: what ships, and what the runs inside it mean. Held together because
@@ -1323,7 +1339,7 @@ pub struct PageCut<T> {
 /// and hands the items back oldest-first, the order a conversation is rendered
 /// in.
 ///
-/// `tool_calls_between` is the census, and the only thing that differs between
+/// `census` is the count over a span, and the only thing that differs between
 /// reading memory and reading SQLite. It is asked for the run's whole span,
 /// which both callers can answer exactly: a run on a page never reaches below
 /// the span, because the span's oldest item is a message and a message ends a
@@ -1331,7 +1347,7 @@ pub struct PageCut<T> {
 pub fn cut_activity_runs<T, E>(
     span_newest_first: Vec<T>,
     limit: usize,
-    tool_calls_between: impl Fn(u64, u64) -> Result<u64, E>,
+    census: impl Fn(u64, u64) -> Result<RunCensus, E>,
 ) -> Result<PageCut<T>, E>
 where
     T: Borrow<ThreadItem>,
@@ -1349,10 +1365,10 @@ where
             run.push(item);
             continue;
         }
-        page = fold_activity_run(page, std::mem::take(&mut run), &tool_calls_between)?;
+        page = fold_activity_run(page, std::mem::take(&mut run), &census)?;
         page.cut.items.push(item);
     }
-    let mut cut = fold_activity_run(page, run, &tool_calls_between)?.cut;
+    let mut cut = fold_activity_run(page, run, &census)?.cut;
     cut.items.reverse();
     cut.digests.reverse();
     Ok(cut)
@@ -1373,7 +1389,7 @@ struct PageBeingCut<T> {
 fn fold_activity_run<T, E>(
     mut page: PageBeingCut<T>,
     run_newest_first: Vec<T>,
-    tool_calls_between: &impl Fn(u64, u64) -> Result<u64, E>,
+    census: &impl Fn(u64, u64) -> Result<RunCensus, E>,
 ) -> Result<PageBeingCut<T>, E>
 where
     T: Borrow<ThreadItem>,
@@ -1383,10 +1399,12 @@ where
     };
     let from_sequence = oldest.borrow().sequence();
     let through_sequence = newest.borrow().sequence();
+    let counted = census(from_sequence, through_sequence)?;
     page.cut.digests.push(ActivityDigest {
         from_sequence,
         through_sequence,
-        tool_calls: tool_calls_between(from_sequence, through_sequence)?,
+        tool_calls: counted.tool_calls,
+        rows: counted.rows,
         last_tool_call: run_newest_first
             .iter()
             .find_map(|item| item.borrow().tool_call().map(LastToolCall::of)),
@@ -2481,21 +2499,22 @@ impl Thread {
             < limit
     }
 
-    /// How many tool calls the resident tail holds between two sequences,
-    /// inclusive — the memory census, and the exact sibling of the store's
-    /// `tool_calls_between`.
+    /// How many rows of work, and how many tool calls among them, the
+    /// resident tail holds between two sequences, inclusive — the memory
+    /// census, and the exact sibling of the store's `run_census`.
     ///
     /// Exact wherever a page is allowed to ask it: a page answered out of
     /// memory has `page_reaches_stored_history() == false`, so every run it
     /// touches is resident whole and nothing in `[from, through]` sits under
     /// the tail.
-    pub fn tool_calls_between(&self, from_sequence: u64, through_sequence: u64) -> u64 {
+    pub fn run_census(&self, from_sequence: u64, through_sequence: u64) -> RunCensus {
         self.items
             .iter()
-            .filter(|item| {
-                item.is_tool_call() && (from_sequence..=through_sequence).contains(&item.sequence())
+            .filter(|item| (from_sequence..=through_sequence).contains(&item.sequence()))
+            .fold(RunCensus::default(), |counted, item| RunCensus {
+                tool_calls: counted.tool_calls + u64::from(item.is_tool_call()),
+                rows: counted.rows + u64::from(item.is_activity()),
             })
-            .count() as u64
     }
 
     /// The newest activity of a span the tail holds, oldest-first — what an
@@ -2797,7 +2816,7 @@ impl Thread {
         // message is resident and a message ends the oldest run. A conversation
         // shorter than the limit is reached whole and has nothing below it.
         let census = |from: u64, through: u64| {
-            Ok::<u64, std::convert::Infallible>(self.tool_calls_between(from, through))
+            Ok::<RunCensus, std::convert::Infallible>(self.run_census(from, through))
         };
         let cut = match cut_activity_runs(span, limit, census) {
             Ok(cut) => cut,
@@ -3655,6 +3674,7 @@ mod counted_page_tests {
         assert_eq!(digests[0]["from_sequence"], 2);
         assert_eq!(digests[0]["through_sequence"], thread.last_sequence());
         assert_eq!(digests[0]["tool_calls"], 1000, "the omitted calls counted");
+        assert_eq!(digests[0]["rows"], 1000, "a run of calls is as many rows");
         assert_eq!(digests[0]["last_tool_call"]["sequence"], 1001);
         assert_eq!(
             digests[0]["last_tool_call"]["summary"], "Read file-999.rs",
@@ -3810,7 +3830,7 @@ mod counted_page_tests {
         assert!(digests[0]["last_tool_call"].is_null(), "{digests:?}");
     }
 
-    /// The shape on the wire, whole. A client reads these four names and no
+    /// The shape on the wire, whole. A client reads these five names and no
     /// others, and a digest always carries `last_tool_call` — the object when
     /// the run made a call, `null` when it made none — so nothing has to read
     /// around a field that is sometimes absent.
@@ -3835,6 +3855,7 @@ mod counted_page_tests {
                 "from_sequence": 2,
                 "through_sequence": 3,
                 "tool_calls": 1,
+                "rows": 2,
                 "last_tool_call": {
                     "sequence": 3,
                     "created_at": NOW,
@@ -4084,11 +4105,11 @@ mod activity_cut_tests {
 
     /// The cut as a default page takes it: the whole conversation newest-first,
     /// under the budget [`DEFAULT_THREAD_PAGE`] buys, with a census that counts
-    /// the tool calls of a span exactly.
+    /// the rows and tool calls of a span exactly.
     fn cut_over(thread: &Thread) -> PageCut<&ThreadItem> {
         let span: Vec<&ThreadItem> = thread.items.iter().rev().collect();
         let census = |from: u64, through: u64| {
-            Ok::<u64, std::convert::Infallible>(thread.tool_calls_between(from, through))
+            Ok::<RunCensus, std::convert::Infallible>(thread.run_census(from, through))
         };
         match cut_activity_runs(span, DEFAULT_THREAD_PAGE, census) {
             Ok(cut) => cut,
@@ -4096,12 +4117,12 @@ mod activity_cut_tests {
         }
     }
 
-    /// The memory census itself: how many tool calls a span of the resident
-    /// tail holds, inclusive at both ends. What a digest's count is when a
-    /// page is answered out of memory, and the sibling of the SQL count the
-    /// store answers with.
+    /// The memory census itself: how many rows and how many tool calls a span
+    /// of the resident tail holds, inclusive at both ends. What a digest's
+    /// counts are when a page is answered out of memory, and the sibling of
+    /// the SQL counts the store answers with.
     #[test]
-    fn the_memory_census_counts_the_tool_calls_of_a_span_inclusively() {
+    fn the_memory_census_counts_the_rows_and_calls_of_a_span_inclusively() {
         let mut thread = Thread::new("run-census");
         thread.post_user("rename the helper", None, NOW);
         let first = call(&mut thread, "Read one.rs");
@@ -4109,18 +4130,31 @@ mod activity_cut_tests {
         let last = call(&mut thread, "Read two.rs");
         thread.post_agent("renamed it", None, NOW);
 
-        assert_eq!(thread.tool_calls_between(first, last), 2, "both ends count");
         assert_eq!(
-            thread.tool_calls_between(first, first),
-            1,
-            "one item, one call"
+            thread.run_census(first, last),
+            RunCensus {
+                tool_calls: 2,
+                rows: 3
+            },
+            "both ends count, and the thought between them is a row"
         );
         assert_eq!(
-            thread.tool_calls_between(1, thread.last_sequence()),
-            2,
-            "nothing but a call is a call: not the words, not the thinking"
+            thread.run_census(first, first),
+            RunCensus {
+                tool_calls: 1,
+                rows: 1
+            },
+            "one item, one call, one row"
         );
-        assert_eq!(thread.tool_calls_between(last + 1, u64::MAX), 0);
+        assert_eq!(
+            thread.run_census(1, thread.last_sequence()),
+            RunCensus {
+                tool_calls: 2,
+                rows: 3
+            },
+            "the words are neither a call nor a row of work"
+        );
+        assert_eq!(thread.run_census(last + 1, u64::MAX), RunCensus::default());
     }
 
     fn call(thread: &mut Thread, summary: &str) -> u64 {
@@ -4166,6 +4200,7 @@ mod activity_cut_tests {
         assert_eq!(digest.from_sequence, 2);
         assert_eq!(digest.through_sequence, 1001);
         assert_eq!(digest.tool_calls, 1000, "exact over the whole run");
+        assert_eq!(digest.rows, 1000);
         let last = digest
             .last_tool_call
             .as_ref()
@@ -4176,10 +4211,10 @@ mod activity_cut_tests {
         assert!(last.outcome.is_none(), "{last:?}");
     }
 
-    /// A run that only thought counts nothing and names no call, so the row it
-    /// folds to has nothing to claim.
+    /// A run that only thought made no call and names none, but every thought
+    /// is a row: the fold it collapses to still says how much is inside it.
     #[test]
-    fn a_run_of_pure_reasoning_counts_no_calls_and_names_none() {
+    fn a_run_of_pure_reasoning_counts_its_rows_and_names_no_call() {
         let mut thread = Thread::new("run-quiet");
         thread.post_user("what do you make of it", None, NOW);
         for _ in 0..5 {
@@ -4195,6 +4230,7 @@ mod activity_cut_tests {
         let cut = cut_over(&thread);
         let digest = cut.digests.first().expect("the run has a digest");
         assert_eq!(digest.tool_calls, 0);
+        assert_eq!(digest.rows, 5, "five thoughts are five rows");
         assert!(digest.last_tool_call.is_none(), "{digest:?}");
         assert_eq!(cut.items.len(), 6, "nothing was capped");
     }
@@ -4217,6 +4253,11 @@ mod activity_cut_tests {
         let digest = cut.digests.first().expect("the run has a digest");
         assert_eq!(digest.tool_calls, 1);
         assert_eq!(
+            digest.rows,
+            1 + PAGE_ACTIVITY_RUN_CAP as u64 + 20,
+            "the rows the cap left off the wire are counted all the same"
+        );
+        assert_eq!(
             digest.last_tool_call.as_ref().map(|last| last.sequence),
             Some(called)
         );
@@ -4236,7 +4277,7 @@ mod activity_cut_tests {
         thread.push_event(ThreadEventKind::Narration, None, None, None, NOW);
 
         let cut = cut_over(&thread);
-        let runs: Vec<(u64, u64, u64)> = cut
+        let runs: Vec<(u64, u64, u64, u64)> = cut
             .digests
             .iter()
             .map(|digest| {
@@ -4244,10 +4285,15 @@ mod activity_cut_tests {
                     digest.from_sequence,
                     digest.through_sequence,
                     digest.tool_calls,
+                    digest.rows,
                 )
             })
             .collect();
-        assert_eq!(runs, vec![(2, 3, 2), (5, 5, 1), (7, 7, 0)], "{runs:?}");
+        assert_eq!(
+            runs,
+            vec![(2, 3, 2, 2), (5, 5, 1, 1), (7, 7, 0, 1)],
+            "{runs:?}"
+        );
         assert_eq!(
             cut.items
                 .iter()

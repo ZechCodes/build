@@ -325,9 +325,10 @@ describe("per-file discard lives behind the header ⋯", () => {
 });
 
 describe("comments on any changeset", () => {
+  /** Comment through the popover. A press opens the field itself, so there is
+   *  no intermediate button to get past. */
   const addCommentViaPop = async (trigger) => {
     await click(trigger);
-    await click(document.querySelector(".cp-add"));
     document.querySelector(".cp-input").value = "rename this";
     await click(document.querySelector(".cp-save"));
   };
@@ -385,7 +386,6 @@ describe("the poll freeze holds a review in progress", () => {
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
       await settle();
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
-      await click(document.querySelector(".cp-add"));
       document.querySelector(".cp-input").value = "hold this thought";
       await click(document.querySelector(".cp-save"));
       expect(container.querySelector(".pcomment")).toBeTruthy();
@@ -463,7 +463,6 @@ describe("re-review memory on every stack", () => {
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
       await settle();
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
-      await click(document.querySelector(".cp-add"));
       document.querySelector(".cp-input").value = "rename this";
       await click(document.querySelector(".cp-save"));
       await click(container.querySelector(".cssend"));

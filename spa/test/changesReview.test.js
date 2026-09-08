@@ -68,7 +68,7 @@ describe("the review plug (DOM)", () => {
   const commentOnTheFile = async (host) => {
     host.querySelector(".fcmt").click();
     await vi.advanceTimersByTimeAsync(0);
-    document.querySelector(".cp-add").click();
+    // The press IS the ask: the field is already there, no button in between.
     document.querySelector(".cp-input").value = "split this up";
     document.querySelector(".cp-save").click();
     await vi.advanceTimersByTimeAsync(0);

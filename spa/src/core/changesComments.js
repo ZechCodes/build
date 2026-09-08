@@ -18,7 +18,7 @@ import { commentTrayHtml } from "./changesRender.js";
 import { pathOf } from "./diff.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";
-import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
+import { showCommentPop, hideCommentPop, hasCommentPop, openCommentComposer } from "../commentPop.js";
 import { watchSelection, selectionInside } from "../selectWatch.js";
 import { notifyError } from "./notify.js";
 
@@ -217,7 +217,7 @@ export function createCommentLayer({
       if (commentButton) {
         const fileEl = commentButton.closest(".file");
         if (fileEl)
-          showCommentPop(commentButton.getBoundingClientRect(), (comment) =>
+          openCommentComposer(commentButton.getBoundingClientRect(), (comment) =>
             addComment(pathOf(fileEl.dataset.key), 0, 0, "(entire file)", comment),
           );
         return true;
@@ -232,7 +232,7 @@ export function createCommentLayer({
       if (!row || row.classList.contains("hunk") || !row.dataset.ln) return false;
       const line = +row.dataset.ln;
       const snippet = row.querySelector(".code").textContent;
-      showCommentPop(row.getBoundingClientRect(), (comment) =>
+      openCommentComposer(row.getBoundingClientRect(), (comment) =>
         addComment(pathOf(fileEl.dataset.key), line, line, snippet, comment, row.dataset.side || "new"),
       );
       return true;

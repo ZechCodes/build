@@ -62,7 +62,7 @@ export async function mountAgentModes(host, { callRpc, onSaved }) {
 
   const disableAll = () => {
     controls.forEach(({ select, status }) => {
-      select.innerHTML = "";
+      select.innerHTML = '<option value="">Unavailable</option>';
       select.disabled = true;
       status.textContent = "";
     });

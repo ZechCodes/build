@@ -50,7 +50,7 @@ describe("the agent-modes panel", () => {
 
     expect(select("claude").disabled).toBe(true);
     expect(select("codex").disabled).toBe(true);
-    expect(select("claude").options).toHaveLength(0);
+    expect([...select("claude").options].map((option) => option.textContent)).toEqual(["Unavailable"]);
     expect(error().textContent).toContain("unavailable on this bridge");
     expect(error().textContent).toContain("Update the bridge");
   });
@@ -62,6 +62,8 @@ describe("the agent-modes panel", () => {
 
     expect(error().textContent).toBe("device offline");
     expect(select("claude").disabled).toBe(true);
+    expect(select("claude").value).toBe("");
+    expect(select("claude").textContent).toBe("Unavailable");
   });
 
   it("auto-saves only the changed family and paints the confirmed response", async () => {

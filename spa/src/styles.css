@@ -503,10 +503,12 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    the keyboard. */
 .csbox { max-width:780px; margin:0 auto; }
 .csbox-row { display:flex; align-items:flex-end; gap:8px; }
+/* `min-height` is overridden deliberately: the page's textareas stand 96px tall
+   by default, and this one opens as ONE line and earns every row after it. */
 .csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto;
   font:inherit; font-size:13px; line-height:1.45; padding:9px 11px;
   border:1px solid var(--line); border-radius:10px; background:var(--panel2); color:var(--ink);
-  max-height:240px; }
+  min-height:0; max-height:240px; }
 .csbox .csinput:focus { outline:none; border-color:var(--accent); }
 .csbox-actions { flex:none; }
 .csbox .githint:empty { display:none; }

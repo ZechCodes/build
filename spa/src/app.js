@@ -12,12 +12,16 @@ import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
+import { adoptCacheScope, clearCacheScope } from "./core/cacheScope.js";
+import { createChatRepository } from "./core/chatRepository.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
 export const App = {
   call: null, // RPC into the live E2EE session (session.call)
   session: null, // { call, deviceId, close }
+  cacheScope: null, // captured ownership of browser cache reads/writes
+  chatRepository: null, // drafts/controllers owned by the current device scope
   route: { name: "inbox" },
   poll: null, // the current view's change watcher (core/changeEvents.js)
   viewDispose: null, // the current view's teardown (terminal panes, observers)
@@ -40,17 +44,53 @@ export const App = {
   openFileOnMount: null,
 };
 
+/** Bind application chat state to a live device. Reconnecting that same device
+ * only replaces the transport; switching devices retires every controller and
+ * its private draft/offer state before a new repository is created. */
+export function adoptApplicationScope({ deviceId, call }) {
+  if (App.cacheScope?.active() && App.cacheScope.deviceId === deviceId && App.chatRepository) {
+    App.call = call;
+    App.chatRepository.retarget(call);
+    return App.chatRepository;
+  }
+  disposeApplicationScope();
+  App.cacheScope = adoptCacheScope(deviceId);
+  App.chatRepository = createChatRepository({ scope: App.cacheScope, call });
+  App.call = call;
+  App.modelCatalog = null;
+  return App.chatRepository;
+}
+
+/** Explicit auth/application teardown hook. The current product signs out by
+ * leaving this document, but embedders and future in-place auth can call this
+ * before replacing the account. */
+export function disposeApplicationScope() {
+  App.chatRepository?.dispose();
+  App.chatRepository = null;
+  App.cacheScope = null;
+  App.call = null;
+  App.modelCatalog = null;
+  clearCacheScope();
+}
+
 /** The bridge's provider/model catalog, cached for the session.
  *  An older bridge without the RPC yields empty lists — selectors then offer
  *  only "Harness default", which is exactly what that bridge supports. */
 export async function loadModelCatalog() {
   if (App.modelCatalog) return App.modelCatalog;
+  const scope = App.cacheScope;
+  const call = App.call;
+  let catalog;
   try {
-    App.modelCatalog = normalizeModelCatalog(await App.call("models.list"));
+    catalog = normalizeModelCatalog(await call("models.list"));
   } catch {
-    App.modelCatalog = normalizeModelCatalog({ models: [], efforts: [] });
+    catalog = normalizeModelCatalog({ models: [], efforts: [] });
   }
-  return App.modelCatalog;
+  // A device switch can overtake this request. Its answer still belongs to the
+  // caller that asked, but it must not become the catalog of the new scope.
+  const stillOwned = scope ? scope === App.cacheScope && scope.active() : call === App.call;
+  if (stillOwned) App.modelCatalog = catalog;
+  return catalog;
 }
 
 export function rememberSelectedDevice(deviceId) {

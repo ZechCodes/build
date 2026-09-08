@@ -43,7 +43,7 @@ import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { cacheDeviceId } from "./cacheScope.js";
+import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { patchList } from "./patchList.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
@@ -385,6 +385,7 @@ export function mountGitPane(
   } = {},
 ) {
   const openFile = (navigate && navigate.openFile) || null;
+  const cacheScope = currentCacheScope();
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
   let bodiesUnpainted = false; // a file body landed while a repaint was held
@@ -403,10 +404,8 @@ export function mountGitPane(
   // The local cache's address for this checkout. A primary checkout names no
   // entity, so it takes no part — nothing to key by, nothing evicted with it.
   const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
-  const cacheAddress = (kind, sub) => {
-    const deviceId = cacheDeviceId();
-    return deviceId && cacheEntityId ? { deviceId, entityId: cacheEntityId, kind, sub } : null;
-  };
+  const cacheAddress = (kind, sub) =>
+    cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind, sub }) || null : null;
   const readThroughCache = async (kind, sub) => {
     const address = cacheAddress(kind, sub);
     const record = address ? await readCached(address) : undefined;
@@ -418,7 +417,7 @@ export function mountGitPane(
   };
   // The uncommitted changeset's bodies: git.status names the files and what each
   // one holds, and each file's diff is fetched, cached and answered on its own.
-  const fileDiffs = createFileDiffs({ deviceId: cacheDeviceId(), entityId: cacheEntityId, scope, call: callRpc });
+  const fileDiffs = createFileDiffs({ deviceId: cacheScope?.deviceId, entityId: cacheEntityId, scope, call: callRpc });
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
   let inFlightActions = 0; // commit/discard/sync RPCs currently awaited
   let scopeErrorShown = null; // the terminal scope error currently rendered
@@ -549,15 +548,18 @@ export function mountGitPane(
   const commentLayer = commentable
     ? createCommentLayer({
         submit: async (messages) => {
+          const reviewedChangeset = selected;
+          const reviewedViews = renderedViews;
+          const destination = agentSelection.scope();
           await callRpc("run.request_changes", {
             run_id: scope.run_id,
-            ...agentSelection.scope(),
+            ...destination,
             messages,
             ...MUTATION_THREAD_PAGE,
           });
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
-          reviewStamps = stampChangeset(reviewStamps, selected, renderedViews);
+          reviewStamps = stampChangeset(reviewStamps, reviewedChangeset, reviewedViews);
         },
         revisionId,
         onChange: () => render(),

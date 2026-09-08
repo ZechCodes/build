@@ -548,14 +548,72 @@ function linksHtml(links) {
 /// is megabytes, and re-serialising it into the timeline string 37 times a
 /// minute would cost more than it saves. The picture on the page keeps them:
 /// `patchElement` leaves a loaded `<img>` its `src`.
-const attachmentDataUrls = new Map();
 const ATTACHMENT_CACHE_MAX = 40;
 
-function rememberAttachment(path, dataUrl) {
-  if (attachmentDataUrls.size >= ATTACHMENT_CACHE_MAX) {
-    attachmentDataUrls.delete(attachmentDataUrls.keys().next().value);
-  }
-  attachmentDataUrls.set(path, dataUrl);
+/** UI state owned by one canonical conversation inside one application/device
+ * repository. Keeping these maps behind an instance prevents equal attachment
+ * paths and offer ids in unrelated scopes from becoming the same browser state. */
+export function createThreadState({ ownerId = "" } = {}) {
+  const attachmentDataUrls = new Map();
+  const pendingAttachmentLoads = new Map();
+  const pendingChoices = new Map();
+  const sendingChoices = new Set();
+  let live = true;
+
+  return Object.freeze({
+    ownerId,
+    active: () => live,
+    attachment: (path) => attachmentDataUrls.get(path),
+    rememberAttachment(path, dataUrl) {
+      if (!live) return;
+      if (attachmentDataUrls.size >= ATTACHMENT_CACHE_MAX) {
+        attachmentDataUrls.delete(attachmentDataUrls.keys().next().value);
+      }
+      attachmentDataUrls.set(path, dataUrl);
+    },
+    loadAttachment(path, load) {
+      if (attachmentDataUrls.has(path)) return Promise.resolve(attachmentDataUrls.get(path));
+      const held = pendingAttachmentLoads.get(path);
+      if (held) return held;
+      let pending;
+      try {
+        pending = Promise.resolve(load());
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+      pendingAttachmentLoads.set(path, pending);
+      const settled = () => {
+        if (pendingAttachmentLoads.get(path) === pending) pendingAttachmentLoads.delete(path);
+      };
+      pending.then(settled, settled);
+      return pending;
+    },
+    choice: (key) => pendingChoices.get(key) || new Set(),
+    choose(key, optionIds) {
+      if (live) pendingChoices.set(key, new Set(optionIds));
+    },
+    isSending: (key) => sendingChoices.has(key),
+    beginSending(key) {
+      if (live) sendingChoices.add(key);
+    },
+    finishSending(key, accepted) {
+      if (!live) return false;
+      sendingChoices.delete(key);
+      if (accepted) pendingChoices.delete(key);
+      return true;
+    },
+    snapshot() {
+      const picks = [...pendingChoices].map(([key, chosen]) => `${key}=${[...chosen].sort().join(",")}`);
+      return { choiceState: picks.sort().join("|"), sending: [...sendingChoices].sort().join("|") };
+    },
+    dispose() {
+      live = false;
+      attachmentDataUrls.clear();
+      pendingAttachmentLoads.clear();
+      pendingChoices.clear();
+      sendingChoices.clear();
+    },
+  });
 }
 
 /// The files a message came with.
@@ -569,14 +627,14 @@ function rememberAttachment(path, dataUrl) {
 /// timeline is a string, and the bytes are a round trip away. A picture already
 /// asked for and refused is drawn as refused, so that a repaint of the same
 /// conversation is the same markup down to the class.
-function attachmentsHtml(attachments) {
+function attachmentsHtml(attachments, threadState) {
   if (!attachments || !attachments.length) return "";
   return `<div class="thread-attachments">${attachments
     .map((attachment) => {
       const path = esc(attachment.path || "");
       const name = esc(attachment.name || attachment.path || "file");
       if (isImageAttachment(attachment.mime)) {
-        const refused = attachmentDataUrls.get(attachment.path) === null ? " unavailable" : "";
+        const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
         return `<figure class="thread-attachment-figure${refused}">
           <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
           <figcaption>${name}</figcaption>
@@ -597,12 +655,6 @@ function attachmentsHtml(attachments) {
 /// half: a selection lives in the render, so it has to survive one — the same
 /// reason the composer's draft is not kept in the DOM either. Dropped once the
 /// choice is on the record, which is the moment the chips stop being pressable.
-const pendingChoices = new Map();
-
-/// The offers being submitted right now. They read as shut while the daemon
-/// decides, so a second press cannot send the same choice twice.
-const sendingChoices = new Set();
-
 /// What a pick is filed under. Every conversation numbers its messages from
 /// one, so the message id alone would put one thread's picks on another's
 /// chips the moment the reader switched agents.
@@ -612,9 +664,9 @@ const offerKey = (threadId, messageId) => `${threadId || ""}::${messageId || ""}
 /// such a thing; what is picked and not yet sent, while it can still be sent;
 /// and nothing at all on an offer that went by unanswered — picking is not
 /// choosing, so an offer overtaken mid-pick leaves no mark.
-const chosenOn = (message, live, key) => {
+const chosenOn = (message, live, key, threadState) => {
   if ((message.selected_options || []).length) return new Set(message.selected_options);
-  return live ? pendingChoices.get(key) || new Set() : new Set();
+  return live ? threadState.choice(key) : new Set();
 };
 
 /// The actions the agent suggested taking in answer to its message.
@@ -624,12 +676,12 @@ const chosenOn = (message, live, key) => {
 /// anything said afterwards — by either side — leaves it dim exactly as it
 /// stands. A choice already made keeps its chips marked, because that mark is
 /// the conversation's only record of what the reader pressed.
-function optionsHtml(message, live, key) {
+function optionsHtml(message, live, key, threadState) {
   const options = message.options || [];
   if (!options.length) return "";
   const answered = (message.selected_options || []).length > 0;
   const shut = answered || !live;
-  const chosen = chosenOn(message, live, key);
+  const chosen = chosenOn(message, live, key, threadState);
   const chips = options
     .map(
       (option) => `<button type="button" class="thread-option${chosen.has(option.id) ? " chosen" : ""}"
@@ -677,8 +729,7 @@ function outcomeMarkerHtml(outcome, agentLabel) {
   </div>`;
 }
 
-// eslint-disable-next-line complexity -- ratchet: messageHtml is at 11, cap 10 — reduce it, then drop this line
-function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer = "") {
+function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   const user = message.role === "user";
   const status = user
     ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
@@ -697,9 +748,9 @@ function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer =
       ${anchorLabel(message.anchor)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
       ${completionReportHtml(message.completion_report)}
-      ${attachmentsHtml(message.attachments)}
+      ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
-      ${optionsHtml(message, liveOptions, offer)}
+      ${optionsHtml(message, liveOptions, offer, threadState)}
     </div>
   </article>`;
 }
@@ -937,7 +988,9 @@ function runChildrenHtml(run, view) {
   if (!fetched || !fetched.length) return run.map((row) => row.html).join("");
   const fetchedThrough = fetched.reduce((newest, item) => Math.max(newest, item.data?.sequence || 0), 0);
   const live = run.filter((row) => Number(row.key) > fetchedThrough);
-  return [...timelineRowsOf(fetched, view.agentLabel, view.threadId), ...live].map((row) => row.html).join("");
+  return [...timelineRowsOf(fetched, view.agentLabel, view.threadId, view.threadState), ...live]
+    .map((row) => row.html)
+    .join("");
 }
 
 /// Where a run starts and where it reaches. The start is the digest's, because
@@ -1104,7 +1157,7 @@ function activityRow(item, index, agentLabel, folding) {
 ///
 /// `spoken` is whether this is the last thing said, which is the whole of
 /// whether its offer can still be answered.
-function messageRow(item, index, agentLabel, { threadId, spoken }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState }) {
   const message = item.data || {};
   // Old bridges persisted the noisy structured handoff as a chat message.
   if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
@@ -1112,8 +1165,8 @@ function messageRow(item, index, agentLabel, { threadId, spoken }) {
   // would be the same words a second time.
   if (message.answers_options_of) return [];
   const key = offerKey(threadId, message.id);
-  const live = spoken && !sendingChoices.has(key);
-  return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, live, key) }];
+  const live = spoken && !threadState.isSending(key);
+  return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, live, key, threadState) }];
 }
 
 /// Every top-level row a set of items draws, in order.
@@ -1123,7 +1176,7 @@ function messageRow(item, index, agentLabel, { threadId, spoken }) {
 /// message are drawn on other rows instead. Used for the conversation itself
 /// and for the children of an open run, so a fetched run's rows are the rows
 /// the window would have drawn for the same items.
-function timelineRowsOf(sourceItems, agentLabel, threadId) {
+function timelineRowsOf(sourceItems, agentLabel, threadId, threadState) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
   const folding = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !folding.foldedItems.has(item));
@@ -1133,7 +1186,7 @@ function timelineRowsOf(sourceItems, agentLabel, threadId) {
   const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
   return topLevelItems.flatMap((item, index) =>
     item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken })
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState })
       : [activityRow(item, index, agentLabel, folding)],
   );
 }
@@ -1156,11 +1209,18 @@ function timelineRowsOf(sourceItems, agentLabel, threadId) {
 /// which is not how many entries there are: a run of activity is many items
 /// and one row, and the count on the conversation's title counts what was said
 /// and done rather than how it fell into runs.
-export function timelineEntries(sourceItems, agentLabel, threadId, digests, { openRuns, runItemsOf } = {}) {
-  const rows = timelineRowsOf(sourceItems, agentLabel, threadId);
+export function timelineEntries(
+  sourceItems,
+  agentLabel,
+  threadId,
+  digests,
+  { openRuns, runItemsOf, threadState = createThreadState() } = {},
+) {
+  const rows = timelineRowsOf(sourceItems, agentLabel, threadId, threadState);
   const view = {
     agentLabel,
     threadId,
+    threadState,
     openRuns: openRuns || NO_RUNS_OPEN,
     runItemsOf: runItemsOf || noRunItems,
   };
@@ -1303,9 +1363,8 @@ const keysSignature = (keys) => [...(keys || [])].sort().join(",");
 /// sent, and what is being sent right now. Both are this module's own state —
 /// the chips write it and the timeline reads it — so a paint that skips has to
 /// be able to see it move.
-export function threadOfferState() {
-  const picks = [...pendingChoices].map(([key, chosen]) => `${key}=${[...chosen].sort().join(",")}`);
-  return { choiceState: picks.sort().join("|"), sending: [...sendingChoices].sort().join("|") };
+export function threadOfferState(threadState = createThreadState()) {
+  return threadState.snapshot();
 }
 
 const NOTHING_SAID_YET = { items: [] };
@@ -1461,7 +1520,7 @@ export function wireThreadRevisionLinks(root, loadRevision) {
 /// offer shuts the instant it is pressed rather than when the daemon answers —
 /// the reader has made their choice, and a second press would send it twice —
 /// and comes back if the send is refused, with what they picked still marked.
-export function wireThreadOptions(root, submit) {
+export function wireThreadOptions(root, submit, threadState = createThreadState()) {
   if (!root) return;
   root.querySelectorAll(".thread-options").forEach((group) => {
     const messageId = group.dataset.message;
@@ -1484,7 +1543,7 @@ export function wireThreadOptions(root, submit) {
         chip.setAttribute("aria-pressed", String(chosen));
         // Remembered outside the markup, so the next repaint of the
         // conversation draws the selection back rather than clearing it.
-        pendingChoices.set(key, new Set(picked()));
+        threadState.choose(key, picked());
         if (send) send.disabled = !picked().length;
       };
     });
@@ -1493,33 +1552,33 @@ export function wireThreadOptions(root, submit) {
     send.onclick = () => {
       const optionIds = picked();
       if (!optionIds.length || send.disabled) return;
-      sendingChoices.add(key);
+      threadState.beginSending(key);
       shut(true);
       Promise.resolve(submit({ messageId, optionIds })).then(
         () => {
-          sendingChoices.delete(key);
-          pendingChoices.delete(key);
+          threadState.finishSending(key, true);
         },
         () => {
           // Refused: the offer is still the last thing said, so it goes back
           // to being answerable with the same chips still marked.
-          sendingChoices.delete(key);
-          shut(false);
+          if (threadState.finishSending(key, false)) shut(false);
         },
       );
     };
   });
 }
 
-export function wireThreadAttachments(root, load) {
+export function wireThreadAttachments(root, load, threadState = createThreadState()) {
   if (!root) return;
-  const dataUrlFor = async (path) => {
-    const held = attachmentDataUrls.get(path);
-    if (held) return held;
-    const attachment = await load(path);
-    const dataUrl = `data:${attachment.mime || "application/octet-stream"};base64,${attachment.content_b64 || ""}`;
-    rememberAttachment(path, dataUrl);
-    return dataUrl;
+  const dataUrlFor = (path) => {
+    const held = threadState.attachment(path);
+    if (held) return Promise.resolve(held);
+    return threadState.loadAttachment(path, async () => {
+      const attachment = await load(path);
+      const dataUrl = `data:${attachment.mime || "application/octet-stream"};base64,${attachment.content_b64 || ""}`;
+      threadState.rememberAttachment(path, dataUrl);
+      return dataUrl;
+    });
   };
 
   root.querySelectorAll("img.thread-attachment-image").forEach((image) => {
@@ -1527,7 +1586,7 @@ export function wireThreadAttachments(root, load) {
     // A picture already showing, and one already asked for and refused, are
     // both settled: asking again on every poll would be a request a second and
     // a half for bytes the reader is not going to get.
-    if (!path || image.getAttribute("src") || attachmentDataUrls.get(path) === null) return;
+    if (!path || image.getAttribute("src") || threadState.attachment(path) === null) return;
     dataUrlFor(path).then(
       (dataUrl) => {
         image.setAttribute("src", dataUrl);
@@ -1536,7 +1595,7 @@ export function wireThreadAttachments(root, load) {
         // A picture that will not load says so where the picture would be,
         // rather than leaving a silent gap in the conversation — remembered as
         // well as shown, so the next render draws the same unavailable figure.
-        rememberAttachment(path, null);
+        threadState.rememberAttachment(path, null);
         image.closest(".thread-attachment-figure")?.classList.add("unavailable");
       },
     );
@@ -1600,7 +1659,18 @@ export function wireThreadLinks(root, openLink) {
 /// to protect, is driven directly.
 const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
 
-export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft, onError, afterSubmit, upload, readAttachments, writeAttachments }) {
+export function wireThreadComposer(root, {
+  ids,
+  onSubmit,
+  readDraft,
+  writeDraft,
+  onError,
+  afterSubmit,
+  upload,
+  readAttachments,
+  writeAttachments,
+  submissionOwnsDraft = false,
+}) {
   if (!root) return null;
   const input = root.querySelector(`#${ids.input}`);
   let send = root.querySelector(`#${ids.send}`);
@@ -1630,10 +1700,13 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
 
   /// The caret half of a split send, when the control is wearing that shape.
   const caretOf = () => control && control.querySelector(".caret");
+  let blocked = false;
+  let submitting = false;
   const setPressable = (pressable) => {
-    send.disabled = !pressable;
+    const disabled = !pressable || blocked;
+    send.disabled = disabled;
     const caret = caretOf();
-    if (caret) caret.disabled = !pressable;
+    if (caret) caret.disabled = disabled;
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
@@ -1655,19 +1728,22 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
       return;
     }
     setPressable(false);
+    submitting = true;
     sendLabel(send).textContent = "sending…";
     try {
       const result = await onSubmit(body, tray ? tray.attachments() : [], { interrupt });
-      writeDraft("");
+      if (!submissionOwnsDraft) writeDraft("");
       input.value = "";
       fitToText();
       if (tray) tray.clear();
+      submitting = false;
       setPressable(true);
       sendLabel(send).textContent = "Send";
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
       // The text and the files stay put: a failed send must never cost the user
       // their words, and re-picking the files would be worse.
+      submitting = false;
       setPressable(true);
       sendLabel(send).textContent = "Send";
       if (onError) onError(error);
@@ -1706,6 +1782,14 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
     }
   };
 
-  return { setCanInterrupt };
-}
+  const setBlocked = (wanted, message = "") => {
+    blocked = !!wanted;
+    setPressable(!submitting);
+    if (!submitting) {
+      say(blocked ? message : "");
+      sendLabel(send).textContent = blocked ? message : "Send";
+    }
+  };
 
+  return { setCanInterrupt, setBlocked };
+}

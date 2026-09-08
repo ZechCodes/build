@@ -486,4 +486,46 @@ describe("re-review memory on every stack", () => {
       vi.useRealTimers();
     }
   });
+
+  it("stamps the changeset that was open when a late comment send began", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let served = dirtyStatus();
+      let releaseRequest;
+      const request = new Promise((resolve) => { releaseRequest = resolve; });
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const callRpc = vi.fn(async (method, params) => {
+        if (method === "git.status") return served;
+        if (method === "git.diff") return tree.diff(params);
+        if (method === "git.log") return log();
+        if (method === "git.show") return show();
+        if (method === "run.request_changes") return request;
+        return {};
+      });
+      const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
+      await settle();
+      await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
+      await click(document.querySelector(".cp-add"));
+      document.querySelector(".cp-input").value = "rename this";
+      await click(document.querySelector(".cp-save"));
+      container.querySelector(".cssend").click();
+      await settle();
+
+      await click(container.querySelector(".crow[data-hash]"));
+      releaseRequest({ ok: true });
+      await settle();
+      tree.write("src/a.js", "the agent moved after review");
+      served = dirtyStatus();
+      await vi.advanceTimersByTimeAsync(2000);
+      await settle();
+      await click(container.querySelector('.rrow[data-sel="uncommitted"]'));
+
+      expect(container.querySelector('.file[data-key$=":src/a.js"] .fchanged').textContent)
+        .toContain("changed since your review");
+      pane.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

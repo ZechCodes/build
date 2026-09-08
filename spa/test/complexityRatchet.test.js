@@ -15,7 +15,10 @@ import { describe, it, expect } from "vitest";
 // 75 since the timeline became keyed rows: threadHtml took its initial message
 // and its title from two named helpers, and the row builder split into a
 // message row and an activity row.
-const RATCHETED_FUNCTIONS = 75;
+// 73 since chat state moved behind addressed controllers: agent identity no
+// longer migrates global draft maps, and message rendering reads its owned
+// thread state instead of branching across ambient maps.
+const RATCHETED_FUNCTIONS = 73;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

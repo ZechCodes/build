@@ -64,6 +64,7 @@ pub mod lifecycle;
 pub mod mcp;
 pub mod models;
 pub mod notify;
+pub mod operation;
 pub mod orchestrator;
 pub mod pairing;
 pub mod plan;

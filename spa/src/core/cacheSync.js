@@ -34,7 +34,15 @@ const entityWatchers = new Map(); // entityId → { dispose }
 const refreshing = new Set(); // entityIds mid-fetch, so deliveries never stack
 let activeRows = new Map(); // entityId → its feed row (scope lives on the row)
 
-const deviceIdNow = () => (App.session && App.session.deviceId) || null;
+const syncContext = () => {
+  const session = App.session;
+  const scope = App.cacheScope;
+  return {
+    deviceId: (scope && scope.deviceId) || (session && session.deviceId) || null,
+    call: App.call,
+    active: () => scope ? scope === App.cacheScope && scope.active() : session === App.session,
+  };
+};
 
 /** The git scope a feed row's checkout answers under — the same derivation the
  *  branch surface makes (views/branchView.js branchScope), minus the primary
@@ -46,11 +54,13 @@ function gitScopeOf(row) {
   return null;
 }
 
-async function writeSurfaces(deviceId, entityId, agents) {
+async function writeSurfaces(context, entityId, agents) {
   for (const agent of agents) {
+    if (!context.active()) return;
     if (!agent.id || !agent.surfaces) continue;
-    const address = surfacesCacheAddress({ deviceId, entityId, agentId: agent.id });
+    const address = surfacesCacheAddress({ deviceId: context.deviceId, entityId, agentId: agent.id });
     const stored = surfacesFromRecord(await readCached(address));
+    if (!context.active()) return;
     if (stored && surfacesFingerprint(stored.surfaces) === surfacesFingerprint(agent.surfaces)) continue;
     await writeCached(address, surfacesRecord(agent.surfaces));
   }
@@ -59,13 +69,14 @@ async function writeSurfaces(deviceId, entityId, agents) {
 /** Re-read the conversations that were ever warmed on this entity — one full
  *  first page per agent, stored as the saved window the rail seeds from. A
  *  conversation never opened has no record here and is never asked for. */
-async function refreshThreads(deviceId, entityId, row) {
+async function refreshThreads(context, entityId, row) {
   const isIssue = row.kind === "issue";
   const detailParams = isIssue ? { issue_id: entityId } : { project_id: row.project_id, branch: row.branch };
   let agentsOnEntity = [];
-  for (const agentSub of await cachedSubKeys(deviceId, entityId, THREAD_RECORD_KIND)) {
+  for (const agentSub of await cachedSubKeys(context.deviceId, entityId, THREAD_RECORD_KIND)) {
+    if (!context.active()) return;
     try {
-      const payload = await App.call(isIssue ? "issue.get" : "branch.get", {
+      const payload = await context.call(isIssue ? "issue.get" : "branch.get", {
         ...detailParams,
         ...(agentSub ? { agent_id: agentSub } : {}),
         thread_limit: FIRST_PAGE_ITEMS,
@@ -73,23 +84,31 @@ async function refreshThreads(deviceId, entityId, row) {
       const detail = railEntity(payload, isIssue ? "issue" : "branch");
       agentsOnEntity = detail.agents;
       const shaped = windowFromThreadPayload(detail.thread);
-      if (shaped) await writeCached({ deviceId, entityId, kind: THREAD_RECORD_KIND, sub: agentSub }, shaped);
+      if (shaped && context.active()) {
+        await writeCached({ deviceId: context.deviceId, entityId, kind: THREAD_RECORD_KIND, sub: agentSub }, shaped);
+      }
     } catch {
       /* transient, or the agent left — the next event tries again */
     }
   }
-  await writeSurfaces(deviceId, entityId, agentsOnEntity);
+  await writeSurfaces(context, entityId, agentsOnEntity);
 }
 
 /** Keep a branch's file listings warm: the top-level directory always — the
  *  Files tab's first paint — plus whichever directories the reader has walked
  *  into, which are the tree records the cache already holds. */
-async function refreshTrees(deviceId, entityId, scope) {
-  const visited = await cachedSubKeys(deviceId, entityId, "tree");
+async function refreshTrees(context, entityId, scope) {
+  const visited = await cachedSubKeys(context.deviceId, entityId, "tree");
   for (const path of new Set(["", ...visited])) {
+    if (!context.active()) return;
     try {
-      const listing = await App.call("fs.tree", { ...scope, path });
-      await writeCached({ deviceId, entityId, kind: "tree", sub: path }, { path: listing.path || "", entries: listing.entries || [] });
+      const listing = await context.call("fs.tree", { ...scope, path });
+      if (context.active()) {
+        await writeCached(
+          { deviceId: context.deviceId, entityId, kind: "tree", sub: path },
+          { path: listing.path || "", entries: listing.entries || [] },
+        );
+      }
     } catch {
       /* transient, or the directory left with a branch switch */
     }
@@ -98,15 +117,20 @@ async function refreshTrees(deviceId, entityId, scope) {
 
 /** Keep a warmed review diff fresh — only where the reader has opened the
  *  All-changes view before, which is the record's existence. */
-async function refreshDiff(deviceId, entityId, row) {
+async function refreshDiff(context, entityId, row) {
   if (row.kind === "issue") return;
-  const warmed = await cachedSubKeys(deviceId, entityId, "diff");
+  const warmed = await cachedSubKeys(context.deviceId, entityId, "diff");
   if (!warmed.length) return;
   try {
     const diff = row.run_id
-      ? await App.call("run.diff", { run_id: row.run_id })
-      : await App.call("worktree.diff", { project_id: row.project_id, worktree_id: row.worktree_id });
-    await writeCached({ deviceId, entityId, kind: "diff" }, { patch: diff.patch, triage: null, projectId: row.project_id || null });
+      ? await context.call("run.diff", { run_id: row.run_id })
+      : await context.call("worktree.diff", { project_id: row.project_id, worktree_id: row.worktree_id });
+    if (context.active()) {
+      await writeCached(
+        { deviceId: context.deviceId, entityId, kind: "diff" },
+        { patch: diff.patch, triage: null, projectId: row.project_id || null },
+      );
+    }
   } catch {
     /* transient — the next event tries again */
   }
@@ -115,11 +139,12 @@ async function refreshDiff(deviceId, entityId, row) {
 /** Re-read a checkout's git state: the status shape as received (it carries no
  *  patch — each file's body is its own record) and the commit list. Answers the
  *  shape, so the caller can warm the bodies it names. */
-async function refreshGitState(deviceId, entityId, scope) {
+async function refreshGitState(context, entityId, scope) {
   try {
-    const [status, log] = await Promise.all([App.call("git.status", scope), App.call("git.log", scope)]);
-    await writeCached({ deviceId, entityId, kind: "status" }, status);
-    await writeCached({ deviceId, entityId, kind: "log" }, log);
+    const [status, log] = await Promise.all([context.call("git.status", scope), context.call("git.log", scope)]);
+    if (!context.active()) return null;
+    await writeCached({ deviceId: context.deviceId, entityId, kind: "status" }, status);
+    await writeCached({ deviceId: context.deviceId, entityId, kind: "log" }, log);
     return status;
   } catch {
     /* offline or mid-switch — the next event or safety poll tries again */
@@ -145,10 +170,10 @@ function whenIdle(work) {
 /** Warm the bodies of the files a status names — one bounded git.diff per pass,
  *  asking only for what the cache does not already hold — so opening the
  *  Changes surface expands a file with no round trip, offline included. */
-async function warmFileDiffs(deviceId, entityId, scope, status) {
-  const diffs = createFileDiffs({ deviceId, entityId, scope, call: (method, params) => App.call(method, params) });
+async function warmFileDiffs(context, entityId, scope, status) {
+  const diffs = createFileDiffs({ deviceId: context.deviceId, entityId, scope, call: context.call });
   try {
-    await whenIdle(() => diffs.warm(status));
+    if (context.active()) await whenIdle(() => context.active() && diffs.warm(status));
   } catch {
     /* transient — the next event or safety poll warms it again */
   } finally {
@@ -161,19 +186,19 @@ async function warmFileDiffs(deviceId, entityId, scope, status) {
  *  waits for an idle turn, so it runs alongside the refresh rather than inside
  *  it — an entity whose tab never goes idle still syncs on the next tick. */
 async function refreshEntity(entityId) {
-  const deviceId = deviceIdNow();
+  const context = syncContext();
   const row = activeRows.get(entityId);
-  if (!deviceId || !row || refreshing.has(entityId)) return;
+  if (!context.deviceId || !row || refreshing.has(entityId)) return;
   refreshing.add(entityId);
   try {
     const scope = gitScopeOf(row);
     if (scope) {
-      const status = await refreshGitState(deviceId, entityId, scope);
-      await refreshTrees(deviceId, entityId, scope);
-      await refreshDiff(deviceId, entityId, row);
-      if (status) void warmFileDiffs(deviceId, entityId, scope, status);
+      const status = await refreshGitState(context, entityId, scope);
+      await refreshTrees(context, entityId, scope);
+      await refreshDiff(context, entityId, row);
+      if (status && context.active()) void warmFileDiffs(context, entityId, scope, status);
     }
-    await refreshThreads(deviceId, entityId, row);
+    await refreshThreads(context, entityId, row);
   } finally {
     refreshing.delete(entityId);
   }
@@ -181,10 +206,11 @@ async function refreshEntity(entityId) {
 
 // eslint-disable-next-line complexity -- ratchet: onSnapshot is at 14, cap 10 — reduce it, then drop this line
 async function onSnapshot(snapshot) {
-  const deviceId = deviceIdNow();
+  const context = syncContext();
   // The feed's boot paint is this cache talking; only live answers are news.
-  if (!deviceId || !holdingLock || snapshot.cached) return;
-  await writeCached({ deviceId, entityId: "", kind: "feed" }, snapshot);
+  if (!context.deviceId || !holdingLock || snapshot.cached) return;
+  await writeCached({ deviceId: context.deviceId, entityId: "", kind: "feed" }, snapshot);
+  if (!context.active()) return;
 
   const active = new Set(cacheableEntityIds({ items: snapshot.items }));
   activeRows = new Map();
@@ -194,8 +220,9 @@ async function onSnapshot(snapshot) {
   }
 
   // Immediate eviction: whatever holds records but is no longer named.
-  for (const cachedId of await cachedEntityIds(deviceId)) {
-    if (!active.has(cachedId)) await evictEntity(deviceId, cachedId);
+  for (const cachedId of await cachedEntityIds(context.deviceId)) {
+    if (!context.active()) return;
+    if (!active.has(cachedId)) await evictEntity(context.deviceId, cachedId);
   }
 
   // The watcher set follows the active set; a branch entering it syncs now.

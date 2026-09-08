@@ -86,6 +86,7 @@ describe("an adoption the browser stopped waiting for", () => {
   const timedOut = () => {
     const error = new Error("run.adopt timed out");
     error.timedOut = true;
+    error.uncertain = true;
     return error;
   };
 

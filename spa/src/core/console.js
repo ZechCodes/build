@@ -30,7 +30,7 @@ import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
-import { cacheDeviceId } from "./cacheScope.js";
+import { currentCacheScope } from "./cacheScope.js";
 import { entityIdOf } from "./entityId.js";
 import { readCached, writeCached } from "./localCache.js";
 import { subscribeFeed } from "./taskFeed.js";
@@ -152,6 +152,7 @@ export function consoleHeadHtml(size) {
  */
 export function mountConsole(host, context) {
   if (!host) return { dispose() {}, toggle() {}, size: () => "collapsed" };
+  const cacheScope = currentCacheScope();
   const key = consoleKey(context);
   const manager = terminalManager();
   // A pre-redesign `term-<n>` URL asked for one terminal in particular; that is
@@ -220,9 +221,8 @@ export function mountConsole(host, context) {
   /** The local cache's address for this checkout's tab list, or null while the
    *  entity is unknown. Cached tabs paint the head without a round trip. */
   const tabsCacheAddress = () => {
-    const deviceId = cacheDeviceId();
     const entityId = context.kind === "issue" ? context.issueId : entityIdOf(feedRowNow());
-    return deviceId && entityId ? { deviceId, entityId, kind: "tabs" } : null;
+    return entityId ? cacheScope?.address({ entityId, kind: "tabs" }) || null : null;
   };
 
   const pickSelected = () => {

@@ -21,6 +21,7 @@ use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
 use crate::harness::{
     ActivityReport, AgentSession, AgentStatus, HarnessError, SessionStatusSnapshot, Turn,
+    TurnChoiceSupport,
 };
 use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
@@ -481,8 +482,33 @@ impl SessionCore {
 
 impl AgentSession for CodexAppServerSession {
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
-        self.core
-            .apply_state(SessionEvent::SendTurn(turn.text.clone()))
+        if let Some(frozen) = &turn.choice {
+            frozen
+                .model_choice
+                .validate()
+                .map_err(HarnessError::Unsupported)?;
+            if self.turn_choice_support(&frozen.model_choice) == TurnChoiceSupport::RestartRequired
+            {
+                return Err(HarnessError::Unsupported(
+                    "this Codex session cannot clear its sticky model settings; start a fresh session with the requested choice"
+                        .to_string(),
+                ));
+            }
+        }
+        let event = if turn.choice.is_some() {
+            SessionEvent::SendChosenTurn(turn.clone())
+        } else {
+            SessionEvent::SendTurn(turn.text.clone())
+        };
+        self.core.apply_state(event)
+    }
+
+    fn accepts_turn_choice(&self) -> bool {
+        true
+    }
+
+    fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
+        self.core.state.lock().unwrap().turn_choice_support(choice)
     }
 
     fn status(&self) -> AgentStatus {
@@ -1140,11 +1166,7 @@ mod tests {
         );
         let (session, mut activity) = scripted_session(root.path(), &script);
         wait_until("opened its thread", || session.session_id().is_some());
-        session
-            .send_turn(&Turn {
-                text: "go".to_string(),
-            })
-            .unwrap();
+        session.send_turn(&Turn::new("go")).unwrap();
 
         let reports = drain_reports(&mut activity, |_| false);
         assert!(reports.iter().any(|report| matches!(
@@ -1208,11 +1230,7 @@ mod tests {
         assert!(session.quiet_for() < Duration::from_secs(60));
 
         session.backdate_last_output(Duration::from_secs(60));
-        session
-            .send_turn(&Turn {
-                text: "go".to_string(),
-            })
-            .unwrap();
+        session.send_turn(&Turn::new("go")).unwrap();
 
         reports.extend(drain_reports(&mut activity, |_| false));
         assert_eq!(reports.len(), 1, "{reports:?}");
@@ -1240,11 +1258,7 @@ mod tests {
         );
         let (session, _activity) = scripted_session(root.path(), &script);
         wait_until("opened its thread", || session.session_id().is_some());
-        session
-            .send_turn(&Turn {
-                text: "go".to_string(),
-            })
-            .unwrap();
+        session.send_turn(&Turn::new("go")).unwrap();
         wait_until("started a turn to interrupt", || session.can_interrupt());
         session.interrupt().unwrap();
 

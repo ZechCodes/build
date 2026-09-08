@@ -9,7 +9,7 @@
 // server fences the scope root and every path; this view never sends host paths.
 
 import { esc } from "../core/text.js";
-import { cacheDeviceId } from "../core/cacheScope.js";
+import { currentCacheScope } from "../core/cacheScope.js";
 import { readCached, writeCached } from "../core/localCache.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
@@ -144,6 +144,7 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * fetches only on navigation/selection. Returns { dispose() }.
  */
 export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
+  const cacheScope = currentCacheScope();
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
   // `#ftree` is the stable column (what the drawer slides, what the tab bar
@@ -183,10 +184,8 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
   // The local cache's address for one directory's listing. A primary checkout
   // names no entity and takes no part.
   const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
-  const treeAddress = (path) => {
-    const deviceId = cacheDeviceId();
-    return deviceId && cacheEntityId ? { deviceId, entityId: cacheEntityId, kind: "tree", sub: path } : null;
-  };
+  const treeAddress = (path) =>
+    cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind: "tree", sub: path }) || null : null;
 
   let treeRequest = 0; // which navigation the paints below still speak for
   let liveRenderedRequest = 0; // a live answer outranks the cache for its request

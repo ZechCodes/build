@@ -5,6 +5,7 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 
 const {
   PENDING_GRACE_MS,
+  createOptimisticStore,
   insertRecord,
   removeRecord,
   patchRecord,
@@ -129,6 +130,51 @@ describe("the records and the projection", () => {
 });
 
 describe("the registry", () => {
+  it("keeps independent stores isolated, including late failures", async () => {
+    const first = createOptimisticStore();
+    const second = createOptimisticStore();
+    const firstNotifications = vi.fn();
+    const secondNotifications = vi.fn();
+    first.subscribeOptimistic("agents", firstNotifications);
+    second.subscribeOptimistic("agents", secondNotifications);
+
+    let rejectFirst;
+    const firstRun = first.runOptimistic({
+      scope: "agents",
+      records: [insertRecord("pending-agent", agent("pending-agent"))],
+      call: () => new Promise((_, reject) => {
+        rejectFirst = reject;
+      }),
+      failureSummary: "Could not start the agent",
+      notify: false,
+    });
+    await second.runOptimistic({
+      scope: "agents",
+      records: [insertRecord("pending-agent", agent("pending-agent"))],
+      call: async () => {},
+      failureSummary: "Could not start the agent",
+      notify: false,
+    });
+
+    expect(first.pendingIn("agents")).toHaveLength(1);
+    expect(second.pendingIn("agents")).toHaveLength(1);
+    expect(firstNotifications).toHaveBeenCalled();
+    expect(secondNotifications).toHaveBeenCalled();
+    expect(first.provisionalKey("message")).not.toBe(second.provisionalKey("message"));
+
+    rejectFirst(new Error("nope"));
+    await expect(firstRun).resolves.toBe(false);
+    expect(first.pendingIn("agents")).toEqual([]);
+    expect(second.pendingIn("agents")).toHaveLength(1);
+  });
+
+  it("does not reuse a store's provisional keys after reset", () => {
+    const store = createOptimisticStore();
+    const first = store.provisionalKey("agent");
+    store.reset();
+    expect(store.provisionalKey("agent")).not.toBe(first);
+  });
+
   it("paints before the call answers, and settles after", async () => {
     const notified = [];
     const unsubscribe = subscribeOptimistic("agents", () => notified.push(pendingIn("agents").length));

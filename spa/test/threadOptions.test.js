@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
-import { threadHtml, wireThreadOptions } from "../src/core/thread.js";
+import { createThreadState, threadHtml, wireThreadOptions } from "../src/core/thread.js";
 
 const OFFER = {
   type: "message",
@@ -134,6 +134,37 @@ describe("suggested actions on an agent message", () => {
 
     expect(chips().every((chip) => !chip.classList.contains("chosen"))).toBe(true);
     expect(submit().disabled).toBe(true);
+  });
+
+  it("keeps identical conversation ids isolated by their owning scope", () => {
+    const firstScope = createThreadState({ ownerId: "device-a" });
+    const secondScope = createThreadState({ ownerId: "device-b" });
+    document.body.innerHTML = threadHtml({ id: "thread:run-1", items: [OFFER] }, { threadState: firstScope });
+    wireThreadOptions(document.body, () => Promise.resolve(), firstScope);
+    chips()[0].click();
+
+    document.body.innerHTML = threadHtml(
+      { id: "thread:run-1", items: [OFFER] },
+      { threadState: secondScope },
+    );
+
+    expect(chips().every((chip) => !chip.classList.contains("chosen"))).toBe(true);
+    expect(submit().disabled).toBe(true);
+  });
+
+  it("ignores a late offer completion after its owning scope is disposed", async () => {
+    const state = createThreadState({ ownerId: "device-a" });
+    let resolveSend;
+    document.body.innerHTML = threadHtml({ id: "thread:run-1", items: [OFFER] }, { threadState: state });
+    wireThreadOptions(document.body, () => new Promise((resolve) => { resolveSend = resolve; }), state);
+    chips()[0].click();
+    submit().click();
+
+    state.dispose();
+    resolveSend();
+    await Promise.resolve();
+
+    expect(state.snapshot()).toEqual({ choiceState: "", sending: "" });
   });
 
   it("escapes what the agent wrote on a chip", () => {

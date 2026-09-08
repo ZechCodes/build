@@ -21,11 +21,12 @@ export async function renderIssue() {
   const id = App.route.id;
   let projectId = App.route.projectId || null;
   let selectedStageId = App.route.stage || null;
+  const callRpc = App.call;
   root.className = "surface";
   root.innerHTML = '<div id="tabbody" class="flush"></div>';
 
   // Looking at an issue is seeing it — the dot settles until it moves again.
-  App.call("entity.seen", { entity_id: id }).catch(() => {});
+  callRpc("entity.seen", { entity_id: id }).catch(() => {});
 
   // The open stage rides the hash without re-routing, so the selection is
   // shareable and survives a reload.
@@ -54,12 +55,12 @@ export async function renderIssue() {
     projectId,
     agentSelection,
     initialStageId: selectedStageId,
-    callRpc: (method, params) => App.call(method, params),
+    callRpc,
     navigate: go,
     loadCatalog: loadModelCatalog,
     // The branches an implementation can be sent into are the feed's own branch
     // rows, so the assignment control reads the same list the inbox does.
-    loadWorkItems: async () => (await App.call("board.list")).items || [],
+    loadWorkItems: async () => (await callRpc("board.list")).items || [],
     onSelectStage: (stageId) => {
       selectedStageId = stageId;
       syncHash();

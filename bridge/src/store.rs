@@ -54,9 +54,10 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{Agent, AgentRoster};
+use crate::agent::{Agent, AgentRoster, CURRENT_SETTINGS_VERSION};
 use crate::attention::Attention;
 use crate::models::{AgentProvider, ModelChoice};
+use crate::operation::{OperationReceipt, OperationStatus};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc};
 use crate::run::{RunState, StageProgress};
 use crate::thread::{
@@ -128,6 +129,8 @@ pub enum StoreError {
     /// build from nothing — an error, never a no-op.
     #[error("plan {plan_id} has no docs in the store: nothing to materialize")]
     NoStoredDocs { plan_id: String },
+    #[error("operation {operation_id} was already used with a different request or target")]
+    OperationConflict { operation_id: String },
 }
 
 /// The durable core of one plan — the project-scoped half of the split. Its
@@ -483,6 +486,39 @@ CREATE TABLE IF NOT EXISTS archived_worktrees (
     id     TEXT PRIMARY KEY,
     record TEXT NOT NULL
 );
+
+-- An accepted mutation and the provider delivery it requires. The transcript
+-- row is written in the same SQLite transaction as this receipt. `claimed` is
+-- persisted before handoff so a restart can distinguish safe queued work from
+-- an ambiguous provider write.
+CREATE TABLE IF NOT EXISTS operations (
+    operation_id    TEXT PRIMARY KEY,
+    method          TEXT NOT NULL,
+    entity_id       TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    choice_revision INTEGER NOT NULL,
+    request_hash    TEXT NOT NULL,
+    posted_sequence INTEGER NOT NULL,
+    message_start_sequence INTEGER NOT NULL,
+    status          TEXT NOT NULL,
+    execution_error TEXT,
+    delivery        TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS operations_by_status ON operations(status, created_at);
+
+-- One bounded copy of each pre-v6 agent skeleton. The migration materializes
+-- formerly inherited settings and implicit conversation aliases; retaining the
+-- source makes that one-way interpretation auditable without copying any
+-- transcript rows.
+CREATE TABLE IF NOT EXISTS agent_migration_backups (
+    agent_id          TEXT NOT NULL,
+    migration_version INTEGER NOT NULL,
+    record            TEXT NOT NULL,
+    PRIMARY KEY (agent_id, migration_version)
+);
 "#;
 
 /// The two conversation reads that must never walk a whole conversation, held
@@ -640,7 +676,7 @@ const HOISTED_ITEM_COLUMNS: [(i64, &str); 4] = [
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -681,10 +717,11 @@ impl Store {
             cause: cause.to_string(),
         })?;
         let database_path = dir.join(DB_FILE);
-        let conn = Connection::open(&database_path).map_err(|cause| StoreError::Unopenable {
-            path: database_path,
-            cause: cause.to_string(),
-        })?;
+        let mut conn =
+            Connection::open(&database_path).map_err(|cause| StoreError::Unopenable {
+                path: database_path,
+                cause: cause.to_string(),
+            })?;
         // Refuse BEFORE writing anything. A store written by a newer bridge
         // must not receive this build's pragmas or DDL on the way to being
         // rejected — the refusal exists to leave it untouched.
@@ -726,8 +763,12 @@ impl Store {
             }
         }
         conn.execute_batch(SCHEMA)?;
+        ensure_operation_receipt_columns(&conn)?;
         if stored.is_some_and(|found| found < SCHEMA_VERSION) {
             Store::classify_stored_items(&conn)?;
+        }
+        if stored.unwrap_or(0) < 6 {
+            migrate_agents_to_v6(&mut conn)?;
         }
         if stored.unwrap_or(0) < SCHEMA_VERSION {
             conn.execute(
@@ -960,6 +1001,19 @@ impl Store {
         .expect("the v4 shape is staged");
     }
 
+    /// Test-only: the v5 shape, before durable operation receipts.
+    #[cfg(test)]
+    pub fn pretend_to_be_v5(&self) {
+        self.connection()
+            .execute_batch(
+                "DROP INDEX IF EXISTS operations_by_status;
+                 DROP TABLE IF EXISTS operations;
+                 DROP TABLE IF EXISTS agent_migration_backups;
+                 UPDATE meta SET value = '5' WHERE key = 'schema_version';",
+            )
+            .expect("the v5 shape is staged");
+    }
+
     /// Test-only: make the next write fail once, then behave normally.
     #[cfg(test)]
     pub fn fail_next_write(&self) {
@@ -1152,8 +1206,182 @@ impl Store {
         Ok(())
     }
 
+    /// Accept one reviewer post: its new transcript rows and immutable
+    /// operation receipt land in the same transaction. A retry that presents
+    /// the same operation and resolved request returns the original receipt
+    /// without touching either table.
+    pub fn accept_thread_post(
+        &self,
+        conversation_owner_id: &str,
+        agents: &[Agent],
+        receipt: &OperationReceipt,
+    ) -> Result<OperationReceipt, StoreError> {
+        self.in_transaction(|tx| {
+            if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
+                return Ok(existing);
+            }
+            Store::write_agents(tx, conversation_owner_id, agents)?;
+            insert_operation(tx, receipt)?;
+            Ok(receipt.clone())
+        })
+    }
+
+    /// An immutable receipt by its client-generated id.
+    pub fn operation(&self, operation_id: &str) -> Result<Option<OperationReceipt>, StoreError> {
+        read_operation(&self.connection(), operation_id)
+    }
+
+    /// Mark one authorized operation's exact historical messages seen without
+    /// loading the rest of the conversation. The agent skeleton and selected
+    /// item rows advance in one transaction, including when the messages sit
+    /// below the bounded resident tail after restart.
+    pub fn acknowledge_operation_messages(
+        &self,
+        conversation_id: &str,
+        operation_id: &str,
+        start_sequence: u64,
+        end_sequence: u64,
+        now: &str,
+    ) -> Result<u64, StoreError> {
+        self.in_transaction(|tx| {
+            let raw_agent: String = tx.query_row(
+                "SELECT record FROM agents WHERE id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )?;
+            let mut agent: Agent =
+                serde_json::from_str(&raw_agent).map_err(|source| StoreError::Corrupt {
+                    path: PathBuf::from(format!("agents/{conversation_id}")),
+                    source,
+                })?;
+            let mut statement = tx.prepare(
+                "SELECT item FROM thread_items WHERE agent_id = ?1 \
+                 AND sequence BETWEEN ?2 AND ?3 ORDER BY sequence",
+            )?;
+            let raw_items = statement
+                .query_map(
+                    rusqlite::params![
+                        conversation_id,
+                        i64::try_from(start_sequence).unwrap_or(i64::MAX),
+                        i64::try_from(end_sequence).unwrap_or(i64::MAX)
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            agent.thread.items = raw_items
+                .into_iter()
+                .map(|raw| {
+                    serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                        path: PathBuf::from(format!("thread_items/{conversation_id}")),
+                        source,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            agent
+                .thread
+                .read_operation_messages(operation_id, start_sequence, end_sequence, now);
+            agent.thread.note_operation_read(now);
+            let acknowledged_sequence = agent
+                .thread
+                .items
+                .iter()
+                .map(ThreadItem::latest_sequence)
+                .max()
+                .unwrap_or_else(|| agent.thread.last_sequence());
+            for item in &agent.thread.items {
+                tx.execute(
+                    "UPDATE thread_items SET item = ?3, updated_sequence = ?4 \
+                     WHERE agent_id = ?1 AND sequence = ?2",
+                    rusqlite::params![
+                        conversation_id,
+                        i64::try_from(item.sequence()).unwrap_or(i64::MAX),
+                        serde_json::to_string(item).expect("a thread item always serializes"),
+                        i64::try_from(item.latest_sequence()).unwrap_or(i64::MAX),
+                    ],
+                )?;
+            }
+            agent.thread.items.clear();
+            tx.execute(
+                "UPDATE agents SET record = ?2 WHERE id = ?1",
+                rusqlite::params![
+                    conversation_id,
+                    serde_json::to_string(&agent).expect("an agent always serializes")
+                ],
+            )?;
+            Ok(acknowledged_sequence)
+        })
+    }
+
+    /// Boot recovery for provider delivery intents. A queued intent never left
+    /// this database and is safe to replay. A durable claim might have crossed
+    /// the provider boundary before the process died, so it becomes uncertain
+    /// and is intentionally not made replayable again.
+    pub fn recover_operations(&self) -> Result<Vec<OperationReceipt>, StoreError> {
+        self.in_transaction(|tx| {
+            let now = now_rfc3339();
+            tx.execute(
+                "UPDATE operations SET status = 'uncertain', \
+                 execution_error = 'provider handoff outcome unknown after restart', \
+                 updated_at = ?1 \
+                 WHERE status = 'claimed'",
+                [&now],
+            )?;
+            let mut operations = read_recoverable_operations(tx)?;
+            for receipt in &mut operations {
+                let bounded = receipt
+                    .delivery
+                    .as_ref()
+                    .and_then(|delivery| delivery.payload.as_ref())
+                    .is_some();
+                if receipt.status == OperationStatus::Queued && !bounded {
+                    tx.execute(
+                        "UPDATE operations SET status = 'uncertain', \
+                         execution_error = 'legacy delivery has no bounded operation payload', \
+                         updated_at = ?2 WHERE operation_id = ?1 AND status = 'queued'",
+                        rusqlite::params![receipt.operation_id, now],
+                    )?;
+                    receipt.status = OperationStatus::Uncertain;
+                    receipt.execution_error =
+                        Some("legacy delivery has no bounded operation payload".to_string());
+                }
+            }
+            Ok(operations)
+        })
+    }
+
+    /// Advance an intent only from the state its caller observed. The compare
+    /// in SQL keeps two delivery workers from claiming the same operation.
+    pub fn transition_operation(
+        &self,
+        operation_id: &str,
+        expected: OperationStatus,
+        next: OperationStatus,
+        execution_error: Option<&str>,
+    ) -> Result<bool, StoreError> {
+        self.in_transaction(|tx| {
+            let changed = tx.execute(
+                "UPDATE operations SET status = ?3, execution_error = ?4, updated_at = ?5 \
+                 WHERE operation_id = ?1 AND status = ?2",
+                rusqlite::params![
+                    operation_id,
+                    expected.as_str(),
+                    next.as_str(),
+                    execution_error,
+                    now_rfc3339()
+                ],
+            )?;
+            Ok(changed == 1)
+        })
+    }
+
     /// Read one owner's agents back, conversations included, in rail order.
-    fn read_agents(conn: &Connection, owner_id: &str) -> Result<Vec<Agent>, StoreError> {
+    fn read_agents(
+        conn: &Connection,
+        owner_id: &str,
+        entity_choice: &ModelChoice,
+        shared_primary_conversation: Option<&str>,
+    ) -> Result<Vec<Agent>, StoreError> {
         let mut statement =
             conn.prepare("SELECT id, record FROM agents WHERE owner_id = ?1 ORDER BY ordinal")?;
         let rows: Vec<(String, String)> = statement
@@ -1171,12 +1399,19 @@ impl Store {
         let mut first_attention_after = conn.prepare(THREAD_FIRST_ATTENTION_AFTER_SQL)?;
         let mut last_attention = conn.prepare(THREAD_LAST_ATTENTION_SQL)?;
         let mut agents = Vec::with_capacity(rows.len());
-        for (id, raw) in rows {
+        for (index, (id, raw)) in rows.into_iter().enumerate() {
             let mut agent: Agent =
                 serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
                     path: PathBuf::from(format!("agents/{id}")),
                     source,
                 })?;
+            let primary_conversation = (index == 0)
+                .then_some(shared_primary_conversation)
+                .flatten();
+            // A record inserted directly by a current-version test or recovery
+            // tool can still be legacy-shaped. Materialize it in memory; only
+            // the versioned boot migration above overwrites raw stored data.
+            materialize_agent_identity(&mut agent, entity_choice, primary_conversation);
             let held = count.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
             let stored_last = last_sequence.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
             let items = read_thread_page(&mut tail, &id, i64::MAX, RESIDENT_CONVERSATION_TAIL)?;
@@ -1491,19 +1726,27 @@ impl Store {
     /// longer rewrites every implementation inside it.
     pub fn save_issue_plan(&self, record: &PersistedPlan) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            let mut skeleton = record.clone();
-            let agents = std::mem::take(&mut skeleton.agents);
-            tx.execute(
-                "INSERT INTO issues (id, created_at, updated_at, record) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(id) DO UPDATE SET created_at = ?2, updated_at = ?3, record = ?4",
-                rusqlite::params![
-                    record.id,
-                    record.created_at,
-                    record.updated_at,
-                    serde_json::to_string(&skeleton).expect("an Issue always serializes")
-                ],
-            )?;
-            Store::write_agents(tx, &record.id, &agents)
+            write_issue(tx, record)?;
+            Store::write_agents(tx, &record.id, &record.agents)
+        })
+    }
+
+    /// [`save_issue_plan`](Self::save_issue_plan) plus the operation receipt in
+    /// one commit. Used by `thread.post`, where acknowledging the operation
+    /// without its message (or vice versa) would make a retry unsafe.
+    pub fn save_issue_plan_accepting_operation(
+        &self,
+        record: &PersistedPlan,
+        receipt: &OperationReceipt,
+    ) -> Result<OperationReceipt, StoreError> {
+        self.in_transaction(|tx| {
+            if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
+                return Ok(existing);
+            }
+            write_issue(tx, record)?;
+            Store::write_agents(tx, &record.id, &record.agents)?;
+            insert_operation(tx, receipt)?;
+            Ok(receipt.clone())
         })
     }
 
@@ -1525,7 +1768,12 @@ impl Store {
                     path: PathBuf::from(format!("issues/{id}")),
                     source,
                 })?;
-            issue.agents = Store::read_agents(&conn, &id)?;
+            let issue_choice = ModelChoice {
+                provider: issue.provider,
+                model: issue.model.clone(),
+                effort: issue.effort.clone(),
+            };
+            issue.agents = Store::read_agents(&conn, &id, &issue_choice, None)?;
             let implementations = Store::read_runs(&conn, Some(&id))?;
             issues.push(PersistedIssue {
                 issue,
@@ -1569,22 +1817,26 @@ impl Store {
     /// Write one run and its agents, whether or not it belongs to an Issue.
     pub fn save_run(&self, record: &PersistedRun) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            let mut skeleton = record.clone();
-            let agents = std::mem::take(&mut skeleton.agents);
-            tx.execute(
-                "INSERT INTO implementations (id, issue_id, created_at, updated_at, record)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(id) DO UPDATE SET
-                     issue_id = ?2, created_at = ?3, updated_at = ?4, record = ?5",
-                rusqlite::params![
-                    record.id,
-                    record.plan_id,
-                    record.created_at,
-                    record.updated_at,
-                    serde_json::to_string(&skeleton).expect("a run always serializes")
-                ],
-            )?;
-            Store::write_agents(tx, &record.id, &agents)
+            write_run(tx, record)?;
+            Store::write_agents(tx, &record.id, &record.agents)
+        })
+    }
+
+    /// Run-owned counterpart of
+    /// [`save_issue_plan_accepting_operation`](Self::save_issue_plan_accepting_operation).
+    pub fn save_run_accepting_operation(
+        &self,
+        record: &PersistedRun,
+        receipt: &OperationReceipt,
+    ) -> Result<OperationReceipt, StoreError> {
+        self.in_transaction(|tx| {
+            if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
+                return Ok(existing);
+            }
+            write_run(tx, record)?;
+            Store::write_agents(tx, &record.id, &record.agents)?;
+            insert_operation(tx, receipt)?;
+            Ok(receipt.clone())
         })
     }
 
@@ -1618,7 +1870,16 @@ impl Store {
                     path: PathBuf::from(format!("implementations/{id}")),
                     source,
                 })?;
-            run.agents = Store::read_agents(conn, &id)?;
+            let run_choice = ModelChoice {
+                provider: run.provider,
+                model: run.model.clone(),
+                effort: run.effort.clone(),
+            };
+            let shared_primary = run
+                .plan_id
+                .as_deref()
+                .and_then(|issue_id| primary_agent_id(conn, issue_id).ok().flatten());
+            run.agents = Store::read_agents(conn, &id, &run_choice, shared_primary.as_deref())?;
             runs.push(run);
         }
         Ok(runs)
@@ -2226,6 +2487,345 @@ fn copy_tree(
 /// which pages every conversation of an owner off one statement, and by
 /// [`Store::thread_page`], which prepares its own. Turns the seek's
 /// newest-first read into the order the conversation happened in.
+const OPERATION_COLUMNS: &str = "operation_id, method, entity_id, agent_id, \
+    conversation_id, choice_revision, request_hash, posted_sequence, status, \
+    delivery, execution_error, message_start_sequence";
+
+fn ensure_operation_receipt_columns(conn: &Connection) -> Result<(), StoreError> {
+    let mut columns = conn.prepare("PRAGMA table_info(operations)")?;
+    let names = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(columns);
+    if !names.iter().any(|name| name == "execution_error") {
+        conn.execute("ALTER TABLE operations ADD COLUMN execution_error TEXT", [])?;
+    }
+    if !names.iter().any(|name| name == "message_start_sequence") {
+        conn.execute(
+            "ALTER TABLE operations ADD COLUMN message_start_sequence INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn primary_agent_id(conn: &Connection, owner_id: &str) -> Result<Option<String>, StoreError> {
+    conn.query_row(
+        "SELECT id FROM agents WHERE owner_id = ?1 ORDER BY ordinal LIMIT 1",
+        [owner_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(StoreError::from)
+}
+
+/// Schema-v6 migration: freeze the model choice each legacy agent effectively
+/// used and turn the old first-agent Issue/run alias into an explicit
+/// conversation id. The original skeleton is retained once before overwrite;
+/// conversation rows stay exactly where they are.
+fn migrate_agents_to_v6(conn: &mut Connection) -> Result<(), StoreError> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let owners = load_legacy_owner_context(&tx)?;
+    let primary_agents = load_primary_agent_ids(&tx)?;
+    let rows: Vec<(String, String, String)> = {
+        let mut statement = tx.prepare("SELECT id, owner_id, record FROM agents")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        rows
+    };
+    for (agent_id, owner_id, raw) in rows {
+        let mut agent: Agent =
+            serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                path: PathBuf::from(format!("agents/{agent_id}")),
+                source,
+            })?;
+        let Some(context) = owners.get(&owner_id) else {
+            continue;
+        };
+        let shared = context
+            .issue_id
+            .as_deref()
+            .filter(|_| primary_agents.get(&owner_id) == Some(&agent_id))
+            .and_then(|issue_id| primary_agents.get(issue_id))
+            .map(String::as_str);
+        if !materialize_agent_identity(&mut agent, &context.choice, shared) {
+            continue;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO agent_migration_backups \
+             (agent_id, migration_version, record) VALUES (?1, 6, ?2)",
+            rusqlite::params![agent_id, raw],
+        )?;
+        tx.execute(
+            "UPDATE agents SET record = ?2 WHERE id = ?1",
+            rusqlite::params![
+                agent_id,
+                serde_json::to_string(&agent).expect("an agent always serializes")
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+struct LegacyOwnerContext {
+    choice: ModelChoice,
+    issue_id: Option<String>,
+}
+
+fn load_legacy_owner_context(
+    conn: &Connection,
+) -> Result<HashMap<String, LegacyOwnerContext>, StoreError> {
+    let mut owners = HashMap::new();
+    let mut issues = conn.prepare("SELECT id, record FROM issues")?;
+    let issue_rows: Vec<(String, String)> = issues
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    drop(issues);
+    for (id, raw) in issue_rows {
+        let record: PersistedPlan =
+            serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                path: PathBuf::from(format!("issues/{id}")),
+                source,
+            })?;
+        owners.insert(
+            id,
+            LegacyOwnerContext {
+                choice: ModelChoice {
+                    provider: record.provider,
+                    model: record.model,
+                    effort: record.effort,
+                },
+                issue_id: None,
+            },
+        );
+    }
+    let mut runs = conn.prepare("SELECT id, record FROM implementations")?;
+    let run_rows: Vec<(String, String)> = runs
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    drop(runs);
+    for (id, raw) in run_rows {
+        let record: PersistedRun =
+            serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                path: PathBuf::from(format!("implementations/{id}")),
+                source,
+            })?;
+        owners.insert(
+            id,
+            LegacyOwnerContext {
+                choice: ModelChoice {
+                    provider: record.provider,
+                    model: record.model,
+                    effort: record.effort,
+                },
+                issue_id: record.plan_id,
+            },
+        );
+    }
+    Ok(owners)
+}
+
+fn load_primary_agent_ids(conn: &Connection) -> Result<HashMap<String, String>, StoreError> {
+    let mut statement = conn.prepare(
+        "SELECT owner_id, id FROM agents \
+         WHERE ordinal = (SELECT MIN(first.ordinal) FROM agents first \
+                          WHERE first.owner_id = agents.owner_id)",
+    )?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<Result<_, _>>().map_err(StoreError::from)
+}
+
+fn write_issue(tx: &rusqlite::Transaction, record: &PersistedPlan) -> Result<(), StoreError> {
+    let mut skeleton = record.clone();
+    skeleton.agents.clear();
+    tx.execute(
+        "INSERT INTO issues (id, created_at, updated_at, record) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET created_at = ?2, updated_at = ?3, record = ?4",
+        rusqlite::params![
+            record.id,
+            record.created_at,
+            record.updated_at,
+            serde_json::to_string(&skeleton).expect("an Issue always serializes")
+        ],
+    )?;
+    Ok(())
+}
+
+fn write_run(tx: &rusqlite::Transaction, record: &PersistedRun) -> Result<(), StoreError> {
+    let mut skeleton = record.clone();
+    skeleton.agents.clear();
+    tx.execute(
+        "INSERT INTO implementations (id, issue_id, created_at, updated_at, record)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET
+             issue_id = ?2, created_at = ?3, updated_at = ?4, record = ?5",
+        rusqlite::params![
+            record.id,
+            record.plan_id,
+            record.created_at,
+            record.updated_at,
+            serde_json::to_string(&skeleton).expect("a run always serializes")
+        ],
+    )?;
+    Ok(())
+}
+
+/// One-way read migration from entity-owned choices and implicit transcript
+/// ownership. It changes only the small agent skeleton; transcript rows remain
+/// under the same existing storage id.
+fn materialize_agent_identity(
+    agent: &mut Agent,
+    entity_choice: &ModelChoice,
+    shared_primary_conversation: Option<&str>,
+) -> bool {
+    let mut changed = false;
+    if agent.settings_version < CURRENT_SETTINGS_VERSION {
+        if agent.choice.provider == entity_choice.provider {
+            agent.choice = entity_choice.clone();
+        }
+        agent.settings_version = CURRENT_SETTINGS_VERSION;
+        changed = true;
+    }
+    if agent.conversation_id.is_none() {
+        agent.conversation_id = Some(shared_primary_conversation.unwrap_or(&agent.id).to_string());
+        changed = true;
+    }
+    changed
+}
+
+fn insert_operation(
+    tx: &rusqlite::Transaction,
+    receipt: &OperationReceipt,
+) -> Result<(), StoreError> {
+    let now = now_rfc3339();
+    let delivery = receipt
+        .delivery
+        .as_ref()
+        .map(|intent| serde_json::to_string(intent).expect("a delivery intent always serializes"));
+    tx.execute(
+        "INSERT INTO operations \
+         (operation_id, method, entity_id, agent_id, conversation_id, choice_revision, \
+          request_hash, posted_sequence, message_start_sequence, status, execution_error, delivery, \
+          created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+        rusqlite::params![
+            receipt.operation_id,
+            receipt.method,
+            receipt.entity_id,
+            receipt.agent_id,
+            receipt.conversation_id,
+            i64::try_from(receipt.choice_revision).unwrap_or(i64::MAX),
+            receipt.request_hash,
+            i64::try_from(receipt.posted_sequence).unwrap_or(i64::MAX),
+            i64::try_from(receipt.message_start_sequence).unwrap_or(i64::MAX),
+            receipt.status.as_str(),
+            receipt.execution_error,
+            delivery,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+fn existing_operation_or_conflict(
+    conn: &Connection,
+    receipt: &OperationReceipt,
+) -> Result<Option<OperationReceipt>, StoreError> {
+    let Some(existing) = read_operation(conn, &receipt.operation_id)? else {
+        return Ok(None);
+    };
+    if same_operation(&existing, receipt) {
+        Ok(Some(existing))
+    } else {
+        Err(StoreError::OperationConflict {
+            operation_id: receipt.operation_id.clone(),
+        })
+    }
+}
+
+fn read_operation(
+    conn: &Connection,
+    operation_id: &str,
+) -> Result<Option<OperationReceipt>, StoreError> {
+    let sql = format!("SELECT {OPERATION_COLUMNS} FROM operations WHERE operation_id = ?1");
+    conn.query_row(&sql, [operation_id], decode_operation_row)
+        .optional()
+        .map_err(StoreError::from)
+}
+
+fn read_recoverable_operations(conn: &Connection) -> Result<Vec<OperationReceipt>, StoreError> {
+    let sql = format!(
+        "SELECT {OPERATION_COLUMNS} FROM operations \
+         WHERE status IN ('queued', 'uncertain') ORDER BY created_at, operation_id"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map([], decode_operation_row)?;
+    rows.collect::<Result<_, _>>().map_err(StoreError::from)
+}
+
+fn decode_operation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OperationReceipt> {
+    let operation_id: String = row.get(0)?;
+    let status: String = row.get(8)?;
+    let status = match status.as_str() {
+        "queued" => OperationStatus::Queued,
+        "claimed" => OperationStatus::Claimed,
+        "delivered" => OperationStatus::Delivered,
+        "uncertain" => OperationStatus::Uncertain,
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                format!("invalid operation status {status:?}").into(),
+            ))
+        }
+    };
+    let delivery = row
+        .get::<_, Option<String>>(9)?
+        .map(|raw| {
+            serde_json::from_str(&raw).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()?;
+    Ok(OperationReceipt {
+        operation_id,
+        method: row.get(1)?,
+        entity_id: row.get(2)?,
+        agent_id: row.get(3)?,
+        conversation_id: row.get(4)?,
+        choice_revision: row.get::<_, i64>(5)?.max(0) as u64,
+        request_hash: row.get(6)?,
+        posted_sequence: row.get::<_, i64>(7)?.max(0) as u64,
+        message_start_sequence: {
+            let start = row.get::<_, i64>(11)?.max(0) as u64;
+            if start == 0 {
+                row.get::<_, i64>(7)?.max(0) as u64
+            } else {
+                start
+            }
+        },
+        status,
+        execution_error: row.get(10)?,
+        delivery,
+    })
+}
+
+fn same_operation(left: &OperationReceipt, right: &OperationReceipt) -> bool {
+    left.operation_id == right.operation_id
+        && left.method == right.method
+        && left.entity_id == right.entity_id
+        && left.agent_id == right.agent_id
+        && left.conversation_id == right.conversation_id
+        && left.choice_revision == right.choice_revision
+        && left.request_hash == right.request_hash
+}
+
 fn read_thread_page(
     statement: &mut rusqlite::Statement<'_>,
     agent_id: &str,
@@ -2473,8 +3073,333 @@ mod tests {
 
     use crate::agent::AgentRoster;
     use crate::models::ModelChoice;
+    use crate::operation::{
+        DeliveryIntent, OperationPayload, OperationReceipt, OperationStatus, THREAD_POST_METHOD,
+    };
 
     const NOW: &str = "2026-08-21T10:00:00Z";
+
+    fn queued_operation(operation_id: &str, posted_sequence: u64) -> OperationReceipt {
+        let agent_id = crate::agent::derived_agent_id("issue-1");
+        OperationReceipt {
+            operation_id: operation_id.to_string(),
+            method: THREAD_POST_METHOD.to_string(),
+            entity_id: "issue-1".to_string(),
+            agent_id: agent_id.clone(),
+            conversation_id: agent_id.clone(),
+            choice_revision: 0,
+            posted_sequence,
+            message_start_sequence: posted_sequence,
+            status: OperationStatus::Queued,
+            execution_error: None,
+            request_hash: "same-request".to_string(),
+            delivery: Some(DeliveryIntent {
+                root: "/repo".into(),
+                owner_id: "issue-1".to_string(),
+                agent_id,
+                model_choice: ModelChoice::default(),
+                choice_revision: 0,
+                interrupt: false,
+                payload: Some(OperationPayload {
+                    start_sequence: posted_sequence,
+                    end_sequence: posted_sequence,
+                    messages: Vec::new(),
+                    prior_context: String::new(),
+                }),
+            }),
+        }
+    }
+
+    #[test]
+    fn thread_post_receipt_and_message_commit_together_and_retry_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let mut record = plan_record("issue-1");
+        record.agents[0].thread.post_user("hello", None, NOW);
+        let receipt = queued_operation("op-1", 1);
+
+        let accepted = store
+            .accept_thread_post("issue-1", &record.agents, &receipt)
+            .unwrap();
+        assert_eq!(accepted, receipt);
+        let writes = store.total_changes();
+        let retried = store
+            .accept_thread_post("issue-1", &record.agents, &receipt)
+            .unwrap();
+        assert_eq!(retried, receipt);
+        assert_eq!(
+            store.total_changes(),
+            writes,
+            "retry wrote no second effect"
+        );
+        assert_eq!(store.thread_items(&record.agents[0].id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn operation_id_reuse_with_a_different_request_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let record = plan_record("issue-1");
+        let receipt = queued_operation("op-1", 1);
+        store
+            .accept_thread_post("issue-1", &record.agents, &receipt)
+            .unwrap();
+
+        let mut reused = receipt.clone();
+        reused.request_hash = "different-request".to_string();
+        let error = store
+            .accept_thread_post("issue-1", &record.agents, &reused)
+            .unwrap_err();
+        assert!(matches!(error, StoreError::OperationConflict { .. }));
+    }
+
+    #[test]
+    fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let mut record = plan_record("issue-1");
+        let thread = &mut record.agents[0].thread;
+        let before = thread.last_sequence();
+        thread.post_user("managed message", None, NOW);
+        let sequence = thread.last_sequence();
+        let messages = thread.bind_operation_messages("old-op", before, sequence);
+        let mut receipt = queued_operation("old-op", sequence);
+        receipt.message_start_sequence = sequence;
+        receipt.delivery.as_mut().unwrap().payload = Some(OperationPayload {
+            start_sequence: sequence,
+            end_sequence: sequence,
+            messages,
+            prior_context: String::new(),
+        });
+        store
+            .accept_thread_post("issue-1", &record.agents, &receipt)
+            .unwrap();
+        for index in 0..250 {
+            record.agents[0]
+                .thread
+                .post_user(format!("later {index}"), None, NOW);
+        }
+        store.save_issue_plan(&record).unwrap();
+        drop(store);
+
+        let reopened = Store::new(dir.path()).unwrap();
+        let loaded = reopened.load_all_issues().unwrap().remove(0);
+        assert!(
+            loaded.issue.agents[0]
+                .thread
+                .items
+                .iter()
+                .all(|item| item.sequence() != sequence),
+            "the managed message is below the bounded resident tail"
+        );
+        let previous_last = loaded.issue.agents[0].thread.last_sequence();
+        let acknowledged_sequence = reopened
+            .acknowledge_operation_messages(
+                &record.agents[0].id,
+                "old-op",
+                sequence,
+                sequence,
+                "2026-08-21T10:01:00Z",
+            )
+            .unwrap();
+        assert!(acknowledged_sequence > previous_last);
+        assert!(reopened
+            .thread_items_after(&record.agents[0].id, previous_last)
+            .unwrap()
+            .iter()
+            .any(|item| item.sequence() == sequence));
+        let raw: String = reopened
+            .connection()
+            .query_row(
+                "SELECT item FROM thread_items WHERE agent_id = ?1 AND sequence = ?2",
+                rusqlite::params![record.agents[0].id, sequence as i64],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let item: ThreadItem = serde_json::from_str(&raw).unwrap();
+        let ThreadItem::Message(message) = item else {
+            panic!("the accepted item is a message");
+        };
+        assert_eq!(message.operation_id.as_deref(), Some("old-op"));
+        assert_eq!(message.seen_at.as_deref(), Some("2026-08-21T10:01:00Z"));
+        assert_eq!(message.updated_sequence, acknowledged_sequence);
+        let mut after_ack = reopened.load_all_issues().unwrap().remove(0);
+        after_ack.issue.agents[0]
+            .thread
+            .post_user("after acknowledgement", None, NOW);
+        assert!(
+            after_ack.issue.agents[0].thread.last_sequence() > acknowledged_sequence,
+            "the store-side acknowledgement sequence cannot be reused"
+        );
+    }
+
+    #[test]
+    fn boot_requeues_only_safe_intents_and_marks_claimed_handoffs_uncertain() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let record = plan_record("issue-1");
+        let queued = queued_operation("queued", 1);
+        let claimed = queued_operation("claimed", 2);
+        store
+            .accept_thread_post("issue-1", &record.agents, &queued)
+            .unwrap();
+        store
+            .accept_thread_post("issue-1", &record.agents, &claimed)
+            .unwrap();
+        assert!(store
+            .transition_operation(
+                "claimed",
+                OperationStatus::Queued,
+                OperationStatus::Claimed,
+                None,
+            )
+            .unwrap());
+        drop(store);
+
+        let reopened = Store::new(dir.path()).unwrap();
+        let recovered = reopened.recover_operations().unwrap();
+        let ambiguous = recovered
+            .iter()
+            .find(|receipt| receipt.operation_id == "claimed")
+            .unwrap();
+        assert_eq!(ambiguous.status, OperationStatus::Uncertain);
+        assert_eq!(
+            ambiguous.execution_error.as_deref(),
+            Some("provider handoff outcome unknown after restart")
+        );
+        assert_eq!(
+            recovered
+                .iter()
+                .find(|receipt| receipt.operation_id == "queued")
+                .unwrap()
+                .status,
+            OperationStatus::Queued
+        );
+    }
+
+    #[test]
+    fn v5_database_gains_operation_receipts_without_touching_conversations() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let mut record = plan_record("issue-1");
+        record.agents[0].thread.post_user("keep me", None, NOW);
+        store.save_issue_plan(&record).unwrap();
+        store.pretend_to_be_v5();
+        drop(store);
+
+        let migrated = Store::new(dir.path()).unwrap();
+        assert_eq!(
+            migrated.thread_items(&record.agents[0].id).unwrap().len(),
+            1
+        );
+        let receipt = queued_operation("after-upgrade", 1);
+        migrated
+            .accept_thread_post("issue-1", &record.agents, &receipt)
+            .unwrap();
+        assert_eq!(migrated.operation("after-upgrade").unwrap(), Some(receipt));
+    }
+
+    #[test]
+    fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let mut issue = plan_record("issue-legacy");
+        issue.provider = crate::models::AgentProvider::Codex;
+        issue.model = Some("issue-model".to_string());
+        store.save_issue_plan(&issue).unwrap();
+
+        let mut run = run_record("run-legacy", Some("issue-legacy"), NOW);
+        run.provider = crate::models::AgentProvider::Codex;
+        run.model = Some("entity-model".to_string());
+        let mut surviving = Agent::new(
+            "run-legacy-agent-2",
+            "run-legacy",
+            ModelChoice {
+                provider: crate::models::AgentProvider::Codex,
+                model: Some("old-agent-model".to_string()),
+                effort: None,
+            },
+            2,
+            NOW,
+        );
+        surviving.thread.post_user("legacy words", None, NOW);
+        run.agents = vec![surviving];
+        store.save_run(&run).unwrap();
+
+        let raw_before = {
+            let conn = store.connection();
+            let raw: String = conn
+                .query_row(
+                    "SELECT record FROM agents WHERE id = 'run-legacy-agent-2'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let object = value.as_object_mut().unwrap();
+            object.remove("conversation_id");
+            object.remove("choice_revision");
+            object.remove("settings_version");
+            let raw = serde_json::to_string(&value).unwrap();
+            conn.execute(
+                "UPDATE agents SET record = ?2 WHERE id = ?1",
+                rusqlite::params!["run-legacy-agent-2", raw],
+            )
+            .unwrap();
+            raw
+        };
+        store.pretend_to_be_v5();
+        drop(store);
+
+        let migrated = Store::new(dir.path()).unwrap();
+        let loaded = reload_run(&migrated, "run-legacy");
+        let agent = &loaded.agents[0];
+        assert_eq!(agent.ordinal, 2, "migration does not renumber survivors");
+        assert_eq!(agent.choice.model.as_deref(), Some("entity-model"));
+        assert_eq!(agent.settings_version, CURRENT_SETTINGS_VERSION);
+        assert_eq!(
+            agent.conversation_id(),
+            issue.agents[0].id,
+            "the legacy current agent keeps the Issue alias it effectively used"
+        );
+        assert_eq!(
+            migrated.thread_items("run-legacy-agent-2").unwrap().len(),
+            1,
+            "migration never copies or drops transcript rows"
+        );
+        let backup: String = migrated
+            .connection()
+            .query_row(
+                "SELECT record FROM agent_migration_backups \
+                 WHERE agent_id = 'run-legacy-agent-2' AND migration_version = 6",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(backup, raw_before);
+
+        drop(migrated);
+        let reopened = Store::new(dir.path()).unwrap();
+        let stable = reload_run(&reopened, "run-legacy");
+        assert_eq!(stable.agents[0].conversation_id(), issue.agents[0].id);
+        assert_eq!(
+            stable.agents[0].choice.model.as_deref(),
+            Some("entity-model")
+        );
+        assert_eq!(
+            reopened
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_migration_backups \
+                     WHERE agent_id = 'run-legacy-agent-2'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "reopening does not reinterpret or overwrite the migration source"
+        );
+    }
 
     /// Two writers replacing one file at once — two planning workspaces
     /// appending to one `.git/info/exclude` — must each stage their own

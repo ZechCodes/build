@@ -26,7 +26,8 @@ use super::translator::{
     ToolSummaryCategory,
 };
 use crate::harness::Harness;
-use crate::harness::{AgentActivity, AgentStatus, ToolOutcome};
+use crate::harness::{AgentActivity, AgentStatus, ToolOutcome, Turn, TurnChoiceSupport};
+use crate::models::{AgentProvider, ModelChoice};
 
 fn limits() -> AppServerLimits {
     AppServerLimits {
@@ -88,6 +89,27 @@ fn start_turn(input: &str) -> PendingOperation {
         model: Some(SELECTED_MODEL.to_string()),
         effort: Some(SELECTED_EFFORT.to_string()),
     }
+}
+
+fn start_turn_with(input: &str, model: Option<&str>, effort: Option<&str>) -> PendingOperation {
+    PendingOperation::StartTurn {
+        thread_id: THREAD_ID.to_string(),
+        input: input.to_string(),
+        model: model.map(str::to_string),
+        effort: effort.map(str::to_string),
+    }
+}
+
+fn chosen_turn(input: &str, model: Option<&str>, effort: Option<&str>, revision: u64) -> Turn {
+    Turn::with_choice(
+        input,
+        ModelChoice {
+            provider: AgentProvider::CodexAppServer,
+            model: model.map(str::to_string),
+            effort: effort.map(str::to_string),
+        },
+        revision,
+    )
 }
 
 fn steer_turn(input: &str) -> PendingOperation {
@@ -1012,6 +1034,201 @@ fn two_sends_during_start_issue_only_one_turn_start() {
 }
 
 #[test]
+fn successive_frozen_choices_are_applied_to_their_own_turn_starts() {
+    let first_choice = chosen_turn("first", Some("gpt-5.6-terra"), Some("low"), 1);
+    let first = advance_to_waiting()
+        .transition(
+            SessionEvent::SendChosenTurn(first_choice),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(matches!(
+        first.effects.as_slice(),
+        [SessionEffect::Request(PendingOperation::StartTurn { input, model, effort, .. })]
+            if input == "first"
+                && model.as_deref() == Some("gpt-5.6-terra")
+                && effort.as_deref() == Some("low")
+    ));
+
+    let waiting = first
+        .state
+        .transition(
+            correlated(
+                start_turn_with("first", Some("gpt-5.6-terra"), Some("low")),
+                Ok(json!({"turn":{"id":TURN_ID}})),
+            ),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap()
+        .state
+        .transition(
+            turn_completed(TURN_ID, None),
+            Duration::from_secs(2),
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    assert_eq!(waiting.active_model().as_deref(), Some("gpt-5.6-terra"));
+    assert_eq!(waiting.active_effort().as_deref(), Some("low"));
+
+    let second = waiting
+        .transition(
+            SessionEvent::SendChosenTurn(chosen_turn(
+                "second",
+                Some("gpt-6-astra"),
+                Some("xhigh"),
+                2,
+            )),
+            Duration::from_secs(3),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(matches!(
+        second.effects.as_slice(),
+        [SessionEffect::Request(PendingOperation::StartTurn { input, model, effort, .. })]
+            if input == "second"
+                && model.as_deref() == Some("gpt-6-astra")
+                && effort.as_deref() == Some("xhigh")
+    ));
+    assert_eq!(
+        second.state.active_model().as_deref(),
+        Some("gpt-5.6-terra"),
+        "requested settings do not masquerade as active before Codex accepts turn/start"
+    );
+    let accepted = second
+        .state
+        .transition(
+            correlated(
+                start_turn_with("second", Some("gpt-6-astra"), Some("xhigh")),
+                Ok(json!({"turn":{"id":"turn-2"}})),
+            ),
+            Duration::from_secs(4),
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    assert_eq!(accepted.active_model().as_deref(), Some("gpt-6-astra"));
+    assert_eq!(accepted.active_effort().as_deref(), Some("xhigh"));
+}
+
+#[test]
+fn clearing_a_sticky_choice_requires_a_safe_default_session_restart() {
+    let explicit_b = ModelChoice {
+        provider: AgentProvider::CodexAppServer,
+        model: Some("gpt-5.6-terra".to_string()),
+        effort: Some("low".to_string()),
+    };
+    let state = advance_to_waiting();
+    assert_eq!(
+        state.turn_choice_support(&explicit_b),
+        TurnChoiceSupport::Native
+    );
+    let changed = state
+        .transition(
+            SessionEvent::SendChosenTurn(Turn::with_choice("use b", explicit_b, 1)),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    assert_eq!(
+        changed.turn_choice_support(&ModelChoice {
+            provider: AgentProvider::CodexAppServer,
+            model: None,
+            effort: None,
+        }),
+        TurnChoiceSupport::RestartRequired,
+        "a session started at explicit A and moved to B cannot discover configured Default"
+    );
+}
+
+#[test]
+fn fresh_default_session_projects_the_configured_model_and_effort() {
+    let default_choice = ModelChoice {
+        provider: AgentProvider::CodexAppServer,
+        model: None,
+        effort: None,
+    };
+    let opening = CodexSessionState::new(PathBuf::from(WORKTREE_ROOT), None, None, None)
+        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
+        .unwrap()
+        .state
+        .transition(
+            initialize_response(&supported_user_agent()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    let waiting = opening
+        .transition(
+            correlated(
+                PendingOperation::StartThread {
+                    cwd: WORKTREE_ROOT.to_string(),
+                    model: None,
+                },
+                Ok(thread_opened_with(
+                    THREAD_ID,
+                    Some("medium"),
+                    json!({"model":"configured-default"}),
+                )),
+            ),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    assert_eq!(
+        waiting.active_model().as_deref(),
+        Some("configured-default")
+    );
+    assert_eq!(waiting.active_effort().as_deref(), Some("medium"));
+    assert_eq!(
+        waiting.turn_choice_support(&default_choice),
+        TurnChoiceSupport::Native
+    );
+
+    let starting = waiting
+        .transition(
+            SessionEvent::SendChosenTurn(Turn::with_choice(
+                "use configured default",
+                default_choice,
+                3,
+            )),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(matches!(
+        starting.effects.as_slice(),
+        [SessionEffect::Request(PendingOperation::StartTurn {
+            model: None,
+            effort: None,
+            ..
+        })]
+    ));
+    let accepted = starting
+        .state
+        .transition(
+            correlated(
+                start_turn_with("use configured default", None, None),
+                Ok(json!({"turn":{"id":TURN_ID}})),
+            ),
+            Duration::from_secs(2),
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    assert_eq!(
+        accepted.active_model().as_deref(),
+        Some("configured-default")
+    );
+    assert_eq!(accepted.active_effort().as_deref(), Some("medium"));
+}
+
+#[test]
 fn failed_starting_turn_is_interrupted_after_its_id_is_confirmed() {
     let starting = advance_to_waiting()
         .transition(
@@ -1100,6 +1317,46 @@ fn steers_are_serialized_and_success_releases_input_in_order() {
     assert!(
         matches!(released.effects.as_slice(), [SessionEffect::Request(PendingOperation::SteerTurn { input, .. })] if input == "two")
     );
+}
+
+#[test]
+fn queued_frozen_turns_keep_the_choice_snapshot_they_arrived_with() {
+    let first = chosen_turn("one", Some("gpt-5.6-terra"), Some("low"), 10);
+    let second = chosen_turn("two", Some("gpt-6-astra"), Some("xhigh"), 11);
+    let queued = working_state()
+        .transition(
+            SessionEvent::SendChosenTurn(first),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(queued.effects.is_empty(), "a chosen turn is never a steer");
+    let queued = queued
+        .state
+        .transition(
+            SessionEvent::SendChosenTurn(second),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(queued.effects.is_empty());
+
+    let released = queued
+        .state
+        .transition(
+            turn_completed(TURN_ID, None),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(matches!(
+        released.effects.as_slice(),
+        [SessionEffect::CloseTurn(turn_id), SessionEffect::Request(PendingOperation::StartTurn { input, model, effort, .. })]
+            if turn_id == TURN_ID
+                && input == "one"
+                && model.as_deref() == Some("gpt-5.6-terra")
+                && effort.as_deref() == Some("low")
+    ));
 }
 
 #[test]

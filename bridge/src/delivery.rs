@@ -1,10 +1,10 @@
 //! Opening an agent's harness, off the app mutex.
 //!
 //! A spawn asks the disk three questions before it can build an argv — does the
-//! provider still hold the conversation this agent was recorded on, is there a
-//! transcript in this checkout to continue, and which transcript will the child
-//! about to start be writing — and then writes `.build/` into the checkout. All
-//! four are filesystem walks over a tree the daemon does not own, and every one
+//! provider still hold the conversation this agent was recorded on, and which
+//! transcript will the child about to start be writing — and then writes
+//! `.build/` into the checkout. These are filesystem walks over a tree the
+//! daemon does not own, and every one
 //! of them used to run with the app-wide state lock in hand.
 //!
 //! [`AgentSpawnPlan`] is that work, lifted out whole. The lock-held half of a
@@ -18,7 +18,7 @@ use portable_pty::PtySize;
 
 use crate::harness::SessionLocator;
 use crate::models::{AgentProvider, ModelChoice};
-use crate::orchestrator::{Orchestrator, ResumeIdProbe, SessionLocatorFactory, TranscriptProbe};
+use crate::orchestrator::{Orchestrator, ResumeIdProbe, SessionLocatorFactory};
 use crate::pty::HarnessSpec;
 
 /// What a spawn asks the provider's transcript tree, injectable so no test
@@ -29,7 +29,6 @@ use crate::pty::HarnessSpec;
 /// thing and still compiles.
 #[derive(Clone)]
 pub struct SessionProbes {
-    pub transcript: TranscriptProbe,
     pub resume_id: ResumeIdProbe,
     pub locator: SessionLocatorFactory,
 }
@@ -43,10 +42,10 @@ impl SessionProbes {
     ///    Verified first, so a dead name costs zero restarts instead of one,
     ///    and the claude uuid an agent carried onto codex is refused here
     ///    rather than choking the resume.
-    /// 2. No name, but this agent's record shows history: the same agent
-    ///    continuing its own conversation, which `--continue` guesses at as the
-    ///    newest one in the checkout, still gated on the transcript probe.
-    /// 3. Otherwise fresh, on every carrier. A brand-new agent record has no
+    /// 2. Otherwise fresh, on every carrier. Missing exact lineage is never an
+    ///    invitation to guess from the checkout's newest transcript; the cold
+    ///    turn catches up from the canonical conversation history instead.
+    ///    A brand-new agent record has no
     ///    conversation to pick up, and the checkout's old one belongs to
     ///    whoever had it — adoption included: Build cannot show a history it
     ///    never heard.
@@ -55,7 +54,6 @@ impl SessionProbes {
         root: &Path,
         provider: AgentProvider,
         recorded: Option<String>,
-        may_pick_up: bool,
     ) -> SessionPickup {
         match recorded {
             Some(named) if (self.resume_id)(root, provider, &named) => SessionPickup {
@@ -70,7 +68,7 @@ impl SessionProbes {
             },
             None => SessionPickup {
                 resume_session_id: None,
-                continue_session: may_pick_up && (self.transcript)(root, provider),
+                continue_session: false,
                 recorded_name_is_gone: false,
             },
         }
@@ -111,7 +109,6 @@ pub struct AgentSpawnPlan {
     pub agent_id: String,
     pub model_choice: ModelChoice,
     pub recorded_resume_id: Option<String>,
-    pub may_pick_up_a_conversation: bool,
     pub probes: SessionProbes,
     pub session_token: String,
 }
@@ -126,12 +123,9 @@ impl AgentSpawnPlan {
     /// sharing a checkout report as themselves.
     pub fn probe_and_scaffold(self) -> Result<ReadyToSpawn, String> {
         let provider = self.model_choice.provider;
-        let pickup = self.probes.pickup(
-            &self.root,
-            provider,
-            self.recorded_resume_id,
-            self.may_pick_up_a_conversation,
-        );
+        let pickup = self
+            .probes
+            .pickup(&self.root, provider, self.recorded_resume_id);
         let locator = self.probes.locator(&self.root, provider);
         let resume_session_id = pickup.resume_session_id.clone();
         let prepared = self
@@ -171,12 +165,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    fn probes(
-        holds: impl Fn(&str) -> bool + Send + Sync + 'static,
-        transcript: bool,
-    ) -> SessionProbes {
+    fn probes(holds: impl Fn(&str) -> bool + Send + Sync + 'static) -> SessionProbes {
         SessionProbes {
-            transcript: Arc::new(move |_, _| transcript),
             resume_id: Arc::new(move |_, _, id: &str| holds(id)),
             locator: Arc::new(|_, _| None),
         }
@@ -184,11 +174,10 @@ mod tests {
 
     #[test]
     fn a_recorded_name_the_provider_still_holds_is_resumed_exactly() {
-        let pickup = probes(|id| id == "sess-live", true).pickup(
+        let pickup = probes(|id| id == "sess-live").pickup(
             Path::new("/tmp"),
             AgentProvider::default(),
             Some("sess-live".into()),
-            true,
         );
         assert_eq!(pickup.resume_session_id.as_deref(), Some("sess-live"));
         assert!(
@@ -200,11 +189,10 @@ mod tests {
 
     #[test]
     fn a_recorded_name_the_provider_has_lost_starts_fresh_and_says_so() {
-        let pickup = probes(|_| false, true).pickup(
+        let pickup = probes(|_| false).pickup(
             Path::new("/tmp"),
             AgentProvider::default(),
             Some("sess-gone".into()),
-            true,
         );
         assert_eq!(pickup.resume_session_id, None);
         assert!(
@@ -218,17 +206,18 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_with_history_and_no_name_continues_its_checkouts_transcript() {
-        let pickup =
-            probes(|_| true, true).pickup(Path::new("/tmp"), AgentProvider::default(), None, true);
-        assert!(pickup.continue_session);
+    fn history_without_exact_lineage_starts_fresh_for_canonical_catch_up() {
+        let pickup = probes(|_| true).pickup(Path::new("/tmp"), AgentProvider::default(), None);
+        assert!(
+            !pickup.continue_session,
+            "shared history must never activate a cwd-most-recent resume"
+        );
         assert!(!pickup.recorded_name_is_gone);
     }
 
     #[test]
     fn a_brand_new_agent_opens_fresh_however_much_the_checkout_holds() {
-        let pickup =
-            probes(|_| true, true).pickup(Path::new("/tmp"), AgentProvider::default(), None, false);
+        let pickup = probes(|_| true).pickup(Path::new("/tmp"), AgentProvider::default(), None);
         assert!(
             !pickup.continue_session,
             "the checkout's old conversation belongs to whoever had it"

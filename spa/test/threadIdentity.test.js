@@ -15,6 +15,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  createThreadState,
   paintThreadKeepingPlace,
   threadHtml,
   wireThreadAttachments,
@@ -149,6 +150,7 @@ describe("a repaint that resolves the same conversation", () => {
   // render says it. Otherwise the repaint would take the notice off and ask for
   // the bytes again, every tick, forever.
   it("keeps saying a picture is unavailable once it is", async () => {
+    const threadState = createThreadState({ ownerId: "device-a/thread-9" });
     const thread = {
       items: [
         message("here it is", {
@@ -164,21 +166,48 @@ describe("a repaint that resolves the same conversation", () => {
       asked += 1;
       throw new Error("no such attachment");
     };
-    paintThreadKeepingPlace(element, paintInto(element, thread));
-    wireThreadAttachments(element, refuse);
+    const paint = () => {
+      const html = threadHtml(thread, { composer: RAIL_COMPOSER, threadState });
+      writeThreadKeepingComposer(element, html);
+    };
+    paintThreadKeepingPlace(element, paint);
+    wireThreadAttachments(element, refuse, threadState);
     await Promise.resolve();
     await Promise.resolve();
     const figure = element.querySelector(".thread-attachment-figure");
     expect(figure.classList.contains("unavailable")).toBe(true);
 
     const records = mutationsDuring(element, () => {
-      paintThreadKeepingPlace(element, paintInto(element, thread));
-      wireThreadAttachments(element, refuse);
+      paintThreadKeepingPlace(element, paint);
+      wireThreadAttachments(element, refuse, threadState);
     });
 
     expect(records.map(describeRecord)).toEqual([]);
     expect(element.querySelector(".thread-attachment-figure")).toBe(figure);
     expect(asked).toBe(1);
+  });
+
+  it("does not share attachment failures between owning scopes", async () => {
+    const thread = {
+      items: [message("here it is", {
+        role: "user",
+        attachments: [{ path: "shots/shared.png", name: "shared.png", mime: "image/png", size: 12 }],
+      })],
+    };
+    const firstScope = createThreadState({ ownerId: "device-a" });
+    const secondScope = createThreadState({ ownerId: "device-b" });
+    const first = document.createElement("div");
+    const second = document.createElement("div");
+    document.body.append(first, second);
+    first.innerHTML = threadHtml(thread, { threadState: firstScope });
+    wireThreadAttachments(first, async () => { throw new Error("missing on a"); }, firstScope);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    second.innerHTML = threadHtml(thread, { threadState: secondScope });
+
+    expect(first.querySelector(".thread-attachment-figure").classList.contains("unavailable")).toBe(true);
+    expect(second.querySelector(".thread-attachment-figure").classList.contains("unavailable")).toBe(false);
   });
 });
 

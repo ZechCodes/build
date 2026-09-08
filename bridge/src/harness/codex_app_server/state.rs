@@ -7,7 +7,8 @@ use super::protocol::{
     ConnectionEvent, ErrorNotification, InitializeResult, OperationResult, PendingOperation,
     RpcError, ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult, CLIENT_NAME,
 };
-use crate::harness::{ActivityReport, AgentStatus};
+use crate::harness::{ActivityReport, AgentStatus, Turn, TurnChoiceSupport};
+use crate::models::{AgentProvider, ModelChoice};
 use semver::Version;
 
 const MINIMUM_VERSION: &str = "0.153.0";
@@ -27,6 +28,7 @@ pub enum SessionEffect {
 pub enum SessionEvent {
     Start,
     SendTurn(String),
+    SendChosenTurn(Turn),
     Interrupt,
     Connection(ConnectionEvent),
     ThreadStarted(String),
@@ -54,13 +56,13 @@ pub struct StateTransition {
 pub struct CodexSessionState {
     root: PathBuf,
     selected_model: Option<String>,
-    selected_effort: Option<String>,
     resume_id: Option<String>,
     phase: Phase,
     thread_id: Option<String>,
     active_model: Option<String>,
     active_effort: Option<String>,
-    queued_turns: VecDeque<String>,
+    requested_choice: ModelChoice,
+    queued_turns: VecDeque<AcceptedTurn>,
     queued_bytes: usize,
     last_completion: Option<TurnCompletion>,
     reported_error: Option<String>,
@@ -77,7 +79,7 @@ enum Phase {
     },
     Waiting,
     StartingTurn {
-        input: String,
+        turn: AcceptedTurn,
         observed_id: Option<String>,
         completion: Option<TurnCompletion>,
         interrupt_after_start: bool,
@@ -97,11 +99,17 @@ struct WorkingTurn {
 }
 
 #[derive(Debug, Clone)]
+struct AcceptedTurn {
+    turn: Turn,
+    applied_choice: ModelChoice,
+}
+
+#[derive(Debug, Clone)]
 enum PendingSteer {
-    Response { input: String },
-    NoActiveTurn { input: String, since: Duration },
-    ActiveTurnNotSteerable { input: String },
-    ReplayAfterInterrupt { input: String },
+    Response { turn: AcceptedTurn },
+    NoActiveTurn { turn: AcceptedTurn, since: Duration },
+    ActiveTurnNotSteerable { turn: AcceptedTurn },
+    ReplayAfterInterrupt { turn: AcceptedTurn },
 }
 
 #[derive(Debug, Clone)]
@@ -117,15 +125,20 @@ impl CodexSessionState {
         selected_effort: Option<String>,
         resume_id: Option<String>,
     ) -> CodexSessionState {
+        let requested_choice = ModelChoice {
+            provider: AgentProvider::CodexAppServer,
+            model: selected_model.clone(),
+            effort: selected_effort.clone(),
+        };
         CodexSessionState {
             root,
             selected_model,
-            selected_effort,
             resume_id,
             phase: Phase::Starting,
             thread_id: None,
             active_model: None,
             active_effort: None,
+            requested_choice,
             queued_turns: VecDeque::new(),
             queued_bytes: 0,
             last_completion: None,
@@ -153,6 +166,7 @@ impl CodexSessionState {
         match event {
             command @ (SessionEvent::Start
             | SessionEvent::SendTurn(_)
+            | SessionEvent::SendChosenTurn(_)
             | SessionEvent::Interrupt) => self.apply_command(command, limits),
             SessionEvent::Connection(event) => self.apply_connection(event, now, limits),
             lifecycle @ (SessionEvent::ThreadStarted(_)
@@ -176,7 +190,8 @@ impl CodexSessionState {
     ) -> Result<Vec<SessionEffect>, StateError> {
         match command {
             SessionEvent::Start => self.start(),
-            SessionEvent::SendTurn(input) => self.send_turn(input, limits),
+            SessionEvent::SendTurn(input) => self.send_turn(Turn::new(input), limits),
+            SessionEvent::SendChosenTurn(turn) => self.send_turn(turn, limits),
             SessionEvent::Interrupt => self.interrupt(),
             _ => unreachable!(),
         }
@@ -270,16 +285,19 @@ impl CodexSessionState {
 
     fn send_turn(
         &mut self,
-        input: String,
+        turn: Turn,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
+        let chosen = turn.choice.is_some();
+        let turn = self.accept_turn(turn)?;
         let thread_id = self.thread_id.clone();
         match &mut self.phase {
-            Phase::Waiting => Ok(vec![self.begin_start_turn(input)]),
-            Phase::Working(working) if working.interrupt.is_none() && working.steer.is_none() => {
-                working.steer = Some(PendingSteer::Response {
-                    input: input.clone(),
-                });
+            Phase::Waiting => Ok(vec![self.begin_start_turn(turn)]),
+            Phase::Working(working)
+                if !chosen && working.interrupt.is_none() && working.steer.is_none() =>
+            {
+                let input = turn.turn.text.clone();
+                working.steer = Some(PendingSteer::Response { turn });
                 Ok(vec![SessionEffect::Request(PendingOperation::SteerTurn {
                     thread_id: thread_id.expect("an active turn has a thread"),
                     turn_id: working.id.clone(),
@@ -292,7 +310,7 @@ impl CodexSessionState {
             | Phase::OpeningThread { .. }
             | Phase::StartingTurn { .. }
             | Phase::Working(_) => {
-                self.queue(input, limits)?;
+                self.queue(turn, limits)?;
                 Ok(Vec::new())
             }
             Phase::Ending | Phase::Ended => Err(StateError(
@@ -301,8 +319,27 @@ impl CodexSessionState {
         }
     }
 
-    fn queue(&mut self, input: String, limits: StateLimits) -> Result<(), StateError> {
-        let bytes = input.len();
+    fn accept_turn(&mut self, turn: Turn) -> Result<AcceptedTurn, StateError> {
+        let applied_choice = match &turn.choice {
+            Some(frozen) => {
+                if self.turn_choice_support(&frozen.model_choice) != TurnChoiceSupport::Native {
+                    return Err(StateError(
+                        "frozen turn choice requires a fresh session".to_string(),
+                    ));
+                }
+                self.requested_choice = frozen.model_choice.clone();
+                frozen.model_choice.clone()
+            }
+            None => self.requested_choice.clone(),
+        };
+        Ok(AcceptedTurn {
+            turn,
+            applied_choice,
+        })
+    }
+
+    fn queue(&mut self, turn: AcceptedTurn, limits: StateLimits) -> Result<(), StateError> {
+        let bytes = turn.turn.text.len();
         if self.queued_turns.len() >= limits.queued_turns {
             return Err(StateError(format!(
                 "queued turn count exceeds {}",
@@ -315,7 +352,7 @@ impl CodexSessionState {
                 limits.queued_turn_bytes
             )));
         }
-        self.queued_turns.push_back(input);
+        self.queued_turns.push_back(turn);
         self.queued_bytes += bytes;
         Ok(())
     }
@@ -534,9 +571,12 @@ impl CodexSessionState {
         Ok(())
     }
 
-    fn begin_start_turn(&mut self, input: String) -> SessionEffect {
+    fn begin_start_turn(&mut self, turn: AcceptedTurn) -> SessionEffect {
+        let input = turn.turn.text.clone();
+        let model = turn.applied_choice.model.clone();
+        let effort = turn.applied_choice.effort.clone();
         self.phase = Phase::StartingTurn {
-            input: input.clone(),
+            turn,
             observed_id: None,
             completion: None,
             interrupt_after_start: false,
@@ -548,8 +588,8 @@ impl CodexSessionState {
                 .clone()
                 .expect("a turn starts only after its thread is ready"),
             input,
-            model: self.selected_model.clone(),
-            effort: self.selected_effort.clone(),
+            model,
+            effort,
         })
     }
 
@@ -560,7 +600,7 @@ impl CodexSessionState {
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::StartingTurn {
-            input: retained,
+            turn,
             observed_id,
             completion,
             interrupt_after_start,
@@ -571,11 +611,12 @@ impl CodexSessionState {
                 "turn/start response arrived out of order".to_string(),
             ));
         };
-        if retained != &input {
+        if turn.turn.text != input {
             return Err(StateError(
                 "turn/start response input did not match".to_string(),
             ));
         }
+        let accepted_choice = turn.applied_choice.clone();
         let observed = observed_id.clone();
         let completed = completion.clone();
         let interrupt_after_start = *interrupt_after_start;
@@ -592,8 +633,12 @@ impl CodexSessionState {
         })?;
         let id = result.turn.id;
         ensure_optional_id(&observed, &id, "turn/start")?;
-        self.active_model = self.selected_model.clone().or(self.active_model.clone());
-        self.active_effort = self.selected_effort.clone().or(self.active_effort.clone());
+        if let Some(model) = accepted_choice.model {
+            self.active_model = Some(model);
+        }
+        if let Some(effort) = accepted_choice.effort {
+            self.active_effort = Some(effort);
+        }
         if let Some(completion) = completed {
             ensure_id(&completion.turn_id, &id, "completed turn")?;
             self.finish_turn(completion, limits)
@@ -707,9 +752,9 @@ impl CodexSessionState {
             return Ok(effects);
         }
         if let Some(steer) = working.steer.take() {
-            let input = retained_steer_input(steer);
+            let turn = retained_steer_turn(steer);
             self.remember_completion(completion);
-            effects.push(self.begin_start_turn(input));
+            effects.push(self.begin_start_turn(turn));
             return Ok(effects);
         }
         effects.extend(self.finish_turn(completion, limits)?);
@@ -737,16 +782,16 @@ impl CodexSessionState {
         now: Duration,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let completion = self.take_pending_steer(&operation_turn_id, &operation_input)?;
+        let (turn, completion) = self.take_pending_steer(&operation_turn_id, &operation_input)?;
         match result {
             Ok(OperationResult::TurnSteered(TurnSteerResult { turn_id })) => {
                 self.accept_steer(turn_id, completion, limits)
             }
             Err(error) if error.is_no_active_turn() => {
-                self.reconcile_no_active_turn(operation_input, completion, now)
+                self.reconcile_no_active_turn(turn, completion, now)
             }
             Err(error) if error.is_active_turn_not_steerable() => {
-                self.reconcile_non_steerable(operation_input, completion)
+                self.reconcile_non_steerable(turn, completion)
             }
             Ok(_) => Err(StateError(
                 "turn/steer response body was mistyped".to_string(),
@@ -762,24 +807,24 @@ impl CodexSessionState {
         &mut self,
         operation_turn_id: &str,
         operation_input: &str,
-    ) -> Result<Option<TurnCompletion>, StateError> {
+    ) -> Result<(AcceptedTurn, Option<TurnCompletion>), StateError> {
         let Phase::Working(working) = &mut self.phase else {
             return Err(StateError(
                 "turn/steer response arrived out of order".to_string(),
             ));
         };
         ensure_id(&working.id, operation_turn_id, "steer operation")?;
-        let Some(PendingSteer::Response { input }) = working.steer.take() else {
+        let Some(PendingSteer::Response { turn }) = working.steer.take() else {
             return Err(StateError(
                 "turn/steer response had no pending steer".to_string(),
             ));
         };
-        if input != operation_input {
+        if turn.turn.text != operation_input {
             return Err(StateError(
                 "turn/steer response input did not match".to_string(),
             ));
         }
-        Ok(working.completion.clone())
+        Ok((turn, working.completion.clone()))
     }
 
     fn accept_steer(
@@ -803,7 +848,7 @@ impl CodexSessionState {
 
     fn reconcile_no_active_turn(
         &mut self,
-        input: String,
+        turn: AcceptedTurn,
         completion: Option<TurnCompletion>,
         now: Duration,
     ) -> Result<Vec<SessionEffect>, StateError> {
@@ -811,44 +856,50 @@ impl CodexSessionState {
             unreachable!()
         };
         let Some(completion) = completion else {
-            working.steer = Some(PendingSteer::NoActiveTurn { input, since: now });
+            working.steer = Some(PendingSteer::NoActiveTurn { turn, since: now });
             return Ok(Vec::new());
         };
         if working.interrupt.is_some() {
-            working.steer = Some(PendingSteer::ReplayAfterInterrupt { input });
+            working.steer = Some(PendingSteer::ReplayAfterInterrupt { turn });
             return Ok(Vec::new());
         }
         self.remember_completion(completion);
-        Ok(vec![self.begin_start_turn(input)])
+        Ok(vec![self.begin_start_turn(turn)])
     }
 
     fn reconcile_non_steerable(
         &mut self,
-        input: String,
+        turn: AcceptedTurn,
         completion: Option<TurnCompletion>,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
             unreachable!()
         };
         let Some(completion) = completion else {
-            working.steer = Some(PendingSteer::ActiveTurnNotSteerable { input });
+            working.steer = Some(PendingSteer::ActiveTurnNotSteerable { turn });
             return Ok(Vec::new());
         };
         if working.interrupt.is_some() {
-            working.steer = Some(PendingSteer::ReplayAfterInterrupt { input });
+            working.steer = Some(PendingSteer::ReplayAfterInterrupt { turn });
             return Ok(Vec::new());
         }
         self.remember_completion(completion);
-        Ok(vec![self.begin_start_turn(input)])
+        Ok(vec![self.begin_start_turn(turn)])
     }
 
     fn release_next_steer(
         &mut self,
         _limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let Some(input) = self.pop_queue() else {
+        let Some(turn) = self.pop_queue() else {
             return Ok(Vec::new());
         };
+        if turn.turn.choice.is_some() {
+            self.queued_bytes += turn.turn.text.len();
+            self.queued_turns.push_front(turn);
+            return Ok(Vec::new());
+        }
+        let input = turn.turn.text.clone();
         let thread_id = self.thread_id.clone().expect("an active turn has a thread");
         let Phase::Working(working) = &mut self.phase else {
             return Err(StateError(
@@ -857,12 +908,10 @@ impl CodexSessionState {
         };
         if working.interrupt.is_some() {
             self.queued_bytes += input.len();
-            self.queued_turns.push_front(input);
+            self.queued_turns.push_front(turn);
             return Ok(Vec::new());
         }
-        working.steer = Some(PendingSteer::Response {
-            input: input.clone(),
-        });
+        working.steer = Some(PendingSteer::Response { turn });
         Ok(vec![SessionEffect::Request(PendingOperation::SteerTurn {
             thread_id,
             turn_id: working.id.clone(),
@@ -929,9 +978,9 @@ impl CodexSessionState {
             return self.report_late_interrupt_error(result);
         }
         if let Some(steer) = working.steer.take() {
-            let input = retained_steer_input(steer);
+            let turn = retained_steer_turn(steer);
             self.remember_completion(completion);
-            return Ok(vec![self.begin_start_turn(input)]);
+            return Ok(vec![self.begin_start_turn(turn)]);
         }
         let report = match result {
             Err(error) if !error.is_no_active_turn() => {
@@ -977,14 +1026,14 @@ impl CodexSessionState {
 
     fn start_next_queued(&mut self, _limits: StateLimits) -> Vec<SessionEffect> {
         self.pop_queue()
-            .map(|input| vec![self.begin_start_turn(input)])
+            .map(|turn| vec![self.begin_start_turn(turn)])
             .unwrap_or_default()
     }
 
-    fn pop_queue(&mut self) -> Option<String> {
-        let input = self.queued_turns.pop_front()?;
-        self.queued_bytes -= input.len();
-        Some(input)
+    fn pop_queue(&mut self) -> Option<AcceptedTurn> {
+        let turn = self.queued_turns.pop_front()?;
+        self.queued_bytes -= turn.turn.text.len();
+        Some(turn)
     }
 
     fn check_timeouts(
@@ -1070,6 +1119,17 @@ impl CodexSessionState {
             Phase::Working(working)
                 if working.completion.is_none() && working.interrupt.is_none()
         )
+    }
+
+    pub fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
+        let native_provider = choice.provider == AgentProvider::CodexAppServer;
+        let model_supported = choice.model.is_some() || self.requested_choice.model.is_none();
+        let effort_supported = choice.effort.is_some() || self.requested_choice.effort.is_none();
+        if native_provider && model_supported && effort_supported {
+            TurnChoiceSupport::Native
+        } else {
+            TurnChoiceSupport::RestartRequired
+        }
     }
 
     pub fn session_id(&self) -> Option<String> {
@@ -1220,12 +1280,12 @@ fn expect_interrupted(
     }
 }
 
-fn retained_steer_input(steer: PendingSteer) -> String {
+fn retained_steer_turn(steer: PendingSteer) -> AcceptedTurn {
     match steer {
-        PendingSteer::Response { input }
-        | PendingSteer::NoActiveTurn { input, .. }
-        | PendingSteer::ActiveTurnNotSteerable { input }
-        | PendingSteer::ReplayAfterInterrupt { input } => input,
+        PendingSteer::Response { turn }
+        | PendingSteer::NoActiveTurn { turn, .. }
+        | PendingSteer::ActiveTurnNotSteerable { turn }
+        | PendingSteer::ReplayAfterInterrupt { turn } => turn,
     }
 }
 

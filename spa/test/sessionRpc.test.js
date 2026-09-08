@@ -81,7 +81,11 @@ describe("createSessionRpc", () => {
 
   it("gives up on a call nobody answers", async () => {
     const rpc = rpcOn(fakeCarrier());
-    await expect(rpc.call("slow.thing", {}, { timeoutMs: 5 })).rejects.toThrow(/slow.thing/);
+    await expect(rpc.call("slow.thing", {}, { timeoutMs: 5 })).rejects.toMatchObject({
+      message: expect.stringContaining("slow.thing"),
+      timedOut: true,
+      uncertain: true,
+    });
   });
 
   it("fails a call whose envelope never crossed the wire, rather than waiting out its timeout", async () => {
@@ -157,9 +161,12 @@ describe("createSessionRpc", () => {
 
   it("gives up on a wire that never comes, at the deadline the call set", async () => {
     const rpc = rpcOn(fakeCarrier());
-    await expect(rpc.call("rtc.offer", {}, { carrier: new Promise(() => {}), timeoutMs: 5 })).rejects.toThrow(
-      /rtc.offer/,
-    );
+    const waiting = rpc.call("rtc.offer", {}, { carrier: new Promise(() => {}), timeoutMs: 5 });
+    await expect(waiting).rejects.toMatchObject({
+      message: expect.stringContaining("rtc.offer"),
+      timedOut: true,
+    });
+    await expect(waiting).rejects.not.toMatchObject({ uncertain: true });
   });
 
   it("hands a frame nobody asked for to whoever is listening for pushes", async () => {
@@ -227,6 +234,84 @@ describe("createSessionRpc", () => {
     await expect(waiting).rejects.toThrow("nothing is carrying this session");
   });
 
+  it("marks a carrier loss after handoff as delivery-uncertain", async () => {
+    const carrier = fakeCarrier();
+    const rpc = rpcOn(carrier);
+    const waiting = rpc.call("thread.post", { body: "do it" });
+    waiting.catch(() => {});
+    await tick();
+
+    rpc.fail(new Error("your device went offline"));
+
+    await expect(waiting).rejects.toMatchObject({
+      message: "your device went offline",
+      uncertain: true,
+    });
+  });
+
+  it("keeps a loss before carrier handoff definite", async () => {
+    let arrive;
+    const onItsWay = new Promise((resolve) => (arrive = resolve));
+    const rpc = rpcOn(fakeCarrier());
+    const waiting = rpc.call("thread.post", { body: "do it" }, { carrier: onItsWay });
+    waiting.catch(() => {});
+    await tick();
+
+    rpc.fail(new Error("your device went offline"));
+
+    await expect(waiting).rejects.toMatchObject({
+      message: "your device went offline",
+    });
+    await expect(waiting).rejects.not.toMatchObject({ uncertain: true });
+    arrive(null);
+  });
+
+  it("does not send later when a carrier arrives after the call was failed", async () => {
+    let arrive;
+    const onItsWay = new Promise((resolve) => (arrive = resolve));
+    const carrier = fakeCarrier();
+    const rpc = rpcOn(fakeCarrier());
+    const waiting = rpc.call("thread.post", { body: "do it" }, { carrier: onItsWay });
+    waiting.catch(() => {});
+    await tick();
+
+    rpc.fail(new Error("your device went offline"));
+    arrive(carrier);
+    await expect(waiting).rejects.toThrow("offline");
+    await tick();
+
+    expect(carrier.sent).toEqual([]);
+  });
+
+  it("does not send an envelope whose encryption finishes after close", async () => {
+    let finishEncryption;
+    const delayedTransport = {
+      ...fakeTransport,
+      encryptFrame: vi.fn(() => new Promise((resolve) => (finishEncryption = resolve))),
+    };
+    const carrier = fakeCarrier();
+    const rpc = rpcOn(carrier, { transport: delayedTransport });
+    const waiting = rpc.call("thread.post", { body: "do it" });
+    waiting.catch(() => {});
+    await tick();
+
+    rpc.close(new Error("session closed"));
+    finishEncryption({ key: "key-1", outerFields: {}, frameFields: {} });
+    await expect(waiting).rejects.toMatchObject({ message: "session closed" });
+    await tick();
+
+    expect(carrier.sent).toEqual([]);
+  });
+
+  it("keeps an explicit carrier send failure definite", async () => {
+    const rpc = rpcOn(fakeCarrier({ sendFails: "the channel closed before handoff" }));
+
+    const waiting = rpc.call("thread.post", { body: "do it" });
+
+    await expect(waiting).rejects.toMatchObject({ message: "the channel closed before handoff" });
+    await expect(waiting).rejects.not.toMatchObject({ uncertain: true });
+  });
+
   it("answers nothing once its client has said so, in the words it closed with", async () => {
     const carrier = fakeCarrier();
     const rpc = rpcOn(carrier, { noCarrier: () => new Error("your device went offline") });
@@ -235,7 +320,7 @@ describe("createSessionRpc", () => {
 
     rpc.close(new Error("session closed"));
 
-    await expect(waiting).rejects.toThrow("session closed");
+    await expect(waiting).rejects.toMatchObject({ message: "session closed", uncertain: true });
     await expect(rpc.call("project.list", {})).rejects.toThrow("your device went offline");
     expect(carrier.sent).toHaveLength(1);
   });

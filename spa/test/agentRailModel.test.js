@@ -339,14 +339,20 @@ describe("the pinned status line above the composer", () => {
     expect(elapsedClock(NOW + 5_000, NOW)).toBe("0:00");
   });
 
-  it("reads all three off the row, the git facts as the characters they are drawn from", () => {
+  it("reads the timer from the selected agent and git facts from the row", () => {
     const row = { working_time: { since: ago(750), seconds: 750 }, stat: { insertions: 42, deletions: 7, ahead: 2, behind: 0 } };
-    const status = railWorkStatus(row, NOW);
+    const status = railWorkStatus(row, NOW, [], "Agent", agent({ working_time: { since: ago(750), seconds: 750 } }));
     expect(status.working).toBe("12:30");
     expect(status.starting).toBe("");
     expect(status.git).toEqual(gitStatusCells({ insertions: 42, deletions: 7, ahead: 2, behind: 0 }));
     expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", starting: "", git: [] });
     expect(railWorkStatus(null, NOW)).toEqual({ working: "", starting: "", git: [] });
+  });
+
+  it("never borrows the entity aggregate for an agent", () => {
+    const row = { working_time: { since: ago(750), seconds: 750 } };
+    expect(railWorkStatus(row, NOW, [], "Agent", agent({ working_time: null })).working).toBe("");
+    expect(railWorkStatus(row, NOW, [], "Agent", agent({ working_time: { seconds: 5 } })).working).toBe("0:05");
   });
 
   it("names the lead's shape, the working clock winning over the startup line", () => {
@@ -383,7 +389,7 @@ describe("the startup line the status slot borrows from the conversation", () =>
       starting: "Agent session started · 2m ago",
       git: [],
     });
-    expect(railWorkStatus({ working_time: { since: ago(5), seconds: 5 } }, NOW, items)).toEqual({
+    expect(railWorkStatus({}, NOW, items, "Agent", agent({ working_time: { since: ago(5), seconds: 5 } }))).toEqual({
       working: "0:05",
       starting: "",
       git: [],

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
-import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { describe, expect, it, vi } from "vitest";
+import { FIRST_PAGE_ITEMS, createThreadCache, createThreadState, currentRevisionId, formatRelativeDate, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
@@ -1033,6 +1033,7 @@ describe("attachments on the record", () => {
   });
 
   it("fills an inline image from the bytes the bridge hands back, once", async () => {
+    const threadState = createThreadState({ ownerId: "conversation-1" });
     document.body.innerHTML = `<div id="host">${threadHtml(withAttachments([
       { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
     ]))}</div>`;
@@ -1043,7 +1044,7 @@ describe("attachments on the record", () => {
       return Promise.resolve({ mime: "image/png", content_b64: "AAAA" });
     };
 
-    wireThreadAttachments(host, load);
+    wireThreadAttachments(host, load, threadState);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(host.querySelector("img.thread-attachment-image").getAttribute("src")).toBe("data:image/png;base64,AAAA");
 
@@ -1052,9 +1053,30 @@ describe("attachments on the record", () => {
     document.body.innerHTML = `<div id="host">${threadHtml(withAttachments([
       { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
     ]))}</div>`;
-    wireThreadAttachments(document.querySelector("#host"), load);
+    wireThreadAttachments(document.querySelector("#host"), load, threadState);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(asked).toEqual([".build/attachments/ab12-shot.png"]);
+  });
+
+  it("shares an in-flight attachment load within its conversation", async () => {
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = `<div id="first">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]), { threadState })}</div><div id="second">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]), { threadState })}</div>`;
+    let release;
+    const load = vi.fn(() => new Promise((resolve) => (release = resolve)));
+
+    wireThreadAttachments(document.querySelector("#first"), load, threadState);
+    wireThreadAttachments(document.querySelector("#second"), load, threadState);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(load).toHaveBeenCalledTimes(1);
+
+    release({ mime: "image/png", content_b64: "AAAA" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector("#first img").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(document.querySelector("#second img").getAttribute("src")).toBe("data:image/png;base64,AAAA");
   });
 });
 

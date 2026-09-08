@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chatPaintFingerprint,
+  createThreadState,
   paintThreadEntries,
   threadOfferState,
   timelineEntries,
@@ -71,19 +72,20 @@ describe("the offer state a paint has to see move", () => {
   };
 
   it("moves when a chip is picked, and again when the pick is sent", () => {
+    const state = createThreadState({ ownerId: "device-a/thread-1" });
     const host = offerThread();
     let held = null;
     wireThreadOptions(host, () => new Promise((resolve) => {
       held = resolve;
-    }));
-    const before = threadOfferState();
+    }), state);
+    const before = threadOfferState(state);
 
     host.querySelector(".thread-option").click();
-    const picked = threadOfferState();
+    const picked = threadOfferState(state);
     expect(picked).not.toEqual(before);
 
     host.querySelector(".thread-options-send").click();
-    expect(threadOfferState()).not.toEqual(picked);
+    expect(threadOfferState(state)).not.toEqual(picked);
     held({});
   });
 });

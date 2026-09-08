@@ -44,6 +44,62 @@ describe("routeFromHash", () => {
     });
   });
 
+  // The Files tab names a file, so a link to a file is a link somebody can send
+  // — and a reload keeps the reviewer's place. It rides as a query rather than
+  // as more path segments: both a branch name and a file path carry slashes,
+  // and two slashed things in one path cannot be told apart.
+  describe("the file the Files tab is open on", () => {
+    it("carries the path and the line", () => {
+      expect(routeFromHash("#/project/p/branch/main/files?path=src%2Fapp.js&line=42")).toEqual({
+        name: "branch", projectId: "p", branch: "main", tab: "files", file: "src/app.js", line: 42,
+      });
+    });
+
+    it("carries a path with no line", () => {
+      const route = routeFromHash("#/project/p/branch/main/files?path=src%2Fapp.js");
+      expect(route.file).toBe("src/app.js");
+      expect(route.line).toBeUndefined();
+    });
+
+    it("names no file when the tab is open on none", () => {
+      expect(routeFromHash("#/project/p/branch/main/files").file).toBeUndefined();
+    });
+
+    it("survives a slashed branch name beside a slashed path", () => {
+      const route = routeFromHash("#/project/p/branch/build%2Fui/files?path=src%2Fcore%2Fapp.js&line=7");
+      expect(route.branch).toBe("build/ui");
+      expect(route.file).toBe("src/core/app.js");
+      expect(route.line).toBe(7);
+    });
+
+    it("ignores a line that is not a line", () => {
+      expect(routeFromHash("#/project/p/branch/main/files?path=a.js&line=nope").line).toBeUndefined();
+    });
+
+    it("writes the file back into the hash", () => {
+      expect(hashFromRoute({ name: "branch", projectId: "p", branch: "build/ui", tab: "files", file: "src/app.js", line: 42 })).toBe(
+        "#/project/p/branch/build%2Fui/files?path=src%2Fapp.js&line=42",
+      );
+    });
+
+    it("writes a file with no line", () => {
+      expect(hashFromRoute({ name: "branch", projectId: "p", branch: "main", tab: "files", file: "a.js" })).toBe(
+        "#/project/p/branch/main/files?path=a.js",
+      );
+    });
+
+    it("says nothing about a file on the Changes tab, which has none", () => {
+      expect(hashFromRoute({ name: "branch", projectId: "p", branch: "main", tab: "changes", file: "a.js" })).toBe(
+        "#/project/p/branch/main/changes",
+      );
+    });
+
+    it("round-trips", () => {
+      const route = { name: "branch", projectId: "p", branch: "build/ui", tab: "files", file: "src/a b.js", line: 3 };
+      expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+    });
+  });
+
   // A branch may be NAMED after a tab; a lone segment is always the branch.
   it("reads a lone segment as the branch even when it spells a tab", () => {
     expect(routeFromHash("#/project/p/branch/changes")).toEqual({

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // The way out of a diff and into the file itself: a control in each file's
-// head, a one-shot handoff the route cannot carry, and a Files view that opens
-// on that path at that line.
+// head, a URL that names the file, and a Files view that opens on that path at
+// that line. The file is in the URL, so the way out is also a link somebody can
+// send.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -213,7 +214,7 @@ describe("the line a jump asked for", () => {
   });
 });
 
-describe("the handoff the route cannot carry", () => {
+describe("the file the route names", () => {
   const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
   const flush = () => new Promise((done) => setTimeout(done, 0));
   const row = {
@@ -234,7 +235,6 @@ describe("the handoff the route cannot carry", () => {
     location.hash = "#/p/p1/branch/build%2Flogin/files";
     ({ App } = await import("../src/app.js"));
     ({ renderBranch } = await import("../src/views/branchView.js"));
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files" };
     document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
   });
 
@@ -245,36 +245,53 @@ describe("the handoff the route cannot carry", () => {
     App.viewDispose = null;
   });
 
-  it("opens the Files tab on the file the Changes surface named, and clears the handoff", async () => {
-    const asked = [];
-    App.call = vi.fn(async (method, params) => {
+  const answering = (asked) =>
+    vi.fn(async (method, params) => {
       if (method === "branch.get") return row;
       asked.push({ method, params });
-      if (method === "fs.tree") return { path: "src", entries: [{ kind: "file", name: "a.js", size: 20 }] };
+      if (method === "fs.tree")
+        return { path: params.path || "", entries: [{ kind: "file", name: params.path ? "a.js" : "README.md", size: 20 }] };
       if (method === "fs.read")
-        return { path: "src/a.js", size: 4, truncated: false, mime: "text/plain", content_b64: btoa("x\ny\n") };
+        return { path: params.path, size: 4, truncated: false, mime: "text/plain", content_b64: btoa("x\ny\n") };
       return {};
     });
-    App.openFileOnMount = { path: "src/a.js", line: 2 };
+
+  it("opens the Files tab on the file the URL names", async () => {
+    const asked = [];
+    App.call = answering(asked);
+    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files", file: "src/a.js", line: 2 };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".fppath")?.textContent).toBe("src/a.js"));
-    expect(App.openFileOnMount).toBe(null);
     expect(asked.find((call) => call.method === "fs.read").params.path).toBe("src/a.js");
   });
 
   it("leaves an ordinary visit to the Files tab at the root", async () => {
     const asked = [];
-    App.call = vi.fn(async (method, params) => {
-      if (method === "branch.get") return row;
-      asked.push({ method, params });
-      if (method === "fs.tree") return { path: "", entries: [{ kind: "file", name: "README.md", size: 3 }] };
-      return {};
-    });
+    App.call = answering(asked);
+    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files" };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".ffile")).toBeTruthy());
     expect(asked.filter((call) => call.method === "fs.read")).toEqual([]);
     expect(asked.find((call) => call.method === "fs.tree").params.path).toBe("");
+  });
+
+  // The URL is what makes a file sendable, so picking one inside the tab has to
+  // move it too — silently, without rebuilding the surface around the file it
+  // is already showing.
+  it("writes the file the reader picks into the URL, without a re-render", async () => {
+    const asked = [];
+    App.call = answering(asked);
+    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files" };
+    await renderBranch();
+    await flush();
+    await vi.waitFor(() => expect(document.querySelector(".ffile")).toBeTruthy());
+    const built = document.querySelector(".files");
+
+    document.querySelector(".ffile").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => expect(App.route.file).toBe("README.md"));
+    expect(location.hash).toContain("path=README.md");
+    expect(document.querySelector(".files")).toBe(built); // the same surface, still standing
   });
 });

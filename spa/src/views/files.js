@@ -143,7 +143,7 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection. Returns { dispose() }.
  */
-export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
+export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen = null }) {
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
   // `#ftree` is the stable column (what the drawer slides, what the tab bar
@@ -224,6 +224,8 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
 
   const selectFile = async (path, row) => {
     if (requestedLine && requestedLine.path !== path) requestedLine = null;
+    // The tab names the file it is standing in, so the URL can say so too.
+    if (onFileOpen) onFileOpen(path);
     treeEl.querySelectorAll(".frow.sel").forEach((r) => r.classList.remove("sel"));
     if (row) row.classList.add("sel");
     sourceOverride = false;

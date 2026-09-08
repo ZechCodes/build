@@ -56,14 +56,10 @@ async function mount({ clean = false } = {}) {
       return true;
     },
   });
-  const plug = {
-    getBase: () => "main",
-    mount: (element, options) => review.mount(element, options),
-    unmount: () => review.unmount(),
-    refreshActions: () => review.refreshActions(),
-    commentOffer: () => review.commentOffer(),
-    sendComments: () => review.sendComments(),
-  };
+  // Spread, exactly as views/branchView.js does. A hand-written subset here
+  // would test a wrapper the app does not have — which is how the real one
+  // dropped four methods and took the toolbar down.
+  const plug = { ...review, getBase: () => "main" };
   const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, review: plug });
   await settle();
   return { container, pane, calls };
@@ -139,6 +135,33 @@ describe("the Changes surface, opened on its review aggregate", () => {
     await settle();
     expect(container.querySelector(".gittoolbar .selcount").textContent).toBe("1 file selected");
     expect(container.querySelector(".cdetail-host .selbar"), "and not over the diffs").toBe(null);
+    pane.dispose();
+  });
+
+  // The reviewer's bug: Clear emptied the selection and took the bar away, but
+  // every box in the diff stayed ticked — the render said unticked, and a box's
+  // ticked-ness is a property no attribute comparison ever reached.
+  it("unticks every box when the selection is cleared", async () => {
+    const { container, pane } = await mount();
+    container.querySelector(".fselect-box").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(container.querySelector(".fselect-box").checked).toBe(true);
+
+    container.querySelector(".selclear").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(container.querySelector(".gittoolbar .selbar")).toBe(null);
+    expect(container.querySelector(".fselect-box").checked, "the box the reader ticked").toBe(false);
+    pane.dispose();
+  });
+
+  it("unticks them after Approve all takes the selection too", async () => {
+    const { container, pane } = await mount();
+    container.querySelector(".fselect-box").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    container.querySelector(".selapprove").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(container.querySelector(".fselect-box").checked).toBe(false);
+    expect(container.querySelector(".fapprove").getAttribute("aria-pressed")).toBe("true");
     pane.dispose();
   });
 

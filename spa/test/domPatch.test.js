@@ -174,3 +174,45 @@ describe("patching a canvas being painted into", () => {
     expect(live.querySelector("canvas").getAttribute("width")).toBe("32");
   });
 });
+
+// A checkbox the reader pressed carries its state as a PROPERTY, and the render
+// declares it as an ATTRIBUTE. Comparing attributes alone, the two agree — so a
+// render saying "unticked" wrote nothing and the box stayed ticked on screen.
+// That is the whole of why Clear left every box in the diff still ticked.
+describe("a box the render owns", () => {
+  const box = (checked) => tree(`<input type="checkbox" class="fselect-box"${checked ? " checked" : ""}/>`);
+
+  it("unticks one the render no longer says is ticked", () => {
+    const live = box(false);
+    live.querySelector("input").checked = true; // the reader pressed it
+    patchElement(live, box(false));
+    expect(live.querySelector("input").checked).toBe(false);
+  });
+
+  it("ticks one the render says is ticked", () => {
+    const live = box(false);
+    patchElement(live, box(true));
+    expect(live.querySelector("input").checked).toBe(true);
+  });
+
+  it("leaves a box that already agrees completely alone", () => {
+    const live = box(true);
+    live.querySelector("input").checked = true;
+    expect(mutationsOf(live, box(true))).toEqual([]);
+    expect(live.querySelector("input").checked).toBe(true);
+  });
+
+  it("says the same thing about a radio", () => {
+    const live = tree('<input type="radio" name="r"/>');
+    live.querySelector("input").checked = true;
+    patchElement(live, tree('<input type="radio" name="r"/>'));
+    expect(live.querySelector("input").checked).toBe(false);
+  });
+
+  it("never reaches into a box that is not a box", () => {
+    const live = tree('<input type="text" value="typed"/>');
+    live.querySelector("input").value = "half a sentence";
+    patchElement(live, tree('<input type="text" value="typed"/>'));
+    expect(live.querySelector("input").value, "what is being typed is the reader's").toBe("half a sentence");
+  });
+});

@@ -205,13 +205,12 @@ export function createWorktreeReview({
     onFinished();
   };
 
+  // Spread, never an enumerated copy: this view answers one question of its own
+  // and the plug answers the rest, so a method the plug grows must not need a
+  // line here to reach the pane.
   return {
+    ...plug,
     /** The branch the rail's "All changes" entry names this diff against. */
     getBase: () => baseLabel(),
-    mount: (element, options) => plug.mount(element, options),
-    unmount: () => plug.unmount(),
-    refreshActions: () => plug.refreshActions(),
-    commentOffer: () => plug.commentOffer(),
-    sendComments: () => plug.sendComments(),
   };
 }

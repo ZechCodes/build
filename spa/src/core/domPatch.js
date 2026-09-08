@@ -81,6 +81,26 @@ function patchAttributes(live, next) {
   }
 }
 
+/** Whether this element's ticked-ness is state the render declares. */
+const boxTheRenderOwns = (live) =>
+  live.tagName === "INPUT" && (live.type === "checkbox" || live.type === "radio");
+
+/// Make a box say what the render says about it.
+///
+/// Pressing a checkbox sets its `checked` PROPERTY; the render declares it as
+/// an ATTRIBUTE. Comparing attributes alone, a box the reader ticked and a
+/// render saying "unticked" already agree — so nothing was written and the box
+/// stayed ticked on screen while the state behind it said otherwise.
+///
+/// Only boxes. What is being typed into a text field is the reader's, not the
+/// render's, and syncing `value` the same way would take a half-written
+/// sentence away mid-keystroke.
+function patchCheckedness(live, next) {
+  if (!boxTheRenderOwns(live)) return;
+  const declared = next.hasAttribute("checked");
+  if (live.checked !== declared) live.checked = declared;
+}
+
 /// Make `live` say what `next` says.
 ///
 /// `next` is a throwaway tree parsed from the render, and the nodes it still
@@ -90,6 +110,7 @@ function patchAttributes(live, next) {
 /// resolved the same conversation a true no-op.
 export function patchElement(live, next) {
   patchAttributes(live, next);
+  patchCheckedness(live, next);
   if (keyedByAnotherPainter(live)) return;
   const liveChildren = [...live.childNodes];
   const nextChildren = [...next.childNodes];

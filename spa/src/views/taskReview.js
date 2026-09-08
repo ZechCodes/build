@@ -177,11 +177,8 @@ export function createTaskReview({
     flash(action === "commit" ? "Committed." : "Pushed " + (task.branch || "branch") + ".");
   };
 
-  return {
-    mount: (element, options) => plug.mount(element, options),
-    unmount: () => plug.unmount(),
-    refreshActions: () => plug.refreshActions(),
-    commentOffer: () => plug.commentOffer(),
-    sendComments: () => plug.sendComments(),
-  };
+  // The plug itself. This view adds the run's verbs and its diff source through
+  // the options above; it has nothing of its own to put on the handle, and an
+  // enumerated copy would silently drop whatever the plug learns to do next.
+  return plug;
 }

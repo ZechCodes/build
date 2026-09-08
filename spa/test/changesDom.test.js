@@ -66,6 +66,14 @@ const settle = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+/** The primary verb of the one box under the diff. Commenting leads wherever
+ *  there is an agent to talk to, so committing is behind the caret. */
+const composerPrimary = (container) => container.querySelector(".csbox-actions .btn:not(.caret)");
+const pickCommit = async (container) => {
+  await click(container.querySelector(".csbox-actions .caret"));
+  await click(container.querySelector('.csbox-actions [data-action="commit"]'));
+};
+
 const click = async (element) => {
   element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   await settle();
@@ -91,17 +99,21 @@ describe("the Changes rail", () => {
     pane.dispose();
   });
 
-  it("opens a clean branch at the commit list — nothing selected, no commit box", async () => {
+  it("opens a clean branch at the commit list — nothing selected, nothing to commit", async () => {
     const { container, pane } = await mount({ status: cleanStatus() });
     expect(container.querySelector(".crail .sel")).toBe(null);
-    expect(container.querySelector(".gitmsg")).toBe(null);
+    // The box stands — there is still an agent to comment to — but with nothing
+    // uncommitted it offers only that.
+    expect(container.querySelector('.csbox-actions [data-action="commit"]')).toBe(null);
     expect(container.querySelector(".cdetail-host").textContent).toContain("Pick a commit");
     pane.dispose();
   });
 
-  it("discloses the commit box only while uncommitted changes exist", async () => {
+  it("offers committing only while uncommitted changes exist", async () => {
     const { container, pane } = await mount();
-    expect(container.querySelector(".gitmsg")).toBeTruthy();
+    expect(container.querySelector(".csinput")).toBeTruthy();
+    await click(container.querySelector(".csbox-actions .caret"));
+    expect(container.querySelector('.csbox-actions [data-action="commit"]')).toBeTruthy();
     pane.dispose();
   });
 
@@ -286,8 +298,8 @@ describe("noise is collapsed, never hidden", () => {
 describe("commit is commit-all", () => {
   it("stages every changed path, then commits the message", async () => {
     const { container, pane, calls } = await mount();
-    container.querySelector(".gitmsg").value = "a real message";
-    await click(container.querySelector(".gitcommit-actions .btn.primary"));
+    container.querySelector(".csinput").value = "a real message";
+    await pickCommit(container);
     const stage = calls.find((c) => c.method === "git.stage");
     expect(stage.params.paths).toEqual(["src/a.js", "uv.lock"]);
     const commit = calls.find((c) => c.method === "git.commit");
@@ -298,7 +310,7 @@ describe("commit is commit-all", () => {
 
   it("refuses an empty message without touching the index", async () => {
     const { container, pane, calls } = await mount();
-    await click(container.querySelector(".gitcommit-actions .btn.primary"));
+    await pickCommit(container);
     expect(calls.some((c) => c.method === "git.stage")).toBe(false);
     expect(container.textContent).toContain("Enter a commit message");
     pane.dispose();
@@ -337,7 +349,7 @@ describe("comments on any changeset", () => {
     const { container, pane, calls } = await mount();
     await addCommentViaPop(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
     expect(container.querySelector(".pcomment").textContent).toContain("rename this");
-    await click(container.querySelector(".cssend"));
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.run_id).toBe("run-1");
     expect(post.params.messages[0].body).toBe("rename this");
@@ -355,7 +367,7 @@ describe("comments on any changeset", () => {
     const file = container.querySelector('.file[data-key$=":src/a.js"]');
     file.classList.remove("capped");
     await addCommentViaPop(file.querySelector('tr[data-ln="1"] td.code'));
-    await click(container.querySelector(".cssend"));
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.messages[0].anchor).toMatchObject({ path: "src/a.js", line_start: 1, line_end: 1 });
     pane.dispose();
@@ -428,15 +440,15 @@ describe("the poll freeze holds an open menu", () => {
       });
       await settle();
 
-      await click(container.querySelector(".gitcommit-actions .caret"));
-      const menu = container.querySelector(".gitcommit-actions .splitmenu");
+      await click(container.querySelector(".csbox-actions .caret"));
+      const menu = container.querySelector(".csbox-actions .splitmenu");
       expect(menu.hidden).toBe(false);
 
       served = dirtyStatus({ head: "e".repeat(40) });
       await vi.advanceTimersByTimeAsync(2000);
       await settle();
 
-      expect(container.querySelector(".gitcommit-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
+      expect(container.querySelector(".csbox-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
       expect(menu.hidden).toBe(false);
       pane.dispose();
     } finally {
@@ -465,7 +477,7 @@ describe("re-review memory on every stack", () => {
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
       document.querySelector(".cp-input").value = "rename this";
       await click(document.querySelector(".cp-save"));
-      await click(container.querySelector(".cssend"));
+      await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
       expect(container.querySelector(".fchanged")).toBe(null); // nothing has moved yet
 
       tree.write("src/a.js", "the agent moved on");

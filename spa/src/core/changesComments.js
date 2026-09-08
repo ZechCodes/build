@@ -41,10 +41,10 @@ export function createCommentLayer({
   submit,
   revisionId = () => null,
   onChange = () => {},
+  readNote = () => "",
 }) {
   const comments = [];
   let nextId = 0;
-  let generalDraft = "";
   let host = null;
   let selectionWatcher = null;
   let sending = false;
@@ -87,13 +87,12 @@ export function createCommentLayer({
 
   const clear = () => {
     comments.length = 0;
-    generalDraft = "";
     hideCommentPop();
   };
 
   const send = async () => {
     if (sending) return;
-    const messages = diffThreadMessages(comments, generalDraft, revisionId());
+    const messages = diffThreadMessages(comments, readNote(), revisionId());
     if (!messages.length) return;
     sending = true;
     renderActions();
@@ -114,38 +113,28 @@ export function createCommentLayer({
    *  in the git toolbar above the stack, where a git verb belongs — so this
    *  bar speaks only about the comments in it. Re-rendered in place so a repaint
    *  is never needed to keep the buttons honest. */
-  /** What the bar says about what is waiting: the comments counted, or the bare
-   *  note the reviewer has typed with nothing anchored. */
-  const pendingLine = (count) =>
-    count ? `${count} comment${count === 1 ? "" : "s"} ready to send.` : "Your note goes to the agent.";
-
-  const sendButtonsHtml = () =>
-    `<button class="btn cscancel">Clear</button><button class="btn primary cssend"${sending ? " disabled" : ""}>${
-      sending ? "sending…" : "Send to agent"
-    }</button>`;
-
+  /** The tray's one control: discarding what has been anchored and not sent.
+   *  Sending is the box's, under the diff — there is one place to write and one
+   *  button to press, and it is not up here among the comments. */
   function renderActions() {
-    const actions = q(".csactions");
-    const hintHost = q(".cshint");
-    if (!actions || !hintHost) return;
-    const pending = comments.length > 0 || generalDraft.trim().length > 0;
-    hintHost.textContent = pending ? pendingLine(comments.length) : "";
-    actions.innerHTML = pending ? sendButtonsHtml() : "";
-    const cancel = actions.querySelector(".cscancel");
+    const cancel = q(".cscancel");
     if (cancel)
       cancel.onclick = () => {
         clear();
         onChange();
       };
-    const sendButton = actions.querySelector(".cssend");
-    if (sendButton) sendButton.onclick = send;
   }
 
   return {
     /** Markup for the tray — the controller drops this under the diff stack. */
-    trayHtml: () => commentTrayHtml(comments, { generalDraft }),
+    trayHtml: () => commentTrayHtml(comments),
 
     count: () => comments.length,
+
+    /** Send what is pending, with whatever note the box under the diff holds.
+     *  The box is the surface's (core/changesComposer.js), so the note is read
+     *  through `readNote` rather than kept here. */
+    send,
 
     /** The reviewer is mid-comment: the controller must freeze its poll. A
      *  selection still being dragged over the diff counts — the popover that
@@ -155,14 +144,16 @@ export function createCommentLayer({
       commentLayerBusy({
         pending: comments.length,
         popOpen: hasCommentPop(),
-        generalText: generalDraft,
+        generalText: readNote(),
         selecting: Boolean(selectionInside(host)),
       }),
 
-    /** Redraw the actionbar in place — what the surface calls when its own idle
-     *  verbs change (a lifecycle action settled, its catalog loaded) without the
-     *  changeset itself having moved. */
+    /** Re-wire the tray's control after a repaint. */
     refreshActions: renderActions,
+
+    /** Whether a send is in flight — what the box under the diff disables its
+     *  own button against. */
+    sending: () => sending,
 
     /** Bind to a freshly-rendered changeset: restore highlights and the general
      *  draft, wire the tray's controls, and watch for text selections. */
@@ -186,14 +177,6 @@ export function createCommentLayer({
           addComment(pathOf(fileEl.dataset.key), from, to, text, comment, side),
         );
       });
-      const general = q(".csgeneral");
-      if (general) {
-        general.value = generalDraft;
-        general.oninput = () => {
-          generalDraft = general.value;
-          renderActions();
-        };
-      }
       host.querySelectorAll(".pcx").forEach((remove) => {
         remove.onclick = () => removeComment(+remove.dataset.id);
       });

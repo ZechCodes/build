@@ -91,9 +91,10 @@ describe("the review plug (DOM)", () => {
     plug.unmount();
   });
 
-  // The two bars are independent now: sending comments is the tray's, merging
-  // is the toolbar's, and a pending comment no longer takes the merge verb away.
-  it("offers Clear and Send while a comment is pending, and leaves the merge verb standing", async () => {
+  // Sending is the surface's box under the diff, not the plug's — so the plug
+  // says what is waiting and sends when asked, and the merge verb in the
+  // toolbar is untouched by a comment being written.
+  it("keeps the pending comments, says how many, and sends them with the note", async () => {
     const sent = [];
     const { host, toolbar, plug } = mountPlug({
       submit: async (messages) => sent.push(messages),
@@ -104,14 +105,15 @@ describe("the review plug (DOM)", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await commentOnTheFile(host);
-    expect(host.querySelector(".cssend")).toBeTruthy();
+    expect(plug.commentOffer()).toEqual({ commentable: true, pending: 1 });
+    expect(host.querySelector(".pcomment")).toBeTruthy();
     expect(toolbar.querySelector(".mine")).toBeTruthy();
 
-    host.querySelector(".cssend").click();
+    await plug.sendComments();
     await vi.advanceTimersByTimeAsync(0);
     expect(sent[0][0].body).toBe("split this up");
     expect(host.querySelector(".pcomment")).toBe(null);
-    expect(host.querySelector(".cssend")).toBe(null);
+    expect(plug.commentOffer().pending).toBe(0);
     plug.unmount();
   });
 
@@ -125,7 +127,7 @@ describe("the review plug (DOM)", () => {
     expect(host.querySelector(".changedonly")).toBe(null); // no baseline yet
 
     await commentOnTheFile(host);
-    host.querySelector(".cssend").click();
+    await plug.sendComments();
     await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".changedonly")).toBeTruthy();
     expect(host.querySelector(".fchanged")).toBe(null); // nothing moved yet
@@ -189,7 +191,7 @@ describe("the review plug (DOM)", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".fcmt")).toBe(null);
-    expect(host.querySelector(".csgeneral")).toBe(null);
+    expect(plug.commentOffer().commentable).toBe(false);
     expect(toolbar.querySelector(".mine")).toBeTruthy(); // the surface still has verbs
     plug.unmount();
   });

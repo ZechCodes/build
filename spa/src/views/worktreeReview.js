@@ -211,5 +211,7 @@ export function createWorktreeReview({
     mount: (element, options) => plug.mount(element, options),
     unmount: () => plug.unmount(),
     refreshActions: () => plug.refreshActions(),
+    commentOffer: () => plug.commentOffer(),
+    sendComments: () => plug.sendComments(),
   };
 }

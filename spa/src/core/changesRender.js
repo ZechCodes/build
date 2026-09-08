@@ -102,21 +102,10 @@ export function commitHeaderHtml(show) {
     ${show.truncated ? TRUNCATED_NOTICE : ""}`;
 }
 
-/** The commit box: message + hint + the split-button host. Disclosed only while
- *  uncommitted changes exist (commitBoxVisible decides), and it commits
- *  everything — there is no staged set to assemble. */
-export function commitBoxHtml() {
-  return `<div class="gitcommit">
-    <textarea class="gitmsg" placeholder="Commit message…"></textarea>
-    <div class="actionbar"><span class="hint githint"></span><div class="right gitcommit-actions"></div></div>
-  </div>`;
-}
-
-/** The pending-comment tray: what the reviewer has written but not yet sent,
- *  plus the general-comment box. `generalDraft` is re-applied on every repaint
- *  so a rebuild never loses typed text. */
-export function commentTrayHtml(comments, { generalDraft = "" } = {}) {
-  const rows = (comments || [])
+/** One pending comment, wherever it was written: where it is, what it quotes,
+ *  and what was said about it. */
+function pendingCommentRowsHtml(comments) {
+  return (comments || [])
     .map((c) => {
       const location = lineRangeSuffix(c.lnA, c.lnB);
       return `<div class="pcomment"><span class="pcx" data-id="${esc(c.id)}">×</span>
@@ -124,17 +113,33 @@ export function commentTrayHtml(comments, { generalDraft = "" } = {}) {
         <span class="pctext">${esc(c.comment)}</span></div>`;
     })
     .join("");
-  return `<div class="plan-feedback csfeedback"><div class="cslist">${rows}</div>
-    <textarea class="csgeneral plan-general" placeholder="Add a general comment about these changes…">${esc(generalDraft)}</textarea></div>
-    ${changesActionbarHtml()}`;
 }
 
-/** The comment tray's actionbar: what is waiting on the left, Clear and Send on
- *  the right. It speaks only about the comments in the tray — the surface's own
- *  git verbs live in the git toolbar above the stack, where a git verb
- *  belongs. */
-function changesActionbarHtml() {
-  return `<div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
+/** The Changes surface's pending-comment tray: what the reviewer has anchored
+ *  and not yet sent, and the one control that discards it.
+ *
+ *  Nothing to write in. The box under the diff is where a note is written and
+ *  where Send lives, so it is on screen no matter how far down the stack the
+ *  reviewer has read (core/changesComposer.js) — and a tray with nothing in it
+ *  draws nothing at all. */
+export function commentTrayHtml(comments) {
+  const pending = comments || [];
+  if (!pending.length) return "";
+  const count = `${pending.length} comment${pending.length === 1 ? "" : "s"} ready to send`;
+  return `<div class="plan-feedback csfeedback"><div class="cslist">${pendingCommentRowsHtml(pending)}</div>
+    <div class="cstrayfoot"><span class="hint">${count}</span><button class="btn mini cscancel">Clear</button></div></div>`;
+}
+
+/** The issue doc's tray: the same pending rows, and the surface's own note box
+ *  and actionbar under them.
+ *
+ *  A doc is read top to bottom once, not scrolled through a hundred times, so
+ *  it keeps the box at the END of what it is about — the Changes surface pinned
+ *  its own below the scroller because the stack is long enough to lose it. */
+export function docCommentTrayHtml(comments, { generalDraft = "" } = {}) {
+  return `<div class="plan-feedback csfeedback"><div class="cslist">${pendingCommentRowsHtml(comments)}</div>
+    <textarea class="csgeneral plan-general" placeholder="Add a general comment about these changes…">${esc(generalDraft)}</textarea></div>
+    <div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
 }
 
 /** What the detail pane says when nothing is selected (a clean branch opens on

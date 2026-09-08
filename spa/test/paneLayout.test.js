@@ -302,12 +302,14 @@ describe("tab layout primitives", () => {
 
   it("keeps no second content width for a one-column pane to fall back to", () => {
     // The three the panes above used to carry. 1180px survives only as the
-    // token's value and as the non-surface page's own width.
+    // token's value and as the non-surface page's own width; 780px survives as
+    // the width of the box under the diff, which is a line of text to write in
+    // rather than a pane.
     for (const orphan of ["920px", "820px", "780px"]) {
       const carriers = cssRules()
         .filter((rule) => new RegExp(`max-width:\\s*${orphan}`).test(rule.body))
         .map((rule) => rule.selector);
-      expect(carriers).toEqual(orphan === "780px" ? [".gitcommit"] : []);
+      expect(carriers).toEqual(orphan === "780px" ? [".csbox"] : []);
     }
   });
 

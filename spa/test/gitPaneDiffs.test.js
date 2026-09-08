@@ -161,7 +161,7 @@ describe("the shape and its bodies", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const tree = worktreeOf({ "src/a.js": "new line" });
     const { container, pane } = await mount({ tree, answers: refusingTheFirstBody(tree) });
-    const draft = container.querySelector(".gitmsg");
+    const draft = container.querySelector(".csinput");
     draft.value = "a commit message being typed";
 
     await vi.advanceTimersByTimeAsync(2000);

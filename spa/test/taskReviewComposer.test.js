@@ -35,8 +35,11 @@ function mountReview(state = "review") {
   });
   const host = document.createElement("div");
   document.body.appendChild(host);
-  plug.mount(host);
-  return { calls, host, plug };
+  // The note rides in the surface's box under the diff, so the test supplies
+  // one, as gitPane does.
+  const note = { text: "" };
+  plug.mount(host, { readNote: () => note.text });
+  return { calls, host, plug, note };
 }
 
 describe("dedicated conversation separation from diff review", () => {
@@ -53,20 +56,21 @@ describe("dedicated conversation separation from diff review", () => {
     expect(host.querySelector(".review-thread")).toBeNull();
     expect(host.querySelector("#diffthreadinput")).toBeNull();
     expect(host.textContent).not.toContain("Lives elsewhere");
-    expect(host.querySelector(".csgeneral")).not.toBeNull();
+    // The diff takes comments; where they are WRITTEN is the surface's box
+    // below the stack, not a field inside it.
+    expect(host.querySelector(".fcmt")).not.toBeNull();
     plug.unmount();
   });
 
   it("still sends selected diff and whole-change-set comments as user messages", async () => {
-    const { calls, host, plug } = mountReview("building");
+    const { calls, host, plug, note } = mountReview("building");
     await vi.advanceTimersByTimeAsync(0);
     host.querySelector(".file").classList.remove("capped");
     host.querySelector('tr.add[data-ln="1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
     document.querySelector(".cp-input").value = "rename this";
     document.querySelector(".cp-save").click();
-    host.querySelector(".csgeneral").value = "tighten the whole change set";
-    host.querySelector(".csgeneral").dispatchEvent(new Event("input"));
-    host.querySelector(".cssend").click();
+    note.text = "tighten the whole change set";
+    await plug.sendComments();
     await vi.advanceTimersByTimeAsync(0);
 
     const request = calls.find((call) => call.method === "run.request_changes");

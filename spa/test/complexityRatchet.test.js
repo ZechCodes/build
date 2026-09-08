@@ -18,7 +18,10 @@ import { describe, it, expect } from "vitest";
 // 74 since the merge verb moved to the git toolbar: the comment tray's
 // actionbar stopped standing in for the surface's own, which took its resting
 // copy, its idle branch and two of its decisions with it.
-const RATCHETED_FUNCTIONS = 74;
+// 73 since the commit box became the one box under the diff: renderCommitBox's
+// draft resolution, focus restoration and disclosure rule all moved into
+// core/changesComposer.js, which decides them once for both verbs.
+const RATCHETED_FUNCTIONS = 73;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

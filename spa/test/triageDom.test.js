@@ -251,7 +251,7 @@ describe("disagreeing with the pass in the Changes pane", () => {
     expect(chip.textContent).toContain("a rename, nothing more");
     // The offer sits on a hunk row inside a capped file: pressing it must not
     // also read as "expand this file" or "comment on this line".
-    expect(container.querySelector(".cslist").children.length).toBe(0);
+    expect(container.querySelector(".cslist")).toBe(null);
     expect(collapsed.classList.contains("capped")).toBe(true);
   });
 

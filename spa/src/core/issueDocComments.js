@@ -12,7 +12,7 @@
 // controller feeds its poll freeze — a rebuild mid-comment would drop the
 // anchors, the open popover, and the typed text.
 
-import { commentTrayHtml } from "./changesRender.js";
+import { docCommentTrayHtml } from "./changesRender.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { docLineRange } from "./issueModel.js";
 import { buildHeadingPath, slugifyHeading } from "./anchors.js";
@@ -152,7 +152,7 @@ export function createDocCommentLayer({
      *  is the diff surface's, so a pending comment reads the same wherever it
      *  was written: where it is, what it quotes, what was said. */
     trayHtml: () =>
-      commentTrayHtml(
+      docCommentTrayHtml(
         comments.map((comment) => ({
           id: comment.id,
           file: comment.headingPath.length ? comment.headingPath.join(" › ") : "top of doc",

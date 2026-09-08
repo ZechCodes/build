@@ -494,8 +494,24 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* ---- git pane (Changes tab: commit rail on the left, diffs on the right) ---- */
 .gitstat { font-family:var(--mono); font-size:11px; letter-spacing:0; text-transform:none; }
 .gitstat .a, .cinfo .a { color:var(--green); } .gitstat .d, .cinfo .d { color:var(--red); }
-.gitcommit { max-width:780px; margin:0 auto; }
-.gitmsg { min-height:58px; max-height:160px; }
+/* The one box under the diff. It sits below the scroller rather than at the end
+   of the stack, so reading to the bottom of a long change never takes it off
+   screen, and it opens as one line because most of what goes in it is one line.
+
+   The ceiling it grows to is a device's, not a layout's: a computer can give a
+   long commit message half a pane, a phone has already given half its screen to
+   the keyboard. */
+.csbox { max-width:780px; margin:0 auto; }
+.csbox-row { display:flex; align-items:flex-end; gap:8px; }
+.csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto;
+  font:inherit; font-size:13px; line-height:1.45; padding:9px 11px;
+  border:1px solid var(--line); border-radius:10px; background:var(--panel2); color:var(--ink);
+  max-height:240px; }
+.csbox .csinput:focus { outline:none; border-color:var(--accent); }
+.csbox-actions { flex:none; }
+.csbox .githint:empty { display:none; }
+.csbox .githint { display:block; padding-bottom:6px; }
+@media (max-width: 720px) { .csbox .csinput { max-height:30vh; } }
 /* The Changes surface fills the flush tab body: .changes2 is a .pane-split, so
    the row's width, centring and gutters are the shell's, and only what is
    inside the two columns is this pane's own. */
@@ -547,7 +563,8 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    the way every card in the one-column layout does. */
 .gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
   background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
-.gp-commit .actionbar { position:static; background:none; padding:8px 0 0; margin:0; }
+/* The tray's foot: what is waiting, and the one control that discards it. */
+.cstrayfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
 /* Every row in the rail carries the gutter on its LEFT: the column itself meets
    the frame (.pane-split .pane-list), so the row is where the surface's text
    column is paid — the same line the toolbar's project name and the tab labels

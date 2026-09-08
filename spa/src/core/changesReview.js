@@ -133,6 +133,7 @@ export function createReviewPlug({
 
   const commentLayer = submit
     ? createCommentLayer({
+        readNote: () => noteReader(),
         submit: async (messages) => {
           await submit(messages);
           // Stamp what was just reviewed: the next pass marks what moved.
@@ -140,7 +141,10 @@ export function createReviewPlug({
           diffKey = null; // the stamp changes what is drawn — force the rebuild
         },
         revisionId,
-        onChange: () => render(),
+        onChange: () => {
+          render();
+          onCommentsChanged();
+        },
       })
     : null;
 
@@ -158,6 +162,13 @@ export function createReviewPlug({
   // Where this surface hosts the plug's git verbs — the git toolbar above the
   // diff. A plug mounted without one (a standalone stack, a test) draws none.
   let gitActionsHost = () => null;
+  // What the surface's box under the diff is holding. The box sits below the
+  // scroller, outside everything this plug paints, so the note riding out with
+  // the anchored comments is read from there rather than kept here.
+  let noteReader = () => "";
+  // The surface's box under the diff names how much is waiting on its button, so
+  // it is told whenever that moves.
+  let onCommentsChanged = () => {};
 
   function render() {
     if (!host) return;
@@ -368,10 +379,12 @@ export function createReviewPlug({
     /** The pending comments (and typed general note) the surface holds. */
     busy: () => Boolean(commentLayer && commentLayer.busy()),
 
-    mount(element, { gitActions = () => null } = {}) {
+    mount(element, { gitActions = () => null, readNote = () => "", onComments = () => {} } = {}) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
       gitActionsHost = gitActions;
+      noteReader = readNote;
+      onCommentsChanged = onComments;
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       livePainted = false;
@@ -387,6 +400,14 @@ export function createReviewPlug({
         pausesWhileHidden: false,
       });
     },
+
+    /** What the surface's box under the diff should offer while this plug is
+     *  the changeset on screen: whether there is an agent to talk to, and how
+     *  much is anchored and waiting. */
+    commentOffer: () => ({ commentable: commentableNow && Boolean(commentLayer), pending: commentLayer ? commentLayer.count() : 0 }),
+
+    /** Send what is anchored, with the note the box is holding. */
+    sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),
 
     unmount() {
       if (watcher) watcher.dispose();

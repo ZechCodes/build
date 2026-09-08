@@ -12,13 +12,12 @@
 // tests; mountGitPane is the only DOM-touching entry point.
 
 import { esc } from "./text.js";
-import { gitToolbarHtml, gitStateBannerHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
+import { gitToolbarHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
 import {
   changesRailEntries,
   uncommittedHeaderHtml,
   commitHeaderHtml,
   changesetPlaceholderHtml,
-  selectionBarHtml,
 } from "./changesRender.js";
 import {
   defaultChangesSelection,
@@ -489,7 +488,6 @@ export function mountGitPane(
         <aside class="crail-host pane-list"></aside>
         <section class="cdetail">
           <div class="gp-toolbar"></div>
-          <div class="gp-banner"></div>
           <div class="cdetail-host"></div>
           <div class="gp-commit"></div>
         </section>
@@ -650,7 +648,7 @@ export function mountGitPane(
 
   const paintChangeset = (detailHost, { bar, views, stackOptions = {} }) => {
     paintChangesetInto({
-      bar: bar + selectionBarHtml(marks.selected.size),
+      bar,
       entries: fileStackEntries(views, stackOptions),
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
@@ -757,14 +755,17 @@ export function mountGitPane(
     if (!container.querySelector(".changes2")) paintSkeleton();
     const repoControls = supportsRepoManagement(lastStatus);
     // Always drawn, even against a bridge too old to manage the repo: the merge
-    // verb the surface hosts here is the surface's own, not the bridge's.
+    // verb the surface hosts here is the surface's own, not the bridge's. One
+    // bar carries everything that must survive a scroll — the branch's standing,
+    // the verbs, and whatever the selection raises.
     container.querySelector(".gp-toolbar").innerHTML = gitToolbarHtml({
       chips: syncChipState(lastStatus),
+      stat: lastStatus.stat || null,
+      selected: marks.selected.size,
+      banner: repoControls ? repoStateBanner(lastStatus.repo_state) : null,
+      pendingConfirm,
       repo: repoControls,
     });
-    container.querySelector(".gp-banner").innerHTML = repoControls
-      ? gitStateBannerHtml(repoStateBanner(lastStatus.repo_state), { pendingConfirm })
-      : "";
     const mergedLog = {
       ...lastLog,
       commits: [...(lastLog.commits || []), ...extraCommits],
@@ -790,6 +791,9 @@ export function mountGitPane(
           // The box's own button says how many comments the send carries.
           onComments: () => renderComposer(),
           reviewMarks: marks,
+          // The bar above the stack names what is selected, and the bar is this
+          // pane's — a mark made inside the plug has to reach it.
+          onMarks: () => render(),
         });
         reviewMounted = true;
       }

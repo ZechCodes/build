@@ -75,3 +75,16 @@ before the full gates.
 **Post-merge score: 100/100.** The same scoped controls remain verified on the
 resolved merge tree; the ignored-test and scanner limitations above remain
 explicit.
+
+## Follow-up toolbar merge revalidation
+
+After commit `9b5e69ba`, the one additional SPA toolbar commit from
+`origin/main` was merged cleanly and reviewed without Bridge changes. SPA lint,
+203 files / 3,573 tests, and the production build passed. Expanded Semgrep ran
+510 rules against 503 tracked targets with zero findings (the same unrelated
+landing-page HTML rule timed out; approximately 99.9% of lines parsed).
+Gitleaks found no leaks in the 29.16 MB current tree or in the two-head
+`--full-history HEAD origin/main` scan of 1,669 commits / 35.41 MB.
+
+**Follow-up score: 100/100.** The toolbar-only follow-up introduced no change to
+the previously verified Bridge isolation controls.

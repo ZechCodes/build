@@ -246,7 +246,13 @@ describe("outsidePressDismisses", () => {
 
 // ---- markup builders ---------------------------------------------------
 
+// The bar reads left to right: where this branch stands against its upstream
+// and its own working tree, then the verbs, then — only while files are in hand
+// — the verbs aimed at those. All of it above the scroller, so a reviewer deep
+// in a long diff still has every number and every button.
 describe("gitToolbarHtml", () => {
+  const stat = { insertions: 2923, deletions: 494 };
+
   it("renders fetch and the pull/push/stash split-button hosts", () => {
     const html = gitToolbarHtml({ chips: null });
     expect(html).toContain("gtfetch");
@@ -255,10 +261,65 @@ describe("gitToolbarHtml", () => {
     expect(html).toContain('class="gtstash"');
   });
 
-  it("renders ahead/behind chips only when chip data is supplied", () => {
-    expect(gitToolbarHtml({ chips: { ahead: 3, behind: 4 } })).toContain("↑3");
-    expect(gitToolbarHtml({ chips: { ahead: 3, behind: 4 } })).toContain("↓4");
-    expect(gitToolbarHtml({ chips: null })).not.toContain("gtchips");
+  it("leads with where the branch stands: ahead, behind, and the working tree's weight", () => {
+    const html = gitToolbarHtml({ chips: { ahead: 1, behind: 15 }, stat });
+    expect(html).toContain("↑1");
+    expect(html).toContain("↓15");
+    expect(html).toContain("+2923");
+    expect(html).toContain("−494");
+    expect(html.indexOf("gtstatus")).toBeLessThan(html.indexOf("gtfetch"));
+  });
+
+  it("says nothing it does not know", () => {
+    expect(gitToolbarHtml({ chips: null, stat })).not.toContain("gtchips");
+    expect(gitToolbarHtml({ chips: { ahead: 3, behind: 4 }, stat: null })).not.toContain("gtweight");
+    expect(gitToolbarHtml({ chips: null, stat: null })).not.toContain("gtstatus");
+  });
+
+  it("keeps a clean tree's zero weight, which is a fact and not an absence", () => {
+    const html = gitToolbarHtml({ chips: null, stat: { insertions: 0, deletions: 0 } });
+    expect(html).toContain("+0");
+    expect(html).toContain("−0");
+  });
+
+  it("raises the bulk verbs behind a divider, only while files are in hand", () => {
+    const none = gitToolbarHtml({ chips: null, selected: 0 });
+    expect(none).not.toContain("selbar");
+    expect(none).not.toContain("gtdivider");
+    const some = gitToolbarHtml({ chips: null, selected: 2 });
+    expect(some).toContain("gtdivider");
+    expect(some).toContain("2 files selected");
+    expect(some.indexOf("gtstash")).toBeLessThan(some.indexOf("gtdivider"));
+    expect(some.indexOf("gtdivider")).toBeLessThan(some.indexOf("selbar"));
+  });
+
+  // A repository mid-merge has one thing to say and one thing to do, and the
+  // verbs beside them are the ones that must not be pressed until it is over.
+  it("gives the whole bar past the status over to a banner", () => {
+    const html = gitToolbarHtml({
+      chips: { ahead: 1, behind: 15 },
+      stat,
+      selected: 3,
+      banner: repoStateBanner("merging"),
+    });
+    expect(html).toContain("gtstatus");
+    expect(html).toContain("↑1");
+    expect(html).toContain("Merge in progress");
+    expect(html).toContain("gitabort");
+    expect(html).not.toContain("gtfetch");
+    expect(html).not.toContain("gtpull");
+    expect(html).not.toContain("selbar");
+  });
+
+  it("arms the banner's abort in place, where the two-click confirm shows", () => {
+    const html = gitToolbarHtml({ chips: null, banner: repoStateBanner("merging"), pendingConfirm: "abort" });
+    expect(html).toContain("Confirm abort?");
+  });
+
+  it("gives the bar back the moment the repository is out of that state", () => {
+    const html = gitToolbarHtml({ chips: null, banner: repoStateBanner("clean") });
+    expect(html).toContain("gtfetch");
+    expect(html).not.toContain("gitstate");
   });
 });
 

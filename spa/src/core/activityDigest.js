@@ -1,12 +1,12 @@
 /// What a folded run of activity says, and where the number comes from.
 ///
-/// A run's tool-call count is a fact about the whole run, and the whole run is
-/// not what a page ships: the bridge caps how many items of any one run travel
-/// and sends a DIGEST — the run's span, its exact tool-call count, and its last
-/// call — for what it left behind. Counting the rows in hand would say "12"
-/// under a thousand calls, and would keep saying a different number as the
+/// A run's row count is a fact about the whole run, and the whole run is not
+/// what a page ships: the bridge caps how many items of any one run travel and
+/// sends a DIGEST — the run's span, its exact census of rows and tool calls,
+/// and its last call — for what it left behind. Counting the rows in hand would
+/// say "12" under a thousand, and would keep saying a different number as the
 /// reader scrolls, so the count is read off the digest and topped up with the
-/// calls that arrived after the page was cut.
+/// rows that arrived after the page was cut.
 ///
 /// Nothing here touches the DOM. The renderer is handed five printed values.
 
@@ -99,11 +99,15 @@ function digestsOver(digests, span) {
 const newestCovered = (covering) =>
   covering.reduce((newest, digest) => Math.max(newest, digest.through_sequence ?? -Infinity), -Infinity);
 
-const arrivedAfterTheDigest = (toolCalls, coveredThrough) =>
-  toolCalls.filter((activity) => {
-    const sequence = sequenceOf(activity);
+const arrivedAfterTheDigest = (rows, coveredThrough) =>
+  rows.filter((row) => {
+    const sequence = sequenceOf(row);
     return sequence === null || sequence > coveredThrough;
   });
+
+/// How many rows a digest counted. A bridge from before the rows census sends
+/// only the calls, and that number is the nearest it has to the truth.
+const rowsCountedBy = (digest) => digest.rows ?? digest.tool_calls ?? 0;
 
 /// The newest call any covering digest recorded, shaped like a row in hand.
 ///
@@ -145,25 +149,25 @@ function headOf(call, latest) {
   return { icon: (latest && latest.icon) || "", ...lineOf(latest) };
 }
 
-/// What one folded run prints: how many tools it called, and the last call's
+/// What one folded run prints: how many rows it holds, and the last call's
 /// line, mark, time and glyph.
 ///
-/// The count is the sum over every digest the run reaches, plus the calls held
-/// newer than the newest of them — where a row's calls are the ones it STANDS
-/// for: a call that spawned a subagent folds that subagent's calls under it, so
-/// a row can be four calls and counting rows would say one.
+/// The count is every row of the run — calls, thoughts, narration, background
+/// tasks — summed over every digest the run reaches, plus the rows held newer
+/// than the newest of them. A row's rows are the ones it STANDS for: a call
+/// that spawned a subagent folds that subagent's rows under it, so one row a
+/// reader can see may be four the run holds.
 ///
 /// A run no digest reaches — one written entirely after the page, or a
-/// conversation shipped whole — counts the calls in hand.
-/// A run that called no tool at all keeps the old look: its latest line, and how
-/// many rows it holds.
+/// conversation shipped whole — counts the rows in hand. The line is the newest
+/// call held, then the newest the digests recorded, then the latest row.
 export function activityRunSummary(digests, runEntries) {
   const activities = runEntries.map((entry) => entry.activity).filter(Boolean);
   const toolCalls = activities.flatMap((activity) => activity.toolCalls || []);
-  const covering = digestsOver(digests || [], heldSpan([...activities, ...toolCalls]));
-  const counted = covering.reduce((total, digest) => total + (digest.tool_calls || 0), 0);
-  const count = counted + arrivedAfterTheDigest(toolCalls, newestCovered(covering)).length;
-  const latest = activities.at(-1);
-  const call = count ? newestHeldCall(toolCalls) || digestLastCall(covering) : null;
-  return { count: count || runEntries.length, ...headOf(call, latest) };
+  const rows = activities.flatMap((activity) => activity.rows || []);
+  const covering = digestsOver(digests || [], heldSpan([...activities, ...rows]));
+  const counted = covering.reduce((total, digest) => total + rowsCountedBy(digest), 0);
+  const count = counted + arrivedAfterTheDigest(rows, newestCovered(covering)).length;
+  const call = newestHeldCall(toolCalls) || digestLastCall(covering);
+  return { count, ...headOf(call, activities.at(-1)) };
 }

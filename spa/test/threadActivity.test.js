@@ -342,7 +342,7 @@ describe("a run of activity between messages", () => {
   const groups = () => [...document.querySelectorAll(".thread-activity-group")];
   const timeline = () => [...document.querySelector(".thread-items").children];
 
-  it("collapses the whole run into one line: how many tools, and the last one called", () => {
+  it("collapses the whole run into one line: how many rows, and the last tool called", () => {
     document.body.innerHTML = activity();
 
     expect(groups()).toHaveLength(1);
@@ -351,10 +351,10 @@ describe("a run of activity between messages", () => {
     expect(group.tagName).toBe("DETAILS");
     // Shut on arrival: activity asks the reader for nothing.
     expect(group.open).toBe(false);
-    // Five rows, one tool call. The number is what the agent DID — a count of
-    // thoughts and narration is a count of nothing a reader can act on, and
-    // the tool-call total is the one the bridge can also vouch for exactly.
-    expect(group.querySelector(".thread-activity-count").textContent).toBe("1");
+    // Five rows, one tool call. The number is how much is inside the fold —
+    // every row, thought and narration included — which the bridge's census
+    // can vouch for exactly however much of the run the page shipped.
+    expect(group.querySelector(".thread-activity-count").textContent).toBe("5");
     // The last call, not the last row: the line says what the agent reached
     // for, and a live run's line is a ticker over its calls.
     expect(group.querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
@@ -389,7 +389,7 @@ describe("a run of activity between messages", () => {
       "thread-message",
       "thread-activity-group",
     ]);
-    expect(groups().map((group) => group.querySelector(".thread-activity-count").textContent)).toEqual(["1", "1"]);
+    expect(groups().map((group) => group.querySelector(".thread-activity-count").textContent)).toEqual(["2", "1"]);
     expect(groups()[0].querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
     expect(document.querySelector(".thread-message").textContent).toContain("The lock has to move.");
   });

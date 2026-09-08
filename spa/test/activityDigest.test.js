@@ -1,10 +1,10 @@
 // The count and the last call on a folded run of activity.
 //
-// A folded run's tool-call count is a fact about the WHOLE run, and the whole
-// run is not what the page ships: the bridge caps how much of one run travels
-// and sends a digest for the rest. So the row is drawn from the digest, topped
-// up with what arrived after it, and never from how many rows happen to be in
-// hand.
+// A folded run's row count is a fact about the WHOLE run, and the whole run is
+// not what the page ships: the bridge caps how much of one run travels and
+// sends a digest for the rest. So the number is drawn from the digest's rows
+// census, topped up with what arrived after it, and never from how many rows
+// happen to be in hand.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -15,10 +15,10 @@ import {
   runDigestToFetch,
 } from "../src/core/activityDigest.js";
 
-const digest = (from, through, toolCalls, lastToolCall = null) => ({
+const digest = (from, through, rows, lastToolCall = null) => ({
   from_sequence: from,
   through_sequence: through,
-  tool_calls: toolCalls,
+  rows,
   last_tool_call: lastToolCall,
 });
 
@@ -46,12 +46,13 @@ const entry = (sequence, kind, meat, extra = {}) => ({
     outcome: undefined,
     createdAt: null,
     toolCalls: kind === "tool_use" ? [call(sequence, meat, extra)] : [],
+    rows: [{ sequence }],
     ...extra,
   },
 });
 
 /// A tool call that spawned a subagent: the calls the subagent made fold under
-/// it, so the run holds one row standing for several calls.
+/// it, so the run holds one row standing for several rows and calls.
 const spawningEntry = (sequence, meat, nested) => ({
   html: "",
   key: sequence,
@@ -62,6 +63,7 @@ const spawningEntry = (sequence, meat, nested) => ({
     outcome: undefined,
     createdAt: null,
     toolCalls: [call(sequence, meat), ...nested],
+    rows: [{ sequence }, ...nested.map((folded) => ({ sequence: folded.sequence }))],
   },
 });
 
@@ -79,11 +81,11 @@ describe("holding the digests a page carried", () => {
 
     const merged = mergeActivityDigests(held, { activity_digests: [digest(20, 55, 12)] });
 
-    expect(merged.map((entryDigest) => [entryDigest.from_sequence, entryDigest.tool_calls])).toEqual([
+    expect(merged.map((entryDigest) => [entryDigest.from_sequence, entryDigest.rows])).toEqual([
       [1, 3],
       [20, 12],
     ]);
-    expect(held[1].tool_calls).toBe(7);
+    expect(held[1].rows).toBe(7);
   });
 
   it("takes in the runs an older page reaches back to, oldest first", () => {
@@ -108,7 +110,7 @@ describe("what a folded run says", () => {
     expect(summary.count).toBe(1000);
   });
 
-  it("adds the calls that arrived after the digest was cut", () => {
+  it("adds the rows that arrived after the digest was cut", () => {
     const run = [
       entry(1530, "tool_use", "Bash(cargo test)"),
       entry(1532, "tool_use", "Edit bridge/src/app.rs"),
@@ -131,10 +133,10 @@ describe("what a folded run says", () => {
     expect(summary.count).toBe(100);
   });
 
-  // A subagent's calls fold under the call that spawned them, so they never
-  // become rows of their own — and a count of rows would say one where the
-  // bridge counted four.
-  it("counts the calls folded under a row, not the rows", () => {
+  // A subagent's rows fold under the call that spawned them, so they never
+  // become rows of their own — and counting the rows a reader can see would
+  // say one where the bridge counted four.
+  it("counts what folds under a row along with the row", () => {
     const run = [
       spawningEntry(2, "Task(review the parser)", [
         call(3, "Read spa/src/core/thread.js"),
@@ -172,7 +174,7 @@ describe("what a folded run says", () => {
     expect(summary.createdAt).toBe("2026-09-06T18:09:00.000Z");
   });
 
-  it("tops a digest up with the folded calls that arrived after it", () => {
+  it("tops a digest up with the folded rows that arrived after it", () => {
     const run = [
       spawningEntry(2, "Task(review the parser)", [
         call(3, "Read spa/src/core/thread.js"),
@@ -191,8 +193,31 @@ describe("what a folded run says", () => {
       entry(12, "tool_use", "Read b.js"),
     ];
 
-    expect(activityRunSummary([digest(500, 600, 40)], run).count).toBe(2);
-    expect(activityRunSummary([], run).count).toBe(2);
+    expect(activityRunSummary([digest(500, 600, 40)], run).count).toBe(3);
+    expect(activityRunSummary([], run).count).toBe(3);
+  });
+
+  // Every row is a row: the number on the fold says how much is inside it,
+  // and a thought or a narration is inside it as much as a call is.
+  it("counts thoughts and narration as rows, whether digested or in hand", () => {
+    const run = [
+      entry(1600, "reasoning", "Reading the review."),
+      entry(1601, "narration", "Running the suite."),
+      entry(1602, "tool_use", "Bash(npm test)"),
+    ];
+
+    expect(activityRunSummary([], run).count).toBe(3);
+    expect(activityRunSummary([digest(1590, 1600, 11)], run).count).toBe(13);
+  });
+
+  // A bridge from before the rows census sends a digest that counts only the
+  // calls. That number is the nearest it has, and it beats a fold that says
+  // nothing about the thousand rows the page left off.
+  it("falls back to an older bridge's tool-call count when a digest carries no rows", () => {
+    const run = [entry(1530, "tool_use", "Bash(cargo test)")];
+    const olderDigest = { from_sequence: 412, through_sequence: 1531, tool_calls: 1000, last_tool_call: null };
+
+    expect(activityRunSummary([olderDigest], run).count).toBe(1000);
   });
 
   it("takes the line, the mark and the time from the newest call in hand", () => {
@@ -256,11 +281,11 @@ describe("what a folded run says", () => {
 
   it("says the latest row's own glyph when the line fell back to that row", () => {
     const noCall = [
-      entry(1600, "tool_use", "Read a.js", { icon: "\u25b8" }),
-      entry(1601, "narration", "Running the suite.", { icon: "\u25e6", toolCalls: [] }),
+      entry(1600, "reasoning", "Reading the review.", { icon: "\u25cc" }),
+      entry(1601, "narration", "Running the suite.", { icon: "\u25e6" }),
     ];
 
-    expect(activityRunSummary([digest(1600, 1601, 0, null)], noCall).icon).toBe("\u25e6");
+    expect(activityRunSummary([digest(1600, 1601, 2, null)], noCall).icon).toBe("\u25e6");
 
     const wordlessDigest = [entry(1600, "reasoning", "Reading the review.", { icon: "\u25cc" })];
 
@@ -269,26 +294,26 @@ describe("what a folded run says", () => {
     );
   });
 
-  it("keeps the old look for a run that called no tool at all", () => {
+  it("shows its latest row for a run that called no tool at all", () => {
     const run = [
       entry(1600, "reasoning", "Reading the review."),
       entry(1601, "narration", "Running the suite.", { createdAt: "2026-09-06T19:00:00.000Z" }),
     ];
 
-    const summary = activityRunSummary([digest(1600, 1601, 0, null)], run);
+    const summary = activityRunSummary([digest(1600, 1601, 2, null)], run);
 
     expect(summary.count).toBe(2);
     expect(summary.meat).toBe("Running the suite.");
     expect(summary.createdAt).toBe("2026-09-06T19:00:00.000Z");
   });
 
-  it("counts a run rendered without sequences by the calls it holds", () => {
+  it("counts a run rendered without sequences by the rows it holds", () => {
     const run = [
-      { html: "", key: "at-0", activity: { icon: "▸", meat: "Read a.js", toolCalls: [{ meat: "Read a.js" }] } },
-      { html: "", key: "at-1", activity: { icon: "◌", meat: "Thinking.", toolCalls: [] } },
+      { html: "", key: "at-0", activity: { icon: "▸", meat: "Read a.js", toolCalls: [{ meat: "Read a.js" }], rows: [{}] } },
+      { html: "", key: "at-1", activity: { icon: "◌", meat: "Thinking.", toolCalls: [], rows: [{}] } },
     ];
 
-    expect(activityRunSummary([digest(1, 9, 40)], run).count).toBe(1);
+    expect(activityRunSummary([digest(1, 9, 40)], run).count).toBe(2);
   });
 });
 

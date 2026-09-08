@@ -77,7 +77,8 @@ describe("rows that fold under the call that spawned them", () => {
     expect(runs).toHaveLength(1);
     const rowsTheReaderCanSee = 2;
     expect(runs[0].querySelector(".thread-activity-group-list").children).toHaveLength(rowsTheReaderCanSee);
-    expect(runs[0].querySelector(".thread-activity-count").textContent).toBe(String(rowsTheReaderCanSee));
+    // Two rows to see, three in the run: the folded thought counts too.
+    expect(runs[0].querySelector(".thread-activity-count").textContent).toBe("3");
 
     const parent = rowOfSequence(SPAWNING_CALL_SEQUENCE);
     expect(parent.tagName).toBe("DETAILS");
@@ -99,8 +100,8 @@ describe("rows that fold under the call that spawned them", () => {
 
     const rowsTheReaderCanSee = 2;
     expect(document.querySelector(".thread-activity-group-list").children).toHaveLength(rowsTheReaderCanSee);
-    // Two rows, four calls: the spawning call stands for everything the
-    // subagent it started did, at every depth, and the count is calls.
+    // Two rows to see, four in the run: the spawning call stands for
+    // everything the subagent it started did, at every depth.
     expect(document.querySelector(".thread-activity-count").textContent).toBe("4");
   });
 
@@ -121,9 +122,8 @@ describe("rows that fold under the call that spawned them", () => {
 
     expect(document.querySelectorAll(".thread-activity-children")).toHaveLength(0);
     expect(document.querySelector(".thread-activity-group-list").children).toHaveLength(2);
-    // The run counts the tools it called, and one of these two rows is a
-    // thought.
-    expect(document.querySelector(".thread-activity-count").textContent).toBe("1");
+    // Both rows count, the thought as much as the call.
+    expect(document.querySelector(".thread-activity-count").textContent).toBe("2");
     expect(document.querySelectorAll(`[data-sequence="${subagentThought.data.sequence}"]`)).toHaveLength(1);
 
     paint([spawningCall, subagentThought, laterCall]);

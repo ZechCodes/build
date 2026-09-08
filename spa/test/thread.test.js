@@ -876,6 +876,7 @@ describe("thread cache paging over an activity-heavy conversation", () => {
         from_sequence: run.at(-1).data.sequence,
         through_sequence: run[0].data.sequence,
         tool_calls: run.filter((entry) => entry.data.event === "tool_use").length,
+        rows: run.length,
         last_tool_call: { sequence: run[0].data.sequence, created_at: null, summary: run[0].data.summary, outcome: null },
       });
     }
@@ -1296,6 +1297,7 @@ describe("the activity digests a window holds", () => {
     from_sequence: from,
     through_sequence: through,
     tool_calls: toolCalls,
+    rows: toolCalls,
     last_tool_call: null,
   });
 

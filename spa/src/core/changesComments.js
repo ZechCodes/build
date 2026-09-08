@@ -131,6 +131,16 @@ export function createCommentLayer({
 
     count: () => comments.length,
 
+    /** Anchor one comment per file, in the words the reviewer types once. What a
+     *  bulk selection is FOR: the same thing said about six files is six posts
+     *  the agent can act on, not one paragraph naming them. */
+    commentOnFiles(paths, rect) {
+      if (!paths.length) return;
+      openCommentComposer(rect, (comment) => {
+        for (const path of paths) addComment(path, 0, 0, "(entire file)", comment);
+      });
+    },
+
     /** Send what is pending, with whatever note the box under the diff holds.
      *  The box is the surface's (core/changesComposer.js), so the note is read
      *  through `readNote` rather than kept here. */

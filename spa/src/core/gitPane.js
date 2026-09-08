@@ -18,6 +18,7 @@ import {
   uncommittedHeaderHtml,
   commitHeaderHtml,
   changesetPlaceholderHtml,
+  selectionBarHtml,
 } from "./changesRender.js";
 import {
   defaultChangesSelection,
@@ -41,6 +42,7 @@ import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { mountChangesComposer } from "./changesComposer.js";
+import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { cacheDeviceId } from "./cacheScope.js";
@@ -414,6 +416,10 @@ export function mountGitPane(
   const fileDiffs = createFileDiffs({ deviceId: cacheDeviceId(), entityId: cacheEntityId, scope, call: callRpc });
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
   let composer = null; // the one box under the diff, mounted once
+  // What the reviewer has approved and selected on this surface's files. One
+  // set of marks for every changeset it draws, its own and the review plug's,
+  // so a file ticked on one is ticked on the other.
+  const marks = createReviewMarks();
   let inFlightActions = 0; // commit/discard/sync RPCs currently awaited
   let scopeErrorShown = null; // the terminal scope error currently rendered
   let fileMenuPath = null; // the file whose header ⋯ is open
@@ -594,6 +600,10 @@ export function mountGitPane(
     const stackFor = (views, patch) => ({
       commentable,
       openable: Boolean(openFile),
+      approvable: true,
+      approved: marks.approved,
+      selectable: true,
+      selected: marks.selected,
       noiseExpanded: noiseExpanded.has(String(selected)),
       folds,
       changedSince: changedSinceChangeset(reviewStamps, selected, views),
@@ -638,7 +648,7 @@ export function mountGitPane(
 
   const paintChangeset = (detailHost, { bar, views, stackOptions = {} }) => {
     paintChangesetInto({
-      bar,
+      bar: bar + selectionBarHtml(marks.selected.size, { commentable: Boolean(commentLayer) }),
       entries: fileStackEntries(views, stackOptions),
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
@@ -774,6 +784,7 @@ export function mountGitPane(
           readNote: () => (messageBox() ? messageBox().value : ""),
           // The box's own button says how many comments the send carries.
           onComments: () => renderComposer(),
+          reviewMarks: marks,
         });
         reviewMounted = true;
       }
@@ -918,9 +929,9 @@ export function mountGitPane(
         setHint("Enter a commit message first.");
         throw new Error("commit message must not be empty");
       }
-      // Commit is commit-all: there is no staged set to assemble, so every
-      // changed path is staged first and the commit takes the lot.
-      const paths = commitAllPaths(lastStatus);
+      // The files the reviewer ticked, or the whole worktree when they ticked
+      // none — staged first, then committed together.
+      const paths = commitPaths(commitAllPaths(lastStatus), marks.selected);
       if (!paths.length) {
         setHint("Nothing to commit.");
         throw new Error("nothing to commit");
@@ -1218,8 +1229,43 @@ export function mountGitPane(
     return true;
   };
 
+  /// A mark made on one of this pane's OWN stacks. The review plug draws its
+  /// own and handles its own; the marks themselves are shared, so a file ticked
+  /// on either is ticked on both.
+  const claimFileMark = (event) => {
+    if (reviewMounted) return false;
+    const approve = event.target.closest(".fapprove");
+    const select = event.target.closest(".fselect-box");
+    if (!approve && !select) return false;
+    const key = (approve || select).dataset.key;
+    if (approve) marks.toggleApproved(pathOf(key));
+    else marks.toggleSelected(pathOf(key));
+    renderAndFetch();
+    renderComposer();
+    return true;
+  };
+
+  /// The verbs the selection raises, each aimed at every file in hand at once.
+  const claimSelectionVerb = (event) => {
+    const button = event.target.closest(".selapprove, .selcomment, .selclear");
+    if (!button) return false;
+    if (button.classList.contains("selapprove")) marks.approveSelected();
+    else if (button.classList.contains("selclear")) marks.clearSelection();
+    else if (commentLayer) {
+      commentLayer.commentOnFiles([...marks.selected], button.getBoundingClientRect());
+      marks.clearSelection();
+    }
+    // A mark the plug shares has to reach the stack the plug is drawing.
+    if (reviewMounted && review.refresh) review.refresh();
+    renderAndFetch();
+    renderComposer();
+    return true;
+  };
+
   const claims = [
     claimSecret,
+    claimFileMark,
+    claimSelectionVerb,
     claimFetch,
     claimSyncButtonWiredElsewhere,
     claimAbort,
@@ -1234,6 +1280,7 @@ export function mountGitPane(
       comments: () => (reviewMounted ? null : commentLayer),
       openFile: () => openFile,
       folds: () => (reviewMounted ? null : foldsOfOpenChangeset()),
+      approved: () => marks.approved,
       repaint: renderAndFetch,
     }),
   ];

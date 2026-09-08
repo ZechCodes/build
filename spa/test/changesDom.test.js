@@ -295,6 +295,81 @@ describe("noise is collapsed, never hidden", () => {
   });
 });
 
+// Selection is a hand on a row: files gathered so one verb can be aimed at all
+// of them, and so a commit can be narrowed to what the reviewer actually meant.
+describe("selecting files", () => {
+  const selectBox = (container, path) => container.querySelector(`.file[data-key$=":${path}"] .fselect-box`);
+  const select = async (container, path) => {
+    const box = selectBox(container, path);
+    box.checked = true;
+    await click(box);
+  };
+  /** uv.lock is generated noise, folded into its own group until asked for. */
+  const showNoise = (container) => click(container.querySelector(".noisehead"));
+
+  it("raises a bar naming what is in hand, and nothing while nothing is", async () => {
+    const { container, pane } = await mount();
+    expect(container.querySelector(".selbar")).toBe(null);
+    await select(container, "src/a.js");
+    expect(container.querySelector(".selcount").textContent).toBe("1 file selected");
+    await showNoise(container);
+    await select(container, "uv.lock");
+    expect(container.querySelector(".selcount").textContent).toBe("2 files selected");
+    pane.dispose();
+  });
+
+  it("approves every selected file in one verb, and lets the selection go", async () => {
+    const { container, pane } = await mount();
+    await showNoise(container);
+    await select(container, "src/a.js");
+    await select(container, "uv.lock");
+    await click(container.querySelector(".selapprove"));
+    expect(container.querySelector(".selbar")).toBe(null);
+    for (const path of ["src/a.js", "uv.lock"]) {
+      const file = container.querySelector(`.file[data-key$=":${path}"]`);
+      expect(file.querySelector(".fapprove").getAttribute("aria-pressed")).toBe("true");
+      expect(file.classList.contains("collapsed")).toBe(true);
+    }
+    pane.dispose();
+  });
+
+  it("anchors what the reviewer says once against every file selected", async () => {
+    const { container, pane, calls } = await mount();
+    await showNoise(container);
+    await select(container, "src/a.js");
+    await select(container, "uv.lock");
+    await click(container.querySelector(".selcomment"));
+    document.querySelector(".cp-input").value = "these two belong together";
+    await click(document.querySelector(".cp-save"));
+    expect(container.querySelectorAll(".pcomment")).toHaveLength(2);
+
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    const post = calls.find((c) => c.method === "run.request_changes");
+    expect(post.params.messages.map((m) => m.anchor.path)).toEqual(["src/a.js", "uv.lock"]);
+    expect(post.params.messages.every((m) => m.body === "these two belong together")).toBe(true);
+    pane.dispose();
+  });
+
+  it("lets a selection go without approving it", async () => {
+    const { container, pane } = await mount();
+    await select(container, "src/a.js");
+    await click(container.querySelector(".selclear"));
+    expect(container.querySelector(".selbar")).toBe(null);
+    expect(container.querySelector('.file[data-key$=":src/a.js"] .fapprove').getAttribute("aria-pressed")).toBe("false");
+    pane.dispose();
+  });
+
+  it("narrows the commit to the files in hand", async () => {
+    const { container, pane, calls } = await mount();
+    await showNoise(container);
+    await select(container, "uv.lock");
+    container.querySelector(".csinput").value = "lockfile only";
+    await pickCommit(container);
+    expect(calls.find((c) => c.method === "git.stage").params.paths).toEqual(["uv.lock"]);
+    pane.dispose();
+  });
+});
+
 describe("commit is commit-all", () => {
   it("stages every changed path, then commits the message", async () => {
     const { container, pane, calls } = await mount();

@@ -563,6 +563,11 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    the way every card in the one-column layout does. */
 .gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
   background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
+/* The bar the selection raises: what is in hand, and the verbs that take all of
+   it at once. Drawn only while something is selected, so it never sits over a
+   diff as a row of verbs aimed at nothing. */
+.selbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 0 2px; }
+.selcount { font-size:11.5px; font-weight:650; color:var(--accent); margin-right:2px; }
 /* The tray's foot: what is waiting, and the one control that discards it. */
 .cstrayfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
 /* Every row in the rail carries the gutter on its LEFT: the column itself meets

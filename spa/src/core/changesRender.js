@@ -142,6 +142,21 @@ export function docCommentTrayHtml(comments, { generalDraft = "" } = {}) {
     <div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
 }
 
+/** The bar the selection raises: how many files are in hand, and the verbs that
+ *  take all of them at once.
+ *
+ *  Drawn only while something is selected — a row of verbs aimed at nothing is
+ *  a row of verbs in the way. Committing is not among them: the box under the
+ *  diff is where a commit is written, and it narrows itself to the selection
+ *  without being told twice. */
+export function selectionBarHtml(count, { commentable = false } = {}) {
+  if (!count) return "";
+  const comment = commentable ? '<button class="btn mini selcomment">Comment on all</button>' : "";
+  return `<div class="selbar"><span class="selcount">${count} file${count === 1 ? "" : "s"} selected</span>
+    <button class="btn mini selapprove">Approve all</button>${comment}
+    <button class="btn mini selclear">Clear</button></div>`;
+}
+
 /** What the detail pane says when nothing is selected (a clean branch opens on
  *  the commit list) — never a blank pane. */
 export function changesetPlaceholderHtml(message) {

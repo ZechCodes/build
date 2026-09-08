@@ -27,6 +27,8 @@ import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
+import { createReviewMarks } from "./reviewMarks.js";
+import { selectionBarHtml } from "./changesRender.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -123,9 +125,11 @@ export function createReviewPlug({
   // when they last sent comments, which files they have approved, which they
   // have selected, and whether the stack is narrowed to only what moved since.
   let reviewStamps = new Map();
-  const approvedFiles = new Set();
-  const selectedFiles = new Set();
   let changedOnlyFilter = false;
+  // What the reviewer has marked on these files. The surface hands its own over
+  // at mount where it has one, so a mark made on this changeset is the same
+  // mark on the stacks beside it.
+  let marks = createReviewMarks();
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
    *  wears a hash of its own rows as its content key. */
@@ -184,11 +188,11 @@ export function createReviewPlug({
       commentable: editable,
       openable: Boolean(openFile),
       changedSince: changed,
-      approved: approvedFiles,
-      selected: selectedFiles,
-      selectable: editable,
+      approved: marks.approved,
+      selected: marks.selected,
+      selectable: true,
       folds,
-      approvable: editable,
+      approvable: true,
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
       review:
@@ -203,11 +207,12 @@ export function createReviewPlug({
             },
     });
     paintChangeset({
-      bar: reviewBarHtml(renderedFiles, {
-        statusHtml: statusHtml(),
-        offerChangedOnly: reviewStamps.size > 0,
-        changedOnly: changedOnlyFilter,
-      }),
+      bar:
+        reviewBarHtml(renderedFiles, {
+          statusHtml: statusHtml(),
+          offerChangedOnly: reviewStamps.size > 0,
+          changedOnly: changedOnlyFilter,
+        }) + selectionBarHtml(marks.selected.size, { commentable: editable }),
       entries,
       tray: trayMounted ? commentLayer.trayHtml() : "",
     });
@@ -250,9 +255,23 @@ export function createReviewPlug({
   const claimApprove = (event) => {
     const toggle = event.target.closest(".fapprove");
     if (!toggle) return false;
-    const path = pathOf(toggle.dataset.key);
-    if (approvedFiles.has(path)) approvedFiles.delete(path);
-    else approvedFiles.add(path);
+    marks.toggleApproved(pathOf(toggle.dataset.key));
+    render();
+    return true;
+  };
+
+  /// The verbs the selection raises, each aimed at every file in hand at once.
+  /// Commenting on all of them anchors one comment per file, in the words the
+  /// reviewer typed once.
+  const claimSelectionVerb = (event) => {
+    const button = event.target.closest(".selapprove, .selcomment, .selclear");
+    if (!button) return false;
+    if (button.classList.contains("selapprove")) marks.approveSelected();
+    else if (button.classList.contains("selclear")) marks.clearSelection();
+    else if (commentLayer) {
+      commentLayer.commentOnFiles([...marks.selected], button.getBoundingClientRect());
+      marks.clearSelection();
+    }
     render();
     return true;
   };
@@ -260,6 +279,7 @@ export function createReviewPlug({
   const claims = [
     claimSecret,
     claimApprove,
+    claimSelectionVerb,
     claimNoiseGroup,
     claimTrustDial,
     claimOverride,
@@ -268,7 +288,7 @@ export function createReviewPlug({
       comments: () => (trayMounted ? commentLayer : null),
       openFile: () => openFile,
       folds: () => folds,
-      approved: () => approvedFiles,
+      approved: () => marks.approved,
       repaint: render,
     }),
   ];
@@ -284,9 +304,7 @@ export function createReviewPlug({
         return;
       }
       if (!target.classList.contains("fselect-box")) return;
-      const path = pathOf(target.dataset.key);
-      if (target.checked) selectedFiles.add(path);
-      else selectedFiles.delete(path);
+      marks.toggleSelected(pathOf(target.dataset.key));
       render();
     };
     host.onclick = (event) => {
@@ -379,12 +397,13 @@ export function createReviewPlug({
     /** The pending comments (and typed general note) the surface holds. */
     busy: () => Boolean(commentLayer && commentLayer.busy()),
 
-    mount(element, { gitActions = () => null, readNote = () => "", onComments = () => {} } = {}) {
+    mount(element, { gitActions = () => null, readNote = () => "", onComments = () => {}, reviewMarks = null } = {}) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
       gitActionsHost = gitActions;
       noteReader = readNote;
       onCommentsChanged = onComments;
+      if (reviewMarks) marks = reviewMarks;
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       livePainted = false;
@@ -405,6 +424,10 @@ export function createReviewPlug({
      *  the changeset on screen: whether there is an agent to talk to, and how
      *  much is anchored and waiting. */
     commentOffer: () => ({ commentable: commentableNow && Boolean(commentLayer), pending: commentLayer ? commentLayer.count() : 0 }),
+
+    /** Redraw the stack — what the surface calls when a mark it shares with this
+     *  plug was made somewhere else. */
+    refresh: render,
 
     /** Send what is anchored, with the note the box is holding. */
     sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),

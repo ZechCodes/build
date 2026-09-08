@@ -30,7 +30,7 @@ vi.mock("../src/core/inboxView.js", () => ({
   mountInboxList: () => {},
   inboxListRouteChanged: () => {},
 }));
-vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notify: () => {} }));
+vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notifySuccess: () => {} }));
 const mountAgentTab = vi.fn(() => ({ dispose: () => {} }));
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: (...args) => mountAgentTab(...args) }));
 

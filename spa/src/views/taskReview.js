@@ -15,7 +15,7 @@ import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { currentRevisionId, MUTATION_THREAD_PAGE } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
-import { notify, notifyError } from "../core/notify.js";
+import { notifyError, notifySuccess } from "../core/notify.js";
 
 export { REVIEW_POLL_MS };
 
@@ -147,7 +147,7 @@ export function createTaskReview({
   /// What just happened, said once. It used to be a line of copy under the
   /// diff that faded after a moment; with that bar gone the notice is where a
   /// result belongs — it does not need the reviewer to be looking down there.
-  const flash = (message) => notify(message);
+  const flash = (message) => notifySuccess(message);
 
   /** One review git action: confirm the decisive ones, run it, then either hand
    *  the surface off (a merge leaves it) or say what happened. */

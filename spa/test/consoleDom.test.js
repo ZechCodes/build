@@ -35,7 +35,7 @@ vi.mock("../src/terminal/pane.js", () => ({
 }));
 
 const notifyError = vi.fn();
-vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
+vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 
 const { App } = await import("../src/app.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");

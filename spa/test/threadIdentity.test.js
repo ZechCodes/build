@@ -315,7 +315,7 @@ describe("the rail's poll on an unchanged conversation", () => {
       mountInboxList: () => {},
       inboxListRouteChanged: () => {},
     }));
-    vi.doMock("../src/core/notify.js", () => ({ notifyError: () => {}, notify: () => {} }));
+    vi.doMock("../src/core/notify.js", () => ({ notifyError: () => {}, notifySuccess: () => {} }));
     vi.doMock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: () => {} }) }));
     // The bubble's painter rides requestAnimationFrame, and the one stubbed
     // above answers in the same tick it is asked — which for a working agent is

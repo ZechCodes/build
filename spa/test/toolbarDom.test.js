@@ -67,7 +67,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 const openProjectSettings = vi.fn();
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
 const notifyError = vi.fn();
-vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
+vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 

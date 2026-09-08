@@ -723,6 +723,12 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .actionbar .right { margin-left:auto; display:flex; gap:10px; }
 /* git repo-management toolbar (v2) */
 .gittoolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* Icons in the bar are sized to the text beside them, once, for the whole bar.
+   The pack's SVGs carry an intrinsic 24px — twice the mini button's own font —
+   so an unsized one does not just look wrong, it makes its button taller than
+   every other button in the row. */
+.gittoolbar .btn { display:inline-flex; align-items:center; gap:6px; }
+.gittoolbar svg { width:14px; height:14px; flex:none; }
 /* The surface's own verb — merging — sits at the far end of the bar, past the
    repo-management ones: they are about the remote, it is about this work. */
 .gtmerge { margin-left:auto; display:flex; align-items:center; gap:6px; }

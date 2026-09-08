@@ -6,8 +6,14 @@
 // resizing the set is one file's work.
 //
 // Every icon carries stroke="currentColor", so it takes the colour of whatever
-// it sits in; size it from CSS. Each is a build-time constant and never user
-// data — which is what lets the tab shell inline one as markup.
+// it sits in. Each is a build-time constant and never user data — which is what
+// lets the tab shell inline one as markup.
+//
+// SIZE IT FROM CSS, at every call site. The pack's SVGs carry an intrinsic
+// 24x24, which is twice the font of a mini button — an unsized icon does not
+// merely look large, it makes its button taller than everything beside it. Each
+// place that renders one states its size once, near the rule that styles the
+// control it sits in.
 
 export { default as ICON_INBOX } from "lucide-static/icons/inbox.svg?raw";
 export { default as ICON_CIRCLE_DOT } from "lucide-static/icons/circle-dot.svg?raw";

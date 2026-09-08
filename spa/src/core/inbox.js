@@ -202,12 +202,11 @@ export const entryKeyOf = (item) => {
 };
 
 /**
- * How `entity.dismiss` names the row being cleared. An entity by its id — the
- * bridge draws the line at the end of its conversation. A row with no entity
- * by what it IS: the project's own checkout (`primary: true`), or a branch in
- * the project — the bridge clears those at the commit they sit on, and a new
- * commit brings them back. Null for a row nothing can name, which is not a
- * row the feed produces.
+ * How `entity.dismiss` names the row being cleared. An entity is named by its
+ * id; a row with no entity is named by what it is: the project's own checkout
+ * (`primary: true`), or a branch in the project. In either case the bridge
+ * records the current message boundary, and a later user or agent message
+ * clears that marker. Null means the row cannot be named on the wire.
  */
 export function dismissParamsOf(entry) {
   if (entry.entityId) return { entity_id: entry.entityId };
@@ -296,6 +295,9 @@ function toCaptureEntry(item) {
     title: item.title || "(nothing said)",
     text: item.text || "",
     state: item.unread ? "unread" : item.state === "routed" ? "inactive" : "working",
+    // The status word covers queued/unrouted captures too; only the feed's
+    // working bit means an agent is actually active for recency purposes.
+    working: !!item.working,
     reason: question || (item.unread_reason === "routing_failed" ? "Routing failed" : ""),
     question,
     routedTo: routing ? { project: item.project || item.project_id, kind: routing.kind } : null,
@@ -339,12 +341,15 @@ function toEntry(item) {
     name,
     title: item.title || item.branch || "(untitled)",
     state,
+    // Unread wins visually, but execution is an independent classification
+    // input: an unread row can also have an agent actively working on it.
+    working: !!item.working,
     reason: state === "unread" ? unreadReasonText(item.unread_reason, item.kind) : "",
     unreadCount: item.unread_count || 0,
     muted: !!item.muted,
-    // The bridge's own word for "the user cleared this and nothing new has
-    // happened since". It is not mute and not Done: the row is simply absent
-    // until an attention event later than the dismissal brings it back.
+    // The bridge's own word for "the user cleared this and no user or agent has
+    // spoken since". The row remains accessible in Recent until a message
+    // causes the bridge to remove this marker.
     dismissed: !!item.dismissed,
     // What the daemon is doing to this row right now, if anything. A row with
     // a verb in flight is not the reader's to act on until that verb settles.
@@ -389,21 +394,18 @@ function byAnchor(left, right) {
  * The rows the inbox lists, split into the list proper and Recent:
  * `{ entries, recent }`.
  *
- * Both lists are in anchor order, oldest first. `recent` is everything whose
- * last activity — a file changing, a message, an agent painting — is over a day
- * old.
- *
- * A row the user cleared (`dismissed`) is in neither list — that is what
- * clearing means, and it is the whole difference from Recent, where a row that
- * has only gone quiet still sits.
+ * Both lists are in anchor order, oldest first. `recent` contains every cleared
+ * row (`dismissed`), plus rows whose message/agent activity is at least a day
+ * old while no agent is working. Unknown activity remains in the Inbox proper;
+ * missing data is not evidence that a row is stale.
  */
 export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
   const rows = items
     .filter(isListed)
     .map(toEntry)
-    .filter((entry) => !entry.dismissed)
     .sort(byAnchor);
-  const quiet = (entry) => entry.lastActivityMs !== null && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
+  const quiet = (entry) =>
+    entry.dismissed || (!entry.working && entry.lastActivityMs !== null && nowMs - entry.lastActivityMs >= RECENT_AFTER_MS);
   const entries = rows.filter((entry) => !quiet(entry));
   const recent = rows.filter(quiet);
   return { entries, recent };
@@ -460,10 +462,8 @@ export function activeEntryKey(route, entries) {
  *  not. It is offered only where there is something to finish.
  *
  *  Every row has Clear, because it is the one verb that costs nothing: the
- *  row leaves and comes back the moment something new needs the user. On a
- *  row with a conversation "something new" is the next attention event; on
- *  one with none (a bare checkout, the primary) the bridge clears it at the
- *  commit it sits on, and a new commit brings it back.
+ *  row moves to Recent until the next user or agent message removes its clear
+ *  marker. File and commit changes do not revive it.
  *
  *  Mute keeps the row and takes its voice, so it needs an entity with a voice
  *  to take. A row with neither Done nor Mute still has its menu — Clear is
@@ -482,7 +482,7 @@ function menuHtml(entry, open) {
     );
   }
   items.push(
-    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
+    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Moves it to Recent until a new message</span></div>`,
   );
   if (entry.entityId) {
     items.push(

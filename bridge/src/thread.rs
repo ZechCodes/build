@@ -1651,6 +1651,20 @@ pub struct Thread {
     pub last_completion: Option<CompletionReport>,
     #[serde(default)]
     next_sequence: u64,
+    /// Durable inbox summary. Conversations are loaded as a bounded tail, so
+    /// these cannot be derived from `items` without losing an older message
+    /// behind a long run of tool activity.
+    #[serde(default)]
+    last_message_sequence_summary: u64,
+    #[serde(default)]
+    last_attention_sequence_summary: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conversation_activity_at_summary: Option<String>,
+    /// Whether the newest message left a turn in flight. This is persisted so
+    /// a stopping attention event can close work even when that message is
+    /// below the resident tail after restart.
+    #[serde(default)]
+    conversation_working: bool,
     /// Where this conversation's checkout is, told to the thread by the daemon
     /// on its way to a mutation. Never persisted, never compared.
     #[serde(skip)]
@@ -1753,6 +1767,52 @@ impl Thread {
                 .max()
                 .unwrap_or(0),
         );
+        self.refresh_conversation_summary_from_resident();
+    }
+
+    fn refresh_conversation_summary_from_resident(&mut self) {
+        for item in &self.items {
+            match item {
+                ThreadItem::Message(message)
+                    if message.sequence >= self.last_message_sequence_summary =>
+                {
+                    self.last_message_sequence_summary = message.sequence;
+                    self.conversation_activity_at_summary = Some(message.created_at.clone());
+                    self.conversation_working = match message.role {
+                        MessageRole::User => message.seen_at.is_some(),
+                        MessageRole::Agent => message.still_working,
+                    };
+                }
+                ThreadItem::Event(event)
+                    if self.conversation_working
+                        && event.sequence > self.last_message_sequence_summary
+                        && event.event.class() == EventClass::Attention =>
+                {
+                    self.conversation_activity_at_summary = Some(event.created_at.clone());
+                    self.conversation_working = false;
+                }
+                _ => {}
+            }
+            if item.attention_reason().is_some() {
+                self.last_attention_sequence_summary =
+                    self.last_attention_sequence_summary.max(item.sequence());
+            }
+        }
+    }
+
+    /// Install the durable/indexed summary read alongside a stored tail.
+    pub fn adopt_conversation_summary(
+        &mut self,
+        last_message_sequence: u64,
+        last_attention_sequence: u64,
+        activity_at: Option<String>,
+        working: bool,
+    ) {
+        self.last_message_sequence_summary = last_message_sequence;
+        self.last_attention_sequence_summary = last_attention_sequence;
+        self.conversation_activity_at_summary = activity_at;
+        self.conversation_working = working;
+        self.refresh_conversation_summary_from_resident();
     }
 
     fn next(&mut self) -> u64 {
@@ -2129,6 +2189,19 @@ impl Thread {
             selected_options: Vec::new(),
             answers_options_of: None,
         }));
+        self.last_message_sequence_summary = sequence;
+        self.conversation_activity_at_summary = self
+            .items
+            .last()
+            .map(ThreadItem::created_at)
+            .map(str::to_string);
+        self.conversation_working = match role {
+            MessageRole::User => false,
+            MessageRole::Agent => still_working,
+        };
+        if role == MessageRole::Agent && !still_working {
+            self.last_attention_sequence_summary = sequence;
+        }
         id
     }
 
@@ -2159,6 +2232,9 @@ impl Thread {
                 message.updated_sequence = self.next_sequence;
                 unread.push(message.clone());
             }
+        }
+        if !unread.is_empty() {
+            self.conversation_working = true;
         }
         unread
     }
@@ -2214,13 +2290,21 @@ impl Thread {
             None,
             &self.scope,
         );
+        let now = now.into();
+        if self.conversation_working && event.class() == EventClass::Attention {
+            self.conversation_activity_at_summary = Some(now.clone());
+            self.conversation_working = false;
+        }
         let sequence = self.next();
+        if event.class() == EventClass::Attention {
+            self.last_attention_sequence_summary = sequence;
+        }
         self.items.push(ThreadItem::Event(ThreadEvent {
             id: format!("event-{sequence}"),
             sequence,
             updated_sequence: 0,
             event,
-            created_at: now.into(),
+            created_at: now,
             summary,
             outcome: None,
             session_id,
@@ -2588,11 +2672,10 @@ impl Thread {
         None
     }
 
-    /// When the last thing on this conversation was said or happened.
-    ///
-    /// One of the three clocks the inbox's "last activity" is the latest of
-    /// (the others being the checkout's files and the agent's terminal), and
-    /// the cheapest: items are appended in order, so it is the tail.
+    /// When the newest resident item was created. This is conversation-detail
+    /// metadata, not the inbox activity clock: tool and lifecycle events count
+    /// here, while [`conversation_activity_at`](Self::conversation_activity_at)
+    /// deliberately excludes them.
     pub fn last_item_at(&self) -> Option<&str> {
         self.items.last().map(ThreadItem::created_at)
     }
@@ -2659,19 +2742,40 @@ impl Thread {
     }
 
     /// The creation sequence of the newest item here that needed the human, or
-    /// 0 when nothing ever has — the line a dismissal is measured against.
+    /// 0 when nothing ever has.
     ///
     /// Creation sequence, for the same reason [`unread_since`](Self::unread_since)
     /// reads it: marking a message seen bumps its `updated_sequence` and that is
     /// not the conversation speaking again. A status-only stretch after a
     /// dismissal leaves the row cleared, however long it runs.
     pub fn last_attention_sequence(&self) -> u64 {
-        self.items
-            .iter()
-            .rev()
-            .find(|item| item.attention_reason().is_some())
-            .map(ThreadItem::sequence)
-            .unwrap_or(0)
+        self.last_attention_sequence_summary.max(
+            self.items
+                .iter()
+                .rev()
+                .find(|item| item.attention_reason().is_some())
+                .map(ThreadItem::sequence)
+                .unwrap_or(0),
+        )
+    }
+
+    /// The newest user or agent message sequence. Tool and lifecycle events
+    /// never cross a message-based dismissal line.
+    pub fn last_message_sequence(&self) -> u64 {
+        self.last_message_sequence_summary.max(
+            self.items
+                .iter()
+                .rev()
+                .find(|item| matches!(item, ThreadItem::Message(_)))
+                .map(ThreadItem::sequence)
+                .unwrap_or(0),
+        )
+    }
+
+    /// The latest time somebody spoke, extended to the instant an in-flight
+    /// turn stopped when an attention event ended it.
+    pub fn conversation_activity_at(&self) -> Option<&str> {
+        self.conversation_activity_at_summary.as_deref()
     }
 
     /// The items this query names, newest first, bounded by its limit.
@@ -5196,6 +5300,75 @@ mod tests {
             "2026-07-24T12:02:00Z",
         );
         thread
+    }
+
+    #[test]
+    fn conversation_summary_tracks_speech_and_only_an_in_flight_stop() {
+        let mut thread = Thread::new("plan-1");
+        thread.post_user("please investigate", None, "2026-09-08T10:00:00Z");
+        let user_sequence = thread.last_message_sequence();
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-09-08T10:00:00Z")
+        );
+
+        thread.read_unread("2026-09-08T10:01:00Z");
+        assert_eq!(thread.last_message_sequence(), user_sequence);
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-09-08T10:00:00Z")
+        );
+
+        thread.post_agent_progress("still working", None, "2026-09-08T10:02:00Z");
+        let progress_sequence = thread.last_message_sequence();
+        assert!(progress_sequence > user_sequence);
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-09-08T10:02:00Z")
+        );
+
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            None,
+            None,
+            None,
+            "2026-09-08T10:03:00Z",
+        );
+        assert_eq!(thread.last_message_sequence(), progress_sequence);
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-09-08T10:02:00Z")
+        );
+
+        thread.push_event(
+            ThreadEventKind::Blocked,
+            None,
+            None,
+            None,
+            "2026-09-08T10:04:00Z",
+        );
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-09-08T10:04:00Z")
+        );
+
+        thread.push_event(
+            ThreadEventKind::RunFailed,
+            None,
+            None,
+            None,
+            "2026-09-08T10:05:00Z",
+        );
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-09-08T10:04:00Z")
+        );
+        thread.normalize("plan-1");
+        thread.normalize("plan-1");
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-09-08T10:04:00Z")
+        );
     }
 
     #[test]

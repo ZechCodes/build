@@ -2620,6 +2620,8 @@ impl AppState {
         self.restore_plans_before_runs(stored.plans, stored.runs)?;
         self.seed_conversation_attention_sequences();
         self.seed_anchors_for_records_without_one();
+        self.migrate_legacy_dismissals();
+        self.close_recovered_working_intervals();
         self.resume_stored_issue_schedulers()
     }
 
@@ -3300,6 +3302,15 @@ impl AppState {
             finish_open_session(thread, &now_rfc3339())
         });
         self.close_turn_of_dead_agent(owner, agent_id);
+        if !self.entity_agents_working(owner)
+            && self
+                .attention
+                .entry(owner.to_string())
+                .or_default()
+                .observe_working(false, &now_rfc3339())
+        {
+            self.persist_attention();
+        }
         // Agent liveness is feed state, and it is the one kind that moves with
         // no verb behind it: the pump learned a harness died. Noted here rather
         // than left to the mutation tails above, which do nothing at all for an
@@ -4001,6 +4012,47 @@ impl AppState {
                 entry
             }).collect::<Vec<_>>(),
         })
+    }
+
+    fn observe_conversation_working(&mut self, entity_id: &str, now: &str) {
+        let working = self.entity_effectively_working(entity_id);
+        self.observe_working_state(entity_id, working, now);
+    }
+
+    fn entity_effectively_working(&self, entity_id: &str) -> bool {
+        let Ok(roster) = self.entity_agents(entity_id) else {
+            return false;
+        };
+        let root = self.entity_agent_root(entity_id).ok();
+        let entity_thread = self.entity_conversation(entity_id);
+        roster.iter().any(|agent| {
+            let protocol_working = root.as_ref().and_then(|root| {
+                let tab = self.tabs.get(&TabKey::agent(root, &agent.id))?;
+                tab.session
+                    .status_changed()
+                    .is_some()
+                    .then(|| agent_is_working(tab))
+            });
+            protocol_working.unwrap_or_else(|| {
+                let thread = if roster.is_primary(&agent.id) {
+                    entity_thread.unwrap_or(&agent.thread)
+                } else {
+                    &agent.thread
+                };
+                thread.working_since().is_some()
+            })
+        })
+    }
+
+    fn observe_working_state(&mut self, entity_id: &str, working: bool, now: &str) {
+        if self
+            .attention
+            .entry(entity_id.to_string())
+            .or_default()
+            .observe_working(working, now)
+        {
+            self.persist_attention();
+        }
     }
 
     /// Write the config as it stands, for a verb that has already put its
@@ -5201,9 +5253,13 @@ impl AppState {
         // is the implementation's first — is one rule, and it is
         // `edit_agent_conversation`'s.
         let now = now_rfc3339();
-        self.edit_agent_conversation(entity_id, agent_id, |thread, artifact| {
+        let result = self.edit_agent_conversation(entity_id, agent_id, |thread, artifact| {
             apply_thread_action(thread, artifact, action, &now)
-        })
+        });
+        if result.is_ok() {
+            self.observe_conversation_working(entity_id, &now);
+        }
+        result
     }
 
     /// Answer a history query out of the conversations this agent may read.
@@ -6136,6 +6192,65 @@ impl AppState {
     /// own. The first pair is the roster's first agent — the only one the
     /// pre-agent dismissal folds onto.
     fn dismissal_lines(&self, entity_id: &str) -> Vec<(String, u64)> {
+        let Ok(roster) = self.entity_agents(entity_id) else {
+            return Vec::new();
+        };
+        let entity_thread = self.entity_conversation(entity_id);
+        roster
+            .iter()
+            .map(|agent| {
+                let thread = if roster.is_primary(&agent.id) {
+                    entity_thread.unwrap_or(&agent.thread)
+                } else {
+                    &agent.thread
+                };
+                (agent.id.clone(), thread.last_message_sequence())
+            })
+            .collect()
+    }
+
+    fn migrate_legacy_dismissals(&mut self) {
+        let entity_ids: Vec<String> = self.plans.keys().chain(self.runs.keys()).cloned().collect();
+        let mut changed = false;
+        for id in entity_ids {
+            let Some(attention) = self.attention.get(&id) else {
+                continue;
+            };
+            if attention.dismissal_tracks_messages {
+                continue;
+            }
+            let message_lines = self.dismissal_lines(&id);
+            let old_lines = self.legacy_dismissal_lines(&id);
+            let was_still_dismissed = !old_lines.is_empty()
+                && old_lines.iter().enumerate().all(
+                    |(position, (agent_id, latest_attention_sequence))| {
+                        attention.is_dismissed_for(
+                            agent_id,
+                            position == 0,
+                            *latest_attention_sequence,
+                        )
+                    },
+                );
+            changed |= self.attention.get_mut(&id).is_some_and(|attention| {
+                attention.migrate_dismissal_to_messages(&message_lines, was_still_dismissed)
+            });
+        }
+        if changed {
+            self.persist_attention();
+        }
+    }
+
+    fn close_recovered_working_intervals(&mut self) {
+        let mut changed = false;
+        for attention in self.attention.values_mut() {
+            changed |= attention.close_recovered_working_interval();
+        }
+        if changed {
+            self.persist_attention();
+        }
+    }
+
+    fn legacy_dismissal_lines(&self, entity_id: &str) -> Vec<(String, u64)> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
@@ -8688,16 +8803,14 @@ impl AppState {
     /// stands behind.
     ///
     /// A row with an entity behind it is named by that entity's id, and the
-    /// line is drawn at the end of its conversation: the row stays out of the
-    /// list while nothing attention-class arrives past it.
+    /// line is drawn at the end of every owned conversation: the row stays out
+    /// of the list until a user or agent sends another message.
     ///
     /// A row with no entity — a project's primary checkout, a branch checked
     /// out somewhere Build never cut — is named by what it IS:
     /// `{ project_id, branch }`, or `{ project_id, primary: true }` for the
-    /// checkout that is the repository. It has no conversation, so its line is
-    /// drawn in the only language it speaks: the commit it is sitting on. It
-    /// comes back when its HEAD moves, or when adoption turns it into an entity
-    /// that speaks for itself.
+    /// checkout that is the repository. With no conversation, unrelated git
+    /// changes cannot revive it; adoption gives it a conversation and identity.
     ///
     /// There is no un-dismiss verb because there is nothing to undo: the next
     /// thing the work says brings the row back by itself, which is the whole
@@ -8737,6 +8850,7 @@ impl AppState {
         // the first agent says nothing about where the second one has got to.
         let lines = self.dismissal_lines(&entity_id);
         let attention = self.attention.entry(entity_id.clone()).or_default();
+        attention.dismiss_messages();
         for (agent_id, last_attention_sequence) in lines {
             attention.dismiss_agent_through(&agent_id, last_attention_sequence);
         }
@@ -8893,19 +9007,32 @@ impl AppState {
     /// Forget what was cleared against the entity-less rows a checkout has just
     /// stopped being. These records hold a dismissal and nothing else, so
     /// dropping the record IS forgetting the dismissal.
-    fn forget_row_dismissals(&mut self, project_id: &str, branch: Option<&str>, primary: bool) {
+    fn take_row_dismissal(
+        &mut self,
+        project_id: &str,
+        branch: Option<&str>,
+        primary: bool,
+    ) -> (bool, Option<String>) {
         let keys: Vec<String> = branch
             .map(|branch| crate::attention::branch_row_key(project_id, branch))
             .into_iter()
             .chain(primary.then(|| crate::attention::primary_row_key(project_id)))
             .collect();
-        let forgot = keys
+        let removed: Vec<crate::attention::Attention> = keys
             .iter()
-            .filter(|key| self.attention.remove(*key).is_some())
-            .count();
-        if forgot > 0 {
+            .filter_map(|key| self.attention.remove(key))
+            .collect();
+        let dismissed = removed
+            .iter()
+            .any(|attention| attention.is_dismissed_at_head(None));
+        let first_observed_at = removed
+            .iter()
+            .filter_map(|attention| attention.first_observed_at.clone())
+            .min();
+        if !removed.is_empty() {
             self.persist_attention();
         }
+        (dismissed, first_observed_at)
     }
 
     /// Whether an entity-less row has been cleared out of the inbox: the human
@@ -9221,6 +9348,27 @@ impl AppState {
                  session is running"
             ));
         }
+        let removed_agent_revived_clear = self
+            .entity_agents(&entity_id)
+            .ok()
+            .and_then(|roster| {
+                let position = roster.iter().position(|agent| agent.id == agent_id)?;
+                let agent = roster.by_id(&agent_id)?;
+                let thread = if roster.is_primary(&agent.id) {
+                    self.entity_conversation(&entity_id)
+                        .unwrap_or(&agent.thread)
+                } else {
+                    &agent.thread
+                };
+                let attention = self.attention.get(&entity_id)?;
+                let sequence = thread.last_message_sequence();
+                let crossed = match attention.dismissed_line_for(&agent.id, position == 0) {
+                    Some(line) => sequence > line,
+                    None => sequence > 0 && attention.has_message_dismissal(),
+                };
+                Some(crossed)
+            })
+            .unwrap_or(false);
         let mut active = self.take_run(&entity_id)?;
         let removed = match active.agents.remove(&agent_id) {
             Ok(removed) => removed,
@@ -9236,6 +9384,9 @@ impl AppState {
             // Nothing prunes cursors by agent, so one left behind here would
             // outlive the daemon it was written in.
             attention.agent_read_sequences.remove(&removed.id);
+            if removed_agent_revived_clear {
+                attention.invalidate_dismissal();
+            }
         }
         self.persist_attention();
         persisted?;
@@ -14523,6 +14674,8 @@ impl AppState {
         external_worktrees: &[Value],
         primary_changes: &[Value],
     ) -> Vec<Value> {
+        self.observe_conversationless_rows(external_worktrees, primary_changes);
+        self.reconcile_crossed_dismissal_lines();
         let run_ids: Vec<String> = self
             .runs
             .iter()
@@ -14569,6 +14722,63 @@ impl AppState {
         items
     }
 
+    fn reconcile_crossed_dismissal_lines(&mut self) {
+        let entity_ids: Vec<String> = self.plans.keys().chain(self.runs.keys()).cloned().collect();
+        let crossed: Vec<String> = entity_ids
+            .into_iter()
+            .filter(|id| {
+                let Some(attention) = self.attention.get(id) else {
+                    return false;
+                };
+                attention.dismissal_tracks_messages
+                    && self.dismissal_lines(id).iter().enumerate().any(
+                        |(position, (agent_id, sequence))| match attention
+                            .dismissed_line_for(agent_id, position == 0)
+                        {
+                            Some(line) => *sequence > line,
+                            None => *sequence > 0 && attention.has_message_dismissal(),
+                        },
+                    )
+            })
+            .collect();
+        if crossed.is_empty() {
+            return;
+        }
+        for id in crossed {
+            if let Some(attention) = self.attention.get_mut(&id) {
+                attention.invalidate_dismissal();
+            }
+        }
+        self.persist_attention();
+    }
+
+    fn observe_conversationless_rows(
+        &mut self,
+        external_worktrees: &[Value],
+        primary_changes: &[Value],
+    ) {
+        let now = now_rfc3339();
+        let primary_keys = primary_changes.iter().filter_map(|entry| {
+            entry["project_id"]
+                .as_str()
+                .map(crate::attention::primary_row_key)
+        });
+        let external_keys = external_worktrees.iter().filter_map(|entry| {
+            let project_id = entry["project_id"].as_str()?;
+            Some(match entry["branch"].as_str() {
+                Some(branch) => crate::attention::branch_row_key(project_id, branch),
+                None => entry["worktree_id"].as_str()?.to_string(),
+            })
+        });
+        let mut changed = false;
+        for key in primary_keys.chain(external_keys) {
+            changed |= self.attention.entry(key).or_default().observe(&now);
+        }
+        if changed {
+            self.persist_attention();
+        }
+    }
+
     /// The branch row for a run: the source that knows the most, because it is
     /// the only one that carries a lifecycle, a conversation and agents.
     fn branch_candidate_from_run(
@@ -14582,7 +14792,10 @@ impl AppState {
         let sync = WorkItemStat::from_run_stat(stat);
         let thread = self.conversation_thread_for_run(active);
         let unread = self.unread_for(run_id, thread);
-        let working_since = self.working_since_for(run_id, thread);
+        let working = self.entity_agents_working(run_id);
+        let working_since = working
+            .then(|| self.working_since_for(run_id, thread))
+            .flatten();
         let primary = self.owns_primary_checkout(run_id, active);
         let title = if active.run.goal.trim().is_empty() {
             branch.clone()
@@ -14599,7 +14812,7 @@ impl AppState {
             "unread": unread.is_unread(),
             "unread_count": unread.count,
             "unread_reason": unread.reason,
-            "working": active.run.state.is_working() || working_since.is_some(),
+            "working": working,
             "working_time": working_time_json(working_since.as_deref()),
             "agents": self.agent_digests(run_id, DigestScope::List),
             "stat": sync.to_json(),
@@ -14607,12 +14820,7 @@ impl AppState {
             // Where this row sits in the inbox, and how long it has been quiet.
             // Every row carries both, whatever it was read off.
             "anchor": self.anchor_of(run_id),
-            "last_activity": self.last_activity_of(
-                Some(run_id),
-                thread,
-                Some(&active.worktree.path),
-                sync.head_committed_at.as_deref(),
-            ),
+            "last_activity": self.last_activity_of(Some(run_id), thread),
             // Done deletes the branch and its records. It is offered whenever
             // there is something to delete: the primary checkout is the
             // repository, so there is nothing to file away and everything to
@@ -14627,7 +14835,7 @@ impl AppState {
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the work speaks again. The client
             // hides the row on it; nothing here changes because of it.
-            "dismissed": self.is_dismissed(run_id, &unread),
+            "dismissed": self.is_dismissed(run_id),
             "worktree_path": active.worktree.path.display().to_string(),
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
             "run_id": run_id,
@@ -14677,12 +14885,9 @@ impl AppState {
             // dates itself by its own last commit, which is the only history it
             // has. Same for its last activity, plus whatever its agent painted.
             "anchor": sync.head_committed_at,
-            "last_activity": self.last_activity_of(
-                None,
-                None,
-                Some(&project.repo_path),
-                sync.head_committed_at.as_deref(),
-            ),
+            "last_activity": self.attention
+                .get(&crate::attention::primary_row_key(&project_id))
+                .and_then(|attention| attention.first_observed_at.clone()),
             // The repository is not a worktree to file away.
             "can_finish": false,
             "finish": { "warnings": [] },
@@ -14749,20 +14954,19 @@ impl AppState {
                 .get(&worktree_id)
                 .and_then(|attention| attention.anchor_at.clone())
                 .or_else(|| sync.head_committed_at.clone()),
-            "last_activity": self.last_activity_of(
-                None,
-                None,
-                Some(std::path::Path::new(&path)),
-                sync.head_committed_at.as_deref(),
-            ),
+            "last_activity": self.attention
+                .get(&match &branch {
+                    Some(branch) => crate::attention::branch_row_key(&project_id, branch),
+                    None => worktree_id.clone(),
+                })
+                .and_then(|attention| attention.first_observed_at.clone()),
             "can_finish": true,
             "finish": { "warnings": sync.finish_warnings_json(
                 branch.as_deref().unwrap_or("this checkout"),
             ) },
             "muted": self.is_muted(&worktree_id),
-            // A checkout has no conversation, so everything it says it says
-            // through git: it stays cleared until it gets a commit, or until
-            // adoption turns it into a run that speaks for itself.
+            // A checkout has no conversation, so git changes cannot revive a
+            // clear. Adoption turns it into a run that can speak for itself.
             "dismissed": self.row_is_dismissed(
                 &match &branch {
                     Some(branch) => crate::attention::branch_row_key(&project_id, branch),
@@ -14798,7 +15002,10 @@ impl AppState {
         let active = self.plans.get(issue_id).expect("caller listed this issue");
         let conversation = &active.agents.sole_thread();
         let unread = self.unread_for(issue_id, Some(conversation));
-        let working_since = self.working_since_for(issue_id, Some(conversation));
+        let working = self.entity_agents_working(issue_id);
+        let working_since = working
+            .then(|| self.working_since_for(issue_id, Some(conversation)))
+            .flatten();
         let implementation = self.current_issue_implementation(issue_id);
         // The implementation still in flight, which is narrower than the newest
         // one: a merged or abandoned branch has stopped speaking for its issue,
@@ -14814,7 +15021,7 @@ impl AppState {
             "unread": unread.is_unread(),
             "unread_count": unread.count,
             "unread_reason": unread.reason,
-            "working": active.plan.state.is_working() || working_since.is_some(),
+            "working": working,
             "working_time": working_time_json(working_since.as_deref()),
             "agents": self.agent_digests(issue_id, DigestScope::List),
             "stat": Value::Null,
@@ -14822,7 +15029,7 @@ impl AppState {
             "anchor": self.anchor_of(issue_id),
             // An issue has no checkout and no commits of its own: its
             // conversation is the whole of its activity.
-            "last_activity": self.last_activity_of(Some(issue_id), Some(active.agents.sole_thread()), None, None),
+            "last_activity": self.last_activity_of(Some(issue_id), Some(active.agents.sole_thread())),
             // Done on an issue archives it, and archiving is never refused.
             // What it costs — an issue nothing was ever built for — is a
             // warning the client confirms through.
@@ -14832,7 +15039,7 @@ impl AppState {
             ) },
             "muted": self.is_muted(issue_id),
             // See the branch row: dismissed until its conversation asks again.
-            "dismissed": self.is_dismissed(issue_id, &unread),
+            "dismissed": self.is_dismissed(issue_id),
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": implementation.map(|run| run.run.id.0.clone()),
@@ -14879,34 +15086,32 @@ impl AppState {
             .is_some_and(|attention| attention.muted)
     }
 
-    /// Whether this row has been cleared out of the inbox: the human dismissed
-    /// it, and NO agent on it has needed them since.
+    /// Whether this row was cleared and no user or agent has spoken on any of
+    /// its conversations since.
     ///
     /// Every agent has to still be cleared, which is the complement of the
     /// badge above it: `unread_for` unions unread across the roster, so a row
     /// is out of the list only while nothing anywhere on it has spoken past
     /// the line the human drew.
     ///
-    /// Unread beats dismissed. News the human has not read is news, however
-    /// quiet they told the row to be — and it is the same fact that revives a
-    /// dismissed row the moment an agent hands its turn back.
-    fn is_dismissed(&self, entity_id: &str, unread: &crate::thread::UnreadSummary) -> bool {
-        if unread.is_unread() {
-            return false;
-        }
+    fn is_dismissed(&self, entity_id: &str) -> bool {
         let Some(attention) = self.attention.get(entity_id) else {
             return false;
         };
         let lines = self.dismissal_lines(entity_id);
         // A row with no roster behind it holds no conversation to have been
         // cleared: it is dismissed at a commit instead, by `row_is_dismissed`.
-        !lines.is_empty()
-            && lines
-                .iter()
-                .enumerate()
-                .all(|(position, (agent_id, latest_attention_sequence))| {
-                    attention.is_dismissed_for(agent_id, position == 0, *latest_attention_sequence)
-                })
+        attention.has_message_dismissal()
+            && (lines.is_empty()
+                || lines.iter().enumerate().all(
+                    |(position, (agent_id, latest_attention_sequence))| {
+                        attention.is_dismissed_for(
+                            agent_id,
+                            position == 0,
+                            *latest_attention_sequence,
+                        ) || (*latest_attention_sequence == 0 && attention.has_message_dismissal())
+                    },
+                ))
     }
 
     /// When this work item's oldest turn still in flight started — how long the
@@ -14944,6 +15149,20 @@ impl AppState {
         self.tabs
             .iter()
             .any(|(key, tab)| key.root == root && key.is_agent() && agent_is_working(tab))
+    }
+
+    fn entity_agents_working(&self, entity_id: &str) -> bool {
+        let Ok(root) = self.entity_agent_root(entity_id) else {
+            return false;
+        };
+        let Ok(roster) = self.entity_agents(entity_id) else {
+            return false;
+        };
+        roster.iter().any(|agent| {
+            self.tabs
+                .get(&TabKey::agent(&root, &agent.id))
+                .is_some_and(agent_is_working)
+        })
     }
 
     /// `branch.get` — resolve `(project_id, branch)` to the work item behind
@@ -15815,52 +16034,50 @@ impl AppState {
         self.persist_attention();
     }
 
-    /// When this work item last did anything, as the Recent section reads it:
-    /// the latest of its files changing, something landing on its conversation,
-    /// and its agent painting. A row is only quiet when all three are.
+    /// When somebody last spoke on this work item, extended through the end of
+    /// its most recent in-flight turn. Git, files, tools and terminal output do
+    /// not make an inbox entry recent.
     ///
     /// Every input is already in hand — no clock here starts new git work.
     fn last_activity_of(
         &self,
         entity_id: Option<&str>,
         conversation: Option<&crate::thread::Thread>,
-        checkout: Option<&std::path::Path>,
-        head_committed_at: Option<&str>,
     ) -> Option<String> {
-        let files_changed_at = entity_id
-            .and_then(|id| self.run_files_changed_at.get(id))
-            .cloned();
-        let conversation_at = conversation
-            .and_then(crate::thread::Thread::last_item_at)
-            .map(str::to_string);
-        let agent_at = checkout.and_then(|root| self.agent_last_painted_at(root));
-        let head_at = head_committed_at.map(str::to_string);
-        [files_changed_at, conversation_at, agent_at, head_at]
-            .into_iter()
-            .flatten()
-            .max()
-    }
-
-    /// When the agent working in this checkout was last heard from, or `None`
-    /// when no agent has ever run there. Read off the session's own quiet
-    /// clock, which is the only record of it — bytes painted for a terminal,
-    /// protocol events read for a session that has none.
-    fn agent_last_painted_at(&self, root: &std::path::Path) -> Option<String> {
-        let root = Self::canonical_root(root);
-        let quiet = self
-            .tabs
-            .iter()
-            .filter(|(key, tab)| {
-                key.root == root
-                    && key.is_agent()
-                    && !matches!(tab.session.status(), AgentStatus::Ended { .. })
-            })
-            .map(|(_, tab)| tab.session.quiet_for())
-            .min()?;
-        let painted = time::OffsetDateTime::now_utc() - quiet;
-        painted
-            .format(&time::format_description::well_known::Rfc3339)
-            .ok()
+        if let Some(id) = entity_id {
+            if let Ok(roster) = self.entity_agents(id) {
+                let entity_thread = self.entity_conversation(id);
+                let conversation_at = roster
+                    .iter()
+                    .filter_map(|agent| {
+                        let thread = if roster.is_primary(&agent.id) {
+                            entity_thread.unwrap_or(&agent.thread)
+                        } else {
+                            &agent.thread
+                        };
+                        thread.conversation_activity_at()
+                    })
+                    .max()
+                    .map(str::to_string);
+                let worked_at = self
+                    .attention
+                    .get(id)
+                    .and_then(|attention| attention.last_worked_at.clone());
+                let first_observed_at = self
+                    .attention
+                    .get(id)
+                    .and_then(|attention| attention.first_observed_at.clone());
+                return conversation_at
+                    .into_iter()
+                    .chain(worked_at)
+                    .max()
+                    .or(first_observed_at)
+                    .or_else(|| Some(self.anchor_of(id)));
+            }
+        }
+        conversation
+            .and_then(crate::thread::Thread::conversation_activity_at)
+            .map(str::to_string)
     }
 
     fn current_issue_implementation(&self, issue_id: &str) -> Option<&ActiveRun> {
@@ -15947,7 +16164,7 @@ impl AppState {
             "unread_reason": unread.reason,
             // See `run_view`.
             "muted": self.is_muted(plan_id),
-            "dismissed": self.is_dismissed(plan_id, &unread),
+            "dismissed": self.is_dismissed(plan_id),
             "attention": self.attention_json(plan_id),
             "summary": active.last_summary,
             "last_error": active.last_error,
@@ -16087,7 +16304,7 @@ impl AppState {
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the conversation asks again. Mute
             // silences a row that stays; this one is not in the list at all.
-            "dismissed": self.is_dismissed(run_id, &unread),
+            "dismissed": self.is_dismissed(run_id),
             "attention": self.attention_json(run_id),
             "branch": active.worktree.branch(),
             "base_branch": active.worktree.base_branch,
@@ -18239,11 +18456,19 @@ impl RunAdopted {
         // run is cleared through its conversation: whatever was dismissed
         // against the entity-less row is spent, and must not come back with the
         // bare row if the run is ever released.
-        state.forget_row_dismissals(
+        let (was_dismissed, first_observed_at) = state.take_row_dismissal(
             &self.project_id,
             Some(&self.checkout.branch),
             self.scope == AdoptionScope::PrimaryCheckout,
         );
+        if was_dismissed || first_observed_at.is_some() {
+            let attention = state.attention.entry(self.run_id.clone()).or_default();
+            attention.first_observed_at = first_observed_at;
+            if was_dismissed {
+                attention.dismiss_messages();
+            }
+            state.persist_attention();
+        }
         state.note_worktree_gone(&self.project_id, &self.checkout.path);
         Ok(active)
     }
@@ -21318,8 +21543,11 @@ fn deliver(
     // before, it now has something to answer for. A tab that closed while the
     // turn was in flight has no clock left to restart — and the turn still
     // travelled, so that is not a delivery failure to report.
-    if let Some(tab) = timer.lock(state).tabs.get_mut(&key) {
+    let now = now_rfc3339();
+    let mut app = timer.lock(state);
+    if let Some(tab) = app.tabs.get_mut(&key) {
         tab.last_delivered_at = Some(std::time::Instant::now());
+        app.observe_working_state(owner, true, &now);
     }
     Ok(Some((wire_id, spawned)))
 }
@@ -21593,7 +21821,69 @@ fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
         screen,
         output.bytes,
     );
-    spawn_activity_pump(state, key, session, output.activity, output.surfaces);
+    let status_changed = session.status_changed();
+    spawn_activity_pump(
+        state,
+        key.clone(),
+        Arc::clone(&session),
+        output.activity,
+        output.surfaces,
+    );
+    spawn_status_pump(state, key, session, status_changed);
+}
+
+fn spawn_status_pump(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    session: Arc<dyn AgentSession>,
+    mut changed: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
+) {
+    let Some(mut changed) = changed.take() else {
+        return;
+    };
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let state = Arc::downgrade(state);
+    let session = Arc::downgrade(&session);
+    tokio::spawn(async move {
+        loop {
+            let snapshot = changed.borrow_and_update().clone();
+            let ended = {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let mut app = state.lock().unwrap();
+                let Some(session) = session.upgrade() else {
+                    return;
+                };
+                let Some((owner, _)) = pumped_agent_of_tab(&app, &key, &session) else {
+                    return;
+                };
+                let working = app.entity_agents_working(&owner);
+                if app
+                    .attention
+                    .entry(owner.clone())
+                    .or_default()
+                    .observe_status(
+                        working,
+                        &snapshot.changed_at,
+                        snapshot.last_worked_at.as_deref(),
+                    )
+                {
+                    app.persist_attention();
+                    app.note_entity_changed(&owner);
+                }
+                matches!(snapshot.status, AgentStatus::Ended { .. })
+            };
+            if ended {
+                return;
+            }
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    });
 }
 
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
@@ -27133,7 +27423,7 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let row = loop {
             let row = feed_row_for_run(&handler, "run-killed");
-            if row["working"] == json!(false) {
+            if row["working"] == json!(false) && row["unread_reason"] == "interrupted" {
                 break row;
             }
             assert!(
@@ -30734,7 +31024,7 @@ mod tests {
         // Adoption is git and records — it speaks to nobody, so it mints no
         // agent. A test about a branch someone is working gives it the one the
         // human's first message would have created.
-        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id.clone() })));
         assert_eq!(added["ok"], true, "{added:?}");
         run_id
     }
@@ -40065,6 +40355,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn adopting_a_cleared_primary_keeps_it_cleared_until_a_message() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let _ = branch_row(&mut state, "main");
+        state.handle(req(
+            "entity.dismiss",
+            json!({ "project_id": project_id.clone(), "primary": true }),
+        ));
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        let run_id = run_id_of(&adopted);
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "adoption is not a message: {row:?}");
+
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(
+            row["dismissed"], true,
+            "adding an agent is not a message: {row:?}"
+        );
+        primary_thread_mut(&mut state.runs.get_mut(&run_id).unwrap().agents).post_user(
+            "please continue",
+            None,
+            now_rfc3339(),
+        );
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
     /// Finishing archives a worktree and removes it. The primary checkout is
     /// the repository; there is nothing to file away and everything to lose.
     #[test]
@@ -44474,6 +44799,7 @@ mod tests {
         log: SessionLog,
         surfaces: Option<AgentSurfaces>,
         watched_surface_revision: Option<tokio::sync::watch::Receiver<u64>>,
+        watched_status: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
         active_model: Option<String>,
     }
 
@@ -44486,6 +44812,7 @@ mod tests {
                 log: SessionLog::default(),
                 surfaces: None,
                 watched_surface_revision: None,
+                watched_status: None,
                 active_model: None,
             }
         }
@@ -44504,6 +44831,14 @@ mod tests {
             watched: tokio::sync::watch::Receiver<u64>,
         ) -> DictatedSession {
             self.watched_surface_revision = Some(watched);
+            self
+        }
+
+        fn watching_status(
+            mut self,
+            watched: tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>,
+        ) -> Self {
+            self.watched_status = Some(watched);
             self
         }
 
@@ -44532,7 +44867,14 @@ mod tests {
             Ok(())
         }
         fn status(&self) -> AgentStatus {
-            self.status
+            self.watched_status
+                .as_ref()
+                .map_or(self.status, |status| status.borrow().status)
+        }
+        fn status_changed(
+            &self,
+        ) -> Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>> {
+            self.watched_status.clone()
         }
         fn quiet_for(&self) -> Duration {
             self.quiet
@@ -47797,6 +48139,93 @@ mod tests {
         key
     }
 
+    #[test]
+    fn a_secondary_agent_keeps_the_entry_working_and_its_stop_is_activity() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-secondary-working",
+            RunState::Building,
+        );
+        let added = state.handle(req(
+            "agent.add",
+            json!({ "entity_id": "run-secondary-working" }),
+        ));
+        let secondary = added["result"]["agent"]["id"].as_str().unwrap();
+        insert_agent_tab(
+            &mut state,
+            &root,
+            "run-secondary-working",
+            secondary,
+            DictatedSession::reporting(AgentStatus::Working),
+        );
+
+        let row = work_item_row_for(&mut state, "run-secondary-working");
+        assert_eq!(row["working"], true, "{row:?}");
+
+        insert_agent_tab(
+            &mut state,
+            &root,
+            "run-secondary-working",
+            secondary,
+            DictatedSession::reporting(AgentStatus::Waiting),
+        );
+        let row = work_item_row_for(&mut state, "run-secondary-working");
+        assert_eq!(row["working"], false, "{row:?}");
+    }
+
+    #[tokio::test]
+    async fn protocol_status_completion_records_activity_without_a_board_poll() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-status-watch",
+            RunState::Building,
+        );
+        let initial = crate::harness::SessionStatusSnapshot::new(AgentStatus::Working);
+        let completed = initial.transition(AgentStatus::Waiting).unwrap();
+        let (status_tx, status_rx) = tokio::sync::watch::channel(initial);
+        let key = insert_agent_tab(
+            &mut app,
+            &root,
+            "run-status-watch",
+            &crate::agent::derived_agent_id("run-status-watch"),
+            DictatedSession::reporting(AgentStatus::Working).watching_status(status_rx),
+        );
+        let session = Arc::clone(&app.tabs[&key].session);
+        let state = app.shared();
+        spawn_status_pump(&state, key, session, Some(status_tx.subscribe()));
+
+        status_tx.send(completed.clone()).unwrap();
+        let recorded = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let matches = state
+                    .lock()
+                    .unwrap()
+                    .attention
+                    .get("run-status-watch")
+                    .and_then(|attention| attention.last_worked_at.as_deref())
+                    == completed.last_worked_at.as_deref();
+                if matches {
+                    break true;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            recorded,
+            "the protocol boundary is persisted without reading the board"
+        );
+    }
+
     /// Whether an agent is live is the same question the pulse asks, one state
     /// further out, and it is now asked the same way: a session that reports
     /// `Ended` is over, whatever a process table would have said about it.
@@ -48068,40 +48497,6 @@ mod tests {
                 .unwrap_or_default()
                 .contains("exit code 9"),
             "the code the session reported explains the crash: {got:?}"
-        );
-    }
-
-    /// A worktree card's "last active" reads the same quiet clock. It was the
-    /// PTY's paint clock and the comment said so; the measurement has not
-    /// moved, but the question is now one every session can answer.
-    #[test]
-    fn a_worktree_card_reads_the_sessions_quiet_clock() {
-        let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        let root = insert_run(
-            &mut state,
-            &repo,
-            dir.path(),
-            "run-card",
-            RunState::Building,
-        );
-        insert_dictated_agent_tab(
-            &mut state,
-            &root,
-            "run-card",
-            DictatedSession::reporting(AgentStatus::Waiting).silent_for(Duration::from_secs(3600)),
-        );
-
-        let active = state
-            .agent_last_painted_at(&root)
-            .expect("an agent has run here");
-        let active =
-            time::OffsetDateTime::parse(&active, &time::format_description::well_known::Rfc3339)
-                .expect("an rfc3339 stamp");
-        let quiet = time::OffsetDateTime::now_utc() - active;
-        assert!(
-            (quiet - time::Duration::hours(1)).abs() < time::Duration::seconds(30),
-            "the card reads the session's own hour of silence, got {quiet}"
         );
     }
 
@@ -48550,8 +48945,8 @@ mod tests {
     // ---- dismiss: a row cleared until the work speaks again -----------------
 
     /// The whole feature: a row the human clears leaves the inbox, stays gone
-    /// while the work only reports progress, and comes back by itself the
-    /// moment the agent asks for something. Nothing un-dismisses it, because
+    /// while only tools run, and comes back by itself the
+    /// moment anybody sends a message. Nothing un-dismisses it, because
     /// nothing has to.
     #[test]
     #[allow(clippy::cognitive_complexity)] // ratchet: dismissing_a_row_clears_it_until_the_work_speaks_again is at 17, threshold 15 — bring it under, then remove
@@ -48587,8 +48982,7 @@ mod tests {
         assert_eq!(entry["unread"], false, "{entry:?}");
         assert_eq!(entry["state"], "review", "{entry:?}");
 
-        // The work carrying on quietly leaves it cleared — that is the point of
-        // measuring the line against attention, not against the last item.
+        // Tool activity leaves it cleared.
         push_to_issue_conversation(&mut state, &issue_id, |thread| {
             thread.push_event(
                 crate::thread::ThreadEventKind::Committed,
@@ -48597,13 +48991,15 @@ mod tests {
                 None,
                 now_rfc3339(),
             );
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "tools do not speak: {row:?}");
+
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
             thread.post_agent_progress("still going", None, now_rfc3339());
         });
         let row = work_item_row_for(&mut state, &run_id);
-        assert_eq!(
-            row["dismissed"], true,
-            "progress is not the work asking: {row:?}"
-        );
+        assert_eq!(row["dismissed"], false, "progress is a message: {row:?}");
 
         // The agent handing its turn back is, and the row is in the list again
         // with nobody having to un-dismiss it.
@@ -48669,6 +49065,17 @@ mod tests {
         let row = work_item_row_for(&mut state, &run_id);
         assert_eq!(row["unread"], true, "{row:?}");
         assert_eq!(row["dismissed"], false, "unread beats dismissed: {row:?}");
+        state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": second_agent }),
+        ));
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(
+            row["dismissed"], false,
+            "removing the speaker cannot restore an invalidated clear: {row:?}"
+        );
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
 
         // Reading what the second agent said is not clearing the row away:
         // nothing the human did draws a line under a conversation they never
@@ -48695,6 +49102,23 @@ mod tests {
         let row = work_item_row_for(&mut state, &run_id);
         assert_eq!(row["unread"], true, "{row:?}");
         assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
+    #[test]
+    fn silent_agent_roster_changes_preserve_a_clear() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "silent roster");
+        state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        assert_eq!(work_item_row_for(&mut state, &run_id)["dismissed"], true);
+        state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": agent_id }),
+        ));
+        assert_eq!(work_item_row_for(&mut state, &run_id)["dismissed"], true);
     }
 
     /// A row cleared before dismissal was per-agent carries one scalar and no
@@ -48729,11 +49153,10 @@ mod tests {
         assert_eq!(row["dismissed"], false, "{row:?}");
     }
 
-    /// News the human has not read keeps the row on the list, whatever they
-    /// told the inbox. Dismissing is not a read cursor and must not act like
-    /// one.
+    /// Clearing draws its line after existing unread messages; those messages
+    /// do not immediately revive it.
     #[test]
-    fn unread_beats_dismissed() {
+    fn old_unread_does_not_beat_a_newer_dismissal() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (issue_id, run_id) = planned_run_in_review(&mut state, "still asking");
@@ -48746,7 +49169,7 @@ mod tests {
 
         let row = work_item_row_for(&mut state, &run_id);
         assert_eq!(row["unread"], true, "{row:?}");
-        assert_eq!(row["dismissed"], false, "{row:?}");
+        assert_eq!(row["dismissed"], true, "{row:?}");
         assert_eq!(
             row["unread_reason"], "agent_message",
             "the question is still waiting, and still says so: {row:?}"
@@ -48779,8 +49202,7 @@ mod tests {
         assert_eq!(row["muted"], true, "dismissing does not unsilence: {row:?}");
         assert_eq!(row["dismissed"], true, "{row:?}");
 
-        // Unmuting shows exactly what was waiting — and what was waiting is
-        // news, so the row is back in the list with it.
+        // Unmuting restores the unread badge but does not itself send a message.
         state.handle(req(
             "entity.mute",
             json!({ "entity_id": run_id, "muted": false }),
@@ -48788,7 +49210,7 @@ mod tests {
         let row = work_item_row_for(&mut state, &run_id);
         assert_eq!(row["muted"], false, "{row:?}");
         assert_eq!(row["unread"], true, "{row:?}");
-        assert_eq!(row["dismissed"], false, "{row:?}");
+        assert_eq!(row["dismissed"], true, "{row:?}");
     }
 
     /// A row cleared away must still be cleared after a restart: one that came
@@ -48917,10 +49339,9 @@ mod tests {
     }
 
     /// The primary checkout is the project's own row: it has no entity, no
-    /// conversation and nothing to file away, and it is cleared until the
-    /// project has something new to say.
+    /// conversation and nothing to file away, so commits cannot revive it.
     #[test]
-    fn clearing_the_primary_row_holds_until_the_project_commits() {
+    fn clearing_the_primary_row_holds_across_project_commits() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
@@ -48941,7 +49362,7 @@ mod tests {
 
         commit_in(&repo, "landed");
         let row = branch_row(&mut state, "main");
-        assert_eq!(row["dismissed"], false, "{row:?}");
+        assert_eq!(row["dismissed"], true, "{row:?}");
     }
 
     /// Clearing one row clears one row. Two projects on the same branch name
@@ -53037,6 +53458,8 @@ mod tests {
         adopted_run(&mut state, &repo, dir.path(), "feature-counted");
         let worktree = dir.path().join("feature-counted");
         let before = branch_row(&mut state, "feature-counted")["stat"].clone();
+        let activity_before_commit =
+            branch_row(&mut state, "feature-counted")["last_activity"].clone();
 
         std::fs::write(worktree.join("one.txt"), "a\nb\n").unwrap();
         std::fs::write(worktree.join("two.txt"), "c\n").unwrap();
@@ -53076,9 +53499,9 @@ mod tests {
             last_activity.as_bytes()[0].is_ascii_digit(),
             "an RFC 3339 instant: {last_activity}"
         );
-        assert!(
-            last_activity > hours_ago(1).as_str(),
-            "the commit just landed: {last_activity}"
+        assert_eq!(
+            published["last_activity"], activity_before_commit,
+            "commits are not inbox activity"
         );
     }
 

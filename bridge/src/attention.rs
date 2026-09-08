@@ -149,9 +149,8 @@ pub struct Attention {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub dismissed_through: u64,
     /// How far into each AGENT's conversation the human has told the inbox to
-    /// stop showing the row. The row stays out of the list until something
-    /// attention-class arrives past one of these lines — which is why there is
-    /// no un-dismiss: the work speaking again is what brings it back.
+    /// stop showing the row. The row stays cleared until a user or agent sends
+    /// a message past one of these lines.
     ///
     /// Per agent because sequences are: every agent numbers its own
     /// conversation from 1, so one number could never say where the human had
@@ -161,14 +160,31 @@ pub struct Attention {
     /// left out, because clearing the row IS drawing its line.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agent_dismissed_through: HashMap<String, u64>,
-    /// The commit a row with no conversation was sitting on when the human
-    /// cleared it. A bare checkout and a project's primary checkout hold no
-    /// conversation to draw a line in, so their line is drawn in git instead:
-    /// the row stays out of the inbox until its HEAD moves. `None` = never
-    /// cleared this way; `Some("")` = cleared while its history could not be
-    /// read at all.
+    /// Whether the dismissal lines above use conversation-message sequences.
+    /// Records written before this flag used attention-only sequences; boot
+    /// migrates those lines to the messages present when the old clear loads.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dismissal_tracks_messages: bool,
+    /// Entry-wide clear latch. Agent roster changes never move it; only a
+    /// subsequent message invalidates it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dismissal_active: bool,
+    /// Legacy identity payload for a cleared row with no conversation. The
+    /// commit is retained for compatibility but no longer controls revival.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed_at_head: Option<String>,
+    /// When a conversation-less row first appeared in a scan. This gives a
+    /// new checkout the same 24-hour grace as an entity without treating its
+    /// commit or files as activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_observed_at: Option<String>,
+    /// A live working interval observed by the board. Kept across restart so a
+    /// daemon that exits mid-turn can close the interval when it comes back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_observed_at: Option<String>,
+    /// The end of the most recently observed live working interval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_worked_at: Option<String>,
     /// Where this entity sits in the inbox (RFC3339): the moment the user took
     /// it on. Seeded at creation and moved only by
     /// [`note_user_message`](Self::note_user_message). `None` = never seeded,
@@ -358,6 +374,13 @@ impl Attention {
             .entry(agent_id.to_string())
             .or_default();
         *line = (*line).max(last_attention_sequence);
+        self.dismissal_tracks_messages = true;
+        self.dismissal_active = true;
+    }
+
+    pub fn dismiss_messages(&mut self) {
+        self.dismissal_tracks_messages = true;
+        self.dismissal_active = true;
     }
 
     /// The line one agent's conversation was cleared through, or `None` for an
@@ -399,22 +422,112 @@ impl Attention {
             .is_some_and(|line| line >= latest_attention_sequence)
     }
 
-    /// Take a row with no conversation out of the inbox until its history moves
-    /// past `head` — the commit it is sitting on at this moment.
-    ///
-    /// A row whose HEAD cannot be read is still cleared: an empty line is a
-    /// line, and the first commit anyone can read brings the row back.
+    /// Persist the legacy commit payload for a cleared conversation-less row.
     pub fn dismiss_at_head(&mut self, head: Option<&str>) {
         self.dismissed_at_head = Some(head.unwrap_or_default().to_string());
     }
 
-    /// Whether that row is still cleared: the human dismissed it, and it is
-    /// sitting on the commit they left it on. A new commit brings it back on
-    /// its own — the same rule [`is_dismissed_for`](Self::is_dismissed_for)
-    /// applies to a conversation, said in the only language a bare checkout
-    /// speaks.
+    pub fn observe(&mut self, now: &str) -> bool {
+        if self.first_observed_at.is_some() {
+            return false;
+        }
+        self.first_observed_at = Some(now.to_string());
+        true
+    }
+
+    pub fn observe_working(&mut self, working: bool, now: &str) -> bool {
+        match (working, self.working_observed_at.is_some()) {
+            (true, false) => {
+                self.working_observed_at = Some(now.to_string());
+                true
+            }
+            (false, true) => {
+                self.working_observed_at = None;
+                self.advance_last_worked_at(now);
+                true
+            }
+            (true, true) => false,
+            _ => false,
+        }
+    }
+
+    /// Close a working marker recovered after a restart at the last durable
+    /// lower bound; the process cannot claim it observed a later stop.
+    pub fn close_recovered_working_interval(&mut self) -> bool {
+        let Some(started_at) = self.working_observed_at.take() else {
+            return false;
+        };
+        self.advance_last_worked_at(&started_at);
+        true
+    }
+
+    pub fn observe_status(
+        &mut self,
+        working: bool,
+        changed_at: &str,
+        last_worked_at: Option<&str>,
+    ) -> bool {
+        let mut changed = self.observe_working(working, changed_at);
+        if let Some(completed_at) = last_worked_at {
+            changed |= self.advance_last_worked_at(completed_at);
+        }
+        changed
+    }
+
+    fn advance_last_worked_at(&mut self, at: &str) -> bool {
+        let advances = self
+            .last_worked_at
+            .as_deref()
+            .and_then(parse)
+            .zip(parse(at))
+            .is_none_or(|(previous, current)| current > previous);
+        if advances {
+            self.last_worked_at = Some(at.to_string());
+        }
+        advances
+    }
+
+    /// Whether a conversation-less row was cleared. `head` remains in the
+    /// signature for stored compatibility but does not control revival.
     pub fn is_dismissed_at_head(&self, head: Option<&str>) -> bool {
-        self.dismissed_at_head.as_deref() == Some(head.unwrap_or_default())
+        let _ = head;
+        self.dismissed_at_head.is_some()
+    }
+
+    /// Upgrade an attention-sequence dismissal without reviving the entry.
+    pub fn migrate_dismissal_to_messages(
+        &mut self,
+        lines: &[(String, u64)],
+        was_still_dismissed: bool,
+    ) -> bool {
+        if self.dismissal_tracks_messages
+            || (self.dismissed_through == 0 && self.agent_dismissed_through.is_empty())
+        {
+            return false;
+        }
+        self.agent_dismissed_through = if was_still_dismissed {
+            lines.iter().cloned().collect()
+        } else {
+            HashMap::new()
+        };
+        self.dismissed_through = 0;
+        self.dismissal_tracks_messages = true;
+        self.dismissal_active = was_still_dismissed;
+        true
+    }
+
+    /// Permanently forget a clear after any conversation crossed its line.
+    pub fn invalidate_dismissal(&mut self) {
+        self.dismissed_through = 0;
+        self.agent_dismissed_through.clear();
+        self.dismissal_tracks_messages = true;
+        self.dismissal_active = false;
+    }
+
+    pub fn has_message_dismissal(&self) -> bool {
+        self.dismissal_active
+            || self.dismissed_through > 0
+            || !self.agent_dismissed_through.is_empty()
     }
 
     /// The inbox's sort key: the anchor, falling back to `created_at` for a
@@ -808,11 +921,9 @@ mod tests {
 
     // ================== Dismissing a row with no conversation ==================
 
-    /// The same feature for a row that has no conversation to draw a line in:
-    /// it is cleared at the commit it was sitting on, and the next commit
-    /// brings it back with nobody having to un-dismiss it.
+    /// A row with no conversation stays cleared through unrelated git changes.
     #[test]
-    fn a_row_with_no_conversation_stays_cleared_until_its_head_moves() {
+    fn a_row_with_no_conversation_stays_cleared_when_its_head_moves() {
         let mut attention = Attention::default();
         assert!(
             !attention.is_dismissed_at_head(Some("abc123")),
@@ -821,23 +932,94 @@ mod tests {
 
         attention.dismiss_at_head(Some("abc123"));
         assert!(attention.is_dismissed_at_head(Some("abc123")));
-        assert!(
-            !attention.is_dismissed_at_head(Some("def456")),
-            "a commit past the line brings the row back"
-        );
+        assert!(attention.is_dismissed_at_head(Some("def456")));
 
         attention.dismiss_at_head(Some("def456"));
         assert!(attention.is_dismissed_at_head(Some("def456")));
     }
 
-    /// A checkout whose history cannot be read is still a row the human can
-    /// clear — and the first commit anyone can read is news, so it comes back.
+    /// A checkout whose history cannot be read remains cleared when git later
+    /// becomes readable; only a conversation message can revive an entry.
     #[test]
-    fn a_row_cleared_with_no_readable_head_comes_back_when_one_appears() {
+    fn a_row_cleared_with_no_readable_head_stays_cleared_when_one_appears() {
         let mut attention = Attention::default();
         attention.dismiss_at_head(None);
         assert!(attention.is_dismissed_at_head(None));
-        assert!(!attention.is_dismissed_at_head(Some("abc123")));
+        assert!(attention.is_dismissed_at_head(Some("abc123")));
+    }
+
+    #[test]
+    fn legacy_clear_migration_preserves_only_a_clear_that_was_still_effective() {
+        let mut cleared: Attention = serde_json::from_value(serde_json::json!({
+            "dismissed_through": 4
+        }))
+        .unwrap();
+        assert!(cleared.migrate_dismissal_to_messages(&[("agent-one".into(), 12)], true));
+        assert!(cleared.is_dismissed_for("agent-one", FIRST, 12));
+
+        let mut revived: Attention = serde_json::from_value(serde_json::json!({
+            "dismissed_through": 4
+        }))
+        .unwrap();
+        revived.migrate_dismissal_to_messages(&[("agent-one".into(), 12)], false);
+        assert!(!revived.is_dismissed_for("agent-one", FIRST, 12));
+    }
+
+    #[test]
+    fn observing_a_conversationless_row_is_stable_and_persistent() {
+        let mut attention = Attention::default();
+        assert!(attention.observe("2026-09-08T10:00:00Z"));
+        assert!(!attention.observe("2026-09-09T10:00:00Z"));
+        assert_eq!(
+            attention.first_observed_at.as_deref(),
+            Some("2026-09-08T10:00:00Z")
+        );
+        let reloaded: Attention =
+            serde_json::from_value(serde_json::to_value(attention).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.first_observed_at.as_deref(),
+            Some("2026-09-08T10:00:00Z")
+        );
+    }
+
+    #[test]
+    fn a_working_interval_stamps_activity_when_the_last_agent_stops() {
+        let mut attention = Attention::default();
+        assert!(attention.observe_working(true, "2026-09-08T10:00:00Z"));
+        assert!(!attention.observe_working(true, "2026-09-08T10:00:30Z"));
+        assert!(!attention.observe_working(true, "2026-09-08T11:00:00Z"));
+        assert!(attention.observe_working(false, "2026-09-08T12:00:00Z"));
+        assert_eq!(attention.working_observed_at, None);
+        assert_eq!(
+            attention.last_worked_at.as_deref(),
+            Some("2026-09-08T12:00:00Z")
+        );
+
+        let reloaded: Attention =
+            serde_json::from_value(serde_json::to_value(attention).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.last_worked_at.as_deref(),
+            Some("2026-09-08T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn a_coalesced_status_still_records_the_completed_turn() {
+        let mut attention = Attention::default();
+        assert!(attention.observe_status(
+            false,
+            "2026-09-08T12:00:01Z",
+            Some("2026-09-08T12:00:00Z")
+        ));
+        assert_eq!(
+            attention.last_worked_at.as_deref(),
+            Some("2026-09-08T12:00:00Z")
+        );
+        assert!(!attention.observe_status(
+            false,
+            "2026-09-08T12:00:02Z",
+            Some("2026-09-08T12:00:00Z")
+        ));
     }
 
     /// The two lines are drawn in different places and neither reads as the

@@ -332,7 +332,7 @@ describe("the projects face", () => {
       ...live,
       branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) }),
       issueRow(),
-      issueRow({ issue_id: "iss-old", anchor: hoursAgo(200), last_activity: hoursAgo(30) }),
+      issueRow({ issue_id: "iss-old", anchor: hoursAgo(200), last_activity: hoursAgo(30), working: false }),
     ]);
     const toggleIn = (projectId) => blockFor(projectId).querySelector("[data-recent-toggle]");
     // Both start shut, however thin the block above; each opens on its own press.
@@ -356,6 +356,24 @@ describe("the projects face", () => {
     expect(toggleIn("p2").getAttribute("aria-expanded")).toBe("true");
     feed(feedItems);
     expect(toggleIn("p1").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("moves a cleared row into its project's accessible Recent fold immediately", async () => {
+    feed([branchRow({ unread: false, unread_count: 0 }), issueRow()]);
+    const row = rowFor("run-1");
+    row.querySelector("[data-menu]").click();
+    row.querySelector("[data-dismiss]").click();
+
+    const relaydb = blockFor("p1");
+    expect(relaydb.classList.contains("inbox-flat")).toBe(true);
+    expect(relaydb.classList.contains("inbox-folded")).toBe(true);
+    expect(rowFor("run-1").classList.contains("inbox-quiet")).toBe(true);
+
+    relaydb.querySelector("[data-project-fold]").click();
+    expect(relaydb.classList.contains("inbox-folded")).toBe(false);
+    expect(rowFor("run-1")).toBeTruthy();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
   });
 
   it("touches nothing when the feed repeats what it already said", () => {

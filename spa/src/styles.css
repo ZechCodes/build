@@ -453,12 +453,13 @@ main#root.surface { max-width:none;
 /* diff */
 .diffbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
 /* The code table scrolls horizontally inside .dscroll while the .file border
-   (overflow:hidden, below) clips the corners and .fhead stays fixed above it. */
+   clips the corners. overflow:clip preserves the outer vertical scroller as
+   the sticky header's scroll container. */
 .file .dscroll { overflow-x:auto; overflow-y:hidden; }
 .file table { min-width:100%; }
 .file td.code { white-space:pre; }
-.file { background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:hidden; }
-.file .fhead { display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line2); font-family:var(--mono); font-size:12.5px; }
+.file { background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:clip; }
+.file .fhead { position:sticky; top:0; z-index:3; display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line2); background:var(--panel); font-family:var(--mono); font-size:12.5px; }
 .file .fhead .fpath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .file .fhead .fb { font-size:9px; font-weight:700; letter-spacing:.04em; padding:1px 5px; border-radius:4px; }
 .fb.EDIT { background:var(--accent-soft); color:var(--accent); } .fb.ADD { background:var(--green-bg); color:var(--green); } .fb.DEL { background:var(--red-bg); color:var(--red); }

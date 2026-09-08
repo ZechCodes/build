@@ -641,6 +641,22 @@ describe("tab layout primitives", () => {
   });
 });
 
+describe("diff file headers", () => {
+  it("stick to the reading column until their file scrolls away", () => {
+    const [file] = rulesFor(".file");
+    const [header] = rulesFor(".file .fhead");
+    const [expandOverlay] = rulesFor(".file.capped .diff-expand");
+
+    expect(declaration(file.body, "overflow")).toBe("clip");
+    expect(declaration(header.body, "position")).toBe("sticky");
+    expect(declaration(header.body, "top")).toBe("0");
+    expect(declaration(header.body, "background")).toBe("var(--panel)");
+    expect(Number(declaration(header.body, "z-index"))).toBeGreaterThan(
+      Number(declaration(expandOverlay.body, "z-index")),
+    );
+  });
+});
+
 // The work surfaces' reading columns end with the shared sticky actionbar, and
 // a sticky box cannot travel past its parent's content box: scroll-end room
 // paid as the column's bottom padding pins the bar that far above the floor and

@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use super::connection::{AppServerConnection, SharedConnection};
 use super::limits::{AppServerLimits, StateLimits};
@@ -19,7 +19,9 @@ use super::protocol::{
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
-use crate::harness::{ActivityReport, AgentSession, AgentStatus, HarnessError, Turn};
+use crate::harness::{
+    ActivityReport, AgentSession, AgentStatus, HarnessError, SessionStatusSnapshot, Turn,
+};
 use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
 
@@ -154,6 +156,7 @@ struct SessionCore {
     state: Mutex<CodexSessionState>,
     translator: Mutex<CodexActivityTranslator>,
     activity: Mutex<Option<broadcast::Sender<ActivityReport>>>,
+    status: watch::Sender<SessionStatusSnapshot>,
     terminal: Mutex<TerminalSnapshot>,
     published: Mutex<Option<TerminalOutcome>>,
     last_message: Mutex<Instant>,
@@ -184,6 +187,7 @@ impl CodexAppServerSession {
             limits.connection(),
         ));
         let (sender, receiver) = broadcast::channel(ACTIVITY_BACKLOG);
+        let (status, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
         let core = Arc::new(SessionCore {
             connection,
             process: Arc::new(process),
@@ -195,6 +199,7 @@ impl CodexAppServerSession {
             )),
             translator: Mutex::new(CodexActivityTranslator::new(limits.translator())),
             activity: Mutex::new(Some(sender)),
+            status,
             terminal: Mutex::new(TerminalSnapshot::default()),
             published: Mutex::new(None),
             last_message: Mutex::new(Instant::now()),
@@ -246,6 +251,12 @@ impl SessionCore {
                 }
             }
             *state = transition.state;
+            if let Some(status) = state.live_status() {
+                let previous = self.status.borrow().clone();
+                if let Some(next) = previous.transition(status) {
+                    self.status.send_replace(next);
+                }
+            }
             (
                 require_version,
                 should_close.then(|| state.epitaph()),
@@ -433,8 +444,15 @@ impl SessionCore {
         if published.is_some() {
             return;
         }
+        let ended = AgentStatus::Ended {
+            code: outcome.exit_code,
+        };
         *published = Some(outcome);
         drop(published);
+        let previous = self.status.borrow().clone();
+        if let Some(next) = previous.transition(ended) {
+            self.status.send_replace(next);
+        }
         self.report_all(self.translator.lock().unwrap().close_all());
         self.close_activity();
     }
@@ -479,6 +497,10 @@ impl AgentSession for CodexAppServerSession {
             .unwrap()
             .live_status()
             .unwrap_or(STATUS_WHILE_TERMINAL_SOURCES_SETTLE)
+    }
+
+    fn status_changed(&self) -> Option<watch::Receiver<SessionStatusSnapshot>> {
+        Some(self.core.status.subscribe())
     }
 
     fn quiet_for(&self) -> Duration {

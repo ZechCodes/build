@@ -60,8 +60,8 @@ use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc};
 use crate::run::{RunState, StageProgress};
 use crate::thread::{
-    cut_activity_runs, page_activity_budget, run_items_shipped, PageCut, RunCensus, Thread,
-    ThreadItem,
+    cut_activity_runs, page_activity_budget, run_items_shipped, MessageRole, PageCut, RunCensus,
+    Thread, ThreadItem,
 };
 
 /// Things that can go wrong reading or writing the store.
@@ -613,6 +613,14 @@ const THREAD_CURSOR_SQL: &str = "SELECT item FROM thread_items \
 /// for the tail to be the whole answer to it.
 const THREAD_LAST_SEQUENCE_SQL: &str =
     "SELECT COALESCE(MAX(updated_sequence), 0) FROM thread_items WHERE agent_id = ?1";
+/// Durable inbox summary inputs. Both are single indexed seeks; boot never
+/// deserializes the activity that may separate the last message from the tail.
+const THREAD_LAST_MESSAGE_SQL: &str = "SELECT sequence, item FROM thread_items \
+     WHERE agent_id = ?1 AND message = 1 ORDER BY sequence DESC LIMIT 1";
+const THREAD_FIRST_ATTENTION_AFTER_SQL: &str = "SELECT item FROM thread_items \
+     WHERE agent_id = ?1 AND attention = 1 AND sequence > ?2 ORDER BY sequence LIMIT 1";
+const THREAD_LAST_ATTENTION_SQL: &str = "SELECT COALESCE(MAX(sequence), 0) FROM thread_items \
+     WHERE agent_id = ?1 AND attention = 1";
 
 /// The classification columns hoisted out of an item's JSON, each with the
 /// schema version it arrived in: a stored database older than that version is
@@ -1159,6 +1167,9 @@ impl Store {
         let mut tail = conn.prepare(THREAD_PAGE_SQL)?;
         let mut count = conn.prepare(THREAD_ITEM_COUNT_SQL)?;
         let mut last_sequence = conn.prepare(THREAD_LAST_SEQUENCE_SQL)?;
+        let mut last_message = conn.prepare(THREAD_LAST_MESSAGE_SQL)?;
+        let mut first_attention_after = conn.prepare(THREAD_FIRST_ATTENTION_AFTER_SQL)?;
+        let mut last_attention = conn.prepare(THREAD_LAST_ATTENTION_SQL)?;
         let mut agents = Vec::with_capacity(rows.len());
         for (id, raw) in rows {
             let mut agent: Agent =
@@ -1173,6 +1184,16 @@ impl Store {
                 items,
                 held.saturating_sub(RESIDENT_CONVERSATION_TAIL as u64),
                 stored_last,
+            );
+            let summary =
+                stored_conversation_summary(&mut last_message, &mut first_attention_after, &id)?;
+            let last_attention_sequence =
+                last_attention.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
+            agent.thread.adopt_conversation_summary(
+                summary.last_message_sequence,
+                last_attention_sequence,
+                summary.activity_at,
+                summary.working,
             );
             agents.push(agent);
         }
@@ -2337,6 +2358,56 @@ fn decode_thread_items(
     decode_thread_item_text(agent_id, rows.collect::<Result<Vec<String>, _>>()?)
 }
 
+#[derive(Default)]
+struct StoredConversationSummary {
+    last_message_sequence: u64,
+    activity_at: Option<String>,
+    working: bool,
+}
+
+fn stored_conversation_summary(
+    last_message: &mut rusqlite::Statement<'_>,
+    first_attention_after: &mut rusqlite::Statement<'_>,
+    agent_id: &str,
+) -> Result<StoredConversationSummary, StoreError> {
+    let row: Option<(i64, String)> = last_message
+        .query_row([agent_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    let Some((sequence, raw)) = row else {
+        return Ok(StoredConversationSummary::default());
+    };
+    let item: ThreadItem = serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+        path: PathBuf::from(format!("thread_items/{agent_id}/{sequence}")),
+        source,
+    })?;
+    let ThreadItem::Message(message) = item else {
+        unreachable!("message classification must identify a message")
+    };
+    let mut summary = StoredConversationSummary {
+        last_message_sequence: sequence as u64,
+        activity_at: Some(message.created_at),
+        working: match message.role {
+            MessageRole::User => message.seen_at.is_some(),
+            MessageRole::Agent => message.still_working,
+        },
+    };
+    if summary.working {
+        let stopping: Option<String> = first_attention_after
+            .query_row(rusqlite::params![agent_id, sequence], |row| row.get(0))
+            .optional()?;
+        if let Some(raw) = stopping {
+            let item: ThreadItem =
+                serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                    path: PathBuf::from(format!("thread_items/{agent_id}/after-{sequence}")),
+                    source,
+                })?;
+            summary.activity_at = Some(item.created_at().to_string());
+            summary.working = false;
+        }
+    }
+    Ok(summary)
+}
+
 /// Turn stored item TEXT into conversation items, naming the conversation in
 /// the error so a corrupt row says which agent's history stopped parsing.
 ///
@@ -2632,6 +2703,71 @@ mod tests {
         assert_eq!(
             reloaded.agents[0].thread.items, record.agents[0].thread.items,
             "the in-place mutation reached the store"
+        );
+    }
+
+    /// Inbox summaries survive when the message they describe is older than
+    /// the resident tail. Tool work is not conversation activity, while the
+    /// attention event that ends a read user's in-flight turn records its stop.
+    #[test]
+    fn conversation_summary_survives_activity_burial_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let mut record = run_record("run-1", None, NOW);
+        let thread = &mut record.agents[0].thread;
+        let message_sequence = {
+            thread.post_user("please investigate", None, "2026-08-13T10:00:00Z");
+            thread.last_message_sequence()
+        };
+        thread.read_unread("2026-08-13T10:01:00Z");
+        for n in 0..=RESIDENT_CONVERSATION_TAIL {
+            thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("tool {n}")),
+                None,
+                None,
+                "2026-08-13T10:02:00Z",
+            );
+        }
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-08-13T10:00:00Z"),
+            "tool activity is not conversation activity"
+        );
+        let attention_sequence = thread.push_event(
+            crate::thread::ThreadEventKind::Blocked,
+            Some("need input".into()),
+            None,
+            None,
+            "2026-08-13T10:03:00Z",
+        );
+        for n in 0..=RESIDENT_CONVERSATION_TAIL {
+            thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("later tool {n}")),
+                None,
+                None,
+                "2026-08-13T10:04:00Z",
+            );
+        }
+
+        Store::new(&root).unwrap().save_run(&record).unwrap();
+        let reopened = Store::new(&root).unwrap();
+        let loaded = reload_run(&reopened, "run-1");
+        let thread = &loaded.agents[0].thread;
+        assert!(thread.items.len() <= RESIDENT_CONVERSATION_TAIL);
+        assert!(thread.items.iter().all(
+            |item| !matches!(item, ThreadItem::Message(_)) && item.attention_reason().is_none()
+        ));
+        assert_eq!(thread.last_message_sequence(), message_sequence);
+        assert_eq!(thread.last_attention_sequence(), attention_sequence);
+        assert_eq!(
+            thread.conversation_activity_at(),
+            Some("2026-08-13T10:03:00Z")
+        );
+        assert!(
+            thread.last_sequence() > thread.last_message_sequence(),
+            "the seen mutation and tools advance only the general cursor"
         );
     }
 

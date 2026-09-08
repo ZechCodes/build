@@ -38,8 +38,8 @@ use crate::harness::shell_tail::ShellTail;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext,
-    HarnessError, OpenedSession, SessionLocator, SessionOpenRequest, SessionOutput, ToolOutcome,
-    Turn, INHERITED_AGENT_MARKERS,
+    HarnessError, OpenedSession, SessionLocator, SessionOpenRequest, SessionOutput,
+    SessionStatusSnapshot, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -318,6 +318,16 @@ impl ProtocolState {
     }
 }
 
+fn publish_status(updates: &watch::Sender<SessionStatusSnapshot>, status: AgentStatus) {
+    updates.send_if_modified(|snapshot| {
+        let Some(next) = snapshot.transition(status) else {
+            return false;
+        };
+        *snapshot = next;
+        true
+    });
+}
+
 /// What became of one tool call, kept until its result arrives so the answer
 /// can be paired to it — or so it can be closed as unanswered when the turn
 /// ends first. A call that was Build's own is remembered too, so that its answer
@@ -424,10 +434,12 @@ fn reports_already_sent(heard: &mut broadcast::Receiver<ActivityReport>) -> Vec<
 
 #[cfg(test)]
 fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
+    let (status_updates, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
     ProtocolReader::new(
         Arc::new(Mutex::new(ProtocolState::new())),
         activity,
         SurfaceRevision::default(),
+        status_updates,
     )
 }
 
@@ -439,6 +451,7 @@ pub struct AdkSession {
     /// sees EOF and can leave on its own terms before it is killed.
     stdin: Mutex<Option<ChildStdin>>,
     state: Arc<Mutex<ProtocolState>>,
+    status_updates: watch::Sender<SessionStatusSnapshot>,
     activity: ActivitySlot,
     revision: SurfaceRevision,
     /// The child's exit code, cached the first time it is observed: the status
@@ -485,10 +498,15 @@ impl AdkSession {
         let (sender, subscribed) = broadcast::channel(ACTIVITY_BACKLOG);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
         let revision = SurfaceRevision::default();
+        let (status_updates, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
 
         if let Some(stdout) = child.stdout.take() {
-            let mut reader =
-                ProtocolReader::new(Arc::clone(&state), Arc::clone(&activity), revision.clone());
+            let mut reader = ProtocolReader::new(
+                Arc::clone(&state),
+                Arc::clone(&activity),
+                revision.clone(),
+                status_updates.clone(),
+            );
             let slot = Arc::clone(&activity);
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines() {
@@ -497,6 +515,7 @@ impl AdkSession {
                         Err(_) => break,
                     }
                 }
+                reader.publish_status(AgentStatus::Ended { code: None });
                 // The child's account of itself is over: drop the sender so
                 // every subscriber sees `Closed` and the pump performs the
                 // death rites.
@@ -526,6 +545,7 @@ impl AdkSession {
                 child: Mutex::new(child),
                 stdin: Mutex::new(stdin),
                 state,
+                status_updates,
                 activity,
                 revision,
                 exit_code: Mutex::new(None),
@@ -562,7 +582,15 @@ impl AdkSession {
                 *cached = Some(observed_code(status));
             }
         }
-        *cached
+        let code = *cached;
+        drop(cached);
+        if let Some(code) = code {
+            publish_status(
+                &self.status_updates,
+                AgentStatus::Ended { code: Some(code) },
+            );
+        }
+        code
     }
 }
 
@@ -602,6 +630,7 @@ impl AgentSession for AdkSession {
         if let Some(pending) = state.pending_interrupt.as_mut() {
             pending.steered = true;
         }
+        publish_status(&self.status_updates, state.live_status());
         Ok(())
     }
 
@@ -705,6 +734,10 @@ impl AgentSession for AdkSession {
         }
     }
 
+    fn status_changed(&self) -> Option<watch::Receiver<SessionStatusSnapshot>> {
+        Some(self.status_updates.subscribe())
+    }
+
     /// The age of the last protocol line. The same instrument the PTY answers
     /// with its paint clock, reading the evidence a session protocol actually has.
     fn quiet_for(&self) -> Duration {
@@ -743,6 +776,11 @@ impl AgentSession for AdkSession {
         if let Some(code) = reaped {
             let mut cached = self.exit_code.lock().unwrap();
             cached.get_or_insert(code);
+            drop(cached);
+            publish_status(
+                &self.status_updates,
+                AgentStatus::Ended { code: Some(code) },
+            );
         }
     }
 
@@ -799,6 +837,7 @@ impl AgentSession for AdkSession {
 /// to be remembered from the call until its answer arrives.
 struct ProtocolReader {
     state: Arc<Mutex<ProtocolState>>,
+    status_updates: watch::Sender<SessionStatusSnapshot>,
     activity: ActivitySlot,
     calls: HashMap<String, RecordedCall>,
     revision: SurfaceRevision,
@@ -810,9 +849,11 @@ impl ProtocolReader {
         state: Arc<Mutex<ProtocolState>>,
         activity: ActivitySlot,
         revision: SurfaceRevision,
+        status_updates: watch::Sender<SessionStatusSnapshot>,
     ) -> ProtocolReader {
         ProtocolReader {
             state,
+            status_updates,
             activity,
             calls: HashMap::new(),
             revision,
@@ -836,6 +877,16 @@ impl ProtocolReader {
             Some("control_response") => self.read_control_response(&event),
             _ => {}
         }
+        self.publish_live_status();
+    }
+
+    fn publish_live_status(&self) {
+        let state = self.state.lock().unwrap();
+        publish_status(&self.status_updates, state.live_status());
+    }
+
+    fn publish_status(&self, status: AgentStatus) {
+        publish_status(&self.status_updates, status);
     }
 
     /// The lifecycle line, and the background-task lines that ride the same
@@ -914,6 +965,7 @@ impl ProtocolReader {
                 .filter_map(|entry| entry.as_str().map(str::to_string))
                 .collect();
         }
+        publish_status(&self.status_updates, state.live_status());
     }
 
     /// The child's own statement of what background work is live, which
@@ -947,6 +999,7 @@ impl ProtocolReader {
                 }
             }
             state.tasks = listed.into_iter().collect();
+            publish_status(&self.status_updates, state.live_status());
             minted
         };
         self.mint_task_updates(minted);
@@ -963,10 +1016,12 @@ impl ProtocolReader {
         let description = task_description(event, id);
         let minted = {
             let mut state = self.state.lock().unwrap();
-            match state.tasks.insert(id.to_string(), description.clone()) {
+            let minted = match state.tasks.insert(id.to_string(), description.clone()) {
                 Some(_) => Vec::new(),
                 None => vec![format!("{description} — started")],
-            }
+            };
+            publish_status(&self.status_updates, state.live_status());
+            minted
         };
         self.mint_task_updates(minted);
     }
@@ -990,7 +1045,7 @@ impl ProtocolReader {
             .unwrap_or_default();
         let minted = {
             let mut state = self.state.lock().unwrap();
-            if !task_status_is_terminal(status) {
+            let minted = if !task_status_is_terminal(status) {
                 if let Some(renamed) = patch["description"].as_str() {
                     if let Some(held) = state.tasks.get_mut(id) {
                         *held = renamed.to_string();
@@ -1002,7 +1057,9 @@ impl ProtocolReader {
                     Some(description) => vec![ended_summary(status, &description, patch)],
                     None => Vec::new(),
                 }
-            }
+            };
+            publish_status(&self.status_updates, state.live_status());
+            minted
         };
         self.mint_task_updates(minted);
     }
@@ -1051,6 +1108,7 @@ impl ProtocolReader {
                     minted.push(ended_summary(status, description, event));
                 }
             }
+            publish_status(&self.status_updates, state.live_status());
             minted
         };
         self.mint_task_updates(minted);
@@ -1112,6 +1170,7 @@ impl ProtocolReader {
                     true => Some(result_error_text(event)),
                     false => None,
                 };
+            publish_status(&self.status_updates, state.live_status());
         }
         // Outside the lock, because emitting is the broadcast channel's
         // business and not this session's state. A turn the protocol answered
@@ -2867,6 +2926,35 @@ mod tests {
         );
 
         wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    #[tokio::test]
+    async fn a_silent_result_publishes_the_completed_turn_boundary() {
+        let session = open(&HarnessSpec::new("sh").arg("-c").arg(format!(
+            "printf '%s\\n' '{INIT}'\nwhile IFS= read -r turn; do sleep 0.1; printf '%s\\n' '{RESULT}'; done\n"
+        )));
+        let mut changed = session
+            .status_changed()
+            .expect("a protocol session publishes exact status changes");
+        wait_for_status(&session, AgentStatus::Waiting);
+        changed.borrow_and_update();
+
+        session
+            .send_turn(&Turn::new("work without output"))
+            .expect("the turn is written");
+        assert_eq!(changed.borrow_and_update().status, AgentStatus::Working);
+
+        tokio::time::timeout(Duration::from_secs(5), changed.changed())
+            .await
+            .expect("the silent result publishes promptly")
+            .expect("the status channel remains open");
+        let completed = changed.borrow_and_update().clone();
+        assert_eq!(completed.status, AgentStatus::Waiting);
+        assert!(
+            completed.last_worked_at.is_some(),
+            "the cumulative snapshot remembers the completed turn even if later updates coalesce"
+        );
         session.end();
     }
 

@@ -7,6 +7,7 @@ import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { inboxListRouteChanged, mountInboxList, setInboxView } from "./inboxView.js";
 import { loadRailView, persistRailView, railViewSwitchHtml } from "./railMode.js";
+import { subscribeInboxAttentionCount } from "./inboxAttention.js";
 import "../styles/shell.css";
 
 const COLLAPSED_KEY = "build.inbox.collapsed";
@@ -79,6 +80,17 @@ function chooseView(view) {
 
 let mounted = false;
 
+function paintAttentionCount(count) {
+  const open = $("#inbox-open");
+  if (!open) return;
+  const hasAttention = count > 0;
+  open.classList.toggle("has-attention", hasAttention);
+  open.querySelector(".inbox-open-count").textContent = count > 99 ? "99+" : String(count || "");
+  const label = hasAttention ? `Open the inbox, ${count} unread notification${count === 1 ? "" : "s"}` : "Open the inbox";
+  open.setAttribute("aria-label", label);
+  open.title = label;
+}
+
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */
 export function initInboxRail() {
   if (mounted) {
@@ -92,6 +104,7 @@ export function initInboxRail() {
   $("#inbox-collapse").onclick = () =>
     setInboxCollapsed(!document.body.classList.contains("inbox-collapsed"));
   const open = $("#inbox-open");
+  subscribeInboxAttentionCount(paintAttentionCount);
   open.onclick = () => setInboxCollapsed(false);
   open.onmouseenter = () => {
     if (peekWanted()) setInboxPeek(true);

@@ -25,6 +25,7 @@ const hover = (element, type) =>
   element.dispatchEvent(new window.MouseEvent(type, { bubbles: false }));
 
 let setInboxCollapsed, initInboxRail;
+let publishInboxAttentionCount;
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -33,6 +34,7 @@ beforeEach(async () => {
   document.body.className = "";
   localStorage.clear();
   ({ setInboxCollapsed, initInboxRail } = await import("../src/core/inboxShell.js"));
+  ({ publishInboxAttentionCount } = await import("../src/core/inboxAttention.js"));
   initInboxRail();
 });
 
@@ -107,6 +109,28 @@ describe("the collapsed rail's hover peek", () => {
     expect(localStorage.getItem("build.inbox.collapsed")).toBe("");
   });
 
+  it("replaces the reopen icon with the aggregate count and resets at zero", () => {
+    const toggle = document.getElementById("inbox-open");
+    publishInboxAttentionCount(3);
+    expect(toggle.classList.contains("has-attention")).toBe(true);
+    expect(toggle.querySelector(".inbox-open-count").textContent).toBe("3");
+    expect(toggle.getAttribute("aria-label")).toBe("Open the inbox, 3 unread notifications");
+
+    publishInboxAttentionCount(0);
+    expect(toggle.classList.contains("has-attention")).toBe(false);
+    expect(toggle.querySelector(".inbox-open-count").textContent).toBe("");
+    expect(toggle.getAttribute("aria-label")).toBe("Open the inbox");
+  });
+
+  it("keeps large counts inside the fixed-width toggle and still reopens", () => {
+    const toggle = document.getElementById("inbox-open");
+    publishInboxAttentionCount(137);
+    expect(toggle.querySelector(".inbox-open-count").textContent).toBe("99+");
+    expect(toggle.getAttribute("aria-label")).toContain("137 unread notifications");
+    toggle.click();
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(false);
+  });
+
   it("docks the rail on a click of the head toggle inside a peek", () => {
     hover(document.getElementById("inbox-open"), "mouseenter");
     document.getElementById("inbox-collapse").click();
@@ -130,5 +154,12 @@ describe("the peek's geometry", () => {
     expect(peek).toMatch(/position:fixed/);
     // Above the floating toggle (z-index 45), so the head toggle takes the click.
     expect(peek).toMatch(/z-index:46/);
+  });
+
+  it("animates the icon into the count unless reduced motion is requested", () => {
+    expect(shellCss).toMatch(/\.inbox-open-icon, \.inbox-open-count \{[^}]*transition:/);
+    expect(shellCss).toMatch(/#inbox-open\.has-attention \{[^}]*animation:inbox-toggle-bubble/);
+    expect(shellCss).toMatch(/body\.inbox-collapsed #inbox-open\.has-attention \.inbox-open-count \{[^}]*animation:inbox-count-in/);
+    expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
   });
 });

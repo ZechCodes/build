@@ -64,8 +64,38 @@ body.inbox-collapsed #inbox-rail { display:none; }
 #inbox-open { display:none; position:fixed;
   top:calc(10px + env(safe-area-inset-top, 0px));
   left:calc(10px + env(safe-area-inset-left, 0px)); z-index:45;
-  background:var(--panel); border:1px solid var(--line); }
-body.inbox-collapsed #inbox-open { display:block; }
+  height:var(--inbox-toggle); padding:0; overflow:hidden;
+  align-items:center; justify-content:center;
+  grid-template:1fr / 1fr;
+  background:var(--panel); border:1px solid var(--line);
+  transition:background 180ms ease, border-color 180ms ease, border-radius 220ms ease; }
+body.inbox-collapsed #inbox-open { display:grid; }
+.inbox-open-icon, .inbox-open-count { grid-area:1 / 1; transition:opacity 180ms ease, transform 220ms ease; }
+.inbox-open-count { display:flex; align-items:center; justify-content:center;
+  align-self:stretch; justify-self:stretch; border-radius:50%; opacity:0; transform:scale(.55);
+  color:var(--accent-ink); font-size:10px; font-weight:750; letter-spacing:-.03em; }
+body.inbox-collapsed #inbox-open.has-attention {
+  background:var(--accent); border-color:var(--accent); border-radius:50%;
+  animation:inbox-toggle-bubble 220ms ease both; }
+body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
+  opacity:0; transform:scale(.55) rotate(-18deg); animation:inbox-icon-away 220ms ease both; }
+body.inbox-collapsed #inbox-open.has-attention .inbox-open-count {
+  opacity:1; transform:scale(1); animation:inbox-count-in 220ms ease both; }
+@keyframes inbox-icon-away {
+  from { opacity:1; transform:scale(1) rotate(0); }
+  to { opacity:0; transform:scale(.55) rotate(-18deg); }
+}
+@keyframes inbox-toggle-bubble {
+  from { background:var(--panel); border-color:var(--line); border-radius:6px; }
+  to { background:var(--accent); border-color:var(--accent); border-radius:50%; }
+}
+@keyframes inbox-count-in {
+  from { opacity:0; transform:scale(.55); }
+  to { opacity:1; transform:scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #inbox-open, .inbox-open-icon, .inbox-open-count { transition:none; animation:none !important; }
+}
 /* The hover peek: the pointer resting on the reopen toggle lays the collapsed
    rail over the view without docking it. Above the toggle (z-index 45), so the
    head toggle — sitting where the floating one was — takes the click. */

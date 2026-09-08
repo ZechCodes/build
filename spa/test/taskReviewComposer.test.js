@@ -67,6 +67,8 @@ describe("dedicated conversation separation from diff review", () => {
     await vi.advanceTimersByTimeAsync(0);
     host.querySelector(".file").classList.remove("capped");
     host.querySelector('tr.add[data-ln="1"]').dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    // A press on a line offers the Comment button; the field is behind it.
+    document.querySelector(".cp-add").click();
     document.querySelector(".cp-input").value = "rename this";
     document.querySelector(".cp-save").click();
     note.text = "tighten the whole change set";

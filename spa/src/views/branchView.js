@@ -292,10 +292,15 @@ export async function renderBranch() {
       }
     }
     const plug = reviewPlug;
+    // Spread, never a hand-written subset. This wrapper exists to answer ONE
+    // question the plug cannot — which branch a run's diff is against — and an
+    // adapter that re-declares the rest silently drops whatever the plug learns
+    // to do next. It did: `mount(host)` swallowed the options the pane passes,
+    // so the merge verb had no host and `commentOffer` did not exist, which
+    // took the whole toolbar down with it.
     return {
+      ...plug,
       getBase: () => (scope.run_id ? (row && row.run && row.run.base_branch) || "main" : plug.getBase()),
-      mount: (host) => plug.mount(host),
-      unmount: () => plug.unmount(),
     };
   };
 

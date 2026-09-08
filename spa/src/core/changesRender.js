@@ -142,18 +142,18 @@ export function docCommentTrayHtml(comments, { generalDraft = "" } = {}) {
     <div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
 }
 
-/** The bar the selection raises: how many files are in hand, and the verbs that
- *  take all of them at once.
+/** The bar the selection raises: how many files are in hand, approving all of
+ *  them, and letting them go.
  *
  *  Drawn only while something is selected — a row of verbs aimed at nothing is
  *  a row of verbs in the way. Committing is not among them: the box under the
  *  diff is where a commit is written, and it narrows itself to the selection
- *  without being told twice. */
-export function selectionBarHtml(count, { commentable = false } = {}) {
+ *  without being told twice. Nor is commenting: a comment is written where every
+ *  other comment is written, in that same box. */
+export function selectionBarHtml(count) {
   if (!count) return "";
-  const comment = commentable ? '<button class="btn mini selcomment">Comment on all</button>' : "";
   return `<div class="selbar"><span class="selcount">${count} file${count === 1 ? "" : "s"} selected</span>
-    <button class="btn mini selapprove">Approve all</button>${comment}
+    <button class="btn mini selapprove">Approve all</button>
     <button class="btn mini selclear">Clear</button></div>`;
 }
 

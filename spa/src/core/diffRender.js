@@ -243,11 +243,16 @@ export function pressedOpenFile(target, openFile) {
   return true;
 }
 
+/** Whether a press landed on a control rather than on the file around it. A
+ *  button, a checkbox or its label does its own thing, and the fold never reads
+ *  the same press as "show me the rest of this file". */
+const pressedAControl = (target) => Boolean(target.closest("button, input, label"));
+
 export function pressedFold(target, folds, approved = null) {
   const file = folds ? target.closest(FILE_ELEMENT) : null;
-  if (!file) return false;
+  if (!file || pressedAControl(target)) return false;
   const key = file.dataset.key;
-  if (target.closest(".fhead") && !target.closest("button, input, label")) {
+  if (target.closest(".fhead")) {
     folds.press(key, { approved });
     return true;
   }

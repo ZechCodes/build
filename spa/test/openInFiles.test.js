@@ -266,6 +266,37 @@ describe("the file the route names", () => {
     expect(asked.find((call) => call.method === "fs.read").params.path).toBe("src/a.js");
   });
 
+  // The reviewer's bug: branchView wrapped the review plug in a hand-written
+  // subset — `mount(host)` swallowing the pane's options, and no `commentOffer`
+  // at all — so the pane threw part-way through its render and everything after
+  // that line went missing: Pull, Push, Stash, the merge verb, and the box under
+  // the diff. The wrapper spreads the plug now, and this is what says so.
+  it("renders the whole Changes surface, toolbar verbs and box included", async () => {
+    const asked = [];
+    App.call = vi.fn(async (method, params) => {
+      if (method === "branch.get")
+        return { ...row, run_id: "run-1", run: { run_id: "run-1", state: "review", base_branch: "main", thread: { items: [], sessions: [] } } };
+      asked.push({ method, params });
+      if (method === "git.status")
+        return {
+          branch: "build/login", head: "abc", repo_state: "clean", upstream: "origin/build/login",
+          ahead: 0, behind: 0, files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 },
+        };
+      if (method === "git.log") return { branch: "build/login", commits: [], more: false };
+      if (method === "run.diff") return { patch: "" };
+      return {};
+    });
+    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+    await renderBranch();
+    await flush();
+    await vi.waitFor(() => expect(document.querySelector(".gittoolbar")).toBeTruthy());
+    await vi.waitFor(() => expect(document.querySelector(".gtpull .btn")).toBeTruthy());
+
+    expect(document.querySelector(".gtpush .btn"), "Push").toBeTruthy();
+    expect(document.querySelector(".gtstash .btn"), "Stash").toBeTruthy();
+    expect(document.querySelector(".gp-commit .csinput"), "the box under the diff").toBeTruthy();
+  });
+
   it("leaves an ordinary visit to the Files tab at the root", async () => {
     const asked = [];
     App.call = answering(asked);

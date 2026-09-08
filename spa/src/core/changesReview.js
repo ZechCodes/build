@@ -212,13 +212,17 @@ export function createReviewPlug({
           statusHtml: statusHtml(),
           offerChangedOnly: reviewStamps.size > 0,
           changedOnly: changedOnlyFilter,
-        }) + selectionBarHtml(marks.selected.size, { commentable: editable }),
+        }) + selectionBarHtml(marks.selected.size),
       entries,
       tray: trayMounted ? commentLayer.trayHtml() : "",
     });
     if (trayMounted) commentLayer.attach(host);
     paintActions();
     wire();
+    // What this plug can take has just been settled by the payload that drew
+    // the stack, and the box under the diff is the surface's — it cannot know
+    // the plug became commentable unless it is told.
+    onCommentsChanged();
   }
 
   const claimSecret = (event) => toggleSecretSpoiler(event.target);
@@ -260,18 +264,12 @@ export function createReviewPlug({
     return true;
   };
 
-  /// The verbs the selection raises, each aimed at every file in hand at once.
-  /// Commenting on all of them anchors one comment per file, in the words the
-  /// reviewer typed once.
+  /// The verbs the selection raises, aimed at every file in hand at once.
   const claimSelectionVerb = (event) => {
-    const button = event.target.closest(".selapprove, .selcomment, .selclear");
+    const button = event.target.closest(".selapprove, .selclear");
     if (!button) return false;
     if (button.classList.contains("selapprove")) marks.approveSelected();
-    else if (button.classList.contains("selclear")) marks.clearSelection();
-    else if (commentLayer) {
-      commentLayer.commentOnFiles([...marks.selected], button.getBoundingClientRect());
-      marks.clearSelection();
-    }
+    else marks.clearSelection();
     render();
     return true;
   };

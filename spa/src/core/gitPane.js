@@ -648,7 +648,7 @@ export function mountGitPane(
 
   const paintChangeset = (detailHost, { bar, views, stackOptions = {} }) => {
     paintChangesetInto({
-      bar: bar + selectionBarHtml(marks.selected.size, { commentable: Boolean(commentLayer) }),
+      bar: bar + selectionBarHtml(marks.selected.size),
       entries: fileStackEntries(views, stackOptions),
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
@@ -1245,16 +1245,12 @@ export function mountGitPane(
     return true;
   };
 
-  /// The verbs the selection raises, each aimed at every file in hand at once.
+  /// The verbs the selection raises, aimed at every file in hand at once.
   const claimSelectionVerb = (event) => {
-    const button = event.target.closest(".selapprove, .selcomment, .selclear");
+    const button = event.target.closest(".selapprove, .selclear");
     if (!button) return false;
     if (button.classList.contains("selapprove")) marks.approveSelected();
-    else if (button.classList.contains("selclear")) marks.clearSelection();
-    else if (commentLayer) {
-      commentLayer.commentOnFiles([...marks.selected], button.getBoundingClientRect());
-      marks.clearSelection();
-    }
+    else marks.clearSelection();
     // A mark the plug shares has to reach the stack the plug is drawing.
     if (reviewMounted && review.refresh) review.refresh();
     renderAndFetch();

@@ -15,6 +15,11 @@
 // answers with message-<n> ids.
 
 import { commentTrayHtml } from "./changesRender.js";
+import { ICON_MESSAGE_SQUARE } from "./icons.js";
+
+/** The gutter's comment button. The same icon the file header wears, because it
+ *  is the same verb aimed at one line instead of the whole file. */
+const GUTTER_COMMENT_HTML = `<button class="dcmt" type="button" title="Comment on this line" aria-label="Comment on this line">${ICON_MESSAGE_SQUARE}</button>`;
 import { pathOf } from "./diff.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";
@@ -79,6 +84,42 @@ export function createCommentLayer({
     onChange();
   };
 
+  /// The comment button the gutter shows while the pointer is on a line.
+  ///
+  /// ONE button, moved to whichever row is under the pointer. Rendering one per
+  /// row would put thousands of buttons in a long diff — and a diff is long
+  /// exactly when it has to stay quick — so the affordance follows the pointer
+  /// instead of waiting in every row for a pointer that will never arrive.
+  ///
+  /// It rides in the row's line-number cell, so it moves with the table as the
+  /// code scrolls sideways under it. A repaint that reconciles the row takes it
+  /// away, which costs nothing: the next hover puts it back.
+  const offerGutterComment = (target) => {
+    const cell = commentableGutterCell(target);
+    if (!cell) {
+      hideGutterComment();
+      return;
+    }
+    if (cell.querySelector(".dcmt")) return;
+    hideGutterComment();
+    cell.insertAdjacentHTML("beforeend", GUTTER_COMMENT_HTML);
+  };
+
+  /** The line-number cell of a row that can actually take a comment: a real
+   *  line, in a file whose body is open. A hunk header names no line, and a
+   *  capped file's press belongs to the fold. */
+  const commentableGutterCell = (target) => {
+    const row = target.closest ? target.closest("tr[data-ln]") : null;
+    if (!row || row.classList.contains("hunk") || !row.dataset.ln) return null;
+    const file = row.closest(".file");
+    if (!file || file.classList.contains("capped")) return null;
+    return row.querySelector("td.ln");
+  };
+
+  const hideGutterComment = () => {
+    if (host) host.querySelectorAll(".dcmt").forEach((button) => button.remove());
+  };
+
   const removeComment = (id) => {
     const index = comments.findIndex((c) => c.id === id);
     if (index >= 0) comments.splice(index, 1);
@@ -131,16 +172,6 @@ export function createCommentLayer({
 
     count: () => comments.length,
 
-    /** Anchor one comment per file, in the words the reviewer types once. What a
-     *  bulk selection is FOR: the same thing said about six files is six posts
-     *  the agent can act on, not one paragraph naming them. */
-    commentOnFiles(paths, rect) {
-      if (!paths.length) return;
-      openCommentComposer(rect, (comment) => {
-        for (const path of paths) addComment(path, 0, 0, "(entire file)", comment);
-      });
-    },
-
     /** Send what is pending, with whatever note the box under the diff holds.
      *  The box is the surface's (core/changesComposer.js), so the note is read
      *  through `readNote` rather than kept here. */
@@ -165,10 +196,12 @@ export function createCommentLayer({
      *  own button against. */
     sending: () => sending,
 
-    /** Bind to a freshly-rendered changeset: restore highlights and the general
-     *  draft, wire the tray's controls, and watch for text selections. */
+    /** Bind to a freshly-rendered changeset: restore highlights, wire the
+     *  tray's control, offer the gutter's comment button under the pointer, and
+     *  watch for text selections. */
     attach(element) {
       host = element;
+      host.onmouseover = (event) => offerGutterComment(event.target);
       if (selectionWatcher) selectionWatcher();
       // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
       selectionWatcher = watchSelection(host, (selection) => {
@@ -204,6 +237,16 @@ export function createCommentLayer({
         removeComment(+remove.dataset.id);
         return true;
       }
+      const gutter = target.closest(".dcmt");
+      if (gutter) {
+        const row = gutter.closest("tr[data-ln]");
+        const file = gutter.closest(".file");
+        if (row && file)
+          openCommentComposer(row.getBoundingClientRect(), (comment) =>
+            addComment(pathOf(file.dataset.key), +row.dataset.ln, +row.dataset.ln, row.querySelector(".code").textContent, comment, row.dataset.side || "new"),
+          );
+        return true;
+      }
       const commentButton = target.closest(".fcmt");
       if (commentButton) {
         const fileEl = commentButton.closest(".file");
@@ -223,7 +266,7 @@ export function createCommentLayer({
       if (!row || row.classList.contains("hunk") || !row.dataset.ln) return false;
       const line = +row.dataset.ln;
       const snippet = row.querySelector(".code").textContent;
-      openCommentComposer(row.getBoundingClientRect(), (comment) =>
+      showCommentPop(row.getBoundingClientRect(), (comment) =>
         addComment(pathOf(fileEl.dataset.key), line, line, snippet, comment, row.dataset.side || "new"),
       );
       return true;
@@ -235,6 +278,7 @@ export function createCommentLayer({
       if (selectionWatcher) selectionWatcher();
       selectionWatcher = null;
       hideCommentPop();
+      if (host) host.onmouseover = null;
       host = null;
     },
   };

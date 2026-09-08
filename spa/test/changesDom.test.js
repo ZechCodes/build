@@ -333,20 +333,13 @@ describe("selecting files", () => {
     pane.dispose();
   });
 
-  it("anchors what the reviewer says once against every file selected", async () => {
-    const { container, pane, calls } = await mount();
-    await showNoise(container);
+  it("offers approving and clearing, and nothing else", async () => {
+    const { container, pane } = await mount();
     await select(container, "src/a.js");
-    await select(container, "uv.lock");
-    await click(container.querySelector(".selcomment"));
-    document.querySelector(".cp-input").value = "these two belong together";
-    await click(document.querySelector(".cp-save"));
-    expect(container.querySelectorAll(".pcomment")).toHaveLength(2);
-
-    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
-    const post = calls.find((c) => c.method === "run.request_changes");
-    expect(post.params.messages.map((m) => m.anchor.path)).toEqual(["src/a.js", "uv.lock"]);
-    expect(post.params.messages.every((m) => m.body === "these two belong together")).toBe(true);
+    expect([...container.querySelectorAll(".selbar .btn")].map((b) => b.textContent.trim())).toEqual([
+      "Approve all",
+      "Clear",
+    ]);
     pane.dispose();
   });
 
@@ -420,6 +413,15 @@ describe("comments on any changeset", () => {
     await click(document.querySelector(".cp-save"));
   };
 
+  /** A press on a line offers the Comment button first — the same gesture a
+   *  selection gets. Only the file header's own button opens the field. */
+  const addCommentViaButton = async (trigger) => {
+    await click(trigger);
+    await click(document.querySelector(".cp-add"));
+    document.querySelector(".cp-input").value = "rename this";
+    await click(document.querySelector(".cp-save"));
+  };
+
   it("sends a whole-file comment as an anchored post naming the file and no line", async () => {
     const { container, pane, calls } = await mount();
     await addCommentViaPop(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
@@ -441,7 +443,61 @@ describe("comments on any changeset", () => {
     const { container, pane, calls } = await mount();
     const file = container.querySelector('.file[data-key$=":src/a.js"]');
     file.classList.remove("capped");
-    await addCommentViaPop(file.querySelector('tr[data-ln="1"] td.code'));
+    await addCommentViaButton(file.querySelector('tr[data-ln="1"] td.code'));
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    const post = calls.find((c) => c.method === "run.request_changes");
+    expect(post.params.messages[0].anchor).toMatchObject({ path: "src/a.js", line_start: 1, line_end: 1 });
+    pane.dispose();
+  });
+
+  // Three ways in, and they are deliberately not the same gesture. A press on a
+  // line and a selection both OFFER the button — the reviewer has pointed at
+  // something, not yet said they want to write. The gutter's button and the file
+  // header's button ARE that offer already, so pressing either gives the field.
+  it("offers the button on a line press, and the field only behind it", async () => {
+    const { container, pane } = await mount();
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
+    file.classList.remove("capped");
+    await click(file.querySelector('tr[data-ln="1"] td.code'));
+    expect(document.querySelector(".cp-add"), "the Comment button").toBeTruthy();
+    expect(document.querySelector(".cp-input")).toBe(null);
+    await click(document.querySelector(".cp-add"));
+    expect(document.querySelector(".cp-input")).toBeTruthy();
+    pane.dispose();
+  });
+
+  it("shows the gutter's comment button under the pointer, and only there", async () => {
+    const { container, pane } = await mount();
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
+    file.classList.remove("capped");
+    expect(container.querySelector(".dcmt")).toBe(null);
+
+    const row = file.querySelector('tr[data-ln="1"]');
+    row.querySelector("td.ln").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    const button = row.querySelector("td.ln .dcmt");
+    expect(button, "on the row under the pointer").toBeTruthy();
+    expect(container.querySelectorAll(".dcmt")).toHaveLength(1);
+
+    // Off the rows entirely: nothing is being pointed at, so nothing is offered.
+    file.querySelector(".fhead").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    expect(container.querySelector(".dcmt")).toBe(null);
+    pane.dispose();
+  });
+
+  it("opens the field straight away from the gutter's button", async () => {
+    const { container, pane, calls } = await mount();
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
+    file.classList.remove("capped");
+    const row = file.querySelector('tr[data-ln="1"]');
+    row.querySelector("td.ln").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    await click(row.querySelector(".dcmt"));
+    expect(document.querySelector(".cp-add"), "no button in the way").toBe(null);
+    document.querySelector(".cp-input").value = "this line";
+    await click(document.querySelector(".cp-save"));
+
     await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.messages[0].anchor).toMatchObject({ path: "src/a.js", line_start: 1, line_end: 1 });

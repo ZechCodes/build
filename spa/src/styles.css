@@ -571,6 +571,17 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    the way every card in the one-column layout does. */
 .gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
   background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
+/* The gutter's comment button: one element that follows the pointer down the
+   line numbers, so a long diff carries no per-row weight. It sits in the
+   line-number cell, which is why it moves with the code scrolling sideways. */
+.file td.ln { position:relative; }
+.dcmt { position:absolute; right:-9px; top:50%; transform:translateY(-50%); z-index:2;
+  display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; padding:0;
+  border:none; border-radius:5px; cursor:pointer; background:var(--accent); color:var(--accent-ink);
+  box-shadow:0 1px 4px var(--shadow-soft); }
+.dcmt svg { width:12px; height:12px; }
+.dcmt:hover { filter:brightness(1.08); }
+
 /* The bar the selection raises: what is in hand, and the verbs that take all of
    it at once. Drawn only while something is selected, so it never sits over a
    diff as a row of verbs aimed at nothing. */

@@ -552,15 +552,15 @@ async function toggleMute(entry) {
   await refreshFeed();
 }
 
-/** Clear the row off the inbox until something new needs the user. Nothing is
+/** Move the row to Recent until a new user or agent message. Nothing is
  *  destroyed, nothing is silenced: for a row with a conversation the daemon
- *  remembers how far it had got, and the next attention event past that brings
- *  the row back by itself; a row with none (a bare checkout, the primary) is
- *  cleared at the commit it sits on, and a new commit brings it back — so
- *  there is no un-clear verb to offer. The dismiss names the row the way
+ *  remembers how far every agent conversation had got, and the next message
+ *  past any of those markers brings the row back by itself. The dismiss names
+ *  the row the way
  *  dismissParamsOf says: an entity by its id, an entity-less row by what it is.
  *
- *  The row leaves on the tap and comes back if the daemon refuses. */
+ *  The row moves optimistically on the tap and returns to Inbox if the daemon
+ *  refuses. */
 async function dismissEntry(entry) {
   const params = entry && dismissParamsOf(entry);
   if (!params || isPending(INBOX_SCOPE, entry.key)) return;
@@ -570,10 +570,9 @@ async function dismissEntry(entry) {
     scope: INBOX_SCOPE,
     records: [patchRecord(entry.key, { dismissed: true })],
     call: async () => {
-      // Clearing an unread row IS reading it: the daemon's rule keeps an unread
-      // row visible (unread beats dismissed), so the tap reads it through first
-      // — otherwise the row would bounce back on the next poll and Clear would
-      // look broken on exactly the rows people most want to clear.
+      // Clearing an unread row also acknowledges its unread notification. The
+      // dismissal controls placement, but preserving read state avoids an
+      // obsolete badge if the entry later returns.
       if (entry.state === "unread" && entry.entityId) {
         await App.call("entity.seen", { entity_id: entry.entityId });
       }

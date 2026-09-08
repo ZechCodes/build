@@ -643,6 +643,29 @@ describe("tab layout primitives", () => {
   });
 });
 
+describe("diff file headers", () => {
+  it("stick flush to padded reading columns until their file scrolls away", () => {
+    const [file] = rulesFor(".file");
+    const [header] = rulesFor(".file .fhead");
+    const [expandOverlay] = rulesFor(".file.capped .diff-expand");
+
+    expect(declaration(file.body, "overflow")).toBe("clip");
+    expect(declaration(header.body, "position")).toBe("sticky");
+    expect(declaration(header.body, "top")).toBe("var(--diff-sticky-top, 0)");
+    expect(declaration(header.body, "background")).toBe("var(--panel)");
+    expect(Number(declaration(header.body, "z-index"))).toBeGreaterThan(
+      Number(declaration(expandOverlay.body, "z-index")),
+    );
+
+    const [singleColumn] = rulesFor(".surface #tabbody:not(.bare):not(.flush)");
+    const [changesColumn] = rulesFor(".cdetail-host");
+    const [issueColumn] = rulesIn(strippedSurfaces).filter((rule) => rule.selector === ".ivviewer");
+    for (const scroller of [singleColumn, changesColumn, issueColumn]) {
+      expect(declaration(scroller.body, "--diff-sticky-top")).toBe("calc(0px - var(--pane-top))");
+    }
+  });
+});
+
 // The work surfaces' reading columns end with the shared sticky actionbar, and
 // a sticky box cannot travel past its parent's content box: scroll-end room
 // paid as the column's bottom padding pins the bar that far above the floor and

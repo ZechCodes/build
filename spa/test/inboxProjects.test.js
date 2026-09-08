@@ -177,7 +177,7 @@ describe("the blocks the projects face lists", () => {
     expect(blockIsFolded(live, new Map([["p2", true]]))).toBe(true);
   });
 
-  it("drops what the inbox drops: finished rows, cleared rows, and an issue a live branch is implementing", () => {
+  it("drops finished and implemented rows, while filing cleared rows under Recent", () => {
     const { blocks } = projectBlocks({
       projects,
       nowMs: NOW,
@@ -189,7 +189,21 @@ describe("the blocks the projects face lists", () => {
       ],
     });
     expect(keys(blocks.find((block) => block.id === "p1").entries)).toEqual([]);
+    expect(keys(blocks.find((block) => block.id === "p1").recent)).toEqual(["run-c"]);
     expect(keys(blocks.find((block) => block.id === "p2").entries)).toEqual(["iss-live"]);
+  });
+
+  it("ranks and folds a project whose only row was cleared, even if that row is working", () => {
+    const { blocks } = projectBlocks({
+      projects,
+      nowMs: NOW,
+      items: [branch({ dismissed: true, working: true }), issue()],
+    });
+    expect(names(blocks)).toEqual(["dotfiles", "relaydb", "mascot"]);
+    const clearedOnly = blocks.find((block) => block.id === "p1");
+    expect(clearedOnly.entries).toEqual([]);
+    expect(keys(clearedOnly.recent)).toEqual(["run-1"]);
+    expect(blockIsFolded(clearedOnly, new Map())).toBe(true);
   });
 
   it("gives a row from a project the device has not listed a block of its own, named by the row", () => {

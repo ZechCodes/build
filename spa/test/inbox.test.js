@@ -96,7 +96,11 @@ const listed = (items, over = {}) => inboxEntries({ items, nowMs: NOW, ...over }
 
 describe("an entry's state", () => {
   it("is unread when an attention event is waiting, whatever else is true", () => {
-    expect(entryState(branch({ unread: true, working: true }))).toBe("unread");
+    const item = branch({ unread: true, working: true });
+    expect(entryState(item)).toBe("unread");
+    const [entry] = listed([item]);
+    expect(entry.state).toBe("unread");
+    expect(entry.working).toBe(true);
   });
 
   it("is working while an agent is running on it", () => {
@@ -412,10 +416,33 @@ describe("the rows a lifecycle verb in flight leaves", () => {
 describe("the Recent section", () => {
   const quiet = () => branch({ branch: "build/old", run_id: "run-old", anchor: ago(200), last_activity: ago(30) });
 
-  it("takes everything whose last activity is over a day old", () => {
+  it("takes everything whose last message activity is at least a day old", () => {
     const { entries, recent } = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
     expect(entries.map((entry) => entry.entityId)).toEqual(["run-1"]);
     expect(recent.map((entry) => entry.entityId)).toEqual(["run-old"]);
+  });
+
+  it("uses the 24-hour boundary", () => {
+    const { entries, recent } = inboxEntries({ items: [branch({ last_activity: ago(24) })], nowMs: NOW });
+    expect(entries).toEqual([]);
+    expect(recent.map((entry) => entry.entityId)).toEqual(["run-1"]);
+  });
+
+  it("keeps an old entry in Inbox while any agent is working", () => {
+    const { entries, recent } = inboxEntries({
+      items: [branch({ last_activity: ago(72), working: true })],
+      nowMs: NOW,
+    });
+    expect(entries.map((entry) => entry.entityId)).toEqual(["run-1"]);
+    expect(recent).toEqual([]);
+  });
+
+  it("keeps an old unread entry in Inbox when it is also working", () => {
+    const { entries } = inboxEntries({
+      items: [branch({ last_activity: ago(72), unread: true, unread_count: 1, working: true })],
+      nowMs: NOW,
+    });
+    expect(entries[0]).toMatchObject({ state: "unread", working: true });
   });
 
   it("keeps the anchor's order inside itself", () => {
@@ -458,18 +485,17 @@ describe("the Recent section", () => {
 });
 
 // ---- cleared from the inbox ----------------------------------------------------
-// A row the user cleared is GONE, not demoted: Recent is where a quiet row goes,
-// and a cleared one is in neither list until something new needs the user. It is
-// nothing like mute, which keeps the row and stops it asking.
+// A row the user cleared moves to Recent until any user or agent message causes
+// the bridge to remove the marker. Clear outranks working in the meantime.
 
 describe("a row the user cleared", () => {
-  it("is in neither the list nor Recent", () => {
+  it("moves from the list to Recent", () => {
     const { entries, recent } = inboxEntries({ items: [branch({ dismissed: true }), issue()], nowMs: NOW });
     expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
-    expect(recent).toEqual([]);
+    expect(recent.map((entry) => entry.entityId)).toEqual(["run-1"]);
   });
 
-  it("is not demoted to Recent by having gone quiet either", () => {
+  it("remains in Recent when it has also gone quiet", () => {
     const cleared = branch({
       branch: "build/old",
       run_id: "run-old",
@@ -479,7 +505,16 @@ describe("a row the user cleared", () => {
     });
     const { entries, recent } = inboxEntries({ items: [issue(), cleared], nowMs: NOW });
     expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
-    expect(recent).toEqual([]);
+    expect(recent.map((entry) => entry.entityId)).toEqual(["run-old"]);
+  });
+
+  it("stays in Recent even while an agent is working", () => {
+    const { entries, recent } = inboxEntries({
+      items: [branch({ dismissed: true, working: true })],
+      nowMs: NOW,
+    });
+    expect(entries).toEqual([]);
+    expect(recent[0]).toMatchObject({ entityId: "run-1", working: true });
   });
 
   it("keeps a row the bridge has not cleared, and carries what it said", () => {
@@ -499,7 +534,7 @@ describe("a row the user cleared", () => {
     const html = inboxRowHtml(entry, { openMenuKey: "run-1" });
     expect(html).toContain('data-dismiss="run-1"');
     expect(html).toContain("Clear from inbox");
-    expect(html).toContain("Hides it until something new needs you");
+    expect(html).toContain("Moves it to Recent until a new message");
     expect(html.indexOf("Clear from inbox")).toBeLessThan(html.indexOf(">Mute<"));
   });
 

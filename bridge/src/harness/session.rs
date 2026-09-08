@@ -78,6 +78,50 @@ pub enum AgentStatus {
     Ended { code: Option<i32> },
 }
 
+/// Cumulative protocol status. A watch receiver may coalesce intermediate
+/// values, so `last_worked_at` preserves the newest completed-turn boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStatusSnapshot {
+    pub status: AgentStatus,
+    pub changed_at: String,
+    pub last_worked_at: Option<String>,
+}
+
+impl SessionStatusSnapshot {
+    pub fn new(status: AgentStatus) -> Self {
+        let changed_at = status_time();
+        let last_worked_at = None;
+        Self {
+            status,
+            changed_at,
+            last_worked_at,
+        }
+    }
+
+    pub fn transition(&self, status: AgentStatus) -> Option<Self> {
+        (status != self.status).then(|| {
+            let changed_at = status_time();
+            let last_worked_at = match (self.status, status) {
+                (AgentStatus::Working, AgentStatus::Waiting | AgentStatus::Ended { .. }) => {
+                    Some(changed_at.clone())
+                }
+                _ => self.last_worked_at.clone(),
+            };
+            Self {
+                status,
+                changed_at,
+                last_worked_at,
+            }
+        })
+    }
+}
+
+fn status_time() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("UTC always formats as RFC 3339")
+}
+
 /// What Build needs from an agent. Every session implements this.
 pub trait AgentSession: Send + Sync {
     /// Hand the agent one turn. Returns when the turn is accepted, not when it
@@ -103,6 +147,11 @@ pub trait AgentSession: Send + Sync {
 
     /// What the agent is doing right now.
     fn status(&self) -> AgentStatus;
+
+    /// Exact turn-boundary updates for protocols that expose them.
+    fn status_changed(&self) -> Option<watch::Receiver<SessionStatusSnapshot>> {
+        None
+    }
 
     /// How long since the session last showed evidence of work — bytes painted
     /// for a PTY, protocol events read for a session protocol.
@@ -409,6 +458,20 @@ pub trait TerminalView: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_snapshots_remember_only_departures_from_working() {
+        let starting = SessionStatusSnapshot::new(AgentStatus::Starting);
+        let waiting = starting.transition(AgentStatus::Waiting).unwrap();
+        assert_eq!(waiting.last_worked_at, None);
+        let working = waiting.transition(AgentStatus::Working).unwrap();
+        let ended = working
+            .transition(AgentStatus::Ended { code: Some(0) })
+            .unwrap();
+        assert!(ended.last_worked_at.is_some());
+        let resumed = ended.transition(AgentStatus::Working).unwrap();
+        assert_eq!(resumed.last_worked_at, ended.last_worked_at);
+    }
 
     /// A session that reports its own turn boundaries and has nothing to escape
     /// to — the shape [`AgentSession`] exists for.

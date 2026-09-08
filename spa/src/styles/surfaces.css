@@ -145,7 +145,8 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .ivstages { flex:0 0 320px; overflow-y:auto; border-right:1px solid var(--line);
   padding:0 0 var(--pane-bottom); }
 .ivviewer { flex:1; min-width:0; overflow-y:auto;
-  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter); }
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter);
+  --diff-sticky-top:calc(0px - var(--pane-top)); }
 @media (max-width: 900px) { .ivviewer { padding-left:0; } }
 
 /* The issue's own head: where it stands and its gate. What the issue asks for

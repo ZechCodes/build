@@ -1352,6 +1352,7 @@ describe("the count on a folded run of activity", () => {
     from_sequence: from,
     through_sequence: through,
     tool_calls: toolCalls,
+    rows: toolCalls,
     last_tool_call: lastToolCall,
   });
   const railBody = () => railHost().querySelector("#rail-body");
@@ -2059,7 +2060,7 @@ describe("the conversation's local cache", () => {
         olderItemsRemain: true,
         deliveredSequence: 1530,
         knownTotalItems: 1530,
-        activityDigests: [{ from_sequence: 412, through_sequence: 1530, tool_calls: 1000, last_tool_call: null }],
+        activityDigests: [{ from_sequence: 412, through_sequence: 1530, tool_calls: 1000, rows: 1000, last_tool_call: null }],
       },
     );
     feedSnapshot = { items: feedItems, projects: [] };
@@ -2977,7 +2978,7 @@ describe("a run of activity in the rail", () => {
 
   it("draws a shut run as a head, and its rows on the press that opens it", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(2, "Read a.js"), toolCall(3, "Read b.js")], [
-      { from_sequence: 2, through_sequence: 3, tool_calls: 2, last_tool_call: null },
+      { from_sequence: 2, through_sequence: 3, tool_calls: 2, rows: 2, last_tool_call: null },
     ]);
     await mount();
 
@@ -3002,7 +3003,7 @@ describe("a run of activity in the rail", () => {
   it("asks for the half of a cut run the window never held, once", async () => {
     payload = conversation(
       [said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js"), said(52, "Done.")],
-      [{ from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null }],
+      [{ from_sequence: 10, through_sequence: 51, tool_calls: 40, rows: 40, last_tool_call: null }],
     );
     answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
     await mount();
@@ -3031,7 +3032,7 @@ describe("a run of activity in the rail", () => {
   // grew afterwards. The window is where the tail's rows land instead.
   it("never asks for the run that reaches the end of the conversation", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js")], [
-      { from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null },
+      { from_sequence: 10, through_sequence: 51, tool_calls: 40, rows: 40, last_tool_call: null },
     ]);
     answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
     await mount();
@@ -3050,7 +3051,7 @@ describe("a run of activity in the rail", () => {
   // then call a run that is still being written historical.
   it("never asks for a tail run one delta has grown past its digest", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js")], [
-      { from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null },
+      { from_sequence: 10, through_sequence: 51, tool_calls: 40, rows: 40, last_tool_call: null },
     ]);
     answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
     await mount();
@@ -3082,7 +3083,7 @@ describe("a run of activity in the rail", () => {
   it("asks over the digests the timeline was painted from, not the window's", async () => {
     payload = conversation(
       [said(1, "Have a look."), toolCall(50, "Read y.js"), toolCall(51, "Read z.js"), said(60, "Done.")],
-      [{ from_sequence: 10, through_sequence: 51, tool_calls: 40, last_tool_call: null }],
+      [{ from_sequence: 10, through_sequence: 51, tool_calls: 40, rows: 40, last_tool_call: null }],
     );
     answering({ items: [toolCall(10, "Read a.js")], oldest_sequence: 10, has_more: false });
     await mount();
@@ -3103,7 +3104,7 @@ describe("a run of activity in the rail", () => {
 
   it("opens the run a surface's call is folded into before reaching for the row", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(2, "Task(review the parser)")], [
-      { from_sequence: 2, through_sequence: 2, tool_calls: 1, last_tool_call: null },
+      { from_sequence: 2, through_sequence: 2, tool_calls: 1, rows: 1, last_tool_call: null },
     ]);
     payload.agents = [agent({ surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 2 }] } })];
     await mount();
@@ -3122,7 +3123,7 @@ describe("a run of activity in the rail", () => {
   it("says so when the half of a run it asked for does not arrive", async () => {
     payload = conversation(
       [said(1, "Have a look."), toolCall(50, "Read y.js"), said(52, "Done.")],
-      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, last_tool_call: null }],
+      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, rows: 40, last_tool_call: null }],
     );
     App.call.mockImplementation(async (method, params) => {
       calls.push({ method, params });
@@ -3146,7 +3147,7 @@ describe("a run of activity in the rail", () => {
   it("reaches a call in the half of a cut run the window never held", async () => {
     payload = conversation(
       [said(1, "Have a look."), toolCall(50, "Read z.js"), said(60, "Done.")],
-      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, last_tool_call: null }],
+      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, rows: 40, last_tool_call: null }],
     );
     payload.agents = [agent({ surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 12 }] } })];
     answering({

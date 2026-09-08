@@ -18,7 +18,7 @@ import {
 const INPUTS = {
   deliveredSequence: 40,
   itemCount: 12,
-  digests: [{ from_sequence: 1, through_sequence: 40, tool_calls: 300, last_tool_call: { sequence: 39, outcome: "ok" } }],
+  digests: [{ from_sequence: 1, through_sequence: 40, tool_calls: 300, rows: 320, last_tool_call: { sequence: 39, outcome: "ok" } }],
   openRunKeys: new Set(["1"]),
   fetchedRunKeys: new Set(),
   selectedAgentId: "ag-1",
@@ -39,7 +39,7 @@ describe("the chat paint's fingerprint", () => {
     const moved = {
       deliveredSequence: 41,
       itemCount: 13,
-      digests: [{ from_sequence: 1, through_sequence: 40, tool_calls: 301, last_tool_call: { sequence: 40, outcome: "ok" } }],
+      digests: [{ from_sequence: 1, through_sequence: 40, tool_calls: 300, rows: 321, last_tool_call: { sequence: 39, outcome: "ok" } }],
       openRunKeys: new Set(),
       fetchedRunKeys: new Set(["1"]),
       selectedAgentId: "ag-2",

@@ -914,12 +914,12 @@ function activityRunHtml(span, summary, children) {
   </details>`;
 }
 
-/// The newest sequence a run stands for: its own rows, and the calls they fold.
+/// The newest sequence a run stands for: its own rows, and the rows they fold.
 const runThroughSequence = (run) =>
   run.reduce(
     (newest, row) =>
-      (row.activity.toolCalls || []).reduce(
-        (highest, call) => Math.max(highest, call.sequence || 0),
+      (row.activity.rows || []).reduce(
+        (highest, folded) => Math.max(highest, folded.sequence || 0),
         Math.max(newest, row.activity.sequence || 0),
       ),
     0,
@@ -994,13 +994,14 @@ function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
 
 const TOOL_CALL_KIND = "tool_use";
 
-/// How a run of activity folds: which rows hide under which, and what calls a
-/// row stands for.
+/// How a run of activity folds: which rows hide under which, and what a row
+/// stands for.
 ///
 /// A tool call that spawns a subagent owns everything the subagent did — those
 /// rows are drawn inside its fold rather than beside it — so the row a reader
-/// sees is one row and several calls. Both readings come from the same parent
-/// map: the html of what folds under a row, and the calls that row stands for.
+/// sees is one row and several. Every reading comes from the same parent map:
+/// the html of what folds under a row, the rows that row stands for, and the
+/// calls among them.
 function threadFolding(items, agentLabel) {
   const eventItems = items.filter((item) => item.type !== "message");
   const sequenceOf = (item) => (item.data || {}).sequence;
@@ -1026,24 +1027,30 @@ function threadFolding(items, agentLabel) {
       .map((child) => eventHtml(child.data || {}, agentLabel, foldedChildrenHtmlOf(sequenceOf(child), drawn)))
       .join("")}</div>`;
   };
-  const toolCallsBeneath = (item, alreadyWalked) => {
+  /// A row and everything folded under it, at every depth, each visited once
+  /// however the parent links happen to loop.
+  const standingFor = (item, alreadyWalked) => {
     const sequence = sequenceOf(item);
     if (alreadyWalked.has(sequence)) return [];
     const walked = new Set([...alreadyWalked, sequence]);
-    const event = item.data || {};
-    const own = event.event === TOOL_CALL_KIND
-      ? [{
-        sequence,
-        meat: activityMeat(event, EVENT_META[TOOL_CALL_KIND], agentLabel),
-        outcome: event.outcome,
-        createdAt: event.created_at,
-      }]
-      : [];
     const children = childrenByParent.get(sequence) || [];
-    return [...own, ...children.flatMap((child) => toolCallsBeneath(child, walked))];
+    return [item, ...children.flatMap((child) => standingFor(child, walked))];
   };
-  const toolCallsUnder = (item) => toolCallsBeneath(item, new Set());
-  return { foldedItems, foldedChildrenHtmlOf, toolCallsUnder };
+  const callOf = (item) => {
+    const event = item.data || {};
+    return {
+      sequence: sequenceOf(item),
+      meat: activityMeat(event, EVENT_META[TOOL_CALL_KIND], agentLabel),
+      outcome: event.outcome,
+      createdAt: event.created_at,
+    };
+  };
+  const rowsUnder = (item) => standingFor(item, new Set()).map((held) => ({ sequence: sequenceOf(held) }));
+  const toolCallsUnder = (item) =>
+    standingFor(item, new Set())
+      .filter((held) => (held.data || {}).event === TOOL_CALL_KIND)
+      .map(callOf);
+  return { foldedItems, foldedChildrenHtmlOf, rowsUnder, toolCallsUnder };
 }
 
 export function revealThreadSequence(scroller, sequence) {
@@ -1085,7 +1092,9 @@ function activityRow(item, index, agentLabel, folding) {
       outcome: event.outcome,
       createdAt: event.created_at,
       // What this row stands for, which is not always itself: a call that
-      // spawned a subagent stands for every call the subagent made.
+      // spawned a subagent stands for every row the subagent made, and the
+      // calls among them are what the head's line is drawn from.
+      rows: folding.rowsUnder(item),
       toolCalls: folding.toolCallsUnder(item),
     },
   };
@@ -1282,7 +1291,10 @@ const lastCallSignature = (call) => (call ? `${call.sequence}:${call.outcome || 
 
 const digestsSignature = (digests) =>
   (digests || [])
-    .map((digest) => `${digest.from_sequence}-${digest.through_sequence}:${digest.tool_calls}:${lastCallSignature(digest.last_tool_call)}`)
+    .map(
+      (digest) =>
+        `${digest.from_sequence}-${digest.through_sequence}:${digest.rows}:${digest.tool_calls}:${lastCallSignature(digest.last_tool_call)}`,
+    )
     .join(",");
 
 const keysSignature = (keys) => [...(keys || [])].sort().join(",");

@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 // The number on a folded run.
 //
-// A run of a thousand tool calls ships as a hundred: the bridge caps how much
-// of one run travels and sends the run's total beside it. So the row counts
-// TOOL CALLS, from the digest, and shows the last call the agent made — never
-// how many rows happened to arrive.
+// A run of a thousand rows ships as a hundred: the bridge caps how much of
+// one run travels and sends the run's total beside it. So the head counts
+// ROWS, from the digest's census, and shows the last call the agent made —
+// never how many rows happened to arrive.
 
 import { describe, expect, it } from "vitest";
 import { threadHtml } from "../src/core/thread.js";
@@ -35,10 +35,10 @@ const previewOn = (group) => group.querySelector(".thread-activity-preview").tex
 const iconOn = (group) => group.querySelector(".thread-activity-group-head .thread-event-icon").textContent;
 
 describe("a folded run drawn from its digest", () => {
-  const digest = (from, through, toolCalls, lastToolCall = null) => ({
+  const digest = (from, through, rows, lastToolCall = null) => ({
     from_sequence: from,
     through_sequence: through,
-    tool_calls: toolCalls,
+    rows,
     last_tool_call: lastToolCall,
   });
 
@@ -61,7 +61,7 @@ describe("a folded run drawn from its digest", () => {
     expect(group.querySelectorAll(".thread-activity-group-list .thread-activity")).toHaveLength(2);
   });
 
-  it("adds the calls that arrived after the page was cut", () => {
+  it("adds the rows that arrived after the page was cut", () => {
     const group = paint({
       items: [toolCall(1530, "Bash(cargo test)"), toolCall(1532, "Edit bridge/src/app.rs")],
       activityDigests: [digest(412, 1531, 1000, { sequence: 1530, summary: "Bash(cargo test)", outcome: "ok" })],
@@ -106,16 +106,17 @@ describe("a folded run drawn from its digest", () => {
 
   // A conversation shipped whole, and every run written since the page was
   // cut: nothing has a digest, so the rows in hand are the count.
-  it("counts the calls in hand when no digest reaches the run", () => {
+  it("counts the rows in hand when no digest reaches the run", () => {
     const group = paint({ items: [toolCall(1, "Read a.js"), reasoning(2, "Thinking."), toolCall(3, "Read b.js")] });
 
-    expect(countOn(group)).toBe("2");
+    expect(countOn(group)).toBe("3");
     expect(previewOn(group)).toBe("Read b.js");
   });
 
-  // A subagent's calls fold under the call that spawned them: they are never
-  // rows of their own, so a count of rows says one where the agent made four.
-  it("counts the calls a subagent made under the call that spawned it", () => {
+  // A subagent's rows fold under the call that spawned them: they are never
+  // rows of their own, so counting what the reader can see says one where the
+  // run holds four.
+  it("counts the rows a subagent made under the call that spawned it", () => {
     const group = paint({
       items: [
         toolCall(2, "Task(review the parser)"),
@@ -130,7 +131,7 @@ describe("a folded run drawn from its digest", () => {
     expect(previewOn(group)).toBe("Bash(npm test)");
   });
 
-  it("tops the digest up with the subagent calls that arrived after it", () => {
+  it("tops the digest up with the subagent rows that arrived after it", () => {
     const group = paint({
       items: [
         toolCall(2, "Task(review the parser)"),
@@ -164,10 +165,10 @@ describe("a folded run drawn from its digest", () => {
     expect(iconOn(group)).toBe("\u25cc");
   });
 
-  it("keeps the old look for a run that called no tool", () => {
+  it("shows its latest row for a run that called no tool", () => {
     const group = paint({
       items: [reasoning(1, "Thinking."), reasoning(2, "Still thinking.")],
-      activityDigests: [digest(1, 2, 0, null)],
+      activityDigests: [digest(1, 2, 2, null)],
     });
 
     expect(countOn(group)).toBe("2");

@@ -28,7 +28,6 @@ import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { createReviewMarks } from "./reviewMarks.js";
-import { selectionBarHtml } from "./changesRender.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -173,6 +172,9 @@ export function createReviewPlug({
   // The surface's box under the diff names how much is waiting on its button, so
   // it is told whenever that moves.
   let onCommentsChanged = () => {};
+  // A mark is the SURFACE's — its bar names what is selected and its commit
+  // narrows to it — so the surface is told whenever one moves in here.
+  let onMarksChanged = () => {};
 
   function render() {
     if (!host) return;
@@ -207,12 +209,11 @@ export function createReviewPlug({
             },
     });
     paintChangeset({
-      bar:
-        reviewBarHtml(renderedFiles, {
-          statusHtml: statusHtml(),
-          offerChangedOnly: reviewStamps.size > 0,
-          changedOnly: changedOnlyFilter,
-        }) + selectionBarHtml(marks.selected.size),
+      bar: reviewBarHtml(renderedFiles, {
+        statusHtml: statusHtml(),
+        offerChangedOnly: reviewStamps.size > 0,
+        changedOnly: changedOnlyFilter,
+      }),
       entries,
       tray: trayMounted ? commentLayer.trayHtml() : "",
     });
@@ -261,23 +262,13 @@ export function createReviewPlug({
     if (!toggle) return false;
     marks.toggleApproved(pathOf(toggle.dataset.key));
     render();
-    return true;
-  };
-
-  /// The verbs the selection raises, aimed at every file in hand at once.
-  const claimSelectionVerb = (event) => {
-    const button = event.target.closest(".selapprove, .selclear");
-    if (!button) return false;
-    if (button.classList.contains("selapprove")) marks.approveSelected();
-    else marks.clearSelection();
-    render();
+    onMarksChanged();
     return true;
   };
 
   const claims = [
     claimSecret,
     claimApprove,
-    claimSelectionVerb,
     claimNoiseGroup,
     claimTrustDial,
     claimOverride,
@@ -304,6 +295,7 @@ export function createReviewPlug({
       if (!target.classList.contains("fselect-box")) return;
       marks.toggleSelected(pathOf(target.dataset.key));
       render();
+      onMarksChanged();
     };
     host.onclick = (event) => {
       for (const claim of claims) if (claim(event)) return;
@@ -395,12 +387,16 @@ export function createReviewPlug({
     /** The pending comments (and typed general note) the surface holds. */
     busy: () => Boolean(commentLayer && commentLayer.busy()),
 
-    mount(element, { gitActions = () => null, readNote = () => "", onComments = () => {}, reviewMarks = null } = {}) {
+    mount(
+      element,
+      { gitActions = () => null, readNote = () => "", onComments = () => {}, onMarks = () => {}, reviewMarks = null } = {},
+    ) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
       gitActionsHost = gitActions;
       noteReader = readNote;
       onCommentsChanged = onComments;
+      onMarksChanged = onMarks;
       if (reviewMarks) marks = reviewMarks;
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint

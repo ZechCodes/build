@@ -130,6 +130,18 @@ describe("the Changes surface, opened on its review aggregate", () => {
     pane.dispose();
   });
 
+  // The bar is the surface's and the mark is made inside the plug, so the plug
+  // has to say so — otherwise the verbs the selection raises never appear.
+  it("raises the selection's verbs in the bar above the stack", async () => {
+    const { container, pane } = await mount();
+    expect(container.querySelector(".gittoolbar .selbar")).toBe(null);
+    container.querySelector(".fselect-box").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(container.querySelector(".gittoolbar .selcount").textContent).toBe("1 file selected");
+    expect(container.querySelector(".cdetail-host .selbar"), "and not over the diffs").toBe(null);
+    pane.dispose();
+  });
+
   // The reviewer's bug: the box selects the file AND expanded its diff, because
   // a capped file treats any click in it as "show me the rest".
   it("selects a file without expanding it", async () => {

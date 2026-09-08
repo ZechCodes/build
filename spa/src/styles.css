@@ -552,12 +552,11 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .cdetail-host { flex:1; min-height:0; overflow-y:auto;
   padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter);
   --diff-sticky-top:calc(0px - var(--pane-top)); }
-.gp-toolbar:empty, .gp-banner:empty { display:none; }
+.gp-toolbar:empty { display:none; }
 /* Rows of controls, not surfaces: their box still spans to the seam (the
    toolbar's rule is the pane's own line) while the buttons and boxes on them
    stop a gutter short of it. */
 .gp-toolbar { padding:12px var(--pane-gutter) 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
-.gp-banner { padding:16px var(--pane-gutter) 0 var(--pane-gutter); }
 /* Below the stacking width there is no divider to clear — the rail floats over
    this column instead of sitting beside it — so the column's own left gutter
    goes, and the split's left inset with the column's right gutter leave the
@@ -565,7 +564,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    base rules, not up with the drawer: same specificity, so the later block is
    the one that wins.) */
 @media (max-width: 900px) {
-  .cdetail-host, .gp-toolbar, .gp-banner { padding-left:0; }
+  .cdetail-host, .gp-toolbar { padding-left:0; }
 }
 /* The commit bar is a filled surface, so it keeps its own inset on both sides,
    the way every card in the one-column layout does. */
@@ -585,8 +584,8 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* The bar the selection raises: what is in hand, and the verbs that take all of
    it at once. Drawn only while something is selected, so it never sits over a
    diff as a row of verbs aimed at nothing. */
-.selbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 0 2px; }
-.selcount { font-size:11.5px; font-weight:650; color:var(--accent); margin-right:2px; }
+.selbar { display:inline-flex; align-items:center; gap:8px; }
+.selcount { font-size:11.5px; font-weight:650; color:var(--accent); margin-right:2px; white-space:nowrap; }
 /* The tray's foot: what is waiting, and the one control that discards it. */
 .cstrayfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
 /* Every row in the rail carries the gutter on its LEFT: the column itself meets
@@ -729,12 +728,23 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
    every other button in the row. */
 .gittoolbar .btn { display:inline-flex; align-items:center; gap:6px; }
 .gittoolbar svg { width:14px; height:14px; flex:none; }
-/* The surface's own verb — merging — sits at the far end of the bar, past the
-   repo-management ones: they are about the remote, it is about this work. */
-.gtmerge { margin-left:auto; display:flex; align-items:center; gap:6px; }
+/* The surface's own verb — merging — sits with the repo-management ones rather
+   than floated away from them: the bar reads left to right, and what follows it
+   is the selection's, behind the divider that says so. */
+.gtmerge { display:flex; align-items:center; gap:6px; }
 .gtmerge:empty { display:none; }
 .gtsync { display:flex; align-items:center; gap:7px; }
+/* Where the branch stands, on the left and never covered: the two numbers about
+   its upstream and the two about its working tree, in the mono the rest of the
+   surface counts in. */
+.gtstatus { display:inline-flex; align-items:center; gap:10px; flex:none;
+  font-family:var(--mono); font-size:12px; }
 .gtchips { font-family:var(--mono); font-size:12px; display:inline-flex; gap:8px; }
+.gtstatus .gtweight { font-size:12px; }
+/* Everything the banner takes over when the repository is mid-operation. */
+.gtrest { display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1; min-width:0; }
+/* The line that says the verbs after it belong to something else. */
+.gtdivider { width:1px; align-self:stretch; min-height:20px; background:var(--line); margin:0 2px; }
 .gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }
 .gtpull, .gtpush, .gtstash { display:inline-flex; }
 /* The bar's verbs are the app's mini button, mounted as such (gitPane's
@@ -744,7 +754,12 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .gtpush .btn:not(.caret)::before { content:"↑"; margin-right:6px; }
 .gtstash .btn:not(.caret)::before { content:"↧"; margin-right:6px; }
 /* git repo-state banner (merge/rebase in progress) */
-.gitstate { display:flex; align-items:center; gap:12px; background:var(--red-bg); border:1px solid var(--red); color:var(--red); border-radius:9px; padding:10px 13px; font-size:13px; margin-bottom:18px; }
+/* The repository mid-merge, in the bar rather than under it: the same banner it
+   always was, sized to the row it now stands in and taking the width the verbs
+   it replaced were using. */
+.gitstate { display:flex; align-items:center; gap:12px; flex:1; min-width:0;
+  background:var(--red-bg); border:1px solid var(--red); color:var(--red);
+  border-radius:9px; padding:5px 10px; font-size:12.5px; }
 .gitstate-msg { flex:1; }
 /* per-file discard + armed danger confirms */
 .gitfile .fhead .gitdiscard { margin-left:auto; }

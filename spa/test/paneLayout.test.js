@@ -571,7 +571,9 @@ describe("tab layout primitives", () => {
   // The regions of the Changes detail column that pay the divider gutter. The
   // Files preview is not among them: its head and body carry their own even
   // padding, so it reads the same at either width.
-  const DIVIDER_SIDE = [".cdetail-host", ".gp-toolbar", ".gp-banner"];
+  // The banner is not a region of its own any more: it stands in the toolbar,
+  // taking the width of the verbs it replaces.
+  const DIVIDER_SIDE = [".cdetail-host", ".gp-toolbar"];
 
   it("gutters every region of the detail column on the divider side", () => {
     // The column touches the frame on its left, so each of its regions pays the
@@ -597,7 +599,7 @@ describe("tab layout primitives", () => {
       return declaration(rule.body, "padding").split(/\s+/)[1];
     };
     expect(rightOf(".cdetail-host")).toBe("var(--pane-gutter)");
-    for (const controls of [".gp-toolbar", ".gp-banner"]) {
+    for (const controls of [".gp-toolbar"]) {
       expect(rightOf(controls)).toBe("var(--pane-gutter)");
     }
     const surfaceRules = rulesIn(strippedSurfaces);

@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+use crate::agent_modes::AgentModes;
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::delivery::{AgentSpawnPlan, ReadyToSpawn, SessionProbes};
@@ -1693,6 +1694,7 @@ fn accept_isolation(named: &str, available: &IsolationAvailability) -> Result<Is
 struct SettingsPatch {
     projects_dir: Option<std::path::PathBuf>,
     default_harness: Option<AgentProvider>,
+    agent_modes: Option<Value>,
     isolation: Option<Isolation>,
 }
 
@@ -1706,7 +1708,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 5] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 6] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -1730,6 +1732,10 @@ impl SettingsPatch {
                      \"codex\", \"codex_app_server\" or \"pi\")"
                 )
             })?);
+            Ok(())
+        }),
+        ("agent_modes", |patch, value, _| {
+            patch.agent_modes = Some(value.clone());
             Ok(())
         }),
         ("codex_mode", |patch, value, _| {
@@ -1803,6 +1809,8 @@ pub struct AppState {
     /// page and spent at creation — never re-read to move an agent that
     /// already exists.
     default_harness: AgentProvider,
+    /// Independent launch presentation for each agent family.
+    agent_modes: AgentModes,
     /// How a new checkout is isolated from the project it comes from, for
     /// every project that names no isolation of its own. Spent at creation,
     /// like `default_harness`: an existing checkout says what it is itself.
@@ -2374,6 +2382,7 @@ impl AppState {
             worktrees_root,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
+            agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             config_path: None,
             #[cfg(test)]
@@ -2509,6 +2518,7 @@ impl AppState {
             self.projects_dir = expand_tilde(dir);
         }
         self.apply_default_harness_config(config);
+        self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;
         }
@@ -2533,6 +2543,17 @@ impl AppState {
                 eprintln!("config {key}: unknown {named:?}; using the default")
             }
             None => {}
+        }
+    }
+
+    fn apply_agent_modes_config(&mut self, config: &Value) {
+        self.agent_modes = AgentModes::from_legacy_default(self.default_harness);
+        let Some(value) = config.get("agent_modes") else {
+            return;
+        };
+        match self.agent_modes.merge_wire(value) {
+            Ok(modes) => self.agent_modes = modes,
+            Err(error) => eprintln!("config agent_modes: {error}; using the legacy default"),
         }
     }
 
@@ -3999,6 +4020,7 @@ impl AppState {
         json!({
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
+            "agent_modes": self.agent_modes,
             "isolation": isolation,
             "router_model": self.router_choice,
             "projects": self.projects.iter().chain(prospective_project).map(|p| {
@@ -6688,6 +6710,7 @@ impl AppState {
                 "models": harness_for(self.default_harness).models(),
                 "efforts": harness_for(self.default_harness).effort_levels(),
                 "default_provider": self.default_harness,
+                "agent_modes": self.agent_modes,
                 "providers": models::provider_catalogs(),
             })),
             "thread.revision" => self.thread_revision(params),
@@ -7446,12 +7469,14 @@ impl AppState {
         }))
     }
 
-    /// Every account setting this bridge holds. Legacy mode fields are derived
-    /// from the concrete default harness rather than stored separately.
+    /// Every account setting this bridge holds. `agent_modes` is independent;
+    /// legacy mode aliases keep describing the concrete default harness for
+    /// clients that still use those fields to choose that fallback.
     fn settings_get(&self) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
+            "agent_modes": self.agent_modes,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
             "isolation": self.isolation,
@@ -7467,6 +7492,12 @@ impl AppState {
     /// accepted one to the account is [`AppState::apply_settings`].
     fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
         let patch = SettingsPatch::parse(params, &self.account_availability())?;
+        let agent_modes = patch
+            .agent_modes
+            .as_ref()
+            .map(|value| self.agent_modes.merge_wire(value))
+            .transpose()?
+            .unwrap_or(self.agent_modes);
         // Every accepted field is put to a prospective config and written
         // BEFORE any of it reaches the account, so a refused write leaves
         // nothing applied. `projects_dir` is the one that touches the disk —
@@ -7482,9 +7513,12 @@ impl AppState {
         };
         let default_harness = patch.default_harness.unwrap_or(self.default_harness);
         let isolation = patch.isolation.unwrap_or(self.isolation);
-        self.persist_config(&self.config_value(&projects_dir, default_harness, isolation))?;
+        let mut config = self.config_value(&projects_dir, default_harness, isolation);
+        config["agent_modes"] = json!(agent_modes);
+        self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
+        self.agent_modes = agent_modes;
         self.isolation = isolation;
         Ok(self.settings_get())
     }
@@ -23479,7 +23513,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_write_failure_is_reported_and_leaves_the_default_harness_unchanged() {
+    fn settings_write_failure_is_reported_and_leaves_account_modes_unchanged() {
         let directory = tempfile::tempdir().unwrap();
         let (_repo_dir, repo) = init_repo();
         let config = directory.path().join("config.json");
@@ -23494,7 +23528,14 @@ mod tests {
         .unwrap();
         std::fs::create_dir(&config).unwrap();
 
-        let response = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+        let before_modes = state.agent_modes;
+        let response = state.handle(req(
+            "settings.set",
+            json!({
+                "default_harness": "pi",
+                "agent_modes": { "claude": "tui", "codex": "headless" }
+            }),
+        ));
 
         assert_eq!(response["ok"], false, "{response:?}");
         assert!(
@@ -23504,6 +23545,7 @@ mod tests {
             "{response:?}"
         );
         assert_eq!(state.default_harness, DEFAULT_HARNESS);
+        assert_eq!(state.agent_modes, before_modes);
         assert!(
             !config.with_extension("tmp").exists(),
             "a failed atomic write leaves no temporary config behind"
@@ -23528,6 +23570,156 @@ mod tests {
         assert_eq!(settings["default_harness"], "claude_adk");
         assert_eq!(settings["claude_mode"], "headless");
         assert_eq!(settings["codex_mode"], "headless");
+        assert_eq!(settings["agent_modes"]["claude"], "headless");
+        assert_eq!(settings["agent_modes"]["codex"], "tui");
+    }
+
+    #[test]
+    fn independent_agent_modes_merge_persist_and_ignore_fallback_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let config = tmp.path().join("config.json");
+        let mut state = AppState::new(
+            repo.clone(),
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+
+        let claude = state.handle(req(
+            "settings.set",
+            json!({ "agent_modes": { "claude": "tui" } }),
+        ));
+        assert_eq!(claude["result"]["agent_modes"]["claude"], "tui");
+        assert_eq!(claude["result"]["agent_modes"]["codex"], "tui");
+        let codex = state.handle(req(
+            "settings.set",
+            json!({ "agent_modes": { "codex": "headless" } }),
+        ));
+        assert_eq!(codex["result"]["agent_modes"]["claude"], "tui");
+        assert_eq!(codex["result"]["agent_modes"]["codex"], "headless");
+
+        let fallback = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+        assert_eq!(fallback["result"]["default_harness"], "pi");
+        assert_eq!(
+            fallback["result"]["agent_modes"],
+            codex["result"]["agent_modes"]
+        );
+        for legacy_patch in [
+            json!({ "claude_mode": "headless" }),
+            json!({ "codex_mode": "tui" }),
+        ] {
+            let legacy = state.handle(req("settings.set", legacy_patch));
+            assert_eq!(
+                legacy["result"]["agent_modes"], codex["result"]["agent_modes"],
+                "legacy aliases must not overwrite independent preferences"
+            );
+        }
+
+        let mut reloaded = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+        let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["agent_modes"]["claude"], "tui");
+        assert_eq!(settings["agent_modes"]["codex"], "headless");
+        let persisted: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+        assert_eq!(persisted["agent_modes"], settings["agent_modes"]);
+    }
+
+    #[test]
+    fn legacy_config_derives_modes_once_and_all_normal_writes_materialize_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let config = tmp.path().join("config.json");
+        std::fs::write(
+            &config,
+            json!({ "default_harness": "codex_app_server" }).to_string(),
+        )
+        .unwrap();
+        let mut state = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+        let initial = state.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(initial["agent_modes"]["claude"], "headless");
+        assert_eq!(initial["agent_modes"]["codex"], "headless");
+
+        let changed = state.handle(req("settings.set", json!({ "default_harness": "claude" })));
+        assert_eq!(changed["result"]["agent_modes"], initial["agent_modes"]);
+        let persisted: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+        assert_eq!(persisted["agent_modes"], initial["agent_modes"]);
+    }
+
+    #[test]
+    fn malformed_agent_mode_patches_are_atomic() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let before = state.handle(req("settings.get", json!({})))["result"].clone();
+        for invalid in [
+            json!(null),
+            json!({}),
+            json!({ "gemini": "tui" }),
+            json!({ "claude": "future" }),
+            json!({ "codex": 1 }),
+        ] {
+            let untouched = dir.path().join("must-not-exist");
+            let response = state.handle(req(
+                "settings.set",
+                json!({
+                    "projects_dir": untouched,
+                    "default_harness": "pi",
+                    "agent_modes": invalid
+                }),
+            ));
+            assert_eq!(response["ok"], false, "{response:?}");
+            assert_eq!(
+                state.handle(req("settings.get", json!({})))["result"],
+                before
+            );
+            assert!(
+                !untouched.exists(),
+                "validation must precede filesystem mutation"
+            );
+        }
+    }
+
+    #[test]
+    fn models_list_serves_independent_agent_modes() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        state.handle(req(
+            "settings.set",
+            json!({ "agent_modes": { "claude": "tui", "codex": "headless" } }),
+        ));
+        let models = state.handle(req("models.list", json!({})));
+        assert_eq!(models["result"]["agent_modes"]["claude"], "tui");
+        assert_eq!(models["result"]["agent_modes"]["codex"], "headless");
     }
 
     /// The default outlives the process it was chosen in — it is an account

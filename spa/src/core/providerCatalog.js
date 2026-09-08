@@ -1,15 +1,19 @@
 const PROVIDER_FAMILIES = [
   {
+    key: "claude",
     genericLabel: "Claude Code",
     fallbackCarrierId: "claude_adk",
+    modeCarrierIds: { headless: "claude_adk", tui: "claude" },
     carriers: [
       { id: "claude_adk", label: "Claude Code" },
       { id: "claude", label: "Claude Code TUI" },
     ],
   },
   {
+    key: "codex",
     genericLabel: "Codex",
     fallbackCarrierId: "codex",
+    modeCarrierIds: { headless: "codex_app_server", tui: "codex" },
     carriers: [
       { id: "codex_app_server", label: "Codex", requiresProviderCatalog: true },
       { id: "codex", label: "Codex TUI" },
@@ -36,7 +40,30 @@ function providerFamilyForCarrier(providerId) {
   );
 }
 
+export function providerInSameFamily(providers, providerId) {
+  const family = providerFamilyForCarrier(providerId);
+  return family?.carriers.find((carrier) =>
+    providers.some((provider) => provider.id === carrier.id),
+  )?.id || "";
+}
+
+function carrierForMode(family, mode) {
+  const id = family.modeCarrierIds[mode];
+  return family.carriers.find((carrier) => carrier.id === id);
+}
+
+function explicitCarrierId(family, catalog) {
+  const carrier = carrierForMode(family, catalog?.agent_modes?.[family.key]);
+  if (!carrier) return "";
+  if (!carrier.requiresProviderCatalog) return carrier.id;
+  return catalog.providers?.some((provider) => provider.id === carrier.id)
+    ? carrier.id
+    : family.fallbackCarrierId;
+}
+
 function selectedCarrierId(family, catalog) {
+  const explicit = explicitCarrierId(family, catalog);
+  if (explicit) return explicit;
   const defaultCarrier = family.carriers.find(
     (carrier) => carrier.id === catalog?.default_provider,
   );

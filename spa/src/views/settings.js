@@ -18,8 +18,9 @@ import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
 import { chosenProviderId } from "../core/agentChoice.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
+import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
 import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
-import { loadModelCatalog } from "../app.js";
+import { loadModelCatalog, refreshModelCatalog } from "../app.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -68,6 +69,7 @@ export async function renderSettings() {
       </div>
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
+    ${agentModesPanelHtml()}
     ${defaultHarnessPanelHtml()}
     ${isolationPanelHtml()}
     <div class="panel">
@@ -125,7 +127,24 @@ export async function renderSettings() {
   };
   await refresh();
   const callRpc = (method, params) => App.call(method, params);
-  await mountDefaultHarness($("#root"), { callRpc });
+  const syncModelCatalog = async (settings) => {
+    if (App.modelCatalog) {
+      App.modelCatalog = {
+        ...App.modelCatalog,
+        default_provider: settings.default_harness ?? App.modelCatalog.default_provider,
+        agent_modes: settings.agent_modes ?? App.modelCatalog.agent_modes,
+      };
+      await mountAgentDefaults();
+    }
+    try {
+      await refreshModelCatalog();
+      await mountAgentDefaults();
+    } catch {
+      // Confirmed settings already keep this page's creation defaults current.
+    }
+  };
+  await mountAgentModes($("#root"), { callRpc, onSaved: syncModelCatalog });
+  await mountDefaultHarness($("#root"), { callRpc, onSaved: syncModelCatalog });
   await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
@@ -148,8 +167,8 @@ export async function renderSettings() {
     const note = $("#defsaved");
 
     // These defaults are spent creating agents, so they offer what every create
-    // surface offers: the two agents, never the carrier behind Claude Code —
-    // that question belongs to the Default agent panel below.
+    // surface offers: the two agents, never the carrier behind either family —
+    // those questions belong to the Agent modes panel below.
     const offered = creatableCatalog(catalog);
 
     const paint = () => {

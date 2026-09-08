@@ -19,9 +19,14 @@ import {
   modelParams,
   providerOptionsHtml,
 } from "./modelPicker.js";
+import { providerInSameFamily } from "./providerCatalog.js";
 
 /** No stored preferences; the provider resolves against the displayed offer. */
 export const NO_AGENT_CHOICE = { provider: "", model: "", effort: "" };
+
+const offeredProviderId = (providers, providerId) =>
+  providers.find((provider) => provider.id === providerId)?.id
+  || providerInSameFamily(providers, providerId);
 
 /** The provider a choice is really on: the one it named, else the catalog's
  *  default, else the first the daemon offers.
@@ -32,9 +37,11 @@ export const NO_AGENT_CHOICE = { provider: "", model: "", effort: "" };
 export function chosenProviderId(catalog, choice) {
   const providers = (catalog && catalog.providers) || [];
   const named = choice && choice.provider;
-  if (named && providers.some((provider) => provider.id === named)) return named;
+  const chosen = offeredProviderId(providers, named);
+  if (chosen) return chosen;
   const fallback = catalog && catalog.default_provider;
-  if (fallback && providers.some((provider) => provider.id === fallback)) return fallback;
+  const familyFallback = offeredProviderId(providers, fallback);
+  if (familyFallback) return familyFallback;
   return providers[0] ? providers[0].id : "";
 }
 

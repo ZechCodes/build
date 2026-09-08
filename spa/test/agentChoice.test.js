@@ -68,6 +68,17 @@ describe("which provider a choice is on", () => {
     expect(chosenProviderId({ providers: [{ id: "codex" }] }, { provider: "gone" })).toBe("codex");
     expect(chosenProviderId({ providers: [] }, NO_AGENT_CHOICE)).toBe("");
   });
+
+  it("keeps a stale saved provider in its family when an agent mode changes", () => {
+    const offered = {
+      default_provider: "claude",
+      providers: [{ id: "claude" }, { id: "codex" }],
+    };
+
+    expect(chosenProviderId(offered, { provider: "codex_app_server" })).toBe("codex");
+    expect(chosenProviderId(offered, { provider: "claude_adk" })).toBe("claude");
+    expect(chosenProviderId({ ...offered, default_provider: "codex_app_server" }, NO_AGENT_CHOICE)).toBe("codex");
+  });
 });
 
 describe("the panel", () => {

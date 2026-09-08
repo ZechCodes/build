@@ -43,6 +43,7 @@
 #![deny(clippy::await_holding_lock)]
 
 pub mod agent;
+pub mod agent_modes;
 pub mod app;
 pub mod attention;
 pub mod backoff;

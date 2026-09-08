@@ -139,6 +139,17 @@ describe("the catalog a create surface offers", () => {
     expect(codexId("claude_adk")).toBe("codex");
   });
 
+  it.each([
+    [{ claude: "headless", codex: "headless" }, ["claude_adk", "codex_app_server"]],
+    [{ claude: "headless", codex: "tui" }, ["claude_adk", "codex"]],
+    [{ claude: "tui", codex: "headless" }, ["claude", "codex_app_server"]],
+    [{ claude: "tui", codex: "tui" }, ["claude", "codex"]],
+  ])("uses explicit agent modes independently of the fallback agent: %o", (agent_modes, expected) => {
+    const offered = creatableCatalog({ ...fourProviders("claude_adk"), agent_modes });
+
+    expect(offered.providers.map((provider) => provider.id)).toEqual(expected);
+  });
+
   it("carries each agent the models the bridge listed for the carrier behind it", () => {
     const appServerOffered = creatableCatalog(fourProviders("codex_app_server"));
     const tuiOffered = creatableCatalog(fourProviders("codex"));

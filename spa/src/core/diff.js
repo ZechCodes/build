@@ -52,16 +52,16 @@ const OPEN = "open";
 const SHUT = "shut";
 const CAPPED = "capped";
 
-export function untouchedFold(key, viewed) {
-  return viewed && viewed.has(pathOf(key)) ? SHUT : CAPPED;
+export function untouchedFold(key, approved) {
+  return approved && approved.has(pathOf(key)) ? SHUT : CAPPED;
 }
 
 export function createFileFolds() {
   const moved = new Map();
-  const foldOf = (key, { viewed = null } = {}) => moved.get(key) || untouchedFold(key, viewed);
+  const foldOf = (key, { approved = null } = {}) => moved.get(key) || untouchedFold(key, approved);
   return {
     foldOf,
-    press: (key, { viewed = null } = {}) => moved.set(key, foldOf(key, { viewed }) === SHUT ? OPEN : SHUT),
+    press: (key, { approved = null } = {}) => moved.set(key, foldOf(key, { approved }) === SHUT ? OPEN : SHUT),
     openBody: (key) => moved.set(key, OPEN),
   };
 }

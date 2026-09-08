@@ -122,10 +122,11 @@ export function createReviewPlug({
   const currentTriage = () => (overrides ? overrides.apply(triageReport) : triageReport);
 
   // Re-review memory, per plug instance (per session): what the reviewer saw
-  // when they last sent comments, which files they have ticked off as read, and
-  // whether the stack is narrowed to only what moved since.
+  // when they last sent comments, which files they have approved, which they
+  // have selected, and whether the stack is narrowed to only what moved since.
   let reviewStamps = new Map();
-  const viewedFiles = new Set();
+  const approvedFiles = new Set();
+  const selectedFiles = new Set();
   let changedOnlyFilter = false;
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
@@ -184,9 +185,11 @@ export function createReviewPlug({
       commentable: editable,
       openable: Boolean(openFile),
       changedSince: changed,
-      viewed: viewedFiles,
+      approved: approvedFiles,
+      selected: selectedFiles,
+      selectable: editable,
       folds,
-      withViewedToggle: editable,
+      approvable: editable,
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
       review:
@@ -243,8 +246,21 @@ export function createReviewPlug({
     return true;
   };
 
+  /// The reviewer approving a file, or taking it back. An approved file
+  /// collapses, which is what makes the stack shorten as they work down it.
+  const claimApprove = (event) => {
+    const toggle = event.target.closest(".fapprove");
+    if (!toggle) return false;
+    const path = pathOf(toggle.dataset.key);
+    if (approvedFiles.has(path)) approvedFiles.delete(path);
+    else approvedFiles.add(path);
+    render();
+    return true;
+  };
+
   const claims = [
     claimSecret,
+    claimApprove,
     claimNoiseGroup,
     claimTrustDial,
     claimOverride,
@@ -253,7 +269,7 @@ export function createReviewPlug({
       comments: () => (trayMounted ? commentLayer : null),
       openFile: () => openFile,
       folds: () => folds,
-      viewed: () => viewedFiles,
+      approved: () => approvedFiles,
       repaint: render,
     }),
   ];
@@ -268,10 +284,10 @@ export function createReviewPlug({
         render();
         return;
       }
-      if (!target.classList.contains("fviewed-box")) return;
+      if (!target.classList.contains("fselect-box")) return;
       const path = pathOf(target.dataset.key);
-      if (target.checked) viewedFiles.add(path);
-      else viewedFiles.delete(path);
+      if (target.checked) selectedFiles.add(path);
+      else selectedFiles.delete(path);
       render();
     };
     host.onclick = (event) => {

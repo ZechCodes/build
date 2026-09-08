@@ -89,7 +89,7 @@ function foldedBodyHtml(file, fold, options) {
 /** One file's entry for the keyed list: its key, and the html of it in the fold
  *  it is in. The cached `{ content_key, patch, truncated }` is `options.body`
  *  for one file, or whatever `options.bodyOf` answers for its path on a stack;
- *  every other option is the stack's (folds, viewed, changedSince, fileMenu…). */
+ *  every other option is the stack's (folds, approved, changedSince, fileMenu…). */
 export function fileEntry(view, options = {}) {
   const body = cachedBody(view, options);
   const file = { ...view, rows: rowsOf(view, body) };

@@ -598,13 +598,21 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .file.collapsed .dpeek { display:block; }
 /* a file whose body has not been fetched yet: one dim line where the diff goes */
 .file .dload { padding:10px var(--pane-gutter); color:var(--dim); font-family:var(--mono); font-size:11.5px; }
-.fcmt, .fopen { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
-  border-radius:5px; padding:3px 6px; cursor:pointer; margin-left:8px; flex:none; }
-.fcmt:hover, .fopen:hover { background:var(--accent-soft); color:var(--accent); }
-.fopen + .fcmt { margin-left:2px; }
-/* re-review memory: changed-since chip, per-file viewed toggle, changes-only filter */
+/* The header's controls. All three are the same button — icon, optional label,
+   the same hover — so the row reads as one set of affordances rather than three
+   glyphs at three sizes. The icons come from the app's pack (core/icons.js) and
+   are sized here, once. */
+.fcmt, .fopen, .fapprove { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:5px; padding:4px 7px; cursor:pointer; margin-left:6px; flex:none;
+  display:inline-flex; align-items:center; gap:5px; }
+.fcmt svg, .fopen svg, .fapprove svg { width:16px; height:16px; flex:none; }
+.fcmt:hover, .fopen:hover, .fapprove:hover { background:var(--accent-soft); color:var(--accent); }
+/* An approved file wears its verdict: the toggle fills, and the header dims to
+   say the reviewer is done with this one. */
+.fapprove[aria-pressed="true"] { color:var(--green); background:color-mix(in srgb, var(--green) 12%, transparent); }
+.fselect-box { flex:none; margin:0; cursor:pointer; }
+/* re-review memory: changed-since chip, changes-only filter */
 .fchanged { font-size:10.5px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:1px 6px; margin-left:6px; }
-.fviewed { margin-left:auto; font-size:11px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
 .changedonly { margin-left:12px; font-size:11.5px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
 /* github-style split action button */
 .splitbtn { position:relative; display:inline-flex; }

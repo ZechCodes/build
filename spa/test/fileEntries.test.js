@@ -234,8 +234,8 @@ describe("openFilePaths", () => {
     expect([...openFilePaths(views, { folds })]).toEqual(["src/a.js"]);
   });
 
-  it("counts a file the reader has ticked off as read as folded shut", () => {
+  it("counts a file the reader has approved as folded shut", () => {
     const views = [statusFile("src/a.js")].map(fileViewFromStatus);
-    expect([...openFilePaths(views, { viewed: new Set(["src/a.js"]) })]).toEqual([]);
+    expect([...openFilePaths(views, { approved: new Set(["src/a.js"]) })]).toEqual([]);
   });
 });

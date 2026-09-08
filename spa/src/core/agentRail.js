@@ -937,7 +937,7 @@ export function mountAgentRail(host, context) {
     const agent = agentOf(selectedId);
     return unreadAnchorSequence({
       held: unreadFrom,
-      cursor: (agent && agent.read_through_sequence) || 0,
+      cursor: agent ? agent.read_through_sequence : undefined,
       unreadCount: (agent && agent.unread_count) || 0,
       items: threadItems(thread),
       caughtUp: isAtBottom(body),

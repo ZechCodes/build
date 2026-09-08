@@ -85,6 +85,15 @@ describe("unreadAnchorSequence", () => {
     expect(unreadAnchorSequence({ cursor: 0, unreadCount: 1, items: [] })).toBeNull();
   });
 
+  it("rules nothing when the daemon has not said where the cursor is", () => {
+    // A bridge that predates the cursor on the wire says nothing about it, and
+    // reading that silence as "read nothing" would rule a line above the whole
+    // window. No line is the honest answer, and the old landing — the newest
+    // message — is what the conversation falls back to.
+    const anchor = unreadAnchorSequence({ unreadCount: 2, items: items(2, 4, 7) });
+    expect(anchor).toBeNull();
+  });
+
   it("rules nothing when everything the window holds is behind the cursor", () => {
     // The count is honest about history under the tail the window never got.
     expect(unreadAnchorSequence({ cursor: 9, unreadCount: 1, items: items(2, 4, 7, 9) })).toBeNull();

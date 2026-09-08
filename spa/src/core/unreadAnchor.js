@@ -44,7 +44,13 @@ const lineStillStanding = ({ held, items }) => {
 
 /// Where the unread line stands: the sequence it is ruled above, or null over a
 /// conversation the reader has nothing left to mark in.
+///
+/// A daemon that says nothing about the cursor rules no line at all. Reading
+/// that silence as "read nothing" would rule one above the whole window on
+/// every conversation with a badge; no line is the honest answer, and the
+/// conversation falls back to landing on its newest message.
 export function unreadAnchorSequence(reading = {}) {
+  if (typeof reading.cursor !== "number") return null;
   if (nothingLeftToMark(reading)) return null;
   const standing = lineStillStanding(reading);
   if (standing !== null) return standing;

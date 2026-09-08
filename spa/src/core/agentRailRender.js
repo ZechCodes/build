@@ -1,4 +1,3 @@
-import { esc } from "./text.js";
 import { QUIET_SHAPE, STARTING_SHAPE, WORKING_SHAPE } from "./agentRailModel.js";
 
 const LEAD_CLASS = {
@@ -15,10 +14,4 @@ export function railStatusLeadHtml(shape) {
   }
   if (shape === STARTING_SHAPE) return `<span class="rail-status-text"></span>`;
   return "";
-}
-
-export function railStatusGitHtml(status) {
-  const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
-  const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
-  return sync + stat;
 }

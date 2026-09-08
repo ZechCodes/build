@@ -15,6 +15,7 @@
 // a working boolean, with no stamp to clock it by.
 
 import { entityIdOf } from "./entityId.js";
+import { gitStatusCells } from "./gitStatusCells.js";
 import { unreadReasonText } from "./inbox.js";
 import { providerLabel } from "./modelPicker.js";
 import { humanAge } from "./text.js";
@@ -239,28 +240,6 @@ export function workingSeconds(workingTime, nowMs) {
   return Number.isFinite(workingTime.seconds) ? workingTime.seconds : null;
 }
 
-/** The diffstat as the status line says it: additions and deletions, nothing
- *  else. A row that predates the object shape sends the string ready-made. */
-export function statText(stat) {
-  if (!stat) return "";
-  if (typeof stat === "string") return stat;
-  const insertions = stat.insertions || 0;
-  const deletions = stat.deletions || 0;
-  if (!insertions && !deletions) return "";
-  return `+${insertions} −${deletions}`;
-}
-
-/** How far the branch stands from its upstream, in the inbox's own glyphs —
- *  "" when there is nothing to report, so an even branch (or an issue, which
- *  has no upstream) says nothing. */
-export function aheadBehindText(stat) {
-  if (!stat) return "";
-  const parts = [];
-  if (stat.ahead) parts.push(`↑${stat.ahead}`);
-  if (stat.behind) parts.push(`↓${stat.behind}`);
-  return parts.join(" ");
-}
-
 /** The elapsed-time clock the pinned line ticks: seconds alone under a
  *  minute, minutes and seconds under an hour, hours and minutes beyond —
  *  never days, which a line this narrow has no room to read. */
@@ -303,15 +282,16 @@ function startupText(startup, nowMs) {
 
 /** The pinned line above the composer: whether the work item has a turn in
  *  flight right now (and for how long), how far it stands from upstream, and
- *  its diffstat — each "" when the row does not know it, so a work item with
- *  nothing to report pins nothing at all. */
+ *  its diffstat. The clocks are "" and the git facts an empty list when the row
+ *  does not know them, so a work item with nothing to report pins nothing at
+ *  all. The git facts are characters rather than text because the line moves
+ *  one character at a time — see core/gitStatusCells.js. */
 export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], agentLabel = "Agent") {
   const working = workingSeconds(row && row.working_time, nowMs);
   return {
     working: working === null ? "" : runningClock(working),
     starting: working === null ? startupText(startupStatusLine(conversationItems, agentLabel), nowMs) : "",
-    sync: aheadBehindText(row && row.stat),
-    stat: statText(row && row.stat),
+    git: gitStatusCells(row && row.stat),
   };
 }
 

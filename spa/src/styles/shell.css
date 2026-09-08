@@ -572,9 +572,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent); }
 /* Pinned to the row's end, so the ticking timer never shoves the git facts
    around. */
-.rail-status-git { flex:0 0 auto; margin-left:auto; display:flex; align-items:center; gap:6px; }
+.rail-status-git { flex:0 0 auto; margin-left:auto; display:flex; align-items:center; gap:6px;
+  white-space:nowrap; }
 .rail-status-git[hidden] { display:none; }
-.rail-status-sync, .rail-status-stat { color:var(--dim); }
+.rail-status-sync, .rail-status-stat { color:var(--dim); white-space:nowrap; }
 
 /* The viewer a pill opens: the last thing in the conversation column, above the
    line that tops the composer block. Nothing is drawn between it and the

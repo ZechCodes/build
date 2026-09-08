@@ -82,6 +82,7 @@ import {
   digestsOf,
   paintThreadEntries,
   paintThreadKeepingPlace,
+  readThroughSequence,
   pressedActivityRunKey,
   revealThreadSequence,
   threadOfferState,
@@ -94,6 +95,9 @@ import {
   wireThreadRevisionLinks,
 } from "./thread.js";
 import { createActivityRuns } from "./activityRuns.js";
+import { isAtBottom } from "./paintKeepingPlace.js";
+import { unreadAnchorSequence } from "./unreadAnchor.js";
+import { wireExpansionReveal } from "./revealExpanded.js";
 import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
@@ -358,6 +362,9 @@ export function mountAgentRail(host, context) {
   let loadingOlderItems = false; // a page of history is in flight
   let activityRuns = null; // the open runs of the conversation in the panel
   let activityRunsFor = null; // whose conversation those runs belong to
+  let unreadFrom = null; // where the unread line stands in that conversation
+  let reportedRead = 0; // how far this panel has told the daemon it read
+  let reportedFloor = null; // and how much of the conversation it held saying so
   let paintedChat = null; // what the timeline in the panel was drawn from
   let paintedDigests = []; // the run totals that timeline was drawn with
   let seededSurfaces = null;
@@ -907,8 +914,34 @@ export function mountAgentRail(host, context) {
         agentId: selectedId,
         call: (method, params) => App.call(method, params),
       });
+      // Everything else the panel remembers about the conversation goes with
+      // it: a line ruled in one thread marks nothing in the next, and how far
+      // this panel read one says nothing about the other.
+      unreadFrom = null;
+      reportedRead = 0;
+      reportedFloor = null;
     }
     return activityRuns;
+  };
+
+  /// Where the unread line stands in the conversation on screen, and with it
+  /// where a paint that is following the conversation lands.
+  ///
+  /// The daemon's cursor says how far the reader got and the bubble's count says
+  /// whether anything is waiting past it; core/unreadAnchor.js reads those two
+  /// as a place. It is HELD rather than recomputed, because a message is read
+  /// the moment its foot comes into view — a line taken from the live cursor
+  /// alone would rule itself above what just arrived and clear itself a tick
+  /// later. The reader reaching the end with nothing waiting is what retires it.
+  const unreadLineFor = (body, thread) => {
+    const agent = agentOf(selectedId);
+    return unreadAnchorSequence({
+      held: unreadFrom,
+      cursor: (agent && agent.read_through_sequence) || 0,
+      unreadCount: (agent && agent.unread_count) || 0,
+      items: threadItems(thread),
+      caughtUp: isAtBottom(body),
+    });
   };
 
   /// What the daemon last said each run over this window totals: the digests
@@ -949,6 +982,7 @@ export function mountAgentRail(host, context) {
       fetchedRunKeys: [...openRuns].filter((key) => fetchedRunItems(key)),
       selectedAgentId: selectedId,
       agentLabel,
+      unreadFrom,
       ...threadOfferState(),
     });
   };
@@ -960,13 +994,20 @@ export function mountAgentRail(host, context) {
   /// never skips those.
   const paintTimeline = (body, thread, olderItemsPrepended) => {
     const agentLabel = providerLabel((agentOf(selectedId) || {}).provider);
+    // Whose conversation this is, settled first: a switch drops everything the
+    // panel remembers about the last one, including the line about to be ruled.
+    const runs = conversationRuns();
+    // Measured before the paint, because where the reader is standing NOW is
+    // what says whether they have caught up.
+    unreadFrom = unreadLineFor(body, thread);
     const fingerprint = chatFingerprintOf(thread, agentLabel);
     if (fingerprint === paintedChat && body.querySelector(".thread-items")) return;
     paintedChat = fingerprint;
     paintedDigests = digestsOf(thread);
     const built = timelineEntries(threadItems(thread), agentLabel, thread && thread.id, paintedDigests, {
-      openRuns: conversationRuns().openKeys(),
+      openRuns: runs.openKeys(),
       runItemsOf: fetchedRunItems,
+      unreadFrom,
     });
     // No composer in here: the box is pinned below this scroller, so what the
     // poll repaints is the timeline and only the timeline.
@@ -992,6 +1033,7 @@ export function mountAgentRail(host, context) {
     // and adding one per paint would ask for the same page once per tick.
     body.onscroll = () => {
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
+      reportRead(body);
     };
     syncComposer();
     syncSurfaces();
@@ -1109,6 +1151,7 @@ export function mountAgentRail(host, context) {
   };
 
   const wireTimeline = (body) => {
+    wireExpansionReveal(body);
     wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
     wireThreadRevisionLinks(body, (revisionId) =>
       App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
@@ -1267,22 +1310,38 @@ export function mountAgentRail(host, context) {
     }
   };
 
-  /// Tell the daemon this agent's conversation has been read, and how much of
-  /// it this panel was ever sent.
+  /// Tell the daemon how much of this agent's conversation has been read, and
+  /// how much of it this panel was ever sent.
   ///
-  /// Open, in Chat, and scrolled to the end: all three, because a panel showing
-  /// the top of a long thread has not read the message at the bottom of it.
-  /// The end of the scroller is the end of a WINDOW, though — a long
-  /// conversation arrives as a page of its newest items — so the floor of that
-  /// window goes with the report. Without it the daemon reads the whole
+  /// Reading is per MESSAGE: what the reader's viewport reached is what clears,
+  /// so a glance at the top of a long thread clears the top of it and the rest
+  /// goes on waiting. The end of the scroller is the end of a WINDOW, though —
+  /// a long conversation arrives as a page of its newest items — so the floor
+  /// of that window goes with the report. Without it the daemon reads the whole
   /// conversation through, clearing the badge for a message waiting a hundred
   /// items back that this panel never received and nobody ever saw.
+  ///
+  /// A scroll gesture fires this many times over, so a report that says what
+  /// the last one said is never made.
   const reportRead = (body) => {
     const agent = agentOf(selectedId);
     if (!agent || !agent.unread_count || !entity.entityId) return;
-    if (body.scrollHeight - body.clientHeight - body.scrollTop > 32) return;
-    markSeen(entity.entityId, agent.id, threadCache.windowFloorSequence()).then(refreshFeed);
+    const read = readThroughSequence(body);
+    const floor = threadCache.windowFloorSequence();
+    if (!readingIsNews(read, floor)) return;
+    reportedRead = read;
+    reportedFloor = floor;
+    markSeen(entity.entityId, agent.id, floor, read).then(refreshFeed);
   };
+
+  /// Whether a read report says anything the last one did not.
+  ///
+  /// Two things can make it news. The reader got further down the conversation,
+  /// which is the ordinary case. Or the window they hold reaches further back —
+  /// a report the daemon dropped because it could not vouch for the history
+  /// under the floor is worth making again once that history has landed.
+  const readingIsNews = (read, floor) =>
+    read > reportedRead || (typeof floor === "number" && floor < (reportedFloor ?? Infinity));
 
   // ---- sending --------------------------------------------------------------
 

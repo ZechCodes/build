@@ -87,17 +87,23 @@ const messageOf = (error) => (error instanceof Error ? error.message : String(er
  * cursor only as far as the reader was actually sent. No floor says what it
  * always said: the conversation arrived whole.
  *
+ * `readThroughSequence` is the newest message the reader's viewport actually
+ * reached. Reading is per message — a panel showing half of what arrived clears
+ * half of it — and no sequence says the reader read to the end of what they
+ * hold, which is what opening a whole entry means.
+ *
  * This is also the hook for a self-initiated ending: merge and abandon are
  * attention-class events, so a merge the user triggered from this client would
  * otherwise badge its own entry. Whoever runs that verb calls this after it.
  */
-export async function markSeen(entityId, agentId, readFromSequence = null) {
+export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null) {
   if (!entityId || !App.call) return;
   try {
     await App.call("entity.seen", {
       entity_id: entityId,
       ...(agentId ? { agent_id: agentId } : {}),
       ...(typeof readFromSequence === "number" ? { read_from_sequence: readFromSequence } : {}),
+      ...(typeof readThroughSequence === "number" ? { read_through_sequence: readThroughSequence } : {}),
     });
   } catch {
     /* the cursor is the daemon's; a failed clear is re-tried by the next open */

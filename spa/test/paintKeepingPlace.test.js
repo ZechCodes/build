@@ -6,7 +6,7 @@
 // neither touches the scroller for a paint that wrote nothing.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { anchorTop, paintKeepingPlace, pinToBottom } from "../src/core/paintKeepingPlace.js";
+import { anchorTop, followConversation, paintKeepingPlace } from "../src/core/paintKeepingPlace.js";
 
 const VIEWPORT = 300;
 
@@ -147,7 +147,7 @@ describe("paintKeepingPlace", () => {
     });
   });
 
-  describe("a conversation, pinned to its newest message", () => {
+  describe("a conversation, following what the reader has not read", () => {
     const opening = (scroller) => !scroller.querySelector(".msg");
     const paintThread = (scroller) => () => {
       scroller.innerHTML = '<div class="msg">landed</div>';
@@ -164,24 +164,133 @@ describe("paintKeepingPlace", () => {
 
     it("opens at the bottom", () => {
       const scroller = tallScroller();
-      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: pinToBottom() });
+      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: followConversation() });
       expect(scroller.scrollTop).toBe(1000);
     });
 
     it("touches nothing when a paint that would have carried history wrote none", () => {
       const scroller = tallScroller();
-      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: pinToBottom() });
+      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: followConversation() });
       const writes = watchScrollTop(scroller);
-      paintKeepingPlace(scroller, () => {}, { opening, policy: pinToBottom({ olderItemsPrepended: true }) });
+      paintKeepingPlace(scroller, () => {}, { opening, policy: followConversation({ olderItemsPrepended: true }) });
       expect(writes).toEqual([]);
     });
 
     it("leaves a reader who scrolled up where they were", () => {
       const scroller = tallScroller();
-      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: pinToBottom() });
+      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: followConversation() });
       scroller.scrollTop = 120;
-      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: pinToBottom() });
+      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: followConversation() });
       expect(scroller.scrollTop).toBe(120);
+    });
+
+    // ---- landing on what has not been read ---------------------------------
+    //
+    // The bottom is where a conversation with nothing waiting goes. A
+    // conversation with an unread line in it goes to the LINE instead: the
+    // reader came for the first thing they have not read, not the last thing
+    // said, and reading a burst starts at its beginning.
+
+    /** A 300px conversation over rows whose heights the test names, measured
+     *  from the live scrollTop so a policy's write can be read back. The
+     *  harness never clamps — a policy that scrolls past the end has to be
+     *  visible as one. */
+    const conversation = (rows) => {
+      const scroller = document.createElement("div");
+      const total = () => rows.reduce((sum, row) => sum + row.height, 0);
+      Object.defineProperty(scroller, "scrollHeight", { get: total, configurable: true });
+      Object.defineProperty(scroller, "clientHeight", { get: () => VIEWPORT, configurable: true });
+      scroller.scrollTop = 0;
+      document.body.appendChild(scroller);
+      Element.prototype.getBoundingClientRect = function () {
+        if (this === scroller) return { top: 0, bottom: VIEWPORT, height: VIEWPORT };
+        const at = rows.findIndex((row) => row.key === this.getAttribute("data-key"));
+        if (at < 0) return { top: 0, bottom: 0, height: 0 };
+        const above = rows.slice(0, at).reduce((sum, row) => sum + row.height, 0);
+        return { top: above - scroller.scrollTop, bottom: above + rows[at].height - scroller.scrollTop };
+      };
+      const paint = () => {
+        scroller.innerHTML = rows
+          .map((row) => `<div class="${row.line ? "thread-unread-line" : "msg"}" data-key="${row.key}"></div>`)
+          .join("");
+      };
+      return { scroller, paint };
+    };
+
+    const followUnread = (extra) => followConversation({ unreadSelector: ".thread-unread-line", ...extra });
+
+    it("opens on the unread line rather than the newest message", () => {
+      const { scroller, paint } = conversation([
+        { key: "a", height: 400 },
+        { key: "line", height: 20, line: true },
+        { key: "b", height: 400 },
+      ]);
+      paintKeepingPlace(scroller, paint, { opening, policy: followUnread() });
+      expect(scroller.scrollTop).toBe(400);
+    });
+
+    it("opens at the bottom when there is nothing unread", () => {
+      const { scroller, paint } = conversation([
+        { key: "a", height: 400 },
+        { key: "b", height: 400 },
+      ]);
+      paintKeepingPlace(scroller, paint, { opening, policy: followUnread() });
+      expect(scroller.scrollTop).toBe(800);
+    });
+
+    it("takes a reader who is at the end to what has just arrived", () => {
+      const { scroller, paint } = conversation([
+        { key: "a", height: 400 },
+        { key: "line", height: 20, line: true },
+        { key: "b", height: 400 },
+      ]);
+      scroller.scrollTop = 520; // scrollHeight - clientHeight: at the end
+      paintKeepingPlace(scroller, paint, { opening: () => false, policy: followUnread() });
+      expect(scroller.scrollTop).toBe(400);
+    });
+
+    it("leaves a reader who scrolled up where they are, line or no line", () => {
+      const { scroller, paint } = conversation([
+        { key: "a", height: 400 },
+        { key: "line", height: 20, line: true },
+        { key: "b", height: 400 },
+      ]);
+      scroller.scrollTop = 60;
+      paintKeepingPlace(scroller, paint, { opening: () => false, policy: followUnread() });
+      expect(scroller.scrollTop).toBe(60);
+    });
+
+    it("never scrolls past the end to put a line at the top", () => {
+      // The last message is shorter than the viewport, so its line cannot reach
+      // the top — and a scroller asked for more than it has just shows the end.
+      const { scroller, paint } = conversation([
+        { key: "a", height: 700 },
+        { key: "line", height: 20, line: true },
+        { key: "b", height: 40 },
+      ]);
+      paintKeepingPlace(scroller, paint, { opening, policy: followUnread() });
+      expect(scroller.scrollTop).toBe(460);
+    });
+
+    it("holds a reader reading history still when older items land above the line", () => {
+      const rows = [
+        { key: "a", height: 400 },
+        { key: "line", height: 20, line: true },
+        { key: "b", height: 400 },
+      ];
+      const { scroller, paint } = conversation(rows);
+      paintKeepingPlace(scroller, paint, { opening, policy: followUnread() });
+      scroller.scrollTop = 0; // the reader reads all the way back
+
+      paintKeepingPlace(
+        scroller,
+        () => {
+          rows.unshift({ key: "old", height: 600 });
+          paint();
+        },
+        { opening: () => false, policy: followUnread({ olderItemsPrepended: true }) },
+      );
+      expect(scroller.scrollTop).toBe(600);
     });
   });
 });

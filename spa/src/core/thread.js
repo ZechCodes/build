@@ -2,7 +2,8 @@ import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { RENDERED_FOLD_ATTRIBUTE, patchElement, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
-import { paintKeepingPlace, pinToBottom } from "./paintKeepingPlace.js";
+import { followConversation, paintKeepingPlace } from "./paintKeepingPlace.js";
+import { paintRunsShowingLatest } from "./activityRunScroll.js";
 import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
 import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "./activityDigest.js";
 import {
@@ -740,7 +741,10 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   // What marks a message is `outcome` — the whole record of a reported outcome,
   // carrying the structured handoff the done event used to.
   // renderMarkdown escapes all input before adding its fixed safe tag set.
-  return `<article class="thread-message thread-comment ${user ? "user" : "agent"}">
+  // The sequence rides the row: it is how the timeline says which message a
+  // row stands for, and how the panel reports what the reader's viewport has
+  // reached (`readThroughSequence`).
+  return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
       <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
@@ -918,6 +922,39 @@ export function activityRunKeyAt(scroller, sequence) {
 export function activityRunThroughAt(scroller, runKey) {
   const run = scroller ? scroller.querySelector(`[${ACTIVITY_RUN_ATTRIBUTE}="${runKey}"]`) : null;
   return run ? runSpanAttribute(run, ACTIVITY_RUN_THROUGH_ATTRIBUTE) : 0;
+}
+
+/// How much of the conversation the reader has read, as a sequence.
+///
+/// Reading is per MESSAGE: a row counts once its bottom edge has come into
+/// view, which is the moment the reader could have finished it. Everything
+/// above the viewport counts too — they scrolled past it.
+///
+/// Only the timeline's own rows are asked. A run's box stands for every call
+/// folded inside it, including the half a page cut away, so reaching the bottom
+/// of the box reads the whole span it names; the rows inside it scroll in their
+/// own little window and answer for nothing.
+///
+/// 0 means nothing has been read yet, which is what the daemon's cursor calls
+/// never — so a report of 0 is one that moves nothing.
+export function readThroughSequence(scroller) {
+  const timeline = scroller && scroller.querySelector(".thread-items");
+  if (!timeline) return 0;
+  const floor = scroller.getBoundingClientRect().bottom;
+  return [...timeline.children].reduce((read, row) => {
+    const reaches = rowReachesSequence(row);
+    if (!reaches || row.getBoundingClientRect().bottom > floor) return read;
+    return Math.max(read, reaches);
+  }, 0);
+}
+
+/// The newest sequence one timeline row stands for: its own for a message or a
+/// lifecycle event, the whole folded span for a run, and nothing for a row
+/// nobody said (the unread line).
+function rowReachesSequence(row) {
+  const own = Number(row.getAttribute("data-sequence") ?? NaN);
+  if (Number.isFinite(own)) return own;
+  return runSpanAttribute(row, ACTIVITY_RUN_THROUGH_ATTRIBUTE) || 0;
 }
 
 /// A run of activity, collapsed to one line.
@@ -1214,7 +1251,7 @@ export function timelineEntries(
   agentLabel,
   threadId,
   digests,
-  { openRuns, runItemsOf, threadState = createThreadState() } = {},
+  { openRuns, runItemsOf, threadState = createThreadState(), unreadFrom } = {},
 ) {
   const rows = timelineRowsOf(sourceItems, agentLabel, threadId, threadState);
   const view = {
@@ -1224,7 +1261,37 @@ export function timelineEntries(
     openRuns: openRuns || NO_RUNS_OPEN,
     runItemsOf: runItemsOf || noRunItems,
   };
-  return { entries: foldActivityRuns(rows, digests, view), itemCount: rows.length };
+  const entries = foldActivityRuns(rows, digests, view);
+  return { entries: withUnreadLine(entries, unreadFrom), itemCount: rows.length };
+}
+
+/** The class the unread line is drawn with, and how the scroll finds it. */
+export const UNREAD_LINE_SELECTOR = ".thread-unread-line";
+
+/// The one line in the timeline nobody said: everything below it is what the
+/// reader has not read yet.
+///
+/// Keyed like any other entry, so the reconciler rules it once and takes it
+/// away once — a line redrawn on every tick would flicker down a conversation
+/// an agent is writing into.
+const UNREAD_LINE_ENTRY = {
+  key: "unread",
+  html: '<div class="thread-unread-line" role="separator"><span>New</span></div>',
+};
+
+/// The entries with the unread line ruled into them.
+///
+/// It goes above the first entry that reaches `unreadFrom`, which for a run of
+/// activity is the run it is folded into: the line marks where reading resumes,
+/// and a line ruled INSIDE a shut box would mark nothing at all.
+///
+/// A `unreadFrom` past everything in hand rules no line: the window does not
+/// hold the message it stands for, so there is nowhere honest to put it.
+function withUnreadLine(entries, unreadFrom) {
+  if (!Number.isFinite(unreadFrom)) return entries;
+  const at = entries.findIndex((entry) => Number(entry.key) >= unreadFrom);
+  if (at < 0) return entries;
+  return [...entries.slice(0, at), UNREAD_LINE_ENTRY, ...entries.slice(at)];
 }
 
 const NO_RUNS_OPEN = new Set();
@@ -1322,7 +1389,8 @@ export function threadHtml(thread, options = {}) {
 /// nothing at all: the window's delivery point and how many items it holds,
 /// what the daemon said each run totals, which runs are open and which of them
 /// have their items in hand, whose conversation it is and what that agent is
-/// called, and the offer state riding the last message.
+/// called, the offer state riding the last message, and where the unread line
+/// is ruled.
 export function chatPaintFingerprint({
   deliveredSequence,
   itemCount,
@@ -1333,6 +1401,7 @@ export function chatPaintFingerprint({
   agentLabel,
   sending,
   choiceState,
+  unreadFrom,
 }) {
   return [
     deliveredSequence,
@@ -1344,6 +1413,7 @@ export function chatPaintFingerprint({
     agentLabel || "",
     sending || "",
     choiceState || "",
+    unreadFrom ?? "",
   ].join("|");
 }
 
@@ -1479,10 +1549,13 @@ export function writeThreadKeepingComposer(container, html) {
   return false;
 }
 
+/// Repaint a conversation without moving anything the reader is holding onto:
+/// their place in the timeline (core/paintKeepingPlace.js) and their place
+/// inside every open activity run (core/activityRunScroll.js).
 export function paintThreadKeepingPlace(scroller, paint, { olderItemsPrepended = false } = {}) {
-  paintKeepingPlace(scroller, paint, {
+  paintKeepingPlace(scroller, () => paintRunsShowingLatest(scroller, paint), {
     opening: (element) => !element.querySelector(".review-thread"),
-    policy: pinToBottom({ olderItemsPrepended }),
+    policy: followConversation({ olderItemsPrepended, unreadSelector: UNREAD_LINE_SELECTOR }),
   });
 }
 

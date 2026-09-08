@@ -28,7 +28,7 @@ vi.mock("../src/core/inboxView.js", () => ({
   mountInboxList: () => {},
   inboxListRouteChanged: () => {},
 }));
-vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notify: () => {} }));
+vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notifySuccess: () => {} }));
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: () => {} }) }));
 
 const { App } = await import("../src/app.js");

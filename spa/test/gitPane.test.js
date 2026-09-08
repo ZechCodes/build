@@ -3,7 +3,6 @@ import {
   gitPollKey,
   ifStatusKey,
   statusAfterPoll,
-  commitSplitOptions,
   taskAgentCommitOptions,
   gitDraftKey,
   resolveCommitDraft,
@@ -187,22 +186,6 @@ describe("pollRenderFrozen", () => {
 
   it("never freezes the very first paint unless an action is in flight", () => {
     expect(pollRenderFrozen({ paneRendered: false, keyUnchanged: true, draftActive: true, actionInFlight: false })).toBe(false);
-  });
-});
-
-describe("commitSplitOptions", () => {
-  it("always leads with the plain Commit action", () => {
-    const options = commitSplitOptions([]);
-    expect(options).toHaveLength(1);
-    expect(options[0].id).toBe("commit");
-    expect(options[0].label).toBe("Commit");
-    expect(options[0].busyLabel).toBe("Committing…");
-  });
-
-  it("appends the caller's agent options after the primary", () => {
-    const agent = [{ id: "agent_commit" }, { id: "auto_commit" }];
-    const options = commitSplitOptions(agent);
-    expect(options.map((o) => o.id)).toEqual(["commit", "agent_commit", "auto_commit"]);
   });
 });
 

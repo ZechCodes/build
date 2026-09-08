@@ -22,7 +22,7 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App, go } from "../app.js";
+import { App, go, markRoute } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
 import { tabShellHtml } from "../core/tabshell.js";
 import { mountConsole } from "../core/console.js";
@@ -91,8 +91,9 @@ export async function renderBranch() {
   // focus back to the composer.
   const autofocusComposer = App.focusComposerOnMount;
   App.focusComposerOnMount = false;
-  let openFileOnMount = App.openFileOnMount;
-  App.openFileOnMount = null;
+  // Where the Files tab is standing: the URL says, so a sent link opens the
+  // same file and a reload keeps the reader's place.
+  const openAt = App.route.file ? { path: App.route.file, line: App.route.line || null } : null;
   root.className = "surface";
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   /** Changes/Files, painted into whichever rail the mounted pane just built
@@ -255,10 +256,7 @@ export async function renderBranch() {
   setToolbarVerb(paintFinish);
 
   const navigate = {
-    openFile: ({ path, line }) => {
-      App.openFileOnMount = { path, line };
-      go({ name: "branch", projectId, branch, tab: "files" });
-    },
+    openFile: ({ path, line }) => go({ name: "branch", projectId, branch, tab: "files", file: path, line }),
   };
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
@@ -297,10 +295,15 @@ export async function renderBranch() {
       }
     }
     const plug = reviewPlug;
+    // Spread, never a hand-written subset. This wrapper exists to answer ONE
+    // question the plug cannot — which branch a run's diff is against — and an
+    // adapter that re-declares the rest silently drops whatever the plug learns
+    // to do next. It did: `mount(host)` swallowed the options the pane passes,
+    // so the merge verb had no host and `commentOffer` did not exist, which
+    // took the whole toolbar down with it.
     return {
+      ...plug,
       getBase: () => (scope.run_id ? (row && row.run && row.run.base_branch) || "main" : plug.getBase()),
-      mount: (host) => plug.mount(host),
-      unmount: () => plug.unmount(),
     };
   };
 
@@ -323,8 +326,14 @@ export async function renderBranch() {
       return;
     }
     if (tab === "files") {
-      pane = renderFilesTab(host, { scope, callRpc, openAt: openFileOnMount });
-      openFileOnMount = null;
+      pane = renderFilesTab(host, {
+        scope,
+        callRpc,
+        openAt,
+        // Moving within the tab: the URL keeps up without the surface being
+        // rebuilt around the file it is already showing.
+        onFileOpen: (path) => markRoute({ name: "branch", projectId, branch, tab: "files", file: path }),
+      });
       ensureTabsPainted();
       return;
     }

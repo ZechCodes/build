@@ -4,6 +4,7 @@
 // line is escaped.
 
 import { esc } from "./text.js";
+import { ICON_CHECK, ICON_EXTERNAL_LINK, ICON_MESSAGE_SQUARE } from "./icons.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
 import { fileKey, firstLineOf, untouchedFold } from "./diff.js";
@@ -105,9 +106,12 @@ function overrideButtonHtml(mark) {
  *  Re-review options (all opt-in; omitting them keeps the output byte-identical
  *  so the poll-repaint freeze contract holds): `changedSince` is a Set of paths
  *  that moved since the reviewer's last pass (an amber "changed since your
- *  review" chip); `viewed` is a Set of paths the reviewer ticked off (those
+ *  review" chip); `approved` is a Set of paths the reviewer has approved (those
  *  files render `collapsed` instead of `capped` — collapsed wins); and
- *  `withViewedToggle` adds the per-file "Viewed" checkbox to each header.
+ *  `approvable` adds the per-file Approve toggle to each header.
+ *
+ *  `selectable` puts a checkbox ahead of each path and `selected` says which
+ *  are ticked: the selection is what the surface's bulk verbs act on.
  *
  *  `fileMenu` puts the file's own destructive verbs behind a ⋯ in the header —
  *  where per-file discard lives now that the stage checkboxes are gone (commit
@@ -129,10 +133,10 @@ const FOLD_CLASS = { open: "", shut: "collapsed", capped: "capped" };
  *  decided, else what the reader last pressed, else the untouched default
  *  (capped, or shut for a file they have ticked off). One rule, so a file's
  *  class and its body can never disagree about how folded it is. */
-export function fileFoldOf(file, { fold = null, folds = null, viewed = null } = {}) {
+export function fileFoldOf(file, { fold = null, folds = null, approved = null } = {}) {
   if (fold) return fold;
   const key = fileKey(file);
-  return folds ? folds.foldOf(key, { viewed }) : untouchedFold(key, viewed);
+  return folds ? folds.foldOf(key, { approved }) : untouchedFold(key, approved);
 }
 
 function foldClassOf(file, options) {
@@ -140,24 +144,44 @@ function foldClassOf(file, options) {
 }
 
 function commentButtonHtml(commentable) {
-  return commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
+  return commentable
+    ? `<button class="fcmt" title="Comment on this file" aria-label="Comment on this file">${ICON_MESSAGE_SQUARE}</button>`
+    : "";
 }
 
 function changedChipHtml(file, changedSince) {
   return changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
 }
 
-function viewedToggleHtml(file, { withViewedToggle, viewed }) {
-  if (!withViewedToggle) return "";
-  const checked = viewed && viewed.has(file.path) ? " checked" : "";
-  return `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-key="${esc(fileKey(file))}"${checked}/> Viewed</label>`;
+/// The reviewer's verdict on one file, as a toggle rather than a checkbox: a
+/// checkbox is a setting, and approving is something you DO. Pressed state
+/// rides `aria-pressed`, so the control says the same thing to a screen reader
+/// as the fill says to everyone else.
+///
+/// An approved file collapses (core/diff.js `untouchedFold`), which is the
+/// whole point of saying so: the stack shortens as the reviewer works down it.
+function approveToggleHtml(file, { approvable, approved }) {
+  if (!approvable) return "";
+  const pressed = Boolean(approved && approved.has(file.path));
+  return `<button class="fapprove" data-key="${esc(fileKey(file))}" aria-pressed="${pressed}">${ICON_CHECK}<span>${
+    pressed ? "Approved" : "Approve"
+  }</span></button>`;
+}
+
+/// The box that puts a file in the surface's selection — what its bulk verbs
+/// act on, and what a commit narrows to when anything is ticked. Ahead of the
+/// path, because it names the row rather than acting on it.
+function selectBoxHtml(file, { selectable, selected }) {
+  if (!selectable) return "";
+  const checked = selected && selected.has(file.path) ? " checked" : "";
+  return `<input type="checkbox" class="fselect-box" data-key="${esc(fileKey(file))}" aria-label="Select ${esc(file.path)}"${checked}/>`;
 }
 
 /** One file's header: its path, its status, its weights, and every affordance
  *  the surface offers on it. */
 export function fileHeadHtml(file, options) {
-  return `<div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
-        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChipHtml(file, options.changedSince)}${viewedToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</div>`;
+  return `<div class="fhead">${selectBoxHtml(file, options)}<span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChipHtml(file, options.changedSince)}${approveToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</div>`;
 }
 
 // The two boxes a file's body can sit in: the scrolling one the collapse rule
@@ -207,7 +231,7 @@ export function diffFileHtml(file, options = {}) {
 
 function openFileButtonHtml(file, openable) {
   if (!openable) return "";
-  return `<button class="fopen" data-open-file="${esc(file.path)}" data-new-line="${firstLineOf(file)}" title="Open this file in Files">↗</button>`;
+  return `<button class="fopen" data-open-file="${esc(file.path)}" data-new-line="${firstLineOf(file)}" title="Open this file in Files">${ICON_EXTERNAL_LINK}<span>Open File</span></button>`;
 }
 
 export const FILE_ELEMENT = ".file[data-key]";
@@ -219,15 +243,20 @@ export function pressedOpenFile(target, openFile) {
   return true;
 }
 
-export function pressedFold(target, folds, viewed = null) {
+/** Whether a press landed on a control rather than on the file around it. A
+ *  button, a checkbox or its label does its own thing, and the fold never reads
+ *  the same press as "show me the rest of this file". */
+const pressedAControl = (target) => Boolean(target.closest("button, input, label"));
+
+export function pressedFold(target, folds, approved = null) {
   const file = folds ? target.closest(FILE_ELEMENT) : null;
-  if (!file) return false;
+  if (!file || pressedAControl(target)) return false;
   const key = file.dataset.key;
-  if (target.closest(".fhead") && !target.closest("button, input, label")) {
-    folds.press(key, { viewed });
+  if (target.closest(".fhead")) {
+    folds.press(key, { approved });
     return true;
   }
-  if (folds.foldOf(key, { viewed }) !== "capped") return false;
+  if (folds.foldOf(key, { approved }) !== "capped") return false;
   folds.openBody(key);
   return true;
 }
@@ -340,7 +369,7 @@ function sectionHeadHtml(section) {
   return section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
 }
 
-export function stackClaims({ comments, openFile, folds, viewed = () => null, repaint }) {
+export function stackClaims({ comments, openFile, folds, approved = () => null, repaint }) {
   return [
     (event) => {
       const layer = comments();
@@ -348,7 +377,7 @@ export function stackClaims({ comments, openFile, folds, viewed = () => null, re
     },
     (event) => pressedOpenFile(event.target, openFile()),
     (event) => {
-      if (!pressedFold(event.target, folds(), viewed())) return false;
+      if (!pressedFold(event.target, folds(), approved())) return false;
       repaint();
       return true;
     },

@@ -499,8 +499,26 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* ---- git pane (Changes tab: commit rail on the left, diffs on the right) ---- */
 .gitstat { font-family:var(--mono); font-size:11px; letter-spacing:0; text-transform:none; }
 .gitstat .a, .cinfo .a { color:var(--green); } .gitstat .d, .cinfo .d { color:var(--red); }
-.gitcommit { max-width:780px; margin:0 auto; }
-.gitmsg { min-height:58px; max-height:160px; }
+/* The one box under the diff. It sits below the scroller rather than at the end
+   of the stack, so reading to the bottom of a long change never takes it off
+   screen, and it opens as one line because most of what goes in it is one line.
+
+   The ceiling it grows to is a device's, not a layout's: a computer can give a
+   long commit message half a pane, a phone has already given half its screen to
+   the keyboard. */
+.csbox { max-width:780px; margin:0 auto; }
+.csbox-row { display:flex; align-items:flex-end; gap:8px; }
+/* `min-height` is overridden deliberately: the page's textareas stand 96px tall
+   by default, and this one opens as ONE line and earns every row after it. */
+.csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto;
+  font:inherit; font-size:13px; line-height:1.45; padding:9px 11px;
+  border:1px solid var(--line); border-radius:10px; background:var(--panel2); color:var(--ink);
+  min-height:0; max-height:240px; }
+.csbox .csinput:focus { outline:none; border-color:var(--accent); }
+.csbox-actions { flex:none; }
+.csbox .githint:empty { display:none; }
+.csbox .githint { display:block; padding-bottom:6px; }
+@media (max-width: 720px) { .csbox .csinput { max-height:30vh; } }
 /* The Changes surface fills the flush tab body: .changes2 is a .pane-split, so
    the row's width, centring and gutters are the shell's, and only what is
    inside the two columns is this pane's own. */
@@ -553,7 +571,24 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    the way every card in the one-column layout does. */
 .gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
   background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
-.gp-commit .actionbar { position:static; background:none; padding:8px 0 0; margin:0; }
+/* The gutter's comment button: one element that follows the pointer down the
+   line numbers, so a long diff carries no per-row weight. It sits in the
+   line-number cell, which is why it moves with the code scrolling sideways. */
+.file td.ln { position:relative; }
+.dcmt { position:absolute; right:-9px; top:50%; transform:translateY(-50%); z-index:2;
+  display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; padding:0;
+  border:none; border-radius:5px; cursor:pointer; background:var(--accent); color:var(--accent-ink);
+  box-shadow:0 1px 4px var(--shadow-soft); }
+.dcmt svg { width:12px; height:12px; }
+.dcmt:hover { filter:brightness(1.08); }
+
+/* The bar the selection raises: what is in hand, and the verbs that take all of
+   it at once. Drawn only while something is selected, so it never sits over a
+   diff as a row of verbs aimed at nothing. */
+.selbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 0 2px; }
+.selcount { font-size:11.5px; font-weight:650; color:var(--accent); margin-right:2px; }
+/* The tray's foot: what is waiting, and the one control that discards it. */
+.cstrayfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
 /* Every row in the rail carries the gutter on its LEFT: the column itself meets
    the frame (.pane-split .pane-list), so the row is where the surface's text
    column is paid — the same line the toolbar's project name and the tab labels
@@ -604,13 +639,21 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .file.collapsed .dpeek { display:block; }
 /* a file whose body has not been fetched yet: one dim line where the diff goes */
 .file .dload { padding:10px var(--pane-gutter); color:var(--dim); font-family:var(--mono); font-size:11.5px; }
-.fcmt, .fopen { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
-  border-radius:5px; padding:3px 6px; cursor:pointer; margin-left:8px; flex:none; }
-.fcmt:hover, .fopen:hover { background:var(--accent-soft); color:var(--accent); }
-.fopen + .fcmt { margin-left:2px; }
-/* re-review memory: changed-since chip, per-file viewed toggle, changes-only filter */
+/* The header's controls. All three are the same button — icon, optional label,
+   the same hover — so the row reads as one set of affordances rather than three
+   glyphs at three sizes. The icons come from the app's pack (core/icons.js) and
+   are sized here, once. */
+.fcmt, .fopen, .fapprove { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:5px; padding:4px 7px; cursor:pointer; margin-left:6px; flex:none;
+  display:inline-flex; align-items:center; gap:5px; }
+.fcmt svg, .fopen svg, .fapprove svg { width:16px; height:16px; flex:none; }
+.fcmt:hover, .fopen:hover, .fapprove:hover { background:var(--accent-soft); color:var(--accent); }
+/* An approved file wears its verdict: the toggle fills, and the header dims to
+   say the reviewer is done with this one. */
+.fapprove[aria-pressed="true"] { color:var(--green); background:color-mix(in srgb, var(--green) 12%, transparent); }
+.fselect-box { flex:none; margin:0; cursor:pointer; }
+/* re-review memory: changed-since chip, changes-only filter */
 .fchanged { font-size:10.5px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:1px 6px; margin-left:6px; }
-.fviewed { margin-left:auto; font-size:11px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
 .changedonly { margin-left:12px; font-size:11.5px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
 /* github-style split action button */
 .splitbtn { position:relative; display:inline-flex; }
@@ -680,6 +723,16 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .actionbar .right { margin-left:auto; display:flex; gap:10px; }
 /* git repo-management toolbar (v2) */
 .gittoolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* Icons in the bar are sized to the text beside them, once, for the whole bar.
+   The pack's SVGs carry an intrinsic 24px — twice the mini button's own font —
+   so an unsized one does not just look wrong, it makes its button taller than
+   every other button in the row. */
+.gittoolbar .btn { display:inline-flex; align-items:center; gap:6px; }
+.gittoolbar svg { width:14px; height:14px; flex:none; }
+/* The surface's own verb — merging — sits at the far end of the bar, past the
+   repo-management ones: they are about the remote, it is about this work. */
+.gtmerge { margin-left:auto; display:flex; align-items:center; gap:6px; }
+.gtmerge:empty { display:none; }
 .gtsync { display:flex; align-items:center; gap:7px; }
 .gtchips { font-family:var(--mono); font-size:12px; display:inline-flex; gap:8px; }
 .gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }
@@ -1185,6 +1238,12 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   background:var(--panel2); color:var(--dim); font-size:10.5px; font-weight:650; text-align:center; }
 .thread-activity-group-list { --activity-row:26px; max-height:calc(var(--activity-row) * 8); overflow-y:auto; }
 .thread-empty { padding:13px 0; color:var(--dim); font-size:12px; }
+/* The one line in the timeline nobody said: everything under it is what the
+   reader has not read. Ruled across the whole width, label on the gutter side,
+   so it reads as a place in the conversation rather than as another row. */
+.thread-unread-line { display:flex; align-items:center; gap:8px; margin:8px 0 4px; color:var(--accent); }
+.thread-unread-line::after { content:""; flex:1; height:1px; background:currentColor; opacity:.45; }
+.thread-unread-line span { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
 @keyframes working-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 @media (prefers-reduced-motion: reduce) { }
 .thread-revision-link { border:0; padding:0; background:none; color:var(--accent); font:inherit; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }

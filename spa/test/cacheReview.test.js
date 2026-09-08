@@ -46,8 +46,9 @@ describe("the saved aggregate diff", () => {
     plug.mount(host);
     await settle();
     expect(host.textContent).toContain("cached line");
-    // The chrome is not a round trip late: the tray the last live paint had.
-    expect(host.querySelector(".csactions")).toBeTruthy();
+    // The chrome is not a round trip late: the comment affordances the last
+    // live paint had are on the cached stack too.
+    expect(host.querySelector(".fcmt")).toBeTruthy();
     plug.unmount();
   });
 

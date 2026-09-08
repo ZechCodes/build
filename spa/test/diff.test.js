@@ -86,12 +86,12 @@ describe("createFileFolds", () => {
     expect(folds.foldOf("EDIT:a.js")).toBe("capped");
   });
 
-  it("shuts a file the reader ticked off as read, until they open it themselves", () => {
+  it("shuts a file the reader approved, until they open it themselves", () => {
     const folds = createFileFolds();
-    const viewed = new Set(["a.js"]);
-    expect(folds.foldOf("EDIT:a.js", { viewed })).toBe("shut");
-    folds.press("EDIT:a.js", { viewed });
-    expect(folds.foldOf("EDIT:a.js", { viewed })).toBe("open");
+    const approved = new Set(["a.js"]);
+    expect(folds.foldOf("EDIT:a.js", { approved })).toBe("shut");
+    folds.press("EDIT:a.js", { approved });
+    expect(folds.foldOf("EDIT:a.js", { approved })).toBe("open");
   });
 
   it("opens a file the reader pressed the body of", () => {

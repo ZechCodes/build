@@ -15,10 +15,15 @@
 // answers with message-<n> ids.
 
 import { commentTrayHtml } from "./changesRender.js";
+import { ICON_MESSAGE_SQUARE } from "./icons.js";
+
+/** The gutter's comment button. The same icon the file header wears, because it
+ *  is the same verb aimed at one line instead of the whole file. */
+const GUTTER_COMMENT_HTML = `<button class="dcmt" type="button" title="Comment on this line" aria-label="Comment on this line">${ICON_MESSAGE_SQUARE}</button>`;
 import { pathOf } from "./diff.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";
-import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
+import { showCommentPop, hideCommentPop, hasCommentPop, openCommentComposer } from "../commentPop.js";
 import { watchSelection, selectionInside } from "../selectWatch.js";
 import { notifyError } from "./notify.js";
 
@@ -30,23 +35,21 @@ function rowOf(node, root) {
 }
 
 /**
- * createCommentLayer({ submit, revisionId, hint, onChange }) → the layer.
+ * createCommentLayer({ submit, revisionId, onChange }) → the layer.
  *
  * `submit(messages)` sends the assembled thread posts (the controller supplies
  * the RPC); `revisionId()` names the diff revision the anchors belong to (null
- * when the surface has no thread to ask); `hint` is the resting actionbar copy;
- * `onChange()` lets the controller repaint when the pending set changes.
+ * when the surface has no thread to ask); `onChange()` lets the controller
+ * repaint when the pending set changes.
  */
 export function createCommentLayer({
   submit,
   revisionId = () => null,
-  hint = "Select code, tap a line, or use ✎ to comment. Comments go to the agent.",
   onChange = () => {},
-  renderIdle = () => false,
+  readNote = () => "",
 }) {
   const comments = [];
   let nextId = 0;
-  let generalDraft = "";
   let host = null;
   let selectionWatcher = null;
   let sending = false;
@@ -81,6 +84,42 @@ export function createCommentLayer({
     onChange();
   };
 
+  /// The comment button the gutter shows while the pointer is on a line.
+  ///
+  /// ONE button, moved to whichever row is under the pointer. Rendering one per
+  /// row would put thousands of buttons in a long diff — and a diff is long
+  /// exactly when it has to stay quick — so the affordance follows the pointer
+  /// instead of waiting in every row for a pointer that will never arrive.
+  ///
+  /// It rides in the row's line-number cell, so it moves with the table as the
+  /// code scrolls sideways under it. A repaint that reconciles the row takes it
+  /// away, which costs nothing: the next hover puts it back.
+  const offerGutterComment = (target) => {
+    const cell = commentableGutterCell(target);
+    if (!cell) {
+      hideGutterComment();
+      return;
+    }
+    if (cell.querySelector(".dcmt")) return;
+    hideGutterComment();
+    cell.insertAdjacentHTML("beforeend", GUTTER_COMMENT_HTML);
+  };
+
+  /** The line-number cell of a row that can actually take a comment: a real
+   *  line, in a file whose body is open. A hunk header names no line, and a
+   *  capped file's press belongs to the fold. */
+  const commentableGutterCell = (target) => {
+    const row = target.closest ? target.closest("tr[data-ln]") : null;
+    if (!row || row.classList.contains("hunk") || !row.dataset.ln) return null;
+    const file = row.closest(".file");
+    if (!file || file.classList.contains("capped")) return null;
+    return row.querySelector("td.ln");
+  };
+
+  const hideGutterComment = () => {
+    if (host) host.querySelectorAll(".dcmt").forEach((button) => button.remove());
+  };
+
   const removeComment = (id) => {
     const index = comments.findIndex((c) => c.id === id);
     if (index >= 0) comments.splice(index, 1);
@@ -89,13 +128,12 @@ export function createCommentLayer({
 
   const clear = () => {
     comments.length = 0;
-    generalDraft = "";
     hideCommentPop();
   };
 
   const send = async () => {
     if (sending) return;
-    const messages = diffThreadMessages(comments, generalDraft, revisionId());
+    const messages = diffThreadMessages(comments, readNote(), revisionId());
     if (!messages.length) return;
     sending = true;
     renderActions();
@@ -111,43 +149,33 @@ export function createCommentLayer({
     }
   };
 
-  /** The changeset's actionbar: Clear + Send while comments are pending, and
-   *  otherwise whatever the mounting surface puts there (`renderIdle`, which
-   *  says whether it drew) — a changeset has ONE actionbar, and finishing the
-   *  work lives in it too. Re-rendered in place so a repaint is never needed to
-   *  keep the buttons honest. */
-  // eslint-disable-next-line complexity -- ratchet: renderActions is at 12, cap 10 — reduce it, then drop this line
+  /** The tray's actionbar: Clear + Send, and nothing at all while there is
+   *  nothing to send. It is the TRAY's now — the surface's own git verbs live
+   *  in the git toolbar above the stack, where a git verb belongs — so this
+   *  bar speaks only about the comments in it. Re-rendered in place so a repaint
+   *  is never needed to keep the buttons honest. */
+  /** The tray's one control: discarding what has been anchored and not sent.
+   *  Sending is the box's, under the diff — there is one place to write and one
+   *  button to press, and it is not up here among the comments. */
   function renderActions() {
-    const actions = q(".csactions");
-    const hintHost = q(".cshint");
-    if (!actions || !hintHost) return;
-    const pending = comments.length > 0 || generalDraft.trim().length > 0;
-    if (!pending) {
-      if (renderIdle(actions, hintHost)) return;
-      hintHost.textContent = hint;
-      actions.innerHTML = "";
-      return;
-    }
-    const count = comments.length;
-    hintHost.textContent = count
-      ? `${count} comment${count === 1 ? "" : "s"} ready to send.`
-      : "Your note goes to the agent.";
-    actions.innerHTML = `<button class="btn cscancel">Clear</button><button class="btn primary cssend"${sending ? " disabled" : ""}>${sending ? "sending…" : "Send to agent"}</button>`;
-    const cancel = actions.querySelector(".cscancel");
+    const cancel = q(".cscancel");
     if (cancel)
       cancel.onclick = () => {
         clear();
         onChange();
       };
-    const sendButton = actions.querySelector(".cssend");
-    if (sendButton) sendButton.onclick = send;
   }
 
   return {
     /** Markup for the tray — the controller drops this under the diff stack. */
-    trayHtml: () => commentTrayHtml(comments, { generalDraft }),
+    trayHtml: () => commentTrayHtml(comments),
 
     count: () => comments.length,
+
+    /** Send what is pending, with whatever note the box under the diff holds.
+     *  The box is the surface's (core/changesComposer.js), so the note is read
+     *  through `readNote` rather than kept here. */
+    send,
 
     /** The reviewer is mid-comment: the controller must freeze its poll. A
      *  selection still being dragged over the diff counts — the popover that
@@ -157,19 +185,23 @@ export function createCommentLayer({
       commentLayerBusy({
         pending: comments.length,
         popOpen: hasCommentPop(),
-        generalText: generalDraft,
+        generalText: readNote(),
         selecting: Boolean(selectionInside(host)),
       }),
 
-    /** Redraw the actionbar in place — what the surface calls when its own idle
-     *  verbs change (a lifecycle action settled, its catalog loaded) without the
-     *  changeset itself having moved. */
+    /** Re-wire the tray's control after a repaint. */
     refreshActions: renderActions,
 
-    /** Bind to a freshly-rendered changeset: restore highlights and the general
-     *  draft, wire the tray's controls, and watch for text selections. */
+    /** Whether a send is in flight — what the box under the diff disables its
+     *  own button against. */
+    sending: () => sending,
+
+    /** Bind to a freshly-rendered changeset: restore highlights, wire the
+     *  tray's control, offer the gutter's comment button under the pointer, and
+     *  watch for text selections. */
     attach(element) {
       host = element;
+      host.onmouseover = (event) => offerGutterComment(event.target);
       if (selectionWatcher) selectionWatcher();
       // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
       selectionWatcher = watchSelection(host, (selection) => {
@@ -188,14 +220,6 @@ export function createCommentLayer({
           addComment(pathOf(fileEl.dataset.key), from, to, text, comment, side),
         );
       });
-      const general = q(".csgeneral");
-      if (general) {
-        general.value = generalDraft;
-        general.oninput = () => {
-          generalDraft = general.value;
-          renderActions();
-        };
-      }
       host.querySelectorAll(".pcx").forEach((remove) => {
         remove.onclick = () => removeComment(+remove.dataset.id);
       });
@@ -213,11 +237,21 @@ export function createCommentLayer({
         removeComment(+remove.dataset.id);
         return true;
       }
+      const gutter = target.closest(".dcmt");
+      if (gutter) {
+        const row = gutter.closest("tr[data-ln]");
+        const file = gutter.closest(".file");
+        if (row && file)
+          openCommentComposer(row.getBoundingClientRect(), (comment) =>
+            addComment(pathOf(file.dataset.key), +row.dataset.ln, +row.dataset.ln, row.querySelector(".code").textContent, comment, row.dataset.side || "new"),
+          );
+        return true;
+      }
       const commentButton = target.closest(".fcmt");
       if (commentButton) {
         const fileEl = commentButton.closest(".file");
         if (fileEl)
-          showCommentPop(commentButton.getBoundingClientRect(), (comment) =>
+          openCommentComposer(commentButton.getBoundingClientRect(), (comment) =>
             addComment(pathOf(fileEl.dataset.key), 0, 0, "(entire file)", comment),
           );
         return true;
@@ -244,6 +278,7 @@ export function createCommentLayer({
       if (selectionWatcher) selectionWatcher();
       selectionWatcher = null;
       hideCommentPop();
+      if (host) host.onmouseover = null;
       host = null;
     },
   };

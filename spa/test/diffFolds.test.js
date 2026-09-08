@@ -143,7 +143,7 @@ describe("the review plug's folds", () => {
     plug.unmount();
   });
 
-  it("leaves a file the reader ticked off collapsed when the diff moves", async () => {
+  it("leaves a file the reader approved collapsed when the diff moves", async () => {
     vi.useFakeTimers();
     let line = "first";
     const { host, plug } = mountPlug({
@@ -151,9 +151,7 @@ describe("the review plug's folds", () => {
       submit: async () => {},
     });
     await vi.advanceTimersByTimeAsync(0);
-    const box = host.querySelector(".fviewed-box");
-    box.checked = true;
-    box.dispatchEvent(new window.Event("change", { bubbles: true }));
+    host.querySelector(".fapprove").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await vi.advanceTimersByTimeAsync(0);
     expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(true);
 
@@ -163,13 +161,12 @@ describe("the review plug's folds", () => {
     plug.unmount();
   });
 
-  it("opens a file the reader ticked off and then asked to read again", async () => {
+  it("opens a file the reader approved and then asked to read again", async () => {
     vi.useFakeTimers();
     const { host, plug } = mountPlug({ submit: async () => {} });
     await vi.advanceTimersByTimeAsync(0);
-    const box = () => host.querySelector(".fviewed-box");
-    box().checked = true;
-    box().dispatchEvent(new window.Event("change", { bubbles: true }));
+    const approve = () => host.querySelector(".fapprove");
+    approve().dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await vi.advanceTimersByTimeAsync(0);
     expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(true);
 
@@ -177,7 +174,7 @@ describe("the review plug's folds", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(false);
     expect(fileOf(host, "src/a.js").classList.contains("capped")).toBe(false);
-    expect(box().checked).toBe(true);
+    expect(approve().getAttribute("aria-pressed")).toBe("true");
     plug.unmount();
   });
 });

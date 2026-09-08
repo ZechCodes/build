@@ -10,7 +10,7 @@ import {
 } from "../src/core/agentSurfacesModel.js";
 import { surfacesSnapshot } from "./surfacesFixture.js";
 
-vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notify: () => {} }));
+vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notifySuccess: () => {} }));
 
 const SURFACES_KEY = "branch-1:agent-1";
 

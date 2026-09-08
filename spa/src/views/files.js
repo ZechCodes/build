@@ -143,8 +143,9 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection. Returns { dispose() }.
  */
-export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
+export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen = null }) {
   const cacheScope = currentCacheScope();
+  let disposed = false;
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
   // `#ftree` is the stable column (what the drawer slides, what the tab bar
@@ -221,20 +222,30 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
     if (address) writeCached(address, { path: dir, entries: res.entries || [] });
   };
 
+  const readFile = async (path) => {
+    try {
+      return { file: await callRpc("fs.read", { ...scope, path }) };
+    } catch (error) {
+      return { error };
+    }
+  };
+
   const selectFile = async (path, row) => {
+    if (disposed) return;
     if (requestedLine && requestedLine.path !== path) requestedLine = null;
+    // The tab names the file it is standing in, so the URL can say so too.
+    if (onFileOpen) onFileOpen(path);
     treeEl.querySelectorAll(".frow.sel").forEach((r) => r.classList.remove("sel"));
     if (row) row.classList.add("sel");
     sourceOverride = false;
     showPlaceholder("loading");
-    let file;
-    try {
-      file = await callRpc("fs.read", { ...scope, path });
-    } catch (e) {
-      showPlaceholder("error", `cannot read: ${(e && e.message) || "error"}`);
+    const result = await readFile(path);
+    if (disposed) return;
+    if (result.error) {
+      showPlaceholder("error", `cannot read: ${result.error.message || "error"}`);
       return;
     }
-    renderPreview(path, file);
+    renderPreview(path, result.file);
   };
 
   // Reveal/hide is EPHEMERAL: a fresh renderPreview re-derives the secrets and
@@ -298,13 +309,19 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
   };
 
   loadTree(dir).then(() => {
-    if (!openAt) return;
+    if (disposed || !openAt) return;
     const fileName = openAt.path.split("/").at(-1);
     const row = [...treeEl.querySelectorAll(".ffile")].find((entry) => entry.dataset.file === fileName);
     selectFile(openAt.path, row || null);
   });
 
-  return { dispose: () => drawer.dispose() };
+  return {
+    dispose() {
+      disposed = true;
+      treeRequest += 1;
+      drawer.dispose();
+    },
+  };
 }
 
 export { FS_READ_MAX_BYTES };

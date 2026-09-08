@@ -42,7 +42,7 @@ vi.mock("../src/core/inboxView.js", () => ({
   inboxListRouteChanged: () => {},
 }));
 const notifyError = vi.fn();
-vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
+vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 const mountAgentTab = vi.fn(() => ({ dispose: () => {} }));
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: (...args) => mountAgentTab(...args) }));
 
@@ -1136,16 +1136,64 @@ describe("the conversation panel", () => {
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
   });
 
-  it("tells the daemon an agent's conversation has been read while it is open at the end", async () => {
-    payload = branchRow({ agents: [agent({ unread_count: 2, unread_reason: "done" })] });
+  it("tells the daemon how far down an agent's conversation it has read", async () => {
+    payload = branchRow({
+      agents: [agent({ unread_count: 2, unread_reason: "done" })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: [
+            { type: "message", data: { sequence: 11, role: "agent", body: "asked" } },
+            { type: "message", data: { sequence: 12, role: "agent", body: "and asked again" } },
+          ],
+        },
+      },
+    });
     await mount();
-    // No floor: this conversation arrived whole, so the end of it is the end.
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", null);
+    // The floor is the oldest message the panel holds, and 12 is the newest its
+    // viewport reached — which over a conversation that arrived whole is all of
+    // it.
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12);
   });
 
   it("says nothing about reading a conversation with nothing waiting", async () => {
     await mount();
     expect(markSeen).not.toHaveBeenCalled();
+  });
+
+  /// A conversation the reader has been away from, with the daemon's cursor
+  /// saying where they got to.
+  const conversationReadThrough = (cursor, unreadCount) => {
+    payload = branchRow({
+      agents: [agent({ unread_count: unreadCount, unread_reason: "agent_message", read_through_sequence: cursor })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: [
+            { type: "message", data: { sequence: 11, role: "agent", body: "the one you read" } },
+            { type: "message", data: { sequence: 12, role: "agent", body: "the one you did not" } },
+          ],
+        },
+      },
+    });
+  };
+
+  it("rules a line above the first message the reader has not read", async () => {
+    conversationReadThrough(11, 1);
+    await mount();
+
+    const line = railHost().querySelector(".thread-unread-line");
+    expect(line).toBeTruthy();
+    expect(line.nextElementSibling.textContent).toContain("the one you did not");
+  });
+
+  it("rules no line over a conversation with nothing waiting in it", async () => {
+    conversationReadThrough(12, 0);
+    await mount();
+
+    expect(railHost().querySelector(".thread-unread-line")).toBeNull();
   });
 
   // The reviewer's bug: pressing the second bubble moved the selection and the
@@ -1317,10 +1365,13 @@ describe("reading back past the top of a paged conversation", () => {
     pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
     await mount();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99);
   });
 
   it("moves the floor it reports down as the reader scrolls back", async () => {
+    // A report the daemon dropped for history it could not vouch for is worth
+    // making again once that history has landed, so a window reaching further
+    // back is news even when the reader got no further down.
     pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
     await mount();
     markSeen.mockClear();
@@ -1328,7 +1379,7 @@ describe("reading back past the top of a paged conversation", () => {
     railBody().dispatchEvent(new Event("scroll"));
     await flush();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99);
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {

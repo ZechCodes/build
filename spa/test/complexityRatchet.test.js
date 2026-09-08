@@ -18,7 +18,9 @@ import { describe, it, expect } from "vitest";
 // 73 since chat state moved behind addressed controllers: agent identity no
 // longer migrates global draft maps, and message rendering reads its owned
 // thread state instead of branching across ambient maps.
-const RATCHETED_FUNCTIONS = 73;
+// Main's toolbar/composer extraction and chat state ownership together retire
+// four counted functions, with no new exemption added.
+const RATCHETED_FUNCTIONS = 71;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

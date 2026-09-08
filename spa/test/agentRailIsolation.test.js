@@ -22,7 +22,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
 vi.mock("../src/core/inboxView.js", () => ({ markSeen: async () => {} }));
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({
-  notify: () => {},
   notifyError: (...args) => notifyError(...args),
 }));
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose() {} }) }));
@@ -366,12 +365,23 @@ describe("agent rail chat ownership", () => {
       project_id: "project-1",
       issue_id: "issue-1",
       agents: [agent("issue-agent", 1)],
-      thread: { items: [], sessions: [] },
+      thread: {
+        items: [
+          { type: "message", data: { sequence: 11, role: "agent", body: "already read" } },
+          { type: "message", data: { sequence: 12, role: "agent", body: "new implementation reply" } },
+        ],
+        sessions: [],
+      },
       execution_context: {
         entity_id: "run-live",
         agent_id: "execution-agent",
         conversation_id: "conversation-issue-agent",
-        agent: agent("execution-agent", 1, { conversation_id: "conversation-issue-agent", choice_revision: 0 }),
+        agent: agent("execution-agent", 1, {
+          conversation_id: "conversation-issue-agent",
+          choice_revision: 0,
+          read_through_sequence: 11,
+          unread_count: 1,
+        }),
       },
     };
     rail = mountAgentRail(host(), {
@@ -384,6 +394,10 @@ describe("agent rail chat ownership", () => {
       chatRepository: App.chatRepository,
     });
     await flush();
+
+    const unreadLine = host().querySelector(".thread-unread-line");
+    expect(unreadLine).toBeTruthy();
+    expect(unreadLine.nextElementSibling.textContent).toContain("new implementation reply");
 
     host().querySelector(".composer-model .caret").click();
     host().querySelector('[data-action="model:claude-opus-5"]').click();

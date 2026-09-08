@@ -46,11 +46,13 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
       onMerged: () => {},
     });
     const host = document.createElement("div");
-    document.body.appendChild(host);
-    plug.mount(host);
+    const toolbar = document.createElement("div");
+    toolbar.className = "gtmerge";
+    document.body.append(toolbar, host);
+    plug.mount(host, { gitActions: () => toolbar });
     await vi.advanceTimersByTimeAsync(0); // flush the first paint
 
-    const primary = host.querySelector(".csactions .btn.primary:not(.caret)");
+    const primary = toolbar.querySelector(".btn:not(.caret)");
     expect(primary).toBeTruthy();
     expect(primary.textContent).toBe("Merge");
 
@@ -65,7 +67,7 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
     // Two full poll ticks while the RPC is in flight: the button must stay the
     // same disabled busy button — not a fresh enabled remount.
     await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS * 2 + 10);
-    const after = host.querySelector(".csactions .btn.primary:not(.caret)");
+    const after = toolbar.querySelector(".btn:not(.caret)");
     expect(after.disabled).toBe(true);
     expect(after.textContent).toBe("merging…");
     expect(document.querySelectorAll(".modal-scrim")).toHaveLength(0);
@@ -93,11 +95,13 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
       onMerged: () => {},
     });
     const host = document.createElement("div");
-    document.body.appendChild(host);
-    plug.mount(host);
+    const toolbar = document.createElement("div");
+    toolbar.className = "gtmerge";
+    document.body.append(toolbar, host);
+    plug.mount(host, { gitActions: () => toolbar });
     await vi.advanceTimersByTimeAsync(0);
 
-    const lead = host.querySelector(".csactions .btn.primary:not(.caret)");
+    const lead = toolbar.querySelector(".btn:not(.caret)");
     expect(lead.textContent).toBe("Commit");
     expect(host.querySelector('[data-action="merge_prune"]')).toBe(null);
     plug.unmount();
@@ -119,17 +123,19 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
       onMerged: () => {},
     });
     const host = document.createElement("div");
-    document.body.appendChild(host);
-    plug.mount(host);
+    const toolbar = document.createElement("div");
+    toolbar.className = "gtmerge";
+    document.body.append(toolbar, host);
+    plug.mount(host, { gitActions: () => toolbar });
     await vi.advanceTimersByTimeAsync(0);
 
-    host.querySelector(".csactions .caret").click();
-    const menu = host.querySelector(".csactions .splitmenu");
+    toolbar.querySelector(".caret").click();
+    const menu = toolbar.querySelector(".splitmenu");
     expect(menu.hidden).toBe(false);
 
     await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS * 2 + 10);
 
-    expect(host.querySelector(".csactions .splitmenu"), "the poll replaced the menu").toBe(menu);
+    expect(toolbar.querySelector(".splitmenu"), "the poll replaced the menu").toBe(menu);
     expect(menu.hidden).toBe(false);
 
     menu.querySelector('[data-action="merge_release"]').click();

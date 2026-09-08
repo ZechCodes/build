@@ -41,7 +41,6 @@ export const App = {
   // name/projectId/branch/tab).
   focusComposerOnMount: false,
 
-  openFileOnMount: null,
 };
 
 /** Bind application chat state to a live device. Reconnecting that same device
@@ -104,6 +103,22 @@ export function go(route) {
   const hash = hashFromRoute(route);
   if (location.hash !== hash) location.hash = hash; // hashchange re-enters render()
   else render();
+}
+
+/**
+ * Record where the reader is standing, without re-rendering.
+ *
+ * A surface that moves WITHIN itself — the Files tab opening another file —
+ * still owes the URL an answer, so the link stays sendable and a reload lands
+ * in the same place. Going through `go` would tear the surface down and build
+ * it again around the same tab, refetching everything it already holds and
+ * losing the reader's place in it.
+ */
+export function markRoute(route) {
+  App.route = route;
+  const hash = hashFromRoute(route);
+  if (location.hash === hash) return;
+  history.replaceState(null, "", hash);
 }
 
 /** The route the URL names.

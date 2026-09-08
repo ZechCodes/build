@@ -98,6 +98,62 @@ describe("diff folding + file comments", () => {
   });
 });
 
+// The header's controls are icons from the app's own pack (core/icons.js),
+// never typed glyphs: an arrow drawn in the body font sits at whatever size and
+// weight the font gives it, which is why they read as too small beside the
+// path.
+describe("the file header's controls", () => {
+  const files = [{ path: "src/a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] }];
+
+  it("opens the file with a labelled button, not a bare glyph", () => {
+    const html = diffFilesHtml(files, { openable: true });
+    expect(html).toContain("Open File");
+    expect(html).not.toContain("↗");
+    expect(html).toContain("lucide-external-link");
+  });
+
+  it("says comment with a comment icon rather than a pencil", () => {
+    const html = diffFilesHtml(files, { commentable: true });
+    expect(html).not.toContain("✎");
+    expect(html).toContain("lucide-message-square");
+  });
+
+  it("offers an Approve toggle where it used to offer a Viewed checkbox", () => {
+    const html = diffFilesHtml(files, { approvable: true });
+    expect(html).not.toContain("Viewed");
+    expect(html).toContain("Approve");
+    expect(html).toContain('class="fapprove"');
+    expect(html).toContain('aria-pressed="false"');
+  });
+
+  it("marks an approved file's toggle pressed", () => {
+    const html = diffFilesHtml(files, { approvable: true, approved: new Set(["src/a.js"]) });
+    expect(html).toContain('aria-pressed="true"');
+  });
+
+  it("collapses an approved file, and caps one nobody has approved", () => {
+    const two = [...files, { path: "src/b.js", status: "EDIT", add: 1, del: 0, rows: [] }];
+    const html = diffFilesHtml(two, { approvable: true, approved: new Set(["src/a.js"]) });
+    expect(html).toMatch(/<div class="file collapsed" data-key="EDIT:src\/a\.js"/);
+    expect(html).toMatch(/<div class="file capped" data-key="EDIT:src\/b\.js"/);
+  });
+
+  it("puts a selection checkbox ahead of the path when the surface selects files", () => {
+    const html = diffFilesHtml(files, { selectable: true });
+    expect(html).toContain('class="fselect-box"');
+    expect(html.indexOf("fselect-box")).toBeLessThan(html.indexOf("fpath"));
+  });
+
+  it("ticks the selection checkbox of a selected file", () => {
+    const html = diffFilesHtml(files, { selectable: true, selected: new Set(["src/a.js"]) });
+    expect(html).toMatch(/fselect-box[^>]*checked/);
+  });
+
+  it("offers no selection checkbox where the surface does not select files", () => {
+    expect(diffFilesHtml(files)).not.toContain("fselect-box");
+  });
+});
+
 describe("diffFilesHtml re-review options", () => {
   const files = [
     { path: "a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] },
@@ -106,14 +162,14 @@ describe("diffFilesHtml re-review options", () => {
 
   it("is byte-identical to the old output when no new options are passed", () => {
     expect(diffFilesHtml(files, { commentable: true })).toBe(
-      diffFilesHtml(files, { commentable: true, changedSince: null, viewed: null, withViewedToggle: false }),
+      diffFilesHtml(files, { commentable: true, changedSince: null, approved: null, approvable: false }),
     );
   });
 
   it("emits no re-review markup by default", () => {
     const html = diffFilesHtml(files);
     expect(html).not.toContain("fchanged");
-    expect(html).not.toContain("fviewed");
+    expect(html).not.toContain("fapprove");
   });
 
   it("marks only the changed paths with a changed-since chip", () => {
@@ -122,16 +178,16 @@ describe("diffFilesHtml re-review options", () => {
     expect(html).toContain("changed since your review");
   });
 
-  it("renders a viewed checkbox per file when withViewedToggle", () => {
-    const html = diffFilesHtml(files, { withViewedToggle: true });
-    expect((html.match(/fviewed-box/g) || []).length).toBe(2);
+  it("renders an Approve toggle per file when approvable", () => {
+    const html = diffFilesHtml(files, { approvable: true });
+    expect((html.match(/class="fapprove"/g) || []).length).toBe(2);
   });
 
-  it("collapses (not caps) a viewed file and checks its box", () => {
-    const html = diffFilesHtml(files, { withViewedToggle: true, viewed: new Set(["a.js"]) });
+  it("collapses (not caps) an approved file and presses its toggle", () => {
+    const html = diffFilesHtml(files, { approvable: true, approved: new Set(["a.js"]) });
     expect(html).toMatch(/<div class="file collapsed" data-key="EDIT:a\.js"/);
     expect(html).toMatch(/<div class="file capped" data-key="EDIT:b\.js"/);
-    expect(html).toContain('data-key="EDIT:a.js" checked');
+    expect(html).toContain('data-key="EDIT:a.js" aria-pressed="true"');
   });
 });
 
@@ -295,19 +351,19 @@ describe("folds the reader owns", () => {
     expect(diffFilesHtml(files, { folds })).toContain('class="file collapsed" data-key="EDIT:a.js"');
   });
 
-  it("collapses a viewed file, with or without a reader's folds behind it", () => {
-    expect(diffFilesHtml(files, { viewed: new Set(["a.js"]) })).toContain('class="file collapsed" data-key="EDIT:a.js"');
-    const html = diffFilesHtml(files, { folds: createFileFolds(), viewed: new Set(["a.js"]) });
+  it("collapses an approved file, with or without a reader's folds behind it", () => {
+    expect(diffFilesHtml(files, { approved: new Set(["a.js"]) })).toContain('class="file collapsed" data-key="EDIT:a.js"');
+    const html = diffFilesHtml(files, { folds: createFileFolds(), approved: new Set(["a.js"]) });
     expect(html).toContain('class="file collapsed" data-key="EDIT:a.js"');
   });
 
-  it("opens a viewed file the reader asked to see again", () => {
-    const viewed = new Set(["a.js"]);
+  it("opens an approved file the reader asked to see again", () => {
+    const approved = new Set(["a.js"]);
     const folds = createFileFolds();
-    folds.press(keyA, { viewed });
-    const html = diffFilesHtml(files, { folds, viewed, withViewedToggle: true });
+    folds.press(keyA, { approved });
+    const html = diffFilesHtml(files, { folds, approved, approvable: true });
     expect(html).toContain('class="file" data-key="EDIT:a.js"');
-    expect(html).toContain('data-key="EDIT:a.js" checked');
+    expect(html).toContain('data-key="EDIT:a.js" aria-pressed="true"');
   });
 });
 

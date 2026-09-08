@@ -93,8 +93,9 @@ export function commitBoxVisible(status) {
   return hasUncommittedChanges(status);
 }
 
-/** Commit is commit-all: every changed path is staged, then committed. There is
- *  no per-file staged set to assemble. */
+/** Every path the worktree has changed, in the order the bridge lists them.
+ *  What a commit takes unless the reviewer has ticked a narrower set
+ *  (core/reviewMarks.js `commitPaths`). */
 export function commitAllPaths(status) {
   return ((status && status.files) || []).map((file) => file.path);
 }

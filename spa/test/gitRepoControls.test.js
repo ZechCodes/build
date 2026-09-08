@@ -80,7 +80,7 @@ describe("settleReenableSelectors", () => {
     // The whole S1 bug: runGuarded settled without ever re-enabling the commit
     // button. The unified settle list MUST include it, or a Fetch/Push leaves
     // Commit stuck disabled.
-    expect(settleReenableSelectors()).toContain(".gitcommit-actions .btn.primary:not(.caret)");
+    expect(settleReenableSelectors()).toContain(".csbox-actions .btn:not(.caret)");
   });
 });
 

@@ -119,17 +119,31 @@ function mountComposer(pop, { placeholder, confirmLabel, onSubmit, requireText }
   pop._composer = { input, arm, isArmed: () => armed };
 }
 
-/** The selection popover: a Comment button that opens the composer. */
+const COMMENT_COMPOSER = { placeholder: "Comment on this passage…", confirmLabel: "Add", requireText: true };
+
+/**
+ * The selection popover: a Comment button that opens the composer.
+ *
+ * The extra press is the point here. A reader who has just finished dragging
+ * out a selection has said nothing yet, and a textarea taking focus the instant
+ * they let go would collapse the very selection the comment is about. Pressing
+ * Comment is them saying they meant it — and by then the selection is safe.
+ */
 export function showCommentPop(rect, onAdd) {
   const pop = openPop(rect);
   pop.innerHTML = `<button class="cp-add">💬 Comment</button>`;
-  pop.querySelector(".cp-add").onclick = () =>
-    mountComposer(pop, {
-      placeholder: "Comment on this passage…",
-      confirmLabel: "Add",
-      onSubmit: onAdd,
-      requireText: true,
-    });
+  pop.querySelector(".cp-add").onclick = () => mountComposer(pop, { ...COMMENT_COMPOSER, onSubmit: onAdd });
+}
+
+/**
+ * The composer itself, for a reader who PRESSED something — a file's comment
+ * button, a line number.
+ *
+ * They have already said what they want, so a button that opens a field is a
+ * second press for nothing.
+ */
+export function openCommentComposer(rect, onAdd) {
+  mountComposer(openPop(rect), { ...COMMENT_COMPOSER, onSubmit: onAdd });
 }
 
 /**

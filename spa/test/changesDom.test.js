@@ -66,6 +66,14 @@ const settle = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+/** The primary verb of the one box under the diff. Commenting leads wherever
+ *  there is an agent to talk to, so committing is behind the caret. */
+const composerPrimary = (container) => container.querySelector(".csbox-actions .btn:not(.caret)");
+const pickCommit = async (container) => {
+  await click(container.querySelector(".csbox-actions .caret"));
+  await click(container.querySelector('.csbox-actions [data-action="commit"]'));
+};
+
 const click = async (element) => {
   element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   await settle();
@@ -91,17 +99,21 @@ describe("the Changes rail", () => {
     pane.dispose();
   });
 
-  it("opens a clean branch at the commit list — nothing selected, no commit box", async () => {
+  it("opens a clean branch at the commit list — nothing selected, nothing to commit", async () => {
     const { container, pane } = await mount({ status: cleanStatus() });
     expect(container.querySelector(".crail .sel")).toBe(null);
-    expect(container.querySelector(".gitmsg")).toBe(null);
+    // The box stands — there is still an agent to comment to — but with nothing
+    // uncommitted it offers only that.
+    expect(container.querySelector('.csbox-actions [data-action="commit"]')).toBe(null);
     expect(container.querySelector(".cdetail-host").textContent).toContain("Pick a commit");
     pane.dispose();
   });
 
-  it("discloses the commit box only while uncommitted changes exist", async () => {
+  it("offers committing only while uncommitted changes exist", async () => {
     const { container, pane } = await mount();
-    expect(container.querySelector(".gitmsg")).toBeTruthy();
+    expect(container.querySelector(".csinput")).toBeTruthy();
+    await click(container.querySelector(".csbox-actions .caret"));
+    expect(container.querySelector('.csbox-actions [data-action="commit"]')).toBeTruthy();
     pane.dispose();
   });
 
@@ -283,11 +295,79 @@ describe("noise is collapsed, never hidden", () => {
   });
 });
 
+// Selection is a hand on a row: files gathered so one verb can be aimed at all
+// of them, and so a commit can be narrowed to what the reviewer actually meant.
+describe("selecting files", () => {
+  const selectBox = (container, path) => container.querySelector(`.file[data-key$=":${path}"] .fselect-box`);
+  const select = async (container, path) => {
+    const box = selectBox(container, path);
+    box.checked = true;
+    await click(box);
+  };
+  /** uv.lock is generated noise, folded into its own group until asked for. */
+  const showNoise = (container) => click(container.querySelector(".noisehead"));
+
+  it("raises a bar naming what is in hand, and nothing while nothing is", async () => {
+    const { container, pane } = await mount();
+    expect(container.querySelector(".selbar")).toBe(null);
+    await select(container, "src/a.js");
+    expect(container.querySelector(".selcount").textContent).toBe("1 file selected");
+    await showNoise(container);
+    await select(container, "uv.lock");
+    expect(container.querySelector(".selcount").textContent).toBe("2 files selected");
+    pane.dispose();
+  });
+
+  it("approves every selected file in one verb, and lets the selection go", async () => {
+    const { container, pane } = await mount();
+    await showNoise(container);
+    await select(container, "src/a.js");
+    await select(container, "uv.lock");
+    await click(container.querySelector(".selapprove"));
+    expect(container.querySelector(".selbar")).toBe(null);
+    for (const path of ["src/a.js", "uv.lock"]) {
+      const file = container.querySelector(`.file[data-key$=":${path}"]`);
+      expect(file.querySelector(".fapprove").getAttribute("aria-pressed")).toBe("true");
+      expect(file.classList.contains("collapsed")).toBe(true);
+    }
+    pane.dispose();
+  });
+
+  it("offers approving and clearing, and nothing else", async () => {
+    const { container, pane } = await mount();
+    await select(container, "src/a.js");
+    expect([...container.querySelectorAll(".selbar .btn")].map((b) => b.textContent.trim())).toEqual([
+      "Approve all",
+      "Clear",
+    ]);
+    pane.dispose();
+  });
+
+  it("lets a selection go without approving it", async () => {
+    const { container, pane } = await mount();
+    await select(container, "src/a.js");
+    await click(container.querySelector(".selclear"));
+    expect(container.querySelector(".selbar")).toBe(null);
+    expect(container.querySelector('.file[data-key$=":src/a.js"] .fapprove').getAttribute("aria-pressed")).toBe("false");
+    pane.dispose();
+  });
+
+  it("narrows the commit to the files in hand", async () => {
+    const { container, pane, calls } = await mount();
+    await showNoise(container);
+    await select(container, "uv.lock");
+    container.querySelector(".csinput").value = "lockfile only";
+    await pickCommit(container);
+    expect(calls.find((c) => c.method === "git.stage").params.paths).toEqual(["uv.lock"]);
+    pane.dispose();
+  });
+});
+
 describe("commit is commit-all", () => {
   it("stages every changed path, then commits the message", async () => {
     const { container, pane, calls } = await mount();
-    container.querySelector(".gitmsg").value = "a real message";
-    await click(container.querySelector(".gitcommit-actions .btn.primary"));
+    container.querySelector(".csinput").value = "a real message";
+    await pickCommit(container);
     const stage = calls.find((c) => c.method === "git.stage");
     expect(stage.params.paths).toEqual(["src/a.js", "uv.lock"]);
     const commit = calls.find((c) => c.method === "git.commit");
@@ -298,7 +378,7 @@ describe("commit is commit-all", () => {
 
   it("refuses an empty message without touching the index", async () => {
     const { container, pane, calls } = await mount();
-    await click(container.querySelector(".gitcommit-actions .btn.primary"));
+    await pickCommit(container);
     expect(calls.some((c) => c.method === "git.stage")).toBe(false);
     expect(container.textContent).toContain("Enter a commit message");
     pane.dispose();
@@ -325,7 +405,17 @@ describe("per-file discard lives behind the header ⋯", () => {
 });
 
 describe("comments on any changeset", () => {
+  /** Comment through the popover. A press opens the field itself, so there is
+   *  no intermediate button to get past. */
   const addCommentViaPop = async (trigger) => {
+    await click(trigger);
+    document.querySelector(".cp-input").value = "rename this";
+    await click(document.querySelector(".cp-save"));
+  };
+
+  /** A press on a line offers the Comment button first — the same gesture a
+   *  selection gets. Only the file header's own button opens the field. */
+  const addCommentViaButton = async (trigger) => {
     await click(trigger);
     await click(document.querySelector(".cp-add"));
     document.querySelector(".cp-input").value = "rename this";
@@ -336,7 +426,7 @@ describe("comments on any changeset", () => {
     const { container, pane, calls } = await mount();
     await addCommentViaPop(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
     expect(container.querySelector(".pcomment").textContent).toContain("rename this");
-    await click(container.querySelector(".cssend"));
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.run_id).toBe("run-1");
     expect(post.params.messages[0].body).toBe("rename this");
@@ -353,8 +443,62 @@ describe("comments on any changeset", () => {
     const { container, pane, calls } = await mount();
     const file = container.querySelector('.file[data-key$=":src/a.js"]');
     file.classList.remove("capped");
-    await addCommentViaPop(file.querySelector('tr[data-ln="1"] td.code'));
-    await click(container.querySelector(".cssend"));
+    await addCommentViaButton(file.querySelector('tr[data-ln="1"] td.code'));
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    const post = calls.find((c) => c.method === "run.request_changes");
+    expect(post.params.messages[0].anchor).toMatchObject({ path: "src/a.js", line_start: 1, line_end: 1 });
+    pane.dispose();
+  });
+
+  // Three ways in, and they are deliberately not the same gesture. A press on a
+  // line and a selection both OFFER the button — the reviewer has pointed at
+  // something, not yet said they want to write. The gutter's button and the file
+  // header's button ARE that offer already, so pressing either gives the field.
+  it("offers the button on a line press, and the field only behind it", async () => {
+    const { container, pane } = await mount();
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
+    file.classList.remove("capped");
+    await click(file.querySelector('tr[data-ln="1"] td.code'));
+    expect(document.querySelector(".cp-add"), "the Comment button").toBeTruthy();
+    expect(document.querySelector(".cp-input")).toBe(null);
+    await click(document.querySelector(".cp-add"));
+    expect(document.querySelector(".cp-input")).toBeTruthy();
+    pane.dispose();
+  });
+
+  it("shows the gutter's comment button under the pointer, and only there", async () => {
+    const { container, pane } = await mount();
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
+    file.classList.remove("capped");
+    expect(container.querySelector(".dcmt")).toBe(null);
+
+    const row = file.querySelector('tr[data-ln="1"]');
+    row.querySelector("td.ln").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    const button = row.querySelector("td.ln .dcmt");
+    expect(button, "on the row under the pointer").toBeTruthy();
+    expect(container.querySelectorAll(".dcmt")).toHaveLength(1);
+
+    // Off the rows entirely: nothing is being pointed at, so nothing is offered.
+    file.querySelector(".fhead").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    expect(container.querySelector(".dcmt")).toBe(null);
+    pane.dispose();
+  });
+
+  it("opens the field straight away from the gutter's button", async () => {
+    const { container, pane, calls } = await mount();
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
+    file.classList.remove("capped");
+    const row = file.querySelector('tr[data-ln="1"]');
+    row.querySelector("td.ln").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    await settle();
+    await click(row.querySelector(".dcmt"));
+    expect(document.querySelector(".cp-add"), "no button in the way").toBe(null);
+    document.querySelector(".cp-input").value = "this line";
+    await click(document.querySelector(".cp-save"));
+
+    await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.messages[0].anchor).toMatchObject({ path: "src/a.js", line_start: 1, line_end: 1 });
     pane.dispose();
@@ -385,7 +529,6 @@ describe("the poll freeze holds a review in progress", () => {
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
       await settle();
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
-      await click(document.querySelector(".cp-add"));
       document.querySelector(".cp-input").value = "hold this thought";
       await click(document.querySelector(".cp-save"));
       expect(container.querySelector(".pcomment")).toBeTruthy();
@@ -428,15 +571,15 @@ describe("the poll freeze holds an open menu", () => {
       });
       await settle();
 
-      await click(container.querySelector(".gitcommit-actions .caret"));
-      const menu = container.querySelector(".gitcommit-actions .splitmenu");
+      await click(container.querySelector(".csbox-actions .caret"));
+      const menu = container.querySelector(".csbox-actions .splitmenu");
       expect(menu.hidden).toBe(false);
 
       served = dirtyStatus({ head: "e".repeat(40) });
       await vi.advanceTimersByTimeAsync(2000);
       await settle();
 
-      expect(container.querySelector(".gitcommit-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
+      expect(container.querySelector(".csbox-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
       expect(menu.hidden).toBe(false);
       pane.dispose();
     } finally {
@@ -463,10 +606,9 @@ describe("re-review memory on every stack", () => {
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
       await settle();
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
-      await click(document.querySelector(".cp-add"));
       document.querySelector(".cp-input").value = "rename this";
       await click(document.querySelector(".cp-save"));
-      await click(container.querySelector(".cssend"));
+      await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
       expect(container.querySelector(".fchanged")).toBe(null); // nothing has moved yet
 
       tree.write("src/a.js", "the agent moved on");
@@ -506,10 +648,9 @@ describe("re-review memory on every stack", () => {
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
       await settle();
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
-      await click(document.querySelector(".cp-add"));
       document.querySelector(".cp-input").value = "rename this";
       await click(document.querySelector(".cp-save"));
-      container.querySelector(".cssend").click();
+      container.querySelector(".csbox-actions .btn:not(.caret)").click();
       await settle();
 
       await click(container.querySelector(".crow[data-hash]"));

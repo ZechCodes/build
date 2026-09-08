@@ -17,8 +17,8 @@ import {
   changesRailEntries,
   uncommittedHeaderHtml,
   commitHeaderHtml,
-  commitBoxHtml,
   changesetPlaceholderHtml,
+  selectionBarHtml,
 } from "./changesRender.js";
 import {
   defaultChangesSelection,
@@ -41,6 +41,8 @@ import { timedPaint } from "./paintTiming.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
+import { mountChangesComposer } from "./changesComposer.js";
+import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { currentCacheScope } from "./cacheScope.js";
@@ -94,13 +96,13 @@ export function actionSettleReenables(inFlightCount) {
  *  the app's mini button — no look of its own. */
 export const TOOLBAR_BUTTON_VARIANT = "mini";
 
-/** The controls one settled action re-enables — every toolbar verb PLUS the
- *  commit primary. This is the single source S1 unifies on: a toolbar action's
- *  repaint disables the commit button (render() disables it while any action is
+/** The controls one settled action re-enables — every toolbar verb PLUS the box
+ *  under the diff. This is the single source S1 unifies on: a toolbar action's
+ *  repaint disables that box's button (render() disables it while any action is
  *  in flight), so the SAME settle that re-enables the toolbar must also re-enable
- *  Commit, or a Fetch/Push leaves it stuck disabled. */
+ *  it, or a Fetch/Push leaves it stuck disabled. */
 export function settleReenableSelectors() {
-  return [".gtfetch", ".gtsync .btn", ".gtstash .btn", ".gitcommit-actions .btn.primary:not(.caret)"];
+  return [".gtfetch", ".gtsync .btn", ".gtstash .btn", ".csbox-actions .btn:not(.caret)"];
 }
 
 /** Pull split button: fast-forward primary, then merge / rebase in the menu. */
@@ -318,13 +320,6 @@ export function outsidePressDismisses({ inside, hasPendingConfirm, fileMenuOpen 
 /** The commit split-button option list: the plain Commit action first (primary),
  *  then whatever agent options the mounting view offers (task scope only).
  *  Commit is commit-all — there is no staged set for it to mean anything else. */
-export function commitSplitOptions(agentCommitOptions = []) {
-  return [
-    { id: "commit", label: "Commit", description: "commit everything in the worktree with your message", busyLabel: "Committing…" },
-    ...agentCommitOptions,
-  ];
-}
-
 // Run states with a live/parked agent to reach — the states where the
 // conversation on this surface can still dispatch work ("Ask agent to commit"
 // below). The header button this list was once shared with is gone: talking to
@@ -419,6 +414,11 @@ export function mountGitPane(
   // one holds, and each file's diff is fetched, cached and answered on its own.
   const fileDiffs = createFileDiffs({ deviceId: cacheScope?.deviceId, entityId: cacheEntityId, scope, call: callRpc });
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
+  let composer = null; // the one box under the diff, mounted once
+  // What the reviewer has approved and selected on this surface's files. One
+  // set of marks for every changeset it draws, its own and the review plug's,
+  // so a file ticked on one is ticked on the other.
+  const marks = createReviewMarks();
   let inFlightActions = 0; // commit/discard/sync RPCs currently awaited
   let scopeErrorShown = null; // the terminal scope error currently rendered
   let fileMenuPath = null; // the file whose header ⋯ is open
@@ -443,7 +443,7 @@ export function mountGitPane(
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
-  const messageBox = () => container.querySelector(".gitmsg");
+  const messageBox = () => container.querySelector(".csinput");
   const draftBusy = () => {
     const box = messageBox();
     return Boolean(box && (box.value.trim() || document.activeElement === box));
@@ -547,6 +547,7 @@ export function mountGitPane(
   const commentable = commentsSupported(scope);
   const commentLayer = commentable
     ? createCommentLayer({
+        readNote: () => (messageBox() ? messageBox().value : ""),
         submit: async (messages) => {
           const reviewedChangeset = selected;
           const reviewedViews = renderedViews;
@@ -562,7 +563,10 @@ export function mountGitPane(
           reviewStamps = stampChangeset(reviewStamps, reviewedChangeset, reviewedViews);
         },
         revisionId,
-        onChange: () => render(),
+        onChange: () => {
+          render();
+          renderComposer();
+        },
       })
     : null;
 
@@ -598,6 +602,10 @@ export function mountGitPane(
     const stackFor = (views, patch) => ({
       commentable,
       openable: Boolean(openFile),
+      approvable: true,
+      approved: marks.approved,
+      selectable: true,
+      selected: marks.selected,
       noiseExpanded: noiseExpanded.has(String(selected)),
       folds,
       changedSince: changedSinceChangeset(reviewStamps, selected, views),
@@ -642,7 +650,7 @@ export function mountGitPane(
 
   const paintChangeset = (detailHost, { bar, views, stackOptions = {} }) => {
     paintChangesetInto({
-      bar,
+      bar: bar + selectionBarHtml(marks.selected.size),
       entries: fileStackEntries(views, stackOptions),
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
@@ -683,42 +691,63 @@ export function mountGitPane(
     refreshBodies();
   };
 
-  /** The commit box: disclosed only while uncommitted changes exist, and only
-   *  on the changeset it commits. It commits everything — the message is the
-   *  only input it takes. */
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
-  const renderCommitBox = () => {
+  /// Whose comments the box under the diff is writing: the review plug's while
+  /// its changeset is on screen, this pane's own otherwise. One box, and it
+  /// always speaks to the changeset the reviewer is looking at.
+  /** This pane's own comment layer, answering the same two questions the review
+   *  plug does, so the box below can ask one thing without knowing which. */
+  const commentLayerAsPlug = {
+    commentOffer: () => ({ commentable: Boolean(commentLayer), pending: commentLayer ? commentLayer.count() : 0 }),
+    sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),
+  };
+
+  const activeComments = () => (reviewMounted ? review : commentLayerAsPlug);
+
+  const activeCommentOffer = () =>
+    activeComments()?.commentOffer?.() || { commentable: false, pending: 0 };
+
+  /// What the box can do right now.
+  ///
+  /// Committing is offered on the two changesets that SHOW uncommitted work —
+  /// the aggregate and Uncommitted itself. On a past commit it would commit the
+  /// worktree, which is not what the reviewer is looking at.
+  const composerOffer = () => {
+    const offer = activeCommentOffer();
+    const commitsHere = selected === "uncommitted" || selected === "review";
+    return {
+      commentable: offer.commentable,
+      pendingComments: offer.pending,
+      uncommitted: commitsHere && commitBoxVisible(lastStatus),
+      commitExtras: agentCommitOptions,
+    };
+  };
+
+  /// The verb the reviewer picked, with what they wrote in the box.
+  const runComposerVerb = (optionId, text) =>
+    optionId === "comment" ? activeComments()?.sendComments?.() || Promise.resolve() : runCommitOption(optionId, text);
+
+  /** The one box under the diff: below the scroller, so reading to the bottom of
+   *  a long stack never takes it off screen. Mounted once and kept — it holds a
+   *  draft, and rebuilding it would take the caret with it. */
+  const renderComposer = () => {
     const commitHost = container.querySelector(".gp-commit");
     if (!commitHost) return;
-    const box = messageBox();
-    // A live box is the freshest draft; otherwise (first paint after a
-    // dispose/remount) the module-level stash restores what was typed.
-    const draft = resolveCommitDraft(box ? box.value : null, commitDraftStash, draftKey);
-    const hadFocus = box && document.activeElement === box;
-    if (!(selected === "uncommitted" && commitBoxVisible(lastStatus))) {
-      commitHost.innerHTML = "";
-      syncCommitDraft(commitDraftStash, draftKey, draft);
-      return;
-    }
-    commitHost.innerHTML = commitBoxHtml();
-    const freshBox = messageBox();
-    if (freshBox) {
-      freshBox.value = draft;
-      // Every keystroke lands in the stash so tab switches and view-shell
-      // rebuilds (which remount the pane from scratch) restore the draft.
-      freshBox.oninput = () => syncCommitDraft(commitDraftStash, draftKey, freshBox.value);
-      if (hadFocus) freshBox.focus();
-    }
-    syncCommitDraft(commitDraftStash, draftKey, draft);
-    const actionsHost = commitHost.querySelector(".gitcommit-actions");
-    if (actionsHost) {
-      mountSplitButton(actionsHost, { options: commitSplitOptions(agentCommitOptions), run: runCommitOption });
-      // A repaint during an in-flight action must not resurrect an enabled
-      // commit button (double-fire) — remount it disabled until the RPC settles.
-      if (inFlightActions > 0) {
-        const primaryButton = actionsHost.querySelector(".btn.primary:not(.caret)");
-        if (primaryButton) primaryButton.disabled = true;
-      }
+    if (!composer)
+      composer = mountChangesComposer(commitHost, {
+        offers: composerOffer,
+        run: runComposerVerb,
+        readDraft: () => resolveCommitDraft(null, commitDraftStash, draftKey),
+        // Every keystroke lands in the stash so tab switches and view-shell
+        // rebuilds (which remount the pane from scratch) restore the draft.
+        writeDraft: (value) => syncCommitDraft(commitDraftStash, draftKey, value),
+      });
+    else composer.refresh();
+    setHint(hint); // the box the refresh may have rebuilt has no hint in it yet
+    // A repaint during an in-flight action must not resurrect an enabled button
+    // (double-fire) — leave it disabled until the RPC settles.
+    if (inFlightActions > 0) {
+      const primaryButton = commitHost.querySelector(".btn:not(.caret)");
+      if (primaryButton) primaryButton.disabled = true;
     }
   };
 
@@ -727,11 +756,12 @@ export function mountGitPane(
     if (disposed || !lastStatus || !lastLog) return;
     if (!container.querySelector(".changes2")) paintSkeleton();
     const repoControls = supportsRepoManagement(lastStatus);
-    container.querySelector(".gp-toolbar").innerHTML = repoControls
-      ? gitToolbarHtml({
-          chips: syncChipState(lastStatus),
-        })
-      : "";
+    // Always drawn, even against a bridge too old to manage the repo: the merge
+    // verb the surface hosts here is the surface's own, not the bridge's.
+    container.querySelector(".gp-toolbar").innerHTML = gitToolbarHtml({
+      chips: syncChipState(lastStatus),
+      repo: repoControls,
+    });
     container.querySelector(".gp-banner").innerHTML = repoControls
       ? gitStateBannerHtml(repoStateBanner(lastStatus.repo_state), { pendingConfirm })
       : "";
@@ -751,9 +781,20 @@ export function mountGitPane(
       // The plug owns the detail DOM — mount once, then leave it alone.
       if (!reviewMounted) {
         detailHost.innerHTML = "";
-        review.mount(detailHost);
+        // The plug's own git verb — merging — goes in the git toolbar above the
+        // stack. The toolbar is rewritten on every paint, so the plug is asked
+        // for a host each time rather than handed the element.
+        review.mount(detailHost, {
+          gitActions: () => container.querySelector(".gtmerge"),
+          readNote: () => (messageBox() ? messageBox().value : ""),
+          // The box's own button says how many comments the send carries.
+          onComments: () => renderComposer(),
+          reviewMarks: marks,
+        });
         reviewMounted = true;
       }
+      // The toolbar this render just rewrote took the plug's button with it.
+      if (review.refreshActions) review.refreshActions();
     } else {
       if (reviewMounted) {
         review.unmount();
@@ -774,7 +815,7 @@ export function mountGitPane(
         ),
       );
     }
-    renderCommitBox();
+    renderComposer();
     setHint(hint);
     mountToolbarControls();
     // Every toolbar verb stays disabled through an in-flight action (a repaint
@@ -876,28 +917,26 @@ export function mountGitPane(
   /** Run a commit variant with the in-flight guard: while any action RPC is
    *  awaited, poll repaints are suppressed and remounted buttons stay disabled.
    *  Once settled, a button remounted disabled mid-action is re-enabled. */
-  const runCommitOption = async (optionId) => {
+  const runCommitOption = async (optionId, message) => {
     inFlightActions += 1;
     try {
-      return await performCommitOption(optionId);
+      return await performCommitOption(optionId, String(message || "").trim());
     } finally {
       settleInFlight();
     }
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 18, cap 10 — reduce it, then drop this line
-  const performCommitOption = async (optionId) => {
+  const performCommitOption = async (optionId, message) => {
     setHint("");
     if (optionId === "commit") {
-      const box = messageBox();
-      const message = box ? box.value.trim() : "";
       if (!message) {
         setHint("Enter a commit message first.");
         throw new Error("commit message must not be empty");
       }
-      // Commit is commit-all: there is no staged set to assemble, so every
-      // changed path is staged first and the commit takes the lot.
-      const paths = commitAllPaths(lastStatus);
+      // The files the reviewer ticked, or the whole worktree when they ticked
+      // none — staged first, then committed together.
+      const paths = commitPaths(commitAllPaths(lastStatus), marks.selected);
       if (!paths.length) {
         setHint("Nothing to commit.");
         throw new Error("nothing to commit");
@@ -1195,8 +1234,39 @@ export function mountGitPane(
     return true;
   };
 
+  /// A mark made on one of this pane's OWN stacks. The review plug draws its
+  /// own and handles its own; the marks themselves are shared, so a file ticked
+  /// on either is ticked on both.
+  const claimFileMark = (event) => {
+    if (reviewMounted) return false;
+    const approve = event.target.closest(".fapprove");
+    const select = event.target.closest(".fselect-box");
+    if (!approve && !select) return false;
+    const key = (approve || select).dataset.key;
+    if (approve) marks.toggleApproved(pathOf(key));
+    else marks.toggleSelected(pathOf(key));
+    renderAndFetch();
+    renderComposer();
+    return true;
+  };
+
+  /// The verbs the selection raises, aimed at every file in hand at once.
+  const claimSelectionVerb = (event) => {
+    const button = event.target.closest(".selapprove, .selclear");
+    if (!button) return false;
+    if (button.classList.contains("selapprove")) marks.approveSelected();
+    else marks.clearSelection();
+    // A mark the plug shares has to reach the stack the plug is drawing.
+    if (reviewMounted && review.refresh) review.refresh();
+    renderAndFetch();
+    renderComposer();
+    return true;
+  };
+
   const claims = [
     claimSecret,
+    claimFileMark,
+    claimSelectionVerb,
     claimFetch,
     claimSyncButtonWiredElsewhere,
     claimAbort,
@@ -1211,6 +1281,7 @@ export function mountGitPane(
       comments: () => (reviewMounted ? null : commentLayer),
       openFile: () => openFile,
       folds: () => (reviewMounted ? null : foldsOfOpenChangeset()),
+      approved: () => marks.approved,
       repaint: renderAndFetch,
     }),
   ];

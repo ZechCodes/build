@@ -48,3 +48,30 @@ surface can hide a leak.
 **Final score: 100/100.** This score applies to the ten scoped chat-isolation
 controls above and records the explicit ignored-test and scanner limitations;
 it is not a claim that every optional external fixture was executed.
+
+## Merge revalidation — `origin/main`
+
+The completed chat-isolation tree was revalidated after merging the 15 incoming
+commits from `origin/main`. The merge combined explicit agent isolation with
+upstream per-message read reporting; the focused
+`per_message_read_reports_preserve_explicit_agent_isolation` regression passed
+before the full gates.
+
+- Bridge: `cargo fmt --all -- --check` and
+  `cargo clippy --all-targets -- -D warnings` passed. `cargo test --all` passed
+  2,133 tests with zero failures. Seven tests remained intentionally ignored:
+  six library tests that require real provider/network conditions and the
+  opt-in real-store migration fixture requiring `BUILD_MIGRATION_FIXTURE`.
+- SPA: `npm run lint -- --no-cache` passed; `npm test` passed 203 files and
+  3,566 tests; `npm run build` completed successfully.
+- Semgrep: `semgrep --config auto --max-target-bytes 10000000 .` ran 510 rules
+  against all 503 tracked targets and found zero findings. One rule timed out on
+  the unrelated `planning/v2/Build Landing Page v2.html`; approximately 99.9%
+  of lines parsed.
+- Gitleaks current tree: 29.15 MB scanned, no leaks found. Gitleaks history with
+  `--full-history HEAD origin/main` covered both merge parents, 1,668 commits and
+  35.40 MB, with no leaks found.
+
+**Post-merge score: 100/100.** The same scoped controls remain verified on the
+resolved merge tree; the ignored-test and scanner limitations above remain
+explicit.

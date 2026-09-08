@@ -112,8 +112,34 @@ function resolveIssueRoute(id, tailSegments) {
   return route;
 }
 
-// eslint-disable-next-line complexity -- ratchet: routeFromHash is at 28, cap 10 — reduce it, then drop this line
+/// Where in a tab the URL is standing, as a query on the end of the hash.
+///
+/// The Files tab names a FILE, and a file path carries slashes exactly as a
+/// branch name does — two slashed things in one path cannot be told apart, and
+/// the branch/tab split is already delicate enough. So the file rides as
+/// `?path=…&line=…` and the path parsing above never sees it.
+function tabPlace(query) {
+  if (!query) return null;
+  const params = new URLSearchParams(query);
+  const path = params.get("path");
+  if (!path) return null;
+  const line = Number(params.get("line"));
+  return { file: path, ...(Number.isFinite(line) && line > 0 ? { line } : null) };
+}
+
+/// The route a hash names, and where in it the reader is standing.
+///
+/// Split before parse: everything up to the `?` is the surface, everything
+/// after it is the place within it.
 export function routeFromHash(hash) {
+  const [path, query] = String(hash || "").split("?");
+  const route = surfaceFromHashPath(path);
+  const place = route.name === "branch" && route.tab === "files" ? tabPlace(query) : null;
+  return place ? { ...route, ...place } : route;
+}
+
+// eslint-disable-next-line complexity -- ratchet: surfaceFromHashPath is at 28, cap 10 — reduce it, then drop this line
+function surfaceFromHashPath(hash) {
   const parts = (hash || "")
     .replace(/^#\/?/, "")
     .split("/")
@@ -169,11 +195,21 @@ export function routeFromHash(hash) {
   }
 }
 
+/// The `?path=…&line=…` a Files route ends with, and nothing at all for every
+/// other tab: only Files stands in a file.
+function tabPlaceSuffix(route, tab) {
+  if (tab !== "files" || !route.file) return "";
+  const query = new URLSearchParams({ path: route.file });
+  if (Number.isFinite(route.line) && route.line > 0) query.set("line", String(route.line));
+  return `?${query}`;
+}
+
 // eslint-disable-next-line complexity -- ratchet: hashFromRoute is at 12, cap 10 — reduce it, then drop this line
 export function hashFromRoute(route) {
   const encode = encodeURIComponent;
   if (route.name === "branch" && route.projectId && route.branch) {
-    return `#/project/${encode(route.projectId)}/branch/${encode(route.branch)}/${branchTab(route.tab)}`;
+    const tab = branchTab(route.tab);
+    return `#/project/${encode(route.projectId)}/branch/${encode(route.branch)}/${tab}${tabPlaceSuffix(route, tab)}`;
   }
   if (route.name === "issue" && route.projectId && route.id) {
     const base = `#/project/${encode(route.projectId)}/issue/${encode(route.id)}`;

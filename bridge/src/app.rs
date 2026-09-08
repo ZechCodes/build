@@ -6490,14 +6490,14 @@ impl AppState {
     /// named agent's. The read cursors are what unread is derived against, so
     /// this is the one place a badge clears.
     ///
-    /// `read_from_sequence` is where the reader's conversation window starts,
-    /// when they are reading one that does not reach back to the beginning.
-    /// See [`conversation_last_sequences`](Self::conversation_last_sequences).
-    fn see_attention(&mut self, id: &str, agent_id: Option<&str>, read_from_sequence: Option<u64>) {
+    /// `report` is what the panel claims to have read — the window it holds and
+    /// the message its viewport reached. See
+    /// [`conversation_last_sequences`](Self::conversation_last_sequences).
+    fn see_attention(&mut self, id: &str, agent_id: Option<&str>, report: ReadReport) {
         let Some(state_changed_at) = self.entity_state_clock(id) else {
             return;
         };
-        let read_through = self.conversation_last_sequences(id, agent_id, read_from_sequence);
+        let read_through = self.conversation_last_sequences(id, agent_id, report);
         let attention = self.attention.entry(id.to_string()).or_default();
         attention.see(&state_changed_at);
         for (agent_id, sequence) in read_through {
@@ -6524,7 +6524,7 @@ impl AppState {
         &self,
         entity_id: &str,
         agent_id: Option<&str>,
-        read_from_sequence: Option<u64>,
+        report: ReadReport,
     ) -> Vec<(String, u64)> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
@@ -6536,10 +6536,10 @@ impl AppState {
                 let thread = self
                     .agent_conversation(entity_id, Some(&agent.id))
                     .unwrap_or(&agent.thread);
-                let hidden_below = read_from_sequence.is_some_and(|floor| {
+                let hidden_below = report.window_floor.is_some_and(|floor| {
                     thread.unread_attention_below(floor, self.read_cursor(entity_id, &agent.id))
                 });
-                (!hidden_below).then(|| (agent.id.clone(), thread.last_sequence()))
+                (!hidden_below).then(|| (agent.id.clone(), report.reached(thread.last_sequence())))
             })
             .collect()
     }
@@ -9120,12 +9120,11 @@ impl AppState {
         } else {
             None
         };
-        // Where the reader's conversation window starts. A client paging a long
-        // conversation reaches the end of a window, not the end of the thread,
-        // so it says how much of it was ever shipped and the cursor moves only
-        // as far as that honestly covers.
-        let read_from_sequence = params.get("read_from_sequence").and_then(Value::as_u64);
-        self.see_attention(&entity_id, agent_id.as_deref(), read_from_sequence);
+        let report = ReadReport {
+            window_floor: params.get("read_from_sequence").and_then(Value::as_u64),
+            through: params.get("read_through_sequence").and_then(Value::as_u64),
+        };
+        self.see_attention(&entity_id, agent_id.as_deref(), report);
         Ok(json!({ "ok": true }))
     }
 
@@ -9948,6 +9947,9 @@ impl AppState {
             },
             "unread_count": unread.count,
             "unread_reason": unread.reason,
+            // Where the reader got to, so the panel can rule its unread divider
+            // and open on the first message they have not seen.
+            "read_through_sequence": self.read_cursor(entity_id, &agent.id),
             "working": tab.is_some_and(agent_is_working),
             "working_time": working_time_json(agent.working_since.as_deref()),
             "choice_revision": agent.choice_revision,
@@ -17855,6 +17857,30 @@ fn view_thread_detail(replacement: &Option<Value>, params: &Value) -> ThreadDeta
     match replacement {
         Some(_) => ThreadDetail::Digest,
         None => thread_detail(params),
+    }
+}
+
+/// What a panel claims to have read of one conversation.
+///
+/// `window_floor` is where the window it holds starts: a client paging a long
+/// conversation reaches the end of a WINDOW rather than the end of the thread,
+/// so a report from one carries no claim about the items below the floor.
+/// `through` is the newest message its viewport actually reached — reading is
+/// per message, so a reader half way down what arrived clears half of it and
+/// the rest goes on waiting. No `through` means the panel read to the end of
+/// what it holds.
+#[derive(Clone, Copy, Default, Debug)]
+struct ReadReport {
+    window_floor: Option<u64>,
+    through: Option<u64>,
+}
+
+impl ReadReport {
+    /// How far this report reads a conversation whose newest item is
+    /// `last_sequence`. Never past the end: a stale `through` from a panel
+    /// holding a longer thread than this one claims nothing extra.
+    fn reached(self, last_sequence: u64) -> u64 {
+        self.through.unwrap_or(last_sequence).min(last_sequence)
     }
 }
 
@@ -46452,6 +46478,112 @@ mod tests {
         assert_eq!(entry["unread_reason"], "agent_message", "{entry:?}");
     }
 
+    /// How far the shared conversation has counted, for a test that wants to
+    /// name one message by the sequence it landed on.
+    fn issue_thread_last_sequence(state: &AppState, issue_id: &str) -> u64 {
+        state
+            .plans
+            .get(issue_id)
+            .expect("the issue exists")
+            .agents
+            .sole_thread()
+            .last_sequence()
+    }
+
+    /// Reading is per message. A panel whose viewport reached the middle of
+    /// what arrived says the sequence it got to, and the badge goes on counting
+    /// everything below it — rather than the reader having to reach the very
+    /// end before anything clears.
+    #[test]
+    fn entity_seen_reads_through_the_sequence_the_reader_names() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "read through");
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        let first_question = issue_thread_last_sequence(&state, &issue_id);
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("and which module does it go in?", None, now_rfc3339());
+        });
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread_count"], 2, "{entry:?}");
+
+        let seen = state.handle(req(
+            "entity.seen",
+            json!({ "entity_id": run_id, "read_through_sequence": first_question }),
+        ));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(
+            entry["unread_count"], 1,
+            "the message below the viewport is still waiting: {entry:?}"
+        );
+    }
+
+    /// A report from behind the cursor moves nothing: a second panel holding an
+    /// older sequence cannot resurrect a badge the reader already cleared.
+    #[test]
+    fn a_read_through_report_behind_the_cursor_moves_nothing() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "no rewind");
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        let first_question = issue_thread_last_sequence(&state, &issue_id);
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("and which module does it go in?", None, now_rfc3339());
+        });
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(board_entry(&mut state, &run_id)["unread_count"], 0);
+
+        state.handle(req(
+            "entity.seen",
+            json!({ "entity_id": run_id, "read_through_sequence": first_question }),
+        ));
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread_count"], 0, "{entry:?}");
+    }
+
+    /// The bubble carries the cursor, so the panel can rule its unread divider
+    /// and open on the first message the reader has not seen.
+    #[test]
+    fn an_agent_bubble_carries_the_read_cursor() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "cursor on the wire");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        let first_question = issue_thread_last_sequence(&state, &issue_id);
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("and which module does it go in?", None, now_rfc3339());
+        });
+
+        let unread = board_entry(&mut state, &run_id);
+        let bubble = &unread["agents"][0];
+        assert_eq!(
+            bubble["read_through_sequence"], 0,
+            "nothing read yet: {bubble:?}"
+        );
+
+        state.handle(req(
+            "entity.seen",
+            json!({ "entity_id": run_id, "read_through_sequence": first_question }),
+        ));
+        let read = board_entry(&mut state, &run_id);
+        let bubble = &read["agents"][0];
+        assert_eq!(
+            bubble["read_through_sequence"], first_question,
+            "{bubble:?}"
+        );
+    }
+
     /// The reviewer's own messages are not news to the reviewer, and a progress
     /// note is the agent saying it is still going — neither pulls anyone in.
     #[test]
@@ -55429,6 +55561,44 @@ mod tests {
             "{other:?}"
         );
         assert_eq!(other["result"]["thread"]["thread_total"], 1, "{other:?}");
+    }
+
+    #[test]
+    fn per_message_read_reports_preserve_explicit_agent_isolation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, first_agent, second_agent) =
+            branch_with_two_conversations(&mut state, &repo, dir.path(), "scoped-read-report");
+        let first_cursor = state.read_cursor(&run_id, &first_agent);
+        let reached = state
+            .edit_agent_conversation(&run_id, &second_agent, |thread, _| {
+                thread.post_agent("first question", None, now_rfc3339());
+                let reached = thread.last_sequence();
+                thread.post_agent("still unread", None, now_rfc3339());
+                Ok(reached)
+            })
+            .unwrap();
+
+        let read = state.handle(req(
+            "entity.seen",
+            json!({
+                "entity_id": run_id,
+                "agent_id": second_agent,
+                "conversation_id": second_agent,
+                "read_through_sequence": reached,
+            }),
+        ));
+        assert_eq!(read["ok"], true, "{read:?}");
+        assert_eq!(state.read_cursor(&run_id, &second_agent), reached);
+        assert_eq!(state.read_cursor(&run_id, &first_agent), first_cursor);
+
+        let refused = state.handle(req(
+            "entity.seen",
+            json!({ "entity_id": run_id, "agent_id": "", "read_through_sequence": u64::MAX }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(state.read_cursor(&run_id, &second_agent), reached);
+        assert_eq!(state.read_cursor(&run_id, &first_agent), first_cursor);
     }
 
     /// An issue carries exactly one agent session, so naming it is a check

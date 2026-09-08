@@ -16,7 +16,6 @@
 import "../styles/surfaces.css";
 import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
-import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, parseDiff, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
@@ -28,6 +27,8 @@ import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
+import { createReviewMarks } from "./reviewMarks.js";
+import { selectionBarHtml } from "./changesRender.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -65,7 +66,7 @@ export function emptyStackText(totalFiles, changedOnly) {
  * - `submitOverride({ hunk_id, direction, note })` sends the reviewer's
  *   disagreement with where the pass put a hunk; omitting it draws no offers.
  * - `revisionId()` names the revision the anchors belong to.
- * - `renderIdleActions(actionsHost, hintHost)` fills the actionbar while no
+ * - `renderIdleActions(actionsHost)` fills the git toolbar's verb host while no
  *   comment is pending; it returns whether it drew anything.
  * - `actionsFrozen()` is the surface's own freeze — an action RPC in flight.
  * - `statusHtml()` is the live claim in the bar (e.g. the agent is working).
@@ -77,7 +78,6 @@ export function createReviewPlug({
   submit = null,
   submitOverride = null,
   revisionId = () => null,
-  hint = "Select code, tap a line, or use ✎ to comment. Comments go to the agent.",
   renderIdleActions = () => false,
   actionsFrozen = () => false,
   statusHtml = () => "",
@@ -123,11 +123,14 @@ export function createReviewPlug({
   const currentTriage = () => (overrides ? overrides.apply(triageReport) : triageReport);
 
   // Re-review memory, per plug instance (per session): what the reviewer saw
-  // when they last sent comments, which files they have ticked off as read, and
-  // whether the stack is narrowed to only what moved since.
+  // when they last sent comments, which files they have approved, which they
+  // have selected, and whether the stack is narrowed to only what moved since.
   let reviewStamps = new Map();
-  const viewedFiles = new Set();
   let changedOnlyFilter = false;
+  // What the reviewer has marked on these files. The surface hands its own over
+  // at mount where it has one, so a mark made on this changeset is the same
+  // mark on the stacks beside it.
+  let marks = createReviewMarks();
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
    *  wears a hash of its own rows as its content key. */
@@ -135,6 +138,7 @@ export function createReviewPlug({
 
   const commentLayer = submit
     ? createCommentLayer({
+        readNote: () => noteReader(),
         submit: async (messages) => {
           await submit(messages);
           // Stamp what was just reviewed: the next pass marks what moved.
@@ -142,34 +146,34 @@ export function createReviewPlug({
           diffKey = null; // the stamp changes what is drawn — force the rebuild
         },
         revisionId,
-        hint,
-        onChange: () => render(),
-        renderIdle: (actions, hintHost) => {
-          if (!renderIdleActions(actions, hintHost)) {
-            hintHost.textContent = commentableNow ? hint : "";
-            actions.innerHTML = "";
-          }
-          return true;
+        onChange: () => {
+          render();
+          onCommentsChanged();
         },
       })
     : null;
 
-  /** Redraw the actionbar in place, without touching the diff. */
+  /** Redraw the surface's own git verbs, and the tray's, without touching the
+   *  diff. The two live in different bars now — merging in the toolbar above
+   *  the stack, sending comments in the tray below it — so both are painted. */
   const paintActions = () => {
     if (!host) return;
-    if (trayMounted && commentLayer) {
-      commentLayer.refreshActions();
-      return;
-    }
-    const actions = host.querySelector(".csactions");
-    const hintHost = host.querySelector(".cshint");
-    if (!actions || !hintHost) return;
-    if (renderIdleActions(actions, hintHost)) return;
-    hintHost.textContent = "";
-    actions.innerHTML = "";
+    if (trayMounted && commentLayer) commentLayer.refreshActions();
+    const gitActions = gitActionsHost();
+    if (gitActions && !renderIdleActions(gitActions)) gitActions.innerHTML = "";
   };
 
   let paintChangeset = null;
+  // Where this surface hosts the plug's git verbs — the git toolbar above the
+  // diff. A plug mounted without one (a standalone stack, a test) draws none.
+  let gitActionsHost = () => null;
+  // What the surface's box under the diff is holding. The box sits below the
+  // scroller, outside everything this plug paints, so the note riding out with
+  // the anchored comments is read from there rather than kept here.
+  let noteReader = () => "";
+  // The surface's box under the diff names how much is waiting on its button, so
+  // it is told whenever that moves.
+  let onCommentsChanged = () => {};
 
   function render() {
     if (!host) return;
@@ -185,9 +189,11 @@ export function createReviewPlug({
       commentable: editable,
       openable: Boolean(openFile),
       changedSince: changed,
-      viewed: viewedFiles,
+      approved: marks.approved,
+      selected: marks.selected,
+      selectable: true,
       folds,
-      withViewedToggle: editable,
+      approvable: true,
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
       review:
@@ -202,17 +208,22 @@ export function createReviewPlug({
             },
     });
     paintChangeset({
-      bar: reviewBarHtml(renderedFiles, {
-        statusHtml: statusHtml(),
-        offerChangedOnly: reviewStamps.size > 0,
-        changedOnly: changedOnlyFilter,
-      }),
+      bar:
+        reviewBarHtml(renderedFiles, {
+          statusHtml: statusHtml(),
+          offerChangedOnly: reviewStamps.size > 0,
+          changedOnly: changedOnlyFilter,
+        }) + selectionBarHtml(marks.selected.size),
       entries,
-      tray: trayMounted ? commentLayer.trayHtml() : changesActionbarHtml(),
+      tray: trayMounted ? commentLayer.trayHtml() : "",
     });
     if (trayMounted) commentLayer.attach(host);
-    else paintActions();
+    paintActions();
     wire();
+    // What this plug can take has just been settled by the payload that drew
+    // the stack, and the box under the diff is the surface's — it cannot know
+    // the plug became commentable unless it is told.
+    onCommentsChanged();
   }
 
   const claimSecret = (event) => toggleSecretSpoiler(event.target);
@@ -244,8 +255,30 @@ export function createReviewPlug({
     return true;
   };
 
+  /// The reviewer approving a file, or taking it back. An approved file
+  /// collapses, which is what makes the stack shorten as they work down it.
+  const claimApprove = (event) => {
+    const toggle = event.target.closest(".fapprove");
+    if (!toggle) return false;
+    marks.toggleApproved(pathOf(toggle.dataset.key));
+    render();
+    return true;
+  };
+
+  /// The verbs the selection raises, aimed at every file in hand at once.
+  const claimSelectionVerb = (event) => {
+    const button = event.target.closest(".selapprove, .selclear");
+    if (!button) return false;
+    if (button.classList.contains("selapprove")) marks.approveSelected();
+    else marks.clearSelection();
+    render();
+    return true;
+  };
+
   const claims = [
     claimSecret,
+    claimApprove,
+    claimSelectionVerb,
     claimNoiseGroup,
     claimTrustDial,
     claimOverride,
@@ -254,7 +287,7 @@ export function createReviewPlug({
       comments: () => (trayMounted ? commentLayer : null),
       openFile: () => openFile,
       folds: () => folds,
-      viewed: () => viewedFiles,
+      approved: () => marks.approved,
       repaint: render,
     }),
   ];
@@ -269,10 +302,8 @@ export function createReviewPlug({
         render();
         return;
       }
-      if (!target.classList.contains("fviewed-box")) return;
-      const path = pathOf(target.dataset.key);
-      if (target.checked) viewedFiles.add(path);
-      else viewedFiles.delete(path);
+      if (!target.classList.contains("fselect-box")) return;
+      marks.toggleSelected(pathOf(target.dataset.key));
       render();
     };
     host.onclick = (event) => {
@@ -363,9 +394,13 @@ export function createReviewPlug({
     /** The pending comments (and typed general note) the surface holds. */
     busy: () => Boolean(commentLayer && commentLayer.busy()),
 
-    mount(element) {
+    mount(element, { gitActions = () => null, readNote = () => "", onComments = () => {}, reviewMarks = null } = {}) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
+      gitActionsHost = gitActions;
+      noteReader = readNote;
+      onCommentsChanged = onComments;
+      if (reviewMarks) marks = reviewMarks;
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       livePainted = false;
@@ -381,6 +416,18 @@ export function createReviewPlug({
         pausesWhileHidden: false,
       });
     },
+
+    /** What the surface's box under the diff should offer while this plug is
+     *  the changeset on screen: whether there is an agent to talk to, and how
+     *  much is anchored and waiting. */
+    commentOffer: () => ({ commentable: commentableNow && Boolean(commentLayer), pending: commentLayer ? commentLayer.count() : 0 }),
+
+    /** Redraw the stack — what the surface calls when a mark it shares with this
+     *  plug was made somewhere else. */
+    refresh: render,
+
+    /** Send what is anchored, with the note the box is holding. */
+    sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),
 
     unmount() {
       if (watcher) watcher.dispose();

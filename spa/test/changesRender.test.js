@@ -4,7 +4,7 @@ import {
   commitRowHtml,
   uncommittedHeaderHtml,
   commitHeaderHtml,
-  commitBoxHtml,
+  docCommentTrayHtml,
   commentTrayHtml,
   changesetPlaceholderHtml,
 } from "../src/core/changesRender.js";
@@ -182,15 +182,6 @@ describe("commitHeaderHtml", () => {
   });
 });
 
-describe("commitBoxHtml", () => {
-  it("carries the message box, hint host, and the actions host", () => {
-    const html = commitBoxHtml();
-    expect(html).toContain('class="gitmsg"');
-    expect(html).toContain("gitcommit-actions");
-    expect(html).toContain("githint");
-  });
-});
-
 describe("commentTrayHtml", () => {
   const comments = [
     { id: 1, file: "src/a.js", lnA: 12, lnB: 14, snippet: "let x = 1;", comment: "rename this" },
@@ -198,7 +189,7 @@ describe("commentTrayHtml", () => {
   ];
 
   it("lists each pending comment with its location and a remove control", () => {
-    const html = commentTrayHtml(comments, { generalDraft: "" });
+    const html = commentTrayHtml(comments);
     expect(html).toContain("src/a.js:12-14");
     expect(html).toContain("rename this");
     expect(html).toContain('data-id="2"');
@@ -207,8 +198,14 @@ describe("commentTrayHtml", () => {
     expect(html).not.toContain("src/b.js:0");
   });
 
-  it("keeps the general draft in the box across repaints", () => {
-    expect(commentTrayHtml([], { generalDraft: "one more thing" })).toContain("one more thing");
+  it("draws nothing at all with nothing pending", () => {
+    // Where a note is written is the box under the diff, which is always on
+    // screen; an empty tray has nothing left to say.
+    expect(commentTrayHtml([])).toBe("");
+  });
+
+  it("keeps the doc surface's general draft in its own box across repaints", () => {
+    expect(docCommentTrayHtml([], { generalDraft: "one more thing" })).toContain("one more thing");
   });
 
   it("escapes comment text, snippets, and paths", () => {

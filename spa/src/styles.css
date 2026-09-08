@@ -372,10 +372,32 @@ main#root.surface { max-width:none;
    sits in has to scroll in place, or a six-column run report takes the whole
    conversation panel's width with it. Row separators only, no vertical rules —
    the same flat, line-based surface every other list in the app is. */
-.mdtable { margin:8px 0 12px; max-width:100%; overflow-x:auto; }
+/* The one sign that a table runs wider than its column is a pair of edge
+   shadows. A macOS scrollbar only shows itself mid-scroll, so a clipped last
+   column reads as a rendering bug until the reader happens to drag it. Two
+   pairs of gradients say it instead: a shadow pinned to each edge (`scroll`),
+   and over it a cover in the host's own background that travels with the
+   content (`local`). At rest each cover hides its shadow; scroll, and the cover
+   slides away to leave the shadow on the side there is still table to reach.
+   Every surface renderMarkdown paints into — a conversation card, .plan — is
+   --panel, and --mdtable-cover names that colour for the one that is not. */
+.mdtable { margin:8px 0 12px; max-width:100%; overflow-x:auto; --mdtable-cover:var(--panel);
+  background:
+    linear-gradient(to right, var(--mdtable-cover), transparent) 0 0 / 22px 100% no-repeat local,
+    linear-gradient(to left, var(--mdtable-cover), transparent) 100% 0 / 22px 100% no-repeat local,
+    linear-gradient(to right, color-mix(in srgb, var(--line) 85%, transparent), transparent)
+      0 0 / 14px 100% no-repeat scroll,
+    linear-gradient(to left, color-mix(in srgb, var(--line) 85%, transparent), transparent)
+      100% 0 / 14px 100% no-repeat scroll; }
 .mdtable table { border-collapse:collapse; min-width:100%; font-variant-numeric:tabular-nums; }
-.mdtable th, .mdtable td { padding:5px 16px 5px 0; text-align:left; vertical-align:top;
-  border-bottom:1px solid var(--line2); }
+/* A cell breaks on spaces. Its host — a conversation card above all — wraps
+   anywhere so a pasted path can never widen the column, but a cell inheriting
+   that has no minimum width at all: the column shrinks until its text runs one
+   character per line. break-word keeps the column as wide as its longest word
+   and still breaks a word that could not fit a line of its own. */
+.mdtable th, .mdtable td { padding:5px 14px 5px 0; text-align:left; vertical-align:top;
+  border-bottom:1px solid var(--line2); white-space:normal; overflow-wrap:break-word;
+  word-break:normal; }
 /* The header is the one row that names things, so it reads as ink and holds its
    line: a wrapped header over a scrolling table is unreadable. */
 .mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; border-bottom-color:var(--line); }
@@ -1090,6 +1112,11 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-body > :last-child { margin-bottom:0; }
 .thread-body p { margin:0 0 10px; }
 .thread-body ul { margin:6px 0 10px; padding-left:20px; }
+/* The 12px gutter is the message's, not its table's: a table takes the card
+   edge to edge — 24px more column in the narrowest place a table is read —
+   and carries the gutter inside as padding so the text still clears the edge
+   at either end of the scroll. */
+.thread-body .mdtable { margin-inline:-12px; padding-inline:12px; max-width:none; }
 .thread-references { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 12px; }
 .thread-event-content .thread-references { padding:6px 0 0; }
 .thread-reference { max-width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px;
@@ -1101,6 +1128,9 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-event-content { min-width:0; padding-top:3px; }
 .thread-event-content strong { color:var(--ink2); }
 .thread-event-detail { margin-top:4px; color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; }
+/* An event's detail is printed on the rail itself, not on a card, so a table in
+   one covers its edge shadows in the rail's colour. */
+.thread-event-detail .mdtable { --mdtable-cover:var(--bg); }
 .thread-event-detail p { margin:0 0 6px; }
 .thread-event-detail p:last-child, .thread-event-detail ul:last-child { margin-bottom:0; }
 .thread-event-detail ul { margin:4px 0 8px; padding-left:19px; }

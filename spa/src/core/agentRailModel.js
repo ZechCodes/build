@@ -286,8 +286,11 @@ function startupText(startup, nowMs) {
  *  does not know them, so a work item with nothing to report pins nothing at
  *  all. The git facts are characters rather than text because the line moves
  *  one character at a time — see core/gitStatusCells.js. */
-export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], agentLabel = "Agent") {
-  const working = workingSeconds(row && row.working_time, nowMs);
+export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], agentLabel = "Agent", agent = null) {
+  // A branch/issue row may still carry the old entity aggregate. It is not an
+  // agent timer: parallel agents have independent turns, so only the selected
+  // agent's durable field may drive this clock.
+  const working = workingSeconds(agent && agent.working_time, nowMs);
   return {
     working: working === null ? "" : runningClock(working),
     starting: working === null ? startupText(startupStatusLine(conversationItems, agentLabel), nowMs) : "",
@@ -326,6 +329,7 @@ export function railEntity(payload, kind = "branch") {
       primary: false,
       adoptable: false,
       canAdd: false,
+      executionContext: row.execution_context || null,
       agents: row.agents || [],
       thread: row.thread || null,
     };
@@ -342,6 +346,7 @@ export function railEntity(payload, kind = "branch") {
     // the first message adopts the checkout on its way to being sent.
     adoptable: !row.run_id,
     canAdd: !!row.run_id && agents.length > 0,
+    executionContext: row.execution_context || null,
     agents,
     thread: (row.run && row.run.thread) || null,
   };

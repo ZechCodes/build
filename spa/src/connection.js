@@ -14,7 +14,7 @@ import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { onlineStickyDeviceId } from "./core/devicePolicy.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
-import { App, render, rememberSelectedDevice } from "./app.js";
+import { App, adoptApplicationScope, render, rememberSelectedDevice } from "./app.js";
 import {
   deviceName,
   markDeviceOnline,
@@ -26,7 +26,7 @@ import {
 import { retargetTerminals, terminalsRideOn } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
-import { setCacheDevice } from "./core/cacheScope.js";
+import { resetFeedScope } from "./core/taskFeed.js";
 import { offlineBannerText } from "./core/text.js";
 
 /// Connection status has no chip of its own any more — the status line under the
@@ -128,20 +128,30 @@ function dropPeerLink() {
  *  callers — a slow greeting must not hold up the app, and a surface mounted
  *  before it lands is re-timed the moment it does. */
 export function greetLiveBridge() {
-  return greetBridge(App.call).catch(() => {
+  const session = App.session;
+  const repository = App.chatRepository;
+  if (!session) return Promise.resolve(false);
+  return greetBridge(session.call, {
+    isCurrent: () => App.session === session && App.chatRepository === repository,
+    onGreeting: (greeting) => repository?.configureCapabilities(greeting),
+  }).catch(() => {
     /* the session died mid-greeting; the next one greets again */
   });
 }
 
 export function adoptSession(session) {
+  const deviceChanged = Boolean(App.cacheScope && App.cacheScope.deviceId !== session.deviceId);
   dropPeerLink(); // whatever was carrying was carrying the session we just left
   App.session = session;
   App.call = session.call;
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   session.onCarrier(greetLiveBridge);
-  // Whose cache the surfaces read and write through from here on.
-  setCacheDevice(session.deviceId);
+  // Reconnects keep this device's controllers/drafts and only replace their
+  // transport. A device switch retires the old scope before any new view can
+  // capture it.
+  adoptApplicationScope({ deviceId: session.deviceId, call: session.call });
+  if (deviceChanged) resetFeedScope();
   paintDevicePicker();
   // Every live session starts here — the gate's first one, a reconnect, a
   // device switch — so this is where captures taken with no device to send them

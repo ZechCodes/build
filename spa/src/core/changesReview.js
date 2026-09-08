@@ -14,7 +14,7 @@
 // popover, and typed text, and a rebuild mid-action would wipe a busy button.
 
 import "../styles/surfaces.css";
-import { cacheDeviceId } from "./cacheScope.js";
+import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, parseDiff, pathOf } from "./diff.js";
@@ -89,6 +89,7 @@ export function createReviewPlug({
   navigate = null,
 }) {
   const openFile = (navigate && navigate.openFile) || null;
+  const cacheScope = currentCacheScope();
   let host = null;
   let watcher = null;
   let diffKey = null;
@@ -304,10 +305,8 @@ export function createReviewPlug({
 
   // The local cache's slot for this surface's aggregate diff, keyed by the
   // entity the diff belongs to. A surface that names none caches nothing.
-  const diffAddress = () => {
-    const deviceId = cacheDeviceId();
-    return deviceId && entity ? { deviceId, entityId: entity, kind: "diff" } : null;
-  };
+  const diffAddress = () =>
+    entity ? cacheScope?.address({ entityId: entity, kind: "diff" }) || null : null;
   let livePainted = false; // a live payload outranks whatever the cache held
 
   /** The saved diff, painted whole — comment tray and verbs included, from the

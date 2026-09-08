@@ -136,6 +136,7 @@ describe("the create modal", () => {
     App.call = vi.fn(async () => {
       const timedOut = new Error("worktree.create timed out");
       timedOut.timedOut = true;
+      timedOut.uncertain = true;
       throw timedOut;
     });
     openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
@@ -151,6 +152,7 @@ describe("the create modal", () => {
     App.call = vi.fn(async () => {
       const timedOut = new Error("issue.create timed out");
       timedOut.timedOut = true;
+      timedOut.uncertain = true;
       throw timedOut;
     });
     openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });

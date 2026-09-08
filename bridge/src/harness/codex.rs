@@ -26,6 +26,12 @@ pub(super) fn models() -> Vec<ModelOption> {
     const THROUGH_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];
     vec![
         ModelOption {
+            id: "gpt-6-astra",
+            label: "GPT-6-Astra",
+            supports_effort: true,
+            efforts: &EFFORT_LEVELS,
+        },
+        ModelOption {
             id: "gpt-5.6-sol",
             label: "GPT-5.6-Sol",
             supports_effort: true,
@@ -69,7 +75,7 @@ impl Harness for CodexHarness {
         "Codex TUI"
     }
 
-    /// The curated catalog, most capable first. (cached: 2026-07)
+    /// The curated catalog, most capable first. (cached: 2026-09)
     ///
     /// Codex has an experimental debug catalog command, but Build cannot assume
     /// every installed CLI version exposes it; shipping the catalog keeps the

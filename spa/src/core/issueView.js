@@ -179,10 +179,14 @@ export function mountIssueView(
     submit: async ({ comments, general }) => {
       const stage = selectedStage();
       if (!stage) throw new Error("no stage is open");
+      // One press is one addressed batch. Neither the stage picker nor the
+      // agent rail may retarget its later posts while an earlier comment is
+      // still crossing the bridge.
+      const destination = { stageId: stage.id, agentScope: agentSelection.scope() };
       for (const comment of comments) {
         await callRpc("issue.comment_add", {
           issue_id: issueId,
-          stage_id: stage.id,
+          stage_id: destination.stageId,
           body: comment.comment,
           anchor: docCommentAnchor(comment),
         });
@@ -195,7 +199,7 @@ export function mountIssueView(
         await replyOrNothing(
           callRpc("thread.post", {
             entity_id: issueId,
-            ...agentSelection.scope(),
+            ...destination.agentScope,
             body: general,
             ...MUTATION_THREAD_PAGE,
           }),

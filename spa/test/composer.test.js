@@ -8,6 +8,7 @@ import {
   mountComposerAttachments,
   pasteIntent,
 } from "../src/core/composer.js";
+import { createChatRepository } from "../src/core/chatRepository.js";
 
 const IDS = { input: "ti", send: "ts", hint: "th" };
 const MARKUP_IDS = { inputId: "ti", sendId: "ts", hintId: "th", placeholder: "Say something…" };
@@ -197,6 +198,46 @@ describe("attaching", () => {
     const second = mount(options);
     expect(second.controller.attachments().map((a) => a.name)).toEqual(["kept.png"]);
     expect(second.host.querySelectorAll(".composer-chip")).toHaveLength(1);
+  });
+
+  it("persists an upload that completes after the composer remounts", async () => {
+    let release;
+    const repository = createChatRepository({ scope: { key: "device-a" }, call: vi.fn() });
+    const chat = repository.controller({ entityId: "run-1", agentId: "agent-1", conversationId: "thread-1" });
+    const upload = (file) => new Promise((resolve) => {
+      release = () => resolve({ name: file.name, path: "stored/slow.txt", mime: "text/plain", size: 1 });
+    });
+    const first = mount({ ...chat.bindDraft(), upload });
+    first.host.dispatchEvent(dropOf([new File(["a"], "slow.txt")]));
+    await settle();
+    expect(chat.readAttachments()[0].status).toBe("uploading");
+
+    mount({ ...chat.bindDraft(), upload });
+    release();
+    await settle();
+
+    expect(chat.readAttachments()[0].status).toBe("ready");
+    expect(chat.readAttachments()[0].descriptor.path).toBe("stored/slow.txt");
+  });
+
+  it("does not let an old upload completion replace a newer attachment draft", async () => {
+    let release;
+    const repository = createChatRepository({ scope: { key: "device-a" }, call: vi.fn() });
+    const chat = repository.controller({ entityId: "run-1", agentId: "agent-1", conversationId: "thread-1" });
+    const first = mount({
+      ...chat.bindDraft(),
+      upload: (file) => new Promise((resolve) => {
+        release = () => resolve({ name: file.name, path: "stored/old.txt", mime: "text/plain", size: 1 });
+      }),
+    });
+    first.host.dispatchEvent(dropOf([new File(["a"], "old.txt")]));
+    await settle();
+    chat.writeAttachments([{ name: "new.txt", path: "stored/new.txt", status: "ready" }]);
+
+    release();
+    await settle();
+
+    expect(chat.readAttachments().map((entry) => entry.name)).toEqual(["new.txt"]);
   });
 });
 

@@ -31,6 +31,7 @@ use crate::delivery::{AgentSpawnPlan, ReadyToSpawn, SessionProbes};
 use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
     SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, Turn,
+    TurnChoiceSupport,
 };
 use crate::isolation::{Isolation, IsolationAvailability, ResolvedIsolation};
 use crate::lifecycle::holders::{BranchHolder, ProjectCheckouts};
@@ -46,10 +47,14 @@ use crate::lifecycle::{
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
+use crate::operation::{
+    thread_post_request_hash, DeliveryIntent, OperationPayload, OperationReceipt, OperationStatus,
+    THREAD_POST_METHOD,
+};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, AdoptableCheckout, AdoptionScope, Agent, AgentTurn, ImplementableIssue,
     Orchestrator, OrchestratorError, PreparedAgentLaunch, PreparedImplementation, ReportConsumed,
-    ReportOutcome, ResumeIdProbe, RunSource, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
+    ReportOutcome, ResumeIdProbe, RunSource, SessionLocatorFactory, SpawnOptions,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -70,7 +75,7 @@ use crate::store::{
     WorktreeFinishAction, WorktreeFinishStatus,
 };
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
-use crate::thread::ThreadDetail;
+use crate::thread::{SessionInstance, SessionStart, ThreadDetail};
 use crate::timing::{FrameClock, FrameTimer};
 use crate::transport::{self, Frame};
 use crate::worktree::{
@@ -172,7 +177,7 @@ fn terminal_size(cols: u16, rows: u16) -> PtySize {
 /// A worktree-backed surface a terminal or fs call is scoped to. Scope roots are
 /// resolved server-side ONLY (spec §1): ids map to roots through the bridge's own
 /// records — a client-supplied filesystem path is never a scope root.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum TermScope {
     Run {
         run_id: String,
@@ -430,6 +435,10 @@ struct Tab {
     /// app-wide state lock RELEASED, so the delivery takes a handle out of the
     /// registry instead of holding the registry open across the turn.
     session: Arc<dyn AgentSession>,
+    /// Exact conversation-lineage row opened for this process. Captured once
+    /// at publication and carried by every callback; never rediscovered from
+    /// whichever session is newest when the callback finally runs.
+    session_instance: Option<SessionInstance>,
     /// The grid this tab's terminal paints into — `None` for a session with no
     /// terminal, because there is no grid without one. The terminal is a
     /// capability, not a guarantee, and a screen kept for a session that has
@@ -520,6 +529,7 @@ impl Tab {
     fn pumps(&self, output: SessionOutput) -> TabPumps {
         TabPumps {
             session: Arc::clone(&self.session),
+            session_instance: self.session_instance.clone(),
             screen: self.screen.clone(),
             output,
         }
@@ -603,6 +613,7 @@ impl Tab {
                 created_at: now_rfc3339(),
                 screen,
                 session,
+                session_instance: None,
                 live: true,
                 call_sequences: HashMap::new(),
                 last_delivered_at: None,
@@ -621,6 +632,7 @@ impl Tab {
 /// session it was started for and to no replacement that took the tab since.
 struct TabPumps {
     session: Arc<dyn AgentSession>,
+    session_instance: Option<SessionInstance>,
     screen: Option<ScreenHandle>,
     output: SessionOutput,
 }
@@ -655,9 +667,35 @@ const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
 struct AddressedAgent {
     entity_id: String,
     agent_id: String,
+    conversation_id: String,
     root: std::path::PathBuf,
     model_choice: ModelChoice,
+    choice_revision: u64,
     has_unread: bool,
+}
+
+struct AgentSpawnRequest<'a> {
+    owner: &'a str,
+    agent_id: &'a str,
+    conversation_id: &'a str,
+    model_choice: &'a ModelChoice,
+    force_fresh: bool,
+    phase: &'a str,
+}
+
+/// One addressed agent and the durable conversation it is bound to.
+///
+/// The addressed identity drives the harness and settings. The canonical
+/// identity drives history storage. Keeping both in one resolved value makes
+/// it impossible for a caller to validate one agent and then accidentally
+/// read the roster's current primary conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationAddress {
+    entity_id: String,
+    agent_id: String,
+    conversation_entity_id: String,
+    conversation_id: String,
+    artifact: crate::thread::ArtifactKind,
 }
 
 /// Who is on the other end of an authenticated MCP control frame.
@@ -684,6 +722,9 @@ enum AddressedSession {
 /// [`dispatch_frame`] — which holds the `Arc` and no guard — sends it the moment
 /// the verb returns.
 struct PendingAgentTurn {
+    /// Durable reviewer operation this turn delivers. Lifecycle turns predate
+    /// operation receipts and carry none.
+    operation_id: Option<String>,
     /// The worktree the agent that hears this turn works in. Canonical at
     /// construction — every site that builds a turn passes it through
     /// `AppState::canonical_root` — so [`Self::tab_key`] is a field read and
@@ -694,7 +735,13 @@ struct PendingAgentTurn {
     /// The agent that hears it. Entity-level work addresses the entity's first
     /// agent; a verb the rail addressed names the agent whose bubble was open.
     agent_id: String,
+    /// Canonical conversation binding captured with the addressed agent. A
+    /// queued turn must not follow an agent id after that binding was removed
+    /// or changed while the delivery sat outside the app lock.
+    conversation_id: String,
     model_choice: ModelChoice,
+    choice_revision: u64,
+    interrupt: bool,
     /// What to say once the tab is open — `None` for a turn that only wants
     /// the agent there.
     ///
@@ -745,9 +792,32 @@ struct ImplementationTarget {
     worktree_path: std::path::PathBuf,
     agent_id: String,
     model_choice: ModelChoice,
+    choice_revision: u64,
 }
 
 impl PendingAgentTurn {
+    fn for_delivery_operation(receipt: &OperationReceipt) -> Option<Self> {
+        let delivery = receipt.delivery.as_ref()?;
+        let payload = delivery.payload.as_ref()?;
+        Some(Self {
+            operation_id: Some(receipt.operation_id.clone()),
+            root: AppState::canonical_root(&delivery.root),
+            owner: delivery.owner_id.clone(),
+            agent_id: delivery.agent_id.clone(),
+            conversation_id: receipt.conversation_id.clone(),
+            model_choice: delivery.model_choice.clone(),
+            choice_revision: delivery.choice_revision,
+            interrupt: delivery.interrupt,
+            say: Some(TurnText {
+                cold: payload.delivery_prompt(&receipt.operation_id, true),
+                warm: payload.delivery_prompt(&receipt.operation_id, false),
+            }),
+            phase: "revive",
+            wants_catch_up: false,
+            survives_refusal: true,
+        })
+    }
+
     /// What this turn says, for a test that queued one that says something.
     #[cfg(test)]
     fn said(&self) -> &TurnText {
@@ -790,11 +860,19 @@ impl PendingAgentTurn {
     /// roster for its Issue's so the comments land on the conversation the
     /// Issue renders. Either way the turn must reach the run's OWN agent.
     fn for_run_agent(owner: &str, agent_id: &str, active: &ActiveRun, turn: AgentTurn) -> Self {
+        let agent = active
+            .agents
+            .by_id(agent_id)
+            .expect("a run turn is addressed to one of its agents");
         PendingAgentTurn {
+            operation_id: None,
             root: AppState::canonical_root(&active.worktree.path),
             owner: owner.to_string(),
             agent_id: agent_id.to_string(),
-            model_choice: active.agents.turn_choice(agent_id, &active.model_choice),
+            conversation_id: agent.conversation_id().to_string(),
+            model_choice: agent.choice.clone(),
+            choice_revision: agent.choice_revision,
+            interrupt: false,
             say: Some(TurnText {
                 cold: turn.cold,
                 warm: turn.warm,
@@ -813,9 +891,13 @@ impl PendingAgentTurn {
         let workspace = active.workspace.as_ref()?;
         let agent_id = active.agents.sole().id.clone();
         Some(PendingAgentTurn {
+            operation_id: None,
             root: AppState::canonical_root(&workspace.checkout),
             owner: owner.to_string(),
-            model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
+            conversation_id: active.agents.sole().conversation_id().to_string(),
+            model_choice: active.agents.sole().choice.clone(),
+            choice_revision: active.agents.sole().choice_revision,
+            interrupt: false,
             agent_id,
             say: Some(TurnText {
                 cold: turn.cold,
@@ -849,9 +931,27 @@ impl PendingAgentTurn {
         let primed = crate::orchestrator::conversation_prompt(&prompt);
         let agent_id = active.agents.primary()?.id.clone();
         Some(PendingAgentTurn {
+            operation_id: None,
             root: AppState::canonical_root(project_root),
             owner: owner.to_string(),
-            model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
+            conversation_id: active
+                .agents
+                .primary()
+                .expect("the recovery agent was just resolved")
+                .conversation_id()
+                .to_string(),
+            model_choice: active
+                .agents
+                .primary()
+                .expect("the recovery agent was just resolved")
+                .choice
+                .clone(),
+            choice_revision: active
+                .agents
+                .primary()
+                .expect("the recovery agent was just resolved")
+                .choice_revision,
+            interrupt: false,
             agent_id,
             say: Some(TurnText {
                 cold: primed.clone(),
@@ -1613,15 +1713,6 @@ fn build_agent(qa_agent: bool, context: HarnessContext) -> Agent {
     }
 }
 
-fn default_transcript_probe() -> TranscriptProbe {
-    Arc::new(|cwd: &std::path::Path, provider| {
-        let Ok(home) = std::env::var("HOME") else {
-            return false;
-        };
-        harness_for(provider).has_transcript(std::path::Path::new(&home), cwd)
-    })
-}
-
 fn default_resume_id_probe() -> ResumeIdProbe {
     Arc::new(|cwd: &std::path::Path, provider, id: &str| {
         let Ok(home) = std::env::var("HOME") else {
@@ -1980,6 +2071,14 @@ pub struct AppState {
     /// ([`AppState::turns_in_flight`], the idle sweep) exists to cover
     /// the gap this split opens; none of it is optional.
     pending_agent_turns: Vec<PendingAgentTurn>,
+    /// Receipts loaded from SQLite plus operations accepted in this process.
+    /// The database remains authoritative; this mirror keeps retry/status
+    /// checks under the app's existing single state lock.
+    operations: HashMap<String, OperationReceipt>,
+    /// The one post currently entering persistence. The canonical
+    /// conversation-owner save consumes it so message, receipt and delivery
+    /// intent use one SQLite commit.
+    pending_operation_acceptance: Option<PendingOperationAcceptance>,
     /// The turns that have left [`AppState::pending_agent_turns`] and are being
     /// delivered right now. Between a verb's transition and the tab its turn
     /// spawns, a working entity legitimately has no agent tab yet — the queue
@@ -2001,15 +2100,6 @@ pub struct AppState {
     next_project: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
     qa_agent: bool,
-    /// Whether the harness has a prior conversation for a worktree cwd —
-    /// consulted on every agent-tab spawn to decide `--continue`.
-    ///
-    /// It answers exactly one question: is there a conversation here that this
-    /// process did not start? A tab respawned after a daemon restart or a
-    /// crash, and a worktree where the user ran the agent by hand before Build
-    /// looked at it, are the same case, and both want the transcript picked
-    /// back up. Never true in QA mode.
-    transcript_probe: TranscriptProbe,
     /// Builds the watcher that names the conversation a spawning session is
     /// having — consulted once per agent-tab spawn, before the child exists.
     /// Never builds one in QA mode: the scripted harness has no transcript
@@ -2058,6 +2148,12 @@ struct StoredTasks {
     archived_worktrees: Vec<PersistedArchivedWorktree>,
     captures: Vec<crate::capture::Capture>,
     attention: HashMap<String, crate::attention::Attention>,
+    operations: Vec<OperationReceipt>,
+}
+
+struct PendingOperationAcceptance {
+    conversation_owner_id: String,
+    receipt: OperationReceipt,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2122,6 +2218,9 @@ fn load_stored_tasks(dir: std::path::PathBuf) -> Result<StoredTasks, String> {
             .load_all_captures()
             .map_err(|error| error.to_string())?,
         attention: store.load_attention(),
+        operations: store
+            .recover_operations()
+            .map_err(|error| error.to_string())?,
         store,
     })
 }
@@ -2293,7 +2392,9 @@ async fn handle_coding_mcp_frame(
     if let Ok(report) =
         serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
     {
-        let deferred = timer.lock(state).done_deferring(entity_id, report);
+        let deferred = timer
+            .lock(state)
+            .done_deferring_for_agent(entity_id, agent_id, report);
         if let Some(deferred) = deferred {
             if let Err(error) = apply_off_the_socket(state, timer, deferred).await {
                 eprintln!("done report {entity_id}: {error}");
@@ -2362,11 +2463,6 @@ impl AppState {
         context: HarnessContext,
     ) -> Self {
         let harness = if qa_agent { "QA agent" } else { "Claude Code" }.to_string();
-        let transcript_probe: TranscriptProbe = if qa_agent {
-            Arc::new(|_, _| false)
-        } else {
-            default_transcript_probe()
-        };
         let session_locator_factory: SessionLocatorFactory = if qa_agent {
             Arc::new(|_, _| None)
         } else {
@@ -2426,6 +2522,8 @@ impl AppState {
             agent_spawn_finished: Arc::new(std::sync::Condvar::new()),
             agent_screens_awaiting_spawn: HashMap::new(),
             pending_agent_turns: Vec::new(),
+            operations: HashMap::new(),
+            pending_operation_acceptance: None,
             turns_in_flight: TurnsInFlight::default(),
             mcp_session_tokens: HashMap::new(),
             next_term: 1,
@@ -2433,7 +2531,6 @@ impl AppState {
             next_stream: 1,
             next_project: 1,
             qa_agent,
-            transcript_probe,
             session_locator_factory,
             resume_id_probe: default_resume_id_probe(),
             notifier: None,
@@ -2639,11 +2736,22 @@ impl AppState {
         self.recover_captures(stored.captures)?;
         self.recover_completed_worktree_finishes();
         self.restore_plans_before_runs(stored.plans, stored.runs)?;
+        self.restore_operations(stored.operations);
         self.seed_conversation_attention_sequences();
         self.seed_anchors_for_records_without_one();
         self.migrate_legacy_dismissals();
         self.close_recovered_working_intervals();
         self.resume_stored_issue_schedulers()
+    }
+
+    fn restore_operations(&mut self, operations: Vec<OperationReceipt>) {
+        for receipt in operations {
+            if receipt.status == OperationStatus::Queued {
+                if let Some(turn) = PendingAgentTurn::for_delivery_operation(&receipt) {
+                    self.pending_agent_turns.push(turn);
+                }
+            }
+        }
     }
 
     fn restore_plans_before_runs(
@@ -3114,6 +3222,7 @@ impl AppState {
     /// written transactionally at each plan/revise `done`.
     fn persist_plan_record(&mut self, plan_id: &str, active: &ActivePlan) -> Result<(), String> {
         if self.store.is_none() {
+            self.remember_in_memory_acceptance(plan_id);
             return Ok(());
         }
         let now = now_rfc3339();
@@ -3146,11 +3255,23 @@ impl AppState {
             updated_at,
             state_changed_at: self.entity_state_changed_at.get(plan_id).cloned(),
         };
-        self.store
-            .as_ref()
-            .expect("checked above")
-            .save_issue_plan(&record)
-            .map_err(|e| format!("issue store: {e}"))
+        let acceptance = self.take_operation_acceptance(plan_id);
+        match acceptance.as_ref() {
+            Some(acceptance) => self
+                .store
+                .as_ref()
+                .expect("checked above")
+                .save_issue_plan_accepting_operation(&record, &acceptance.receipt)
+                .map(Some),
+            None => self
+                .store
+                .as_ref()
+                .expect("checked above")
+                .save_issue_plan(&record)
+                .map(|()| None),
+        }
+        .map_err(|e| format!("issue store: {e}"))?;
+        Ok(())
     }
 
     /// Write a run's durable core to the store (atomic replace). Same discipline
@@ -3158,6 +3279,7 @@ impl AppState {
     /// `plan_id`, never plan docs.
     fn persist_run_record(&mut self, run_id: &str, active: &ActiveRun) -> Result<(), String> {
         if self.store.is_none() {
+            self.remember_in_memory_acceptance(run_id);
             return Ok(());
         }
         let now = now_rfc3339();
@@ -3201,11 +3323,42 @@ impl AppState {
         // One write path, whether or not the run belongs to an Issue: the
         // `issue_id` column is `record.plan_id`, so asking the store whether
         // the Issue exists first only bought a lock acquisition per save.
-        self.store
+        let acceptance = self.take_operation_acceptance(run_id);
+        match acceptance.as_ref() {
+            Some(acceptance) => self
+                .store
+                .as_ref()
+                .expect("checked above")
+                .save_run_accepting_operation(&record, &acceptance.receipt)
+                .map(Some),
+            None => self
+                .store
+                .as_ref()
+                .expect("checked above")
+                .save_run(&record)
+                .map(|()| None),
+        }
+        .map_err(|e| format!("run store: {e}"))?;
+        Ok(())
+    }
+
+    fn take_operation_acceptance(&mut self, owner_id: &str) -> Option<PendingOperationAcceptance> {
+        if self
+            .pending_operation_acceptance
             .as_ref()
-            .expect("checked above")
-            .save_run(&record)
-            .map_err(|e| format!("run store: {e}"))
+            .is_some_and(|pending| pending.conversation_owner_id == owner_id)
+        {
+            self.pending_operation_acceptance.take()
+        } else {
+            None
+        }
+    }
+
+    fn remember_in_memory_acceptance(&mut self, owner_id: &str) {
+        if let Some(acceptance) = self.take_operation_acceptance(owner_id) {
+            self.operations
+                .insert(acceptance.receipt.operation_id.clone(), acceptance.receipt);
+        }
     }
 
     /// The shared tail of every plan mutation: stamp times, persist the durable
@@ -3297,19 +3450,39 @@ impl AppState {
     /// to. A warm delivery never calls this — the session it continues is
     /// already open, and a second `start_session` would read back as an agent
     /// restart that never happened.
-    fn record_agent_session_start(&mut self, owner: &str, model_choice: &ModelChoice, phase: &str) {
+    fn record_agent_session_start(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        checkout: &std::path::Path,
+        model_choice: &ModelChoice,
+        phase: &str,
+    ) -> Option<SessionInstance> {
         // A router owns no conversation — it decides which one the capture
         // becomes. What its session start records is that there is now a
         // process to have lost, which is what makes a dead one detectable.
         if let Some(session) = self.router_sessions.get_mut(owner) {
             session.mark_started();
             self.note_board_changed();
-            return;
+            return None;
         }
-        self.edit_owner_thread("record_agent_session_start", owner, |thread| {
-            open_session_lineage(thread, model_choice, phase)
-        });
+        let mut opened = None;
+        let checkout = checkout.display().to_string();
+        if let Err(error) = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+            opened = Some(open_session_lineage(
+                thread,
+                owner,
+                agent_id,
+                &checkout,
+                model_choice,
+                phase,
+            ));
+            Ok(())
+        }) {
+            eprintln!("record_agent_session_start {owner}: {error}");
+        }
         self.note_board_changed();
+        opened
     }
 
     /// The agent process an id owns has ended: close the conversation's session
@@ -3318,17 +3491,32 @@ impl AppState {
     /// is the PUMP that calls it — the only place that learns a harness died on
     /// its own. An owner that no longer exists (its record was deleted with the
     /// tab) has no lineage left to close, which is why this is quiet.
-    fn record_agent_session_end(&mut self, owner: &str, agent_id: &str) {
-        self.edit_owner_thread("record_agent_session_end", owner, |thread| {
-            finish_open_session(thread, &now_rfc3339())
-        });
+    fn record_agent_session_end(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        instance: &SessionInstance,
+    ) {
+        let now = now_rfc3339();
+        let mut ended_current = false;
+        if let Err(error) = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+            let was_current = thread.open_session_instance(agent_id).as_ref() == Some(instance);
+            ended_current = thread.finish_session_instance(instance, &now) && was_current;
+            Ok(())
+        }) {
+            eprintln!("record_agent_session_end {owner}: {error}");
+        }
+        if !ended_current {
+            return;
+        }
         self.close_turn_of_dead_agent(owner, agent_id);
+        self.record_agent_working_since(owner, agent_id, None);
         if !self.entity_agents_working(owner)
             && self
                 .attention
                 .entry(owner.to_string())
                 .or_default()
-                .observe_working(false, &now_rfc3339())
+                .observe_working(false, &now)
         {
             self.persist_attention();
         }
@@ -3344,107 +3532,38 @@ impl AppState {
     /// the row's and the bubble's claim that work is in flight.
     ///
     /// The conversation is chosen exactly the way
-    /// [`agent_conversation`](Self::agent_conversation) reads it: the first
-    /// agent's IS the entity's own, and a planned implementation's is its
-    /// Issue's, so an event written for the first agent has to travel there or
-    /// it lands on a thread no surface renders. A turn that is already closed —
+    /// [`agent_conversation`](Self::agent_conversation) reads it: through the
+    /// addressed agent's stable binding. A turn that is already closed —
     /// the agent replied, reported `done`, or was told the branch was abandoned
     /// — is left alone: this marker exists only for a turn nobody else will
     /// ever close.
     fn close_turn_of_dead_agent(&mut self, owner: &str, agent_id: &str) {
         let died_mid_turn = self
-            .agent_conversation(owner, Some(agent_id))
-            .is_ok_and(|thread| thread.working_since().is_some());
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .is_some_and(|agent| agent.working_since.is_some());
         if !died_mid_turn {
             return;
         }
         let now = now_rfc3339();
-        if self.plans.contains_key(owner) {
-            let Ok(mut active) = self.take_plan(owner) else {
-                return;
-            };
-            if let Some(agent) = active.agents.by_id_mut(agent_id) {
-                record_session_death_in_thread(&mut agent.thread, &now);
-            }
-            let persisted = self.finish_plan_mutation(owner.to_string(), active);
-            if let Err(error) = persisted {
-                eprintln!("close_turn_of_dead_agent {owner}: {error}");
-            }
-            return;
-        }
-        let Ok(mut active) = self.take_run(owner) else {
-            return;
-        };
-        let is_primary = active
-            .agents
-            .primary()
-            .is_some_and(|primary| primary.id == agent_id);
-        let recorded = if is_primary {
-            self.record_on_run_conversation(&mut active, |thread| {
-                record_session_death_in_thread(thread, &now)
-            })
-        } else {
-            if let Some(agent) = active.agents.by_id_mut(agent_id) {
-                record_session_death_in_thread(&mut agent.thread, &now);
-            }
+        if let Err(error) = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+            record_session_death_in_thread(thread, &now);
             Ok(())
-        };
-        if let Err(error) = recorded {
+        }) {
             eprintln!("close_turn_of_dead_agent {owner}: {error}");
-        }
-        let persisted = self.finish_run_mutation(owner.to_string(), active);
-        if let Err(error) = persisted {
-            eprintln!("close_turn_of_dead_agent {owner}: {error}");
-        }
-    }
-
-    /// Apply `edit` to `owner`'s conversation and persist the result, whichever
-    /// kind of entity the id names. Plan and run ids are disjoint, so the owner
-    /// lookup is the router; an id that names neither is a no-op, because a
-    /// thread that no longer exists cannot be wrong. So is a branch with no
-    /// agents: there is nobody there to tell.
-    fn edit_owner_thread(
-        &mut self,
-        context: &str,
-        owner: &str,
-        edit: impl FnOnce(&mut crate::thread::Thread),
-    ) {
-        if self.plans.contains_key(owner) {
-            let Ok(mut active) = self.take_plan(owner) else {
-                return;
-            };
-            edit(active.agents.sole_thread_mut());
-            let persisted = self.finish_plan_mutation(owner.to_string(), active);
-            if let Err(error) = persisted {
-                eprintln!("{context} {owner}: {error}");
-            }
-            return;
-        }
-        let Ok(mut active) = self.take_run(owner) else {
-            return;
-        };
-        let Some(primary) = active.agents.primary_mut() else {
-            self.runs.insert(owner.to_string(), active);
-            return;
-        };
-        edit(&mut primary.thread);
-        let persisted = self.finish_run_mutation(owner.to_string(), active);
-        if let Err(error) = persisted {
-            eprintln!("{context} {owner}: {error}");
         }
     }
 
     /// Apply `edit` to `agent_id`'s own RECORD — what the agent IS, not what it
     /// said — and persist the entity that owns it.
     ///
-    /// Beside [`edit_owner_thread`](Self::edit_owner_thread) rather than
-    /// [`edit_agent_conversation`](Self::edit_agent_conversation), which edits
+    /// Separate from [`edit_agent_conversation`](Self::edit_agent_conversation), which edits
     /// the conversation an agent SPEAKS in: for a planned implementation's
     /// first agent that is the Issue's thread, which is not the agent.
     ///
-    /// Quiet about an owner or an agent it cannot find, for the reason
-    /// `edit_owner_thread` is: an entity whose record was deleted with its tab
-    /// has no roster left to write onto.
+    /// Quiet about an owner or agent it cannot find: a record deleted with its
+    /// tab has no roster left to write onto.
     fn edit_agent_record(
         &mut self,
         context: &str,
@@ -3475,46 +3594,10 @@ impl AppState {
         }
     }
 
-    /// Whether a spawn for this agent may pick up a conversation Build never
-    /// named — the guess `--continue` makes, which reopens the newest
-    /// conversation in the checkout whoever it belonged to.
-    ///
-    /// One reading, off the agent's own durable record: its `thread.sessions`
-    /// is non-empty, so a session of its own has opened before and this spawn
-    /// is a respawn — the crash window where the name was never captured. The
-    /// conversation the guess lands on is then the one Build already holds and
-    /// shows, which is the only conversation an agent may be given.
-    ///
-    /// Everything else starts fresh, and an ADOPTED entity is not an exception:
-    /// the conversation the human was having in the checkout they adopted is
-    /// one Build never heard, so an agent handed it would answer out of a
-    /// history the conversation view cannot show.
-    ///
-    /// Lineage is not per-agent today — [`AppState::record_agent_session_start`]
-    /// writes through the ROSTER's primary agent — so for the primary its own
-    /// `sessions` IS the entity's whole lineage and this reading is exact,
-    /// while a non-first agent's is empty and starts FRESH. Deliberate:
-    /// `--continue` guesses the newest conversation in the cwd, and on a
-    /// checkout several agents share that is precisely the misattribution being
-    /// retired. One capture after its first session, the name carries it
-    /// instead.
-    ///
-    /// A router owns no record at all, so it falls through to `false` and
-    /// always spawns fresh: a router is one decision long, and the newest
-    /// conversation in a checkout is never it.
-    fn may_pick_up_a_conversation(&self, owner: &str, agent_id: &str) -> bool {
-        self.entity_agents(owner).is_ok_and(|agents| {
-            agents
-                .by_id(agent_id)
-                .is_some_and(|agent| !agent.thread.sessions.is_empty())
-        })
-    }
-
-    /// The three transcript-tree reads a spawn makes, taken together so the
+    /// The transcript-tree reads a spawn makes, taken together so the
     /// disk work can be handed over in one piece.
     fn session_probes(&self) -> SessionProbes {
         SessionProbes {
-            transcript: Arc::clone(&self.transcript_probe),
             resume_id: Arc::clone(&self.resume_id_probe),
             locator: Arc::clone(&self.session_locator_factory),
         }
@@ -3528,6 +3611,94 @@ impl AppState {
             .by_id(agent_id)?
             .resume_session_id
             .clone()
+    }
+
+    /// An exact provider id is resumable only when persisted lineage binds it
+    /// to this agent, provider, and checkout. Legacy/partial records start
+    /// fresh and catch up from canonical history instead of guessing.
+    fn resumable_session_id(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        root: &std::path::Path,
+        provider: AgentProvider,
+    ) -> Option<String> {
+        let named = self.recorded_resume_id(owner, agent_id)?;
+        let checkout = root.display().to_string();
+        self.agent_conversation(owner, Some(agent_id))
+            .ok()?
+            .sessions
+            .iter()
+            .rev()
+            .any(|session| {
+                session.agent_id == agent_id
+                    && session.checkout.as_deref() == Some(checkout.as_str())
+                    && session.provider == provider.label()
+                    && session.resume_session_id.as_deref() == Some(named.as_str())
+            })
+            .then_some(named)
+    }
+
+    /// Whether a queued turn still names the same executable agent and
+    /// canonical conversation it named when accepted.
+    ///
+    /// This is deliberately stricter than owner liveness. A drained batch can
+    /// outlive `agent.remove`, and an Issue implementation can share history
+    /// with its Issue while retaining a distinct process identity. Neither may
+    /// be reconstructed from roster position after the turn left the queue.
+    fn queued_agent_target_exists(&self, turn: &PendingAgentTurn) -> bool {
+        self.agent_target_exists(
+            &turn.owner,
+            &turn.agent_id,
+            &turn.conversation_id,
+            &turn.root,
+        )
+    }
+
+    fn agent_target_exists(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        conversation_id: &str,
+        root: &std::path::Path,
+    ) -> bool {
+        if crate::router::is_router_agent(agent_id) {
+            return self.router_sessions.get(owner).is_some_and(|session| {
+                session.agent_id() == agent_id
+                    && conversation_id == agent_id
+                    && Self::canonical_root(session.scratch_dir()) == root
+            });
+        }
+        let Ok(address) = self.resolve_conversation_address(owner, Some(agent_id)) else {
+            return false;
+        };
+        address.conversation_id == conversation_id
+            && self
+                .entity_agent_root(owner)
+                .is_ok_and(|actual| Self::canonical_root(&actual) == root)
+    }
+
+    /// Whether the exact process behind `instance` was launched with `choice`.
+    fn session_instance_uses_choice(
+        &self,
+        instance: &SessionInstance,
+        choice: &ModelChoice,
+    ) -> bool {
+        self.agent_conversation(&instance.entity_id, Some(&instance.agent_id))
+            .ok()
+            .and_then(|thread| {
+                thread
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == instance.id)
+            })
+            .is_some_and(|session| {
+                session.conversation_id == instance.conversation_id
+                    && session.checkout.as_deref().unwrap_or_default() == instance.checkout
+                    && session.provider == choice.provider.label()
+                    && session.model == choice.model
+                    && session.effort == choice.effort
+            })
     }
 
     /// Write down the name the agent's live session gave its conversation, so
@@ -3581,6 +3752,70 @@ impl AppState {
         });
     }
 
+    /// Set the current execution clock on the addressed agent record, never on
+    /// the canonical conversation it may share with another agent.
+    fn record_agent_working_since(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        working_since: Option<String>,
+    ) {
+        let unchanged = self
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .is_some_and(|agent| agent.working_since == working_since);
+        if unchanged {
+            return;
+        }
+        self.edit_agent_record("record_agent_working_since", owner, agent_id, |agent| {
+            agent.working_since = working_since;
+        });
+    }
+
+    /// Start one agent's execution interval without moving an interval already
+    /// in flight. A second read or a turn queued onto a native session is more
+    /// work for the same execution, not a new start time.
+    fn start_agent_working(&mut self, owner: &str, agent_id: &str, now: &str) {
+        let already_working = self
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .is_some_and(|agent| agent.working_since.is_some());
+        if !already_working {
+            self.record_agent_working_since(owner, agent_id, Some(now.to_string()));
+        }
+    }
+
+    /// Apply one provider-reported boundary to the exact agent whose session
+    /// emitted it. The entity attention clock remains the aggregate of all
+    /// agent intervals, while the execution clock itself never moves onto the
+    /// canonical conversation another agent may share.
+    fn record_agent_status_snapshot(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        snapshot: &crate::harness::SessionStatusSnapshot,
+    ) {
+        let working_since =
+            matches!(snapshot.status, AgentStatus::Working).then(|| snapshot.changed_at.clone());
+        self.record_agent_working_since(owner, agent_id, working_since);
+        let working = self.entity_agents_working(owner);
+        if self
+            .attention
+            .entry(owner.to_string())
+            .or_default()
+            .observe_status(
+                working,
+                &snapshot.changed_at,
+                snapshot.last_worked_at.as_deref(),
+            )
+        {
+            self.persist_attention();
+            self.note_entity_changed(owner);
+        }
+    }
+
     /// Post one thing the agent reported doing into the conversation it speaks
     /// in.
     ///
@@ -3622,7 +3857,7 @@ impl AppState {
     ) -> Option<u64> {
         let now = now_rfc3339();
         self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
-            let session_id = open_session_id(thread);
+            let session_id = open_session_id(thread, agent_id);
             Ok(thread.push_drafted_event(
                 crate::thread::ThreadEventDraft {
                     event,
@@ -3661,11 +3896,9 @@ impl AppState {
     /// Edit the conversation `agent_id` speaks in, and persist the entity that
     /// owns it.
     ///
-    /// Which conversation that is has one rule and this is where it lives: an
-    /// implementation's FIRST agent speaks in its Issue's conversation — the one
-    /// every Issue surface renders — and an agent added to the branch beside it
-    /// owns its own, because aliasing it would put two agents' words in one
-    /// place. The artifact that conversation is about travels with it, since a
+    /// Which conversation that is has one rule and this is where it lives: the
+    /// addressed agent's persisted binding names the storage owner. The artifact
+    /// that conversation is about travels with the addressed entity, since a
     /// plan's links resolve against a document and a run's against a diff.
     ///
     /// The record is persisted whether the edit succeeded or not, and the
@@ -3677,43 +3910,27 @@ impl AppState {
         agent_id: &str,
         edit: impl FnOnce(&mut crate::thread::Thread, crate::thread::ArtifactKind) -> Result<T, String>,
     ) -> Result<T, String> {
-        let speaks_for_the_entity = self.entity_agents(entity_id)?.is_primary(agent_id);
-        if self.plans.contains_key(entity_id) {
-            let mut active = self.take_plan(entity_id)?;
+        let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
+        if self.plans.contains_key(&address.conversation_entity_id) {
+            let mut active = self.take_plan(&address.conversation_entity_id)?;
             let result = active
                 .agents
-                .resolve_mut(Some(agent_id))
-                .and_then(|agent| edit(&mut agent.thread, crate::thread::ArtifactKind::Plan));
-            let persisted = self.finish_plan_mutation(entity_id.to_string(), active);
+                .resolve_mut(Some(&address.conversation_id))
+                .and_then(|agent| edit(&mut agent.thread, address.artifact));
+            let persisted =
+                self.finish_plan_mutation(address.conversation_entity_id.clone(), active);
             let value = result?;
             persisted?;
             return Ok(value);
         }
-        if let Some(issue_id) = self
-            .runs
-            .get(entity_id)
-            .and_then(|run| run.run.plan_id.as_ref())
-            .map(|id| id.0.clone())
-            .filter(|issue_id| self.plans.contains_key(issue_id))
-            .filter(|_| speaks_for_the_entity)
-        {
-            let mut issue = self.take_plan(&issue_id)?;
-            let result = edit(
-                issue.agents.sole_thread_mut(),
-                crate::thread::ArtifactKind::Diff,
-            );
-            let persisted = self.finish_plan_mutation(issue_id, issue);
-            let value = result?;
-            persisted?;
-            return Ok(value);
-        }
-        if self.runs.contains_key(entity_id) {
-            let mut active = self.take_run(entity_id)?;
+        if self.runs.contains_key(&address.conversation_entity_id) {
+            let mut active = self.take_run(&address.conversation_entity_id)?;
             let result = active
                 .agents
-                .resolve_mut(Some(agent_id))
-                .and_then(|agent| edit(&mut agent.thread, crate::thread::ArtifactKind::Diff));
-            let persisted = self.finish_run_mutation(entity_id.to_string(), active);
+                .resolve_mut(Some(&address.conversation_id))
+                .and_then(|agent| edit(&mut agent.thread, address.artifact));
+            let persisted =
+                self.finish_run_mutation(address.conversation_entity_id.clone(), active);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -3845,13 +4062,25 @@ impl AppState {
     /// once at boot: the store holds history that was announced when it
     /// happened, and a restart must not announce it again.
     fn seed_conversation_attention_sequences(&mut self) {
-        let sequences: Vec<(String, u64)> = self
+        let addresses: Vec<(String, String)> = self
             .plans
-            .values()
-            .map(|plan| &plan.agents)
-            .chain(self.runs.values().map(|run| &run.agents))
-            .filter_map(|roster| roster.primary())
-            .map(|agent| (agent.thread.id.clone(), agent.thread.last_sequence()))
+            .iter()
+            .map(|(id, plan)| (id, &plan.agents))
+            .chain(self.runs.iter().map(|(id, run)| (id, &run.agents)))
+            .flat_map(|(id, roster)| {
+                roster
+                    .iter()
+                    .map(|agent| (id.clone(), agent.id.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let sequences: Vec<_> = addresses
+            .into_iter()
+            .filter_map(|(entity_id, agent_id)| {
+                self.agent_conversation(&entity_id, Some(&agent_id))
+                    .ok()
+                    .map(|thread| (thread.id.clone(), thread.last_sequence()))
+            })
             .collect();
         self.conversation_attention_sequence.extend(sequences);
     }
@@ -3884,17 +4113,18 @@ impl AppState {
                 // anchor to what is held rather than leaving the entry unseeded.
                 let mut said_at: Vec<String> = roster
                     .iter()
-                    .flat_map(|agent| match self.whole_conversation(&agent.thread) {
-                        Ok(items) => crate::thread::Thread::user_message_times_in(&items)
-                            .map(str::to_string)
-                            .collect::<Vec<String>>(),
-                        Err(error) => {
-                            eprintln!("anchor seeding: {error}");
-                            agent
-                                .thread
-                                .user_message_times()
+                    .flat_map(|agent| {
+                        let thread = self
+                            .agent_conversation(id, Some(&agent.id))
+                            .unwrap_or(&agent.thread);
+                        match self.whole_conversation(thread) {
+                            Ok(items) => crate::thread::Thread::user_message_times_in(&items)
                                 .map(str::to_string)
-                                .collect()
+                                .collect::<Vec<String>>(),
+                            Err(error) => {
+                                eprintln!("anchor seeding: {error}");
+                                thread.user_message_times().map(str::to_string).collect()
+                            }
                         }
                     })
                     .collect();
@@ -4045,25 +4275,7 @@ impl AppState {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return false;
         };
-        let root = self.entity_agent_root(entity_id).ok();
-        let entity_thread = self.entity_conversation(entity_id);
-        roster.iter().any(|agent| {
-            let protocol_working = root.as_ref().and_then(|root| {
-                let tab = self.tabs.get(&TabKey::agent(root, &agent.id))?;
-                tab.session
-                    .status_changed()
-                    .is_some()
-                    .then(|| agent_is_working(tab))
-            });
-            protocol_working.unwrap_or_else(|| {
-                let thread = if roster.is_primary(&agent.id) {
-                    entity_thread.unwrap_or(&agent.thread)
-                } else {
-                    &agent.thread
-                };
-                thread.working_since().is_some()
-            })
-        })
+        roster.iter().any(|agent| agent.working_since.is_some())
     }
 
     fn observe_working_state(&mut self, entity_id: &str, working: bool, now: &str) {
@@ -4297,24 +4509,6 @@ impl AppState {
         Err("unknown id".to_string())
     }
 
-    /// Whether a queued turn still has a session to reach. An issue that holds
-    /// no workspace has none: its agent ended with the gate that closed it. A
-    /// capture has one only while a router session stands for it: the cancel
-    /// or the reroute that took the session away took the turn's destination
-    /// with it. Everything else — runs, recoveries — is deliverable.
-    fn owner_still_has_a_session(&self, owner: &str) -> bool {
-        if let Some(issue) = self.plans.get(owner) {
-            return issue.workspace.is_some();
-        }
-        if let Some(run) = self.runs.get(owner) {
-            return !run.run.state.is_terminal();
-        }
-        if crate::capture::is_capture_id(owner) {
-            return self.router_sessions.contains_key(owner);
-        }
-        true
-    }
-
     /// An entity's agents, whichever kind of entity it is.
     fn entity_agents(&self, entity_id: &str) -> Result<&crate::agent::AgentRoster, String> {
         if let Some(plan) = self.plans.get(entity_id) {
@@ -4368,6 +4562,70 @@ impl AppState {
             .map(|(id, _)| id.clone())
     }
 
+    /// Resolve an optional wire address to one stable conversation binding.
+    fn resolve_conversation_address(
+        &self,
+        entity_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<ConversationAddress, String> {
+        let roster = self.entity_agents(entity_id)?;
+        let agent = roster.resolve(agent_id)?;
+        let conversation_id = agent.conversation_id().to_string();
+        let conversation_entity_id = self.entity_of_agent(&conversation_id).ok_or_else(|| {
+            format!(
+                "agent {} is bound to missing conversation {}",
+                agent.id, conversation_id
+            )
+        })?;
+        self.entity_agents(&conversation_entity_id)?
+            .by_id(&conversation_id)
+            .ok_or_else(|| format!("unknown conversation_id: {conversation_id}"))?;
+        Ok(ConversationAddress {
+            entity_id: entity_id.to_string(),
+            agent_id: agent.id.clone(),
+            conversation_entity_id,
+            conversation_id,
+            artifact: if self.plans.contains_key(entity_id) {
+                crate::thread::ArtifactKind::Plan
+            } else {
+                crate::thread::ArtifactKind::Diff
+            },
+        })
+    }
+
+    /// Resolve strict wire identity and, when supplied, guard against a stale
+    /// conversation binding captured before the request crossed the network.
+    fn resolve_conversation_params(
+        &self,
+        entity_id: &str,
+        params: &Value,
+    ) -> Result<ConversationAddress, String> {
+        let agent_id = named_agent_id(params)?;
+        let address = self.resolve_conversation_address(entity_id, agent_id.as_deref())?;
+        if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
+            if expected != address.conversation_id {
+                return Err(format!(
+                    "stale conversation_id {expected}; agent {} is bound to {}",
+                    address.agent_id, address.conversation_id
+                ));
+            }
+        }
+        Ok(address)
+    }
+
+    fn conversation_at(
+        &self,
+        address: &ConversationAddress,
+    ) -> Result<&crate::thread::Thread, String> {
+        debug_assert!(self
+            .entity_agents(&address.entity_id)
+            .is_ok_and(|roster| roster.by_id(&address.agent_id).is_some()));
+        self.entity_agents(&address.conversation_entity_id)?
+            .by_id(&address.conversation_id)
+            .map(|agent| &agent.thread)
+            .ok_or_else(|| format!("unknown conversation_id: {}", address.conversation_id))
+    }
+
     /// The agent the system delivers to on `entity_id`, minting one when the
     /// human has left the branch with none.
     ///
@@ -4415,24 +4673,65 @@ impl AppState {
             .filter(|id| !id.is_empty())
             .ok_or("missing id")?
             .to_string();
-        if has_agent_choice(params) {
+        let named = named_agent_id(params)?;
+        let roster_is_empty = self.entity_agents(&entity_id)?.is_empty();
+        let expected_conversation = optional_nonempty_string(params, "conversation_id")?;
+        if roster_is_empty && named.is_some() {
+            self.resolve_agent(&entity_id, named.as_deref())?;
+        }
+        if roster_is_empty && expected_conversation.is_some() {
+            return Err("no conversation exists for the expected conversation_id".to_string());
+        }
+        // A provider card on an empty branch seeds the one agent it is about to
+        // create. Once an agent exists, settings are written only on that exact
+        // agent and its provider is its durable harness identity.
+        if roster_is_empty && has_agent_choice(params) {
             let chosen = model_choice_from(params, self.default_harness)?;
             self.set_entity_model_choice(&entity_id, chosen)?;
         }
-        let named = named_agent_id(params);
         let agent_id = match named.as_deref() {
-            None => self.ensure_primary_agent(&entity_id)?,
+            None if roster_is_empty => self.ensure_primary_agent(&entity_id)?,
             named => self.resolve_agent(&entity_id, named)?.id,
         };
+        if let Some(expected) = expected_conversation {
+            let actual = self
+                .entity_agents(&entity_id)?
+                .resolve(Some(&agent_id))?
+                .conversation_id();
+            if expected != actual {
+                return Err(format!(
+                    "stale conversation_id {expected}; agent {agent_id} is bound to {actual}"
+                ));
+            }
+        }
+        if !roster_is_empty && has_agent_choice(params) {
+            let locked = self
+                .entity_agents(&entity_id)?
+                .resolve(Some(&agent_id))?
+                .choice
+                .provider;
+            let chosen = model_choice_from(params, locked)?;
+            if chosen.provider != locked {
+                return Err(format!(
+                    "agent.start: the agent is locked to {}",
+                    locked.label()
+                ));
+            }
+            self.set_agent_model_choice(&entity_id, &agent_id, chosen)?;
+        }
         let root = self.entity_agent_root(&entity_id)?;
-        let entity_choice = self.entity_model_choice(&entity_id)?;
+        let has_unread = self
+            .agent_conversation(&entity_id, Some(&agent_id))?
+            .has_unread();
         let roster = self.entity_agents(&entity_id)?;
         let agent = roster
             .by_id(&agent_id)
             .expect("the agent was just resolved on this roster");
         Ok(AddressedAgent {
-            has_unread: agent.thread.has_unread(),
-            model_choice: roster.turn_choice(&agent_id, &entity_choice),
+            has_unread,
+            model_choice: agent.choice.clone(),
+            choice_revision: agent.choice_revision,
+            conversation_id: agent.conversation_id().to_string(),
             entity_id,
             agent_id,
             root,
@@ -4539,19 +4838,15 @@ impl AppState {
     /// notices the root is gone.
     fn retire_agents_of_pruned_worktree(&mut self, root: &std::path::Path) {
         let root = Self::canonical_root(root);
-        let ended: Vec<(String, String)> = self
+        let ended: Vec<SessionInstance> = self
             .tabs
             .iter()
             .filter(|(key, _)| key.is_agent() && key.root == root)
-            .filter_map(|(_, tab)| {
-                tab.role
-                    .agent()
-                    .map(|(owner, agent_id)| (owner.to_string(), agent_id.to_string()))
-            })
+            .filter_map(|(_, tab)| tab.session_instance.clone())
             .collect();
         let _retiring = self.retire_agent_tabs(&root);
-        for (owner, agent_id) in ended {
-            self.record_agent_session_end(&owner, &agent_id);
+        for instance in ended {
+            self.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
         }
     }
 
@@ -5223,13 +5518,34 @@ impl AppState {
         self.deferred_work.take()
     }
 
+    /// Route a report while retaining the authenticated actor long enough to
+    /// stop only that agent's execution clock.
+    fn done_deferring_for_agent(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        report: DoneReport,
+    ) -> Option<DeferredWork> {
+        self.record_agent_working_since(entity_id, agent_id, None);
+        self.done_deferring(entity_id, report)
+    }
+
     /// One agent's `done`, drained — the synchronous twin of
     /// [`AppState::done_deferring`], for the tests that own the state directly
     /// and have no guard to release. Running it is what the MCP control socket
     /// does with the guard released.
     #[cfg(test)]
     fn on_agent_done(&mut self, entity_id: &str, report: DoneReport) {
-        if let Some(deferred) = self.done_deferring(entity_id, report) {
+        let agent_id = self
+            .entity_agents(entity_id)
+            .ok()
+            .and_then(|agents| agents.primary())
+            .map(|agent| agent.id.clone());
+        let deferred = match agent_id {
+            Some(agent_id) => self.done_deferring_for_agent(entity_id, &agent_id, report),
+            None => self.done_deferring(entity_id, report),
+        };
+        if let Some(deferred) = deferred {
             let done = deferred.run();
             if let Err(error) = self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done) {
                 eprintln!("on_agent_done {entity_id}: {error}");
@@ -5265,12 +5581,20 @@ impl AppState {
                 action.tool_name()
             ));
         }
+        if let BridgeAction::ReadOperationMessages { operation_id } = &action {
+            return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);
+        }
         if let BridgeAction::SearchConversation { query } = &action {
             return self.search_agent_conversations(entity_id, agent_id, query);
         }
         if let BridgeAction::PostThreadMessage { links, .. } = &action {
             self.validate_thread_links_for_owner(entity_id, links)?;
         }
+        let posted_still_working = match &action {
+            BridgeAction::PostThreadMessage { still_working, .. } => Some(*still_working),
+            _ => None,
+        };
+        let reads_unread = matches!(action, BridgeAction::ReadUnreadMessages);
         // Where an agent speaks — its own conversation, or its Issue's when it
         // is the implementation's first — is one rule, and it is
         // `edit_agent_conversation`'s.
@@ -5278,7 +5602,84 @@ impl AppState {
         let result = self.edit_agent_conversation(entity_id, agent_id, |thread, artifact| {
             apply_thread_action(thread, artifact, action, &now)
         });
-        if result.is_ok() {
+        if let Ok(value) = &result {
+            if reads_unread && value["working"].is_string() {
+                self.start_agent_working(entity_id, agent_id, &now);
+            }
+            match posted_still_working {
+                Some(true) => self.start_agent_working(entity_id, agent_id, &now),
+                Some(false) => self.record_agent_working_since(entity_id, agent_id, None),
+                None => {}
+            }
+            self.observe_conversation_working(entity_id, &now);
+        }
+        result
+    }
+
+    fn read_operation_messages_for_agent(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        operation_id: &str,
+    ) -> Result<Value, String> {
+        let receipt = self
+            .operation_receipt(operation_id)?
+            .ok_or_else(|| format!("unknown operation_id: {operation_id}"))?;
+        let delivery = receipt
+            .delivery
+            .as_ref()
+            .ok_or_else(|| "read_unread_messages: operation has no delivery intent".to_string())?;
+        let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
+        if receipt.method != THREAD_POST_METHOD
+            || delivery.owner_id != entity_id
+            || delivery.agent_id != agent_id
+            || receipt.conversation_id != address.conversation_id
+        {
+            return Err("read_unread_messages: operation does not belong to this agent".into());
+        }
+        let payload = delivery
+            .payload
+            .as_ref()
+            .ok_or_else(|| "read_unread_messages: operation has no bounded payload".to_string())?;
+        let messages = payload.messages.clone();
+        let start = payload.start_sequence;
+        let end = payload.end_sequence;
+        let now = now_rfc3339();
+        let acknowledged_sequence = if let Some(store) = self.store.as_ref() {
+            Some(
+                store
+                    .acknowledge_operation_messages(
+                        &receipt.conversation_id,
+                        operation_id,
+                        start,
+                        end,
+                        &now,
+                    )
+                    .map_err(|error| format!("operation message store: {error}"))?,
+            )
+        } else {
+            None
+        };
+        let result = self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
+            thread.read_operation_messages(operation_id, start, end, &now);
+            if let Some(sequence) = acknowledged_sequence {
+                thread.advance_sequence_to(sequence);
+            }
+            thread.note_operation_read(&now);
+            Ok(json!({
+                "thread_id": thread.id,
+                "agent_id": thread.agent.id,
+                "messages": messages,
+                "working": WORKING_INDICATOR_NOTICE,
+            }))
+        });
+        if let Ok(value) = &result {
+            if value["messages"]
+                .as_array()
+                .is_some_and(|messages| !messages.is_empty())
+            {
+                self.start_agent_working(entity_id, agent_id, &now);
+            }
             self.observe_conversation_working(entity_id, &now);
         }
         result
@@ -5325,47 +5726,17 @@ impl AppState {
         agent_id: &str,
         query: &crate::thread::ConversationQuery,
     ) -> Result<Value, String> {
-        let mut threads: Vec<&crate::thread::Thread> = Vec::new();
-        if let Some(issue) = self.plans.get(entity_id) {
-            threads.push(&issue.agents.resolve(Some(agent_id))?.thread);
-        } else if let Some(run) = self.runs.get(entity_id) {
-            threads.push(&run.agents.resolve(Some(agent_id))?.thread);
-            if let Some(issue) = run
-                .run
-                .plan_id
-                .as_ref()
-                .and_then(|issue_id| self.plans.get(&issue_id.0))
-            {
-                threads.push(issue.agents.sole_thread());
-            }
-        } else {
-            return Err(format!("unknown conversation owner: {entity_id}"));
-        }
+        let thread = self.agent_conversation(entity_id, Some(agent_id))?;
 
         let mut hits: Vec<crate::thread::ConversationHit> = Vec::new();
-        for thread in &threads {
-            // A search is asked about the whole conversation — what was decided
-            // about a thing, however long ago — so it looks past the tail the
-            // load left resident.
-            let items = self.whole_conversation(thread)?;
-            hits.extend(thread.search_items(&items, query));
-        }
-        // One answer out of possibly two conversations, so the ordering the
-        // per-conversation search guarantees has to be re-established across
-        // them: newest first, by when it was said.
-        hits.sort_by(|left, right| {
-            right
-                .created_at
-                .cmp(&left.created_at)
-                .then(right.sequence.cmp(&left.sequence))
-        });
+        // A search is asked about the whole conversation — what was decided
+        // about a thing, however long ago — so it looks past the resident tail.
+        let items = self.whole_conversation(thread)?;
+        hits.extend(thread.search_items(&items, query));
         hits.truncate(query.effective_limit());
         Ok(json!({
             "hits": hits,
-            "threads_searched": threads
-                .iter()
-                .map(|thread| thread.id.clone())
-                .collect::<Vec<String>>(),
+            "threads_searched": [thread.id.clone()],
         }))
     }
 
@@ -6034,13 +6405,6 @@ impl AppState {
                         &contents,
                         &now_rfc3339(),
                     );
-                    if let Some(primary) = active.agents.primary_mut() {
-                        primary.thread.add_revision(
-                            crate::thread::ArtifactKind::Plan,
-                            &contents,
-                            &now_rfc3339(),
-                        );
-                    }
                 }
             }
         }
@@ -6187,16 +6551,13 @@ impl AppState {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
-        let entity_thread = self.entity_conversation(entity_id);
         roster
             .iter()
             .filter(|agent| agent_id.is_none_or(|named| named == agent.id))
             .filter_map(|agent| {
-                let thread = if roster.is_primary(&agent.id) {
-                    entity_thread.unwrap_or(&agent.thread)
-                } else {
-                    &agent.thread
-                };
+                let thread = self
+                    .agent_conversation(entity_id, Some(&agent.id))
+                    .unwrap_or(&agent.thread);
                 let hidden_below = report.window_floor.is_some_and(|floor| {
                     thread.unread_attention_below(floor, self.read_cursor(entity_id, &agent.id))
                 });
@@ -6217,15 +6578,12 @@ impl AppState {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
-        let entity_thread = self.entity_conversation(entity_id);
         roster
             .iter()
             .map(|agent| {
-                let thread = if roster.is_primary(&agent.id) {
-                    entity_thread.unwrap_or(&agent.thread)
-                } else {
-                    &agent.thread
-                };
+                let thread = self
+                    .agent_conversation(entity_id, Some(&agent.id))
+                    .unwrap_or(&agent.thread);
                 (agent.id.clone(), thread.last_message_sequence())
             })
             .collect()
@@ -6276,45 +6634,33 @@ impl AppState {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
-        let entity_thread = self.entity_conversation(entity_id);
         roster
             .iter()
             .map(|agent| {
-                let thread = if roster.is_primary(&agent.id) {
-                    entity_thread.unwrap_or(&agent.thread)
-                } else {
-                    &agent.thread
-                };
+                let thread = self
+                    .agent_conversation(entity_id, Some(&agent.id))
+                    .unwrap_or(&agent.thread);
                 (agent.id.clone(), thread.last_attention_sequence())
             })
             .collect()
     }
 
-    /// The conversation an entity's own surfaces render: its Issue's for a
-    /// planned run, its first agent's otherwise.
+    /// The conversation an entity's own surfaces render: its currently implicit
+    /// addressed agent's stable binding.
     fn entity_conversation(&self, entity_id: &str) -> Option<&crate::thread::Thread> {
-        if let Some(plan) = self.plans.get(entity_id) {
-            return Some(plan.agents.sole_thread());
-        }
-        let run = self.runs.get(entity_id)?;
-        self.conversation_thread_for_run(run)
+        self.agent_conversation(entity_id, None).ok()
     }
 
     /// The conversation a caller means: the agent it named, or the entity's
-    /// first — whose thread IS the entity's own (a planned implementation
-    /// speaks in its Issue's). An id that names no agent here is refused rather
-    /// than answered with somebody else's conversation.
+    /// implicit primary for legacy callers. The resolved agent's persisted
+    /// binding, never its current roster position, selects the history.
     fn agent_conversation(
         &self,
         entity_id: &str,
         agent_id: Option<&str>,
     ) -> Result<&crate::thread::Thread, String> {
-        let roster = self.entity_agents(entity_id)?;
-        let agent = roster.resolve(agent_id)?;
-        if roster.is_primary(&agent.id) {
-            return Ok(self.entity_conversation(entity_id).unwrap_or(&agent.thread));
-        }
-        Ok(&agent.thread)
+        let address = self.resolve_conversation_address(entity_id, agent_id)?;
+        self.conversation_at(&address)
     }
 
     /// The `thread` a detail poll ships when it asked for one in particular:
@@ -6328,12 +6674,13 @@ impl AppState {
         entity_id: &str,
         params: &Value,
     ) -> Result<Option<Value>, String> {
-        let addressed = named_agent_id(params);
+        let addressed = named_agent_id(params)?;
         let cursor = thread_cursor(params);
-        if addressed.is_none() && cursor.is_none() {
+        if addressed.is_none() && cursor.is_none() && params.get("conversation_id").is_none() {
             return Ok(None);
         }
-        let thread = self.agent_conversation(entity_id, addressed.as_deref())?;
+        let address = self.resolve_conversation_params(entity_id, params)?;
+        let thread = self.conversation_at(&address)?;
         Ok(Some(match cursor {
             // A conversation is loaded as its tail, so a cursor from before a
             // restart can be owed news memory does not hold: an item under the
@@ -6383,13 +6730,11 @@ impl AppState {
         };
         let mut summary = crate::thread::UnreadSummary::default();
         for agent in roster.iter() {
-            let agent_thread = if roster.is_primary(&agent.id) {
-                thread.unwrap_or(&agent.thread)
-            } else {
-                &agent.thread
-            };
+            let agent_thread = self
+                .agent_conversation(entity_id, Some(&agent.id))
+                .unwrap_or_else(|_| thread.unwrap_or(&agent.thread));
             let unread = self.unread_including_history(
-                &agent.id,
+                &agent_thread.agent.id,
                 agent_thread,
                 self.read_cursor(entity_id, &agent.id),
             );
@@ -6412,7 +6757,11 @@ impl AppState {
         if self.is_muted(entity_id) {
             return crate::thread::UnreadSummary::default();
         }
-        self.unread_including_history(&agent.id, thread, self.read_cursor(entity_id, &agent.id))
+        self.unread_including_history(
+            &thread.agent.id,
+            thread,
+            self.read_cursor(entity_id, &agent.id),
+        )
     }
 
     /// One conversation's unread, counting the part of it this process did not
@@ -6717,6 +7066,7 @@ impl AppState {
             "thread.page" => self.thread_page(params),
             "thread.activity" => self.thread_activity(params),
             "thread.post" => self.thread_post(params),
+            "thread.operation" => self.thread_operation(params),
             "thread.attach" => self.thread_attach(params),
             "thread.attachment" => self.thread_attachment(params),
             "fs.list" => self.fs_list(params),
@@ -6979,17 +7329,14 @@ impl AppState {
             .cloned()
             .collect();
         let mut reaped = Vec::new();
-        let mut killed_agents: Vec<(String, String)> = Vec::new();
+        let mut killed_agents: Vec<SessionInstance> = Vec::new();
         for key in vanished {
             let Some(tab) = self.tabs.get(&key) else {
                 continue;
             };
             let wire_id = tab.wire_id();
-            if let TabRole::Agent {
-                owner, agent_id, ..
-            } = &tab.role
-            {
-                killed_agents.push((owner.clone(), agent_id.clone()));
+            if let Some(instance) = &tab.session_instance {
+                killed_agents.push(instance.clone());
             }
             self.retire_tab(&key, "reaped");
             reaped.push(wire_id);
@@ -7004,8 +7351,8 @@ impl AppState {
         // and abandon already closed its own. The loop runs after every removal
         // above so the nested reap inside `finish_run_mutation` finds nothing
         // left to take.
-        for (owner, agent_id) in killed_agents {
-            self.record_agent_session_end(&owner, &agent_id);
+        for instance in killed_agents {
+            self.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
         }
         // The screens waiting for a first spawn go the same way: a worktree
         // that is gone will never host the agent their clients are watching
@@ -8798,11 +9145,15 @@ impl AppState {
         let entity_id = require_str(params, "entity_id")?;
         // A named agent reads one bubble through; no agent reads the whole
         // entry, which is what opening the entry means.
-        let agent_id = params
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string);
+        let named = named_agent_id(params)?;
+        let agent_id = if named.is_some() || params.get("conversation_id").is_some() {
+            Some(
+                self.resolve_conversation_params(&entity_id, params)?
+                    .agent_id,
+            )
+        } else {
+            None
+        };
         let report = ReadReport {
             window_floor: params.get("read_from_sequence").and_then(Value::as_u64),
             through: params.get("read_through_sequence").and_then(Value::as_u64),
@@ -9239,14 +9590,16 @@ impl AppState {
     /// than a second agent on the issue itself. The agent is a record and a
     /// conversation; no process is spawned until something is said to it.
     ///
-    /// The FIRST agent of a branch that had none carries the branch with it:
-    /// its choice becomes the entity's, so the harness the human picked out of
-    /// the new-agent cards is what the branch is set to and what the model menu
-    /// then edits. A branch that already runs agents keeps its own — the new
-    /// one may be on another harness entirely, and the entity's choice belongs
-    /// to the primary.
+    /// The FIRST agent of a branch that had none also seeds the entity's legacy
+    /// default. That field is only a creation template after migration: every
+    /// existing agent keeps and edits its own settings, including agents on the
+    /// same provider.
     fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        let creation_id = optional_nonempty_string(params, "creation_id")?.map(str::to_string);
+        if creation_id.as_ref().is_some_and(|id| id.len() > 128) {
+            return Err("agent.add: creation_id is too long".to_string());
+        }
         if self.plans.contains_key(&entity_id) {
             return Err(format!(
                 "agent.add: {entity_id} is an issue, and an issue carries exactly one agent \
@@ -9258,32 +9611,83 @@ impl AppState {
         }
         // The provider is parsed before anything is touched, so an unrunnable
         // one refuses instead of leaving an agent nothing can start.
+        let existing_creation = creation_id.as_deref().and_then(|creation_id| {
+            self.entity_agents(&entity_id)
+                .ok()?
+                .iter()
+                .find(|agent| agent.creation_id.as_deref() == Some(creation_id))
+                .cloned()
+        });
+        let retried_choice = existing_creation
+            .as_ref()
+            .and_then(|agent| agent.creation_choice.clone());
         let choice = if has_agent_choice(params) {
             model_choice_from(params, self.default_harness)?
         } else {
-            self.entity_model_choice(&entity_id)?
+            retried_choice.unwrap_or(self.entity_model_choice(&entity_id)?)
         };
-        if self.entity_agents(&entity_id)?.is_empty() {
-            self.set_entity_model_choice(&entity_id, choice.clone())?;
+        if let Some(existing) = existing_creation {
+            if existing.creation_choice.as_ref() != Some(&choice) {
+                return Err(format!(
+                    "agent.add: creation_id {} was already used with different agent settings",
+                    creation_id
+                        .as_deref()
+                        .expect("an existing creation has an id")
+                ));
+            }
+            let root = self.entity_agent_root(&entity_id).ok();
+            return Ok(json!({
+                "entity_id": entity_id,
+                "created": false,
+                "agent": self.agent_digest(
+                    &entity_id,
+                    &existing,
+                    root.as_deref(),
+                    DigestScope::List,
+                ),
+            }));
         }
+        let before_agents = self.runs[&entity_id].agents.clone();
+        let before_entity_choice = self.runs[&entity_id].model_choice.clone();
         let mut active = self.take_run(&entity_id)?;
-        let added = active
-            .agents
-            .add(&entity_id, choice, &now_rfc3339())
-            .clone();
+        if active.agents.is_empty() {
+            active.model_choice = choice.clone();
+        }
+        let (added, created) = match creation_id.as_deref() {
+            Some(creation_id) => active
+                .agents
+                .add_idempotent(&entity_id, choice, &now_rfc3339(), creation_id)
+                .expect("the creation id and any prior use were validated before taking the run"),
+            None => (
+                active
+                    .agents
+                    .add(&entity_id, choice, &now_rfc3339())
+                    .clone(),
+                true,
+            ),
+        };
         let persisted = self.finish_run_mutation(entity_id.clone(), active);
-        persisted?;
+        if let Err(error) = persisted {
+            let restored = self
+                .runs
+                .get_mut(&entity_id)
+                .expect("the failed finish put the run back");
+            restored.agents = before_agents;
+            restored.model_choice = before_entity_choice;
+            return Err(error);
+        }
         self.touch_attention(&entity_id);
         let root = self.entity_agent_root(&entity_id).ok();
         Ok(json!({
             "entity_id": entity_id,
+            "created": created,
             "agent": self.agent_digest(&entity_id, &added, root.as_deref(), DigestScope::List),
         }))
     }
 
-    /// `agent.choose` — set the model and reasoning effort an entity's agents
-    /// run on. The composer's model menu, and the only verb that persists a
-    /// choice without spawning anything.
+    /// `agent.choose` — set the model and reasoning effort one exact agent runs
+    /// on. The composer's model menu, and the only verb that persists an
+    /// agent-owned choice without spawning anything.
     ///
     /// The provider is not a question here: an agent is locked to the harness
     /// it was created on, and a caller that names one is refused by that
@@ -9292,23 +9696,20 @@ impl AppState {
     /// menu offers.
     fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
-        let entity_provider = self.entity_model_choice(&entity_id)?.provider;
-        let on_another_harness = params
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .filter(|agent_id| !agent_id.is_empty())
-            .and_then(|agent_id| {
-                let provider = self
-                    .entity_agents(&entity_id)
-                    .ok()?
-                    .by_id(agent_id)?
-                    .choice
-                    .provider;
-                (provider != entity_provider).then(|| (agent_id.to_string(), provider))
-            });
-        let locked = on_another_harness
-            .as_ref()
-            .map_or(entity_provider, |(_, provider)| *provider);
+        let requested_agent = named_agent_id(params)?;
+        let agent = self
+            .entity_agents(&entity_id)?
+            .resolve(requested_agent.as_deref())?;
+        let agent_id = agent.id.clone();
+        let locked = agent.choice.provider;
+        if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
+            if expected != agent.conversation_id() {
+                return Err(format!(
+                    "agent.choose: stale conversation_id {expected}; agent {agent_id} is bound to {}",
+                    agent.conversation_id()
+                ));
+            }
+        }
         if let Some(named) = params.get("provider").and_then(Value::as_str) {
             if !named.is_empty() {
                 return Err(format!(
@@ -9318,25 +9719,84 @@ impl AppState {
             }
         }
         let choice = model_choice_from(params, locked)?;
-        match on_another_harness {
-            Some((agent_id, _)) => {
-                self.set_agent_model_choice(&entity_id, &agent_id, choice.clone())
+        let expected_revision = params
+            .get("expected_choice_revision")
+            .map(|value| {
+                value.as_u64().ok_or_else(|| {
+                    "agent.choose: expected_choice_revision must be an unsigned integer".to_string()
+                })
+            })
+            .transpose()?;
+        if let Some(expected) = expected_revision {
+            if expected != agent.choice_revision {
+                return Err(format!(
+                    "agent.choose: stale choice revision {expected}; current revision is {}",
+                    agent.choice_revision
+                ));
             }
-            None => self.set_entity_model_choice(&entity_id, choice.clone())?,
         }
+        let choice_revision = self.set_agent_model_choice(&entity_id, &agent_id, choice.clone())?;
         Ok(json!({
             "entity_id": entity_id,
+            "agent_id": agent_id,
             "provider": choice.provider,
             "model": choice.model,
             "effort": choice.effort,
+            "choice_revision": choice_revision,
         }))
     }
 
-    fn set_agent_model_choice(&mut self, entity_id: &str, agent_id: &str, choice: ModelChoice) {
-        self.edit_agent_record("set_agent_model_choice", entity_id, agent_id, |agent| {
-            agent.choice = choice;
-        });
+    fn set_agent_model_choice(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        choice: ModelChoice,
+    ) -> Result<u64, String> {
+        let previous = self
+            .entity_agents(entity_id)?
+            .resolve(Some(agent_id))?
+            .clone();
+        let revision = if self.plans.contains_key(entity_id) {
+            let mut active = self.take_plan(entity_id)?;
+            let revision = active
+                .agents
+                .resolve_mut(Some(agent_id))
+                .expect("the agent was validated before its issue was taken")
+                .choose(choice);
+            if let Err(error) = self.finish_plan_mutation(entity_id.to_string(), active) {
+                *self
+                    .plans
+                    .get_mut(entity_id)
+                    .expect("the failed finish put the issue back")
+                    .agents
+                    .resolve_mut(Some(agent_id))
+                    .expect("the previous agent still belongs to the issue") = previous;
+                return Err(error);
+            }
+            revision
+        } else if self.runs.contains_key(entity_id) {
+            let mut active = self.take_run(entity_id)?;
+            let revision = active
+                .agents
+                .resolve_mut(Some(agent_id))
+                .expect("the agent was validated before its run was taken")
+                .choose(choice);
+            if let Err(error) = self.finish_run_mutation(entity_id.to_string(), active) {
+                *self
+                    .runs
+                    .get_mut(entity_id)
+                    .expect("the failed finish put the run back")
+                    .agents
+                    .resolve_mut(Some(agent_id))
+                    .expect("the previous agent still belongs to the run") = previous;
+                return Err(error);
+            }
+            revision
+        } else {
+            return Err("unknown id".to_string());
+        };
         self.note_entity_changed(entity_id);
+        Ok(revision)
     }
 
     /// `agent.remove` — take an agent back off a branch's rail.
@@ -9486,8 +9946,7 @@ impl AppState {
     /// One bubble: who the agent is, what it runs on, whether it is live, and
     /// how much of its conversation is waiting for the human.
     ///
-    /// The first agent's conversation is the entity's own (a planned
-    /// implementation speaks in its Issue's), so its unread is counted there.
+    /// Unread is counted from the agent's canonical conversation binding.
     fn agent_digest(
         &self,
         entity_id: &str,
@@ -9495,26 +9954,17 @@ impl AppState {
         root: Option<&std::path::Path>,
         scope: DigestScope,
     ) -> Value {
-        let entity_thread = self.entity_conversation(entity_id);
-        let is_first = self
-            .entity_agents(entity_id)
-            .is_ok_and(|roster| roster.is_primary(&agent.id));
-        let thread = match (is_first, entity_thread) {
-            (true, Some(thread)) => thread,
-            _ => &agent.thread,
-        };
+        let thread = self
+            .agent_conversation(entity_id, Some(&agent.id))
+            .unwrap_or(&agent.thread);
         let unread = self.agent_unread(entity_id, agent, thread);
         let tab = root.map(|root| TabKey::agent(root, &agent.id));
         let tab = tab.as_ref().and_then(|key| self.tabs.get(key));
         let live = tab.is_some_and(|tab| tab.session_is_live());
-        let next_start = self
-            .entity_agents(entity_id)
-            .ok()
-            .zip(self.entity_model_choice(entity_id).ok())
-            .map(|(roster, entity_choice)| roster.turn_choice(&agent.id, &entity_choice))
-            .unwrap_or_else(|| agent.choice.clone());
+        let next_start = agent.choice.clone();
         let mut digest = json!({
             "id": agent.id,
+            "conversation_id": agent.conversation_id(),
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,
             "model": next_start.model.clone().unwrap_or_default(),
@@ -9535,6 +9985,8 @@ impl AppState {
             // and open on the first message they have not seen.
             "read_through_sequence": self.read_cursor(entity_id, &agent.id),
             "working": tab.is_some_and(agent_is_working),
+            "working_time": working_time_json(agent.working_since.as_deref()),
+            "choice_revision": agent.choice_revision,
             // Whether the rail offers this agent a basement. The live session
             // answers for an agent that is running, since it is the only thing
             // that can; before there is one the PROVIDER answers, because it
@@ -9641,21 +10093,26 @@ impl AppState {
         active: &mut ActiveRun,
         write: impl FnOnce(&mut crate::thread::Thread),
     ) -> Result<(), String> {
-        let issue_id = active
-            .run
-            .plan_id
-            .as_ref()
-            .map(|id| id.0.clone())
-            .filter(|issue_id| self.plans.contains_key(issue_id));
-        let Some(issue_id) = issue_id else {
-            if let Some(primary) = active.agents.primary_mut() {
-                write(&mut primary.thread);
-            }
+        let Some(primary) = active.agents.primary() else {
             return Ok(());
         };
-        let mut issue = self.take_plan(&issue_id)?;
-        write(issue.agents.sole_thread_mut());
-        self.finish_plan_mutation(issue_id, issue)
+        let agent_id = primary.id.clone();
+        let conversation_id = primary.conversation_id().to_string();
+        if conversation_id == agent_id {
+            write(&mut active.agents.primary_mut().expect("just resolved").thread);
+            return Ok(());
+        }
+        let owner = self.entity_of_agent(&conversation_id).ok_or_else(|| {
+            format!("agent {agent_id} is bound to missing conversation {conversation_id}")
+        })?;
+        if self.plans.contains_key(&owner) {
+            let mut issue = self.take_plan(&owner)?;
+            write(&mut issue.agents.resolve_mut(Some(&conversation_id))?.thread);
+            return self.finish_plan_mutation(owner, issue);
+        }
+        Err(format!(
+            "run conversation {conversation_id} is not owned by an issue"
+        ))
     }
 
     /// Announce on `active`'s conversation, and on the log, that the checkout
@@ -9776,15 +10233,16 @@ impl AppState {
         &'a self,
         run: &'a ActiveRun,
     ) -> Option<&'a crate::thread::Thread> {
-        match run
-            .run
-            .plan_id
-            .as_ref()
-            .and_then(|issue_id| self.plans.get(&issue_id.0))
-        {
-            Some(issue) => Some(issue.agents.sole_thread()),
-            None => run.agents.primary().map(|primary| &primary.thread),
+        let primary = run.agents.primary()?;
+        let conversation_id = primary.conversation_id();
+        if conversation_id == primary.id {
+            return Some(&primary.thread);
         }
+        let owner = self.entity_of_agent(conversation_id)?;
+        self.entity_agents(&owner)
+            .ok()?
+            .by_id(conversation_id)
+            .map(|agent| &agent.thread)
     }
 
     fn record_issue_current_stage_started(
@@ -10211,10 +10669,14 @@ impl AppState {
         self.entity_project
             .insert(capture_id.to_string(), project_id);
         self.pending_agent_turns.push(PendingAgentTurn {
+            operation_id: None,
             root: Self::canonical_root(session.scratch_dir()),
             owner: capture_id.to_string(),
             agent_id: session.agent_id().to_string(),
+            conversation_id: session.agent_id().to_string(),
             model_choice: session.choice().clone(),
+            choice_revision: 0,
+            interrupt: false,
             // A router is one decision long, so there is no warm half: every
             // turn it ever hears is the whole job — and no conversation, so no
             // catch-up packet either.
@@ -10347,11 +10809,13 @@ impl AppState {
         agent_id: Option<&str>,
         limit: usize,
     ) -> Result<Value, String> {
-        let agent = self.entity_agents(entity_id)?.resolve(agent_id)?;
+        let address = self.resolve_conversation_address(entity_id, agent_id)?;
+        let thread = self.conversation_at(&address)?;
         Ok(json!({
             "entity_id": entity_id,
-            "agent_id": agent.id,
-            "transcript": self.catch_up_packet(&agent.thread, limit),
+            "agent_id": address.agent_id,
+            "conversation_id": address.conversation_id,
+            "transcript": self.catch_up_packet(thread, limit),
         }))
     }
 
@@ -12478,10 +12942,16 @@ impl AppState {
         } = opened;
         let opened = (|| -> Result<OpenedImplementation, String> {
             let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
-            let (active, turn) = self
+            let conversation_id = plan.agents.sole().conversation_id().to_string();
+            let (mut active, turn) = self
                 .orch_for(&project_id)?
                 .open_prepared_run(RunId::new(&run_id), plan, prepared, model_choice)
                 .map_err(err)?;
+            active
+                .agents
+                .primary_mut()
+                .expect("a dispatched run opens with its agent")
+                .bind_conversation(conversation_id);
             let agent_id = active
                 .agents
                 .primary()
@@ -12657,22 +13127,8 @@ impl AppState {
     fn thread_revision(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let revision_id = require_str(params, "revision_id")?;
-        let planned_issue_id = self
-            .runs
-            .get(&entity_id)
-            .and_then(|run| run.run.plan_id.as_ref())
-            .map(|id| id.0.as_str());
-        let thread = &self
-            .plans
-            .get(&entity_id)
-            .map(|active| &active.agents)
-            .or_else(|| {
-                planned_issue_id.and_then(|id| self.plans.get(id).map(|active| &active.agents))
-            })
-            .or_else(|| self.runs.get(&entity_id).map(|active| &active.agents))
-            .and_then(|roster| roster.primary())
-            .ok_or("unknown conversation owner")?
-            .thread;
+        let address = self.resolve_conversation_params(&entity_id, params)?;
+        let thread = self.conversation_at(&address)?;
         let revision = thread
             .revisions
             .iter()
@@ -12699,7 +13155,8 @@ impl AppState {
     /// way it merges the page it opened on.
     fn thread_page(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
-        let thread = self.agent_conversation(&entity_id, named_agent_id(params).as_deref())?;
+        let address = self.resolve_conversation_params(&entity_id, params)?;
+        let thread = self.conversation_at(&address)?;
         let before = params.get("before_sequence").and_then(Value::as_u64);
         self.thread_page_at(thread, before, thread_page_limit(params))
     }
@@ -12715,7 +13172,8 @@ impl AppState {
     /// carries.
     fn thread_activity(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
-        let thread = self.agent_conversation(&entity_id, named_agent_id(params).as_deref())?;
+        let address = self.resolve_conversation_params(&entity_id, params)?;
+        let thread = self.conversation_at(&address)?;
         let (from, through) = activity_span_params(params, thread)?;
         self.activity_span(
             thread,
@@ -12858,389 +13316,616 @@ impl AppState {
     /// session and never moves plan/run state — with no live agent the message
     /// simply waits for the next session's catch-up. Refused only where no
     /// conversation remains to post to: a terminal or unknown entity.
-    /// The conversation a message posted to this implementation lands in, and
-    /// so the one whose open offer a choice answers: its Issue's, when its
-    /// first agent is speaking, and its own otherwise — the same redirection
-    /// [`thread_post`](Self::thread_post) makes when it appends.
-    fn offering_thread(
-        &self,
-        entity_id: &str,
-        agent_id: &str,
-        addresses_primary_agent: bool,
-    ) -> Result<&crate::thread::Thread, String> {
-        let run = self.runs.get(entity_id).ok_or("unknown run_id")?;
-        let issue = run
-            .run
-            .plan_id
-            .as_ref()
-            .filter(|_| addresses_primary_agent)
-            .and_then(|issue_id| self.plans.get(&issue_id.0));
-        match issue {
-            Some(issue) => Ok(issue.agents.sole_thread()),
-            None => Ok(&run.agents.resolve(Some(agent_id))?.thread),
-        }
-    }
-
     fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
-        // Which conversation: the agent the caller named, or the entity's
-        // first — the one every surface that predates the agent rail means.
-        let addressed = params
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string);
-        let Ok(roster) = self.entity_agents(&entity_id) else {
+        if !self.plans.contains_key(&entity_id) && !self.runs.contains_key(&entity_id) {
             return Err("unknown conversation owner".to_string());
-        };
-        // A post must be heard: on a branch whose agents were all removed, the
-        // message itself is what creates one, on the entity's own choice.
-        let existing = match (addressed.as_deref(), roster.is_empty()) {
-            (None, true) => None,
-            _ => Some(roster.resolve(addressed.as_deref())?.id.clone()),
-        };
-        let agent_id = match existing {
-            Some(agent_id) => agent_id,
-            None => self.ensure_primary_agent(&entity_id)?,
-        };
-        let addresses_primary_agent = self
-            .entity_agents(&entity_id)
-            .is_ok_and(|roster| roster.is_primary(&agent_id));
-        // A press on the agent's suggested actions comes in here rather than
-        // through a verb of its own: it IS a reviewer message, so everything
-        // that follows one — waking the agent, resuming a parked entity, the
-        // inbox anchor — has to happen exactly as it does for a typed one.
+        }
+        let operation_id = optional_operation_id(params)?;
+        let addressed = named_agent_id(params)?;
+        if self.entity_agents(&entity_id)?.is_empty() {
+            if addressed.is_some() || params.get("conversation_id").is_some() {
+                return Err("thread.post: addressed agent does not exist".to_string());
+            }
+            self.ensure_primary_agent(&entity_id)?;
+        }
+        let address = self.resolve_conversation_params(&entity_id, params)?;
+        if let Some(retry) = self.retry_thread_post(params, operation_id.as_deref(), &address)? {
+            return Ok(retry);
+        }
+        if let Some(expected) = optional_choice_revision(params)? {
+            let current = self
+                .entity_agents(&address.entity_id)?
+                .resolve(Some(&address.agent_id))?
+                .choice_revision;
+            if expected != current {
+                return Err(format!(
+                    "stale choice_revision {expected}; agent {} is at {current}",
+                    address.agent_id
+                ));
+            }
+        }
         let choice = parse_option_choice(params)?;
-        // And an interrupt is a flag on the message rather than a verb of its
-        // own, for the same reason: Build never interrupts without a turn to
-        // follow, so a separate call would always be followed by this one a
-        // moment later — with a window between the two in which the child
-        // starts a fresh turn or the agent calls `done`. Absent is false.
         let interrupt = params
             .get("interrupt")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let posted_sequence;
-        if let Some(active) = self.plans.get(&entity_id) {
-            if active.plan.state.is_terminal() {
-                return Err(format!(
-                    "thread.post: plan is {} — the conversation is closed",
-                    plan_state_str(&active.plan.state)
-                ));
-            }
-            let attachments = self.parse_message_attachments(&entity_id, params)?;
-            let messages = match &choice {
-                Some(choice) => vec![(
-                    active
-                        .agents
-                        .resolve(Some(&agent_id))?
-                        .thread
-                        .option_reply_text(choice)?,
-                    None,
-                )],
-                None => parse_thread_post_input(
-                    params,
-                    crate::thread::ArtifactKind::Plan,
-                    !attachments.is_empty(),
-                )?,
-            };
-            // A reply IS the unblock: the Blocked/Failed/Idle arms exist to
-            // wait for exactly this message, so posting it resumes drafting.
-            // Interrupted is deliberately excluded — its session is gone, and
-            // Drafting must never claim an agent that does not exist.
-            let resume = matches!(
-                active.plan.state,
-                PlanState::Blocked | PlanState::Failed | PlanState::IdleUnreported
-            );
-            // The user is saying something, so the inbox anchor gets its one
-            // chance to move. Here, before the record is checked out of its
-            // map — see `note_user_message`.
-            self.note_user_message(&entity_id);
-            let implementation_target =
-                self.current_issue_implementation_id(&entity_id)
-                    .and_then(|run_id| {
-                        // No primary means no implementation agent to hand
-                        // this to, so the Issue's post stays on the Issue.
-                        self.runs.get(&run_id).and_then(|run| {
-                            run.agents.primary().map(|primary| ImplementationTarget {
-                                run_id,
-                                worktree_path: run.worktree.path.clone(),
-                                agent_id: primary.id.clone(),
-                                model_choice: run
-                                    .agents
-                                    .turn_choice(&primary.id, &run.model_choice),
-                            })
-                        })
-                    });
-            let mut active = self.take_plan(&entity_id)?;
-            posted_sequence = append_reviewer_messages(
-                &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
-                messages,
-                attachments,
-                choice.as_ref(),
-            );
-            if resume {
-                active
-                    .plan
-                    .apply(crate::plan::PlanEvent::Reply)
-                    .expect("Reply is legal from every parked plan state");
-            }
-            let mut parked_implementation = None;
-            // An inert issue has no session at all: this message is what starts
-            // one. The dispatch reads everything said so far, so the planning
-            // agent opens on the goal AND on what the user just added — but its
-            // workspace is disk, so it is reserved below, once the record this
-            // frame is holding is back in its map.
-            let inert = active.plan.state == PlanState::Created && active.workspace.is_none();
-            let awake = implementation_target.filter(|_| !inert);
-            if let Some(implementation) = awake {
-                // The Issue owns the conversation, but its live implementation
-                // owns the checkout/PTY. Addressing thread.post to the Issue
-                // must therefore wake that implementation agent — and the same
-                // reply rule applies to the run it wakes.
-                let run_id = implementation.run_id;
-                // The named agent has to be on this roster; the message was
-                // just appended to its conversation and the turn is addressed
-                // to it.
-                active.agents.resolve(Some(&agent_id))?;
-                self.tell_the_agent_a_message_is_waiting(
-                    &implementation.worktree_path,
-                    &implementation.agent_id,
-                    &run_id,
-                    implementation.model_choice,
-                    interrupt,
-                );
-                parked_implementation = self
-                    .runs
-                    .get(&run_id)
-                    .filter(|run| {
-                        matches!(
-                            run.run.state,
-                            RunState::Blocked | RunState::Failed | RunState::IdleUnreported
-                        )
-                    })
-                    .map(|_| run_id);
-            } else if let Some(workspace) = active.workspace.as_ref().filter(|_| !inert) {
-                active.agents.resolve(Some(&agent_id))?;
-                self.tell_the_agent_a_message_is_waiting(
-                    &workspace.checkout,
-                    &agent_id,
-                    &entity_id,
-                    active.agents.turn_choice(&agent_id, &active.model_choice),
-                    interrupt,
-                );
-            }
-            let (view, persisted) =
-                self.answer_plan_mutation(entity_id.clone(), active, thread_detail(params));
-            persisted?;
-            // The message is durable either way: a dispatch that could not start
-            // leaves the issue inert, with what was said still on its thread.
-            if inert {
-                let started = self.reserve_plan_drafting(
-                    &entity_id,
-                    Box::new(PlanDraftingStarted {
-                        issue_id: entity_id.clone(),
-                        detail: thread_detail(params),
-                        posted_sequence,
-                    }),
-                )?;
-                if let Some(job) = started {
-                    // The Issue's own view comes back from the apply phase, so
-                    // the composer hears about the session that is starting
-                    // rather than about the one that was not there yet.
-                    return Ok(self.defer_job(job));
-                }
-            }
-            if let Some(run_id) = parked_implementation {
-                let mut run = self.take_run(&run_id)?;
-                run.run
-                    .apply(crate::run::RunEvent::Reply)
-                    .expect("Reply is legal from every parked run state");
-                let run_persisted = self.finish_run_mutation(run_id, run);
-                run_persisted?;
-            }
-            return Ok(with_posted_sequence(view, posted_sequence));
+        if self.plans.contains_key(&entity_id) {
+            return self.thread_post_plan(params, address, operation_id, choice, interrupt);
         }
-        if let Some(active) = self.runs.get(&entity_id) {
-            if active.run.state.is_terminal() {
-                return Err(format!(
-                    "thread.post: run is {} — the conversation is closed",
-                    run_state_str(&active.run.state)
-                ));
-            }
-            let attachments = self.parse_message_attachments(&entity_id, params)?;
-            let messages = match &choice {
-                Some(choice) => vec![(
-                    self.offering_thread(&entity_id, &agent_id, addresses_primary_agent)?
-                        .option_reply_text(choice)?,
-                    None,
-                )],
-                None => parse_thread_post_input(
-                    params,
-                    crate::thread::ArtifactKind::Diff,
-                    !attachments.is_empty(),
-                )?,
-            };
-            // Same rule as plans: the reply resumes a parked run (Interrupted
-            // excluded — its session is gone).
-            let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-            let resume = matches!(
-                active.run.state,
-                RunState::Blocked | RunState::Failed | RunState::IdleUnreported
-            );
-            let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
-            let worktree_path = active.worktree.path.clone();
-            // Read before the run leaves the map: reviving this agent needs the
-            // harness it runs on, and the run is borrowed from `self`.
-            active.agents.resolve(Some(&agent_id))?;
-            let agent_choice = active.agents.turn_choice(&agent_id, &active.model_choice);
-            // The branch is what the user is talking to, and — when the message
-            // lands on the issue's conversation, which is where a planned
-            // implementation speaks — the issue heard it too. Both while their
-            // records are still in their maps.
-            self.note_user_message(&entity_id);
-            if let Some(issue_id) = issue_id.clone().filter(|_| addresses_primary_agent) {
-                self.note_user_message(&issue_id);
-            }
-            // An implementation's FIRST agent speaks in its Issue's
-            // conversation — that is the one every Issue surface renders. An
-            // agent the human added to the branch speaks in its own.
-            if let Some(issue_id) = issue_id
-                .filter(|id| self.plans.contains_key(id))
-                .filter(|_| addresses_primary_agent)
-            {
-                let mut issue = self.take_plan(&issue_id)?;
-                posted_sequence = append_reviewer_messages(
-                    issue.agents.sole_thread_mut(),
-                    messages,
-                    attachments,
-                    choice.as_ref(),
-                );
-                self.tell_the_agent_a_message_is_waiting(
-                    &worktree_path,
-                    &agent_id,
-                    &entity_id,
-                    agent_choice,
-                    interrupt,
-                );
-                let persisted = self.finish_plan_mutation(issue_id, issue);
-                persisted?;
-                if resume {
-                    let mut active = self.take_run(&entity_id)?;
-                    active
-                        .run
-                        .apply(crate::run::RunEvent::Reply)
-                        .expect("Reply is legal from every parked run state");
-                    let (view, run_persisted) =
-                        self.answer_run_mutation(entity_id, active, thread_detail(params));
-                    run_persisted?;
-                    return Ok(with_posted_sequence(view, posted_sequence));
-                }
-                let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-                return Ok(with_posted_sequence(
-                    self.run_view(
-                        &entity_id,
-                        active,
-                        thread_detail(params),
-                        DigestScope::Detail,
-                    ),
-                    posted_sequence,
-                ));
-            }
-            let mut active = self.take_run(&entity_id)?;
-            posted_sequence = append_reviewer_messages(
-                &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
-                messages,
-                attachments,
-                choice.as_ref(),
-            );
-            if resume {
-                active
-                    .run
-                    .apply(crate::run::RunEvent::Reply)
-                    .expect("Reply is legal from every parked run state");
-            }
-            // As above: the agent named is the one the message was appended to.
-            active.agents.resolve(Some(&agent_id))?;
-            self.tell_the_agent_a_message_is_waiting(
-                &active.worktree.path,
-                &agent_id,
-                &entity_id,
-                agent_choice,
-                interrupt,
-            );
-            let (view, persisted) =
-                self.answer_run_mutation(entity_id, active, thread_detail(params));
-            persisted?;
-            return Ok(with_posted_sequence(view, posted_sequence));
+        if self.runs.contains_key(&entity_id) {
+            return self.thread_post_run(params, address, operation_id, choice, interrupt);
         }
         Err("unknown conversation owner".to_string())
     }
 
-    /// Tell the agent that owns this conversation a message is waiting for it —
-    /// reviving its harness when nothing is running.
-    ///
-    /// A live tab is nudged where it stands ([`nudge_live_agent_tab`]). A tab
-    /// whose process has ended — or one that was never opened — is not a reason
-    /// for the message to go unheard: the SAME agent starts again, in the SAME
-    /// checkout, through the queue [`DeliveryRunner`] drains on a thread of its
-    /// own (a spawn blocks for seconds on the harness's readiness wait, and
-    /// every terminal pump — and this reply — needs that lock). Continuation
-    /// comes with it for free: [`ensure_agent_tab`] probes the provider's own
-    /// transcript for the checkout, so a revived claude/codex agent picks the
-    /// session it was in back up rather than opening a blank one.
-    ///
-    /// Before this, a message to an agent whose TUI had exited sat on the
-    /// thread forever — the entity read as idle, the human waited, and nothing
-    /// was listening.
-    ///
-    /// `interrupt` asks the live session to stop the turn it is running before
-    /// this message is handed over. It is dropped without an error on the cold
-    /// path: a message that has to SPAWN an agent has no turn to stop, and an
-    /// interrupt of nothing is not a failure but a stronger form of what was
-    /// asked for.
-    fn tell_the_agent_a_message_is_waiting(
+    fn retry_thread_post(
+        &self,
+        params: &Value,
+        operation_id: Option<&str>,
+        address: &ConversationAddress,
+    ) -> Result<Option<Value>, String> {
+        let Some(operation_id) = operation_id else {
+            return Ok(None);
+        };
+        let Some(receipt) = self.operation_receipt(operation_id)? else {
+            return Ok(None);
+        };
+        let request_hash = thread_post_request_hash(
+            params,
+            &address.entity_id,
+            &address.agent_id,
+            &address.conversation_id,
+        );
+        if !receipt.matches_request(THREAD_POST_METHOD, &request_hash)
+            || receipt.entity_id != address.entity_id
+            || receipt.agent_id != address.agent_id
+            || receipt.conversation_id != address.conversation_id
+        {
+            return Err("thread.post: operation_id already used with different request".into());
+        }
+        Ok(Some(post_operation_value(&receipt)))
+    }
+
+    fn thread_post_plan(
         &mut self,
-        root: &std::path::Path,
-        agent_id: &str,
-        owner: &str,
-        model_choice: ModelChoice,
+        params: &Value,
+        address: ConversationAddress,
+        operation_id: Option<String>,
+        choice: Option<crate::thread::OptionChoice>,
         interrupt: bool,
+    ) -> Result<Value, String> {
+        let entity_id = address.entity_id.clone();
+        let active = self.plans.get(&entity_id).ok_or("unknown plan_id")?;
+        if active.plan.state.is_terminal() {
+            return Err(format!(
+                "thread.post: plan is {} — the conversation is closed",
+                plan_state_str(&active.plan.state)
+            ));
+        }
+        let attachments = self.parse_message_attachments(&entity_id, params)?;
+        let messages = match &choice {
+            Some(choice) => vec![(
+                active
+                    .agents
+                    .resolve(Some(&address.conversation_id))?
+                    .thread
+                    .option_reply_text(choice)?,
+                None,
+            )],
+            None => parse_thread_post_messages(
+                params,
+                crate::thread::ArtifactKind::Plan,
+                !attachments.is_empty(),
+            )?,
+        };
+        let resume = matches!(
+            active.plan.state,
+            PlanState::Blocked | PlanState::Failed | PlanState::IdleUnreported
+        );
+        let choice_revision = active
+            .agents
+            .resolve(Some(&address.agent_id))?
+            .choice_revision;
+        let implementation = named_agent_id(params)?
+            .is_none()
+            .then(|| {
+                self.current_issue_implementation_id(&entity_id)
+                    .and_then(|run_id| {
+                        self.runs.get(&run_id).and_then(|run| {
+                            run.agents
+                                .agents()
+                                .iter()
+                                .find(|agent| agent.conversation_id() == address.conversation_id)
+                                .map(|agent| ImplementationTarget {
+                                    run_id,
+                                    worktree_path: run.worktree.path.clone(),
+                                    agent_id: agent.id.clone(),
+                                    model_choice: agent.choice.clone(),
+                                    choice_revision: agent.choice_revision,
+                                })
+                        })
+                    })
+            })
+            .flatten();
+        let mut active = self.take_plan(&entity_id)?;
+        let previous_thread = active
+            .agents
+            .resolve(Some(&address.conversation_id))?
+            .thread
+            .clone();
+        let previous_state = active.plan.state;
+        let inert = active.plan.state == PlanState::Created && active.workspace.is_none();
+        let mut delivery = if inert {
+            let project_id = self.project_of(&entity_id)?;
+            Some(DeliveryIntent {
+                root: self.repo_path_for(&project_id)?,
+                owner_id: entity_id.clone(),
+                agent_id: address.agent_id.clone(),
+                model_choice: active.agents.sole().choice.clone(),
+                choice_revision: active.agents.sole().choice_revision,
+                interrupt,
+                payload: None,
+            })
+        } else if let Some(target) = implementation.as_ref() {
+            Some(DeliveryIntent {
+                root: target.worktree_path.clone(),
+                owner_id: target.run_id.clone(),
+                agent_id: target.agent_id.clone(),
+                model_choice: target.model_choice.clone(),
+                choice_revision: target.choice_revision,
+                interrupt,
+                payload: None,
+            })
+        } else {
+            active.workspace.as_ref().map(|workspace| DeliveryIntent {
+                root: workspace.checkout.clone(),
+                owner_id: entity_id.clone(),
+                agent_id: address.agent_id.clone(),
+                model_choice: active.agents.sole().choice.clone(),
+                choice_revision: active.agents.sole().choice_revision,
+                interrupt,
+                payload: None,
+            })
+        };
+        if operation_id.is_some() && delivery.is_none() {
+            self.plans.insert(entity_id.clone(), active);
+            return Err(
+                "thread.post: this Issue has no execution session; reopen or revise it before sending"
+                    .to_string(),
+            );
+        }
+        let (posted_sequence, payload) = append_operation_reviewer_messages(
+            &mut active
+                .agents
+                .resolve_mut(Some(&address.conversation_id))?
+                .thread,
+            messages,
+            attachments,
+            choice.as_ref(),
+            operation_id.as_deref(),
+        );
+        if let Some(delivery) = delivery.as_mut() {
+            delivery.payload = payload;
+        }
+        if resume {
+            active
+                .plan
+                .apply(PlanEvent::Reply)
+                .expect("parked plan reply");
+        }
+        let receipt = self.stage_post_acceptance(
+            params,
+            operation_id,
+            &address,
+            choice_revision,
+            posted_sequence,
+            delivery.clone(),
+        )?;
+        let (view, persisted) =
+            self.answer_plan_mutation(entity_id.clone(), active, thread_detail(params));
+        if let Err(error) = persisted {
+            let active = self
+                .plans
+                .get_mut(&entity_id)
+                .expect("failed finish still restores the plan");
+            active
+                .agents
+                .resolve_mut(Some(&address.conversation_id))?
+                .thread = previous_thread;
+            active.plan.state = previous_state;
+            return Err(error);
+        }
+        self.note_user_message(&entity_id);
+        if !inert {
+            if let Some(delivery) = delivery {
+                self.queue_message_delivery(&delivery, receipt.as_ref());
+            }
+        }
+        if inert {
+            match self.reserve_plan_drafting(
+                &entity_id,
+                Box::new(PlanDraftingStarted {
+                    issue_id: entity_id.clone(),
+                    detail: thread_detail(params),
+                    posted_sequence,
+                    receipt: receipt.clone(),
+                }),
+            ) {
+                Ok(Some(job)) => return Ok(self.defer_job(job)),
+                Ok(None) => {}
+                Err(error) => {
+                    if let Some(receipt) = receipt.as_ref() {
+                        return Ok(self.settle_accepted_operation_error(receipt, error));
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        if let Some(run_id) = implementation.map(|target| target.run_id).filter(|run_id| {
+            self.runs.get(run_id).is_some_and(|run| {
+                matches!(
+                    run.run.state,
+                    RunState::Blocked | RunState::Failed | RunState::IdleUnreported
+                )
+            })
+        }) {
+            let mut run = self.take_run(&run_id)?;
+            run.run.apply(RunEvent::Reply).expect("parked run reply");
+            if let Err(error) = self.finish_run_mutation(run_id, run) {
+                if let Some(receipt) = receipt.as_ref() {
+                    return Ok(with_operation_error(
+                        with_post_receipt(view, posted_sequence, Some(receipt)),
+                        error,
+                    ));
+                }
+                return Err(error);
+            }
+        }
+        Ok(with_post_receipt(view, posted_sequence, receipt.as_ref()))
+    }
+
+    fn thread_post_run(
+        &mut self,
+        params: &Value,
+        address: ConversationAddress,
+        operation_id: Option<String>,
+        choice: Option<crate::thread::OptionChoice>,
+        interrupt: bool,
+    ) -> Result<Value, String> {
+        let entity_id = address.entity_id.clone();
+        let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
+        if active.run.state.is_terminal() {
+            return Err(format!(
+                "thread.post: run is {} — the conversation is closed",
+                run_state_str(&active.run.state)
+            ));
+        }
+        let attachments = self.parse_message_attachments(&entity_id, params)?;
+        let messages = match &choice {
+            Some(choice) => vec![(
+                self.conversation_at(&address)?.option_reply_text(choice)?,
+                None,
+            )],
+            None => parse_thread_post_messages(
+                params,
+                crate::thread::ArtifactKind::Diff,
+                !attachments.is_empty(),
+            )?,
+        };
+        let resume = matches!(
+            active.run.state,
+            RunState::Blocked | RunState::Failed | RunState::IdleUnreported
+        );
+        let choice_revision = active
+            .agents
+            .resolve(Some(&address.agent_id))?
+            .choice_revision;
+        let delivery = DeliveryIntent {
+            root: active.worktree.path.clone(),
+            owner_id: entity_id.clone(),
+            agent_id: address.agent_id.clone(),
+            model_choice: active.agents.turn_choice(&address.agent_id)?,
+            choice_revision,
+            interrupt,
+            payload: None,
+        };
+        let legacy_delivery = operation_id.is_none().then(|| delivery.clone());
+        let (posted_sequence, receipt) = self.append_addressed_post(
+            params,
+            &address,
+            choice_revision,
+            operation_id,
+            messages,
+            attachments,
+            choice.as_ref(),
+            Some(delivery),
+        )?;
+        self.note_user_message(&entity_id);
+        if address.conversation_entity_id != entity_id {
+            self.note_user_message(&address.conversation_entity_id);
+        }
+        if let Some(delivery) = receipt
+            .as_ref()
+            .and_then(|receipt| receipt.delivery.as_ref())
+        {
+            self.queue_message_delivery(delivery, receipt.as_ref());
+        } else if let Some(delivery) = legacy_delivery {
+            self.queue_message_delivery(&delivery, None);
+        }
+        let mut active = self.take_run(&entity_id)?;
+        if resume {
+            active.run.apply(RunEvent::Reply).expect("parked run reply");
+        }
+        let (view, persisted) = self.answer_run_mutation(entity_id, active, thread_detail(params));
+        if let Err(error) = persisted {
+            if let Some(receipt) = receipt.as_ref() {
+                return Ok(with_operation_error(
+                    with_post_receipt(view, posted_sequence, Some(receipt)),
+                    error,
+                ));
+            }
+            return Err(error);
+        }
+        Ok(with_post_receipt(view, posted_sequence, receipt.as_ref()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_addressed_post(
+        &mut self,
+        params: &Value,
+        address: &ConversationAddress,
+        choice_revision: u64,
+        operation_id: Option<String>,
+        messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+        attachments: Vec<crate::thread::MessageAttachment>,
+        choice: Option<&crate::thread::OptionChoice>,
+        mut delivery: Option<DeliveryIntent>,
+    ) -> Result<(Option<u64>, Option<OperationReceipt>), String> {
+        if self.plans.contains_key(&address.conversation_entity_id) {
+            let mut active = self.take_plan(&address.conversation_entity_id)?;
+            let previous_thread = active
+                .agents
+                .resolve(Some(&address.conversation_id))?
+                .thread
+                .clone();
+            let (sequence, payload) = append_operation_reviewer_messages(
+                &mut active
+                    .agents
+                    .resolve_mut(Some(&address.conversation_id))?
+                    .thread,
+                messages,
+                attachments,
+                choice,
+                operation_id.as_deref(),
+            );
+            if let Some(delivery) = delivery.as_mut() {
+                delivery.payload = payload;
+            }
+            let receipt = self.stage_post_acceptance(
+                params,
+                operation_id,
+                address,
+                choice_revision,
+                sequence,
+                delivery,
+            )?;
+            if let Err(error) =
+                self.finish_plan_mutation(address.conversation_entity_id.clone(), active)
+            {
+                self.plans
+                    .get_mut(&address.conversation_entity_id)
+                    .expect("failed finish still restores the plan")
+                    .agents
+                    .resolve_mut(Some(&address.conversation_id))?
+                    .thread = previous_thread;
+                return Err(error);
+            }
+            return Ok((sequence, receipt));
+        }
+        let mut active = self.take_run(&address.conversation_entity_id)?;
+        let previous_thread = active
+            .agents
+            .resolve(Some(&address.conversation_id))?
+            .thread
+            .clone();
+        let (sequence, payload) = append_operation_reviewer_messages(
+            &mut active
+                .agents
+                .resolve_mut(Some(&address.conversation_id))?
+                .thread,
+            messages,
+            attachments,
+            choice,
+            operation_id.as_deref(),
+        );
+        if let Some(delivery) = delivery.as_mut() {
+            delivery.payload = payload;
+        }
+        let receipt = self.stage_post_acceptance(
+            params,
+            operation_id,
+            address,
+            choice_revision,
+            sequence,
+            delivery,
+        )?;
+        if let Err(error) = self.finish_run_mutation(address.conversation_entity_id.clone(), active)
+        {
+            self.runs
+                .get_mut(&address.conversation_entity_id)
+                .expect("failed finish still restores the run")
+                .agents
+                .resolve_mut(Some(&address.conversation_id))?
+                .thread = previous_thread;
+            return Err(error);
+        }
+        Ok((sequence, receipt))
+    }
+
+    fn stage_post_acceptance(
+        &mut self,
+        params: &Value,
+        operation_id: Option<String>,
+        address: &ConversationAddress,
+        choice_revision: u64,
+        posted_sequence: Option<u64>,
+        delivery: Option<DeliveryIntent>,
+    ) -> Result<Option<OperationReceipt>, String> {
+        let Some(operation_id) = operation_id else {
+            return Ok(None);
+        };
+        let posted_sequence = posted_sequence.ok_or("thread.post did not append a message")?;
+        let receipt = OperationReceipt {
+            operation_id,
+            method: THREAD_POST_METHOD.to_string(),
+            entity_id: address.entity_id.clone(),
+            agent_id: address.agent_id.clone(),
+            conversation_id: address.conversation_id.clone(),
+            choice_revision,
+            posted_sequence,
+            message_start_sequence: delivery
+                .as_ref()
+                .and_then(|delivery| delivery.payload.as_ref())
+                .map(|payload| payload.start_sequence)
+                .unwrap_or(posted_sequence),
+            status: OperationStatus::Queued,
+            execution_error: None,
+            request_hash: thread_post_request_hash(
+                params,
+                &address.entity_id,
+                &address.agent_id,
+                &address.conversation_id,
+            ),
+            delivery,
+        };
+        self.pending_operation_acceptance = Some(PendingOperationAcceptance {
+            conversation_owner_id: address.conversation_entity_id.clone(),
+            receipt: receipt.clone(),
+        });
+        Ok(Some(receipt))
+    }
+
+    fn queue_message_delivery(
+        &mut self,
+        delivery: &DeliveryIntent,
+        receipt: Option<&OperationReceipt>,
     ) {
-        let root = Self::canonical_root(root);
-        let key = TabKey::agent(&root, agent_id);
-        if self.tabs.get(&key).is_some_and(Tab::session_is_live) {
-            nudge_live_agent_tab(&self.tabs, &root, agent_id, owner, interrupt);
+        let operation_id = receipt.map(|receipt| receipt.operation_id.clone());
+        let root = Self::canonical_root(&delivery.root);
+        if operation_id.is_none() && self.agent_is_on_its_way(&root, &delivery.agent_id) {
             return;
         }
-        // Two harnesses in one checkout would both report `done` for the same
-        // owner, and the second report is an illegal transition that lands on
-        // the conversation as a bogus failure. A harness already on its way
-        // WITH WORDS for it is the one that reads this message: it opens on
-        // the cold prompt, which tells it to call `read_unread_messages`, and
-        // the message is durable on the thread before it can ask. A start
-        // that says nothing promises no such read, so this turn is queued
-        // behind it and lands Warm on the tab it opens.
-        if self.agent_is_on_its_way(&root, agent_id) {
-            return;
-        }
+        let conversation_id = receipt
+            .map(|receipt| receipt.conversation_id.clone())
+            .or_else(|| {
+                self.resolve_conversation_address(&delivery.owner_id, Some(&delivery.agent_id))
+                    .ok()
+                    .map(|address| address.conversation_id)
+            })
+            .unwrap_or_default();
+        let operation_prompt = receipt.and_then(|receipt| {
+            delivery.payload.as_ref().map(|payload| TurnText {
+                cold: payload.delivery_prompt(&receipt.operation_id, true),
+                warm: payload.delivery_prompt(&receipt.operation_id, false),
+            })
+        });
         self.pending_agent_turns.push(PendingAgentTurn {
+            operation_id,
             root,
-            owner: owner.to_string(),
-            agent_id: agent_id.to_string(),
-            model_choice,
-            // Cold and warm exactly as `agent.start` sends them: the words are
-            // already durable on the thread, so the harness is told to read
-            // them — wrapped, when it is a new process, in the catch-up packet
-            // it has no other way to reconstruct.
-            say: Some(TurnText {
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            owner: delivery.owner_id.clone(),
+            agent_id: delivery.agent_id.clone(),
+            conversation_id,
+            model_choice: delivery.model_choice.clone(),
+            choice_revision: delivery.choice_revision,
+            interrupt: delivery.interrupt,
+            say: operation_prompt.or_else(|| {
+                Some(TurnText {
+                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+                })
             }),
             phase: "revive",
-            wants_catch_up: true,
-            survives_refusal: false,
+            wants_catch_up: receipt.is_none(),
+            survives_refusal: receipt.is_some(),
         });
+    }
+
+    fn thread_operation(&self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let operation_id = required_operation_id(params)?;
+        let receipt = self
+            .operation_receipt(&operation_id)?
+            .ok_or_else(|| format!("unknown operation_id: {operation_id}"))?;
+        if receipt.entity_id != entity_id {
+            return Err("thread.operation: operation does not belong to entity".into());
+        }
+        if let Some(agent_id) = named_agent_id(params)? {
+            if receipt.agent_id != agent_id {
+                return Err("thread.operation: operation does not belong to agent".into());
+            }
+        }
+        Ok(receipt.wire_value())
+    }
+
+    fn operation_receipt(&self, operation_id: &str) -> Result<Option<OperationReceipt>, String> {
+        match self.store.as_ref() {
+            Some(store) => store
+                .operation(operation_id)
+                .map_err(|error| format!("operation store: {error}")),
+            None => Ok(self.operations.get(operation_id).cloned()),
+        }
+    }
+
+    fn transition_delivery_operation(
+        &mut self,
+        operation_id: &str,
+        expected: OperationStatus,
+        next: OperationStatus,
+        execution_error: Option<&str>,
+    ) -> Result<bool, String> {
+        let changed = match self.store.as_ref() {
+            Some(store) => store
+                .transition_operation(operation_id, expected, next, execution_error)
+                .map_err(|error| format!("operation store: {error}"))?,
+            None => self
+                .operations
+                .get(operation_id)
+                .is_some_and(|receipt| receipt.status == expected),
+        };
+        if changed {
+            if let Some(receipt) = self.operations.get_mut(operation_id) {
+                receipt.status = next;
+                receipt.execution_error = execution_error.map(str::to_string);
+                let entity_id = receipt.entity_id.clone();
+                self.note_entity_changed(&entity_id);
+            }
+        }
+        Ok(changed)
+    }
+
+    fn settle_accepted_operation_error(
+        &mut self,
+        receipt: &OperationReceipt,
+        error: String,
+    ) -> Value {
+        let _ = self.transition_delivery_operation(
+            &receipt.operation_id,
+            OperationStatus::Queued,
+            OperationStatus::Delivered,
+            Some(&error),
+        );
+        let settled = self
+            .operation_receipt(&receipt.operation_id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                let mut settled = receipt.clone();
+                settled.status = OperationStatus::Delivered;
+                settled.execution_error = Some(error.clone());
+                settled
+            });
+        with_operation_error(post_operation_value(&settled), error)
     }
 
     /// Where this entity's attachments live: the bridge's own store, always,
@@ -13544,36 +14229,12 @@ impl AppState {
             let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
             self.owning_plan_stage_docs(active)
         };
+        let run_agent_id = self.resolve_conversation_params(&run_id, params)?.agent_id;
+        self.edit_agent_conversation(&run_id, &run_agent_id, |thread, _artifact| {
+            append_user_thread_messages(thread, messages);
+            Ok(())
+        })?;
         let mut active = self.take_run(&run_id)?;
-        // Whose conversation the reviewer was reading: the rail's open bubble,
-        // or the branch's first agent — the one every surface that predates the
-        // rail meant. Resolved on the run's OWN roster, before the swap below
-        // can hand it the Issue's.
-        let addressed = named_agent_id(params);
-        let run_agent_id = active.agents.resolve(addressed.as_deref())?.id.clone();
-        let addresses_primary_agent = active.agents.is_primary(&run_agent_id);
-        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
-        // An implementation's FIRST agent speaks in its Issue's conversation —
-        // that is the one every Issue surface renders. An agent the human added
-        // to the branch speaks in its own, and the Issue is left alone.
-        let mut issue = issue_id
-            .as_ref()
-            .filter(|_| addresses_primary_agent)
-            .and_then(|issue_id| self.plans.remove(issue_id));
-        let legacy_run_thread = issue
-            .as_ref()
-            .map(|issue| std::mem::replace(&mut active.agents, issue.agents.clone()));
-        // After the swap the roster standing on the run is the Issue's, where
-        // the run's own agent id does not exist: its first agent IS the
-        // conversation the comments just landed in.
-        let conversation_agent = (!addresses_primary_agent).then(|| run_agent_id.clone());
-        append_user_thread_messages(
-            &mut active
-                .agents
-                .resolve_mut(conversation_agent.as_deref())?
-                .thread,
-            messages,
-        );
         let outcome = (|| -> Result<(), String> {
             let turn = self
                 .orch_for(&project_id)?
@@ -13581,7 +14242,7 @@ impl AppState {
                     &mut active,
                     &plan_docs,
                     NEW_THREAD_MESSAGES_PROMPT,
-                    conversation_agent.as_deref(),
+                    Some(&run_agent_id),
                 )
                 .map_err(err)?;
             self.pending_agent_turns
@@ -13593,18 +14254,8 @@ impl AppState {
                 ));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
-        if let (Some(issue), Some(legacy_thread)) = (&mut issue, legacy_run_thread) {
-            issue.agents = std::mem::replace(&mut active.agents, legacy_thread);
-        }
-        let issue_persisted = match (issue_id, issue) {
-            (Some(issue_id), Some(issue)) => Some(self.finish_plan_mutation(issue_id, issue)),
-            _ => None,
-        };
         let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         outcome?;
-        if let Some(issue_persisted) = issue_persisted {
-            issue_persisted?;
-        }
         persisted?;
         Ok(view)
     }
@@ -14027,12 +14678,11 @@ impl AppState {
         // See `plan_message`: the user is speaking, so the anchor may move.
         self.note_user_message(&run_id);
         let agent_id = self.ensure_primary_agent(&run_id)?;
+        self.edit_agent_conversation(&run_id, &agent_id, |thread, _artifact| {
+            thread.post_user(&message, None, now_rfc3339());
+            Ok(())
+        })?;
         let mut active = self.take_run(&run_id)?;
-        active
-            .agents
-            .resolve_mut(Some(&agent_id))?
-            .thread
-            .post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
             let turn = self
                 .orch_for(&project_id)?
@@ -15047,6 +15697,7 @@ impl AppState {
         // one: a merged or abandoned branch has stopped speaking for its issue,
         // and the issue is back in the inbox on its own.
         let live_implementation = implementation.filter(|run| !run.run.state.is_terminal());
+        let execution_context = self.issue_execution_context(issue_id);
         let row = json!({
             "kind": crate::branch::WorkItemKind::Issue.as_str(),
             "project_id": self.entity_project.get(issue_id).cloned().unwrap_or_default(),
@@ -15060,6 +15711,7 @@ impl AppState {
             "working": working,
             "working_time": working_time_json(working_since.as_deref()),
             "agents": self.agent_digests(issue_id, DigestScope::List),
+            "execution_context": execution_context,
             "stat": Value::Null,
             "resume_at": self.attention_json(issue_id)["resume_at"],
             "anchor": self.anchor_of(issue_id),
@@ -15164,14 +15816,7 @@ impl AppState {
         };
         roster
             .iter()
-            .filter_map(|agent| {
-                let agent_thread = if roster.is_primary(&agent.id) {
-                    thread.unwrap_or(&agent.thread)
-                } else {
-                    &agent.thread
-                };
-                agent_thread.working_since()
-            })
+            .filter_map(|agent| agent.working_since.as_deref())
             .min()
             .map(str::to_string)
     }
@@ -15188,17 +15833,10 @@ impl AppState {
     }
 
     fn entity_agents_working(&self, entity_id: &str) -> bool {
-        let Ok(root) = self.entity_agent_root(entity_id) else {
-            return false;
-        };
         let Ok(roster) = self.entity_agents(entity_id) else {
             return false;
         };
-        roster.iter().any(|agent| {
-            self.tabs
-                .get(&TabKey::agent(&root, &agent.id))
-                .is_some_and(agent_is_working)
-        })
+        roster.iter().any(|agent| agent.working_since.is_some())
     }
 
     /// `branch.get` — resolve `(project_id, branch)` to the work item behind
@@ -15250,7 +15888,7 @@ impl AppState {
                 view
             }
             // A checkout Build owns no run in has no agent to name.
-            None => match named_agent_id(params) {
+            None => match named_agent_id(params)? {
                 Some(agent_id) => return Err(format!("unknown agent_id: {agent_id}")),
                 None => Value::Null,
             },
@@ -15595,6 +16233,8 @@ impl AppState {
             .resolve_mut(Some(&agent_id))
             .expect("the agent was just put on this roster");
         let model_choice = agent.choice.clone();
+        let choice_revision = agent.choice_revision;
+        let conversation_id = agent.conversation_id().to_string();
         agent.thread.post_user(instruction, None, &now);
         // Told the same way `agent.start` tells an agent what is waiting for
         // it: the instruction is already durable on the thread, so a warm
@@ -15603,10 +16243,14 @@ impl AppState {
         // reconstruct. The spawn itself happens in `DeliveryRunner`, with the
         // state lock free and this frame already answered.
         self.pending_agent_turns.push(PendingAgentTurn {
+            operation_id: None,
             root,
             owner: run_id.to_string(),
             agent_id: agent_id.clone(),
+            conversation_id,
             model_choice,
+            choice_revision,
+            interrupt: false,
             say: Some(TurnText {
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
@@ -16082,15 +16726,12 @@ impl AppState {
     ) -> Option<String> {
         if let Some(id) = entity_id {
             if let Ok(roster) = self.entity_agents(id) {
-                let entity_thread = self.entity_conversation(id);
                 let conversation_at = roster
                     .iter()
                     .filter_map(|agent| {
-                        let thread = if roster.is_primary(&agent.id) {
-                            entity_thread.unwrap_or(&agent.thread)
-                        } else {
-                            &agent.thread
-                        };
+                        let thread = self
+                            .agent_conversation(id, Some(&agent.id))
+                            .unwrap_or(&agent.thread);
                         thread.conversation_activity_at()
                     })
                     .max()
@@ -16136,6 +16777,33 @@ impl AppState {
             .or_else(|| implementations.last().copied())
     }
 
+    /// The run agent currently executing an Issue's canonical conversation.
+    /// The UI addresses chat and settings to this identity while retaining the
+    /// Issue conversation id as a stale-binding guard. Once the alias agent is
+    /// removed there is no replacement: a private secondary never inherits it.
+    fn issue_execution_context(&self, issue_id: &str) -> Option<Value> {
+        let conversation_id = self.plans.get(issue_id)?.agents.sole().conversation_id();
+        let run = self
+            .current_issue_implementation(issue_id)
+            .filter(|run| !run.run.state.is_terminal())?;
+        let agent = run
+            .agents
+            .iter()
+            .find(|agent| agent.conversation_id() == conversation_id)?;
+        let root = Some(AppState::canonical_root(&run.worktree.path));
+        Some(json!({
+            "entity_id": run.run.id.0,
+            "agent_id": agent.id,
+            "conversation_id": conversation_id,
+            "agent": self.agent_digest(
+                &run.run.id.0,
+                agent,
+                root.as_deref(),
+                DigestScope::List,
+            ),
+        }))
+    }
+
     fn plan_view(
         &self,
         plan_id: &str,
@@ -16164,6 +16832,7 @@ impl AppState {
         // Narrower than the newest implementation: a merged or abandoned branch
         // has stopped speaking for its issue.
         let live_implementation = current_implementation.filter(|run| !run.run.state.is_terminal());
+        let execution_context = self.issue_execution_context(plan_id);
         let mut implementation_lineage = self
             .runs
             .values()
@@ -16220,6 +16889,7 @@ impl AppState {
             // The rail's bubble strip: one entry per agent, on every surface
             // that renders an entity, so status stays legible fully collapsed.
             "agents": self.agent_digests(plan_id, scope),
+            "execution_context": execution_context,
             "active_run_id": active_run_id,
             // Whether a branch is implementing this issue RIGHT NOW, and which
             // one. The same fact that hides the issue's row behind that
@@ -17336,15 +18006,20 @@ fn conversation_owner_param(params: &Value) -> Result<String, String> {
         .ok_or_else(|| "missing required param: entity_id".to_string())
 }
 
-/// The optional `agent_id` a verb was addressed to. Empty reads as absent: a
-/// client with no bubble open yet means the entity's own conversation, which is
-/// its first agent's.
-fn named_agent_id(params: &Value) -> Option<String> {
-    params
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
+/// The optional `agent_id` a verb was addressed to. Only omission or null means
+/// the entity's primary; an explicitly empty or malformed identity is refused
+/// before it can broaden into somebody else's conversation.
+fn named_agent_id(params: &Value) -> Result<Option<String>, String> {
+    optional_nonempty_string(params, "agent_id").map(|id| id.map(str::to_string))
+}
+
+fn optional_nonempty_string<'a>(params: &'a Value, field: &str) -> Result<Option<&'a str>, String> {
+    match params.get(field) {
+        None => Ok(None),
+        Some(Value::String(value)) if value.is_empty() => Err(format!("{field} cannot be empty")),
+        Some(Value::String(value)) => Ok(Some(value)),
+        Some(_) => Err(format!("{field} must be a string")),
+    }
 }
 
 /// A resolved `git.*` scope: the repository directory the RPC operates on,
@@ -18265,6 +18940,7 @@ struct PlanDraftingStarted {
     issue_id: String,
     detail: ThreadDetail,
     posted_sequence: Option<u64>,
+    receipt: Option<OperationReceipt>,
 }
 
 impl PlanSessionOpening for PlanDraftingStarted {
@@ -18273,9 +18949,71 @@ impl PlanSessionOpening for PlanDraftingStarted {
         state: &mut AppState,
         workspace: crate::orchestrator::PlanWorkspace,
     ) -> Result<Value, String> {
-        let view = state.open_inert_plan_drafting(&self.issue_id, workspace, self.detail)?;
-        Ok(with_posted_sequence(view, self.posted_sequence))
+        match state.open_inert_plan_drafting(&self.issue_id, workspace, self.detail) {
+            Ok(view) => {
+                if let Some(receipt) = self.receipt.as_ref() {
+                    if let Err(error) = attach_plan_operation_turn(state, receipt) {
+                        return Ok(state.settle_accepted_operation_error(receipt, error));
+                    }
+                }
+                Ok(with_post_receipt(
+                    view,
+                    self.posted_sequence,
+                    self.receipt.as_ref(),
+                ))
+            }
+            Err(error) => match self.receipt.as_ref() {
+                Some(receipt) => Ok(state.settle_accepted_operation_error(receipt, error)),
+                None => Err(error),
+            },
+        }
     }
+
+    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> Result<Value, String> {
+        match self.receipt.as_ref() {
+            Some(receipt) => Ok(state.settle_accepted_operation_error(receipt, error)),
+            None => Err(error),
+        }
+    }
+}
+
+fn attach_plan_operation_turn(
+    state: &mut AppState,
+    receipt: &OperationReceipt,
+) -> Result<(), String> {
+    let delivery = receipt
+        .delivery
+        .as_ref()
+        .ok_or("thread.post: accepted plan operation has no delivery intent")?;
+    let payload = delivery
+        .payload
+        .as_ref()
+        .ok_or("thread.post: accepted plan operation has no bounded payload")?;
+    let turn = state
+        .pending_agent_turns
+        .iter_mut()
+        .rev()
+        .find(|turn| {
+            turn.operation_id.is_none()
+                && turn.owner == delivery.owner_id
+                && turn.agent_id == delivery.agent_id
+        })
+        .ok_or("thread.post: plan session opened without a delivery turn")?;
+    turn.operation_id = Some(receipt.operation_id.clone());
+    turn.conversation_id = receipt.conversation_id.clone();
+    turn.model_choice = delivery.model_choice.clone();
+    turn.choice_revision = delivery.choice_revision;
+    turn.interrupt = delivery.interrupt;
+    let exact_cold = payload.delivery_prompt(&receipt.operation_id, true);
+    let exact_warm = payload.delivery_prompt(&receipt.operation_id, false);
+    if let Some(say) = turn.say.as_mut() {
+        say.cold.push_str("\n\n");
+        say.cold.push_str(&exact_cold);
+        say.warm = exact_warm;
+    }
+    turn.wants_catch_up = false;
+    turn.survives_refusal = true;
+    Ok(())
 }
 
 /// A router or a reroute asked, on its way to a destination it has already
@@ -19561,6 +20299,9 @@ fn apply_thread_action(
                 "working": working,
             }))
         }
+        BridgeAction::ReadOperationMessages { .. } => {
+            Err("operation-scoped reads require an authenticated agent".to_string())
+        }
         BridgeAction::PostThreadMessage {
             body,
             anchor,
@@ -19742,6 +20483,40 @@ fn parse_thread_inputs(
     Ok(vec![(body.to_string(), None)])
 }
 
+const MAX_OPERATION_ID_BYTES: usize = 128;
+
+fn optional_operation_id(params: &Value) -> Result<Option<String>, String> {
+    optional_nonempty_string(params, "operation_id")?
+        .map(|operation_id| {
+            if operation_id.len() > MAX_OPERATION_ID_BYTES {
+                return Err(format!(
+                    "operation_id exceeds {MAX_OPERATION_ID_BYTES} bytes"
+                ));
+            }
+            if !operation_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+            }) {
+                return Err("operation_id contains unsupported characters".to_string());
+            }
+            Ok(operation_id.to_string())
+        })
+        .transpose()
+}
+
+fn required_operation_id(params: &Value) -> Result<String, String> {
+    optional_operation_id(params)?.ok_or_else(|| "missing required param: operation_id".to_string())
+}
+
+fn optional_choice_revision(params: &Value) -> Result<Option<u64>, String> {
+    match params.get("choice_revision") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| "choice_revision must be a non-negative integer".to_string()),
+    }
+}
+
 /// Parse `thread.post`'s single `body` (+ optional `anchor`) by funneling it
 /// through [`parse_thread_inputs`]'s batch validator, so body limits and
 /// anchor artifact-matching stay single-sourced.
@@ -19766,6 +20541,17 @@ fn parse_thread_post_input(
         artifact,
         "body",
     )
+}
+
+fn parse_thread_post_messages(
+    params: &Value,
+    artifact: crate::thread::ArtifactKind,
+    carries_attachments: bool,
+) -> Result<Vec<(String, Option<crate::thread::MessageAnchor>)>, String> {
+    if params.get("messages").is_some() {
+        return parse_thread_inputs(params, artifact, "body");
+    }
+    parse_thread_post_input(params, artifact, carries_attachments)
 }
 
 fn parse_message_anchor(
@@ -19810,6 +20596,7 @@ fn parse_message_anchor(
 /// reads the caller's own tab registry — which is why
 /// [`AgentSession::send_turn`] must return promptly. A session that blocked
 /// there would stall every RPC and every terminal pump behind one nudge.
+#[cfg(test)]
 fn nudge_live_agent_tab(
     tabs: &HashMap<TabKey, Tab>,
     root: &std::path::Path,
@@ -19865,23 +20652,31 @@ fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
 /// chaining it off the previous session so the thread still reads as a chain.
 fn open_session_lineage(
     thread: &mut crate::thread::Thread,
+    entity_id: &str,
+    agent_id: &str,
+    checkout: &str,
     model_choice: &ModelChoice,
     phase: &str,
-) {
-    let session_id = thread.start_session(
-        model_choice.provider.label(),
-        model_choice.model.as_deref(),
-        model_choice.effort.as_deref(),
+) -> SessionInstance {
+    let now = now_rfc3339();
+    let instance = thread.start_agent_session(SessionStart {
+        entity_id,
+        agent_id,
+        checkout,
+        provider: model_choice.provider.label(),
+        model: model_choice.model.as_deref(),
+        effort: model_choice.effort.as_deref(),
         phase,
-        &now_rfc3339(),
-    );
+        now: &now,
+    });
     thread.push_event(
         crate::thread::ThreadEventKind::RunStarted,
         Some(format!("{phase} run started")),
-        Some(session_id),
+        Some(instance.id.clone()),
         None,
         now_rfc3339(),
     );
+    instance
 }
 
 /// The choice the reviewer submitted from an agent's suggested actions, when
@@ -19930,6 +20725,34 @@ fn append_reviewer_messages(
     append_user_thread_messages_with_attachments(thread, messages, attachments)
 }
 
+fn append_operation_reviewer_messages(
+    thread: &mut crate::thread::Thread,
+    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+    attachments: Vec<crate::thread::MessageAttachment>,
+    choice: Option<&crate::thread::OptionChoice>,
+    operation_id: Option<&str>,
+) -> (Option<u64>, Option<OperationPayload>) {
+    let previous_sequence = thread.last_sequence();
+    let prior_context = thread.operation_prior_context(crate::orchestrator::CATCH_UP_MESSAGES);
+    let posted_sequence = append_reviewer_messages(thread, messages, attachments, choice);
+    let payload = operation_id
+        .zip(posted_sequence)
+        .map(|(operation_id, end_sequence)| {
+            let messages =
+                thread.bind_operation_messages(operation_id, previous_sequence, end_sequence);
+            OperationPayload {
+                start_sequence: messages
+                    .first()
+                    .map(|message| message.sequence)
+                    .unwrap_or(end_sequence),
+                end_sequence,
+                messages,
+                prior_context,
+            }
+        });
+    (posted_sequence, payload)
+}
+
 fn append_user_thread_messages(
     thread: &mut crate::thread::Thread,
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
@@ -19969,6 +20792,47 @@ fn with_posted_sequence(view: Value, sequence: Option<u64>) -> Value {
         map.insert("posted_sequence".to_string(), json!(sequence));
     }
     view
+}
+
+fn post_operation_value(receipt: &OperationReceipt) -> Value {
+    let mut value = receipt.wire_value();
+    let object = value
+        .as_object_mut()
+        .expect("an operation receipt serializes as an object");
+    let status = object
+        .remove("status")
+        .expect("an operation receipt carries status");
+    object.insert("operation_status".to_string(), status);
+    value
+}
+
+fn with_post_receipt(
+    view: Value,
+    sequence: Option<u64>,
+    receipt: Option<&OperationReceipt>,
+) -> Value {
+    let mut view = with_posted_sequence(view, sequence);
+    let Some(receipt) = receipt else {
+        return view;
+    };
+    let Some(object) = view.as_object_mut() else {
+        return post_operation_value(receipt);
+    };
+    let receipt = post_operation_value(receipt);
+    object.extend(
+        receipt
+            .as_object()
+            .expect("an operation receipt serializes as an object")
+            .clone(),
+    );
+    view
+}
+
+fn with_operation_error(mut value: Value, error: String) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("operation_error".to_string(), Value::String(error));
+    }
+    value
 }
 
 fn append_plan_stage_announcements(
@@ -20079,22 +20943,19 @@ fn record_current_stage_started(
 /// session is the life of an agent PROCESS, so it closes when that process
 /// does (the tab pump's EOF) or when Build kills it — never when the agent
 /// merely finishes a turn.
-fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
-    let Some(session_id) = open_session_id(thread) else {
+fn finish_open_session(thread: &mut crate::thread::Thread, agent_id: &str, now: &str) {
+    let Some(instance) = thread.open_session_instance(agent_id) else {
         return;
     };
-    thread.finish_session(&session_id, now);
+    thread.finish_session_instance(&instance, now);
 }
 
 /// The conversation's open session, if one is open — the agent process
 /// speaking right now, which is what an event it produces belongs to.
-fn open_session_id(thread: &crate::thread::Thread) -> Option<String> {
+fn open_session_id(thread: &crate::thread::Thread, agent_id: &str) -> Option<String> {
     thread
-        .sessions
-        .iter()
-        .rev()
-        .find(|session| session.ended_at.is_none())
-        .map(|session| session.id.clone())
+        .open_session_instance(agent_id)
+        .map(|instance| instance.id)
 }
 
 /// Close every conversation an abandoned run was holding open. The run is out
@@ -20103,7 +20964,8 @@ fn open_session_id(thread: &crate::thread::Thread) -> Option<String> {
 fn close_abandoned_run_conversations(active: &mut ActiveRun) {
     let now = now_rfc3339();
     if let Some(primary) = active.agents.primary_mut() {
-        finish_open_session(&mut primary.thread, &now);
+        let agent_id = primary.id.clone();
+        finish_open_session(&mut primary.thread, &agent_id, &now);
         primary.thread.push_event(
             crate::thread::ThreadEventKind::Abandoned,
             Some("Run abandoned".to_string()),
@@ -20594,6 +21456,11 @@ fn session_hello(
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,
+        "thread_post_operations": {
+            "version": 1,
+            "status_method": "thread.operation",
+            "states": ["queued", "claimed", "delivered", "uncertain"],
+        },
     }))
 }
 
@@ -20817,7 +21684,7 @@ fn agent_attach(
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
 
-    let requested_agent = named_agent_id(params);
+    let requested_agent = named_agent_id(params)?;
 
     let mut guard = timer.lock(state);
     let s = &mut *guard;
@@ -20850,6 +21717,19 @@ fn agent_attach(
             .and_then(|key| key.tab_id.strip_prefix("agent:").map(str::to_string))
             .unwrap_or_else(|| crate::worktree::external_worktree_id(&root)),
     };
+    if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
+        let entity_id = entity_id
+            .as_deref()
+            .ok_or("conversation_id requires an entity id")?;
+        let actual = s
+            .resolve_conversation_address(entity_id, Some(&agent_id))?
+            .conversation_id;
+        if expected != actual {
+            return Err(format!(
+                "stale conversation_id {expected}; agent {agent_id} is bound to {actual}"
+            ));
+        }
+    }
     let key = TabKey::agent(&root, &agent_id);
     if !s.tabs.contains_key(&key) {
         // No agent has run here yet: a blank, dead screen, and the tab opens on
@@ -20911,10 +21791,14 @@ fn agent_start(
         let mut s = timer.lock(state);
         let agent = s.addressed_agent(params)?;
         s.pending_agent_turns.push(PendingAgentTurn {
+            operation_id: None,
             root: agent.root.clone(),
             owner: agent.entity_id.clone(),
             agent_id: agent.agent_id.clone(),
+            conversation_id: agent.conversation_id.clone(),
             model_choice: agent.model_choice.clone(),
+            choice_revision: agent.choice_revision,
+            interrupt: false,
             // The button means "give me an agent", not "go do something" — so a
             // start with nothing waiting says nothing, and the human drives from
             // there. But the reviewer's words are durable on the thread and an
@@ -21009,25 +21893,29 @@ fn attach_to_tab(attachment: TabAttachment, sender: &SessionSender, cols: u16, r
 fn ensure_agent_tab(
     state: &Arc<Mutex<AppState>>,
     root: &std::path::Path,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
-    phase: &str,
+    request: AgentSpawnRequest<'_>,
     timer: &FrameTimer,
 ) -> Result<Option<(String, Spawned)>, String> {
-    let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
-    let reserved = match claim_agent_spawn(state, &key, owner, agent_id, model_choice, timer)? {
+    let key = TabKey::agent(&AppState::canonical_root(root), request.agent_id);
+    let reserved = match claim_agent_spawn(state, &key, &request, timer)? {
         SpawnDecision::Live(wire_id) => return Ok(Some((wire_id, Spawned::Warm))),
         SpawnDecision::NoSession => return Ok(None),
         SpawnDecision::Reserved(reserved) => *reserved,
     };
-    let Some(opened) = open_agent_session(state, reserved, &key, timer)? else {
+    let Some(opened) = open_agent_session(state, reserved, &key, request.conversation_id, timer)?
+    else {
         return Ok(None);
     };
-    Ok(
-        publish_agent_tab(state, &key, opened, model_choice, phase, timer)
-            .map(|wire_id| (wire_id, Spawned::Fresh)),
+    Ok(publish_agent_tab(
+        state,
+        &key,
+        opened,
+        request.conversation_id,
+        request.model_choice,
+        request.phase,
+        timer,
     )
+    .map(|wire_id| (wire_id, Spawned::Fresh)))
 }
 
 /// What the lock-held half of a spawn decided.
@@ -21049,25 +21937,30 @@ enum SpawnDecision {
 fn claim_agent_spawn(
     state: &Arc<Mutex<AppState>>,
     key: &TabKey,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
+    request: &AgentSpawnRequest<'_>,
     timer: &FrameTimer,
 ) -> Result<SpawnDecision, String> {
     let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
     let mut s = timer.lock(state);
     loop {
-        if !s.owner_still_has_a_session(owner) {
+        if !s.agent_target_exists(
+            request.owner,
+            request.agent_id,
+            request.conversation_id,
+            &key.root,
+        ) {
             return Ok(SpawnDecision::NoSession);
         }
         if let Some(tab) = s.tabs.get(key) {
-            let same_owner = tab.role.agent().is_some_and(|(had, _)| had == owner);
-            if same_owner && tab.session_is_live() {
+            let same_target = tab.role.agent().is_some_and(|(owner, agent_id)| {
+                owner == request.owner && agent_id == request.agent_id
+            });
+            if same_target && tab.session_is_live() && !request.force_fresh {
                 return Ok(SpawnDecision::Live(tab.wire_id()));
             }
         }
         if !s.agent_spawns_in_flight.contains(key) {
-            return reserve_agent_spawn(&mut s, key, owner, agent_id, model_choice)
+            return reserve_agent_spawn(&mut s, key, request)
                 .map(|reserved| SpawnDecision::Reserved(Box::new(reserved)));
         }
         let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -21146,10 +22039,16 @@ impl SpawnHolding {
 fn reserve_agent_spawn(
     s: &mut AppState,
     key: &TabKey,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
+    request: &AgentSpawnRequest<'_>,
 ) -> Result<ReservedSpawn, String> {
+    let owner = request.owner;
+    let agent_id = request.agent_id;
+    let conversation_id = request.conversation_id;
+    let model_choice = request.model_choice;
+    let force_fresh = request.force_fresh;
+    if !s.agent_target_exists(owner, agent_id, conversation_id, &key.root) {
+        return Err(format!("agent {agent_id} is no longer attached to {owner}"));
+    }
     // A router session belongs to no project — deciding which one
     // the capture belongs to is its job. Any project's
     // orchestrator builds the same harness spec for it, since the
@@ -21162,9 +22061,13 @@ fn reserve_agent_spawn(
         Err(unknown) => return Err(unknown),
     };
     let project = s.orch_for(&project_id)?.clone();
+    let replaced = s.tabs.get(key).and_then(|tab| tab.session_instance.clone());
     let carried = s
         .retire_tab_keeping_screen(key)
         .and_then(|(_reaping, screen)| screen);
+    if let Some(instance) = replaced {
+        s.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
+    }
     // A checkout outlives the entity that owned it — a planning
     // worktree is torn down and a run cuts a new one at the same
     // path, an adopted worktree is released and re-adopted. Agents
@@ -21177,26 +22080,51 @@ fn reserve_agent_spawn(
         .tabs
         .iter()
         .filter(|(other, tab)| {
-            other.root == key.root && tab.role.agent().is_some_and(|(had, _)| had != owner)
+            other.root == key.root
+                && tab.role.agent().is_some_and(|(had, other_agent)| {
+                    had != owner
+                        && tab.session_instance.as_ref().is_none_or(|instance| {
+                            !s.agent_target_exists(
+                                had,
+                                other_agent,
+                                &instance.conversation_id,
+                                &other.root,
+                            )
+                        })
+                })
         })
         .map(|(other, _)| other.clone())
         .collect();
     for other in stale {
+        let instance = s
+            .tabs
+            .get(&other)
+            .and_then(|tab| tab.session_instance.clone());
         s.retire_tab(&other, "closed");
+        if let Some(instance) = instance {
+            s.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
+        }
     }
     let session_token = uuid::Uuid::new_v4().to_string();
     // Before the child exists, because the child dials the done socket as soon
     // as it is up and an unregistered token is an unauthorized report.
     s.mcp_session_tokens
         .insert(agent_id.to_string(), session_token.clone());
+    let recorded_resume_id = (!force_fresh)
+        .then(|| s.resumable_session_id(owner, agent_id, &key.root, model_choice.provider))
+        .flatten();
+    if (force_fresh || recorded_resume_id.is_none())
+        && s.recorded_resume_id(owner, agent_id).is_some()
+    {
+        s.record_agent_resume_id(owner, agent_id, None);
+    }
     Ok(ReservedSpawn {
         plan: AgentSpawnPlan {
             project,
             root: key.root.clone(),
             agent_id: agent_id.to_string(),
             model_choice: model_choice.clone(),
-            recorded_resume_id: s.recorded_resume_id(owner, agent_id),
-            may_pick_up_a_conversation: s.may_pick_up_a_conversation(owner, agent_id),
+            recorded_resume_id,
             probes: s.session_probes(),
             session_token: session_token.clone(),
         },
@@ -21240,11 +22168,13 @@ fn agent_open_request(
     root: std::path::PathBuf,
     model_choice: &ModelChoice,
     resume_session_id: Option<String>,
-    locator: Option<Box<dyn crate::harness::SessionLocator>>,
+    _locator: Option<Box<dyn crate::harness::SessionLocator>>,
 ) -> SessionOpenRequest {
     let identity = match &prepared.spec.known_session_id {
         Some(known) => Some(SessionIdentitySource::Known(known.clone())),
-        None => locator.map(SessionIdentitySource::Located),
+        None => resume_session_id
+            .as_ref()
+            .map(|verified| SessionIdentitySource::Known(verified.clone())),
     };
     SessionOpenRequest {
         spec: prepared.spec,
@@ -21267,6 +22197,7 @@ fn open_agent_session(
     state: &Arc<Mutex<AppState>>,
     reserved: ReservedSpawn,
     key: &TabKey,
+    conversation_id: &str,
     timer: &FrameTimer,
 ) -> Result<Option<OpenedSession>, String> {
     let ReservedSpawn {
@@ -21275,7 +22206,11 @@ fn open_agent_session(
         holding,
     } = reserved;
     let session_is_over = match &role {
-        TabRole::Agent { owner, .. } => !timer.lock(state).owner_still_has_a_session(owner),
+        TabRole::Agent {
+            owner, agent_id, ..
+        } => !timer
+            .lock(state)
+            .agent_target_exists(owner, agent_id, conversation_id, &key.root),
         TabRole::Shell => false,
     };
     if session_is_over {
@@ -21340,6 +22275,7 @@ fn publish_agent_tab(
     state: &Arc<Mutex<AppState>>,
     key: &TabKey,
     opened: OpenedSession,
+    conversation_id: &str,
     model_choice: &ModelChoice,
     phase: &str,
     timer: &FrameTimer,
@@ -21356,7 +22292,7 @@ fn publish_agent_tab(
         .map(|(owner, agent_id)| (owner.to_string(), agent_id.to_string()))
         .expect("an agent spawn opens an agent tab");
     let wire_id = tab.wire_id();
-    let pumps;
+    let mut pumps = None;
     let inherited;
     let stranded;
     {
@@ -21372,15 +22308,21 @@ fn publish_agent_tab(
             .session
             .active_model()
             .or_else(|| model_choice.model.clone());
-        pumps = tab.pumps(output);
         s.tabs.insert(key.clone(), tab);
         claim.settle(&mut s);
         s.record_agent_active_model(&owner, &agent_id, running);
-        stranded = !s.owner_still_has_a_session(&owner);
+        stranded = !s.agent_target_exists(&owner, &agent_id, conversation_id, &key.root);
         if stranded {
             s.retire_tab(key, "closed");
         } else {
-            s.record_agent_session_start(&owner, model_choice, phase);
+            let instance =
+                s.record_agent_session_start(&owner, &agent_id, &key.root, model_choice, phase);
+            let tab = s
+                .tabs
+                .get_mut(key)
+                .expect("the published agent tab was just inserted");
+            tab.session_instance = instance;
+            pumps = Some(tab.pumps(output));
         }
     }
     if stranded {
@@ -21389,7 +22331,11 @@ fn publish_agent_tab(
     if let Some(inherited) = inherited {
         inherited.fit_child_to_screen();
     }
-    spawn_tab_pumps(state, key.clone(), pumps);
+    spawn_tab_pumps(
+        state,
+        key.clone(),
+        pumps.expect("a non-stranded tab starts its pumps"),
+    );
     Some(wire_id)
 }
 
@@ -21542,6 +22488,105 @@ const NO_TERMINAL_LEFT: &str = "no_terminal";
 /// close to reach: they are told here or they are told never.
 const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
+enum DeliveryOutcome {
+    Delivered(Option<(String, Spawned)>),
+    /// The exact destination still exists, but changing its frozen model
+    /// requires a restart and the current turn has not reached a safe boundary.
+    /// No provider call has happened; the durable intent is safe to queue.
+    Deferred,
+}
+
+enum DeliveryPreflight {
+    Proceed { force_fresh: bool },
+    Deferred,
+    Declined,
+}
+
+/// Decide how one frozen turn reaches its exact captured destination before
+/// any provider-facing operation occurs.
+fn preflight_delivery(
+    state: &Arc<Mutex<AppState>>,
+    turn: &PendingAgentTurn,
+    timer: &FrameTimer,
+) -> DeliveryPreflight {
+    let key = turn.tab_key();
+    let (plan, interrupt_session) = {
+        let s = timer.lock(state);
+        if !s.queued_agent_target_exists(turn) {
+            return DeliveryPreflight::Declined;
+        }
+        let Some(tab) = s.tabs.get(&key) else {
+            let force_fresh = s
+                .resumable_session_id(
+                    &turn.owner,
+                    &turn.agent_id,
+                    &turn.root,
+                    turn.model_choice.provider,
+                )
+                .and_then(|named| {
+                    s.agent_conversation(&turn.owner, Some(&turn.agent_id))
+                        .ok()?
+                        .sessions
+                        .iter()
+                        .rev()
+                        .find(|session| {
+                            session.agent_id == turn.agent_id
+                                && session.resume_session_id.as_deref() == Some(named.as_str())
+                        })
+                        .map(|session| {
+                            session.model != turn.model_choice.model
+                                || session.effort != turn.model_choice.effort
+                        })
+                })
+                .unwrap_or(false);
+            return DeliveryPreflight::Proceed { force_fresh };
+        };
+        let exact_tab = tab
+            .role
+            .agent()
+            .is_some_and(|(owner, agent_id)| owner == turn.owner && agent_id == turn.agent_id)
+            && tab.session_instance.as_ref().is_some_and(|instance| {
+                instance.conversation_id == turn.conversation_id
+                    && instance.checkout == turn.root.display().to_string()
+            });
+        if !exact_tab {
+            return DeliveryPreflight::Proceed { force_fresh: false };
+        }
+        let instance = tab
+            .session_instance
+            .as_ref()
+            .expect("an exact agent tab has its session instance");
+        if !tab.session_is_live() {
+            return DeliveryPreflight::Proceed {
+                force_fresh: !s.session_instance_uses_choice(instance, &turn.model_choice),
+            };
+        }
+        if s.session_instance_uses_choice(instance, &turn.model_choice)
+            || tab.session.turn_choice_support(&turn.model_choice) == TurnChoiceSupport::Native
+        {
+            return DeliveryPreflight::Proceed { force_fresh: false };
+        }
+        let working = s
+            .entity_agents(&turn.owner)
+            .ok()
+            .and_then(|agents| agents.by_id(&turn.agent_id))
+            .is_some_and(|agent| agent.working_since.is_some());
+        if working && !turn.interrupt {
+            return DeliveryPreflight::Deferred;
+        }
+        (
+            DeliveryPreflight::Proceed { force_fresh: true },
+            turn.interrupt.then(|| Arc::clone(&tab.session)),
+        )
+    };
+    if let Some(session) = interrupt_session {
+        if let Err(refused) = session.interrupt() {
+            eprintln!("thread.post {}: interrupt refused: {refused}", turn.owner);
+        }
+    }
+    plan
+}
+
 /// The one pipe from Build to a worktree's agent.
 ///
 /// Ensures the tab exists, then hands the agent the turn it was queued with —
@@ -21556,23 +22601,41 @@ fn deliver(
     state: &Arc<Mutex<AppState>>,
     turn: &PendingAgentTurn,
     timer: &FrameTimer,
-) -> Result<Option<(String, Spawned)>, String> {
+) -> Result<DeliveryOutcome, String> {
     let PendingAgentTurn {
         root,
         owner,
         agent_id,
         model_choice,
+        choice_revision,
+        interrupt,
         phase,
         say,
         ..
     } = turn;
-    let Some((wire_id, spawned)) =
-        ensure_agent_tab(state, root, owner, agent_id, model_choice, phase, timer)?
+    let force_fresh = match preflight_delivery(state, turn, timer) {
+        DeliveryPreflight::Proceed { force_fresh } => force_fresh,
+        DeliveryPreflight::Deferred => return Ok(DeliveryOutcome::Deferred),
+        DeliveryPreflight::Declined => return Ok(DeliveryOutcome::Delivered(None)),
+    };
+    let Some((wire_id, spawned)) = ensure_agent_tab(
+        state,
+        root,
+        AgentSpawnRequest {
+            owner,
+            agent_id,
+            conversation_id: &turn.conversation_id,
+            model_choice,
+            force_fresh,
+            phase,
+        },
+        timer,
+    )?
     else {
-        return Ok(None);
+        return Ok(DeliveryOutcome::Delivered(None));
     };
     let Some(say) = say else {
-        return Ok(Some((wire_id, spawned)));
+        return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
     };
     let prompt = match spawned {
         Spawned::Fresh => &say.cold,
@@ -21584,12 +22647,38 @@ fn deliver(
     // sweep wait on that lock, and how long a session takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
-    let session = {
+    let (session, instance) = {
         let s = timer.lock(state);
+        if !s.queued_agent_target_exists(turn) {
+            return Ok(DeliveryOutcome::Delivered(None));
+        }
         let tab = s.tabs.get(&key).ok_or(TAB_CLOSED_UNDER_A_TURN)?;
-        Arc::clone(&tab.session)
+        let exact_instance = tab.session_instance.as_ref().is_some_and(|instance| {
+            instance.entity_id == turn.owner
+                && instance.agent_id == turn.agent_id
+                && instance.conversation_id == turn.conversation_id
+        });
+        if !exact_instance {
+            return Ok(DeliveryOutcome::Delivered(None));
+        }
+        (
+            Arc::clone(&tab.session),
+            tab.session_instance
+                .clone()
+                .expect("an exact delivery tab has its session instance"),
+        )
     };
-    if let Err(error) = session.send_turn(&Turn::new(prompt)) {
+    if *interrupt && spawned == Spawned::Warm {
+        if let Err(refused) = session.interrupt() {
+            eprintln!("thread.post {owner}: interrupt refused: {refused}");
+        }
+    }
+    let reports_turn_boundaries = session.status_changed().is_some();
+    if let Err(error) = session.send_turn(&Turn::with_choice(
+        prompt,
+        model_choice.clone(),
+        *choice_revision,
+    )) {
         // A harness that exits immediately still owns its tab: PTYs return EIO
         // once the child's side is closed, and the child closes it BEFORE the
         // OS makes its exit status reapable, so a single poll here races the
@@ -21605,11 +22694,23 @@ fn deliver(
     // travelled, so that is not a delivery failure to report.
     let now = now_rfc3339();
     let mut app = timer.lock(state);
-    if let Some(tab) = app.tabs.get_mut(&key) {
+    if still_pumping_instance(&app, &key, &session, &instance) {
+        let was_working = app
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .is_some_and(|agent| agent.working_since.is_some());
+        let tab = app
+            .tabs
+            .get_mut(&key)
+            .expect("the exact delivered session is still registered");
         tab.last_delivered_at = Some(std::time::Instant::now());
-        app.observe_working_state(owner, true, &now);
+        if !reports_turn_boundaries && !was_working {
+            app.record_agent_working_since(owner, &turn.agent_id, Some(now.clone()));
+            app.observe_working_state(owner, true, &now);
+        }
     }
-    Ok(Some((wire_id, spawned)))
+    Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))))
 }
 
 /// The turns one lock acquisition took off the queue, on their way to their
@@ -21834,16 +22935,61 @@ impl DeliveryRunner {
     fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
         let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
         while let Some((turn, mark)) = turns.next_turn() {
+            if let Some(operation_id) = turn.operation_id.as_deref() {
+                let claimed = timer.lock(state).transition_delivery_operation(
+                    operation_id,
+                    OperationStatus::Queued,
+                    OperationStatus::Claimed,
+                    None,
+                );
+                match claimed {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        mark.settle(&mut timer.lock(state));
+                        continue;
+                    }
+                    Err(error) => {
+                        eprintln!("claim delivery {operation_id}: {error}");
+                        let mut app = timer.lock(state);
+                        app.pending_agent_turns.push(turn);
+                        mark.settle(&mut app);
+                        continue;
+                    }
+                }
+            }
             let delivered = deliver(state, &turn, &timer);
             let mut s = timer.lock(state);
+            if let Some(operation_id) = turn.operation_id.as_deref() {
+                let next = match &delivered {
+                    Ok(DeliveryOutcome::Deferred) => OperationStatus::Queued,
+                    Ok(DeliveryOutcome::Delivered(_)) => OperationStatus::Delivered,
+                    Err(_) => OperationStatus::Uncertain,
+                };
+                let execution_error = match &delivered {
+                    Ok(DeliveryOutcome::Delivered(None)) => Some(AGENT_START_DECLINED_SESSION_OVER),
+                    Err(error) => Some(error.as_str()),
+                    _ => None,
+                };
+                if let Err(error) = s.transition_delivery_operation(
+                    operation_id,
+                    OperationStatus::Claimed,
+                    next,
+                    execution_error,
+                ) {
+                    eprintln!("settle delivery {operation_id}: {error}");
+                }
+            }
             match delivered {
                 // An issue whose session is over (approved, abandoned) holds no
                 // workspace — and its checkout is the project's primary one,
                 // which is emphatically not a place to spawn a replacement for
                 // work nobody is doing. The turn stays on its thread; the
                 // agent says why nothing opened.
-                Ok(None) => s.record_agent_start_declined(&turn),
-                Ok(Some(_)) => {}
+                Ok(DeliveryOutcome::Delivered(None)) => s.record_agent_start_declined(&turn),
+                Ok(DeliveryOutcome::Delivered(Some(_))) => {}
+                Ok(DeliveryOutcome::Deferred) => {
+                    s.pending_agent_turns.push(turn);
+                }
                 // The turn stays durable on the thread — the agent picks it up
                 // with `read_unread_messages` the next time a tab opens — but
                 // nothing is reading that thread right now, so the entity
@@ -21871,6 +23017,7 @@ impl DeliveryRunner {
 fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
     let TabPumps {
         session,
+        session_instance,
         screen,
         output,
     } = pumps;
@@ -21878,6 +23025,7 @@ fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
         state,
         key.clone(),
         Arc::clone(&session),
+        session_instance.clone(),
         screen,
         output.bytes,
     );
@@ -21886,16 +23034,18 @@ fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
         state,
         key.clone(),
         Arc::clone(&session),
+        session_instance.clone(),
         output.activity,
         output.surfaces,
     );
-    spawn_status_pump(state, key, session, status_changed);
+    spawn_status_pump(state, key, session, session_instance, status_changed);
 }
 
 fn spawn_status_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
     session: Arc<dyn AgentSession>,
+    instance: Option<SessionInstance>,
     mut changed: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
 ) {
     let Some(mut changed) = changed.take() else {
@@ -21909,7 +23059,7 @@ fn spawn_status_pump(
     tokio::spawn(async move {
         loop {
             let snapshot = changed.borrow_and_update().clone();
-            let ended = {
+            let (ended, retry_deferred, clock, delivery_state) = {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
@@ -21917,25 +23067,30 @@ fn spawn_status_pump(
                 let Some(session) = session.upgrade() else {
                     return;
                 };
-                let Some((owner, _)) = pumped_agent_of_tab(&app, &key, &session) else {
+                let Some(instance) = instance.as_ref() else {
                     return;
                 };
-                let working = app.entity_agents_working(&owner);
-                if app
-                    .attention
-                    .entry(owner.clone())
-                    .or_default()
-                    .observe_status(
-                        working,
-                        &snapshot.changed_at,
-                        snapshot.last_worked_at.as_deref(),
-                    )
-                {
-                    app.persist_attention();
-                    app.note_entity_changed(&owner);
+                if !still_pumping_instance(&app, &key, &session, instance) {
+                    return;
                 }
-                matches!(snapshot.status, AgentStatus::Ended { .. })
+                let owner = &instance.entity_id;
+                app.record_agent_status_snapshot(owner, &instance.agent_id, &snapshot);
+                let retry_deferred = !matches!(snapshot.status, AgentStatus::Working)
+                    && app
+                        .pending_agent_turns
+                        .iter()
+                        .any(|turn| turn.owner == *owner && turn.agent_id == instance.agent_id);
+                (
+                    matches!(snapshot.status, AgentStatus::Ended { .. }),
+                    retry_deferred,
+                    Arc::clone(&app.frame_clock),
+                    Arc::clone(&state),
+                )
             };
+            if retry_deferred {
+                let timer = clock.frame(AGENT_DELIVERY_METHOD);
+                DeliveryRunner::drain(&delivery_state, &timer);
+            }
             if ended {
                 return;
             }
@@ -21973,6 +23128,7 @@ fn spawn_tab_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
     session: Arc<dyn AgentSession>,
+    instance: Option<SessionInstance>,
     screen: Option<ScreenHandle>,
     rx: Option<broadcast::Receiver<Vec<u8>>>,
 ) {
@@ -21997,7 +23153,7 @@ fn spawn_tab_pump(
                     Ok(chunk) => screen.feed(&chunk),
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        end_of_session(&state, &key, &session, &screen);
+                        end_of_session(&state, &key, &session, instance.as_ref(), &screen);
                         return;
                     }
                 },
@@ -22024,6 +23180,21 @@ fn still_pumping(s: &AppState, key: &TabKey, session: &Arc<dyn AgentSession>) ->
         .is_some_and(|tab| Arc::ptr_eq(&tab.session, session))
 }
 
+/// Stronger guard for an agent callback: the tab still holds both the process
+/// and the exact lineage instance captured when its pumps were spawned.
+fn still_pumping_instance(
+    s: &AppState,
+    key: &TabKey,
+    session: &Arc<dyn AgentSession>,
+    instance: &SessionInstance,
+) -> bool {
+    s.tabs.get(key).is_some_and(|tab| {
+        Arc::ptr_eq(&tab.session, session)
+            && tab.session_instance.as_ref() == Some(instance)
+            && tab.role.agent() == Some((instance.entity_id.as_str(), instance.agent_id.as_str()))
+    })
+}
+
 /// The death rites of the session a byte pump was watching.
 ///
 /// The app mutex is taken twice, with the reading a dying session owes between
@@ -22035,6 +23206,7 @@ fn end_of_session(
     state: &Arc<Mutex<AppState>>,
     key: &TabKey,
     session: &Arc<dyn AgentSession>,
+    instance: Option<&SessionInstance>,
     screen: &ScreenHandle,
 ) {
     let ended_agent = {
@@ -22042,13 +23214,25 @@ fn end_of_session(
         if !still_pumping(&s, key, session) {
             return;
         }
-        let tab = s
+        let role = s
             .tabs
-            .get_mut(key)
-            .expect("the tab this pump holds was just found");
-        match tab.role.agent() {
-            Some((owner, agent_id)) => {
-                let ended = (owner.to_string(), agent_id.to_string());
+            .get(key)
+            .expect("the tab this pump holds was just found")
+            .role
+            .clone();
+        match role.agent() {
+            Some(_) => {
+                let Some(instance) = instance else {
+                    return;
+                };
+                if !still_pumping_instance(&s, key, session, instance) {
+                    return;
+                }
+                let ended = instance.clone();
+                let tab = s
+                    .tabs
+                    .get_mut(key)
+                    .expect("the guarded agent tab still exists");
                 tab.live = false;
                 // Told in the same acquisition that marks the tab, because a
                 // marked tab is a REPLACEABLE one: the next spawn takes this
@@ -22071,7 +23255,7 @@ fn end_of_session(
             }
         }
     };
-    let Some((owner, agent_id)) = ended_agent else {
+    let Some(instance) = ended_agent else {
         return;
     };
     // One final reading, so a session shorter than a sweep tick is still named
@@ -22087,14 +23271,14 @@ fn end_of_session(
     // A replacement can have taken the tab over while that walk ran. Its turn
     // is in flight and its conversation is its own; this session's findings
     // would close the one and overwrite the other.
-    if !still_pumping(&s, key, session) {
+    if !still_pumping_instance(&s, key, session, &instance) {
         return;
     }
-    s.note_self_report(&owner, &agent_id, report);
+    s.note_self_report(&instance.entity_id, &instance.agent_id, &instance, report);
     // The process is what a session IS, so this is where the conversation's
     // lineage closes — and where a turn the dead process was holding is closed,
     // so the row stops reading as working.
-    s.record_agent_session_end(&owner, &agent_id);
+    s.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
 }
 
 /// Pump one session's reported activity into the conversation it speaks in.
@@ -22119,6 +23303,7 @@ fn spawn_activity_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
     session: Arc<dyn AgentSession>,
+    instance: Option<SessionInstance>,
     rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
     mut surfaces_changed: Option<tokio::sync::watch::Receiver<u64>>,
 ) {
@@ -22146,10 +23331,13 @@ fn spawn_activity_pump(
             let reported = match woke {
                 PumpWake::SurfacesMoved => {
                     let s = state.lock().unwrap();
-                    let Some((owner, _)) = pumped_agent_of_tab(&s, &key, &session) else {
+                    let Some(instance) = instance.as_ref() else {
                         return;
                     };
-                    s.note_entity_changed(&owner);
+                    if !still_pumping_instance(&s, &key, &session, instance) {
+                        return;
+                    }
+                    s.note_entity_changed(&instance.entity_id);
                     continue;
                 }
                 PumpWake::SurfacesUnwatchable => {
@@ -22160,38 +23348,46 @@ fn spawn_activity_pump(
             };
             match reported {
                 Ok(report) => {
-                    let Some((owner, agent_id)) = ({
-                        let s = state.lock().unwrap();
-                        pumped_agent_of_tab(&s, &key, &session)
-                    }) else {
+                    let Some(instance) = instance.as_ref() else {
                         return;
                     };
                     let said = SelfReport::read(&session);
                     let mut s = state.lock().unwrap();
-                    if !still_pumping(&s, &key, &session) {
+                    if !still_pumping_instance(&s, &key, &session, instance) {
                         return;
                     }
-                    s.note_self_report(&owner, &agent_id, said);
-                    record_activity(&mut s, &key, &owner, &agent_id, &report);
+                    s.note_self_report(&instance.entity_id, &instance.agent_id, instance, said);
+                    record_activity(
+                        &mut s,
+                        &key,
+                        &instance.entity_id,
+                        &instance.agent_id,
+                        &report,
+                    );
                 }
                 // A turn that called forty tools while the lock was busy is a
                 // reader problem, not a reason to stop reading: what is lost is
                 // lost, and the events after it still belong in the timeline.
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
-                    let Some((owner, agent_id)) = ({
-                        let s = state.lock().unwrap();
-                        pumped_agent_of_tab(&s, &key, &session)
-                    }) else {
+                    let Some(instance) = instance.as_ref() else {
                         return;
                     };
                     let said = SelfReport::read(&session);
+                    // Protocol sessions publish their final status before
+                    // closing the activity stream. Consume that exact boundary
+                    // here as well as in the watch pump: the two tasks race,
+                    // and EOF must not call a completed turn an interruption
+                    // merely because it acquired the app lock first.
+                    let final_status = session
+                        .status_changed()
+                        .map(|status| status.borrow().clone());
                     let mut s = state.lock().unwrap();
                     // The reading is a filesystem walk, and a replacement can
                     // have taken the tab over while it ran: what follows ends a
                     // session, and ending the live one would mark it dead,
                     // harvest its open tool calls and close its turn.
-                    if !still_pumping(&s, &key, &session) {
+                    if !still_pumping_instance(&s, &key, &session, instance) {
                         return;
                     }
                     let tab = s
@@ -22201,7 +23397,12 @@ fn spawn_activity_pump(
                     tab.live = false;
                     let unanswered_call_sequences = take_unanswered_call_sequences(tab);
                     match said.named {
-                        Some(_) => s.note_self_report(&owner, &agent_id, said),
+                        Some(_) => s.note_self_report(
+                            &instance.entity_id,
+                            &instance.agent_id,
+                            instance,
+                            said,
+                        ),
                         // A session that ended having never announced a
                         // conversation of its own is the shape of one spawned
                         // with an id that no longer resolves: the child exits
@@ -22210,7 +23411,9 @@ fn spawn_activity_pump(
                         // one restart rather than every restart — and where the
                         // child died at startup for an unrelated reason, the
                         // probe is what would have answered anyway.
-                        None => s.record_agent_resume_id(&owner, &agent_id, None),
+                        None => {
+                            s.record_agent_resume_id(&instance.entity_id, &instance.agent_id, None)
+                        }
                     }
                     // A call still open when the child's stream ended never got
                     // an answer and never will: it is closed here, saying so,
@@ -22219,18 +23422,25 @@ fn spawn_activity_pump(
                     // ending over work that still claims to run.
                     for sequence in unanswered_call_sequences {
                         s.resolve_agent_tool_call(
-                            &owner,
-                            &agent_id,
+                            &instance.entity_id,
+                            &instance.agent_id,
                             sequence,
                             crate::thread::ToolCallOutcome::Unanswered,
                             NO_ANSWER_SESSION_ENDED,
+                        );
+                    }
+                    if let Some(snapshot) = final_status.as_ref() {
+                        s.record_agent_status_snapshot(
+                            &instance.entity_id,
+                            &instance.agent_id,
+                            snapshot,
                         );
                     }
                     // The process is what a session IS, so this is where the
                     // conversation's lineage closes — and where a turn the dead
                     // process was holding is closed, so the row stops reading as
                     // working.
-                    s.record_agent_session_end(&owner, &agent_id);
+                    s.record_agent_session_end(&instance.entity_id, &instance.agent_id, instance);
                     return;
                 }
             }
@@ -22276,8 +23486,29 @@ impl AppState {
     /// Both carriers' capture points come through here, so a name a child
     /// announced and a name a locator found are the same record written by the
     /// same hand.
-    fn note_self_report(&mut self, owner: &str, agent_id: &str, report: SelfReport) {
+    fn note_self_report(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        instance: &SessionInstance,
+        report: SelfReport,
+    ) {
         if let Some(named) = report.named {
+            if let Err(error) =
+                self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+                    if thread.name_session_instance(instance, &named) {
+                        Ok(())
+                    } else {
+                        Err(
+                            "session instance no longer matches its conversation lineage"
+                                .to_string(),
+                        )
+                    }
+                })
+            {
+                eprintln!("note_self_report {owner}: {error}");
+                return;
+            }
             if self.recorded_resume_id(owner, agent_id).as_deref() != Some(named.as_str()) {
                 self.record_agent_resume_id(owner, agent_id, Some(named));
             }
@@ -22286,21 +23517,6 @@ impl AppState {
             self.record_agent_active_model(owner, agent_id, Some(running));
         }
     }
-}
-
-/// Who the tab at `key` speaks for, if `session` is still the session behind it.
-///
-/// The pump's own reader: an agent's owner and id, refused outright once the
-/// tab has turned over, so nothing a dead session says is written under a live
-/// one's name.
-fn pumped_agent_of_tab(
-    s: &AppState,
-    key: &TabKey,
-    session: &Arc<dyn AgentSession>,
-) -> Option<(String, String)> {
-    still_pumping(s, key, session)
-        .then(|| agent_of_tab(s, key))
-        .flatten()
 }
 
 /// The terminal's capture point: ask every live agent session for the
@@ -22321,8 +23537,8 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     /// One live agent, taken out of the registry so the name can be asked for
     /// with the lock released, and put back by `key` once it is known.
     struct LiveAgent {
-        owner: String,
-        agent_id: String,
+        key: TabKey,
+        instance: SessionInstance,
         session: Arc<dyn AgentSession>,
         recorded: Option<String>,
         recorded_model: Option<String>,
@@ -22331,35 +23547,38 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     let live: Vec<LiveAgent> = {
         let s = state.lock().unwrap();
         s.tabs
-            .values()
-            .filter(|tab| tab.live)
-            .filter_map(|tab| {
-                let (owner, agent_id) = tab.role.agent()?;
+            .iter()
+            .filter(|(_, tab)| tab.live)
+            .filter_map(|(key, tab)| {
+                let instance = tab.session_instance.clone()?;
                 Some(LiveAgent {
-                    owner: owner.to_string(),
-                    agent_id: agent_id.to_string(),
+                    key: key.clone(),
+                    instance: instance.clone(),
                     session: Arc::clone(&tab.session),
-                    recorded: s.recorded_resume_id(owner, agent_id),
-                    recorded_model: s.recorded_active_model(owner, agent_id),
+                    recorded: s.recorded_resume_id(&instance.entity_id, &instance.agent_id),
+                    recorded_model: s
+                        .recorded_active_model(&instance.entity_id, &instance.agent_id),
                 })
             })
             .collect()
     };
-    let moved: Vec<(String, String, SelfReport)> = live
+    let moved: Vec<(TabKey, SessionInstance, Arc<dyn AgentSession>, SelfReport)> = live
         .into_iter()
         .filter_map(|agent| {
             let said = SelfReport::read(&agent.session);
             let name_moved = said.named.is_some() && agent.recorded != said.named;
             let model_moved = said.model.is_some() && agent.recorded_model != said.model;
-            (name_moved || model_moved).then_some((agent.owner, agent.agent_id, said))
+            (name_moved || model_moved).then_some((agent.key, agent.instance, agent.session, said))
         })
         .collect();
     if moved.is_empty() {
         return;
     }
     let mut s = state.lock().unwrap();
-    for (owner, agent_id, said) in moved {
-        s.note_self_report(&owner, &agent_id, said);
+    for (key, instance, session, said) in moved {
+        if still_pumping_instance(&s, &key, &session, &instance) {
+            s.note_self_report(&instance.entity_id, &instance.agent_id, &instance, said);
+        }
     }
 }
 
@@ -22370,13 +23589,6 @@ fn digest_surfaces(tab: Option<&Tab>, scope: DigestScope) -> Option<Value> {
     };
     let snapshot = tab.session.surfaces()?;
     Some(snapshot.wire_value(&|call_id| tab.call_sequences.get(call_id).map(|row| row.sequence)))
-}
-
-/// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
-/// the tab is gone or was never an agent's.
-fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
-    let (owner, agent_id) = state.tabs.get(key)?.role.agent()?;
-    Some((owner.to_string(), agent_id.to_string()))
 }
 
 /// The conversation event one reported activity becomes. The five kinds are the
@@ -22601,7 +23813,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use crate::harness::claude;
     use crate::harness::stream_fixtures::{
         recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID, WORKFLOW_TASK_ID,
     };
@@ -22647,16 +23858,18 @@ mod tests {
             key: TabKey,
             rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
         ) {
-            let Some((session, surfaces_changed)) = state
-                .lock()
-                .unwrap()
-                .tabs
-                .get(&key)
-                .map(|tab| (Arc::clone(&tab.session), tab.session.surfaces_changed()))
+            let Some((session, instance, surfaces_changed)) =
+                state.lock().unwrap().tabs.get(&key).map(|tab| {
+                    (
+                        Arc::clone(&tab.session),
+                        tab.session_instance.clone(),
+                        tab.session.surfaces_changed(),
+                    )
+                })
             else {
                 return;
             };
-            super::super::spawn_activity_pump(state, key, session, rx, surfaces_changed)
+            super::super::spawn_activity_pump(state, key, session, instance, rx, surfaces_changed)
         }
 
         pub(super) fn ensure_agent_tab(
@@ -22667,13 +23880,22 @@ mod tests {
             model_choice: &ModelChoice,
             phase: &str,
         ) -> Result<(String, Spawned), String> {
+            let conversation_id = state
+                .lock()
+                .unwrap()
+                .resolve_conversation_address(owner, Some(agent_id))?
+                .conversation_id;
             super::super::ensure_agent_tab(
                 state,
                 root,
-                owner,
-                agent_id,
-                model_choice,
-                phase,
+                AgentSpawnRequest {
+                    owner,
+                    agent_id,
+                    conversation_id: &conversation_id,
+                    model_choice,
+                    force_fresh: false,
+                    phase,
+                },
                 &a_frame(state),
             )
             .map(|opened| opened.expect("the owner still has a session"))
@@ -22692,13 +23914,27 @@ mod tests {
                 cold: cold.to_string(),
                 warm: warm.to_string(),
             };
+            let (conversation_id, choice_revision) = {
+                let app = state.lock().unwrap();
+                let address = app.resolve_conversation_address(owner, Some(agent_id))?;
+                let choice_revision = app
+                    .entity_agents(owner)?
+                    .by_id(agent_id)
+                    .expect("the resolved address names this agent")
+                    .choice_revision;
+                (address.conversation_id, choice_revision)
+            };
             super::super::deliver(
                 state,
                 &PendingAgentTurn {
-                    root: root.to_path_buf(),
+                    operation_id: None,
+                    root: AppState::canonical_root(root),
                     owner: owner.to_string(),
                     agent_id: agent_id.to_string(),
+                    conversation_id,
                     model_choice: model_choice.clone(),
+                    choice_revision,
+                    interrupt: false,
                     phase,
                     say: Some(say),
                     wants_catch_up: false,
@@ -22706,7 +23942,11 @@ mod tests {
                 },
                 &a_frame(state),
             )
-            .map(|delivered| delivered.expect("the owner still has a session"))
+            .map(|delivered| match delivered {
+                DeliveryOutcome::Delivered(Some(delivered)) => delivered,
+                DeliveryOutcome::Delivered(None) => panic!("the owner still has a session"),
+                DeliveryOutcome::Deferred => panic!("the test turn is immediately eligible"),
+            })
         }
 
         /// Take the queue and deliver it here and now, the way a test with no
@@ -25686,6 +26926,13 @@ mod tests {
             TabRole::Agent { agent_id, .. } => agent_tab_id(agent_id),
             TabRole::Shell => "term-1".to_string(),
         };
+        let session_instance = role.agent().map(|(owner, agent_id)| SessionInstance {
+            id: format!("session-test-{agent_id}"),
+            entity_id: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id: agent_id.to_string(),
+            checkout: root.display().to_string(),
+        });
         Tab {
             screen: Some(ScreenHandle::new(&tab_id, 80, 24)),
             tab_id,
@@ -25693,6 +26940,7 @@ mod tests {
             role,
             created_at: now_rfc3339(),
             session: Arc::new(harness),
+            session_instance,
             live: true,
             call_sequences: HashMap::new(),
             last_delivered_at: None,
@@ -26068,6 +27316,7 @@ mod tests {
             GatedHarness::new().naming_its_conversation_through(gate, "the-dead-conversation"),
         );
         let session = Arc::clone(&dying.session);
+        let instance = dying.session_instance.clone();
         let screen = screen_of(&dying).clone();
         state.lock().unwrap().tabs.insert(key.clone(), dying);
 
@@ -26077,7 +27326,7 @@ mod tests {
             let session = Arc::clone(&session);
             let (done, finished) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                end_of_session(&state, &key, &session, &screen);
+                end_of_session(&state, &key, &session, instance.as_ref(), &screen);
                 let _ = done.send(());
             });
             finished
@@ -26155,6 +27404,7 @@ mod tests {
             GatedHarness::new(),
         );
         let session = Arc::clone(&dying.session);
+        let instance = dying.session_instance.clone();
         let screen = screen_of(&dying).clone();
         let (sender, mut pushes, session_key) = SessionSender::observable("watching");
         screen.attach(&sender, None);
@@ -26170,7 +27420,7 @@ mod tests {
             let screen = screen.clone();
             let (done, finished) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                end_of_session(&state, &key, &session, &screen);
+                end_of_session(&state, &key, &session, instance.as_ref(), &screen);
                 let _ = done.send(());
             });
             finished
@@ -26241,9 +27491,17 @@ mod tests {
             GatedHarness::new().naming_its_conversation_through(gate, "the-dead-conversation"),
         );
         let session = Arc::clone(&reporting.session);
+        let instance = reporting.session_instance.clone();
         state.lock().unwrap().tabs.insert(key.clone(), reporting);
         let (activity, subscribed) = broadcast::channel(4);
-        super::spawn_activity_pump(&state, key.clone(), session, Some(subscribed), None);
+        super::spawn_activity_pump(
+            &state,
+            key.clone(),
+            session,
+            instance,
+            Some(subscribed),
+            None,
+        );
         // The stream closes: the session behind this tab is over.
         drop(activity);
         gate_handle.wait_for_arrival();
@@ -26414,9 +27672,16 @@ mod tests {
         let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
         let (gate, gate_handle) = OffLockGate::new();
         let key = TabKey::agent(&root, &agent_id);
-        state.lock().unwrap().tabs.insert(
-            key.clone(),
-            gated_tab(
+        {
+            let mut app = state.lock().unwrap();
+            let instance = app.record_agent_session_start(
+                &run_id,
+                &agent_id,
+                &root,
+                &ModelChoice::default(),
+                "build",
+            );
+            let mut tab = gated_tab(
                 &root,
                 TabRole::Agent {
                     owner: run_id.clone(),
@@ -26424,8 +27689,10 @@ mod tests {
                     provider: AgentProvider::default(),
                 },
                 GatedHarness::new().naming_its_conversation_through(gate, "conversation-7"),
-            ),
-        );
+            );
+            tab.session_instance = instance;
+            app.tabs.insert(key.clone(), tab);
+        }
 
         let captured = {
             let capturing = Arc::clone(&state);
@@ -26462,6 +27729,109 @@ mod tests {
             Some("conversation-7"),
             "and writes down what it read"
         );
+    }
+
+    /// A sweep reads outside the app lock. If S2 replaces S1 during that read,
+    /// S1's late provider name belongs only to S1 and cannot overwrite the
+    /// exact resume id S2 has already announced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_late_name_capture_cannot_overwrite_its_replacement_session() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-stale-name",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let key = TabKey::agent(&root, &agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        {
+            let mut app = state.lock().unwrap();
+            let first = app
+                .record_agent_session_start(
+                    &run_id,
+                    &agent_id,
+                    &root,
+                    &ModelChoice::default(),
+                    "build",
+                )
+                .expect("the first exact session");
+            let mut tab = gated_tab(
+                &root,
+                TabRole::Agent {
+                    owner: run_id.clone(),
+                    agent_id: agent_id.clone(),
+                    provider: AgentProvider::default(),
+                },
+                GatedHarness::new().naming_its_conversation_through(gate, "stale-S1-name"),
+            );
+            tab.session_instance = Some(first);
+            app.tabs.insert(key.clone(), tab);
+        }
+        let captured = {
+            let state = Arc::clone(&state);
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                capture_conversation_names(&state);
+                let _ = done.send(());
+            });
+            finished
+        };
+        gate_handle.wait_for_arrival();
+
+        let replacement = {
+            let mut app = state.lock().unwrap();
+            let replacement = app
+                .record_agent_session_start(
+                    &run_id,
+                    &agent_id,
+                    &root,
+                    &ModelChoice::default(),
+                    "build",
+                )
+                .expect("the replacement exact session");
+            app.note_self_report(
+                &run_id,
+                &agent_id,
+                &replacement,
+                SelfReport {
+                    named: Some("live-S2-name".to_string()),
+                    model: None,
+                },
+            );
+            let mut tab = gated_tab(
+                &root,
+                TabRole::Agent {
+                    owner: run_id.clone(),
+                    agent_id: agent_id.clone(),
+                    provider: AgentProvider::default(),
+                },
+                GatedHarness::new(),
+            );
+            tab.session_instance = Some(replacement.clone());
+            app.tabs.insert(key, tab);
+            replacement
+        };
+
+        gate_handle.release();
+        captured
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the stale name read returns");
+
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.recorded_resume_id(&run_id, &agent_id).as_deref(),
+            Some("live-S2-name")
+        );
+        let current = s
+            .agent_conversation(&run_id, Some(&agent_id))
+            .unwrap()
+            .open_session_instance(&agent_id)
+            .expect("S2 stays current");
+        assert_eq!(current, replacement);
     }
 
     /// Poll an observable sender's captured pushes until the decrypted history
@@ -27097,13 +28467,31 @@ mod tests {
         dir: &std::path::Path,
         owner: &str,
     ) -> (Arc<Mutex<AppState>>, FrameHandler, PathBuf) {
-        let (state, handler) = shared_state_and_handler(repo, dir);
         let root = dir.join("agent-root");
         std::fs::create_dir_all(&root).unwrap();
+        agent_tab_fixture_at(repo, dir, owner, root)
+    }
+
+    /// The same fixture with the agent rooted at a checkout the test already
+    /// owns (notably the primary checkout mounted by project-scoped attach).
+    fn agent_tab_fixture_at(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+        owner: &str,
+        root: PathBuf,
+    ) -> (Arc<Mutex<AppState>>, FrameHandler, PathBuf) {
+        let (state, handler) = shared_state_and_handler(repo, dir);
         {
             let mut s = state.lock().unwrap();
             let project_id = s.projects[0].id.clone();
             s.entity_project.insert(owner.to_string(), project_id);
+            let mut record = fake_run_record(owner);
+            record.worktree_path = root.display().to_string();
+            record.project_path = repo.display().to_string();
+            s.runs.insert(
+                owner.to_string(),
+                ActiveRun::reattach(&record, ".build/plan.md".to_string()),
+            );
         }
         (state, handler, root)
     }
@@ -27400,6 +28788,13 @@ mod tests {
                 state_was_free: Arc::clone(&state_was_free),
             });
             let mut s = state.lock().unwrap();
+            tab.session_instance = s.record_agent_session_start(
+                "run-lock",
+                &agent_id,
+                &canonical,
+                &ModelChoice::default(),
+                "build",
+            );
             s.tabs.insert(TabKey::agent(&canonical, &agent_id), tab);
         }
 
@@ -27446,23 +28841,20 @@ mod tests {
     async fn done_then_a_warm_turn_stays_in_one_open_session() {
         let (dir, repo) = init_repo();
         let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-lineage");
-        state.lock().unwrap().runs.insert(
-            "run-lineage".into(),
-            crate::orchestrator::ActiveRun::reattach(
-                &fake_run_record("run-lineage"),
-                ".build/plan.md".into(),
-            ),
-        );
         let queue_turn = || {
             state
                 .lock()
                 .unwrap()
                 .pending_agent_turns
                 .push(PendingAgentTurn {
+                    operation_id: None,
                     root: AppState::canonical_root(&root),
                     owner: "run-lineage".into(),
                     agent_id: crate::agent::derived_agent_id("run-lineage"),
+                    conversation_id: crate::agent::derived_agent_id("run-lineage"),
                     model_choice: ModelChoice::default(),
+                    choice_revision: 0,
+                    interrupt: false,
                     say: Some(TurnText {
                         cold: "COLD-TURN".into(),
                         warm: "WARM-TURN".into(),
@@ -27527,11 +28919,6 @@ mod tests {
         let (state, _handler) = shared_state_and_handler(&repo, dir.path());
         let (tab_key, _wire_id) =
             insert_live_run(&state, &repo, dir.path().join("side"), "run-eof");
-        state.lock().unwrap().record_agent_session_start(
-            "run-eof",
-            &ModelChoice::default(),
-            "build",
-        );
         assert_eq!(open_session_count(&state, "run-eof"), 1);
 
         state.lock().unwrap().tabs[&tab_key].session.end();
@@ -27550,6 +28937,299 @@ mod tests {
             1,
             "the dead session is closed, not replaced"
         );
+    }
+
+    #[test]
+    fn stale_session_end_cannot_clear_its_replacement_execution() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-replaced-session",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-replaced-session");
+        let first = app
+            .record_agent_session_start(
+                "run-replaced-session",
+                &agent_id,
+                &root,
+                &ModelChoice::default(),
+                "build",
+            )
+            .unwrap();
+        let replacement = app
+            .record_agent_session_start(
+                "run-replaced-session",
+                &agent_id,
+                &root,
+                &ModelChoice::default(),
+                "build",
+            )
+            .unwrap();
+        app.record_agent_working_since(
+            "run-replaced-session",
+            &agent_id,
+            Some("2026-09-08T10:01:00Z".to_string()),
+        );
+
+        app.record_agent_session_end("run-replaced-session", &agent_id, &first);
+
+        let agent = app.runs["run-replaced-session"]
+            .agents
+            .by_id(&agent_id)
+            .unwrap();
+        assert_eq!(
+            agent.thread.open_session_instance(&agent_id),
+            Some(replacement)
+        );
+        assert_eq!(
+            agent.working_since.as_deref(),
+            Some("2026-09-08T10:01:00Z"),
+            "S1's delayed end cannot stop S2's execution clock"
+        );
+    }
+
+    #[test]
+    fn default_after_a_native_override_restarts_fresh_before_delivery() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "choice-reset");
+        let root = app.entity_agent_root(&run_id).unwrap();
+        let agent_id = primary_agent_id(&app, &run_id);
+        let choice_a = ModelChoice {
+            model: Some("model-a".to_string()),
+            ..ModelChoice::default()
+        };
+        let choice_b = ModelChoice {
+            model: Some("model-b".to_string()),
+            ..ModelChoice::default()
+        };
+        app.set_agent_model_choice(&run_id, &agent_id, choice_a.clone())
+            .unwrap();
+        let log = SessionLog::default();
+        let key = insert_agent_tab(
+            &mut app,
+            &root,
+            &run_id,
+            &agent_id,
+            DictatedSession::reporting(AgentStatus::Waiting)
+                .recording_into(&log)
+                .natively_accepting(choice_b.clone()),
+        );
+        let instance = app.tabs[&key].session_instance.clone().unwrap();
+        app.note_self_report(
+            &run_id,
+            &agent_id,
+            &instance,
+            SelfReport {
+                named: Some("sticky-session".to_string()),
+                model: Some("model-a".to_string()),
+            },
+        );
+        app.resume_id_probe = Arc::new(|_, _, _| true);
+        let launches: Arc<Mutex<Vec<(ModelChoice, SpawnOptions)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&launches);
+        let worktrees = app.worktrees_root.clone();
+        app.projects[0].orch = Orchestrator::new(
+            repo.clone(),
+            worktrees,
+            Agent::WarmBuilder(Arc::new(move |_prompt, choice, options| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((choice.clone(), options.clone()));
+                Ok(warm_tui_spec())
+            })),
+            Templates::default(),
+            test_bridge_exe(),
+        );
+        app.set_agent_model_choice(&run_id, &agent_id, choice_b.clone())
+            .unwrap();
+        let state = app.shared();
+
+        let (_, b_spawned) = deliver(
+            &state,
+            &root,
+            &run_id,
+            &agent_id,
+            &choice_b,
+            "build",
+            ["cold-b", "warm-b"],
+        )
+        .unwrap();
+        assert_eq!(b_spawned, Spawned::Warm);
+        assert_eq!(log.choices(), vec![Some(choice_b)]);
+
+        {
+            let mut app = state.lock().unwrap();
+            app.record_agent_working_since(&run_id, &agent_id, None);
+            app.set_agent_model_choice(&run_id, &agent_id, ModelChoice::default())
+                .unwrap();
+        }
+        let (_, default_spawned) = deliver(
+            &state,
+            &root,
+            &run_id,
+            &agent_id,
+            &ModelChoice::default(),
+            "build",
+            ["cold-default", "warm-default"],
+        )
+        .unwrap();
+        assert_eq!(default_spawned, Spawned::Fresh);
+        let launches = launches.lock().unwrap();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].0, ModelChoice::default());
+        assert_eq!(launches[0].1.resume_session_id, None);
+        let app = state.lock().unwrap();
+        let current = app
+            .agent_conversation(&run_id, Some(&agent_id))
+            .unwrap()
+            .open_session_instance(&agent_id)
+            .unwrap();
+        let row = app
+            .agent_conversation(&run_id, Some(&agent_id))
+            .unwrap()
+            .sessions
+            .iter()
+            .find(|session| session.id == current.id)
+            .unwrap();
+        assert_eq!(row.model, None, "the fresh session uses configured default");
+        assert_eq!(row.effort, None, "sticky effort is cleared at the boundary");
+    }
+
+    #[test]
+    fn deliveries_preserve_each_agents_existing_execution_interval() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "timer-isolation");
+        let root = app.entity_agent_root(&run_id).unwrap();
+        let primary = primary_agent_id(&app, &run_id);
+        let second = app
+            .runs
+            .get_mut(&run_id)
+            .unwrap()
+            .agents
+            .add(&run_id, ModelChoice::default(), "2026-09-08T09:00:00Z")
+            .id
+            .clone();
+        let primary_choice = app.runs[&run_id]
+            .agents
+            .by_id(&primary)
+            .unwrap()
+            .choice
+            .clone();
+        let second_choice = app.runs[&run_id]
+            .agents
+            .by_id(&second)
+            .unwrap()
+            .choice
+            .clone();
+        insert_agent_tab(
+            &mut app,
+            &root,
+            &run_id,
+            &primary,
+            DictatedSession::reporting(AgentStatus::Waiting),
+        );
+        insert_agent_tab(
+            &mut app,
+            &root,
+            &run_id,
+            &second,
+            DictatedSession::reporting(AgentStatus::Waiting),
+        );
+        let first_started = "2026-09-08T10:00:00Z".to_string();
+        app.record_agent_working_since(&run_id, &primary, Some(first_started.clone()));
+        let state = app.shared();
+
+        deliver(
+            &state,
+            &root,
+            &run_id,
+            &second,
+            &second_choice,
+            "build",
+            ["second-cold", "second-warm"],
+        )
+        .unwrap();
+        deliver(
+            &state,
+            &root,
+            &run_id,
+            &primary,
+            &primary_choice,
+            "build",
+            ["first-cold", "first-warm"],
+        )
+        .unwrap();
+
+        let app = state.lock().unwrap();
+        let roster = &app.runs[&run_id].agents;
+        assert_eq!(
+            roster.by_id(&primary).unwrap().working_since.as_ref(),
+            Some(&first_started),
+            "a second send must not reset an execution already in flight"
+        );
+        assert!(
+            roster.by_id(&second).unwrap().working_since.is_some(),
+            "the second agent starts its own interval"
+        );
+    }
+
+    #[test]
+    fn starting_one_issue_agent_preserves_another_valid_issue_session_in_the_same_checkout() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
+        insert_plan_without_agent(&state, &repo, dir.path().join("issue-a"), "issue-a");
+        insert_plan_without_agent(&state, &repo, dir.path().join("issue-b"), "issue-b");
+        let (root, first_agent, second_agent) = {
+            let app = state.lock().unwrap();
+            let first_root = app.entity_agent_root("issue-a").unwrap();
+            let second_root = app.entity_agent_root("issue-b").unwrap();
+            assert_eq!(
+                first_root, second_root,
+                "both Issue agents use the primary checkout"
+            );
+            (
+                first_root,
+                primary_agent_id(&app, "issue-a"),
+                primary_agent_id(&app, "issue-b"),
+            )
+        };
+        let first_log = SessionLog::default();
+        {
+            let mut app = state.lock().unwrap();
+            insert_agent_tab(
+                &mut app,
+                &root,
+                "issue-a",
+                &first_agent,
+                DictatedSession::reporting(AgentStatus::Waiting).recording_into(&first_log),
+            );
+        }
+
+        ensure_agent_tab(
+            &state,
+            &root,
+            "issue-b",
+            &second_agent,
+            &ModelChoice::default(),
+            "plan",
+        )
+        .expect("the second Issue agent starts");
+
+        let app = state.lock().unwrap();
+        assert!(
+            app.tabs.contains_key(&TabKey::agent(&root, &first_agent)),
+            "starting Issue B retired Issue A's valid session"
+        );
+        assert!(app.tabs.contains_key(&TabKey::agent(&root, &second_agent)));
+        assert!(!first_log.ended());
     }
 
     /// The feed row for a run, off `board.list` — the one place `working` is
@@ -27599,13 +29279,21 @@ mod tests {
     /// nothing comes back. That read is what starts the working clock.
     fn open_a_turn(state: &Arc<Mutex<AppState>>, run_id: &str) {
         let mut s = state.lock().unwrap();
-        let run = s.runs.get_mut(run_id).expect("the run is on the board");
-        primary_thread_mut(&mut run.agents).post_user("do the thing", None, "2026-08-15T10:00:00Z");
-        primary_thread_mut(&mut run.agents).read_unread("2026-08-15T10:00:01Z");
-        assert!(
-            primary_thread(&run.agents).working_since().is_some(),
-            "the agent read the message, so it holds the turn"
-        );
+        let agent_id = {
+            let run = s.runs.get_mut(run_id).expect("the run is on the board");
+            primary_thread_mut(&mut run.agents).post_user(
+                "do the thing",
+                None,
+                "2026-08-15T10:00:00Z",
+            );
+            primary_thread_mut(&mut run.agents).read_unread("2026-08-15T10:00:01Z");
+            assert!(
+                primary_thread(&run.agents).working_since().is_some(),
+                "the agent read the message, so it holds the turn"
+            );
+            run.agents.primary().unwrap().id.clone()
+        };
+        s.record_agent_working_since(run_id, &agent_id, Some("2026-08-15T10:00:01Z".to_string()));
     }
 
     /// A killed agent process must not leave its row working.
@@ -27683,7 +29371,7 @@ mod tests {
             let root = AppState::canonical_root(&active.worktree.path);
             (agent_id, root)
         };
-        let (tab, rx) = Tab::spawn_agent(
+        let (mut tab, rx) = Tab::spawn_agent(
             run_id.to_string(),
             agent_id.clone(),
             test_agent_session_request(
@@ -27695,7 +29383,17 @@ mod tests {
         )
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
-        state.lock().unwrap().tabs.insert(key.clone(), tab);
+        {
+            let mut app = state.lock().unwrap();
+            tab.session_instance = app.record_agent_session_start(
+                run_id,
+                &agent_id,
+                &root,
+                &ModelChoice::default(),
+                "build",
+            );
+            app.tabs.insert(key.clone(), tab);
+        }
         spawn_tab_pumps(state, key.clone(), rx);
         (agent_id, key)
     }
@@ -27713,12 +29411,19 @@ mod tests {
         let (second_id, second_key) = add_second_agent(&state, "run-two-agents");
         {
             let mut s = state.lock().unwrap();
-            let second = s.runs.get_mut("run-two-agents").unwrap();
-            let second = second.agents.by_id_mut(&second_id).expect("just added");
-            second
-                .thread
-                .post_user("and this one too", None, "2026-08-15T10:00:02Z");
-            second.thread.read_unread("2026-08-15T10:00:03Z");
+            {
+                let second = s.runs.get_mut("run-two-agents").unwrap();
+                let second = second.agents.by_id_mut(&second_id).expect("just added");
+                second
+                    .thread
+                    .post_user("and this one too", None, "2026-08-15T10:00:02Z");
+                second.thread.read_unread("2026-08-15T10:00:03Z");
+            }
+            s.record_agent_working_since(
+                "run-two-agents",
+                &second_id,
+                Some("2026-08-15T10:00:03Z".to_string()),
+            );
         }
 
         state.lock().unwrap().tabs[&second_key].session.end();
@@ -27775,12 +29480,20 @@ mod tests {
         open_a_turn(&state, "run-handback");
         {
             let mut s = state.lock().unwrap();
-            let run = s.runs.get_mut("run-handback").unwrap();
-            primary_thread_mut(&mut run.agents).post_agent(
-                "here is what I did",
-                None,
-                "2026-08-15T10:05:00Z",
-            );
+            let agent_id = primary_agent_id(&s, "run-handback");
+            s.on_agent_mcp_action(
+                "run-handback",
+                &agent_id,
+                BridgeAction::PostThreadMessage {
+                    body: "here is what I did".to_string(),
+                    anchor: None,
+                    links: Vec::new(),
+                    still_working: false,
+                    options: Vec::new(),
+                },
+            )
+            .unwrap();
+            let run = s.runs.get("run-handback").unwrap();
             assert_eq!(
                 primary_thread(&run.agents).working_since(),
                 None,
@@ -27956,18 +29669,15 @@ mod tests {
         let agent_id = crate::agent::derived_agent_id("run-exits");
         {
             let mut app = state.lock().unwrap();
-            app.runs.insert(
-                "run-exits".into(),
-                crate::orchestrator::ActiveRun::reattach(
-                    &fake_run_record("run-exits"),
-                    ".build/plan.md".into(),
-                ),
-            );
             app.pending_agent_turns.push(PendingAgentTurn {
+                operation_id: None,
                 root: AppState::canonical_root(&root),
                 owner: "run-exits".into(),
                 agent_id: agent_id.clone(),
+                conversation_id: agent_id.clone(),
                 model_choice: ModelChoice::default(),
+                choice_revision: 0,
+                interrupt: false,
                 say: Some(TurnText {
                     cold: "cold".into(),
                     warm: "warm".into(),
@@ -28157,22 +29867,29 @@ mod tests {
 
         let (directory, repo) = init_repo();
         let mut app = qa_state(&repo, directory.path());
-        let created = app.handle(req(
-            "plan.create",
-            json!({ "goal": "authenticate MCP", "dispatch": false }),
-        ));
-        let entity_id = plan_id_of(&created);
-        let agent_id = crate::agent::derived_agent_id(&entity_id);
+        let entity_id = adopted_run(&mut app, &repo, directory.path(), "authenticate-mcp");
+        let agent_id = primary_agent_id(&app, &entity_id);
         let state = app.shared();
         let (stale_reservation, current_reservation, stale_token, current_token) = {
             let mut app = state.lock().unwrap();
-            let key = TabKey::agent(directory.path(), &agent_id);
+            let root = app.entity_agent_root(&entity_id).unwrap();
+            let key = TabKey::agent(&root, &agent_id);
+            let conversation_id = app
+                .resolve_conversation_address(&entity_id, Some(&agent_id))
+                .unwrap()
+                .conversation_id;
+            let choice = ModelChoice::default();
             let stale = reserve_agent_spawn(
                 &mut app,
                 &key,
-                &entity_id,
-                &agent_id,
-                &ModelChoice::default(),
+                &AgentSpawnRequest {
+                    owner: &entity_id,
+                    agent_id: &agent_id,
+                    conversation_id: &conversation_id,
+                    model_choice: &choice,
+                    force_fresh: false,
+                    phase: "test",
+                },
             )
             .unwrap()
             .holding;
@@ -28180,9 +29897,14 @@ mod tests {
             let current = reserve_agent_spawn(
                 &mut app,
                 &key,
-                &entity_id,
-                &agent_id,
-                &ModelChoice::default(),
+                &AgentSpawnRequest {
+                    owner: &entity_id,
+                    agent_id: &agent_id,
+                    conversation_id: &conversation_id,
+                    model_choice: &choice,
+                    force_fresh: false,
+                    phase: "test",
+                },
             )
             .unwrap()
             .holding;
@@ -28414,6 +30136,33 @@ mod tests {
         tab.session.end();
     }
 
+    #[test]
+    fn concurrent_fresh_sessions_never_trust_the_same_first_writer_locator() {
+        struct RacedLocator;
+        impl crate::harness::SessionLocator for RacedLocator {
+            fn session_id(&self) -> Option<String> {
+                Some("session-written-first-by-the-sibling".to_string())
+            }
+        }
+
+        let request = |_agent_id: &str| {
+            agent_open_request(
+                PreparedAgentLaunch {
+                    spec: HarnessSpec::new("true"),
+                    pty_size: terminal_size(80, 24),
+                },
+                PathBuf::from("/tmp/shared-checkout"),
+                &ModelChoice::default(),
+                None,
+                Some(Box::new(RacedLocator)),
+            )
+        };
+        let first = request("agent-a");
+        let second = request("agent-b");
+        assert!(first.terminal.identity.is_none());
+        assert!(second.terminal.identity.is_none());
+    }
+
     fn pi_extension_child_death_spec(directory: &Path, agent_id: &str) -> HarnessSpec {
         use std::os::unix::fs::PermissionsExt;
 
@@ -28476,7 +30225,7 @@ mod tests {
             .resolve_mut(None)
             .unwrap()
             .choice = choice.clone();
-        app.record_agent_session_start(run_id, &choice, "build");
+        let instance = app.record_agent_session_start(run_id, &agent_id, &root, &choice, "build");
         let (tab, output) = Tab::spawn_agent(
             run_id.to_string(),
             agent_id.clone(),
@@ -28496,6 +30245,7 @@ mod tests {
         let (sender, mut pushes, session_key) = SessionSender::observable("pi-death-observer");
         screen_of(&tab).attach(&sender, None);
         app.tabs.insert(key.clone(), tab);
+        app.tabs.get_mut(&key).unwrap().session_instance = instance;
         let state = app.shared();
         spawn_tab_pumps(&state, key.clone(), output);
 
@@ -28551,7 +30301,6 @@ mod tests {
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
-            s.transcript_probe = Arc::new(|_, _| true);
             s.projects[0].orch = Orchestrator::new(
                 repo.clone(),
                 worktrees,
@@ -32801,7 +34550,7 @@ mod tests {
     #[tokio::test]
     async fn detail_gets_with_a_cursor_ship_only_newer_thread_items() {
         let (dir, repo) = init_repo();
-        let (_state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
         let (_, run_id) = planned_run_in_review_delivered(&handler, "cursor the thread");
         call(
             &handler,
@@ -32811,14 +34560,17 @@ mod tests {
                 "messages": [{ "body": "tighten the loop", "anchor": null }]
             }),
         );
+        // The delivered fixture has a real harness whose exit can append
+        // lifecycle items. Hold the state across this paging snapshot so every
+        // response describes the same immutable conversation revision.
+        let mut state = state.lock().unwrap();
 
         // The first load a paging client makes: the newest page, which for a
         // conversation this short is every item it holds.
-        let full = call(
-            &handler,
+        let full = state.handle(req(
             "run.get",
             json!({ "run_id": run_id, "thread_limit": crate::thread::DEFAULT_THREAD_PAGE }),
-        );
+        ));
         let full_items = full["result"]["thread"]["items"].as_array().unwrap();
         assert!(full_items.len() >= 2, "{full:?}");
         assert_eq!(full["result"]["thread"]["has_more"], false, "{full:?}");
@@ -32831,11 +34583,10 @@ mod tests {
             .as_u64()
             .unwrap();
 
-        let delta = call(
-            &handler,
+        let delta = state.handle(req(
             "run.get",
             json!({ "run_id": run_id, "thread_after_sequence": cursor }),
-        );
+        ));
         let delta_thread = &delta["result"]["thread"];
         let delta_items = delta_thread["items"].as_array().unwrap();
         assert!(!delta_items.is_empty(), "{delta:?}");
@@ -32846,11 +34597,10 @@ mod tests {
         assert_eq!(delta_thread["thread_last_sequence"], last_sequence);
 
         // A cursor past the end is an empty delta, never an error.
-        let drained = call(
-            &handler,
+        let drained = state.handle(req(
             "run.get",
             json!({ "run_id": run_id, "thread_after_sequence": last_sequence + 100 }),
-        );
+        ));
         assert_eq!(drained["ok"], true, "{drained:?}");
         assert_eq!(
             drained["result"]["thread"]["items"]
@@ -32863,15 +34613,14 @@ mod tests {
 
         // A garbage cursor is treated as absent: the page the poll asked for,
         // not an error.
-        let garbage = call(
-            &handler,
+        let garbage = state.handle(req(
             "run.get",
             json!({
                 "run_id": run_id,
                 "thread_after_sequence": "junk",
                 "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
             }),
-        );
+        ));
         assert_eq!(garbage["ok"], true, "{garbage:?}");
         assert_eq!(
             garbage["result"]["thread"]["items"]
@@ -36967,6 +38716,51 @@ mod tests {
         assert_eq!(nameless["ok"], false, "{nameless:?}");
     }
 
+    #[test]
+    fn conversation_reads_reject_invalid_or_stale_explicit_identity() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "strict-thread-address");
+        let agent_id = primary_agent_id(&state, &run_id);
+        let conversation_id = state.runs[&run_id]
+            .agents
+            .by_id(&agent_id)
+            .unwrap()
+            .conversation_id()
+            .to_string();
+
+        for invalid in [json!(""), json!(42)] {
+            let refused = state.handle(req(
+                "thread.page",
+                json!({ "entity_id": run_id, "agent_id": invalid }),
+            ));
+            assert_eq!(refused["ok"], false, "{refused:?}");
+        }
+        let stale = state.handle(req(
+            "thread.page",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": "agent-stale",
+            }),
+        ));
+        assert_eq!(stale["ok"], false, "{stale:?}");
+        assert!(stale["error"]
+            .as_str()
+            .unwrap()
+            .contains("stale conversation_id"));
+
+        let accepted = state.handle(req(
+            "thread.page",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": conversation_id,
+            }),
+        ));
+        assert_eq!(accepted["ok"], true, "{accepted:?}");
+    }
+
     /// A conversation with one long run of work in it — the fixture both
     /// `thread.activity` paths read — with the run's own span, which is what a
     /// client asks for and what the entity's own lifecycle events shift.
@@ -37749,18 +39543,21 @@ mod tests {
         );
         let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
         let mut output = agent_terminal(&state.tabs[&key]).subscribe();
+        let state = state.shared();
+        let handler = AppState::handler(Arc::clone(&state));
 
-        let posted = state.handle(req(
+        let posted = call(
+            &handler,
             "thread.post",
             json!({ "entity_id": run_id, "body": "why did you drop the index?" }),
-        ));
+        );
         assert_eq!(posted["ok"], true, "{posted:?}");
         assert_eq!(
             posted["result"]["state"], "review",
             "the gate does not move"
         );
         assert_eq!(
-            agent_pid(&state.tabs[&key]),
+            agent_pid(&state.lock().unwrap().tabs[&key]),
             Some(pid_before),
             "a post talks to the agent, it never replaces it"
         );
@@ -37826,7 +39623,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (issue_id, run_id) = planned_run_in_review(&mut state, "issue-addressed post");
         let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
-        let (tab, _rx) = Tab::spawn_agent(
+        let (mut tab, _rx) = Tab::spawn_agent(
             run_id.clone(),
             crate::agent::derived_agent_id(&run_id),
             test_agent_session_request(
@@ -37838,12 +39635,28 @@ mod tests {
         )
         .expect("implementation agent tab spawns");
         let mut output = agent_terminal(&tab).subscribe();
+        let agent_id = crate::agent::derived_agent_id(&run_id);
+        let choice = state.runs[&run_id]
+            .agents
+            .by_id(&agent_id)
+            .unwrap()
+            .choice
+            .clone();
+        tab.session_instance =
+            state.record_agent_session_start(&run_id, &agent_id, &root, &choice, "build");
         state.tabs.insert(derived_agent_key(&root, &run_id), tab);
+        // `planned_run_in_review` stages lifecycle turns for the real spawn.
+        // This test installs that live session by hand, so those cold turns
+        // have already happened and only the post's nudge remains deliverable.
+        state.pending_agent_turns.clear();
+        let state = state.shared();
+        let handler = AppState::handler(Arc::clone(&state));
 
-        let posted = state.handle(req(
+        let posted = call(
+            &handler,
             "thread.post",
             json!({ "entity_id": issue_id, "body": "read this in the implementation" }),
-        ));
+        );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -37862,6 +39675,8 @@ mod tests {
             "the active implementation agent must be nudged: {echoed:?}"
         );
         let unread = state
+            .lock()
+            .unwrap()
             .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
             .unwrap();
         assert!(unread["messages"]
@@ -37961,6 +39776,40 @@ mod tests {
         let (plan_id, run_id) = planned_run_in_review(&mut state, "one issue thread");
         let plan_state = state.plans[&plan_id].plan.state;
         let run_state = state.runs[&run_id].run.state;
+        let issue_agent_id = state.plans[&plan_id].agents.sole().id.clone();
+        let execution_agent_id = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        state
+            .runs
+            .get_mut(&run_id)
+            .unwrap()
+            .agents
+            .primary_mut()
+            .unwrap()
+            .choose(ModelChoice {
+                provider: AgentProvider::Codex,
+                model: Some("gpt-5.6-sol".into()),
+                effort: Some("high".into()),
+            });
+        let context = state
+            .issue_execution_context(&plan_id)
+            .expect("the live implementation executes the issue conversation");
+        assert_eq!(context["entity_id"], run_id);
+        assert_eq!(context["agent_id"], execution_agent_id);
+        assert_eq!(context["conversation_id"], issue_agent_id);
+        assert_eq!(context["agent"]["provider"], "codex");
+        assert_eq!(context["agent"]["choice_revision"], 1);
+        assert_ne!(
+            context["agent"]["provider"],
+            state.agent_digests(&plan_id, DigestScope::List)[0]["provider"],
+            "issue and execution settings remain independently owned"
+        );
+        let issue_view = state.plan_view(
+            &plan_id,
+            &state.plans[&plan_id],
+            ThreadDetail::Digest,
+            DigestScope::Detail,
+        );
+        assert_eq!(issue_view["execution_context"], context);
 
         let posted = state.handle(req(
             "thread.post",
@@ -37992,6 +39841,381 @@ mod tests {
             .any(|message| message["body"] == "shared implementation note"));
     }
 
+    #[test]
+    fn explicit_issue_post_never_executes_its_implementation_alias() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "explicit issue address");
+        let issue_agent = state.plans[&issue_id].agents.sole().id.clone();
+        let execution_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        state.pending_agent_turns.clear();
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": issue_id,
+                "agent_id": issue_agent,
+                "conversation_id": issue_agent,
+                "body": "answer the issue agent itself",
+            }),
+        ));
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the Issue workspace was handed off, so its explicitly addressed agent has no PTY; \
+             the post must not silently reach implementation agent {execution_agent}"
+        );
+        assert!(state
+            .agent_conversation(&issue_id, Some(&issue_agent))
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Message(message)
+                    if message.body == "answer the issue agent itself"
+            )));
+    }
+
+    fn queued_operation_turn<'a>(state: &'a AppState, operation_id: &str) -> &'a PendingAgentTurn {
+        state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.operation_id.as_deref() == Some(operation_id))
+            .expect("the accepted operation queued its immutable turn")
+    }
+
+    fn assert_scoped_operation_reads(state: &mut AppState, run_id: &str, agent_id: &str) {
+        let generic = state
+            .on_agent_mcp_action(run_id, agent_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        assert_eq!(generic["messages"], json!([]));
+
+        let other_agent = state
+            .runs
+            .get_mut(run_id)
+            .unwrap()
+            .agents
+            .add(run_id, ModelChoice::default(), &now_rfc3339())
+            .id
+            .clone();
+        let unauthorized = state.on_agent_mcp_action(
+            run_id,
+            &other_agent,
+            BridgeAction::ReadOperationMessages {
+                operation_id: "operation-second".into(),
+            },
+        );
+        assert!(unauthorized.unwrap_err().contains("does not belong"));
+
+        let read_second = state
+            .on_agent_mcp_action(
+                run_id,
+                agent_id,
+                BridgeAction::ReadOperationMessages {
+                    operation_id: "operation-second".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            read_second["messages"][0]["body"],
+            "only model B may consume this"
+        );
+        let repeated = state
+            .on_agent_mcp_action(
+                run_id,
+                agent_id,
+                BridgeAction::ReadOperationMessages {
+                    operation_id: "operation-second".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(repeated["messages"], read_second["messages"]);
+        let read_first = state
+            .on_agent_mcp_action(
+                run_id,
+                agent_id,
+                BridgeAction::ReadOperationMessages {
+                    operation_id: "operation-first".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            read_first["messages"][0]["body"],
+            "only model A may consume this"
+        );
+    }
+
+    fn assert_operation_payload_snapshots(state: &AppState) {
+        let first_receipt = state.operation_receipt("operation-first").unwrap().unwrap();
+        let second_receipt = state
+            .operation_receipt("operation-second")
+            .unwrap()
+            .unwrap();
+        let first_payload = first_receipt.delivery.unwrap().payload.unwrap();
+        let second_payload = second_receipt.delivery.unwrap().payload.unwrap();
+        assert_eq!(first_payload.messages.len(), 1);
+        assert_eq!(
+            first_payload.messages[0].body,
+            "only model A may consume this"
+        );
+        assert_eq!(second_payload.messages.len(), 1);
+        assert_eq!(
+            second_payload.messages[0].body,
+            "only model B may consume this"
+        );
+        assert!(
+            !second_payload
+                .prior_context
+                .contains("only model A may consume this"),
+            "a later operation cannot inherit another unresolved operation as context"
+        );
+    }
+
+    #[test]
+    fn operation_reads_are_bounded_to_the_exact_agent_and_payload() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "bounded-operation-read");
+        let agent_id = primary_agent_id(&state, &run_id);
+        state
+            .runs
+            .get_mut(&run_id)
+            .unwrap()
+            .agents
+            .primary_mut()
+            .unwrap()
+            .choice
+            .model = Some("claude-sonnet-5".into());
+
+        let first_post = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": agent_id,
+                "operation_id": "operation-first",
+                "body": "only model A may consume this",
+                "choice_revision": 0,
+            }),
+        ));
+        assert_eq!(first_post["ok"], true, "{first_post:?}");
+        let chose_second_model = state.handle(req(
+            "agent.choose",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": agent_id,
+                "model": "claude-opus-5",
+                "expected_choice_revision": 0,
+            }),
+        ));
+        assert_eq!(chose_second_model["ok"], true, "{chose_second_model:?}");
+        let second_post = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": agent_id,
+                "operation_id": "operation-second",
+                "body": "only model B may consume this",
+                "choice_revision": 1,
+            }),
+        ));
+        assert_eq!(second_post["ok"], true, "{second_post:?}");
+        assert!(first_post["result"]["message_start_sequence"].is_number());
+        assert!(second_post["result"]["message_start_sequence"].is_number());
+        let first_turn = queued_operation_turn(&state, "operation-first");
+        let second_turn = queued_operation_turn(&state, "operation-second");
+        assert_eq!(first_turn.agent_id, agent_id);
+        assert_eq!(first_turn.choice_revision, 0);
+        assert_eq!(
+            first_turn.model_choice.model.as_deref(),
+            Some("claude-sonnet-5")
+        );
+        assert_eq!(second_turn.agent_id, agent_id);
+        assert_eq!(second_turn.choice_revision, 1);
+        assert_eq!(
+            second_turn.model_choice.model.as_deref(),
+            Some("claude-opus-5")
+        );
+        assert_operation_payload_snapshots(&state);
+
+        assert_scoped_operation_reads(&mut state, &run_id, &agent_id);
+    }
+
+    #[test]
+    fn operation_payload_preserves_batches_attachments_and_normalized_options() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "rich-operation-payload");
+        let agent_id = primary_agent_id(&state, &run_id);
+        let attached = state.handle(req(
+            "thread.attach",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "filename": "review.png",
+                "content_b64": b64encode(ONE_PIXEL_PNG),
+            }),
+        ));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+
+        let batched = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": agent_id,
+                "operation_id": "operation-batch",
+                "messages": [
+                    { "body": "first accepted message", "anchor": null },
+                    { "body": "second accepted message", "anchor": null },
+                ],
+                "attachments": [attached["result"].clone()],
+            }),
+        ));
+        assert_eq!(batched["ok"], true, "{batched:?}");
+        let batch_receipt = state.operation_receipt("operation-batch").unwrap().unwrap();
+        let batch = batch_receipt.delivery.unwrap().payload.unwrap().messages;
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].body, "first accepted message");
+        assert_eq!(batch[1].body, "second accepted message");
+        assert!(batch[0].sequence < batch[1].sequence);
+        assert!(batch[0].attachments.is_empty());
+        assert_eq!(batch[1].attachments.len(), 1);
+        assert_eq!(batch[1].attachments[0].name, "review.png");
+
+        let offered = state
+            .on_agent_mcp_action(
+                &run_id,
+                &agent_id,
+                BridgeAction::PostThreadMessage {
+                    body: "Choose a repair".into(),
+                    anchor: None,
+                    links: Vec::new(),
+                    still_working: false,
+                    options: suggested(&[(
+                        "Fix forward",
+                        Some("Apply the forward repair and retain the migration."),
+                    )]),
+                },
+            )
+            .unwrap();
+        let offer_id = offered["message_id"].as_str().unwrap().to_string();
+        let answered = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": agent_id,
+                "operation_id": "operation-option",
+                "option_reply": {
+                    "message_id": offer_id,
+                    "option_ids": ["option-1"],
+                },
+            }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        let option_receipt = state
+            .operation_receipt("operation-option")
+            .unwrap()
+            .unwrap();
+        let option = option_receipt.delivery.unwrap().payload.unwrap().messages;
+        assert_eq!(option.len(), 1);
+        assert_eq!(
+            option[0].body,
+            "Apply the forward repair and retain the migration."
+        );
+        assert_eq!(
+            option[0].answers_options_of.as_deref(),
+            Some(offer_id.as_str())
+        );
+    }
+
+    #[test]
+    fn failed_operation_acceptance_rolls_back_history_and_can_retry_once() {
+        let (dir, repo) = init_repo();
+        let run_id;
+        let agent_id;
+        let request;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            run_id = adopted_run(&mut state, &repo, dir.path(), "operation-write-failure");
+            agent_id = primary_agent_id(&state, &run_id);
+            request = json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "conversation_id": agent_id,
+                "operation_id": "retry-after-write-failure",
+                "body": "append me exactly once",
+            });
+            let before = state
+                .agent_conversation(&run_id, Some(&agent_id))
+                .unwrap()
+                .clone();
+            state.store.as_ref().unwrap().fail_next_write();
+
+            let refused = state.handle(req("thread.post", request.clone()));
+
+            assert_eq!(refused["ok"], false, "{refused:?}");
+            assert_eq!(
+                state.agent_conversation(&run_id, Some(&agent_id)).unwrap(),
+                &before,
+                "failed acceptance cannot remain visible in memory"
+            );
+            assert!(state
+                .operation_receipt("retry-after-write-failure")
+                .unwrap()
+                .is_none());
+
+            let unrelated = state.handle(req(
+                "agent.choose",
+                json!({
+                    "entity_id": run_id,
+                    "agent_id": agent_id,
+                    "model": "claude-opus-5",
+                }),
+            ));
+            assert_eq!(unrelated["ok"], true, "{unrelated:?}");
+        }
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        assert!(!reloaded
+            .agent_conversation(&run_id, Some(&agent_id))
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Message(message)
+                    if message.body == "append me exactly once"
+            )));
+        assert!(reloaded
+            .operation_receipt("retry-after-write-failure")
+            .unwrap()
+            .is_none());
+
+        let accepted = reloaded.handle(req("thread.post", request));
+        assert_eq!(accepted["ok"], true, "{accepted:?}");
+        assert_eq!(accepted["result"]["operation_status"], "queued");
+        assert_eq!(
+            reloaded
+                .agent_conversation(&run_id, Some(&agent_id))
+                .unwrap()
+                .items
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    crate::thread::ThreadItem::Message(message)
+                        if message.body == "append me exactly once"
+                ))
+                .count(),
+            1
+        );
+    }
+
     /// A mid-build post must leave the worktree's agent running (same process,
     /// same tab) and nudge it in place through its PTY — the PTY echoes written
     /// input back to its reader, so the nudge is observable on the tab's output
@@ -38011,24 +40235,29 @@ mod tests {
         );
         let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
         let mut output = agent_terminal(&state.tabs[&key]).subscribe();
+        let state = state.shared();
+        let handler = AppState::handler(Arc::clone(&state));
 
-        let posted = state.handle(req(
+        let posted = call(
+            &handler,
             "thread.post",
             json!({ "entity_id": run_id, "body": "while you build" }),
-        ));
+        );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
-        let active = state.runs.get(&run_id).unwrap();
+        let held = state.lock().unwrap();
+        let active = held.runs.get(&run_id).unwrap();
         assert_eq!(active.run.state, RunState::Building, "no state transition");
         assert_eq!(
-            agent_pid(&state.tabs[&key]),
+            agent_pid(&held.tabs[&key]),
             Some(pid_before),
             "the worktree's agent must not be respawned"
         );
         assert!(
-            state.tabs[&key].session_is_live(),
+            held.tabs[&key].session_is_live(),
             "the worktree's agent must not be ended"
         );
+        drop(held);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut echoed = String::new();
@@ -38256,11 +40485,14 @@ mod tests {
             "precondition: the agent is still live at the gate"
         );
         let mut output = agent_terminal(&state.tabs[&key]).subscribe();
+        let state = state.shared();
+        let handler = AppState::handler(Arc::clone(&state));
 
-        let posted = state.handle(req(
+        let posted = call(
+            &handler,
             "thread.post",
             json!({ "entity_id": run_id, "body": "a note for later" }),
-        ));
+        );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -38279,16 +40511,18 @@ mod tests {
             "the agent the human is looking at must hear them: {echoed:?}"
         );
         assert_eq!(
-            state.runs[&run_id].run.state,
+            state.lock().unwrap().runs[&run_id].run.state,
             RunState::Review,
             "hearing a message is not a state transition"
         );
         assert!(
-            state.tabs[&key].session_is_live(),
+            state.lock().unwrap().tabs[&key].session_is_live(),
             "the agent is talked to, never replaced"
         );
         // Durable regardless: the next session's catch-up carries it.
         let unread = state
+            .lock()
+            .unwrap()
             .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
             .unwrap();
         assert_eq!(unread["messages"][0]["body"], "a note for later");
@@ -38419,10 +40653,7 @@ mod tests {
         ));
         assert_eq!(unknown["ok"], false, "{unknown:?}");
         assert!(
-            unknown["error"]
-                .as_str()
-                .unwrap()
-                .contains("unknown conversation owner"),
+            unknown["error"].as_str().unwrap().contains("unknown"),
             "{unknown:?}"
         );
     }
@@ -38658,7 +40889,7 @@ mod tests {
         spec: HarnessSpec,
     ) -> (TabKey, broadcast::Receiver<Vec<u8>>) {
         let root = insert_run(state, repo, side_root, run_id, run_state);
-        let (tab, rx) = Tab::spawn_agent(
+        let (mut tab, rx) = Tab::spawn_agent(
             run_id.to_string(),
             crate::agent::derived_agent_id(run_id),
             test_agent_session_request(
@@ -38670,6 +40901,13 @@ mod tests {
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
+        tab.session_instance = state.record_agent_session_start(
+            run_id,
+            &crate::agent::derived_agent_id(run_id),
+            &root,
+            &ModelChoice::default(),
+            "build",
+        );
         state.tabs.insert(key.clone(), tab);
         (key, rx.bytes.expect("a PTY session paints"))
     }
@@ -39138,12 +41376,31 @@ mod tests {
 
     /// A turn addressed to a worktree that cannot host an agent — the scaffold
     /// step fails on a path that is not a directory.
-    fn unreachable_turn(owner: &str) -> PendingAgentTurn {
+    fn unreachable_turn(state: &mut AppState, owner: &str) -> PendingAgentTurn {
+        let root = std::path::PathBuf::from("/dev/null/there-is-no-worktree-here");
+        if let Some(active) = state.runs.get_mut(owner) {
+            active.worktree.path = root.clone();
+        } else if let Some(workspace) = state
+            .plans
+            .get_mut(owner)
+            .and_then(|active| active.workspace.as_mut())
+        {
+            workspace.checkout = root.clone();
+        }
+        let agent = state
+            .entity_agents(owner)
+            .expect("the unreachable fixture owns an agent")
+            .primary()
+            .expect("the unreachable fixture has a primary agent");
         PendingAgentTurn {
-            root: std::path::PathBuf::from("/dev/null/there-is-no-worktree-here"),
+            operation_id: None,
+            root,
             owner: owner.to_string(),
-            agent_id: crate::agent::derived_agent_id(owner),
-            model_choice: ModelChoice::default(),
+            agent_id: agent.id.clone(),
+            conversation_id: agent.conversation_id().to_string(),
+            model_choice: agent.choice.clone(),
+            choice_revision: agent.choice_revision,
+            interrupt: false,
             say: Some(TurnText {
                 cold: "cold turn".into(),
                 warm: "warm turn".into(),
@@ -39169,12 +41426,9 @@ mod tests {
             "run-unreachable",
             RunState::Building,
         );
+        let turn = unreachable_turn(&mut app, "run-unreachable");
+        app.pending_agent_turns.push(turn);
         let state = app.shared();
-        state
-            .lock()
-            .unwrap()
-            .pending_agent_turns
-            .push(unreachable_turn("run-unreachable"));
 
         deliver_pending_agent_turns(&state);
 
@@ -39223,12 +41477,9 @@ mod tests {
             "run-no-start",
             RunState::Building,
         );
+        let turn = unreachable_turn(&mut app, "run-no-start");
+        app.pending_agent_turns.push(turn);
         let state = app.shared();
-        state
-            .lock()
-            .unwrap()
-            .pending_agent_turns
-            .push(unreachable_turn("run-no-start"));
 
         deliver_pending_agent_turns(&state);
 
@@ -39254,19 +41505,16 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         insert_run(&mut app, &repo, dir.path(), "run-retry", RunState::Building);
+        let turn = unreachable_turn(&mut app, "run-retry");
+        app.pending_agent_turns.push(turn);
         let state = app.shared();
-        state
-            .lock()
-            .unwrap()
-            .pending_agent_turns
-            .push(unreachable_turn("run-retry"));
         deliver_pending_agent_turns(&state);
 
-        state
-            .lock()
-            .unwrap()
-            .pending_agent_turns
-            .push(unreachable_turn("run-retry"));
+        {
+            let mut app = state.lock().unwrap();
+            let turn = unreachable_turn(&mut app, "run-retry");
+            app.pending_agent_turns.push(turn);
+        }
         // Taken, not delivered: the point is that reaching for the agent is
         // what forgets the last failure, before anything is known about how
         // this one ends. The marks it holds are released when it drops.
@@ -39311,7 +41559,8 @@ mod tests {
             let project_id = s.projects[0].id.clone();
             s.entity_project.insert(plan_id.to_string(), project_id);
             s.plans.insert(plan_id.to_string(), active);
-            s.pending_agent_turns.push(unreachable_turn(plan_id));
+            let turn = unreachable_turn(&mut s, plan_id);
+            s.pending_agent_turns.push(turn);
         }
 
         deliver_pending_agent_turns(&state);
@@ -39371,7 +41620,8 @@ mod tests {
         {
             let mut app = state.lock().unwrap();
             app.pending_agent_turns.clear();
-            app.pending_agent_turns.push(unreachable_turn(&plan_id));
+            let turn = unreachable_turn(&mut app, &plan_id);
+            app.pending_agent_turns.push(turn);
         }
 
         deliver_pending_agent_turns(&state);
@@ -39412,7 +41662,8 @@ mod tests {
         let plan_id = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "tabless" }))));
         state.plans.get_mut(&plan_id).unwrap().plan.state = PlanState::Drafting;
         state.pending_agent_turns.clear();
-        state.pending_agent_turns.push(unreachable_turn(&plan_id));
+        let turn = unreachable_turn(&mut state, &plan_id);
+        state.pending_agent_turns.push(turn);
         assert!(
             state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
             "a queued turn means the planning agent is coming, not missing"
@@ -39448,12 +41699,9 @@ mod tests {
             "run-panicked",
             RunState::Building,
         );
+        let turn = unreachable_turn(&mut app, "run-panicked");
+        app.pending_agent_turns.push(turn);
         let state = app.shared();
-        state
-            .lock()
-            .unwrap()
-            .pending_agent_turns
-            .push(unreachable_turn("run-panicked"));
         let turns = state.lock().unwrap().take_pending_turns();
         assert!(
             state
@@ -39574,10 +41822,14 @@ mod tests {
         let root = app.entity_agent_root("run-started-bare").unwrap();
         let agent_id = primary_agent_id(&app, "run-started-bare");
         app.pending_agent_turns.push(PendingAgentTurn {
+            operation_id: None,
             root: root.clone(),
             owner: "run-started-bare".into(),
             agent_id: agent_id.clone(),
+            conversation_id: agent_id.clone(),
             model_choice: ModelChoice::default(),
+            choice_revision: 0,
+            interrupt: false,
             say: None,
             phase: "start",
             wants_catch_up: true,
@@ -39626,8 +41878,8 @@ mod tests {
             "run-two-agents",
             RunState::Building,
         );
-        let first = unreachable_turn("run-two-agents");
-        let mut second = unreachable_turn("run-two-agents");
+        let first = unreachable_turn(&mut state, "run-two-agents");
+        let mut second = unreachable_turn(&mut state, "run-two-agents");
         second.agent_id = "agent-second".into();
         let root = first.root.clone();
         let first_agent = first.agent_id.clone();
@@ -39674,9 +41926,8 @@ mod tests {
             "run-dispatching",
             RunState::Building,
         );
-        state
-            .pending_agent_turns
-            .push(unreachable_turn("run-dispatching"));
+        let turn = unreachable_turn(&mut state, "run-dispatching");
+        state.pending_agent_turns.push(turn);
         assert!(
             state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
             "a queued turn means the agent is coming, not missing"
@@ -41549,9 +43800,43 @@ mod tests {
             s.entity_project.insert(run_id.to_string(), project_id);
             s.runs.insert(run_id.to_string(), active);
             s.tabs.insert(key.clone(), tab);
+            let instance = s.record_agent_session_start(
+                run_id,
+                &crate::agent::derived_agent_id(run_id),
+                &root,
+                &ModelChoice::default(),
+                "build",
+            );
+            s.tabs.get_mut(&key).unwrap().session_instance = instance.clone();
         }
         spawn_tab_pumps(state, key.clone(), rx);
         (key, wire_id)
+    }
+
+    /// Put an intentionally unmanaged agent-shaped process in an external
+    /// checkout. It has no entity or conversation lineage: these tests model
+    /// a raw process discovered in a worktree Build has not adopted, so it
+    /// must not pass through the managed delivery/session fixtures.
+    fn insert_unmanaged_agent_tab(
+        state: &Arc<Mutex<AppState>>,
+        root: &std::path::Path,
+        owner: &str,
+    ) -> Result<TabKey, String> {
+        let agent_id = crate::agent::derived_agent_id(owner);
+        let key = TabKey::agent(root, &agent_id);
+        let (tab, output) = Tab::spawn_agent(
+            owner.to_string(),
+            agent_id,
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.to_path_buf(),
+                terminal_size(120, 40),
+            ),
+        )?;
+        state.lock().unwrap().tabs.insert(key.clone(), tab);
+        spawn_tab_pumps(state, key.clone(), output);
+        Ok(key)
     }
 
     /// A run with a worktree but no agent tab — the state every worktree is in
@@ -41800,36 +44085,17 @@ mod tests {
         );
     }
 
-    /// Revival RESUMES where the provider can. An agent that has run before
-    /// and whose checkout holds a claude transcript comes back with
-    /// continuation asked for, so the human's message reaches the session it
-    /// was already in rather than a blank one; one whose checkout holds nothing
-    /// has nothing to continue and opens fresh. (That decision becomes the
-    /// harness's own `--continue` / `resume --last` argument — see
-    /// `agent_harness_spec_carries_the_done_mcp_server_and_the_owner_id`.)
-    ///
-    /// Both agents here have history, so the probe is the only thing that
-    /// separates them — whether an agent is ALLOWED to guess at all is the
-    /// other reading, and it has its own test.
+    /// History without exact persisted lineage never resumes by cwd. Both
+    /// revived agents start fresh and receive canonical catch-up instead of a
+    /// provider's newest transcript guess.
     #[tokio::test]
-    async fn a_revived_agent_resumes_its_session_and_one_that_never_ran_does_not() {
+    async fn revived_agents_without_exact_lineage_never_guess_by_checkout() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let resumed_root =
             insert_run_without_agent(&state, &repo, dir.path().join("resumed"), "run-resumed");
         let fresh_root =
             insert_run_without_agent(&state, &repo, dir.path().join("fresh"), "run-fresh");
-        // Only the first checkout has a conversation on disk to pick back up.
-        let transcripts = tempfile::tempdir().unwrap();
-        let encoded =
-            transcripts
-                .path()
-                .join(claude::encode_project_dir(&AppState::canonical_root(
-                    &resumed_root,
-                )));
-        std::fs::create_dir_all(&encoded).unwrap();
-        std::fs::write(encoded.join("session.jsonl"), "{}\n").unwrap();
-
         let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
         {
             let recorder = Arc::clone(&specs_built);
@@ -41839,12 +44105,8 @@ mod tests {
                     Ok(warm_tui_spec())
                 },
             ));
-            let projects_dir = transcripts.path().to_path_buf();
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
-            s.transcript_probe = Arc::new(move |cwd, provider| {
-                provider == AgentProvider::Claude && claude::transcript_exists(&projects_dir, cwd)
-            });
             s.projects[0].orch = Orchestrator::new(
                 repo.clone(),
                 worktrees,
@@ -41886,10 +44148,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("the message spawned an agent in {}", root.display()))
                 .clone()
         };
-        assert!(
-            spawned_in(&resumed_root).continue_session,
-            "a revived agent picks the conversation it was in back up: {built:?}"
-        );
+        assert!(!spawned_in(&resumed_root).continue_session, "{built:?}");
         assert!(
             !spawned_in(&fresh_root).continue_session,
             "an agent that has never run has nothing to continue: {built:?}"
@@ -42042,10 +44301,11 @@ mod tests {
         );
     }
 
-    /// The same seam serves a plan: its persisted choice is what every later
-    /// plan session runs on.
+    /// A plan already owns its sole agent, so starting it cannot move that
+    /// agent onto another provider. Provider selection belongs to creation;
+    /// model and effort remain editable afterward through `agent.choose`.
     #[tokio::test]
-    async fn agent_start_with_a_provider_switches_a_plans_choice() {
+    async fn agent_start_refuses_switching_an_existing_plans_provider() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
         insert_plan_without_agent(&state, &repo, dir.path().join("side"), "plan-switch");
@@ -42055,21 +44315,16 @@ mod tests {
             "agent.start",
             json!({ "id": "plan-switch", "provider": "codex" }),
         );
-        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(started["ok"], false, "{started:?}");
+        assert!(started["error"].as_str().unwrap().contains("locked to"));
         assert_eq!(
             state.lock().unwrap().plans["plan-switch"]
-                .model_choice
+                .agents
+                .sole()
+                .choice
                 .provider,
-            AgentProvider::Codex
+            AgentProvider::Claude
         );
-        let persisted = crate::store::Store::new(dir.path().join("store"))
-            .expect("store opens")
-            .load_all_plans()
-            .unwrap()
-            .into_iter()
-            .find(|plan| plan.id == "plan-switch")
-            .expect("the plan is on disk");
-        assert_eq!(persisted.provider, AgentProvider::Codex);
     }
 
     /// A start with no provider named is the start that has always existed: the
@@ -42131,31 +44386,48 @@ mod tests {
         );
     }
 
-    /// The composer's model menu edits what the entity RUNS, not what its
-    /// session is running: the choice is persisted and the next start spends
-    /// it. The agent is locked to its harness, so the menu asks only what is
-    /// still a question — a provider named here is refused by name.
+    /// The composer's model menu edits exactly the addressed agent's next
+    /// start. A live session is untouched.
     #[tokio::test]
     async fn agent_choose_persists_the_model_without_touching_a_live_session() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let (key, _wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-choose");
+        let agent_id = state.lock().unwrap().runs["run-choose"]
+            .agents
+            .primary()
+            .unwrap()
+            .id
+            .clone();
 
         let chosen = call(
             &handler,
             "agent.choose",
-            json!({ "entity_id": "run-choose", "model": "claude-opus-5", "effort": "high" }),
+            json!({
+                "entity_id": "run-choose",
+                "agent_id": agent_id,
+                "model": "claude-opus-5",
+                "effort": "high",
+                "expected_choice_revision": 0,
+            }),
         );
         assert_eq!(chosen["ok"], true, "{chosen:?}");
         assert_eq!(chosen["result"]["model"], "claude-opus-5");
         assert_eq!(chosen["result"]["effort"], "high");
+        assert_eq!(chosen["result"]["agent_id"], agent_id);
+        assert_eq!(chosen["result"]["choice_revision"], 1);
         assert_eq!(
             chosen["result"]["provider"], "claude",
             "the harness the agent is locked to is what it stays on"
         );
         {
             let s = state.lock().unwrap();
-            let choice = s.runs["run-choose"].model_choice.clone();
+            let choice = s.runs["run-choose"]
+                .agents
+                .by_id(&agent_id)
+                .unwrap()
+                .choice
+                .clone();
             assert_eq!(choice.model.as_deref(), Some("claude-opus-5"));
             assert_eq!(choice.effort.as_deref(), Some("high"));
             assert_eq!(choice.provider, AgentProvider::Claude);
@@ -42179,10 +44451,112 @@ mod tests {
         );
         assert_eq!(
             state.lock().unwrap().runs["run-choose"]
-                .model_choice
+                .agents
+                .by_id(&agent_id)
+                .unwrap()
+                .choice
                 .provider,
             AgentProvider::Claude,
             "and a refusal moves nothing"
+        );
+    }
+
+    #[test]
+    fn agent_choose_isolated_same_provider_siblings_and_rejects_a_stale_revision() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "choice-isolation");
+        let first = primary_agent_id(&state, &run_id);
+        let second = state
+            .runs
+            .get_mut(&run_id)
+            .unwrap()
+            .agents
+            .add(&run_id, ModelChoice::default(), "2026-09-08T12:00:00Z")
+            .id
+            .clone();
+
+        let chosen = state.handle(req(
+            "agent.choose",
+            json!({
+                "entity_id": run_id,
+                "agent_id": second,
+                "model": "claude-opus-5",
+                "expected_choice_revision": 0,
+            }),
+        ));
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+        assert_eq!(chosen["result"]["choice_revision"], 1);
+        assert_eq!(
+            state.runs[&run_id]
+                .agents
+                .by_id(&first)
+                .unwrap()
+                .choice
+                .model,
+            None,
+            "the same-provider sibling was not changed"
+        );
+
+        let stale = state.handle(req(
+            "agent.choose",
+            json!({
+                "entity_id": run_id,
+                "agent_id": second,
+                "model": "claude-sonnet-5",
+                "expected_choice_revision": 0,
+            }),
+        ));
+        assert_eq!(stale["ok"], false, "{stale:?}");
+        assert!(stale["error"].as_str().unwrap().contains("stale"));
+        assert_eq!(
+            state.runs[&run_id]
+                .agents
+                .by_id(&second)
+                .unwrap()
+                .choice
+                .model
+                .as_deref(),
+            Some("claude-opus-5")
+        );
+    }
+
+    #[test]
+    fn agent_choose_persistence_failure_restores_memory_and_disk() {
+        let (dir, repo) = init_repo();
+        let run_id;
+        let agent_id;
+        let before;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            run_id = adopted_run(&mut state, &repo, dir.path(), "choice-write-failure");
+            agent_id = primary_agent_id(&state, &run_id);
+            before = state.runs[&run_id].agents.by_id(&agent_id).unwrap().clone();
+            state.store.as_ref().unwrap().fail_next_write();
+
+            let refused = state.handle(req(
+                "agent.choose",
+                json!({
+                    "entity_id": run_id,
+                    "agent_id": agent_id,
+                    "model": "claude-opus-5",
+                    "expected_choice_revision": 0,
+                }),
+            ));
+
+            assert_eq!(refused["ok"], false, "{refused:?}");
+            assert_eq!(
+                state.runs[&run_id].agents.by_id(&agent_id).unwrap(),
+                &before,
+                "a rejected choice is not published in memory"
+            );
+        }
+
+        let reloaded = qa_state(&repo, dir.path());
+        assert_eq!(
+            reloaded.runs[&run_id].agents.by_id(&agent_id).unwrap(),
+            &before,
+            "a rejected choice was not persisted either"
         );
     }
 
@@ -42200,13 +44574,23 @@ mod tests {
             json!({ "entity_id": "run-idle-choose", "model": "claude-opus-5" }),
         );
         assert_eq!(chosen["ok"], true, "{chosen:?}");
-        assert_eq!(
-            state.lock().unwrap().runs["run-idle-choose"]
-                .model_choice
-                .model
-                .as_deref(),
-            Some("claude-opus-5")
-        );
+        {
+            let held = state.lock().unwrap();
+            assert_eq!(
+                held.runs["run-idle-choose"]
+                    .agents
+                    .primary()
+                    .unwrap()
+                    .choice
+                    .model
+                    .as_deref(),
+                Some("claude-opus-5")
+            );
+            assert_eq!(
+                held.runs["run-idle-choose"].model_choice.model, None,
+                "the entity choice remains only a creation template"
+            );
+        }
 
         let refused = call(
             &handler,
@@ -42223,7 +44607,10 @@ mod tests {
         );
         assert_eq!(
             state.lock().unwrap().runs["run-idle-choose"]
-                .model_choice
+                .agents
+                .primary()
+                .unwrap()
+                .choice
                 .model
                 .as_deref(),
             Some("claude-opus-5"),
@@ -42236,6 +44623,21 @@ mod tests {
             json!({ "entity_id": "run-nowhere", "model": "claude-opus-5" }),
         );
         assert_eq!(unknown["ok"], false, "{unknown:?}");
+
+        let before_unknown_agent = state.lock().unwrap().runs["run-idle-choose"].agents.clone();
+        let unknown_agent = call(
+            &handler,
+            "agent.choose",
+            json!({
+                "entity_id": "run-idle-choose",
+                "agent_id": "agent-does-not-exist",
+                "model": "claude-sonnet-5",
+            }),
+        );
+        assert_eq!(unknown_agent["ok"], false, "{unknown_agent:?}");
+        let held = state.lock().unwrap();
+        assert!(held.runs.contains_key("run-idle-choose"));
+        assert_eq!(held.runs["run-idle-choose"].agents, before_unknown_agent);
     }
 
     #[tokio::test]
@@ -42310,7 +44712,7 @@ mod tests {
         );
         assert_eq!(refused["ok"], false, "{refused:?}");
         let error = refused["error"].as_str().unwrap();
-        assert!(error.contains("stop the current session"), "{error}");
+        assert!(error.contains("locked to Claude Code TUI"), "{error}");
         assert!(
             !error.to_lowercase().contains("headless"),
             "the refusal prints provider labels, and no label names a provider \
@@ -42739,7 +45141,8 @@ mod tests {
     #[tokio::test]
     async fn a_client_attached_before_the_first_spawn_streams_the_session_it_waited_for() {
         let (dir, repo) = init_repo();
-        let (state, handler, _) = agent_tab_fixture(&repo, dir.path(), "run-waited-for");
+        let (state, handler, _) =
+            agent_tab_fixture_at(&repo, dir.path(), "run-waited-for", repo.clone());
         let project_id = state.lock().unwrap().projects[0].id.clone();
         let wire_id = format!(
             "agent:{}",
@@ -43288,7 +45691,8 @@ mod tests {
     #[tokio::test]
     async fn a_session_that_ended_while_waiting_is_not_carried_onto_the_agent() {
         let (dir, repo) = init_repo();
-        let (state, handler, _) = agent_tab_fixture(&repo, dir.path(), "run-closed-client");
+        let (state, handler, _) =
+            agent_tab_fixture_at(&repo, dir.path(), "run-closed-client", repo.clone());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
         let (sender, _pushes, _key) = SessionSender::observable("closing");
@@ -43347,7 +45751,8 @@ mod tests {
     #[tokio::test]
     async fn a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_the_agent() {
         let (dir, repo) = init_repo();
-        let (state, handler, _) = agent_tab_fixture(&repo, dir.path(), "run-attach-race");
+        let (state, handler, _) =
+            agent_tab_fixture_at(&repo, dir.path(), "run-attach-race", repo.clone());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
         let (leaving, _pushes, _key) = SessionSender::observable("leaving");
@@ -45095,6 +47500,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct SessionLog {
         turns: Arc<Mutex<Vec<String>>>,
+        choices: Arc<Mutex<Vec<Option<ModelChoice>>>>,
         ended: Arc<std::sync::atomic::AtomicBool>,
     }
 
@@ -45102,6 +47508,10 @@ mod tests {
         /// Every turn the daemon has handed this session, in order.
         fn turns(&self) -> Vec<String> {
             self.turns.lock().unwrap().clone()
+        }
+
+        fn choices(&self) -> Vec<Option<ModelChoice>> {
+            self.choices.lock().unwrap().clone()
         }
 
         /// Whether the daemon has ended this session, waiting out the
@@ -45125,6 +47535,7 @@ mod tests {
         watched_surface_revision: Option<tokio::sync::watch::Receiver<u64>>,
         watched_status: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
         active_model: Option<String>,
+        native_choices: Vec<ModelChoice>,
     }
 
     impl DictatedSession {
@@ -45138,6 +47549,7 @@ mod tests {
                 watched_surface_revision: None,
                 watched_status: None,
                 active_model: None,
+                native_choices: Vec::new(),
             }
         }
 
@@ -45183,12 +47595,32 @@ mod tests {
             self.active_model = Some(model.to_string());
             self
         }
+
+        fn natively_accepting(mut self, choice: ModelChoice) -> Self {
+            self.native_choices.push(choice);
+            self
+        }
     }
 
     impl AgentSession for DictatedSession {
         fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
             self.log.turns.lock().unwrap().push(turn.text.clone());
+            self.log.choices.lock().unwrap().push(
+                turn.choice
+                    .as_ref()
+                    .map(|choice| choice.model_choice.clone()),
+            );
             Ok(())
+        }
+        fn accepts_turn_choice(&self) -> bool {
+            !self.native_choices.is_empty()
+        }
+        fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
+            if self.native_choices.contains(choice) {
+                TurnChoiceSupport::Native
+            } else {
+                TurnChoiceSupport::RestartRequired
+            }
         }
         fn status(&self) -> AgentStatus {
             self.watched_status
@@ -45230,12 +47662,20 @@ mod tests {
 
     /// A live tab carrying `session`, rooted nowhere in particular.
     fn tab_running(role: TabRole, session: DictatedSession) -> Tab {
+        let session_instance = role.agent().map(|(owner, agent_id)| SessionInstance {
+            id: format!("session-test-{agent_id}"),
+            entity_id: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id: agent_id.to_string(),
+            checkout: "/nowhere".to_string(),
+        });
         Tab {
             tab_id: "term-status".to_string(),
             root: PathBuf::from("/nowhere"),
             role,
             created_at: now_rfc3339(),
             session: Arc::new(session),
+            session_instance,
             // `DictatedSession` says nothing about terminals, so it has none —
             // and a tab with no terminal has no grid, because the two are made
             // together. A screen here would be the flag that disagrees with
@@ -45301,6 +47741,13 @@ mod tests {
             },
             created_at: now_rfc3339(),
             session: Arc::new(session),
+            session_instance: Some(SessionInstance {
+                id: format!("session-test-{agent_id}"),
+                entity_id: owner.to_string(),
+                agent_id: agent_id.to_string(),
+                conversation_id: agent_id.to_string(),
+                checkout: root.display().to_string(),
+            }),
             screen: None,
             live: true,
             call_sequences: HashMap::new(),
@@ -45403,11 +47850,11 @@ mod tests {
             "run-activity",
             RunState::Building,
         );
-        let agent_id = crate::agent::derived_agent_id("run-activity");
-        let key = derived_agent_key(&root, "run-activity");
-        app.tabs.insert(
-            key.clone(),
-            terminal_free_agent_tab(&root, "run-activity", &agent_id),
+        let key = insert_dictated_agent_tab(
+            &mut app,
+            &root,
+            "run-activity",
+            DictatedSession::reporting(AgentStatus::Working),
         );
         // Everything on the conversation so far has been read, so anything the
         // badge shows after this is the activity's doing.
@@ -45494,18 +47941,11 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), "run-rites", RunState::Building);
-        let agent_id = crate::agent::derived_agent_id("run-rites");
-        let key = derived_agent_key(&root, "run-rites");
-        app.tabs.insert(
-            key.clone(),
-            terminal_free_agent_tab(&root, "run-rites", &agent_id),
-        );
-        primary_thread_mut(&mut app.runs.get_mut("run-rites").unwrap().agents).start_session(
-            "claude",
-            None,
-            None,
-            "build",
-            &now_rfc3339(),
+        let key = insert_dictated_agent_tab(
+            &mut app,
+            &root,
+            "run-rites",
+            DictatedSession::reporting(AgentStatus::Working),
         );
         let state = app.shared();
         assert_eq!(open_session_count(&state, "run-rites"), 1);
@@ -46017,16 +48457,6 @@ mod tests {
     #[tokio::test]
     async fn the_death_rites_close_the_calls_the_session_died_over() {
         let (_dir, state, key) = a_run_with_a_reporting_tab("run-died");
-        primary_thread_mut(
-            &mut state
-                .lock()
-                .unwrap()
-                .runs
-                .get_mut("run-died")
-                .unwrap()
-                .agents,
-        )
-        .start_session("claude", None, None, "build", &now_rfc3339());
 
         let (activity, subscribed) = broadcast::channel(4);
         spawn_activity_pump(&state, key.clone(), Some(subscribed));
@@ -46476,17 +48906,31 @@ mod tests {
             )
         };
         let revisions: Vec<SurfaceRevision> = (0..5).map(|_| SurfaceRevision::default()).collect();
+        let agent_ids = {
+            let mut s = state.lock().unwrap();
+            let roster = &mut s.runs.get_mut("run-invalidated").unwrap().agents;
+            let mut ids = vec![roster.primary().unwrap().id.clone()];
+            for _ in 1..revisions.len() {
+                ids.push(
+                    roster
+                        .add("run-invalidated", ModelChoice::default(), &now_rfc3339())
+                        .id
+                        .clone(),
+                );
+            }
+            ids
+        };
         let activity_senders: Vec<_> = revisions
             .iter()
-            .enumerate()
-            .map(|(ordinal, revision)| {
+            .zip(agent_ids)
+            .map(|(revision, agent_id)| {
                 let key = {
                     let mut s = state.lock().unwrap();
                     insert_agent_tab(
                         &mut s,
                         &root,
                         "run-invalidated",
-                        &format!("agent-{ordinal}"),
+                        &agent_id,
                         DictatedSession::reporting(AgentStatus::Working)
                             .moving_surfaces_on(revision.clone()),
                     )
@@ -47272,6 +49716,36 @@ mod tests {
             .join(" ")
     }
 
+    fn seed_exact_resumable_session(
+        state: &Arc<Mutex<AppState>>,
+        owner: &str,
+        root: &std::path::Path,
+        choice: &ModelChoice,
+        resume_id: &str,
+    ) {
+        let mut app = state.lock().unwrap();
+        let agent_id = app
+            .entity_agents(owner)
+            .unwrap()
+            .primary()
+            .expect("the resumable agent")
+            .id
+            .clone();
+        let instance = app
+            .record_agent_session_start(owner, &agent_id, root, choice, "build")
+            .expect("the exact prior session");
+        app.note_self_report(
+            owner,
+            &agent_id,
+            &instance,
+            SelfReport {
+                named: Some(resume_id.to_string()),
+                model: None,
+            },
+        );
+        app.record_agent_session_end(owner, &agent_id, &instance);
+    }
+
     /// A respawn resumes the conversation the last session NAMED.
     ///
     /// The child announces its session id in its own `init` line, the activity
@@ -47353,7 +49827,7 @@ mod tests {
     async fn a_session_that_never_announced_clears_the_name_it_was_spawned_with() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-stale");
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-stale");
         let agent_id = crate::agent::derived_agent_id("run-stale");
         // A child that leaves without a word — the shape of one handed an id
         // its harness cannot find.
@@ -47363,16 +49837,16 @@ mod tests {
             "run-stale",
             HarnessSpec::new("sh").arg("-c").arg("exit 1"),
         );
-        {
-            let mut s = state.lock().unwrap();
-            s.runs
-                .get_mut("run-stale")
-                .expect("the run")
-                .agents
-                .resolve_mut(None)
-                .expect("its agent")
-                .resume_session_id = Some("sess-gone".to_string());
-        }
+        seed_exact_resumable_session(
+            &state,
+            "run-stale",
+            &root,
+            &ModelChoice {
+                provider: AgentProvider::ClaudeAdk,
+                ..ModelChoice::default()
+            },
+            "sess-gone",
+        );
 
         let posted = call(
             &handler,
@@ -47401,41 +49875,14 @@ mod tests {
         .expect("a session that announced nothing takes the name it was spawned with with it");
     }
 
-    /// The gate on the cwd guess: an agent's OWN recorded history, and nothing
-    /// else.
-    ///
-    /// `--continue` reopens the newest conversation in the checkout whoever was
-    /// having it, so it is offered only where the conversation it would land on
-    /// is the one Build already holds — this agent continuing itself, across the
-    /// window where its name was never captured. Every other spawn is a new
-    /// conversation: adoption included, because Build cannot show a history it
-    /// never heard.
+    /// History alone is not exact lineage and cannot authorize a resume.
     #[tokio::test]
-    async fn only_an_agents_own_history_may_guess_at_a_conversation() {
+    async fn agent_history_without_an_exact_name_and_checkout_starts_fresh() {
         let (dir, repo) = init_repo();
         let (state, _handler) = shared_state_and_handler(&repo, dir.path());
-        insert_run_without_agent(&state, &repo, dir.path().join("fresh"), "run-fresh");
-        insert_run_without_agent(&state, &repo, dir.path().join("lived"), "run-lived");
-        insert_run_without_agent(&state, &repo, dir.path().join("adopted"), "run-adopted");
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("lived"), "run-lived");
         let mut s = state.lock().unwrap();
-
-        let first = |s: &AppState, run_id: &str| {
-            s.entity_agents(run_id)
-                .expect("the run")
-                .primary()
-                .unwrap()
-                .id
-                .clone()
-        };
-        let fresh_agent = first(&s, "run-fresh");
-        assert!(
-            !s.may_pick_up_a_conversation("run-fresh", &fresh_agent),
-            "a brand-new agent record has no conversation of its own to pick up"
-        );
-
-        // A record that shows a session of its own has opened before: this
-        // spawn is a respawn, and the name of that session was never captured.
-        let lived_agent = first(&s, "run-lived");
+        let agent_id = s.runs["run-lived"].agents.primary().unwrap().id.clone();
         primary_thread_mut(&mut s.runs.get_mut("run-lived").expect("the run").agents)
             .start_session(
                 "claude",
@@ -47445,50 +49892,16 @@ mod tests {
                 "2026-08-29T00:00:00Z",
             );
         assert!(
-            s.may_pick_up_a_conversation("run-lived", &lived_agent),
-            "an agent that has run before is in the crash window the guess exists for"
-        );
-
-        // Adoption grants nothing. The conversation the human was having in the
-        // checkout they adopted is one Build never heard, so an agent handed it
-        // would open on a history the conversation view cannot show.
-        s.runs.get_mut("run-adopted").expect("the run").adopted = true;
-        let adopted_first = first(&s, "run-adopted");
-        let added_agent = s
-            .runs
-            .get_mut("run-adopted")
-            .expect("the run")
-            .agents
-            .add(
-                "run-adopted",
-                ModelChoice::default(),
-                "2026-08-29T00:00:00Z",
-            )
-            .id
-            .clone();
-        assert!(
-            !s.may_pick_up_a_conversation("run-adopted", &adopted_first),
-            "the first agent on an adopted branch starts a conversation of its own"
-        );
-        assert!(
-            !s.may_pick_up_a_conversation("run-adopted", &added_agent),
-            "and so does every agent added beside it"
-        );
-
-        assert!(
-            !s.may_pick_up_a_conversation("router", "router-agent"),
-            "a router owns no record at all, and is one decision long"
+            s.resumable_session_id("run-lived", &agent_id, &root, AgentProvider::Claude)
+                .is_none(),
+            "a session count cannot substitute for an exact provider id and checkout"
         );
     }
 
-    /// The spawn rule, three ways — decided in order, and the order is the
-    /// rule.
-    ///
-    /// The third case is the one that made this urgent: before it, the probe
-    /// ran unconditionally, so a brand-new agent spawned into a checkout
-    /// holding anybody's old transcript inherited that conversation.
+    /// The spawn rule has two safe outcomes: exact persisted lineage resumes;
+    /// every missing-lineage case starts fresh.
     #[tokio::test]
-    async fn a_spawn_resumes_by_name_then_guesses_by_history_and_otherwise_starts_fresh() {
+    async fn a_spawn_resumes_exact_lineage_and_never_guesses_from_history() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let named_root =
@@ -47509,9 +49922,6 @@ mod tests {
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
-            // Every checkout holds an old conversation. Which of them may be
-            // picked up is the whole question.
-            s.transcript_probe = Arc::new(|_, _| true);
             s.resume_id_probe = Arc::new(|_, _, id| id == "sess-named");
             s.projects[0].orch = Orchestrator::new(
                 repo.clone(),
@@ -47520,14 +49930,24 @@ mod tests {
                 Templates::default(),
                 test_bridge_exe(),
             );
-            // 1. A name Build wrote down, and the provider still holds it.
-            s.runs
-                .get_mut("run-named")
-                .expect("the run")
-                .agents
-                .resolve_mut(None)
-                .expect("its agent")
-                .resume_session_id = Some("sess-named".to_string());
+            // 1. A name Build wrote on this agent's exact checkout lineage.
+            let named_agent = s.runs["run-named"].agents.primary().unwrap().id.clone();
+            let instance = s
+                .record_agent_session_start(
+                    "run-named",
+                    &named_agent,
+                    &named_root,
+                    &ModelChoice::default(),
+                    "build",
+                )
+                .unwrap();
+            s.edit_agent_conversation("run-named", &named_agent, |thread, _artifact| {
+                assert!(thread.name_session_instance(&instance, "sess-named"));
+                Ok(())
+            })
+            .unwrap();
+            s.record_agent_resume_id("run-named", &named_agent, Some("sess-named".to_string()));
+            s.record_agent_session_end("run-named", &named_agent, &instance);
             // 2. No name, but a session of its own has opened before.
             primary_thread_mut(&mut s.runs.get_mut("run-history").expect("the run").agents)
                 .start_session(
@@ -47577,8 +49997,8 @@ mod tests {
             "there was no name to spend: {history:?}"
         );
         assert!(
-            history.continue_session,
-            "but a respawn of an agent that has run before guesses: {history:?}"
+            !history.continue_session,
+            "history without exact lineage starts fresh: {history:?}"
         );
 
         let fresh = spawned_in(&fresh_root);
@@ -47612,15 +50032,11 @@ mod tests {
             Arc::new(move |_, _| Some(Box::new(LocatorThatFound(named))));
     }
 
-    /// The terminal's capture, and the respawn that spends it.
-    ///
-    /// A terminal announces nothing, so nothing wakes on its behalf: the
-    /// daemon's own sweep asks each live session for the name its locator
-    /// found and writes it down the same way the headless session's
-    /// announcement is written down. One tick later the name is on the record,
-    /// and the next spawn resumes by it instead of guessing at the checkout.
+    /// A fresh terminal locator is not identity. Two sessions starting in one
+    /// checkout can both observe the transcript written first and would then
+    /// alias one provider conversation if the sweep trusted that observation.
     #[tokio::test]
-    async fn one_sweep_tick_writes_down_the_name_a_terminals_locator_found() {
+    async fn a_terminal_locator_never_authorizes_a_fresh_sessions_resume_identity() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-pty");
@@ -47669,10 +50085,9 @@ mod tests {
             state
                 .lock()
                 .unwrap()
-                .recorded_resume_id("run-pty", &agent_id)
-                .as_deref(),
-            Some("sess-pty"),
-            "one tick puts the name the harness wrote down on the agent's record"
+                .recorded_resume_id("run-pty", &agent_id),
+            None,
+            "a cwd/new-file locator cannot identify one of concurrent sessions"
         );
 
         // The harness dies. The next message is a respawn, and it opens on the
@@ -47706,48 +50121,20 @@ mod tests {
         .await
         .expect("the message starts the agent again");
         assert_eq!(
-            spawned.resume_session_id.as_deref(),
-            Some("sess-pty"),
-            "the respawn carries the name the sweep found: {spawned:?}"
+            spawned.resume_session_id, None,
+            "without an exact identity the respawn starts fresh: {spawned:?}"
         );
         assert!(
             !spawned.continue_session,
             "and never the cwd guess beside it: {spawned:?}"
         );
-        let argv = terminal_argv(&spawned);
-        assert!(argv.contains("--resume sess-pty"), "{argv}");
-        assert!(
-            !argv.contains("--continue"),
-            "the name and the cwd guess are alternatives, never both: {argv}"
-        );
+        assert!(!spawned.continue_session, "{spawned:?}");
     }
 
-    /// The argv the TUI provider builds from one recorded spawn — the mirror of
-    /// [`headless_argv`], so the same capture is walked out to argv on both.
-    fn terminal_argv(options: &SpawnOptions) -> String {
-        use crate::harness::Harness;
-        crate::harness::claude::ClaudeHarness
-            .spec(
-                &ModelChoice::default(),
-                options,
-                &crate::harness::HarnessContext {
-                    bridge_exe: std::path::PathBuf::from("/usr/local/bin/build-bridge"),
-                    mcp_socket: std::path::PathBuf::from("/tmp/build-mcp.sock"),
-                    state_root: std::path::PathBuf::from("/tmp/build-state"),
-                },
-            )
-            .unwrap()
-            .args
-            .join(" ")
-    }
-
-    /// A session shorter than a tick is still named.
-    ///
-    /// The sweep runs every few seconds and the respawn that needs the name is
-    /// the very next thing after a close, so the byte pump takes one final
-    /// reading on its way out — with no sweep in this test at all.
+    /// A short-lived fresh terminal cannot turn a locator observation into an
+    /// exact identity on its close path either.
     #[tokio::test]
-    async fn a_terminal_that_closes_before_a_sweep_is_named_on_its_way_out() {
+    async fn a_fresh_terminal_close_does_not_persist_a_locator_guess() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-brief");
@@ -47791,10 +50178,9 @@ mod tests {
             state
                 .lock()
                 .unwrap()
-                .recorded_resume_id("run-brief", &agent_id)
-                .as_deref(),
-            Some("sess-brief"),
-            "the close arm takes the reading no sweep tick was going to take"
+                .recorded_resume_id("run-brief", &agent_id),
+            None,
+            "the close arm cannot promote a locator race into resume identity"
         );
     }
 
@@ -47920,8 +50306,8 @@ mod tests {
             let mut s = state.lock().unwrap();
             s.resume_id_probe = Arc::new(|_, _, _| true);
             let run = s.runs.get_mut("run-outlives").expect("the run");
-            run.model_choice.model = Some("claude-opus-5".to_string());
             let agent = run.agents.resolve_mut(None).expect("its agent");
+            agent.choice.model = Some("claude-opus-5".to_string());
             agent.resume_session_id = Some("sess-gone".to_string());
         }
 
@@ -47991,14 +50377,14 @@ mod tests {
                 Templates::default(),
                 test_bridge_exe(),
             );
-            s.runs
-                .get_mut("run-quiet")
-                .expect("the run")
-                .agents
-                .resolve_mut(None)
-                .expect("its agent")
-                .resume_session_id = Some("sess-resumed-in-place".to_string());
         }
+        seed_exact_resumable_session(
+            &state,
+            "run-quiet",
+            &root,
+            &ModelChoice::default(),
+            "sess-resumed-in-place",
+        );
 
         let posted = call(
             &handler,
@@ -48043,7 +50429,6 @@ mod tests {
         ));
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
-        s.transcript_probe = Arc::new(|_, _| true);
         s.projects[0].orch = Orchestrator::new(
             repo.to_path_buf(),
             worktrees,
@@ -48180,7 +50565,7 @@ mod tests {
     async fn a_recorded_name_the_provider_no_longer_holds_is_cleared_before_it_is_spent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-poisoned");
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-poisoned");
         let agent_id = crate::agent::derived_agent_id("run-poisoned");
 
         let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
@@ -48202,14 +50587,14 @@ mod tests {
                 Templates::default(),
                 test_bridge_exe(),
             );
-            s.runs
-                .get_mut("run-poisoned")
-                .expect("the run")
-                .agents
-                .resolve_mut(None)
-                .expect("its agent")
-                .resume_session_id = Some("sess-gone".to_string());
         }
+        seed_exact_resumable_session(
+            &state,
+            "run-poisoned",
+            &root,
+            &ModelChoice::default(),
+            "sess-gone",
+        );
 
         let posted = call(
             &handler,
@@ -48456,10 +50841,25 @@ mod tests {
         session: DictatedSession,
     ) -> TabKey {
         let key = TabKey::agent(root, agent_id);
-        state.tabs.insert(
-            key.clone(),
-            dictated_agent_tab(root, owner, agent_id, session),
-        );
+        if let Some(previous) = state
+            .tabs
+            .get(&key)
+            .and_then(|tab| tab.session_instance.clone())
+        {
+            state.record_agent_session_end(owner, agent_id, &previous);
+        }
+        let working = matches!(session.status(), AgentStatus::Working);
+        let choice = state
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .map(|agent| agent.choice.clone())
+            .unwrap_or_default();
+        let instance = state.record_agent_session_start(owner, agent_id, root, &choice, "build");
+        let mut tab = dictated_agent_tab(root, owner, agent_id, session);
+        tab.session_instance = instance;
+        state.tabs.insert(key.clone(), tab);
+        state.record_agent_working_since(owner, agent_id, working.then(now_rfc3339));
         key
     }
 
@@ -48523,8 +50923,9 @@ mod tests {
             DictatedSession::reporting(AgentStatus::Working).watching_status(status_rx),
         );
         let session = Arc::clone(&app.tabs[&key].session);
+        let instance = app.tabs[&key].session_instance.clone();
         let state = app.shared();
-        spawn_status_pump(&state, key, session, Some(status_tx.subscribe()));
+        spawn_status_pump(&state, key, session, instance, Some(status_tx.subscribe()));
 
         status_tx.send(completed.clone()).unwrap();
         let recorded = tokio::time::timeout(Duration::from_secs(2), async {
@@ -48661,8 +51062,9 @@ mod tests {
         assert_eq!(digest["active_model"], "");
 
         state
-            .set_entity_model_choice(
+            .set_agent_model_choice(
                 "run-projected-model",
+                &agent_id,
                 ModelChoice {
                     provider: AgentProvider::default(),
                     model: Some("claude-opus-5".to_string()),
@@ -48703,10 +51105,12 @@ mod tests {
         );
         let provider_before =
             state.agent_digests("run-choose", DigestScope::List)[0]["provider"].clone();
+        let agent_id = primary_agent_id(&state, "run-choose");
 
         state
-            .set_entity_model_choice(
+            .set_agent_model_choice(
                 "run-choose",
+                &agent_id,
                 ModelChoice {
                     provider: AgentProvider::default(),
                     model: Some("claude-opus-5".to_string()),
@@ -48734,10 +51138,12 @@ mod tests {
         );
         state.changes().flush();
         assert!(!state.changes().has_pending());
+        let agent_id = primary_agent_id(&state, "run-stale-choice");
 
         state
-            .set_entity_model_choice(
+            .set_agent_model_choice(
                 "run-stale-choice",
+                &agent_id,
                 ModelChoice {
                     provider: AgentProvider::default(),
                     model: Some("claude-opus-5".to_string()),
@@ -48947,23 +51353,14 @@ mod tests {
         // Build's agent starts in that same worktree: the pulse is on, and it
         // is reported against the WORKTREE — the run that owns the agent is
         // not what the board asked about.
-        let root = {
-            let mut s = state.lock().unwrap();
-            let owner = "run-in-the-worktree".to_string();
-            s.entity_project.insert(owner, project_id.clone());
-            s.resolve_external_worktree(&project_id, &worktree_id)
-                .unwrap()
-                .path
-        };
-        ensure_agent_tab(
-            &state,
-            &root,
-            "run-in-the-worktree",
-            &crate::agent::derived_agent_id("run-in-the-worktree"),
-            &ModelChoice::default(),
-            "start",
-        )
-        .expect("the agent spawns");
+        let root = state
+            .lock()
+            .unwrap()
+            .resolve_external_worktree(&project_id, &worktree_id)
+            .unwrap()
+            .path;
+        let key = insert_unmanaged_agent_tab(&state, &root, "run-in-the-worktree")
+            .expect("the unmanaged agent fixture spawns");
         assert_eq!(
             entry_of(&state)["agent_working"],
             true,
@@ -48971,7 +51368,6 @@ mod tests {
         );
         assert_eq!(entry_of(&state)["can_finish"], false);
 
-        let key = derived_agent_key(&AppState::canonical_root(&root), "run-in-the-worktree");
         state.lock().unwrap().tabs[&key]
             .session
             .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
@@ -49025,28 +51421,18 @@ mod tests {
             "a commit alone does not earn it a row"
         );
 
-        let root = {
-            let mut s = state.lock().unwrap();
-            let owner = "agent-in-the-worktree".to_string();
-            s.entity_project.insert(owner, project_id.clone());
-            s.resolve_external_worktree(&project_id, &worktree_id)
-                .unwrap()
-                .path
-        };
-        ensure_agent_tab(
-            &state,
-            &root,
-            "agent-in-the-worktree",
-            &crate::agent::derived_agent_id("agent-in-the-worktree"),
-            &ModelChoice::default(),
-            "start",
-        )
-        .expect("the agent spawns");
+        let root = state
+            .lock()
+            .unwrap()
+            .resolve_external_worktree(&project_id, &worktree_id)
+            .unwrap()
+            .path;
+        let key = insert_unmanaged_agent_tab(&state, &root, "agent-in-the-worktree")
+            .expect("the unmanaged agent fixture spawns");
         assert!(
             !has_branch_row(&state),
             "an agent happening to be live in it is not the same as Build having adopted it"
         );
-        let key = derived_agent_key(&AppState::canonical_root(&root), "agent-in-the-worktree");
         state.lock().unwrap().tabs[&key].session.end();
 
         let adopted = state.lock().unwrap().handle(req(
@@ -52467,6 +54853,105 @@ mod tests {
         assert_eq!(state.runs[&run_id].agents.len(), 1, "nothing was added");
     }
 
+    #[test]
+    fn agent_add_retries_one_creation_operation_without_a_duplicate() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "idempotent-agent-add");
+        let request = json!({
+            "entity_id": run_id,
+            "creation_id": "create-agent-1",
+            "provider": "codex",
+            "model": "gpt-5.6-sol",
+        });
+
+        let first = state.handle(req("agent.add", request.clone()));
+        let retry = state.handle(req("agent.add", request));
+
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(retry["ok"], true, "{retry:?}");
+        assert_eq!(first["result"]["created"], true);
+        assert_eq!(retry["result"]["created"], false);
+        assert_eq!(
+            first["result"]["agent"]["id"],
+            retry["result"]["agent"]["id"]
+        );
+        assert_eq!(state.runs[&run_id].agents.len(), 2);
+
+        let before_reuse = state.runs[&run_id].agents.clone();
+        let reused = state.handle(req(
+            "agent.add",
+            json!({
+                "entity_id": run_id,
+                "creation_id": "create-agent-1",
+                "provider": "codex",
+                "model": "gpt-5.6-terra",
+            }),
+        ));
+        assert_eq!(reused["ok"], false, "{reused:?}");
+        assert_eq!(state.runs[&run_id].agents.len(), 2);
+        assert_eq!(
+            state.runs[&run_id].agents, before_reuse,
+            "a conflicting retry cannot remove the run or alter its history"
+        );
+
+        let valid_retry = state.handle(req(
+            "agent.add",
+            json!({
+                "entity_id": run_id,
+                "creation_id": "create-agent-1",
+                "provider": "codex",
+                "model": "gpt-5.6-sol",
+            }),
+        ));
+        assert_eq!(valid_retry["ok"], true, "{valid_retry:?}");
+        assert_eq!(valid_retry["result"]["created"], false);
+        assert_eq!(
+            valid_retry["result"]["agent"]["id"],
+            first["result"]["agent"]["id"]
+        );
+        assert_eq!(state.runs[&run_id].agents, before_reuse);
+    }
+
+    #[test]
+    fn agent_add_persistence_failure_leaves_no_provisional_agent() {
+        let (dir, repo) = init_repo();
+        let run_id;
+        let before;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            run_id = adopted_run(&mut state, &repo, dir.path(), "agent-add-write-failure");
+            before = state.runs[&run_id].agents.clone();
+            state.store.as_ref().unwrap().fail_next_write();
+            let refused = state.handle(req(
+                "agent.add",
+                json!({
+                    "entity_id": run_id,
+                    "creation_id": "create-after-failure",
+                    "provider": "codex",
+                    "model": "gpt-5.6-sol",
+                }),
+            ));
+            assert_eq!(refused["ok"], false, "{refused:?}");
+            assert_eq!(state.runs[&run_id].agents, before);
+        }
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        assert_eq!(reloaded.runs[&run_id].agents, before);
+        let accepted = reloaded.handle(req(
+            "agent.add",
+            json!({
+                "entity_id": run_id,
+                "creation_id": "create-after-failure",
+                "provider": "codex",
+                "model": "gpt-5.6-sol",
+            }),
+        ));
+        assert_eq!(accepted["ok"], true, "{accepted:?}");
+        assert_eq!(accepted["result"]["created"], true);
+        assert_eq!(reloaded.runs[&run_id].agents.len(), before.len() + 1);
+    }
+
     /// The mirror of `agent.add`. An agent the human put on a branch can be
     /// taken back off it — off the roster, off the board row, out of the
     /// attention map — and it stays off across a restart.
@@ -52592,6 +55077,53 @@ mod tests {
         );
     }
 
+    /// A batch has already left the queue when `agent.remove` runs, so pruning
+    /// `pending_agent_turns` cannot reach it. Delivery must authenticate the
+    /// frozen owner/agent/conversation again before it reserves a spawn.
+    #[test]
+    fn a_drained_turn_cannot_spawn_an_agent_removed_before_delivery() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "drained-agent-remove");
+        let added = app.handle(req("agent.add", json!({ "entity_id": run_id })));
+        let removed_agent = added["result"]["agent"]["id"]
+            .as_str()
+            .expect("the added agent id")
+            .to_string();
+        let posted = app.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "agent_id": removed_agent,
+                "body": "do not deliver after removal",
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let state = app.shared();
+        let drained = state.lock().unwrap().take_pending_turns();
+
+        let removed = state.lock().unwrap().handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": removed_agent }),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+
+        DeliveryRunner::run(&state, drained);
+
+        let s = state.lock().unwrap();
+        assert!(s.runs[&run_id].agents.by_id(&removed_agent).is_none());
+        assert!(
+            s.tabs
+                .keys()
+                .all(|key| key.tab_id != agent_tab_id(&removed_agent)),
+            "the drained turn recreated the deleted agent's tab"
+        );
+        assert!(
+            !s.mcp_session_tokens.contains_key(&removed_agent),
+            "the drained turn minted a provider capability for the deleted agent"
+        );
+    }
+
     /// `agent.remove` refuses exactly what `agent.add` refuses: an unknown
     /// agent, an unknown entity, and an issue — whose one agent IS the issue's
     /// conversation. On a branch every agent may go, the primary included.
@@ -52689,6 +55221,53 @@ mod tests {
             ),
             "the message that created it is the first thing on its conversation: {:?}",
             minted.thread.items
+        );
+    }
+
+    #[test]
+    fn removing_an_implementation_alias_never_rebinds_its_secondary_to_the_issue() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "stable conversation binding");
+        let issue_agent = state.plans[&issue_id].agents.sole().id.clone();
+        let primary = primary_agent_id(&state, &run_id);
+        assert_eq!(
+            state.runs[&run_id]
+                .agents
+                .by_id(&primary)
+                .unwrap()
+                .conversation_id(),
+            issue_agent
+        );
+        let second = state
+            .runs
+            .get_mut(&run_id)
+            .unwrap()
+            .agents
+            .add(&run_id, ModelChoice::default(), "2026-09-08T12:00:00Z")
+            .id
+            .clone();
+
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": primary }),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+        let remaining = state.runs[&run_id].agents.primary().unwrap();
+        assert_eq!(remaining.id, second);
+        assert_eq!(remaining.conversation_id(), second);
+        assert_eq!(
+            state
+                .agent_conversation(&run_id, None)
+                .expect("the remaining agent's conversation")
+                .agent
+                .id,
+            second,
+            "becoming the rail's first item did not inherit the removed alias"
+        );
+        assert_ne!(
+            state.agent_conversation(&run_id, None).unwrap().agent.id,
+            state.plans[&issue_id].agents.sole().id
         );
     }
 
@@ -53174,6 +55753,44 @@ mod tests {
             "{other:?}"
         );
         assert_eq!(other["result"]["thread"]["thread_total"], 1, "{other:?}");
+    }
+
+    #[test]
+    fn per_message_read_reports_preserve_explicit_agent_isolation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (run_id, first_agent, second_agent) =
+            branch_with_two_conversations(&mut state, &repo, dir.path(), "scoped-read-report");
+        let first_cursor = state.read_cursor(&run_id, &first_agent);
+        let reached = state
+            .edit_agent_conversation(&run_id, &second_agent, |thread, _| {
+                thread.post_agent("first question", None, now_rfc3339());
+                let reached = thread.last_sequence();
+                thread.post_agent("still unread", None, now_rfc3339());
+                Ok(reached)
+            })
+            .unwrap();
+
+        let read = state.handle(req(
+            "entity.seen",
+            json!({
+                "entity_id": run_id,
+                "agent_id": second_agent,
+                "conversation_id": second_agent,
+                "read_through_sequence": reached,
+            }),
+        ));
+        assert_eq!(read["ok"], true, "{read:?}");
+        assert_eq!(state.read_cursor(&run_id, &second_agent), reached);
+        assert_eq!(state.read_cursor(&run_id, &first_agent), first_cursor);
+
+        let refused = state.handle(req(
+            "entity.seen",
+            json!({ "entity_id": run_id, "agent_id": "", "read_through_sequence": u64::MAX }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(state.read_cursor(&run_id, &second_agent), reached);
+        assert_eq!(state.read_cursor(&run_id, &first_agent), first_cursor);
     }
 
     /// An issue carries exactly one agent session, so naming it is a check

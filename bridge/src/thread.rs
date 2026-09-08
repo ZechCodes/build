@@ -22,6 +22,73 @@ pub enum ArtifactKind {
     Doc,
 }
 
+#[cfg(test)]
+mod session_instance_tests {
+    use super::*;
+
+    fn start(thread: &mut Thread, agent_id: &str, checkout: &str, now: &str) -> SessionInstance {
+        thread.start_agent_session(SessionStart {
+            entity_id: "entity-shared",
+            agent_id,
+            checkout,
+            provider: "claude",
+            model: None,
+            effort: None,
+            phase: "build",
+            now,
+        })
+    }
+
+    #[test]
+    fn delayed_end_closes_its_exact_instance_not_the_replacement() {
+        let mut thread = Thread::for_agent("agent-a");
+        let first = start(&mut thread, "agent-a", "/work/a", "2026-09-08T10:00:00Z");
+        let replacement = start(&mut thread, "agent-a", "/work/a", "2026-09-08T10:01:00Z");
+
+        assert!(thread.finish_session_instance(&first, "2026-09-08T10:02:00Z"));
+        assert!(thread.sessions[0].ended_at.is_some());
+        assert!(thread.sessions[1].ended_at.is_none());
+        assert_eq!(
+            thread.open_session_instance("agent-a"),
+            Some(replacement),
+            "S1's delayed EOF must not close S2"
+        );
+    }
+
+    #[test]
+    fn shared_history_parents_lineage_within_each_explicit_agent() {
+        let mut thread = Thread::for_agent("conversation-owner");
+        let first_a = start(
+            &mut thread,
+            "agent-a",
+            "/work/shared",
+            "2026-09-08T10:00:00Z",
+        );
+        let first_b = start(
+            &mut thread,
+            "agent-b",
+            "/work/shared",
+            "2026-09-08T10:01:00Z",
+        );
+        let second_a = start(
+            &mut thread,
+            "agent-a",
+            "/work/shared",
+            "2026-09-08T10:02:00Z",
+        );
+
+        assert_eq!(thread.sessions[0].agent_id, "agent-a");
+        assert_eq!(thread.sessions[0].checkout.as_deref(), Some("/work/shared"));
+        assert_eq!(thread.sessions[1].parent_session_id, None);
+        assert_eq!(
+            thread.sessions[2].parent_session_id.as_deref(),
+            Some(first_a.id.as_str()),
+            "agent A must not become a child of agent B's newer session"
+        );
+        assert_ne!(second_a.agent_id, first_b.agent_id);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentIdentity {
     pub id: String,
@@ -434,6 +501,11 @@ pub struct ThreadMessage {
     #[serde(default)]
     pub updated_sequence: u64,
     pub role: MessageRole,
+    /// Client mutation whose durable delivery owns this reviewer message.
+    /// Managed messages are read through that exact operation and never by
+    /// the legacy catch-all unread mailbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     /// Completion is metadata on an otherwise ordinary message. Set by a
     /// completed [`outcome`](Self::outcome) and by nothing else, so a client
     /// that knows only this field renders a completion exactly as it always
@@ -1598,6 +1670,22 @@ impl UnreadSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLineage {
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub entity_id: String,
+    /// The durable agent whose process this session was. Conversations may be
+    /// shared explicitly, so the thread holding the lineage is not enough to
+    /// recover the actor.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub conversation_id: String,
+    /// The checkout this exact process was assigned. Older records did not
+    /// carry it and remain readable without inventing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<String>,
+    /// Provider-owned conversation id used to resume this exact lineage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     pub provider: String,
@@ -1609,6 +1697,32 @@ pub struct SessionLineage {
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
+}
+
+/// The exact session process a lifecycle callback belongs to.
+///
+/// This is deliberately more than an id: a delayed callback must retain the
+/// agent attribution captured when the process started instead of resolving a
+/// current/default actor from shared history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInstance {
+    pub id: String,
+    pub entity_id: String,
+    pub agent_id: String,
+    pub conversation_id: String,
+    pub checkout: String,
+}
+
+/// Immutable facts recorded when one process session starts.
+pub struct SessionStart<'a> {
+    pub entity_id: &'a str,
+    pub agent_id: &'a str,
+    pub checkout: &'a str,
+    pub provider: &'a str,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub phase: &'a str,
+    pub now: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2177,6 +2291,7 @@ impl Thread {
             outcome: None,
             completion_report: None,
             source: MessageSource::Chat,
+            operation_id: None,
             body,
             created_at: now,
             seen_at: None,
@@ -2213,7 +2328,9 @@ impl Thread {
     pub fn has_unread(&self) -> bool {
         self.items.iter().any(|item| {
             matches!(item, ThreadItem::Message(message)
-                if message.role == MessageRole::User && message.seen_at.is_none())
+                if message.role == MessageRole::User
+                    && message.operation_id.is_none()
+                    && message.seen_at.is_none())
         })
     }
 
@@ -2223,7 +2340,10 @@ impl Thread {
             let ThreadItem::Message(message) = item else {
                 continue;
             };
-            if message.role == MessageRole::User && message.seen_at.is_none() {
+            if message.role == MessageRole::User
+                && message.operation_id.is_none()
+                && message.seen_at.is_none()
+            {
                 message.seen_at = Some(now.to_string());
                 // An in-place mutation of an already-sequenced item: bump its
                 // updated_sequence (inlined `next()` — the loop holds a borrow
@@ -2237,6 +2357,77 @@ impl Thread {
             self.conversation_working = true;
         }
         unread
+    }
+
+    /// Bind the reviewer messages appended after `previous_sequence` to one
+    /// durable operation and return immutable snapshots for its delivery.
+    pub fn bind_operation_messages(
+        &mut self,
+        operation_id: &str,
+        previous_sequence: u64,
+        through_sequence: u64,
+    ) -> Vec<ThreadMessage> {
+        self.items
+            .iter_mut()
+            .filter_map(|item| match item {
+                ThreadItem::Message(message)
+                    if message.role == MessageRole::User
+                        && message.sequence > previous_sequence
+                        && message.sequence <= through_sequence =>
+                {
+                    message.operation_id = Some(operation_id.to_string());
+                    Some(message.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Read one accepted operation, independent of every other unread cursor.
+    /// Repeating the scoped read returns the same messages and only the first
+    /// read advances their seen metadata.
+    pub fn read_operation_messages(
+        &mut self,
+        operation_id: &str,
+        from_sequence: u64,
+        through_sequence: u64,
+        now: &str,
+    ) -> Vec<ThreadMessage> {
+        let mut messages = Vec::new();
+        for item in &mut self.items {
+            let ThreadItem::Message(message) = item else {
+                continue;
+            };
+            if message.operation_id.as_deref() != Some(operation_id)
+                || message.sequence < from_sequence
+                || message.sequence > through_sequence
+            {
+                continue;
+            }
+            if message.seen_at.is_none() {
+                message.seen_at = Some(now.to_string());
+                self.next_sequence += 1;
+                message.updated_sequence = self.next_sequence;
+            }
+            messages.push(message.clone());
+        }
+        if !messages.is_empty() {
+            self.conversation_working = true;
+        }
+        messages
+    }
+
+    /// Record the working-state half of an authorized operation read when its
+    /// exact messages live below this process's bounded resident tail.
+    pub fn note_operation_read(&mut self, now: &str) {
+        self.conversation_working = true;
+        self.conversation_activity_at_summary = Some(now.to_string());
+    }
+
+    /// Merge a sequence minted by a narrow store-side historical mutation into
+    /// this bounded resident view so a later append cannot reuse it.
+    pub fn advance_sequence_to(&mut self, sequence: u64) {
+        self.next_sequence = self.next_sequence.max(sequence);
     }
 
     /// Mint one event and hand back the counter value it was minted at — the
@@ -2366,10 +2557,50 @@ impl Thread {
         phase: &str,
         now: &str,
     ) -> String {
-        let parent_session_id = self.sessions.last().map(|session| session.id.clone());
+        let agent_id = self.agent.id.clone();
+        self.start_agent_session(SessionStart {
+            entity_id: "",
+            agent_id: &agent_id,
+            checkout: "",
+            provider,
+            model,
+            effort,
+            phase,
+            now,
+        })
+        .id
+    }
+
+    /// Open one exact agent process in this conversation.
+    ///
+    /// A conversation can be intentionally shared, so ancestry is selected by
+    /// explicit agent identity rather than by the newest row in the thread.
+    pub fn start_agent_session(&mut self, start: SessionStart<'_>) -> SessionInstance {
+        let SessionStart {
+            entity_id,
+            agent_id,
+            checkout,
+            provider,
+            model,
+            effort,
+            phase,
+            now,
+        } = start;
+        let parent_session_id = self
+            .sessions
+            .iter()
+            .rev()
+            .find(|session| session.agent_id == agent_id)
+            .map(|session| session.id.clone());
         let id = format!("session-{}", uuid::Uuid::new_v4());
+        let conversation_id = self.agent.id.clone();
         self.sessions.push(SessionLineage {
             id: id.clone(),
+            entity_id: entity_id.to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id: conversation_id.clone(),
+            checkout: (!checkout.is_empty()).then(|| checkout.to_string()),
+            resume_session_id: None,
             parent_session_id,
             provider: provider.to_string(),
             model: model.map(str::to_string),
@@ -2385,24 +2616,91 @@ impl Thread {
             None,
             now,
         );
-        id
+        SessionInstance {
+            id,
+            entity_id: entity_id.to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id,
+            checkout: checkout.to_string(),
+        }
     }
 
     pub fn finish_session(&mut self, session_id: &str, now: &str) {
-        if let Some(session) = self
+        let Some(session) = self
             .sessions
-            .iter_mut()
+            .iter()
             .find(|session| session.id == session_id)
-        {
-            session.ended_at = Some(now.to_string());
-        }
+        else {
+            return;
+        };
+        let instance = SessionInstance {
+            id: session.id.clone(),
+            entity_id: session.entity_id.clone(),
+            agent_id: session.agent_id.clone(),
+            conversation_id: session.conversation_id.clone(),
+            checkout: session.checkout.clone().unwrap_or_default(),
+        };
+        self.finish_session_instance(&instance, now);
+    }
+
+    /// Close only the process captured by `instance`.
+    ///
+    /// Returns false for stale, mismatched, or already-ended callbacks and
+    /// records no synthetic end event for them.
+    pub fn finish_session_instance(&mut self, instance: &SessionInstance, now: &str) -> bool {
+        let Some(session) = self.sessions.iter_mut().find(|session| {
+            session.id == instance.id
+                && session.entity_id == instance.entity_id
+                && session.agent_id == instance.agent_id
+                && session.conversation_id == instance.conversation_id
+                && session.checkout.as_deref().unwrap_or_default() == instance.checkout
+                && session.ended_at.is_none()
+        }) else {
+            return false;
+        };
+        session.ended_at = Some(now.to_string());
         self.push_event(
             ThreadEventKind::SessionEnded,
             None,
-            Some(session_id.to_string()),
+            Some(instance.id.clone()),
             None,
             now,
         );
+        true
+    }
+
+    /// The newest still-open process explicitly attributed to `agent_id`.
+    pub fn open_session_instance(&self, agent_id: &str) -> Option<SessionInstance> {
+        self.sessions
+            .iter()
+            .rev()
+            .find(|session| session.agent_id == agent_id && session.ended_at.is_none())
+            .map(|session| SessionInstance {
+                id: session.id.clone(),
+                entity_id: session.entity_id.clone(),
+                agent_id: session.agent_id.clone(),
+                conversation_id: session.conversation_id.clone(),
+                checkout: session.checkout.clone().unwrap_or_default(),
+            })
+    }
+
+    /// Attach the provider's resume id to the exact process that announced it.
+    pub fn name_session_instance(
+        &mut self,
+        instance: &SessionInstance,
+        resume_session_id: &str,
+    ) -> bool {
+        let Some(session) = self.sessions.iter_mut().find(|session| {
+            session.id == instance.id
+                && session.entity_id == instance.entity_id
+                && session.agent_id == instance.agent_id
+                && session.conversation_id == instance.conversation_id
+                && session.checkout.as_deref().unwrap_or_default() == instance.checkout
+        }) else {
+            return false;
+        };
+        session.resume_session_id = Some(resume_session_id.to_string());
+        true
     }
 
     pub fn add_revision(
@@ -2986,6 +3284,18 @@ impl Thread {
     /// its line. That is what tells a replacement why its predecessor blocked.
     pub fn catch_up_markdown(&self, limit: usize) -> String {
         catch_up_lines(self.items.iter(), limit)
+    }
+
+    /// Context safe to freeze beside a new managed operation. Another managed
+    /// operation owns its own delivery, so it must never leak into this one's
+    /// provider turn merely because it was accepted first.
+    pub fn operation_prior_context(&self, limit: usize) -> String {
+        catch_up_lines(
+            self.items.iter().filter(|item| {
+                !matches!(item, ThreadItem::Message(message) if message.operation_id.is_some())
+            }),
+            limit,
+        )
     }
 
     /// Whether the packet has to be read from the store rather than off the

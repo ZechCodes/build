@@ -153,7 +153,10 @@ export async function renderBranch() {
   let reviewPlug = null; // ONE instance per backing, so pending comments survive
   let reviewKey = null;
 
-  const callRpc = (method, params) => App.call(method, params);
+  // This mounted route belongs to the session that created it. A device switch
+  // disposes the view, but any operation already awaiting a reply must finish
+  // on that original session instead of recovering the newly-current App.call.
+  const callRpc = App.call;
   // Two surfaces here can mutate an unclaimed checkout first — the rail's first
   // message and the review's first comment or action — and near-simultaneous
   // adoptions would ask for two owners of one checkout. Both take their adopter

@@ -49,6 +49,7 @@ async function mount(overrides = {}) {
     fail = null,
     hold = null,
     timeout = null,
+    beforeReply = null,
     ...options
   } = overrides;
   const host = document.createElement("div");
@@ -62,9 +63,11 @@ async function mount(overrides = {}) {
       if (timeout && timeout[method]) {
         const timedOut = new Error(`${method} timed out`);
         timedOut.timedOut = true;
+        timedOut.uncertain = true;
         throw timedOut;
       }
       if (hold && hold[method]) return new Promise(() => {});
+      if (beforeReply) await beforeReply(method, params);
       if (method === "issue.get") return issue;
       if (method === "issue.stages") return { stages };
       if (method === "issue.stage_doc") return doc;
@@ -432,6 +435,43 @@ describe("the issue view", () => {
     expect(posted[1].body).toBe("why items[]?");
     expect(posted[1].anchor.heading_path).toEqual(["Wire"]);
     expect(posted[1].anchor.line_start).toBe(1);
+    view.dispose();
+  });
+
+  it("keeps a comment batch on the agent selected when the send began", async () => {
+    let releaseComment;
+    const commentHeld = new Promise((resolve) => { releaseComment = resolve; });
+    const selection = createAgentSelection("agent:one");
+    const { host, view, calls } = await mount({
+      agentSelection: selection,
+      beforeReply: (method) => method === "issue.comment_add" ? commentHeld : undefined,
+    });
+    const heading = host.querySelector("#stagedoc h1");
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      anchorNode: heading.firstChild,
+      focusNode: heading.firstChild,
+      toString: () => "Wire",
+      getRangeAt: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }),
+      isCollapsed: false,
+      rangeCount: 1,
+      removeAllRanges: () => {},
+    });
+    document.dispatchEvent(new Event("selectionchange"));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    document.querySelector(".comment-pop .cp-add").click();
+    document.querySelector(".comment-pop .cp-input").value = "anchor this";
+    document.querySelector(".comment-pop .cp-save").click();
+    host.querySelector(".csgeneral").value = "general note";
+    host.querySelector(".csgeneral").dispatchEvent(new Event("input"));
+    host.querySelector(".cssend").click();
+    await flush();
+
+    selection.set("agent:two");
+    releaseComment();
+    await flush();
+
+    const post = calls.find(([method]) => method === "thread.post");
+    expect(post[1].agent_id).toBe("agent:one");
     view.dispose();
   });
 

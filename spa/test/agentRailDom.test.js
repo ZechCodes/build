@@ -79,7 +79,8 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { setCacheDevice } = await import("../src/core/cacheScope.js");
+const { currentCacheScope, setCacheDevice } = await import("../src/core/cacheScope.js");
+const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
@@ -182,16 +183,19 @@ beforeEach(async () => {
     if (method === "branch.get") return payload;
     if (method === "issue.get") return payload;
     if (method === "run.adopt") return { run_id: "run-9" };
-    if (method === "agent.start") return { agent_id: "ag-new", term_id: "agent:ag-new" };
+    if (method === "agent.start") return { agent_id: params.agent_id || "ag-new", term_id: `agent:${params.agent_id || "ag-new"}` };
     if (method === "agent.add") return { entity_id: "run-3", agent: agent({ id: "ag-2", ordinal: 2, state: "idle" }) };
     if (method === "thread.post") return { posted_sequence: 7 };
     return {};
   });
+  App.chatRepository = createChatRepository({ scope: currentCacheScope(), call: (method, params) => App.call(method, params) });
 });
 
 afterEach(() => {
   if (rail) rail.dispose();
   rail = null;
+  App.chatRepository?.dispose();
+  App.chatRepository = null;
   vi.useRealTimers();
 });
 
@@ -337,7 +341,7 @@ describe("the bubble strip", () => {
     railHost().querySelector("#railinput").value = "start here";
     railHost().querySelector("#railsend").click();
     await flush();
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-3", agent_id: "ag-2", body: "start here" });
     expect(railHost().querySelector(".rail-newagent")).toBeNull();
   });
@@ -643,13 +647,14 @@ describe("taking an agent back off the branch", () => {
   });
 
   it("takes the agent off the moment the answer is yes, before the daemon replies", async () => {
+    payload = twoAgents();
+    await mount();
     payload = twoAgents({
       run: {
         run_id: "run-3",
         thread: { items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }], sessions: [] },
       },
     });
-    await mount();
     bubbles()[1].click();
     await flush();
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
@@ -1018,6 +1023,7 @@ describe("the conversation panel", () => {
         calls.push({ method, params });
         const timedOut = new Error("agent.start timed out");
         timedOut.timedOut = true;
+        timedOut.uncertain = true;
         throw timedOut;
       }
       return answering(method, params);
@@ -1525,6 +1531,7 @@ describe("the pinned status line above the composer", () => {
   });
 
   it("pulses and clocks the turn while the branch is working", async () => {
+    payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 750000).toISOString(), seconds: 750 } })] });
     await pushFeed({
       items: [{
         kind: "branch", project_id: "p1", branch: "build/login",
@@ -1601,6 +1608,12 @@ describe("the pinned status line above the composer", () => {
       }],
       projects: [],
     });
+    payload = branchRow({
+      ...payload,
+      agents: [agent({ ...payload.agents[0], working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 } })],
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
     expect(railStatus().textContent).toContain("Working 0:05");
     expect(railStatus().textContent).not.toContain("Run started");
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
@@ -1626,6 +1639,7 @@ describe("the pinned status line above the composer", () => {
     // this test fakes Date too — the others read `since` off the real clock at
     // mount and never advance timers far enough to notice the difference.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 } })] });
     await pushFeed({
       items: [{
         kind: "branch", project_id: "p1", branch: "build/login",
@@ -1738,7 +1752,7 @@ describe("the chat tab of a branch with no agent", () => {
 
     expect(calls.filter((call) => call.method.startsWith("agent.") || call.method === "thread.post")
       .map((call) => call.method)).toEqual(["agent.add", "thread.post", "agent.start"]);
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude_adk" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "claude_adk" });
     expect(callsTo("thread.post")[0].params).toMatchObject({
       entity_id: "run-3", agent_id: "ag-2", body: "start here",
     });
@@ -1760,7 +1774,7 @@ describe("the chat tab of a branch with no agent", () => {
     expect(chosenCard().dataset.provider).toBe("codex");
 
     await send("start here");
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
   });
 
   it("adopts a checkout Build owns nothing in before it creates the agent", async () => {
@@ -1770,7 +1784,7 @@ describe("the chat tab of a branch with no agent", () => {
     await send("start here");
 
     expect(callsTo("run.adopt")[0].params).toMatchObject({ project_id: "p1", worktree_id: "wt-3" });
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-9", provider: "claude_adk" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-9", provider: "claude_adk" });
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-9", agent_id: "ag-2", body: "start here" });
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-9", agent_id: "ag-2" });
   });
@@ -1788,7 +1802,7 @@ describe("the chat tab of a branch with no agent", () => {
     expect(modelMenuButton().textContent).toContain("Claude Opus 5");
 
     await send("start here");
-    expect(callsTo("agent.add")[0].params).toEqual({
+    expect(callsTo("agent.add")[0].params).toMatchObject({
       entity_id: "run-3", provider: "claude_adk", model: "claude-opus-5",
     });
   });
@@ -1805,7 +1819,7 @@ describe("the chat tab of a branch with no agent", () => {
     expect(chosenCard().dataset.provider).toBe("claude");
 
     await send("start here");
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "claude" });
   });
 
   // A choice held from before the account moved its default. The offer is where
@@ -1827,7 +1841,7 @@ describe("the chat tab of a branch with no agent", () => {
     expect(chosenCard().dataset.provider).toBe("claude_adk");
 
     await send("start here");
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude_adk" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "claude_adk" });
   });
 
   it("leaves the cards alone on a tick that says the same thing", async () => {
@@ -1867,7 +1881,7 @@ describe("the composer's model menu", () => {
     await flush();
 
     expect(callsTo("agent.choose")[0].params).toEqual({
-      entity_id: "run-3", agent_id: "ag-1", model: "claude-opus-5", effort: "",
+      entity_id: "run-3", agent_id: "ag-1", model: "claude-opus-5", effort: "", expected_choice_revision: 0,
     });
   });
 
@@ -1917,7 +1931,7 @@ describe("the composer's model menu", () => {
     await flush();
 
     expect(callsTo("agent.choose")[0].params).toEqual({
-      entity_id: "run-3", agent_id: "ag-1", model: "claude-haiku-4-5", effort: "",
+      entity_id: "run-3", agent_id: "ag-1", model: "claude-haiku-4-5", effort: "", expected_choice_revision: 0,
     });
     expect(modelMenuButton().textContent).toContain("Claude Opus 5 → Claude Haiku 4.5");
     expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
@@ -1949,6 +1963,50 @@ describe("the composer's model menu", () => {
     expect(callsTo("agent.choose")).toHaveLength(1);
     await flush();
     expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
+  });
+
+  it("does not send with the old model while a newly picked model is still applying", async () => {
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    let acknowledgeChoice;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.choose") {
+        calls.push({ method, params });
+        return new Promise((resolve) => { acknowledgeChoice = resolve; });
+      }
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    const composer = panel().querySelector("#railinput");
+    composer.value = "use the new model";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    panel().querySelector("#railsend").click();
+
+    expect(callsTo("thread.post")).toEqual([]);
+    expect(panel().querySelector("#railsend").disabled).toBe(true);
+    expect(panel().querySelector("#railsend").textContent).toContain("Applying model…");
+
+    acknowledgeChoice({
+      entity_id: "run-3",
+      agent_id: "ag-1",
+      provider: "claude_adk",
+      model: "claude-haiku-4-5",
+      effort: "",
+      choice_revision: 1,
+    });
+    await flush();
+    expect(panel().querySelector("#railsend").disabled).toBe(false);
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      agent_id: "ag-1",
+      choice_revision: 1,
+      body: "use the new model",
+    });
   });
 
   it("keeps the pick through a branch.get that still names the old model", async () => {
@@ -2088,7 +2146,7 @@ describe("the conversation's local cache", () => {
 
   it("seeds the saved window, so opening the chat asks for a delta, history in hand", async () => {
     await writeCached(
-      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+      { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
       { items: [threadItem(1, "what was said before")], olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: feedItems, projects: [] };
@@ -2106,7 +2164,7 @@ describe("the conversation's local cache", () => {
   // the seeded paint, not a count of the handful of rows the disk held.
   it("seeds the digests with the window, so the fold's count survives the visit", async () => {
     await writeCached(
-      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+      { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
       {
         items: [{
           id: "e-1530",
@@ -2137,7 +2195,7 @@ describe("the conversation's local cache", () => {
     await mount();
     bubbles()[0].click();
     await flush();
-    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
+    const record = await readCached({ deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" });
     expect(record.value.items).toHaveLength(1);
     expect(record.value.items[0].data.body).toBe("fresh words");
     expect(record.value.deliveredSequence).toBe(2);
@@ -2156,7 +2214,7 @@ describe("revisiting a conversation", () => {
 
   it("stands the strip and the saved conversation up before the first read answers", async () => {
     await writeCached(
-      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+      { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
       { items: historyThread().items, olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: [{ ...feedItems[0], agents: [agent()] }], projects: [] };
@@ -2220,7 +2278,7 @@ describe("the agent's surfaces, carried by the status row", () => {
     await openPanelWithSurfaces();
 
     const block = railHost().querySelector(".rail-composer");
-    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", ""]);
+    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", "rail-chat-recovery", ""]);
     expect(block.querySelector('#rail-status-pills [data-surface-kind="shells"]')).not.toBe(null);
     expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
   });
@@ -2351,7 +2409,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     it(`paints the conversation and no pill for a record holding ${JSON.stringify(shapeless)}`, async () => {
       await writeCached(surfacesAddress("ag-1"), shapeless);
       await writeCached(
-        { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+        { deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" },
         {
           items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "the history", created_at: "2026-08-30T12:00:00Z" } }],
           olderItemsRemain: false,
@@ -2439,7 +2497,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
       },
     });
     await mount();
-    expect(await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).toBeTruthy();
+    expect(await readCached({ deviceId: "dev-1", entityId: "ag-1", kind: "thread", sub: "" })).toBeTruthy();
     expect(await savedSurfaces("ag-1")).toBeTruthy();
   });
 
@@ -2497,8 +2555,8 @@ describe("creating an agent, before the daemon has answered for it", () => {
     const held = new Promise((resolve) => {
       release = resolve;
     });
-    const running = runOptimistic({
-      scope: "agents:branch:p1:build/login",
+    const running = App.chatRepository.optimisticStore().runOptimistic({
+      scope: `${App.chatRepository.scopeKey}:agents:branch:p1:build/login`,
       records: [insertRecord("ag-7", agent({ id: "ag-7", ordinal: 1 }))],
       call: () => held,
       failureSummary: "Could not start the agent",
@@ -2631,7 +2689,7 @@ describe("creating an agent, before the daemon has answered for it", () => {
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["ghost"]);
     expect(railHost().querySelector(".rail-newagent")).toBeTruthy();
     expect(composer().value).toBe("start here");
-    expect(document.activeElement).toBe(composer());
+    expect(document.activeElement).not.toBe(composer());
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no room");
   });
@@ -2786,6 +2844,7 @@ describe("sending to an agent that is already there", () => {
       calls.push({ method, params });
       const timedOut = new Error("agent.start timed out");
       timedOut.timedOut = true;
+      timedOut.uncertain = true;
       throw timedOut;
     });
 
@@ -2809,6 +2868,7 @@ describe("sending to an agent that is already there", () => {
       calls.push({ method, params });
       const timedOut = new Error("thread.post timed out");
       timedOut.timedOut = true;
+      timedOut.uncertain = true;
       throw timedOut;
     });
 
@@ -2828,7 +2888,7 @@ describe("sending to an agent that is already there", () => {
 
     expect(copiesOf("look at the login flow")).toBe(0);
     expect(composer().value).toBe("look at the login flow");
-    expect(document.activeElement).toBe(composer());
+    expect(document.activeElement).not.toBe(composer());
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError).toHaveBeenCalledWith("Message failed", "the conversation is gone");
   });
@@ -2840,14 +2900,17 @@ describe("the one status row", () => {
   });
 
   const aTurnInFlight = () =>
-    pushFeed({
+    (payload = branchRow({
+      ...payload,
+      agents: [agent({ ...payload.agents?.[0], working_time: { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 } })],
+    }), pushFeed({
       items: [{
         kind: "branch", project_id: "p1", branch: "build/login",
         working: true, working_time: { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 },
         stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
       }],
       projects: [],
-    });
+    }));
 
   it("lays the row out lead, pills, git — and wears no dot anywhere", async () => {
     payload = branchRow({ agents: [agent({ surfaces: checklistSurfaces() })] });
@@ -2923,6 +2986,7 @@ describe("the one status row", () => {
     expect(railStatusLead().textContent).toContain("1:25");
 
     payload = branchRow({ agents: [agent({ surfaces: {} })] });
+    payload.agents[0].working_time = { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 };
     vi.advanceTimersByTime(2000);
     await flush();
     await motionSettled();
@@ -2948,6 +3012,9 @@ describe("the one status row", () => {
       expect(railStatusGit().textContent).toBe("↑2+4−1");
 
       started.length = 0;
+      payload = branchRow({ agents: [agent({ working_time: null })] });
+      vi.advanceTimersByTime(1600);
+      await flush();
       await pushFeed({ items: [], projects: [] });
       await settleMotion();
 

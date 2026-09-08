@@ -180,7 +180,7 @@ describe("openRelaySession", () => {
     await tick();
     ws.serverSend({ type: "device_offline", device_id: "dev-a" });
     ws.serverSend({ type: "device_offline", device_id: "dev-a" });
-    await expect(pending).rejects.toThrow("offline");
+    await expect(pending).rejects.toMatchObject({ message: expect.stringContaining("offline"), uncertain: true });
     expect(events.lost).toBe(1);
   });
 
@@ -330,10 +330,17 @@ describe("openRelaySession", () => {
 // that owns the timer: a reply the browser stopped waiting for is not a refusal.
 
 describe("a reply the browser stopped waiting for", () => {
-  const timedOut = () => Object.assign(new Error("worktree.create timed out"), { timedOut: true });
+  const timedOut = (uncertain = true) =>
+    Object.assign(new Error("worktree.create timed out"), { timedOut: true, ...(uncertain ? { uncertain: true } : {}) });
 
   it("answers nothing, so the caller carries on with what the board already has", async () => {
     await expect(replyOrNothing(Promise.reject(timedOut()))).resolves.toBeNull();
+  });
+
+  it("raises a timeout that happened before carrier handoff as a definite failure", async () => {
+    await expect(replyOrNothing(Promise.reject(timedOut(false)))).rejects.toMatchObject({
+      timedOut: true,
+    });
   });
 
   it("still raises a refusal, which is the daemon saying no", async () => {

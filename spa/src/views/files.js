@@ -9,7 +9,7 @@
 // server fences the scope root and every path; this view never sends host paths.
 
 import { esc } from "../core/text.js";
-import { cacheDeviceId } from "../core/cacheScope.js";
+import { currentCacheScope } from "../core/cacheScope.js";
 import { readCached, writeCached } from "../core/localCache.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
@@ -144,6 +144,8 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * fetches only on navigation/selection. Returns { dispose() }.
  */
 export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen = null }) {
+  const cacheScope = currentCacheScope();
+  let disposed = false;
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
   // `#ftree` is the stable column (what the drawer slides, what the tab bar
@@ -183,10 +185,8 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
   // The local cache's address for one directory's listing. A primary checkout
   // names no entity and takes no part.
   const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
-  const treeAddress = (path) => {
-    const deviceId = cacheDeviceId();
-    return deviceId && cacheEntityId ? { deviceId, entityId: cacheEntityId, kind: "tree", sub: path } : null;
-  };
+  const treeAddress = (path) =>
+    cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind: "tree", sub: path }) || null : null;
 
   let treeRequest = 0; // which navigation the paints below still speak for
   let liveRenderedRequest = 0; // a live answer outranks the cache for its request
@@ -222,7 +222,16 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     if (address) writeCached(address, { path: dir, entries: res.entries || [] });
   };
 
+  const readFile = async (path) => {
+    try {
+      return { file: await callRpc("fs.read", { ...scope, path }) };
+    } catch (error) {
+      return { error };
+    }
+  };
+
   const selectFile = async (path, row) => {
+    if (disposed) return;
     if (requestedLine && requestedLine.path !== path) requestedLine = null;
     // The tab names the file it is standing in, so the URL can say so too.
     if (onFileOpen) onFileOpen(path);
@@ -230,14 +239,13 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     if (row) row.classList.add("sel");
     sourceOverride = false;
     showPlaceholder("loading");
-    let file;
-    try {
-      file = await callRpc("fs.read", { ...scope, path });
-    } catch (e) {
-      showPlaceholder("error", `cannot read: ${(e && e.message) || "error"}`);
+    const result = await readFile(path);
+    if (disposed) return;
+    if (result.error) {
+      showPlaceholder("error", `cannot read: ${result.error.message || "error"}`);
       return;
     }
-    renderPreview(path, file);
+    renderPreview(path, result.file);
   };
 
   // Reveal/hide is EPHEMERAL: a fresh renderPreview re-derives the secrets and
@@ -301,13 +309,19 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
   };
 
   loadTree(dir).then(() => {
-    if (!openAt) return;
+    if (disposed || !openAt) return;
     const fileName = openAt.path.split("/").at(-1);
     const row = [...treeEl.querySelectorAll(".ffile")].find((entry) => entry.dataset.file === fileName);
     selectFile(openAt.path, row || null);
   });
 
-  return { dispose: () => drawer.dispose() };
+  return {
+    dispose() {
+      disposed = true;
+      treeRequest += 1;
+      drawer.dispose();
+    },
+  };
 }
 
 export { FS_READ_MAX_BYTES };

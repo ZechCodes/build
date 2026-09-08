@@ -12,9 +12,21 @@
 /** How long a call waits for its answer before it is not coming. */
 export const DEFAULT_RPC_TIMEOUT_MS = 12000;
 
-function timedOutError(method) {
+function timedOutError(method, uncertain = false) {
   const error = new Error(`${method} timed out`);
   error.timedOut = true;
+  error.uncertain = uncertain;
+  return error;
+}
+
+/** A carrier disappearing after send was invoked cannot tell us whether the
+ * device accepted the request. Give each affected call its own error: calls
+ * that were still waiting for a carrier can fail definitely beside them. */
+function uncertainDeliveryError(reason) {
+  const error = new Error((reason && reason.message) || String(reason));
+  if (reason && reason.name) error.name = reason.name;
+  if (reason && typeof reason === "object") Object.assign(error, reason);
+  error.uncertain = true;
   return error;
 }
 
@@ -68,7 +80,9 @@ export function createSessionRpc({
 
   /** Every call still waiting, told why it will never answer. */
   const fail = (error) => {
-    for (const { reject } of pending.values()) reject(error);
+    for (const waiting of pending.values()) {
+      waiting.reject(waiting.handoffAttempted ? uncertainDeliveryError(error) : error);
+    }
     pending.clear();
   };
 
@@ -115,31 +129,46 @@ export function createSessionRpc({
     async call(method, params = {}, { timeoutMs = defaultTimeoutMs, carrier: wire = carrier } = {}) {
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
-      const answer = new Promise((resolve, reject) =>
-        pending.set(id, {
+      let waiting;
+      const answer = new Promise((resolve, reject) => {
+        waiting = {
+          handoffAttempted: false,
           reject,
           ok: (payload) => (payload.ok ? resolve(payload.result) : reject(new Error(payload.error))),
-        }),
-      );
+        };
+        pending.set(id, waiting);
+      });
       // A frame that never crossed the wire has no answer coming: the call
       // fails then rather than waiting out a timeout for a reply nobody will
       // send.
       const delivered = (async () => {
         const sending = await wire;
+        if (closed || pending.get(id) !== waiting) return;
         if (!sending) throw noCarrier();
-        await sending.send(
-          await transport.encryptFrame({
-            sessionKeyB64,
-            outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-            frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
-          }),
-        );
+        const envelope = await transport.encryptFrame({
+          sessionKeyB64,
+          outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
+          frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
+        });
+        // The session may have been failed, closed, or timed out while its
+        // carrier/encryption was pending. Once the outward call has settled,
+        // its request must never cross later and mutate the old scope.
+        if (closed || pending.get(id) !== waiting) return;
+        waiting.handoffAttempted = true;
+        await sending.send(envelope);
       })();
+      delivered.catch((error) => {
+        if (pending.get(id) !== waiting) return;
+        pending.delete(id);
+        waiting.reject(error);
+      });
       // However this settles, nothing is waiting for it any more: a call that
       // timed out must not leave an entry for a later loss to reject at nobody.
       return Promise.race([
-        delivered.then(() => answer),
-        new Promise((_, reject) => setTimeout(() => reject(timedOutError(method)), timeoutMs)),
+        answer,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(timedOutError(method, waiting.handoffAttempted)), timeoutMs),
+        ),
       ]).finally(() => pending.delete(id));
     },
 

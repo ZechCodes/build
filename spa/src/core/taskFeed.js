@@ -11,6 +11,17 @@ const subscribers = new Set();
 let watcher = null;
 let last = null;
 
+const EMPTY_SCOPED_FEED = Object.freeze({
+  items: [],
+  plans: [],
+  runs: [],
+  externalWorktrees: [],
+  pending: [],
+  primaryChanges: [],
+  projects: [],
+  cached: true,
+});
+
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
  *  pending, projects, primaryChanges}); the current snapshot (if any) is
  *  delivered immediately. Returns unsubscribe. */
@@ -18,6 +29,13 @@ export function subscribeFeed(fn) {
   subscribers.add(fn);
   if (last) fn(last);
   return () => subscribers.delete(fn);
+}
+
+/** Retire the snapshot owned by the device being left. The cached marker keeps
+ * the sync layer from treating this boundary value as bridge data to persist. */
+export function resetFeedScope() {
+  last = EMPTY_SCOPED_FEED;
+  subscribers.forEach((fn) => fn(last));
 }
 
 /** The run that owns a project's primary checkout, or null while nobody has
@@ -29,33 +47,41 @@ export function primaryRunIdFor(feed, projectId) {
   return (entry && entry.run_id) || null;
 }
 
+const ownsFeedContext = ({ session, scope }) =>
+  session === App.session && scope === App.cacheScope && (!scope || scope.active());
+
+const liveFeedSnapshot = (board, projectList) => ({
+  // The redesigned feed: one row per work item (branch or issue). The
+  // legacy collections below still ship, and still feed what has not moved
+  // over yet.
+  items: board.items || [],
+  plans: board.plans || [],
+  runs: board.runs || [],
+  externalWorktrees: board.external_worktrees || [],
+  // The lifecycle verbs whose git is running right now: a checkout being
+  // cut is a row from the moment it is asked for, under the id it will
+  // settle as. A bridge that predates them sends none.
+  pending: board.pending || [],
+  primaryChanges: board.primary_changes || [],
+  // The wire names a project by `project_id`; consumers of the snapshot
+  // (the toolbar's scope and menu) read `id`. Bridge the key here, in the
+  // one place the wire is read.
+  projects: (projectList.projects || []).map((project) => ({
+    ...project,
+    id: project.project_id || project.id,
+  })),
+});
+
 async function tick() {
+  const context = { session: App.session, scope: App.cacheScope };
+  const call = App.call;
   try {
     const [board, projectList] = await Promise.all([
-      App.call("board.list"),
-      App.call("project.list"),
+      call("board.list"),
+      call("project.list"),
     ]);
-    last = {
-      // The redesigned feed: one row per work item (branch or issue). The
-      // legacy collections below still ship, and still feed what has not moved
-      // over yet.
-      items: board.items || [],
-      plans: board.plans || [],
-      runs: board.runs || [],
-      externalWorktrees: board.external_worktrees || [],
-      // The lifecycle verbs whose git is running right now: a checkout being
-      // cut is a row from the moment it is asked for, under the id it will
-      // settle as. A bridge that predates them sends none.
-      pending: board.pending || [],
-      primaryChanges: board.primary_changes || [],
-      // The wire names a project by `project_id`; consumers of the snapshot
-      // (the toolbar's scope and menu) read `id`. Bridge the key here, in the
-      // one place the wire is read.
-      projects: (projectList.projects || []).map((project) => ({
-        ...project,
-        id: project.project_id || project.id,
-      })),
-    };
+    if (!ownsFeedContext(context)) return;
+    last = liveFeedSnapshot(board, projectList);
     subscribers.forEach((fn) => fn(last));
   } catch {
     /* offline / transient — the next tick retries */
@@ -72,10 +98,12 @@ const onVisibilityChange = () => {
  *  being asked. Marked `cached: true` so the sync layer does not treat its own
  *  echo as news; a live answer that gets there first wins outright. */
 async function seedFromCache() {
-  const deviceId = (App.session && App.session.deviceId) || App.selectedDeviceId;
+  const session = App.session;
+  const scope = App.cacheScope;
+  const deviceId = (session && session.deviceId) || App.selectedDeviceId;
   if (!deviceId) return;
   const record = await readCached({ deviceId, entityId: "", kind: "feed" });
-  if (!record || last) return;
+  if (!record || last || session !== App.session || scope !== App.cacheScope || (scope && !scope.active())) return;
   // Nothing in flight survives a reload: the verbs the last session watched
   // settled long ago, and the live answer names whatever is running now.
   last = { ...record.value, pending: [], cached: true };

@@ -157,6 +157,29 @@ describe("the Files view, opened at a line", () => {
     files.dispose();
     restore();
   });
+
+  it("does not navigate when its initial tree arrives after disposal", async () => {
+    let releaseTree;
+    const tree = new Promise((resolve) => { releaseTree = resolve; });
+    const opened = vi.fn();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const files = renderFilesTab(host, {
+      scope: { run_id: "run-1" },
+      openAt: { path: "src/a.js" },
+      onFileOpen: opened,
+      callRpc: vi.fn(async (method) => {
+        if (method === "fs.tree") return tree;
+        throw new Error("a disposed view must not read its file");
+      }),
+    });
+
+    files.dispose();
+    releaseTree({ path: "src", entries: [{ kind: "file", name: "a.js", size: 20 }] });
+    await settle();
+
+    expect(opened).not.toHaveBeenCalled();
+  });
 });
 
 describe("the line a jump asked for", () => {

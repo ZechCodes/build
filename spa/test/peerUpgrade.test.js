@@ -12,6 +12,7 @@ const peerLink = vi.hoisted(() => ({
 const api = vi.hoisted(() => ({ fetchIceServers: vi.fn(async () => [{ urls: ["stun:stun.test"] }]) }));
 const terminals = vi.hoisted(() => ({ terminalsRideOn: vi.fn(), retargetTerminals: vi.fn() }));
 const relay = vi.hoisted(() => ({ openRelaySession: vi.fn() }));
+const greetings = vi.hoisted(() => ({ greet: vi.fn(async () => true) }));
 
 vi.mock("../src/core/peerLink.js", () => ({
   openPeerLink: (options) => peerLink.open(options),
@@ -39,13 +40,11 @@ vi.mock("../src/devices.js", () => ({
 vi.mock("../src/core/composeView.js", () => ({ flushCaptures: async () => {} }));
 vi.mock("../src/core/changeEvents.js", () => ({
   dispatchChangeEvent: (...args) => changed.push(args),
-  greetBridge: async () => ({}),
+  greetBridge: (...args) => greetings.greet(...args),
 }));
-vi.mock("../src/core/cacheScope.js", () => ({ setCacheDevice: () => {} }));
-
 const changed = [];
-const { App } = await import("../src/app.js");
-const { adoptSession, openAppSession } = await import("../src/connection.js");
+const { App, disposeApplicationScope } = await import("../src/app.js");
+const { adoptSession, greetLiveBridge, openAppSession } = await import("../src/connection.js");
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -85,6 +84,7 @@ const takeCandidate = (deliver) => (push) => {
 };
 
 beforeEach(() => {
+  disposeApplicationScope();
   document.body.innerHTML = '<div id="offbar"><span id="offbar-text"></span></div><div id="conn"></div>';
   changed.length = 0;
   App.offline = false;
@@ -94,9 +94,28 @@ beforeEach(() => {
     spy.mockReset();
   }
   api.fetchIceServers.mockResolvedValue([{ urls: ["stun:stun.test"] }]);
+  greetings.greet.mockReset();
+  greetings.greet.mockResolvedValue(true);
 });
 
 describe("the upgrade policy", () => {
+  it("applies the live bridge's operation capability to its chat repository", async () => {
+    delete globalThis.RTCPeerConnection;
+    const session = fakeSession();
+    adoptSession(session);
+    greetings.greet.mockImplementationOnce(async (_call, { onGreeting }) => {
+      onGreeting({ thread_post_operations: { version: 1, status_method: "thread.operation" } });
+      return true;
+    });
+
+    await greetLiveBridge();
+
+    expect(App.chatRepository.threadPostOperations()).toEqual({
+      version: 1,
+      statusMethod: "thread.operation",
+    });
+  });
+
   it("migrates both streams once the channels are open, and keeps the relay for signaling", async () => {
     const link = fakeLink();
     peerLink.open.mockImplementation(async ({ fetchIceServers, signal }) => {

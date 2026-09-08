@@ -44,7 +44,7 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { cacheDeviceId } from "./cacheScope.js";
+import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { patchList } from "./patchList.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
@@ -379,6 +379,7 @@ export function mountGitPane(
   } = {},
 ) {
   const openFile = (navigate && navigate.openFile) || null;
+  const cacheScope = currentCacheScope();
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
   let bodiesUnpainted = false; // a file body landed while a repaint was held
@@ -397,10 +398,8 @@ export function mountGitPane(
   // The local cache's address for this checkout. A primary checkout names no
   // entity, so it takes no part — nothing to key by, nothing evicted with it.
   const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
-  const cacheAddress = (kind, sub) => {
-    const deviceId = cacheDeviceId();
-    return deviceId && cacheEntityId ? { deviceId, entityId: cacheEntityId, kind, sub } : null;
-  };
+  const cacheAddress = (kind, sub) =>
+    cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind, sub }) || null : null;
   const readThroughCache = async (kind, sub) => {
     const address = cacheAddress(kind, sub);
     const record = address ? await readCached(address) : undefined;
@@ -412,7 +411,7 @@ export function mountGitPane(
   };
   // The uncommitted changeset's bodies: git.status names the files and what each
   // one holds, and each file's diff is fetched, cached and answered on its own.
-  const fileDiffs = createFileDiffs({ deviceId: cacheDeviceId(), entityId: cacheEntityId, scope, call: callRpc });
+  const fileDiffs = createFileDiffs({ deviceId: cacheScope?.deviceId, entityId: cacheEntityId, scope, call: callRpc });
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
   let composer = null; // the one box under the diff, mounted once
   // What the reviewer has approved and selected on this surface's files. One
@@ -548,15 +547,18 @@ export function mountGitPane(
     ? createCommentLayer({
         readNote: () => (messageBox() ? messageBox().value : ""),
         submit: async (messages) => {
+          const reviewedChangeset = selected;
+          const reviewedViews = renderedViews;
+          const destination = agentSelection.scope();
           await callRpc("run.request_changes", {
             run_id: scope.run_id,
-            ...agentSelection.scope(),
+            ...destination,
             messages,
             ...MUTATION_THREAD_PAGE,
           });
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
-          reviewStamps = stampChangeset(reviewStamps, selected, renderedViews);
+          reviewStamps = stampChangeset(reviewStamps, reviewedChangeset, reviewedViews);
         },
         revisionId,
         onChange: () => {
@@ -699,13 +701,16 @@ export function mountGitPane(
 
   const activeComments = () => (reviewMounted ? review : commentLayerAsPlug);
 
+  const activeCommentOffer = () =>
+    activeComments()?.commentOffer?.() || { commentable: false, pending: 0 };
+
   /// What the box can do right now.
   ///
   /// Committing is offered on the two changesets that SHOW uncommitted work —
   /// the aggregate and Uncommitted itself. On a past commit it would commit the
   /// worktree, which is not what the reviewer is looking at.
   const composerOffer = () => {
-    const offer = activeComments().commentOffer();
+    const offer = activeCommentOffer();
     const commitsHere = selected === "uncommitted" || selected === "review";
     return {
       commentable: offer.commentable,
@@ -717,7 +722,7 @@ export function mountGitPane(
 
   /// The verb the reviewer picked, with what they wrote in the box.
   const runComposerVerb = (optionId, text) =>
-    optionId === "comment" ? activeComments().sendComments() : runCommitOption(optionId, text);
+    optionId === "comment" ? activeComments()?.sendComments?.() || Promise.resolve() : runCommitOption(optionId, text);
 
   /** The one box under the diff: below the scroller, so reading to the bottom of
    *  a long stack never takes it off screen. Mounted once and kept — it holds a

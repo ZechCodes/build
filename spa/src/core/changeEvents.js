@@ -197,13 +197,17 @@ export function refetchEverything() {
  * feature detection, and it is the whole of it — the client goes back to
  * polling with nothing to configure.
  */
-export async function greetBridge(call) {
+export async function greetBridge(call, { isCurrent = () => true, onGreeting = () => {} } = {}) {
   let greeting = null;
   try {
     greeting = await call("session.hello");
   } catch {
     greeting = null; // an old bridge, or one that dropped mid-greeting
   }
+  // A slower old device can answer after another session has been adopted.
+  // Its features and gap belong to that old session, not the current app.
+  if (!isCurrent()) return changeEventsArmed();
+  onGreeting(greeting);
   armChangeEvents(greeting);
   refetchEverything();
   return changeEventsArmed();

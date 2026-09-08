@@ -280,6 +280,25 @@ describe("the greeting", () => {
     });
     expect(changeEventsArmed()).toBe(false);
   });
+
+  it("ignores a late greeting after its session stops owning the application", async () => {
+    let resolveGreeting;
+    let current = true;
+    const refreshed = vi.fn();
+    const accepted = vi.fn();
+    watchChanges({ refresh: refreshed, intervalMs: 1600 });
+    const pending = greetBridge(
+      () => new Promise((resolve) => { resolveGreeting = resolve; }),
+      { isCurrent: () => current, onGreeting: accepted },
+    );
+    current = false;
+    resolveGreeting({ push_events: true, thread_post_operations: { version: 1, status_method: "operation.get" } });
+    await pending;
+
+    expect(changeEventsArmed()).toBe(false);
+    expect(refreshed).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
+  });
 });
 
 describe("a reconnect", () => {

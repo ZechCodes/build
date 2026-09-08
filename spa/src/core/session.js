@@ -25,7 +25,7 @@ export { DEFAULT_RPC_TIMEOUT_MS };
  *  between "the daemon said no" and "the daemon has not said yet". This
  *  module's own, deliberately: `replyOrNothing` below is the one answer callers
  *  get, so no call site can re-derive the rule and reach a different verdict. */
-const rpcTimedOut = (error) => Boolean(error && error.timedOut);
+const rpcTimedOutAfterHandoff = (error) => Boolean(error && error.timedOut && error.uncertain);
 
 /**
  * The reply, or nothing when the browser stopped waiting for it.
@@ -40,7 +40,7 @@ export async function replyOrNothing(pending) {
   try {
     return await pending;
   } catch (error) {
-    if (rpcTimedOut(error)) return null;
+    if (rpcTimedOutAfterHandoff(error)) return null;
     throw error;
   }
 }

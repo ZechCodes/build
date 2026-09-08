@@ -7,11 +7,14 @@ import {
   surfacesRecord,
 } from "./surfacesCache.js";
 
-const threadCacheAddress = ({ deviceId, entityId, agentId }) => ({
+const threadCacheAddress = ({ deviceId, entityId, agentId, conversationId }) => ({
   deviceId,
-  entityId,
+  // A conversation is the transcript's canonical storage owner. Issue and run
+  // views may intentionally point at the same one; their route/entity ids must
+  // not fork that history into two browser caches.
+  entityId: conversationId || entityId,
   kind: THREAD_RECORD_KIND,
-  sub: agentId || "",
+  sub: conversationId ? "" : agentId || "",
 });
 
 export function createConversationCache({ addressOf, threadCache, onThreadSeeded, onSurfacesSeeded }) {

@@ -289,6 +289,9 @@ pub struct Handled {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum BridgeAction {
     ReadUnreadMessages,
+    ReadOperationMessages {
+        operation_id: String,
+    },
     PostThreadMessage {
         /// Whether the agent keeps working after this post (a progress note)
         /// rather than handing the turn back. See the tool description.
@@ -360,6 +363,7 @@ impl BridgeAction {
     pub fn tool_name(&self) -> &'static str {
         match self {
             BridgeAction::ReadUnreadMessages => "read_unread_messages",
+            BridgeAction::ReadOperationMessages { .. } => "read_unread_messages",
             BridgeAction::PostThreadMessage { .. } => "post_thread_message",
             BridgeAction::SearchConversation { .. } => "search_conversation",
             BridgeAction::ListProjects => "list_projects",
@@ -377,6 +381,7 @@ impl BridgeAction {
     pub fn surface(&self) -> McpSurface {
         match self {
             BridgeAction::ReadUnreadMessages
+            | BridgeAction::ReadOperationMessages { .. }
             | BridgeAction::PostThreadMessage { .. }
             | BridgeAction::SearchConversation { .. } => McpSurface::Coding,
             BridgeAction::ListProjects
@@ -695,7 +700,12 @@ impl DoneServer {
                         "tools": [{
                             "name": "read_unread_messages",
                             "description": "Read unread reviewer messages in your current Build conversation thread. Reading atomically marks them seen, which starts the reviewer's \"Working\" indicator and its timer — post_thread_message stops it (see the `working` field on the result). A message may carry files under `attachments` — open every `path` it names before acting on that message.",
-                            "inputSchema": { "type": "object", "properties": {} }
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "operation_id": { "type": "string", "description": "A durable thread.post operation to read exactly and idempotently." }
+                                }
+                            }
                         }, {
                             "name": "post_thread_message",
                             // MUST agree with the "Build conversation protocol"
@@ -792,8 +802,35 @@ impl DoneServer {
             return self.handle_router_tools_call(id, name, params);
         }
         if name == "read_unread_messages" {
+            let operation_id = params
+                .and_then(|params| params.get("arguments"))
+                .and_then(|arguments| arguments.get("operation_id"));
+            let action = match operation_id {
+                None | Some(Value::Null) => BridgeAction::ReadUnreadMessages,
+                Some(Value::String(operation_id))
+                    if !operation_id.is_empty()
+                        && operation_id.len() <= 128
+                        && operation_id.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric()
+                                || matches!(byte, b'-' | b'_' | b'.' | b':')
+                        }) =>
+                {
+                    BridgeAction::ReadOperationMessages {
+                        operation_id: operation_id.clone(),
+                    }
+                }
+                Some(_) => {
+                    return Handled {
+                        reply: Some(tool_error(
+                            id,
+                            "operation_id must be a valid non-empty operation key".to_string(),
+                        )),
+                        ..Handled::default()
+                    };
+                }
+            };
             return Handled {
-                action: Some(BridgeAction::ReadUnreadMessages),
+                action: Some(action),
                 action_id: Some(id),
                 ..Handled::default()
             };

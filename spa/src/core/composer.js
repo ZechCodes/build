@@ -294,11 +294,13 @@ export function mountComposerAttachments(root, {
         entry.descriptor = descriptor;
         entry.size = descriptor.size ?? entry.size;
         entry.mime = descriptor.mime || entry.mime;
+        persist();
         render();
       },
       (error) => {
         entry.status = "failed";
         entry.error = (error && error.message) || "Could not attach";
+        persist();
         render();
         onError(`${entry.name}: ${entry.error}`);
       },

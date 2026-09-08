@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let App;
-let subscribeFeed, refreshFeed, startFeed, stopFeed;
+let subscribeFeed, refreshFeed, resetFeedScope, startFeed, stopFeed;
 let armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS;
 
 beforeEach(async () => {
@@ -16,7 +16,7 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ App } = await import("../src/app.js"));
-  ({ subscribeFeed, refreshFeed, startFeed, stopFeed } = await import("../src/core/taskFeed.js"));
+  ({ subscribeFeed, refreshFeed, resetFeedScope, startFeed, stopFeed } = await import("../src/core/taskFeed.js"));
   ({ armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS } = await import(
     "../src/core/changeEvents.js"
   ));
@@ -55,6 +55,38 @@ describe("the shared feed", () => {
     expect(snapshot.projects).toEqual([
       { id: "proj-1", project_id: "proj-1", name: "relaydb", path: "/r" },
     ]);
+  });
+
+  it("discards a late snapshot from the session that was replaced", async () => {
+    const releases = [];
+    App.session = { deviceId: "device-a" };
+    App.call = vi.fn((method) => new Promise((resolve) => releases.push([method, resolve])));
+    const seen = [];
+    subscribeFeed((feed) => seen.push(feed));
+    const stale = refreshFeed();
+
+    App.session = { deviceId: "device-b" };
+    App.call = vi.fn(async (method) => method === "project.list" ? { projects: [] } : { items: [] });
+    for (const [method, resolve] of releases) {
+      resolve(method === "project.list" ? { projects: [{ project_id: "old" }] } : { items: [{ id: "old" }] });
+    }
+    await stale;
+
+    expect(seen).toEqual([]);
+  });
+
+  it("takes the previous device's snapshot out of replay during a switch", async () => {
+    App.call = vi.fn(async (method) =>
+      method === "project.list" ? { projects: [] } : { items: [{ id: "device-a-item" }] },
+    );
+    await refreshFeed();
+
+    resetFeedScope();
+    let replayed;
+    subscribeFeed((feed) => { replayed = feed; });
+
+    expect(replayed.cached).toBe(true);
+    expect(replayed.items).toEqual([]);
   });
 });
 

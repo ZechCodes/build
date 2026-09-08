@@ -381,6 +381,7 @@ describe("the advanced panel", () => {
     App.call = vi.fn(async () => {
       const timedOut = new Error("branch.dispatch timed out");
       timedOut.timedOut = true;
+      timedOut.uncertain = true;
       throw timedOut;
     });
     openAdvanced();

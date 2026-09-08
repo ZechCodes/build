@@ -49,16 +49,10 @@ import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoi
 import { confirmAction } from "./confirm.js";
 import {
   insertRecord,
-  isPending,
   isProvisionalKey,
   patchRecord,
-  projectOptimistic,
   projectPending,
-  provisionalKey,
-  reconcileOptimistic,
   removeRecord,
-  runOptimistic,
-  subscribeOptimistic,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
 import { hide, motionSettled, reveal } from "./motion.js";
@@ -66,8 +60,10 @@ import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
-import { cacheDeviceId } from "./cacheScope.js";
+import { currentCacheScope } from "./cacheScope.js";
 import { createConversationCache } from "./conversationCache.js";
+import { createChatRepository } from "./chatRepository.js";
+import { createAgentRailContext } from "./agentRailContext.js";
 import { entityIdOf } from "./entityId.js";
 import { replyOrNothing } from "./session.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
@@ -147,6 +143,114 @@ const patternSeed = (agentId) => (hashString(agentId) ^ PATTERN_SEED_SALT) >>> 0
  *  can actually paint in, and `var(--amber)` is not one. */
 const UNREAD_INK = "#ffd447";
 
+const operationIsUncertain = (error) =>
+  error?.uncertain === true || (error?.timedOut === true && error?.uncertain !== false);
+
+const recoveryExcerpt = (recovery) => {
+  const body = recovery.body.trim();
+  if (body) return body.length > 80 ? `${body.slice(0, 77)}…` : body;
+  return `${recovery.attachmentCount} attachment${recovery.attachmentCount === 1 ? "" : "s"}`;
+};
+
+const recoveryHeading = (recovery) => {
+  if (recovery.kind === "creation") return "Agent creation uncertain";
+  if (recovery.status === "execution_error") return "Message saved; agent did not start";
+  return recovery.status === "uncertain" ? "Delivery uncertain" : "Message not sent";
+};
+
+const recoveryAction = (recovery) => {
+  if (!recovery.canRetry) return "";
+  const label = recovery.kind === "creation" ? "Retry creation" : recovery.status === "uncertain" ? "Check delivery" : "Retry";
+  return `<button type="button">${label}</button>`;
+};
+
+const chatRecoveryHtml = (controller) => controller.recoveries().map((recovery) =>
+  `<div class="chat-recovery-entry" data-operation="${esc(recovery.operationId)}">
+    <span><strong>${recoveryHeading(recovery)}</strong>
+      <span>${esc(recoveryExcerpt(recovery))}</span>
+      ${recovery.error ? `<span>${esc(recovery.error)}</span>` : ""}
+    </span>
+    ${recoveryAction(recovery)}
+  </div>`,
+).join("");
+
+const conversationIdOf = (agent) => agent?.conversation_id || agent?.id || "";
+
+function railChatDependencies(context) {
+  const cacheScope = context.cacheScope || App.cacheScope || currentCacheScope();
+  const injectedRepository = context.chatRepository || App.chatRepository;
+  return {
+    cacheScope,
+    ownsRepository: !injectedRepository,
+    repository: injectedRepository || createChatRepository({
+      scope: cacheScope || {},
+      // Standalone compatibility only. Application mounts inject a scoped
+      // repository which connection lifecycle retargets explicitly.
+      call: (method, params) => App.call(method, params),
+    }),
+  };
+}
+
+function createRailChatOwnership(repository, key, entityOf) {
+  let provisional = null;
+  const addressFor = (entity, agent) => {
+    const execution = entity.executionContext;
+    if (execution) {
+      return {
+        entityId: execution.entity_id,
+        agentId: execution.agent_id,
+        conversationId: execution.conversation_id,
+      };
+    }
+    return { entityId: entity.entityId, agentId: agent.id, conversationId: conversationIdOf(agent) };
+  };
+  return {
+    controllerFor(agent) {
+      const entity = entityOf();
+      if (!agent || !entity.entityId) return null;
+      const address = addressFor(entity, agent);
+      const controller = repository.controller(address);
+      const digest = entity.executionContext?.agent || agent;
+      controller.absorbAgent({ ...digest, id: address.agentId });
+      return controller;
+    },
+    provisional() {
+      const entity = entityOf();
+      if (!provisional) {
+        provisional = repository.provisional(`new:${key}`, {
+          entityId: entity.entityId || key,
+          conversationId: `new:${key}`,
+        });
+      }
+      return provisional;
+    },
+    resolve(controller, identity) {
+      return repository.resolveProvisional(controller, identity);
+    },
+    releaseProvisional() {
+      provisional = null;
+    },
+  };
+}
+
+const fallbackCacheEntityId = (context, feedRow) => {
+  if (context.kind === "issue") return context.issueId;
+  return feedRow ? entityIdOf(feedRow) : null;
+};
+const cacheEntityId = (identity, context, feedRow) => identity?.entityId || fallbackCacheEntityId(context, feedRow);
+const cacheAgentId = (identity, selectedId) => identity?.agentId || selectedId || "";
+const cacheConversationId = (identity, selectedId) => identity?.conversationId || selectedId || "";
+
+function addressedCacheIdentity({ cacheScope, context, feedRow, selectedId, controller }) {
+  if (!cacheScope) return null;
+  const identity = controller?.identity;
+  const entityId = cacheEntityId(identity, context, feedRow);
+  if (!entityId) return null;
+  const agentId = cacheAgentId(identity, selectedId);
+  const conversationId = cacheConversationId(identity, selectedId);
+  return cacheScope.address({ entityId, agentId, conversationId });
+}
+
 const computedStyleOf = (element) =>
   element && typeof globalThis.getComputedStyle === "function" ? globalThis.getComputedStyle(element) : null;
 
@@ -176,29 +280,20 @@ const bubbleKey = (bubble) => faceKey(bubble.type, bubble.id);
 // (a tab switch re-renders the surface), so the human's choices — which agent
 // is open, whether the panel is out, chat or TUI, and anything typed but not
 // sent — are kept here rather than in the DOM that is about to be replaced.
-const drafts = new Map(); // `${entityId}:${agentId}` → { body, attachments }
-const chosenAgent = new Map(); // entity key → agent id the human last opened
 // What the next agent on a work item will be created as — the harness card the
 // human pressed and the model menu's selection, held until there is an agent to
 // write them to. Nothing goes to the bridge until then: there is no entity
 // choice worth writing for a checkout that may never be adopted.
-const newAgentChoices = new Map(); // entity key → { provider, model, effort }
 // Chat or TUI, per work item: the terminal is the basement, so walking into a
 // different branch or issue starts you in the conversation whatever face of the
 // last one you were looking at.
-const panelModes = new Map();
 
 /** Forget what the rail remembers. For tests, and for a session teardown — the
  *  drafts and choices belong to the person who was signed in. */
 export function resetAgentRailMemory() {
-  drafts.clear();
-  chosenAgent.clear();
-  panelModes.clear();
-  newAgentChoices.clear();
+  // Chat/view memory now belongs to the injected application repository and
+  // is retired with its account/device scope. Kept for old test harnesses.
 }
-
-const railKey = (context) =>
-  context.kind === "issue" ? `issue:${context.issueId}` : `branch:${context.projectId}:${context.branch}`;
 
 const readExpanded = () => {
   try {
@@ -340,20 +435,32 @@ export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true
  */
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
-  const key = railKey(context);
+  const railContext = createAgentRailContext(context);
+  const key = railContext.key;
+  const { cacheScope, ownsRepository: ownsChatRepository, repository: chatRepository } = railChatDependencies(context);
+  const {
+    isPending,
+    projectOptimistic,
+    provisionalKey,
+    reconcileOptimistic,
+    runOptimistic,
+    subscribeOptimistic,
+  } = chatRepository.optimisticStore();
+  const railView = chatRepository.railView(key);
   const selection = context.selection || createAgentSelection();
   let entity = railEntity(null, context.kind);
-  let selectedId = chosenAgent.get(key) || null;
+  let selectedId = railView.selectedAgentId();
   selection.set(selectedId);
   // A collapsed rail has no composer to focus at all — the human just cut
   // this branch and is about to type into it, so that intent outranks
   // whatever they left the rail at on the last one.
   let expanded = context.autofocusComposer === true || readExpanded();
-  let mode = panelModes.get(key) || "chat";
+  let mode = railView.panelMode();
   let poll = null;
   let disposed = false;
   let tui = null; // the mounted PTY pane, in TUI mode
-  const threadCache = createThreadCache();
+  const transientThreadCache = createThreadCache();
+  let threadCache = transientThreadCache;
   // Choosing the next agent's harness, with the chooser in the panel. Entered
   // by the strip's `+`, left by the send that creates the agent or by opening
   // any existing bubble.
@@ -368,15 +475,24 @@ export function mountAgentRail(host, context) {
   let paintedChat = null; // what the timeline in the panel was drawn from
   let paintedDigests = []; // the run totals that timeline was drawn with
   let seededSurfaces = null;
+  const chatOwnership = createRailChatOwnership(chatRepository, key, () => entity);
+  const controllerForAgent = (agent) => chatOwnership.controllerFor(agent);
+  const provisionalController = () => chatOwnership.provisional();
 
   const cacheIdentity = () => {
-    const deviceId = cacheDeviceId();
-    const entityId = context.kind === "issue" ? context.issueId : feedRow ? entityIdOf(feedRow) : null;
-    if (!deviceId || !entityId) return null;
-    return { deviceId, entityId, agentId: selectedId || "" };
+    if (disposed) return null;
+    return addressedCacheIdentity({
+      cacheScope,
+      context,
+      feedRow,
+      selectedId,
+      controller: controllerForAgent(agentOf(selectedId)),
+    });
   };
 
-  const conversationCache = createConversationCache({
+  let conversationCache = null;
+
+  const createBoundConversationCache = () => createConversationCache({
     addressOf: cacheIdentity,
     threadCache,
     onThreadSeeded: (seededFor) => {
@@ -392,14 +508,25 @@ export function mountAgentRail(host, context) {
     },
   });
 
+  const bindConversationCache = () => {
+    const controller = controllerForAgent(agentOf(selectedId));
+    const wantedThreadCache = controller?.history.threadCache || transientThreadCache;
+    if (conversationCache && threadCache === wantedThreadCache) return conversationCache;
+    threadCache = wantedThreadCache;
+    conversationCache = createBoundConversationCache();
+    absorbedThreadPayload = null;
+    seededSurfaces = null;
+    return conversationCache;
+  };
+
   const absorbSurfaces = () => {
     seededSurfaces = null;
     const agent = agentInFocus();
-    conversationCache.absorbSurfaces(agent ? agent.surfaces : null);
+    bindConversationCache().absorbSurfaces(agent ? agent.surfaces : null);
   };
 
   const resetConversationCache = () => {
-    conversationCache.reset();
+    conversationCache = null;
     absorbedThreadPayload = null;
     seededSurfaces = null;
   };
@@ -431,6 +558,8 @@ export function mountAgentRail(host, context) {
   // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
   let composerModelMenu = null;
+  let composerController = null;
+  let unsubscribeComposerController = null;
   let surfacesBlock = null;
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
@@ -441,10 +570,12 @@ export function mountAgentRail(host, context) {
   const openConversation = (agentId) => {
     chooseAgent(agentId);
     resetConversationCache();
-    threadAgentId = agentId;
+    // Let threadWindow bind the selected controller's canonical history before
+    // reading. Marking the new id here would make it keep the old cache.
+    threadAgentId = null;
   };
-  const pendingAgentsScope = () => `agents:${key}`;
-  const pendingThreadScope = (agentId) => `thread:${key}:${agentId || ""}`;
+  const pendingAgentsScope = () => `${chatRepository.scopeKey}:agents:${key}`;
+  const pendingThreadScope = (agentId) => `${chatRepository.scopeKey}:thread:${key}:${agentId || ""}`;
   const visibleAgents = () => projectOptimistic(pendingAgentsScope(), entity.agents, { keyOf: agentIdOf });
 
   const agentOf = (id) => visibleAgents().find((agent) => agent.id === id) || null;
@@ -452,13 +583,17 @@ export function mountAgentRail(host, context) {
    *  bubble strip is the selector for the whole work item, not just the rail. */
   const chooseAgent = (id) => {
     selectedId = id || null;
-    if (selectedId) chosenAgent.set(key, selectedId);
-    else chosenAgent.delete(key);
-    if (!isProvisionalKey(selectedId)) selection.set(selectedId);
+    railView.chooseAgent(selectedId);
+    if (!isProvisionalKey(selectedId)) {
+      const addressed = controllerForAgent(agentOf(selectedId));
+      selection.set(addressed?.identity.agentId || selectedId);
+    }
   };
-  const conversationKey = () => `${entity.entityId || key}:${selectedId || AGENT_NOT_YET_BORN}`;
-  const draftOf = () => drafts.get(conversationKey()) || { body: "", attachments: [] };
-  const writeDraft = (next) => drafts.set(conversationKey(), { ...draftOf(), ...next });
+  const controllerInFocus = () => controllerForAgent(agentInFocus()) || provisionalController();
+  const conversationKey = () => {
+    const controller = controllerInFocus();
+    return `${controller.identity.entityId || key}:${controller.identity.agentId || controller.identity.draftId || AGENT_NOT_YET_BORN}`;
+  };
 
   // ---- the agent that does not exist yet -------------------------------------
 
@@ -474,17 +609,19 @@ export function mountAgentRail(host, context) {
    *  Resolved once, so the cards, the composer's menu and the `agent.add`
    *  params cannot disagree. */
   const newAgentChoice = () => {
-    const said = newAgentChoices.get(key) || NO_AGENT_CHOICE;
+    const held = provisionalController().choice();
+    const said = held.provider
+      ? { provider: held.provider, model: held.requestedModel, effort: held.effort }
+      : NO_AGENT_CHOICE;
     return { ...said, provider: chosenProviderId(creatable(), said) };
   };
-  const writeNewAgentChoice = (next) => newAgentChoices.set(key, next);
+  const writeNewAgentChoice = (next) => provisionalController().setProvisionalChoice(next);
 
   /** That choice as `agent.add` params: empties omitted, so the harness's own
    *  default stands where nothing was said. */
-  const newAgentParams = () => {
-    const choice = newAgentChoice();
+  const newAgentParams = (choice = newAgentChoice()) => {
     const { models } = catalogForProvider(catalog || {}, choice.provider);
-    return modelParams(models || [], choice.model, choice.effort, choice.provider);
+    return modelParams(models || [], choice.model || choice.requestedModel, choice.effort, choice.provider);
   };
 
   /** The adopting caller for a checkout Build owns nothing in.
@@ -494,10 +631,9 @@ export function mountAgentRail(host, context) {
    *  checkout once between them. Standing alone, the rail makes its own once
    *  the payload says which checkout it is, and keeps it — it holds the run it
    *  mints. */
-  const adoptingCall = () => {
+  const adoptingCall = (call) => {
     if (context.adopting) return context.adopting() || null;
     if (!adopting && entity.adoptable && entity.projectId) {
-      const call = (method, params) => App.call(method, params);
       adopting = entity.primary
         ? createPrimaryAdoptingCall(call, entity.projectId)
         : createAdoptingCall(call, entity.projectId, entity.worktreeId);
@@ -510,10 +646,7 @@ export function mountAgentRail(host, context) {
   /// The route the shared feed's rows are keyed by — the same identity
   /// core/toolbarModel.js's `toolbarIdentity` reads for the toolbar's own
   /// jump menu, matched here to find this work item's row.
-  const feedRoute = () =>
-    context.kind === "issue"
-      ? { name: "issue", projectId: context.projectId, id: context.issueId }
-      : { name: "branch", projectId: context.projectId, branch: context.branch };
+  const feedRoute = () => railContext.feedRoute();
 
   const loadedConversationItems = () => {
     const window = threadCache.readWindow();
@@ -554,7 +687,7 @@ export function mountAgentRail(host, context) {
     const row = statusRow();
     if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
-    const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel);
+    const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel, agentInFocus());
     paintStatusLead(row.querySelector(`#${RAIL_STATUS_LEAD_ID}`), status);
     paintStatusGit(row.querySelector(`#${RAIL_STATUS_GIT_ID}`), status).then(syncRailStatusRow);
     syncRailStatusRow();
@@ -578,13 +711,13 @@ export function mountAgentRail(host, context) {
   /// surface before the rail asked for; the param is here so the panel follows
   /// the bubble as soon as the daemon can tell them apart.
   const detail = async () => {
-    await conversationCache.seed();
-    const askedAgentId = selectedId && !isProvisionalKey(selectedId) ? { agent_id: selectedId } : {};
+    const call = chatRepository.currentCall();
+    await bindConversationCache().seed();
+    const addressed = controllerForAgent(agentOf(selectedId));
+    const agentId = addressed?.identity.agentId || selectedId;
+    const askedAgentId = agentId && !isProvisionalKey(agentId) ? { agent_id: agentId } : {};
     const scope = { ...threadCache.cursorParam(), ...askedAgentId };
-    if (context.kind === "issue") {
-      return App.call("issue.get", { issue_id: context.issueId, ...scope });
-    }
-    return App.call("branch.get", { project_id: context.projectId, branch: context.branch, ...scope });
+    return railContext.detail(call, scope);
   };
 
   const letGoOfRefusedAgent = (error, asked) => {
@@ -599,24 +732,26 @@ export function mountAgentRail(host, context) {
     return true;
   };
 
+  const readIsStale = (asked) => disposed || asked !== selectedId;
+
   const refresh = async () => {
     const asked = selectedId;
     let payload;
     try {
       payload = await detail();
     } catch (error) {
+      if (readIsStale(asked)) return;
       letGoOfRefusedAgent(error, asked);
       // Anything else — a branch that stopped resolving (finished, renamed) —
       // leaves the rail as it was rather than blanking the conversation under
       // the reader.
       return;
     }
-    if (disposed) return;
+    if (readIsStale(asked)) return;
     // The human opened a different bubble while this read was in flight: it
     // answers about the conversation they just left, and folding its delta into
     // the cache the switch just cleared would show one agent's words under
     // another's name. Drop it; the next tick asks about the right one.
-    if (asked !== selectedId) return;
     const answered = railEntity(payload, context.kind);
     if (answerLostTheAgents(answered)) return;
     // A start that never reached a harness is answered here and nowhere else:
@@ -627,8 +762,10 @@ export function mountAgentRail(host, context) {
     }
     agentlessOnce = false;
     entity = answered;
+    for (const agent of answered.agents) controllerForAgent(agent);
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
     chooseAgent(selectAgentId(visibleAgents(), selectedId));
+    controllerForAgent(agentOf(selectedId))?.reconcileUncertain().then(syncChatRecovery);
     // Whose conversation this payload carries: the agent we asked about, or —
     // when we asked about none, which is every first read — the entity's own,
     // which is the agent the selection just landed on (its first).
@@ -741,6 +878,9 @@ export function mountAgentRail(host, context) {
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
+      unsubscribeComposerController?.();
+      unsubscribeComposerController = null;
+      composerController = null;
       composerControl = null;
       composerModelMenu = null;
       if (shownMode === "tui") mountTui();
@@ -778,7 +918,7 @@ export function mountAgentRail(host, context) {
     if (tuiToggle) {
       tuiToggle.onclick = () => {
         mode = mode === "tui" ? "chat" : "tui";
-        panelModes.set(key, mode);
+        railView.setPanelMode(mode);
         paintPanel();
       };
     }
@@ -802,7 +942,7 @@ export function mountAgentRail(host, context) {
     if (threadAgentId !== selectedId) {
       resetConversationCache();
       threadAgentId = selectedId;
-      conversationCache.seed(); // fire and forget; the refresh under way folds onto it
+      bindConversationCache().seed(); // fire and forget; the refresh under way folds onto it
     }
     // The payload in hand belongs to the agent it was read for. Just after a
     // switch that is the agent just left, and absorbing it would refill the
@@ -827,7 +967,7 @@ export function mountAgentRail(host, context) {
     }
     absorbedThreadPayload = entity.thread;
     const thread = threadCache.absorb(entity.thread);
-    conversationCache.persistThread();
+    bindConversationCache().persistThread();
     return thread;
   };
 
@@ -849,31 +989,35 @@ export function mountAgentRail(host, context) {
   /// rather than the start, and this is what lifts it. One page in flight at a
   /// time: a scroll gesture fires the handler many times over, and each of
   /// those would otherwise be a round trip for the same history.
-  const readOlderItems = async () => {
+  const olderReadRequest = () => {
     const seek = threadCache.olderPageParam();
-    if (loadingOlderItems || !seek || !threadCache.hasOlderItems() || !entity.entityId) return;
-    loadingOlderItems = true;
-    const asked = selectedId;
+    if (loadingOlderItems || !seek || !threadCache.hasOlderItems() || !entity.entityId) return null;
+    const call = chatRepository.currentCall();
+    const addressed = controllerForAgent(agentOf(selectedId));
+    return { seek, call, addressed, asked: selectedId };
+  };
+
+  const fetchOlderPage = async ({ call, addressed, seek, asked }) => {
     try {
-      const page = await App.call("thread.page", {
-        entity_id: entity.entityId,
-        ...(selectedId ? { agent_id: selectedId } : {}),
-        ...seek,
+      return await railContext.olderPage(call, {
+        entityId: addressed?.identity.entityId || entity.entityId,
+        agentId: addressed?.identity.agentId || asked,
+        beforeSequence: seek.before_sequence,
       });
-      // The reader opened another agent's conversation while this was in
-      // flight: it is history from a thread nobody is looking at.
-      if (disposed || asked !== selectedId) return;
-      // The seek goes back with the page: the cache is the one that knows
-      // whether the window it was fetched above is still the window in hand —
-      // a poll during this round trip can have reset and reopened it.
-      if (threadCache.absorbOlderPage(page, seek)) paintChat({ olderItemsPrepended: true });
     } catch (error) {
-      // Scrolling to the top is a deliberate ask, so a refusal is worth
-      // saying — unlike a poll, which fails quietly and tries again.
       notifyError("Could not load older messages", error.message);
-    } finally {
-      loadingOlderItems = false;
+      return null;
     }
+  };
+
+  const readOlderItems = async () => {
+    const request = olderReadRequest();
+    if (!request) return;
+    loadingOlderItems = true;
+    const page = await fetchOlderPage(request);
+    loadingOlderItems = false;
+    if (!page || disposed || request.asked !== selectedId) return;
+    if (threadCache.absorbOlderPage(page, request.seek)) paintChat({ olderItemsPrepended: true });
   };
 
   /// The chat tab of a work item with no agent: which harness to make one on,
@@ -905,14 +1049,15 @@ export function mountAgentRail(host, context) {
   /// its own sequences and its own folds, so the runs the reader had open in
   /// the one they left do not follow them into the next.
   const conversationRuns = () => {
-    const runsFor = `${entity.entityId || ""}:${selectedId || ""}`;
+    const identity = controllerInFocus().identity;
+    const runsFor = `${identity.entityId || ""}:${identity.agentId || ""}:${identity.conversationId || ""}`;
     if (!activityRuns || activityRunsFor !== runsFor) {
       activityRunsFor = runsFor;
       activityRuns = createActivityRuns({
-        deviceId: cacheDeviceId(),
-        entityId: entity.entityId,
-        agentId: selectedId,
-        call: (method, params) => App.call(method, params),
+        deviceId: cacheScope?.deviceId,
+        entityId: identity.entityId,
+        agentId: identity.agentId,
+        call: (method, params) => chatRepository.currentCall()(method, params),
       });
       // Everything else the panel remembers about the conversation goes with
       // it: a line ruled in one thread marks nothing in the next, and how far
@@ -934,7 +1079,7 @@ export function mountAgentRail(host, context) {
   /// alone would rule itself above what just arrived and clear itself a tick
   /// later. The reader reaching the end with nothing waiting is what retires it.
   const unreadLineFor = (body, thread) => {
-    const agent = agentOf(selectedId);
+    const agent = agentInFocus();
     return unreadAnchorSequence({
       held: unreadFrom,
       cursor: agent ? agent.read_through_sequence : undefined,
@@ -974,6 +1119,7 @@ export function mountAgentRail(host, context) {
 
   const chatFingerprintOf = (thread, agentLabel) => {
     const openRuns = conversationRuns().openKeys();
+    const threadState = controllerInFocus().threadState;
     return chatPaintFingerprint({
       deliveredSequence: deliveredSequenceOf(thread),
       itemCount: threadItems(thread).length,
@@ -983,7 +1129,7 @@ export function mountAgentRail(host, context) {
       selectedAgentId: selectedId,
       agentLabel,
       unreadFrom,
-      ...threadOfferState(),
+      ...threadOfferState(threadState),
     });
   };
 
@@ -1007,6 +1153,7 @@ export function mountAgentRail(host, context) {
     const built = timelineEntries(threadItems(thread), agentLabel, thread && thread.id, paintedDigests, {
       openRuns: runs.openKeys(),
       runItemsOf: fetchedRunItems,
+      threadState: controllerInFocus().threadState,
       unreadFrom,
     });
     // No composer in here: the box is pinned below this scroller, so what the
@@ -1080,6 +1227,7 @@ export function mountAgentRail(host, context) {
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
       ${railStatusRowHtml()}
+      <div class="chat-recovery" id="rail-chat-recovery"></div>
       ${composerHtml({
         inputId: COMPOSER_IDS.input,
         sendId: COMPOSER_IDS.send,
@@ -1098,18 +1246,59 @@ export function mountAgentRail(host, context) {
   /// and gaining one rebuilds the panel around a conversation.)
   /** The agent the panel is about — none while the chooser is up, whatever
    *  bubble is technically still selected behind it. */
-  const agentInFocus = () => (addingAgent ? null : agentOf(selectedId));
+  const agentInFocus = () => {
+    if (addingAgent) return null;
+    return entity.executionContext?.agent || agentOf(selectedId);
+  };
 
   const settledAgentInFocus = () => {
     const agent = agentInFocus();
     return agent && !isProvisionalKey(agent.id) ? agent : null;
   };
 
+  const composerDisplayChoice = (agent, settled) => {
+    if (!settled) return newAgentChoice();
+    return {
+      provider: settled.provider || agent?.provider || chosenProviderId(creatable(), NO_AGENT_CHOICE),
+      model: settled.requestedModel,
+      effort: settled.effort,
+    };
+  };
+
   const syncComposer = () => {
     if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
+    if (composerControl) composerControl.setBlocked(composerController?.choice().pending, "Applying model…");
+    syncChatRecovery();
     if (!composerModelMenu) return;
-    const choice = composerChoice();
-    composerModelMenu.set(catalog, choice.provider, choice, activeModelOf(agentInFocus()));
+    const agent = agentInFocus();
+    const settled = composerController?.choice();
+    const choice = composerDisplayChoice(agent, settled);
+    composerModelMenu.set(catalog, choice.provider, choice, settled?.activeModel || "");
+  };
+
+  const syncChatRecovery = () => {
+    const recoveryHost = host.querySelector("#rail-chat-recovery");
+    if (!recoveryHost) return;
+    const controller = composerController || controllerInFocus();
+    recoveryHost.innerHTML = chatRecoveryHtml(controller);
+    recoveryHost.querySelectorAll(".chat-recovery-entry button").forEach((button) => {
+      button.onclick = async () => {
+        const operationId = button.closest("[data-operation]").dataset.operation;
+        button.disabled = true;
+        try {
+          await controller.retryOperation(operationId, {
+            retryCreation: (submission) => {
+              createAgentWithMessage(controller, submission, { retry: true });
+              return creating?.promise;
+            },
+          });
+          await refresh();
+        } catch (error) {
+          notifyError("Could not retry the message", error.message);
+          syncChatRecovery();
+        }
+      };
+    });
   };
 
   /** What the composer's model menu is editing: the open agent's own choice —
@@ -1118,10 +1307,11 @@ export function mountAgentRail(host, context) {
   const composerChoice = () => {
     const agent = agentInFocus();
     if (!agent) return newAgentChoice();
-    return { provider: agent.provider, model: agent.model || "", effort: agent.effort || "" };
+    const choice = controllerForAgent(agent).choice();
+    return { provider: choice.provider || agent.provider, model: choice.requestedModel, effort: choice.effort };
   };
 
-  const activeModelOf = (agent) => (agent && agent.active_model) || "";
+  const activeModelOf = (agent) => (agent ? controllerForAgent(agent).choice().activeModel : "");
 
   /** A model or effort picked from that menu.
    *
@@ -1135,32 +1325,33 @@ export function mountAgentRail(host, context) {
       writeNewAgentChoice(next);
       return;
     }
+    const controller = controllerForAgent(agent);
+    const choosing = controller.chooseModel(next);
     await runOptimistic({
       scope: pendingAgentsScope(),
       records: [patchRecord(agent.id, { model: next.model, effort: next.effort })],
-      call: () =>
-        App.call("agent.choose", {
-          entity_id: entity.entityId,
-          agent_id: agent.id,
-          model: next.model,
-          effort: next.effort,
-        }),
+      call: () => choosing,
       failureSummary: "Could not set the model",
     });
     await refresh();
   };
 
   const wireTimeline = (body) => {
+    const controller = controllerInFocus();
     wireExpansionReveal(body);
-    wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
+    wireThreadAttachments(
+      body,
+      (path) => chatRepository.currentCall()("thread.attachment", { entity_id: controller.identity.entityId, path }),
+      controller.threadState,
+    );
     wireThreadRevisionLinks(body, (revisionId) =>
-      App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
+      chatRepository.currentCall()("thread.revision", { entity_id: controller.identity.entityId, revision_id: revisionId }),
     );
     wireThreadLinks(body, openLink);
     wireThreadOptions(body, (choice) => choose(choice).catch((error) => {
       notifyError("Choice failed", error.message);
       throw error;
-    }));
+    }), controller.threadState);
     // Delegated, because the row a press lands on is redrawn under it: the
     // scroller outlives every repaint, and the run names itself on the head.
     //
@@ -1180,24 +1371,31 @@ export function mountAgentRail(host, context) {
   /// dropped anywhere on the conversation lands in the tray — the gesture aims
   /// at the agent, not at a 40px strip.
   const wireComposer = (panel) => {
+    const controller = controllerInFocus();
+    composerController = controller;
+    const binding = controller.bindDraft();
     composerControl = wireThreadComposer(panel, {
       ids: COMPOSER_IDS,
-      readDraft: () => draftOf().body,
-      writeDraft: (value) => writeDraft({ body: value }),
-      readAttachments: () => draftOf().attachments,
-      writeAttachments: (next) => writeDraft({ attachments: next }),
+      readDraft: binding.readDraft,
+      writeDraft: binding.writeDraft,
+      readAttachments: binding.readAttachments,
+      writeAttachments: binding.writeAttachments,
+      submissionOwnsDraft: true,
       // Attaching lands the bytes before the message names them — which needs a
       // conversation to store them against, so it adopts exactly as sending
       // does: choosing a file for a message is the same intent, one keystroke
       // earlier.
       upload: async (file, contentBase64) => {
-        const entityId = await ensureEntity();
-        return App.call("thread.attach", { entity_id: entityId, filename: file.name, content_b64: contentBase64 });
+        const call = chatRepository.currentCall();
+        const entityId = await ensureEntity(call);
+        return call("thread.attach", { entity_id: entityId, filename: file.name, content_b64: contentBase64 });
       },
-      onSubmit: (message, attachments, options) => send(message, attachments, options),
+      onSubmit: (message, attachments, options) => sendFrom(controller, message, attachments, options),
       onError: (error) => notifyError("Message failed", error.message),
     });
     composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    unsubscribeComposerController?.();
+    unsubscribeComposerController = controller.subscribe(syncComposer);
     mountSurfaces(panel);
     syncComposer();
     syncSurfaces();
@@ -1324,14 +1522,16 @@ export function mountAgentRail(host, context) {
   /// A scroll gesture fires this many times over, so a report that says what
   /// the last one said is never made.
   const reportRead = (body) => {
-    const agent = agentOf(selectedId);
-    if (!agent || !agent.unread_count || !entity.entityId) return;
+    const agent = agentInFocus();
+    if (!agent || !agent.unread_count) return;
+    const controller = controllerForAgent(agent);
+    if (!controller.identity.entityId || !controller.identity.agentId) return;
     const read = readThroughSequence(body);
     const floor = threadCache.windowFloorSequence();
     if (!readingIsNews(read, floor)) return;
     reportedRead = read;
     reportedFloor = floor;
-    markSeen(entity.entityId, agent.id, floor, read).then(refreshFeed);
+    markSeen(controller.identity.entityId, controller.identity.agentId, floor, read).then(refreshFeed);
   };
 
   /// Whether a read report says anything the last one did not.
@@ -1347,34 +1547,22 @@ export function mountAgentRail(host, context) {
 
   /** The entity a message is posted to, adopting the checkout first when Build
    *  owns nothing here yet — an agent needs an owner for `done` to report to. */
-  const ensureEntity = async () => {
+  const ensureEntity = async (call) => {
     if (entity.entityId && !entity.adoptable) return entity.entityId;
-    const adopt = adoptingCall();
+    const adopt = adoptingCall(call);
     if (!adopt) return entity.entityId;
     return adopt.adopt();
   };
-
-  const willCreateAgent = () =>
-    !agentInFocus() && entity.kind === "branch" && (!visibleAgents().length || addingAgent);
 
   const repaintComposerFromDraft = () => {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     panel.dataset.body = "";
     paintPanel();
-    const input = panel.querySelector(`#${COMPOSER_IDS.input}`);
-    if (input) input.focus();
   };
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const renameAgentIdentity = (fromAgentId, toAgentId) => {
     if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) return;
-    const entityKey = entity.entityId || key;
-    const draft = drafts.get(`${entityKey}:${fromAgentId}`);
-    if (draft) {
-      drafts.set(`${entityKey}:${toAgentId}`, draft);
-      drafts.delete(`${entityKey}:${fromAgentId}`);
-    }
     if (threadAgentId === fromAgentId) threadAgentId = toAgentId;
     if (threadOwner === fromAgentId) threadOwner = toAgentId;
     const fromFaceKey = faceKey("agent", fromAgentId);
@@ -1415,15 +1603,14 @@ export function mountAgentRail(host, context) {
    *  back and have the human send the same turn twice. The provisional row
    *  stands instead, and the next thread read replaces it with the real
    *  message. */
-  const postMessage = async (handle, { entityId, addressed, message, messageKey, provisionalMessage }) => {
-    const posted = await replyOrNothing(
-      App.call("thread.post", {
-        entity_id: entityId,
-        ...addressed,
-        ...message,
-        ...MUTATION_THREAD_PAGE,
-      }),
-    );
+  const postMessage = async (handle, { controller, submission, messageKey, provisionalMessage }) => {
+    let posted;
+    try {
+      posted = await replyOrNothing(controller.post(submission, MUTATION_THREAD_PAGE));
+    } catch (error) {
+      if (!error.uncertain) throw error;
+      posted = null;
+    }
     if (posted) rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
   };
 
@@ -1433,12 +1620,13 @@ export function mountAgentRail(host, context) {
    *  agent it opened; the entity does, on its next answer, so a reply without
    *  one — or no reply at all, when the start outlives the timer — is read
    *  there instead. */
-  const wakeAgent = async (entityId, addressed) => {
-    const started = await replyOrNothing(App.call("agent.start", { id: entityId, ...addressed }));
-    if (started && started.agent_id) return started.agent_id;
-    if (addressed.agent_id) return addressed.agent_id;
-    await refresh();
-    return selectAgentId(visibleAgents(), selectedId);
+  const wakeAgent = async (submission) => {
+    const { entityId, agentId } = submission.address;
+    const started = await replyOrNothing(submission.call("agent.start", { id: entityId, agent_id: agentId }));
+    if (started && started.agent_id && started.agent_id !== agentId) {
+      throw new Error("agent.start answered for a different agent");
+    }
+    return agentId;
   };
 
   /** The state a row wears from the moment a session is asked for until the
@@ -1447,12 +1635,12 @@ export function mountAgentRail(host, context) {
   const startingRecord = (agentId) =>
     patchRecord(agentId, { state: AGENT_STARTING }, { scope: pendingAgentsScope(), clearedBy: agentSessionAnswered });
 
-  const createAgentWithMessage = async (message) => {
+  const createAgentWithMessage = (controller, submission, { retry = false } = {}) => {
     const provisionalAgentId = provisionalKey("agent");
     const provisionalMessageKey = provisionalKey("message");
     const selectedBeforeCreate = selectedId;
     const addingBeforeCreate = addingAgent;
-    const choice = newAgentChoice();
+    const choice = submission.creationChoice;
     const provisionalAgent = {
       id: provisionalAgentId,
       ordinal: visibleAgents().length + 1,
@@ -1465,42 +1653,64 @@ export function mountAgentRail(host, context) {
       working: false,
       has_terminal: false,
     };
-    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, message);
-    writeDraft({ body: "", attachments: [] });
+    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, submission.message);
     addingAgent = false;
     openConversation(provisionalAgentId);
     adoptPanelBody();
     let messageDelivered = false;
 
+    const creationCall = retry ? chatRepository.currentCall() : submission.call;
+    controller.markOperationKind(submission, "creation");
     const call = async (handle) => {
-      const entityId = await ensureEntity();
-      const added = await App.call("agent.add", { entity_id: entityId, ...newAgentParams() });
+      const entityId = await ensureEntity(creationCall);
+      const added = await creationCall("agent.add", {
+        entity_id: entityId,
+        creation_id: submission.creationId,
+        ...newAgentParams(choice),
+      });
       const createdAgent = (added && added.agent) || null;
-      if (createdAgent) {
-        handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id));
-        renameAgentIdentity(provisionalAgentId, createdAgent.id);
-        handle.rekey(provisionalAgentId, createdAgent.id, { ...provisionalAgent, id: createdAgent.id });
-      }
-      const addressed = createdAgent ? { agent_id: createdAgent.id } : {};
-      await postMessage(handle, {
+      if (!createdAgent || !createdAgent.id) throw new Error("agent.add did not return the created agent");
+      const resolvedIdentity = {
         entityId,
-        addressed,
-        message,
+        agentId: createdAgent.id,
+        conversationId: conversationIdOf(createdAgent),
+      };
+      chatOwnership.resolve(controller, resolvedIdentity);
+      controller.absorbAgent(createdAgent);
+      controller.clearOperationKind(submission);
+      handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id));
+      renameAgentIdentity(provisionalAgentId, createdAgent.id);
+      handle.rekey(provisionalAgentId, createdAgent.id, { ...provisionalAgent, ...createdAgent, id: createdAgent.id });
+      const addressedSubmission = controller.addressSubmission(submission, creationCall);
+      await postMessage(handle, {
+        controller,
+        submission: addressedSubmission,
         messageKey: provisionalMessageKey,
         provisionalMessage,
       });
       messageDelivered = true;
-      await wakeAgent(entityId, addressed);
+      await wakeAgent(addressedSubmission);
     };
 
-    const onRevert = () => {
+    const onRevert = (error) => {
+      if (operationIsUncertain(error)) {
+        controller.recordOperationFailure(submission, error);
+        if (selectedId === provisionalAgentId) {
+          chooseAgent(selectedBeforeCreate);
+          addingAgent = true;
+          paint();
+        }
+        return;
+      }
       if (isProvisionalKey(selectedId)) {
         addingAgent = addingBeforeCreate;
         openConversation(selectedBeforeCreate);
       }
       if (messageDelivered) return;
-      writeDraft({ body: message.body || "", attachments: message.attachments || [] });
-      repaintComposerFromDraft();
+      const restored = controller.restoreRejected(submission, error);
+      if (controllerInFocus() !== controller) return;
+      if (restored === "restored") repaintComposerFromDraft();
+      else syncChatRecovery();
     };
 
     const settling = runOptimistic({
@@ -1518,32 +1728,30 @@ export function mountAgentRail(host, context) {
       await refreshFeed();
       await refresh();
     });
-    creating = settling;
+    creating = { controller, promise: settling };
     settling.finally(() => {
-      if (creating === settling) creating = null;
+      if (creating && creating.promise === settling) {
+        creating = null;
+        if (controller.isBound()) chatOwnership.releaseProvisional();
+      }
     });
+    return undefined;
   };
 
-  const deliverMessage = async (message) => {
+  const deliverSubmission = (controller, submission) => {
     const messageKey = provisionalKey("message");
-    const provisionalMessage = provisionalMessageEntry(messageKey, message);
-    const addressedAgentId = selectedId;
-    const agent = agentInFocus();
+    const provisionalMessage = provisionalMessageEntry(messageKey, submission.message);
+    const addressedAgentId = submission.address.agentId;
+    const agent = agentOf(addressedAgentId);
     const wakesAgent = entity.kind === "branch" && !agentIsUp(agent);
 
     let messageDelivered = false;
 
     const call = async (handle) => {
-      const entityId = await ensureEntity();
-      const addressed = agent ? { agent_id: agent.id } : {};
-      await postMessage(handle, { entityId, addressed, message, messageKey, provisionalMessage });
+      await postMessage(handle, { controller, submission, messageKey, provisionalMessage });
       messageDelivered = true;
       if (wakesAgent) {
-        const startedAgentId = await wakeAgent(entityId, addressed);
-        if (startedAgentId && startedAgentId !== addressedAgentId) {
-          handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(startedAgentId));
-          openConversation(startedAgentId);
-        }
+        await wakeAgent(submission);
       }
     };
 
@@ -1555,37 +1763,52 @@ export function mountAgentRail(host, context) {
       ],
       call,
       failureSummary: "Message failed",
-      onRevert: () => {
+      onRevert: (error) => {
         if (messageDelivered) return;
-        writeDraft({ body: message.body || "", attachments: message.attachments || [] });
-        repaintComposerFromDraft();
+        const restored = controller.restoreRejected(submission, error);
+        if (controllerInFocus() !== controller) return;
+        if (restored === "restored") repaintComposerFromDraft();
+        else syncChatRecovery();
       },
     }).then(async () => {
       await refreshFeed();
       await refresh();
     });
-    writeDraft({ body: "", attachments: [] });
     paintChat();
+    return undefined;
   };
 
-  const post = async (message) => {
-    if (creating) await creating;
-    if (willCreateAgent()) return createAgentWithMessage(message);
-    return deliverMessage(message);
+  const postProvisional = (controller, submission) => {
+    if (!creating) return createAgentWithMessage(controller, submission);
+    if (creating.controller !== controller) throw new Error("Another agent creation is already in flight");
+    creating.promise.then(() => {
+      const addressed = controller.addressSubmission(submission);
+      deliverSubmission(controller, addressed);
+    });
+    return undefined;
   };
 
   /** A typed message. `interrupt` rides on the post rather than travelling as a
    *  verb of its own: Build never stops a turn without one to put in its place,
    *  and a second round trip is a window in which the agent starts a fresh turn
    *  or finishes. One send path, one flag. */
-  const send = (body, attachments, { interrupt = false } = {}) =>
-    post({ body, attachments, ...(interrupt ? { interrupt: true } : {}) });
+  const sendFrom = (controller, body, attachments, { interrupt = false } = {}) => {
+    const message = { body, attachments, ...(interrupt ? { interrupt: true } : {}) };
+    if (!controller.identity.agentId) {
+      const submission = controller.captureProvisionalSubmission(message, newAgentChoice());
+      return postProvisional(controller, submission);
+    }
+    return deliverSubmission(controller, controller.captureSubmission(message));
+  };
 
   /** A press on the actions the agent suggested. It goes out as the message it
    *  is — same adoption, same waking, same refresh — and the daemon composes
    *  what the agent hears out of the options it offered. */
-  const choose = ({ messageId, optionIds }) =>
-    post({ option_reply: { message_id: messageId, option_ids: optionIds } });
+  const choose = ({ messageId, optionIds }) => {
+    const controller = controllerInFocus();
+    const message = { option_reply: { message_id: messageId, option_ids: optionIds } };
+    return deliverSubmission(controller, controller.captureSubmission(message));
+  };
 
   // ---- the strip's presses --------------------------------------------------
 
@@ -1634,7 +1857,7 @@ export function mountAgentRail(host, context) {
       // clamped to the offer — the record the silent + used to spend outright.
       // The human now sees the choice before anything is created; the send is
       // what creates, exactly as it does on a branch with no agents at all.
-      if (!newAgentChoices.has(key)) {
+      if (!provisionalController().choice().provider) {
         const defaults = loadAgentDefaults();
         writeNewAgentChoice({
           provider: chosenProviderId(creatable(), defaults),
@@ -1663,6 +1886,7 @@ export function mountAgentRail(host, context) {
   const removeAgent = async () => {
     const agent = settledAgentInFocus();
     if (!agent || !entity.entityId) return;
+    const call = chatRepository.currentCall();
     if (!(await confirmAction(removeAgentConfirm(agent)))) return;
     if (isPending(pendingAgentsScope(), agent.id)) return;
     const records = [removeRecord(agent.id)];
@@ -1671,7 +1895,7 @@ export function mountAgentRail(host, context) {
     await runOptimistic({
       scope: pendingAgentsScope(),
       records,
-      call: () => App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id }),
+      call: () => call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id }),
       failureSummary: "Could not remove the agent",
       onRevert: () => {
         openConversation(agent.id);
@@ -1695,8 +1919,9 @@ export function mountAgentRail(host, context) {
     if (!body) return;
     body.classList.add("rail-body-tui");
     const agent = agentOf(selectedId);
+    const controller = controllerForAgent(agent);
     const target = entity.entityId && !entity.adoptable
-      ? { id: entity.entityId, ...(agent ? { agent_id: agent.id } : {}) }
+      ? { id: controller?.identity.entityId || entity.entityId, ...(controller ? { agent_id: controller.identity.agentId } : {}) }
       : { project_id: entity.projectId, ...(entity.worktreeId ? { worktree_id: entity.worktreeId } : {}) };
     tui = mountAgentTab(body, target, {
       idleLabel: "No agent session is running here",
@@ -1715,15 +1940,16 @@ export function mountAgentRail(host, context) {
    *  the pane that would paint a refusal over a session coming up. */
   const startAgent = async () => {
     const agent = agentOf(selectedId);
+    const call = chatRepository.currentCall();
     let started = null;
     let refusal = null;
     const settled = await runOptimistic({
       scope: pendingAgentsScope(),
       records: agent ? [startingRecord(agent.id)] : [],
       call: async () => {
-        const entityId = await ensureEntity();
+        const entityId = await ensureEntity(call);
         started = await replyOrNothing(
-          App.call("agent.start", {
+          call("agent.start", {
             id: entityId,
             ...(agent ? { agent_id: agent.id } : {}),
           }),
@@ -1736,7 +1962,7 @@ export function mountAgentRail(host, context) {
     });
     if (started && started.agent_id) {
       selectedId = started.agent_id;
-      chosenAgent.set(key, selectedId);
+      railView.chooseAgent(selectedId);
     }
     await refresh();
     if (!settled) throw refusal;
@@ -1803,7 +2029,10 @@ export function mountAgentRail(host, context) {
       disposeTui();
       disposeSurfaces();
       closeSurfaceMenu?.();
+      unsubscribeComposerController?.();
+      unsubscribeComposerController = null;
       releaseFaces();
+      if (ownsChatRepository) chatRepository.dispose();
       host.innerHTML = "";
     },
   };

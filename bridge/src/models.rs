@@ -345,6 +345,29 @@ mod tests {
     }
 
     #[test]
+    fn astra_is_selectable_on_both_codex_carriers_with_all_reasoning_levels() {
+        for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
+            let catalog = catalog_of(provider);
+            let astra = catalog.models.first().unwrap();
+            assert_eq!(astra.id, "gpt-6-astra");
+            assert_eq!(astra.label, "GPT-6-Astra");
+            assert!(astra.supports_effort);
+            assert_eq!(
+                astra.efforts,
+                &["low", "medium", "high", "xhigh", "max", "ultra"]
+            );
+            for effort in astra.efforts {
+                let choice = ModelChoice {
+                    provider,
+                    model: Some(astra.id.into()),
+                    effort: Some((*effort).into()),
+                };
+                assert!(choice.validate().is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn codex_choice_maps_reasoning_to_config_instead_of_claude_effort_flag() {
         let c = ModelChoice {
             provider: AgentProvider::Codex,

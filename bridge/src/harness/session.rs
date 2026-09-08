@@ -20,6 +20,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::surfaces::AgentSurfaces;
+use crate::models::ModelChoice;
 
 /// Things that can go wrong starting or driving a harness session.
 #[derive(Debug, thiserror::Error)]
@@ -50,12 +51,44 @@ pub struct Turn {
     /// What the agent is being asked. Whether it is framed as a paste, spoken
     /// over a protocol or written to a pipe is the session's business.
     pub text: String,
+    /// The agent settings captured when this turn was accepted by Build.
+    /// `None` is the compatibility shape for callers that have no addressed
+    /// choice; new addressed delivery freezes both the value and its revision.
+    pub choice: Option<FrozenTurnChoice>,
+}
+
+/// An immutable agent-choice snapshot carried with exactly one turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenTurnChoice {
+    pub model_choice: ModelChoice,
+    pub revision: u64,
+}
+
+/// Whether a live session can apply a frozen choice without being replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnChoiceSupport {
+    Native,
+    RestartRequired,
 }
 
 impl Turn {
     /// The turn saying `text`.
     pub fn new(text: impl Into<String>) -> Turn {
-        Turn { text: text.into() }
+        Turn {
+            text: text.into(),
+            choice: None,
+        }
+    }
+
+    /// A turn with the exact agent choice that governed its acceptance.
+    pub fn with_choice(text: impl Into<String>, model_choice: ModelChoice, revision: u64) -> Turn {
+        Turn {
+            text: text.into(),
+            choice: Some(FrozenTurnChoice {
+                model_choice,
+                revision,
+            }),
+        }
     }
 }
 
@@ -144,6 +177,22 @@ pub trait AgentSession: Send + Sync {
     ///
     /// [`REAL_TUI_SUBMIT_DELAY`]: crate::harness::REAL_TUI_SUBMIT_DELAY
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError>;
+
+    /// Whether this carrier has a structured per-turn settings channel at all.
+    /// A `false` answer means a frozen choice requires a safe session boundary.
+    fn accepts_turn_choice(&self) -> bool {
+        false
+    }
+
+    /// Whether `choice` can be applied by this particular live session.
+    ///
+    /// This is choice-specific because a structured protocol may support new
+    /// explicit overrides but have no operation that clears a sticky override
+    /// back to the provider-configured default. Callers must replace the
+    /// session before delivery when this returns `RestartRequired`.
+    fn turn_choice_support(&self, _choice: &ModelChoice) -> TurnChoiceSupport {
+        TurnChoiceSupport::RestartRequired
+    }
 
     /// What the agent is doing right now.
     fn status(&self) -> AgentStatus;
@@ -509,6 +558,34 @@ mod tests {
         let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
         assert!(session.surfaces().is_none());
         assert!(session.surfaces_changed().is_none());
+    }
+
+    #[test]
+    fn turns_freeze_an_addressed_choice_without_changing_legacy_construction() {
+        let legacy = Turn::new("legacy");
+        assert_eq!(legacy.text, "legacy");
+        assert_eq!(legacy.choice, None);
+
+        let choice = ModelChoice::default();
+        let frozen = Turn::with_choice("addressed", choice.clone(), 7);
+        assert_eq!(frozen.text, "addressed");
+        assert_eq!(
+            frozen.choice,
+            Some(FrozenTurnChoice {
+                model_choice: choice,
+                revision: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn sessions_require_restart_for_frozen_choices_unless_they_opt_in() {
+        let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
+        assert!(!session.accepts_turn_choice());
+        assert_eq!(
+            session.turn_choice_support(&ModelChoice::default()),
+            TurnChoiceSupport::RestartRequired
+        );
     }
 
     /// Stopping a turn defaults to "no", and the refusal says where the thing

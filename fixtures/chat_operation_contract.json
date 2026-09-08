@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "post_method": "thread.post",
+  "status_method": "thread.operation",
+  "operation_id": {
+    "required_for_idempotency": true,
+    "legacy_omission_allowed": true,
+    "max_bytes": 128
+  },
+  "post_receipt_fields": [
+    "operation_id",
+    "operation_status",
+    "entity_id",
+    "agent_id",
+    "conversation_id",
+    "choice_revision",
+    "message_start_sequence",
+    "posted_sequence"
+  ],
+  "status_receipt_fields": [
+    "operation_id",
+    "status",
+    "entity_id",
+    "agent_id",
+    "conversation_id",
+    "choice_revision",
+    "message_start_sequence",
+    "posted_sequence"
+  ],
+  "statuses": ["queued", "claimed", "delivered", "uncertain"]
+}

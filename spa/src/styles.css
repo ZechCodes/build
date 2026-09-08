@@ -682,6 +682,10 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .actionbar .right { margin-left:auto; display:flex; gap:10px; }
 /* git repo-management toolbar (v2) */
 .gittoolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* The surface's own verb — merging — sits at the far end of the bar, past the
+   repo-management ones: they are about the remote, it is about this work. */
+.gtmerge { margin-left:auto; display:flex; align-items:center; gap:6px; }
+.gtmerge:empty { display:none; }
 .gtsync { display:flex; align-items:center; gap:7px; }
 .gtchips { font-family:var(--mono); font-size:12px; display:inline-flex; gap:8px; }
 .gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }

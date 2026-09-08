@@ -15,12 +15,11 @@ import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { currentRevisionId, MUTATION_THREAD_PAGE } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
-import { notifyError } from "../core/notify.js";
+import { notify, notifyError } from "../core/notify.js";
 
 export { REVIEW_POLL_MS };
 
 // How long a git action's result (Committed./Pushed.) stays in the hint.
-const FLASH_MS = 6000;
 
 // Each option id maps to a run.git_action call. cleanup is omitted for
 // commit/push (the bridge rejects cleanup on non-merges).
@@ -57,15 +56,6 @@ export function reviewMergeOptions(adopted, base, primary = false) {
   return options;
 }
 
-/** The resting copy under a reviewable task's diff: what there is to do here.
- *  The primary checkout has no worktree to finish, so it says what its own
- *  actions actually do. */
-export function reviewHint(task) {
-  return task && task.primary
-    ? "Select code or click a line number to comment, or commit the work."
-    : "Select code or click a line number to comment, or finish the worktree.";
-}
-
 /**
  * createTaskReview({ taskId, callRpc, getTask, isOffline, agentSelection,
  *   onMerged }) → { mount(host), unmount() } — the gitPane review plug for a
@@ -92,7 +82,6 @@ export function createTaskReview({
   // second concurrent run.git_action. It is also the freeze key: while active,
   // the actionbar is left untouched.
   const gitFlight = createSingleFlight();
-  let flashMessage = ""; // a recent git-action result, outliving the poll
 
   const plug = createReviewPlug({
     isOffline,
@@ -134,36 +123,31 @@ export function createTaskReview({
         ? '<span class="dim live-claim">● coding agent working — diff updating live…</span>'
         : "",
     actionsFrozen: () => gitFlight.active(),
-    renderIdleActions: (actions, hintHost) => {
-      // A git action (or its confirm modal) is in flight: leave the actionbar
-      // exactly as it is, so no repaint can remount an enabled button under the
-      // pending RPC (or pop a second modal).
+    // The merge verb, in the git toolbar above the diff. Nothing else goes
+    // there: the diff says what changed, the review bar says whether the agent
+    // is still writing it, and a line of resting copy under the stack telling
+    // the reviewer they may click a line number was a sentence in the way.
+    renderIdleActions: (actions) => {
+      // A git action (or its confirm modal) is in flight: leave the bar exactly
+      // as it is, so no repaint can remount an enabled button under the pending
+      // RPC (or pop a second modal).
       if (gitFlight.active()) return true;
       const task = getTask();
-      const state = task && task.state;
-      if (state === "building") {
-        hintHost.textContent = "Comment on the diff to request changes — even while the agent is working.";
-        actions.innerHTML = "";
-        return true;
-      }
-      if (state !== "review") return false;
-      hintHost.textContent = flashMessage || reviewHint(task);
+      if (!task || task.state !== "review") return false;
       mountSplitButton(actions, {
         options: reviewMergeOptions(task.adopted, task.base_branch || "main", task.primary),
         run: (optionId) => runGitAction(optionId, task),
         flight: gitFlight,
+        variant: "mini",
       });
       return true;
     },
   });
 
-  const flash = (message) => {
-    flashMessage = message;
-    setTimeout(() => {
-      flashMessage = "";
-      plug.refreshActions();
-    }, FLASH_MS);
-  };
+  /// What just happened, said once. It used to be a line of copy under the
+  /// diff that faded after a moment; with that bar gone the notice is where a
+  /// result belongs — it does not need the reviewer to be looking down there.
+  const flash = (message) => notify(message);
 
   /** One review git action: confirm the decisive ones, run it, then either hand
    *  the surface off (a merge leaves it) or say what happened. */
@@ -175,7 +159,6 @@ export function createTaskReview({
     // no error notice appears.
     const confirmPlan = gitActionConfirm(optionId, { branch: task.branch || "the branch", base: task.base_branch || "main" });
     if (confirmPlan && !(await confirmAction(confirmPlan))) throw new Error("cancelled");
-    flashMessage = "";
     const params = { run_id: taskId, action, ...MUTATION_THREAD_PAGE };
     if (cleanup) params.cleanup = cleanup;
     try {
@@ -195,7 +178,8 @@ export function createTaskReview({
   };
 
   return {
-    mount: (element) => plug.mount(element),
+    mount: (element, options) => plug.mount(element, options),
     unmount: () => plug.unmount(),
+    refreshActions: () => plug.refreshActions(),
   };
 }

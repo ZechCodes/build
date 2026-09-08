@@ -725,11 +725,12 @@ export function mountGitPane(
     if (disposed || !lastStatus || !lastLog) return;
     if (!container.querySelector(".changes2")) paintSkeleton();
     const repoControls = supportsRepoManagement(lastStatus);
-    container.querySelector(".gp-toolbar").innerHTML = repoControls
-      ? gitToolbarHtml({
-          chips: syncChipState(lastStatus),
-        })
-      : "";
+    // Always drawn, even against a bridge too old to manage the repo: the merge
+    // verb the surface hosts here is the surface's own, not the bridge's.
+    container.querySelector(".gp-toolbar").innerHTML = gitToolbarHtml({
+      chips: syncChipState(lastStatus),
+      repo: repoControls,
+    });
     container.querySelector(".gp-banner").innerHTML = repoControls
       ? gitStateBannerHtml(repoStateBanner(lastStatus.repo_state), { pendingConfirm })
       : "";
@@ -749,9 +750,14 @@ export function mountGitPane(
       // The plug owns the detail DOM — mount once, then leave it alone.
       if (!reviewMounted) {
         detailHost.innerHTML = "";
-        review.mount(detailHost);
+        // The plug's own git verb — merging — goes in the git toolbar above the
+        // stack. The toolbar is rewritten on every paint, so the plug is asked
+        // for a host each time rather than handed the element.
+        review.mount(detailHost, { gitActions: () => container.querySelector(".gtmerge") });
         reviewMounted = true;
       }
+      // The toolbar this render just rewrote took the plug's button with it.
+      if (review.refreshActions) review.refreshActions();
     } else {
       if (reviewMounted) {
         review.unmount();

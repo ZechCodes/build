@@ -45,9 +45,13 @@ function mountReview({ calls = [], adoptable = true } = {}) {
     adopting: stubAdopting(calls),
   });
   const host = document.createElement("div");
-  document.body.appendChild(host);
-  review.mount(host);
-  return { review, host, calls };
+  // The surface's git verbs live in the git toolbar it owns, not inside the
+  // stack — so the test supplies one, as gitPane does.
+  const toolbar = document.createElement("div");
+  toolbar.className = "gtmerge";
+  document.body.append(toolbar, host);
+  review.mount(host, { gitActions: () => toolbar });
+  return { review, host, toolbar, calls };
 }
 
 describe("the worktree review actionbar under the poll", () => {
@@ -58,16 +62,16 @@ describe("the worktree review actionbar under the poll", () => {
   afterEach(() => vi.useRealTimers());
 
   it("leaves the open merge menu standing through a tick, and still runs its item", async () => {
-    const { review, host, calls } = mountReview();
+    const { review, toolbar, calls } = mountReview();
     await vi.advanceTimersByTimeAsync(0);
 
-    host.querySelector(".csactions .caret").click();
-    const menu = host.querySelector(".csactions .splitmenu");
+    toolbar.querySelector(".caret").click();
+    const menu = toolbar.querySelector(".splitmenu");
     expect(menu.hidden).toBe(false);
 
     await vi.advanceTimersByTimeAsync(WORKTREE_REVIEW_POLL_MS * 2 + 10);
 
-    expect(host.querySelector(".csactions .splitmenu"), "the poll replaced the menu").toBe(menu);
+    expect(toolbar.querySelector(".splitmenu"), "the poll replaced the menu").toBe(menu);
     expect(menu.hidden).toBe(false);
 
     menu.querySelector('[data-action="merge_keep"]').click();
@@ -79,23 +83,25 @@ describe("the worktree review actionbar under the poll", () => {
   });
 
   it("keeps the same buttons across a tick that read the same worktree", async () => {
-    const { review, host } = mountReview();
+    const { review, toolbar } = mountReview();
     await vi.advanceTimersByTimeAsync(0);
-    const abandon = [...host.querySelectorAll(".csactions .btn")].find((b) => b.textContent === "Abandon & delete");
+    const abandon = [...toolbar.querySelectorAll(".btn")].find((b) => b.textContent === "Abandon & delete");
     expect(abandon).toBeTruthy();
 
     await vi.advanceTimersByTimeAsync(WORKTREE_REVIEW_POLL_MS + 10);
 
-    const after = [...host.querySelectorAll(".csactions .btn")].find((b) => b.textContent === "Abandon & delete");
+    const after = [...toolbar.querySelectorAll(".btn")].find((b) => b.textContent === "Abandon & delete");
     expect(after).toBe(abandon);
     review.unmount();
   });
 
   it("says why a worktree cannot be adopted instead of offering the verbs", async () => {
-    const { review, host } = mountReview({ adoptable: false });
+    const { review, host, toolbar } = mountReview({ adoptable: false });
     await vi.advanceTimersByTimeAsync(0);
-    expect(host.querySelector(".cshint").textContent).toContain("check out a feature branch");
-    expect(host.querySelector(".csactions").children).toHaveLength(0);
+    // A fact about the checkout, so it rides the bar over the diff beside the
+    // file counts rather than a line of copy under the stack.
+    expect(host.querySelector(".diffbar").textContent).toContain("check out a feature branch");
+    expect(toolbar.children).toHaveLength(0);
     review.unmount();
   });
 });

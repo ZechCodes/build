@@ -5,27 +5,38 @@
 // string assertions. Every git-derived string (branch name, message) is esc()d.
 
 import { esc } from "./text.js";
+import { ICON_REFRESH } from "./icons.js";
 
 /** The exact canned instruction "Ask agent to commit" sends via task.message. */
 export const AGENT_COMMIT_MESSAGE =
   "Commit all outstanding changes in this worktree as a single atomic commit with a clear, descriptive commit message. Do not make any other changes.";
 
-/** The repo-management toolbar: Fetch + ahead/behind chips + Pull/Push split
- *  button hosts, and a Stash split-button host. Branch selection lives above
- *  the commit log in the rail. */
-export function gitToolbarHtml({ chips }) {
+/** The git toolbar: the repo-management verbs — Fetch + ahead/behind chips +
+ *  Pull/Push split-button hosts, and a Stash host — and, at the end, the host
+ *  for the surface's own merge verb. Branch selection lives above the commit
+ *  log in the rail.
+ *
+ *  Merging is a git verb, so it belongs in the bar of git verbs. It used to sit
+ *  under the diff in an actionbar of its own, which put the most decisive thing
+ *  on the surface at the bottom of a list the reviewer had to scroll to reach.
+ *
+ *  `repo` false draws the toolbar with nothing but that merge host: an older
+ *  bridge reports no repo_state and every repo-management control degrades to
+ *  hidden, but the surface's own verbs do not depend on the bridge's vintage. */
+export function gitToolbarHtml({ chips, repo = true }) {
   const chipsHtml = chips
     ? `<span class="gtchips"><span class="gtahead" title="ahead of upstream">↑${esc(chips.ahead)}</span> <span class="gtbehind" title="behind upstream">↓${esc(chips.behind)}</span></span>`
     : "";
-  return `<div class="gittoolbar">
-    <div class="gtsync">
-      <button class="btn mini gtfetch" title="Fetch --prune"><span aria-hidden="true">↻</span> Fetch</button>
+  const repoVerbs = repo
+    ? `<div class="gtsync">
+      <button class="btn mini gtfetch" title="Fetch --prune">${ICON_REFRESH} Fetch</button>
       ${chipsHtml}
       <div class="gtpull"></div>
       <div class="gtpush"></div>
     </div>
-    <div class="gtstash"></div>
-  </div>`;
+    <div class="gtstash"></div>`
+    : "";
+  return `<div class="gittoolbar">${repoVerbs}<div class="gtmerge"></div></div>`;
 }
 
 /** Render a repo-state banner decision (repoStateBanner's { message, abortable }

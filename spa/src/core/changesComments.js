@@ -30,19 +30,17 @@ function rowOf(node, root) {
 }
 
 /**
- * createCommentLayer({ submit, revisionId, hint, onChange }) → the layer.
+ * createCommentLayer({ submit, revisionId, onChange }) → the layer.
  *
  * `submit(messages)` sends the assembled thread posts (the controller supplies
  * the RPC); `revisionId()` names the diff revision the anchors belong to (null
- * when the surface has no thread to ask); `hint` is the resting actionbar copy;
- * `onChange()` lets the controller repaint when the pending set changes.
+ * when the surface has no thread to ask); `onChange()` lets the controller
+ * repaint when the pending set changes.
  */
 export function createCommentLayer({
   submit,
   revisionId = () => null,
-  hint = "Select code, tap a line, or use ✎ to comment. Comments go to the agent.",
   onChange = () => {},
-  renderIdle = () => false,
 }) {
   const comments = [];
   let nextId = 0;
@@ -111,28 +109,28 @@ export function createCommentLayer({
     }
   };
 
-  /** The changeset's actionbar: Clear + Send while comments are pending, and
-   *  otherwise whatever the mounting surface puts there (`renderIdle`, which
-   *  says whether it drew) — a changeset has ONE actionbar, and finishing the
-   *  work lives in it too. Re-rendered in place so a repaint is never needed to
-   *  keep the buttons honest. */
-  // eslint-disable-next-line complexity -- ratchet: renderActions is at 12, cap 10 — reduce it, then drop this line
+  /** The tray's actionbar: Clear + Send, and nothing at all while there is
+   *  nothing to send. It is the TRAY's now — the surface's own git verbs live
+   *  in the git toolbar above the stack, where a git verb belongs — so this
+   *  bar speaks only about the comments in it. Re-rendered in place so a repaint
+   *  is never needed to keep the buttons honest. */
+  /** What the bar says about what is waiting: the comments counted, or the bare
+   *  note the reviewer has typed with nothing anchored. */
+  const pendingLine = (count) =>
+    count ? `${count} comment${count === 1 ? "" : "s"} ready to send.` : "Your note goes to the agent.";
+
+  const sendButtonsHtml = () =>
+    `<button class="btn cscancel">Clear</button><button class="btn primary cssend"${sending ? " disabled" : ""}>${
+      sending ? "sending…" : "Send to agent"
+    }</button>`;
+
   function renderActions() {
     const actions = q(".csactions");
     const hintHost = q(".cshint");
     if (!actions || !hintHost) return;
     const pending = comments.length > 0 || generalDraft.trim().length > 0;
-    if (!pending) {
-      if (renderIdle(actions, hintHost)) return;
-      hintHost.textContent = hint;
-      actions.innerHTML = "";
-      return;
-    }
-    const count = comments.length;
-    hintHost.textContent = count
-      ? `${count} comment${count === 1 ? "" : "s"} ready to send.`
-      : "Your note goes to the agent.";
-    actions.innerHTML = `<button class="btn cscancel">Clear</button><button class="btn primary cssend"${sending ? " disabled" : ""}>${sending ? "sending…" : "Send to agent"}</button>`;
+    hintHost.textContent = pending ? pendingLine(comments.length) : "";
+    actions.innerHTML = pending ? sendButtonsHtml() : "";
     const cancel = actions.querySelector(".cscancel");
     if (cancel)
       cancel.onclick = () => {

@@ -15,7 +15,10 @@ import { describe, it, expect } from "vitest";
 // 75 since the timeline became keyed rows: threadHtml took its initial message
 // and its title from two named helpers, and the row builder split into a
 // message row and an activity row.
-const RATCHETED_FUNCTIONS = 75;
+// 74 since the merge verb moved to the git toolbar: the comment tray's
+// actionbar stopped standing in for the surface's own, which took its resting
+// copy, its idle branch and two of its decisions with it.
+const RATCHETED_FUNCTIONS = 74;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

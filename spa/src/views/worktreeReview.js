@@ -13,6 +13,7 @@
 // the rail selection moving away and back) keep pending review comments.
 
 import { createReviewPlug, REVIEW_POLL_MS } from "../core/changesReview.js";
+import { esc } from "../core/text.js";
 import { mountSplitButton } from "../core/splitButton.js";
 import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
@@ -132,19 +133,17 @@ export function createWorktreeReview({
       }
       onAdopted();
     },
-    hint: "Your comments adopt this worktree as a task and are sent to the coding agent.",
     actionsFrozen: () => acting,
-    renderIdleActions: (actions, hintHost) => {
+    // Why this worktree offers no verbs, said in the bar over the diff where
+    // the surface's other live claims are. It is a fact about the checkout
+    // rather than an instruction, so it belongs beside the file counts.
+    statusHtml: () => (meta && !meta.adoptable ? `<span class="dim">${esc(unadoptableHint(meta))}</span>` : ""),
+    renderIdleActions: (actions) => {
       const adoptable = Boolean(meta && meta.adoptable);
-      // The hint speaks on every tick — the comment tray borrows this line while
-      // comments are pending and the bar has to take it back.
-      hintHost.textContent = adoptable
-        ? "Comment on the diff to request changes, or finish the worktree."
-        : unadoptableHint(meta);
-      // The buttons do not. This runs on every 1.6s poll, and rebuilding the bar
-      // would take the merge menu the reviewer just opened — and the button a
-      // press is landing on — with it. What the bar offers turns on one thing,
-      // so a tick that says the same thing leaves the bar alone.
+      // This runs on every 1.6s poll, and rebuilding the bar would take the
+      // merge menu the reviewer just opened — and the button a press is landing
+      // on — with it. What the bar offers turns on one thing, so a tick that
+      // says the same thing leaves the bar alone.
       const wanted = adoptable ? "finish" : "browse";
       if (actions.dataset.worktreeActions === wanted) return true;
       actions.dataset.worktreeActions = wanted;
@@ -152,11 +151,11 @@ export function createWorktreeReview({
       if (!adoptable) return true;
       const mergeHost = document.createElement("span");
       const abandon = document.createElement("button"); // quiet — the confirm guards it
-      abandon.className = "btn";
+      abandon.className = "btn mini";
       abandon.textContent = "Abandon & delete";
       actions.appendChild(mergeHost);
       actions.appendChild(abandon);
-      mountSplitButton(mergeHost, { options: WORKTREE_MERGE_OPTIONS, run: runMerge });
+      mountSplitButton(mergeHost, { options: WORKTREE_MERGE_OPTIONS, run: runMerge, variant: "mini" });
       abandon.onclick = () => runAbandon(abandon);
       return true;
     },
@@ -209,7 +208,8 @@ export function createWorktreeReview({
   return {
     /** The branch the rail's "All changes" entry names this diff against. */
     getBase: () => baseLabel(),
-    mount: (element) => plug.mount(element),
+    mount: (element, options) => plug.mount(element, options),
     unmount: () => plug.unmount(),
+    refreshActions: () => plug.refreshActions(),
   };
 }

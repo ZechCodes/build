@@ -129,11 +129,11 @@ export function commentTrayHtml(comments, { generalDraft = "" } = {}) {
     ${changesActionbarHtml()}`;
 }
 
-/** The changeset's one actionbar: a hint on the left, the verbs on the right.
- *  Sending comments and finishing the work share it — a changeset has one place
- *  where its actions live, whether it is the comment layer filling it or the
- *  surface's own lifecycle verbs. */
-export function changesActionbarHtml() {
+/** The comment tray's actionbar: what is waiting on the left, Clear and Send on
+ *  the right. It speaks only about the comments in the tray — the surface's own
+ *  git verbs live in the git toolbar above the stack, where a git verb
+ *  belongs. */
+function changesActionbarHtml() {
   return `<div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
 }
 

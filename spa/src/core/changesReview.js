@@ -16,7 +16,6 @@
 import "../styles/surfaces.css";
 import { cacheDeviceId } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
-import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, parseDiff, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
@@ -65,7 +64,7 @@ export function emptyStackText(totalFiles, changedOnly) {
  * - `submitOverride({ hunk_id, direction, note })` sends the reviewer's
  *   disagreement with where the pass put a hunk; omitting it draws no offers.
  * - `revisionId()` names the revision the anchors belong to.
- * - `renderIdleActions(actionsHost, hintHost)` fills the actionbar while no
+ * - `renderIdleActions(actionsHost)` fills the git toolbar's verb host while no
  *   comment is pending; it returns whether it drew anything.
  * - `actionsFrozen()` is the surface's own freeze — an action RPC in flight.
  * - `statusHtml()` is the live claim in the bar (e.g. the agent is working).
@@ -77,7 +76,6 @@ export function createReviewPlug({
   submit = null,
   submitOverride = null,
   revisionId = () => null,
-  hint = "Select code, tap a line, or use ✎ to comment. Comments go to the agent.",
   renderIdleActions = () => false,
   actionsFrozen = () => false,
   statusHtml = () => "",
@@ -142,34 +140,24 @@ export function createReviewPlug({
           diffKey = null; // the stamp changes what is drawn — force the rebuild
         },
         revisionId,
-        hint,
         onChange: () => render(),
-        renderIdle: (actions, hintHost) => {
-          if (!renderIdleActions(actions, hintHost)) {
-            hintHost.textContent = commentableNow ? hint : "";
-            actions.innerHTML = "";
-          }
-          return true;
-        },
       })
     : null;
 
-  /** Redraw the actionbar in place, without touching the diff. */
+  /** Redraw the surface's own git verbs, and the tray's, without touching the
+   *  diff. The two live in different bars now — merging in the toolbar above
+   *  the stack, sending comments in the tray below it — so both are painted. */
   const paintActions = () => {
     if (!host) return;
-    if (trayMounted && commentLayer) {
-      commentLayer.refreshActions();
-      return;
-    }
-    const actions = host.querySelector(".csactions");
-    const hintHost = host.querySelector(".cshint");
-    if (!actions || !hintHost) return;
-    if (renderIdleActions(actions, hintHost)) return;
-    hintHost.textContent = "";
-    actions.innerHTML = "";
+    if (trayMounted && commentLayer) commentLayer.refreshActions();
+    const gitActions = gitActionsHost();
+    if (gitActions && !renderIdleActions(gitActions)) gitActions.innerHTML = "";
   };
 
   let paintChangeset = null;
+  // Where this surface hosts the plug's git verbs — the git toolbar above the
+  // diff. A plug mounted without one (a standalone stack, a test) draws none.
+  let gitActionsHost = () => null;
 
   function render() {
     if (!host) return;
@@ -210,10 +198,10 @@ export function createReviewPlug({
         changedOnly: changedOnlyFilter,
       }),
       entries,
-      tray: trayMounted ? commentLayer.trayHtml() : changesActionbarHtml(),
+      tray: trayMounted ? commentLayer.trayHtml() : "",
     });
     if (trayMounted) commentLayer.attach(host);
-    else paintActions();
+    paintActions();
     wire();
   }
 
@@ -380,9 +368,10 @@ export function createReviewPlug({
     /** The pending comments (and typed general note) the surface holds. */
     busy: () => Boolean(commentLayer && commentLayer.busy()),
 
-    mount(element) {
+    mount(element, { gitActions = () => null } = {}) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
+      gitActionsHost = gitActions;
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       livePainted = false;

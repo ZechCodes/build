@@ -57,12 +57,15 @@ describe("the review plug (DOM)", () => {
   });
   afterEach(() => vi.useRealTimers());
 
+  /** The plug, and the git toolbar the surface hosts its verbs in — a separate
+   *  bar above the stack, which is what gitPane hands it. */
   const mountPlug = (options = {}) => {
     const host = document.createElement("div");
-    document.body.appendChild(host);
+    const toolbar = document.createElement("div");
+    document.body.append(toolbar, host);
     const plug = createReviewPlug({ fetchDiff: async () => ({ patch: patchOf("new") }), ...options });
-    plug.mount(host);
-    return { host, plug };
+    plug.mount(host, { gitActions: () => toolbar });
+    return { host, toolbar, plug };
   };
 
   const commentOnTheFile = async (host) => {
@@ -74,25 +77,25 @@ describe("the review plug (DOM)", () => {
     await vi.advanceTimersByTimeAsync(0);
   };
 
-  it("draws the stack and lets the surface own the actionbar while nothing is pending", async () => {
-    const { host, plug } = mountPlug({
+  it("draws the stack and puts the surface's own verbs in the git toolbar", async () => {
+    const { host, toolbar, plug } = mountPlug({
       submit: async () => {},
-      renderIdleActions: (actions, hintHost) => {
-        hintHost.textContent = "finish the worktree";
+      renderIdleActions: (actions) => {
         actions.innerHTML = '<button class="mine">Merge</button>';
         return true;
       },
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".file")).toBeTruthy();
-    expect(host.querySelector(".csactions .mine")).toBeTruthy();
-    expect(host.querySelector(".cshint").textContent).toBe("finish the worktree");
+    expect(toolbar.querySelector(".mine")).toBeTruthy();
     plug.unmount();
   });
 
-  it("hands the actionbar to Clear and Send while a comment is pending, and back after", async () => {
+  // The two bars are independent now: sending comments is the tray's, merging
+  // is the toolbar's, and a pending comment no longer takes the merge verb away.
+  it("offers Clear and Send while a comment is pending, and leaves the merge verb standing", async () => {
     const sent = [];
-    const { host, plug } = mountPlug({
+    const { host, toolbar, plug } = mountPlug({
       submit: async (messages) => sent.push(messages),
       renderIdleActions: (actions) => {
         actions.innerHTML = '<button class="mine">Merge</button>';
@@ -101,14 +104,14 @@ describe("the review plug (DOM)", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     await commentOnTheFile(host);
-    expect(host.querySelector(".csactions .mine")).toBe(null);
     expect(host.querySelector(".cssend")).toBeTruthy();
+    expect(toolbar.querySelector(".mine")).toBeTruthy();
 
     host.querySelector(".cssend").click();
     await vi.advanceTimersByTimeAsync(0);
     expect(sent[0][0].body).toBe("split this up");
     expect(host.querySelector(".pcomment")).toBe(null);
-    expect(host.querySelector(".csactions .mine")).toBeTruthy();
+    expect(host.querySelector(".cssend")).toBe(null);
     plug.unmount();
   });
 
@@ -177,11 +180,17 @@ describe("the review plug (DOM)", () => {
   });
 
   it("offers no comment affordances on a surface with nowhere to post", async () => {
-    const { host, plug } = mountPlug({ fetchDiff: async () => ({ patch: patchOf("new"), commentable: false }) });
+    const { host, toolbar, plug } = mountPlug({
+      fetchDiff: async () => ({ patch: patchOf("new"), commentable: false }),
+      renderIdleActions: (actions) => {
+        actions.innerHTML = '<button class="mine">Merge</button>';
+        return true;
+      },
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(host.querySelector(".fcmt")).toBe(null);
     expect(host.querySelector(".csgeneral")).toBe(null);
-    expect(host.querySelector(".csactions")).toBeTruthy(); // the surface still has verbs
+    expect(toolbar.querySelector(".mine")).toBeTruthy(); // the surface still has verbs
     plug.unmount();
   });
 });

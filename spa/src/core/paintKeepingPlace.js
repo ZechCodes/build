@@ -2,6 +2,11 @@
  *  scroll heights a zoomed or sub-pixel layout leaves behind. */
 const AT_BOTTOM_SLACK_PX = 32;
 
+/** How much of what came before the unread line is left showing above it. A
+ *  line landing flush on the top edge reads as the top of the world; a sliver
+ *  of the conversation above it reads as the boundary it is. */
+const LINE_HEADROOM_PX = 12;
+
 /// Run `paint` and report whether it moved anything under `scroller`.
 ///
 /// Asking the DOM is the only honest answer: the paint belongs to the caller,
@@ -67,7 +72,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
     const line = unreadSelector && scroller.querySelector(unreadSelector);
     if (!line) return scroller.scrollHeight;
     const above = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-    const wanted = scroller.scrollTop + above;
+    const wanted = scroller.scrollTop + above - LINE_HEADROOM_PX;
     return Math.max(0, Math.min(wanted, scroller.scrollHeight - scroller.clientHeight));
   };
   return {

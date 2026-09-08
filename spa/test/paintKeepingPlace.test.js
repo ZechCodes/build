@@ -226,7 +226,7 @@ describe("paintKeepingPlace", () => {
         { key: "b", height: 400 },
       ]);
       paintKeepingPlace(scroller, paint, { opening, policy: followUnread() });
-      expect(scroller.scrollTop).toBe(400);
+      expect(scroller.scrollTop).toBe(388); // the line, less a sliver of what came before
     });
 
     it("opens at the bottom when there is nothing unread", () => {
@@ -246,7 +246,7 @@ describe("paintKeepingPlace", () => {
       ]);
       scroller.scrollTop = 520; // scrollHeight - clientHeight: at the end
       paintKeepingPlace(scroller, paint, { opening: () => false, policy: followUnread() });
-      expect(scroller.scrollTop).toBe(400);
+      expect(scroller.scrollTop).toBe(388);
     });
 
     it("leaves a reader who scrolled up where they are, line or no line", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "../src/core/agentRailRender.js";
+import { railStatusLeadClass, railStatusLeadHtml } from "../src/core/agentRailRender.js";
 
 describe("the lead of the pinned status row", () => {
   it("gives the working shape a word of its own to collapse and a slot for the clock", () => {
@@ -14,17 +14,5 @@ describe("the lead of the pinned status row", () => {
     expect(railStatusLeadClass("working")).toBe("rail-status-lead rail-status-working");
     expect(railStatusLeadClass("starting")).toBe("rail-status-lead rail-status-starting");
     expect(railStatusLeadClass("quiet")).toBe("rail-status-lead");
-  });
-});
-
-describe("the git facts at the row's end", () => {
-  it("says only the ones it has, and nothing at all without them", () => {
-    expect(railStatusGitHtml({ sync: "↑2", stat: "+4 −1" })).toContain("↑2");
-    expect(railStatusGitHtml({ sync: "↑2", stat: "+4 −1" })).toContain("+4 −1");
-    expect(railStatusGitHtml({ sync: "", stat: "" })).toBe("");
-  });
-
-  it("escapes what the row said", () => {
-    expect(railStatusGitHtml({ sync: "<b>", stat: "" })).toContain("&lt;b&gt;");
   });
 });

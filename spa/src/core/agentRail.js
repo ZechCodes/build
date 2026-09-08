@@ -42,7 +42,8 @@ import {
   selectAgentId,
   startFailuresLearned,
 } from "./agentRailModel.js";
-import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
+import { railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
+import { createGitStatusTicker } from "./gitStatusTicker.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
@@ -264,18 +265,30 @@ function paintStatusLead(lead, status) {
   if (text) text.textContent = status.working || status.starting;
 }
 
+/// One ticker per git line, kept with the element it paints so a rail that is
+/// rebuilt around it does not lose the characters standing there.
+const gitTickers = new WeakMap();
+
+function gitTickerFor(git) {
+  const standing = gitTickers.get(git);
+  if (standing) return standing;
+  const ticker = createGitStatusTicker(git);
+  gitTickers.set(git, ticker);
+  return ticker;
+}
+
+/// The git facts move a character at a time rather than being redrawn: digits
+/// roll in place, a section that arrives cascades in, one that goes cascades
+/// out. core/gitStatusTicker.js does the moving.
 function paintStatusGit(git, status) {
-  const html = railStatusGitHtml(status);
-  if (git.innerHTML !== html) git.innerHTML = html;
-  if (html) reveal(git, { axis: "width" });
-  else hide(git, { axis: "width" });
+  return gitTickerFor(git).show(status.git);
 }
 
 const railStatusRowHtml = () =>
   `<div class="rail-status" id="${RAIL_STATUS_ID}" hidden>
     <span class="rail-status-lead" id="${RAIL_STATUS_LEAD_ID}" hidden></span>
     <div class="rail-status-pills scrollstrip" id="${RAIL_STATUS_PILLS_ID}" role="group" aria-label="Agent surfaces"></div>
-    <span class="rail-status-git" id="${RAIL_STATUS_GIT_ID}" hidden></span>
+    <span class="rail-status-git mono" id="${RAIL_STATUS_GIT_ID}" hidden></span>
   </div>`;
 
 const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_VIEWER_ID}" hidden></div>`;
@@ -508,7 +521,7 @@ export function mountAgentRail(host, context) {
     const lead = row.querySelector(`#${RAIL_STATUS_LEAD_ID}`);
     const git = row.querySelector(`#${RAIL_STATUS_GIT_ID}`);
     const pills = row.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
-    const populated = !lead.hidden || !git.hidden || !!pills.querySelector(STANDING_PILL_SELECTOR);
+    const populated = !lead.hidden || gitTickerFor(git).populated() || !!pills.querySelector(STANDING_PILL_SELECTOR);
     if (populated) reveal(row, { axis: "height" });
     else hide(row, { axis: "height" });
   };
@@ -536,7 +549,7 @@ export function mountAgentRail(host, context) {
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
     const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel);
     paintStatusLead(row.querySelector(`#${RAIL_STATUS_LEAD_ID}`), status);
-    paintStatusGit(row.querySelector(`#${RAIL_STATUS_GIT_ID}`), status);
+    paintStatusGit(row.querySelector(`#${RAIL_STATUS_GIT_ID}`), status).then(syncRailStatusRow);
     syncRailStatusRow();
     motionSettled().then(syncRailStatusRow);
   };

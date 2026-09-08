@@ -1497,7 +1497,8 @@ describe("the pinned status line above the composer", () => {
     });
     await mount();
     expect(railStatusLead().hidden).toBe(true);
-    expect(railStatus().textContent).toContain("+4 −1");
+    expect(railStatus().textContent).toContain("+4");
+    expect(railStatus().textContent).toContain("−1");
     expect(railStatus().textContent).toContain("↑2");
     expect(railStatus().textContent).not.toContain("↓");
   });
@@ -1517,8 +1518,12 @@ describe("the pinned status line above the composer", () => {
     await mount();
     const git = railStatus().querySelector(".rail-status-git");
     expect(git).toBeTruthy();
-    expect(git.querySelector(".rail-status-sync").textContent).toBe("↓1");
-    expect(git.querySelector(".rail-status-stat").textContent).toBe("+104 −38");
+    expect(git.textContent).toBe("↓1+104−38");
+    expect([...git.children].map((cell) => cell.getAttribute("data-cell"))).toEqual([
+      "behind:glyph", "behind:d0",
+      "insertions:glyph", "insertions:d2", "insertions:d1", "insertions:d0",
+      "deletions:glyph", "deletions:d1", "deletions:d0",
+    ]);
     expect(railStatus().lastElementChild).toBe(git);
     expect(railStatus().firstElementChild).toBe(railStatusLead());
   });
@@ -2886,14 +2891,17 @@ describe("the one status row", () => {
       expect(railStatus().hidden).toBe(false);
       expect(movesOn(railStatus())[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
       expect(movesOn(railStatusLead())[0].keyframes[0]).toEqual({ width: "0px", opacity: 0 });
-      expect(movesOn(railStatusGit())[0].keyframes[0]).toEqual({ width: "0px", opacity: 0 });
+      // The git facts are not a box that grows: their characters cascade in one
+      // at a time, so nothing animates the group itself.
+      expect(movesOn(railStatusGit())).toEqual([]);
+      expect(railStatusGit().textContent).toBe("↑2+4−1");
 
       started.length = 0;
       await pushFeed({ items: [], projects: [] });
       await settleMotion();
 
       expect(movesOn(railStatusLead())[0].keyframes[1]).toEqual({ width: "0px", opacity: 0 });
-      expect(movesOn(railStatusGit())[0].keyframes[1]).toEqual({ width: "0px", opacity: 0 });
+      expect(railStatusGit().textContent).toBe("");
       expect(movesOn(railStatus())[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
       expect(railStatus().hidden).toBe(true);
     } finally {

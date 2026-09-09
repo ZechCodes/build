@@ -672,6 +672,23 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row-jump { flex:none; padding:0 2px; border:0; background:none; color:var(--dim);
   font:inherit; font-size:10.5px; line-height:1; cursor:pointer; }
 .surface-row-jump:hover { color:var(--accent); }
+.surface-agent { display:block; padding:0; }
+.surface-agent-summary { padding:4px 6px; cursor:pointer; list-style:none; }
+.surface-agent-summary::-webkit-details-marker { display:none; }
+.surface-agent-summary:focus-visible { outline:1px solid var(--accent); outline-offset:-1px; border-radius:6px; }
+.surface-agent-summary::before { content:"›"; flex:none; color:var(--dim); transform:rotate(0deg);
+  transition:transform 120ms ease; }
+.surface-agent[open] > .surface-agent-summary::before { transform:rotate(90deg); }
+.surface-agent-details { padding:2px 6px 8px 25px; }
+.surface-agent-facts { display:grid; grid-template-columns:minmax(82px, auto) minmax(0, 1fr);
+  gap:4px 10px; margin:0; }
+.surface-agent-fact { display:contents; }
+.surface-agent-fact dt { color:var(--dim); font-size:10.5px; }
+.surface-agent-fact dd { min-width:0; margin:0; color:var(--ink2); overflow-wrap:anywhere; }
+.surface-agent-fact .surface-row-model, .surface-agent-fact .surface-row-effort,
+.surface-agent-fact .surface-row-detail { font-size:inherit; }
+.surface-agent-unavailable { color:var(--dim); }
+.surface-agent-fact .surface-row-jump { padding:0; color:var(--accent); }
 .surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
 .surface-completed { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }
 .surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;

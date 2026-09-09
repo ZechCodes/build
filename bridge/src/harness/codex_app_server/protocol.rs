@@ -293,6 +293,60 @@ pub struct InboundServerRequest {
     pub params: Value,
 }
 
+/// Metadata emitted for a thread independently of its turn/item lifecycle.
+///
+/// Child-thread notifications are normally isolated from the parent session. This
+/// narrow projection lets the sub-agent surface observe descriptive/configuration
+/// fields without treating child traffic as parent activity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadMetadataNotification {
+    Started {
+        thread_id: String,
+        parent_thread_id: Option<String>,
+        preview: Option<String>,
+        label: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+    },
+    SettingsUpdated {
+        thread_id: String,
+        model: Option<String>,
+        /// `Some(None)` is an authoritative explicit null; `None` is absent.
+        reasoning_effort: Option<Option<String>>,
+    },
+}
+
+impl ThreadMetadataNotification {
+    pub fn decode(method: &str, params: &Value) -> Result<Option<Self>, String> {
+        match method {
+            "thread/started" => Ok(Some(ThreadMetadataNotification::Started {
+                thread_id: required_string(
+                    params,
+                    THREAD_STARTED_ID_POINTER,
+                    "thread/started thread id",
+                )?,
+                parent_thread_id: optional_string(params, THREAD_STARTED_PARENT_POINTER),
+                preview: optional_string(params, "/thread/preview"),
+                label: optional_string(params, "/thread/agentRole")
+                    .or_else(|| optional_string(params, "/thread/agentNickname"))
+                    .or_else(|| optional_string(params, "/thread/name")),
+                model: optional_string(params, "/thread/model"),
+                reasoning_effort: optional_string(params, "/thread/reasoningEffort"),
+            })),
+            "thread/settings/updated" => Ok(Some(ThreadMetadataNotification::SettingsUpdated {
+                thread_id: required_string(
+                    params,
+                    THREAD_ID_POINTER,
+                    "thread/settings/updated thread id",
+                )?,
+                model: optional_string(params, "/threadSettings/model"),
+                reasoning_effort: optional_nullable_string(params, "/threadSettings/effort"),
+            })),
+            _ => Ok(None),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnCompletion {
     pub turn_id: String,
@@ -951,6 +1005,100 @@ fn required_string(value: &Value, pointer: &str, label: &str) -> Result<String, 
         .ok_or_else(|| format!("{label} is missing"))
 }
 
+fn optional_string(value: &Value, pointer: &str) -> Option<String> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn optional_nullable_string(value: &Value, pointer: &str) -> Option<Option<String>> {
+    value.pointer(pointer).and_then(|value| match value {
+        Value::Null => Some(None),
+        Value::String(value) => Some(Some(value.clone())),
+        _ => None,
+    })
+}
+
 fn normalize_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod thread_metadata_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn decodes_only_whitelisted_thread_metadata_fields() {
+        let started = ThreadMetadataNotification::decode(
+            "thread/started",
+            &json!({
+                "thread": {
+                    "id":"child", "parentThreadId":"parent", "preview":"Inspect parser",
+                    "agentRole":"reviewer", "agentNickname":"nickname", "name":"name",
+                    "model":"gpt-6-astra", "reasoningEffort":"high",
+                    "turns":[{"items":[{"private":"not projected"}]}]
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            started,
+            Some(ThreadMetadataNotification::Started {
+                thread_id: "child".to_string(),
+                parent_thread_id: Some("parent".to_string()),
+                preview: Some("Inspect parser".to_string()),
+                label: Some("reviewer".to_string()),
+                model: Some("gpt-6-astra".to_string()),
+                reasoning_effort: Some("high".to_string()),
+            })
+        );
+        assert_eq!(
+            ThreadMetadataNotification::decode("item/started", &json!({"threadId":"child"}))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn settings_distinguish_absent_and_explicit_null_effort() {
+        let decode_effort = |settings: Value| {
+            let Some(ThreadMetadataNotification::SettingsUpdated {
+                reasoning_effort, ..
+            }) = ThreadMetadataNotification::decode(
+                "thread/settings/updated",
+                &json!({"threadId":"child", "threadSettings":settings}),
+            )
+            .unwrap()
+            else {
+                panic!("settings metadata was not decoded");
+            };
+            reasoning_effort
+        };
+        assert_eq!(decode_effort(json!({"model":"gpt-5.6-sol"})), None);
+        assert_eq!(
+            decode_effort(json!({"model":"gpt-5.6-sol", "effort":null})),
+            Some(None)
+        );
+        assert_eq!(
+            decode_effort(json!({"model":"gpt-5.6-sol", "effort":"high"})),
+            Some(Some("high".to_string()))
+        );
+    }
+
+    #[test]
+    fn malformed_whitelisted_metadata_is_rejected() {
+        assert!(ThreadMetadataNotification::decode(
+            "thread/started",
+            &json!({"thread":{"parentThreadId":"parent"}})
+        )
+        .is_err());
+        assert!(ThreadMetadataNotification::decode(
+            "thread/settings/updated",
+            &json!({"threadSettings":{"model":"gpt-5.6-sol"}})
+        )
+        .is_err());
+    }
 }

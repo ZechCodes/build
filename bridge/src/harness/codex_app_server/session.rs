@@ -16,6 +16,7 @@ use super::process::{
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
     ParentThreadFilter, ParentThreadRoute, RoutedServerRequest, ServerNotification,
+    ThreadMetadataNotification,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::subagents::CodexSubagents;
@@ -336,12 +337,36 @@ impl SessionCore {
             expected_parent.as_deref(),
         ) == ParentThreadRoute::Child
         {
+            self.observe_child_thread_metadata(&inbound, expected_parent.as_deref());
             return Ok(());
         }
         self.accept_parent_message();
         let notification = ServerNotification::decode(&inbound.method, inbound.params)
             .map_err(HarnessError::Session)?;
         self.dispatch_notification(notification)
+    }
+
+    fn observe_child_thread_metadata(
+        &self,
+        inbound: &InboundNotification,
+        expected_parent: Option<&str>,
+    ) {
+        let Some(expected_parent) = expected_parent else {
+            return;
+        };
+        let Ok(Some(metadata)) =
+            ThreadMetadataNotification::decode(&inbound.method, &inbound.params)
+        else {
+            return;
+        };
+        if self
+            .subagents
+            .lock()
+            .unwrap()
+            .apply_thread_metadata(&metadata, expected_parent)
+        {
+            self.surfaces_revision.bump();
+        }
     }
 
     fn handle_server_request(
@@ -812,6 +837,74 @@ mod tests {
             ),
             ParentThreadRoute::Parent
         );
+    }
+
+    #[test]
+    fn child_thread_metadata_updates_surfaces_without_touching_parent_lifecycle() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), "read hold");
+        let (session, _activity) = scripted_session(root.path(), &script);
+        wait_until("opened its parent thread", || {
+            session.session_id().is_some()
+        });
+        session.backdate_last_output(Duration::from_secs(60));
+        let status_before = session.status();
+        let revision = session.surfaces_changed().unwrap();
+
+        session
+            .core
+            .handle_notification(InboundNotification {
+                method: "thread/started".to_string(),
+                params: json!({
+                    "thread": {
+                        "id":CHILD_THREAD_ID, "parentThreadId":THREAD_ID,
+                        "preview":"Shorten the notice", "agentNickname":"Hegel",
+                        "model":"gpt-6-astra", "reasoningEffort":"high"
+                    }
+                }),
+            })
+            .unwrap();
+        session
+            .core
+            .handle_notification(InboundNotification {
+                method: "thread/settings/updated".to_string(),
+                params: json!({
+                    "threadId":CHILD_THREAD_ID,
+                    "threadSettings":{"model":"gpt-5.6-sol", "effort":null}
+                }),
+            })
+            .unwrap();
+
+        let agent = &session.surfaces().unwrap().subagents[0];
+        assert_eq!(agent.label, "Hegel");
+        assert_eq!(agent.description.as_deref(), Some("Shorten the notice"));
+        assert_eq!(agent.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(agent.reasoning_effort, None);
+        assert!(*revision.borrow() >= 2);
+        assert_eq!(session.status(), status_before);
+        assert!(session.quiet_for() >= Duration::from_secs(60));
+        assert_eq!(session.epitaph(), None);
+
+        for malformed_or_unknown in [
+            InboundNotification {
+                method: "thread/started".to_string(),
+                params: json!({"thread":{"parentThreadId":THREAD_ID}}),
+            },
+            InboundNotification {
+                method: "future/notification".to_string(),
+                params: json!({"threadId":CHILD_THREAD_ID}),
+            },
+        ] {
+            session
+                .core
+                .handle_notification(malformed_or_unknown)
+                .unwrap();
+        }
+        assert_eq!(session.status(), status_before);
+        assert!(session.quiet_for() >= Duration::from_secs(60));
+        assert_eq!(session.surfaces().unwrap().subagents.len(), 1);
+        assert_eq!(session.epitaph(), None);
+        session.end();
     }
 
     #[test]

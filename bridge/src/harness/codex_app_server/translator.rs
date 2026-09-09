@@ -562,7 +562,11 @@ fn outcome_word(outcome: ToolOutcome) -> &'static str {
 
 fn tool_summary(category: ToolSummaryCategory, item: &Value) -> String {
     let summary = match category {
-        ToolSummaryCategory::Command => labeled_value("Command", command_text(item)),
+        ToolSummaryCategory::Command => command_text(item)
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+            .unwrap_or("Command")
+            .to_string(),
         ToolSummaryCategory::FileChange => file_change_summary(item),
         ToolSummaryCategory::Mcp => format!(
             "MCP {}.{}{}",

@@ -2396,7 +2396,7 @@ fn completed_speech_and_tools_translate_with_bounded_readable_details() {
         started[0].activity,
         AgentActivity::ToolUse {
             call_id: "c".to_string(),
-            summary: "Command cargo test --lib".to_string(),
+            summary: "cargo test --lib".to_string(),
         }
     );
     let completed = translator

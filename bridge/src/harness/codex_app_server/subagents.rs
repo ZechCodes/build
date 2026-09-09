@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use super::protocol::{ItemLifecycle, ServerNotification};
+use super::protocol::{ItemLifecycle, ServerNotification, ThreadMetadataNotification};
 use crate::harness::surfaces::{AgentSurfaces, SurfaceAgent};
 
 const MAX_SUBAGENTS: usize = 128;
@@ -13,11 +13,19 @@ const ID_LIMIT: usize = 256;
 const SEEN_EVENT_LIMIT: usize = 256;
 
 /// Projects parent-thread collaboration items onto Build's shared agent surface.
-/// Child-thread traffic is filtered by the session before it reaches this type.
+/// The session also admits a narrow, ancestry-checked subset of child thread
+/// metadata; child turn/item lifecycle traffic remains filtered out.
 #[derive(Debug, Default)]
 pub struct CodexSubagents {
-    agents: Vec<SurfaceAgent>,
+    agents: Vec<TrackedAgent>,
     seen_events: VecDeque<(ItemLifecycle, String, String, &'static str)>,
+}
+
+#[derive(Debug, Default)]
+struct TrackedAgent {
+    surface: SurfaceAgent,
+    configured_model: bool,
+    configured_effort: bool,
 }
 
 impl CodexSubagents {
@@ -46,14 +54,67 @@ impl CodexSubagents {
 
     pub fn snapshot(&self) -> Option<AgentSurfaces> {
         (!self.agents.is_empty()).then(|| AgentSurfaces {
-            subagents: self.agents.clone(),
+            subagents: self
+                .agents
+                .iter()
+                .map(|agent| agent.surface.clone())
+                .collect(),
             ..AgentSurfaces::default()
         })
     }
 
+    /// Applies only descriptive/configuration metadata for a child thread.
+    /// Lifecycle notifications stay isolated by the session.
+    pub fn apply_thread_metadata(
+        &mut self,
+        notification: &ThreadMetadataNotification,
+        expected_parent: &str,
+    ) -> bool {
+        match notification {
+            ThreadMetadataNotification::Started {
+                thread_id,
+                parent_thread_id,
+                preview,
+                label,
+                model,
+                reasoning_effort,
+            } if parent_thread_id.as_deref() == Some(expected_parent) => {
+                let preview = bounded_text(preview.as_deref(), MESSAGE_LIMIT);
+                let label = bounded_text(label.as_deref(), LABEL_LIMIT);
+                let model = bounded_text(model.as_deref(), LABEL_LIMIT);
+                let effort = bounded_text(reasoning_effort.as_deref(), LABEL_LIMIT);
+                self.upsert(thread_id, |tracked, created| {
+                    apply_configured_metadata(
+                        tracked,
+                        created,
+                        preview.as_deref(),
+                        label.as_deref(),
+                        model.as_deref(),
+                        effort.as_deref(),
+                    )
+                })
+            }
+            ThreadMetadataNotification::SettingsUpdated {
+                thread_id,
+                model,
+                reasoning_effort,
+            } => {
+                let model = bounded_text(model.as_deref(), LABEL_LIMIT);
+                let effort = reasoning_effort
+                    .as_ref()
+                    .map(|effort| bounded_text(effort.as_deref(), LABEL_LIMIT));
+                self.update_existing(thread_id, |tracked| {
+                    apply_settings_metadata(tracked, model.as_deref(), effort)
+                })
+            }
+            ThreadMetadataNotification::Started { .. } => false,
+        }
+    }
+
     pub fn settle_running(&mut self) -> bool {
         let mut changed = false;
-        for agent in &mut self.agents {
+        for tracked in &mut self.agents {
+            let agent = &mut tracked.surface;
             if matches!(agent.state.as_deref(), Some("queued" | "running")) {
                 agent.state = Some("failed".to_string());
                 agent.error = Some("Parent Codex session ended".to_string());
@@ -88,7 +149,10 @@ impl CodexSubagents {
                 .and_then(|status| normalized_state(Some(status)))
                 .or(call_state);
             let message = observed.and_then(|state| optional_text(state, "message", MESSAGE_LIMIT));
-            changed |= self.upsert(receiver, |agent, created| {
+            changed |= self.upsert(receiver, |tracked, created| {
+                let accepts_requested_model = !tracked.configured_model;
+                let accepts_requested_effort = !tracked.configured_effort;
+                let agent = &mut tracked.surface;
                 let before = agent.clone();
                 if created {
                     agent.label = prompt.clone().unwrap_or_else(|| "Sub-agent".to_string());
@@ -99,10 +163,10 @@ impl CodexSubagents {
                         agent.label = label.clone();
                     }
                 }
-                if model.is_some() {
+                if model.is_some() && accepts_requested_model {
                     agent.model = model.clone();
                 }
-                if effort.is_some() {
+                if effort.is_some() && accepts_requested_effort {
                     agent.reasoning_effort = effort.clone();
                 }
                 if prompt.is_some()
@@ -137,7 +201,8 @@ impl CodexSubagents {
             Some("completed") => Some("done"),
             _ => None,
         };
-        self.upsert(thread_id, |agent, created| {
+        self.upsert(thread_id, |tracked, created| {
+            let agent = &mut tracked.surface;
             let before = agent.clone();
             if created {
                 agent.started_at = Some(unix_millis());
@@ -156,29 +221,94 @@ impl CodexSubagents {
         })
     }
 
-    fn upsert(&mut self, id: &str, update: impl FnOnce(&mut SurfaceAgent, bool) -> bool) -> bool {
+    fn upsert(&mut self, id: &str, update: impl FnOnce(&mut TrackedAgent, bool) -> bool) -> bool {
         if id.is_empty() || id.len() > ID_LIMIT {
             return false;
         }
-        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
+        if let Some(agent) = self.agents.iter_mut().find(|agent| agent.surface.id == id) {
             return update(agent, false);
         }
         if self.agents.len() == MAX_SUBAGENTS {
             let evicted = self
                 .agents
                 .iter()
-                .position(|agent| matches!(agent.state.as_deref(), Some("done" | "failed")))
+                .position(|agent| matches!(agent.surface.state.as_deref(), Some("done" | "failed")))
                 .unwrap_or(0);
             self.agents.remove(evicted);
         }
-        let mut agent = SurfaceAgent {
-            id: id.to_string(),
-            ..SurfaceAgent::default()
+        let mut agent = TrackedAgent {
+            surface: SurfaceAgent {
+                id: id.to_string(),
+                ..SurfaceAgent::default()
+            },
+            ..TrackedAgent::default()
         };
         update(&mut agent, true);
         self.agents.push(agent);
         true
     }
+
+    fn update_existing(
+        &mut self,
+        id: &str,
+        update: impl FnOnce(&mut TrackedAgent) -> bool,
+    ) -> bool {
+        if id.is_empty() || id.len() > ID_LIMIT {
+            return false;
+        }
+        self.agents
+            .iter_mut()
+            .find(|agent| agent.surface.id == id)
+            .is_some_and(update)
+    }
+}
+
+fn apply_configured_metadata(
+    tracked: &mut TrackedAgent,
+    created: bool,
+    description: Option<&str>,
+    label: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> bool {
+    let before = tracked.surface.clone();
+    if created {
+        tracked.surface.label = label.unwrap_or("Sub-agent").to_string();
+        tracked.surface.started_at = Some(unix_millis());
+    } else if tracked.surface.label == "Sub-agent" {
+        if let Some(label) = label {
+            tracked.surface.label = label.to_string();
+        }
+    }
+    if let Some(description) = description {
+        tracked.surface.description = Some(description.to_string());
+    }
+    if let Some(model) = model {
+        tracked.surface.model = Some(model.to_string());
+        tracked.configured_model = true;
+    }
+    if let Some(effort) = effort {
+        tracked.surface.reasoning_effort = Some(effort.to_string());
+        tracked.configured_effort = true;
+    }
+    tracked.surface != before
+}
+
+fn apply_settings_metadata(
+    tracked: &mut TrackedAgent,
+    model: Option<&str>,
+    effort: Option<Option<String>>,
+) -> bool {
+    let before = tracked.surface.clone();
+    if let Some(model) = model {
+        tracked.surface.model = Some(model.to_string());
+        tracked.configured_model = true;
+    }
+    if let Some(effort) = effort {
+        tracked.surface.reasoning_effort = effort;
+        tracked.configured_effort = true;
+    }
+    tracked.surface != before
 }
 
 fn event_key(
@@ -274,7 +404,11 @@ fn requested_model(item: &Value) -> Option<String> {
 }
 
 fn optional_text(value: &Value, field: &str, limit: usize) -> Option<String> {
-    let text = value[field].as_str()?.trim();
+    bounded_text(value[field].as_str(), limit)
+}
+
+fn bounded_text(value: Option<&str>, limit: usize) -> Option<String> {
+    let text = value?.trim();
     if text.is_empty() {
         return None;
     }
@@ -312,6 +446,122 @@ mod tests {
             turn_id: "turn".to_string(),
             item: value,
         })
+    }
+
+    fn started_thread(
+        parent: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> ThreadMetadataNotification {
+        ThreadMetadataNotification::Started {
+            thread_id: "child".to_string(),
+            parent_thread_id: Some(parent.to_string()),
+            preview: Some("Inspect the parser".to_string()),
+            label: Some("reviewer".to_string()),
+            model: model.map(str::to_string),
+            reasoning_effort: effort.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn direct_child_thread_metadata_fills_spawn_gaps_and_outranks_requests() {
+        let mut held = CodexSubagents::default();
+        held.apply(&item(json!({
+            "id":"spawn", "type":"collabAgentToolCall", "tool":"spawnAgent",
+            "status":"inProgress", "model":"gpt-5.6-luna", "reasoningEffort":"low",
+            "receiverThreadIds":["child"], "agentsStates":{}
+        })));
+
+        assert!(!held.apply_thread_metadata(
+            &started_thread("unrelated-parent", Some("gpt-6-astra"), Some("high")),
+            "parent"
+        ));
+        assert!(held.apply_thread_metadata(
+            &started_thread("parent", Some("gpt-6-astra"), Some("high")),
+            "parent"
+        ));
+        held.apply(&item(json!({
+            "id":"repeat", "type":"collabAgentToolCall", "tool":"spawnAgent",
+            "status":"completed", "model":"gpt-5.6-sol", "reasoningEffort":"medium",
+            "receiverThreadIds":["child"], "agentsStates":{}
+        })));
+
+        let snapshot = held.snapshot().unwrap();
+        let agent = &snapshot.subagents[0];
+        assert_eq!(agent.description.as_deref(), Some("Inspect the parser"));
+        assert_eq!(agent.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(agent.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn settings_update_only_known_children_and_explicit_null_clears_effort() {
+        let mut held = CodexSubagents::default();
+        let settings = |thread_id: &str, effort| ThreadMetadataNotification::SettingsUpdated {
+            thread_id: thread_id.to_string(),
+            model: Some("gpt-5.6-sol".to_string()),
+            reasoning_effort: effort,
+        };
+        assert!(!held.apply_thread_metadata(
+            &settings("unknown", Some(Some("high".to_string()))),
+            "parent"
+        ));
+
+        held.apply(&item(json!({
+            "id":"activity", "type":"subAgentActivity", "agentPath":"/root/parser",
+            "agentThreadId":"child", "kind":"started"
+        })));
+        held.apply(&item(json!({
+            "id":"spawn", "type":"collabAgentToolCall", "tool":"spawnAgent",
+            "status":"completed", "reasoningEffort":"high",
+            "receiverThreadIds":["child"], "agentsStates":{}
+        })));
+        assert!(held.apply_thread_metadata(&settings("child", Some(None)), "parent"));
+        held.apply(&item(json!({
+            "id":"repeat", "type":"collabAgentToolCall", "tool":"spawnAgent",
+            "status":"completed", "reasoningEffort":"ultra",
+            "receiverThreadIds":["child"], "agentsStates":{}
+        })));
+
+        let agent = &held.snapshot().unwrap().subagents[0];
+        assert_eq!(agent.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(agent.reasoning_effort, None);
+    }
+
+    #[test]
+    fn child_thread_metadata_ids_are_rejected_and_text_is_bounded() {
+        let mut held = CodexSubagents::default();
+        let mut oversized_id = started_thread("parent", Some("model"), Some("high"));
+        if let ThreadMetadataNotification::Started { thread_id, .. } = &mut oversized_id {
+            *thread_id = "x".repeat(ID_LIMIT + 1);
+        }
+        assert!(!held.apply_thread_metadata(&oversized_id, "parent"));
+        assert!(held.snapshot().is_none());
+
+        let oversized_text = "x".repeat(MESSAGE_LIMIT + 1);
+        let metadata = ThreadMetadataNotification::Started {
+            thread_id: "child".to_string(),
+            parent_thread_id: Some("parent".to_string()),
+            preview: Some(oversized_text.clone()),
+            label: Some(oversized_text.clone()),
+            model: Some(oversized_text.clone()),
+            reasoning_effort: Some(oversized_text),
+        };
+        assert!(held.apply_thread_metadata(&metadata, "parent"));
+        let snapshot = held.snapshot().unwrap();
+        let agent = &snapshot.subagents[0];
+        assert_eq!(agent.label.chars().count(), LABEL_LIMIT + 1);
+        assert_eq!(
+            agent.description.as_ref().unwrap().chars().count(),
+            MESSAGE_LIMIT + 1
+        );
+        assert_eq!(
+            agent.model.as_ref().unwrap().chars().count(),
+            LABEL_LIMIT + 1
+        );
+        assert_eq!(
+            agent.reasoning_effort.as_ref().unwrap().chars().count(),
+            LABEL_LIMIT + 1
+        );
     }
 
     #[test]

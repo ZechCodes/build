@@ -152,16 +152,16 @@ describe("mountSurfaceViewer", () => {
     raw.dispose();
   });
 
-  it("leaves the tokens off a compact row and keeps them on one with the width", () => {
+  it("keeps stats available inside both compact and roomy row disclosures", () => {
     const counted = { id: "a1", label: "reader", state: "running", model: "haiku", tokens: 1200, tool_calls: 4 };
     const compact = mount(AGENT_ENTRY_KIND, { compact: true });
     compact.set(surfacesSnapshot({ subagents: [counted] }));
-    expect(document.querySelector(".surface-running").textContent).not.toContain("tokens");
+    expect(document.querySelector(".surface-agent-facts").textContent).toContain("1200");
     compact.dispose();
 
     const roomy = mount(AGENT_ENTRY_KIND);
     roomy.set(surfacesSnapshot({ subagents: [counted] }));
-    expect(document.querySelector(".surface-row-stats").textContent).toContain("1200 tokens");
+    expect(document.querySelector(".surface-agent-facts").textContent).toContain("1200");
     roomy.dispose();
   });
 
@@ -171,14 +171,50 @@ describe("mountSurfaceViewer", () => {
     viewer.set(snapshot());
     const row = document.querySelector(".surface-completed-rows > .surface-row");
 
-    row.querySelector(".surface-row-label").click();
+    row.querySelector(".surface-agent-summary").click();
 
     expect(onOpenThreadItem).not.toHaveBeenCalled();
-    expect(row.querySelector(".surface-row-label").hasAttribute("data-expanded")).toBe(true);
+    expect(row.open).toBe(true);
 
     row.querySelector("[data-call-sequence]").click();
 
     expect(onOpenThreadItem.mock.calls).toEqual([[SPAWNING_CALL_SEQUENCE]]);
+    viewer.dispose();
+  });
+
+  it("keeps an expanded subagent open through a repaint and its move into Completed", async () => {
+    const viewer = mount(AGENT_ENTRY_KIND);
+    const running = snapshot();
+    running.subagents[1] = {
+      ...running.subagents[1],
+      description: "Review the fixture writer",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "high",
+      tokens: 1200,
+      tool_calls: 4,
+    };
+    viewer.set(running);
+    const row = document.querySelector('.surface-running > [data-key="s2"]');
+
+    row.querySelector(".surface-agent-summary").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(row.open).toBe(true);
+
+    const progressed = snapshot();
+    progressed.subagents[1] = { ...running.subagents[1], tokens: 1400 };
+    viewer.set(progressed);
+    expect(document.querySelector('.surface-running > [data-key="s2"]')).toBe(row);
+    expect(row.open).toBe(true);
+    expect(row.querySelector(".surface-agent-facts").textContent).toContain("1400");
+
+    const finished = snapshot();
+    finished.subagents[1] = { ...progressed.subagents[1], state: "done", result: "Fixture review complete" };
+    viewer.set(finished);
+    const moved = document.querySelector('.surface-completed-rows > [data-key="s2"]');
+    expect(moved).not.toBe(row);
+    expect(moved.open).toBe(true);
+    expect(moved.closest(".surface-completed").open).toBe(true);
+    expect(moved.querySelector(".surface-row-detail").textContent).toBe("Fixture review complete");
     viewer.dispose();
   });
 

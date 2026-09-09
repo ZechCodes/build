@@ -13,6 +13,10 @@ identities and agent counts, distinct tool/agent completion, restart/replay
 handling, and preserving authoritative errors.
 `session::tests::parent_subagent_items_publish_surfaces_while_child_items_stay_isolated`
 checks the surface subscription and parent/child boundary together.
+`session::tests::child_thread_metadata_updates_surfaces_without_touching_parent_lifecycle`
+covers the metadata-only exception, including unchanged parent status, quiet
+clock, and epitaph. Tracker tests cover exact ancestry, unknown-child rejection,
+configured-value precedence, explicit-null effort, and metadata retention limits.
 
 Every verification names a test in the crate. Unqualified names live in
 `bridge/src/harness/codex_app_server/tests.rs`; a name marked with its module
@@ -62,7 +66,11 @@ one.
   summaries so the owner can understand what ran and its result. These fields
   can contain workspace content, like the existing tool activity from other
   harnesses. Full protocol payloads and output streams are not retained.
-- **Native subagents are observed through parent-owned events.** Their bounded
-  metadata feeds Build's existing subagent panel and change subscription. This
+- **Native subagent lifecycle is observed through parent-owned events.** A
+  metadata-only exception also accepts child `thread/started` with the exact
+  parent id and `thread/settings/updated` for already tracked children. Only
+  bounded descriptive/configuration fields feed the subagent panel and change
+  subscription; malformed metadata is ignored and the parent quiet clock,
+  lifecycle, activity, and errors remain untouched. This
   does not grant child threads control over the parent session or make a native
   agent's completion an authority over the Build task lifecycle.

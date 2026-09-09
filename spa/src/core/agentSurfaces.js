@@ -127,7 +127,8 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
-  const rowOptions = { compact };
+  const openedAgentKeys = new Set();
+  const rowOptions = { compact, openedAgentKeys };
   const openedPhases = new Set();
   let surfaces = null;
   let selectedWorkflowIndex = 0;
@@ -182,6 +183,9 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       const inner = list.nested(row);
       paintList(element.querySelector(inner.selector), inner);
     });
+    if (list.folded && list.rows.some((row) => openedAgentKeys.has(row.key))) {
+      container.closest(COMPLETED_FOLD_SELECTOR).open = true;
+    }
   };
 
   const paint = () => {
@@ -214,16 +218,35 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       return;
     }
     const spawned = event.target.closest("[data-call-sequence]");
-    if (spawned && onOpenThreadItem) onOpenThreadItem(Number(spawned.dataset.callSequence));
+    if (spawned && onOpenThreadItem) {
+      event.preventDefault();
+      onOpenThreadItem(Number(spawned.dataset.callSequence));
+    }
   };
 
   const onViewerKey = (event) => {
     if (CLIP_KEYS.includes(event.key)) expandClippedText(event);
   };
 
+  const onViewerToggle = (event) => {
+    const agent = event.target.closest("details.surface-agent");
+    if (agent) {
+      if (agent.open) openedAgentKeys.add(agent.dataset.key);
+      else openedAgentKeys.delete(agent.dataset.key);
+      return;
+    }
+    const completed = event.target.closest(COMPLETED_FOLD_SELECTOR);
+    if (!completed || completed.open) return;
+    for (const row of completed.querySelectorAll("details.surface-agent[open]")) {
+      openedAgentKeys.delete(row.dataset.key);
+      row.open = false;
+    }
+  };
+
   host.innerHTML = plan.frameHtmlWithEmptyLists();
   host.addEventListener("click", onViewerPress);
   host.addEventListener("keydown", onViewerKey);
+  host.addEventListener("toggle", onViewerToggle, true);
 
   return {
     kind,
@@ -235,6 +258,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       stopTicking();
       host.removeEventListener("click", onViewerPress);
       host.removeEventListener("keydown", onViewerKey);
+      host.removeEventListener("toggle", onViewerToggle, true);
       host.innerHTML = "";
     },
   };

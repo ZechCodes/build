@@ -331,8 +331,15 @@ The filter reads only the method's routing field. During thread opening, a
 `thread/started` value with `parentThreadId` is a child and a root value may
 establish the candidate parent id; after opening, a thread-scoped inbound value
 is parent-owned only when its exact `threadId` or legacy `conversationId`
-matches the active parent. Notification `Child` returns before full params
-decoding.
+matches the active parent. Notification `Child` returns before normal parent
+params decoding. A separate metadata-only decoder accepts `thread/started` for
+an exact parent/child relationship and `thread/settings/updated` for an already
+tracked child. It may enrich the bounded subagent surface and publish its change
+subscription, but never enters the parent state machine or advances its quiet
+clock. Malformed metadata is ignored. Configured model and effort take precedence
+over requested spawn settings; unavailable values remain unreported. These
+notifications are best-effort configuration observations, not per-turn execution
+metadata.
 
 The filter never chooses a response. A known server-request `Child` is built
 into the same `ServerRequest` variant as its parent counterpart, without
@@ -536,6 +543,12 @@ Tool summaries carry selected, clipped fields: the command or affected paths,
 search query, or tool target, followed on completion by an output/error excerpt
 and outcome information when supplied. The existing conversation pump pairs the
 call and result; the UI previews the action and expands to show its result.
+Command previews show the command text without a category prefix.
+
+Each subagent row has a details disclosure for its task, model, reasoning effort,
+reported activity, and result. Missing model or effort is labeled as not reported;
+it is never inferred from the parent agent's selection. These are configuration
+and activity details, not a reasoning transcript.
 
 ### Build MCP configuration
 
@@ -704,7 +717,9 @@ Protocol-derived summaries are clipped before broadcast. Selected command,
 argument, and output text becomes bounded one-line excerpts; full output streams,
 patch bodies, image data, and arbitrary JSON objects never enter `ActivityReport`.
 Subagent metadata is likewise clipped before retention and the number of retained
-agents is capped.
+agents is capped. The child metadata exception uses these same limits, and a
+settings notification cannot create an untracked agent. Neither metadata source
+has authority over agent completion or the Build task lifecycle.
 
 Parent-owned unknown notification methods and unknown item variants are ignored
 after updating the quiet clock and a bounded diagnostic counter. Unknown fields

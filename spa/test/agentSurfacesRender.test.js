@@ -51,6 +51,11 @@ const expectEscaped = (html) => {
   expect(html).toContain("&lt;/div&gt;");
 };
 
+const factValue = (row, label) =>
+  [...row.querySelectorAll(".surface-agent-fact")]
+    .find((fact) => fact.querySelector("dt").textContent === label)
+    .querySelector("dd").textContent;
+
 const readerEntry = {
   id: "a1",
   label: "Reader",
@@ -107,25 +112,28 @@ describe("agentRowHtml", () => {
     expect(agentRowHtml(fromWorkflow)).toBe(agentRowHtml(agentRows([readerEntry])[0]));
   });
 
-  it("draws a compact row as two lines: the head, then the model and what the agent is doing", () => {
+  it("draws a compact row as a native disclosure with all reported details behind its summary", () => {
     const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0], { compact: true })).firstElementChild;
-    expect([...row.children].map((line) => line.className)).toEqual(["surface-row-head", "surface-row-line"]);
+    expect(row.tagName).toBe("DETAILS");
+    expect(row.open).toBe(false);
+    expect(row.firstElementChild.tagName).toBe("SUMMARY");
+    expect([...row.children].map((line) => line.className)).toEqual([
+      "surface-row-head surface-agent-summary",
+      "surface-agent-details",
+    ]);
     expect(row.querySelector(".surface-row-label").textContent).toBe("Reader");
-    expect(row.querySelector(".surface-row-model").textContent).toBe("haiku");
-    expect(row.querySelector(".surface-row-detail").textContent).toBe("Read bridge/src/app.rs");
-    expect(row.textContent).not.toContain("tokens");
-    expect(row.textContent).not.toContain("calls");
+    expect(factValue(row, "Model")).toBe("haiku");
+    expect(factValue(row, "Current activity")).toBe("Read bridge/src/app.rs");
+    expect(factValue(row, "Tokens")).toBe("1200");
+    expect(factValue(row, "Tool calls")).toBe("4");
   });
 
-  it("gives a row with the width for it a third line of tokens and calls", () => {
+  it("names missing model, effort and task metadata without guessing inherited defaults", () => {
     const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0])).firstElementChild;
-    expect([...row.children].map((line) => line.className)).toEqual([
-      "surface-row-head",
-      "surface-row-line",
-      "surface-row-stats",
-    ]);
-    expect(row.querySelector(".surface-row-stats").textContent).toContain("1200 tokens");
-    expect(row.querySelector(".surface-row-stats").textContent).toContain("4 calls");
+    expect(factValue(row, "Description")).toBe("Not reported");
+    expect(factValue(row, "Reasoning effort")).toBe("Not reported");
+    expect(factValue(row, "Result")).toBe("Not reported");
+    expect(factValue(row, "Spawned by")).toBe("Not reported");
   });
 
   it("prints the model name the row arrived with, having named it nowhere itself", () => {
@@ -148,9 +156,10 @@ describe("agentRowHtml", () => {
     const row = parseHtml(agentRowHtml(agent)).firstElementChild;
 
     expect(row.querySelector(".surface-row-label").textContent).toBe("/root/tool_display");
-    expect(row.querySelector(".surface-row-note").textContent).toBe("Explain tool activity in the timeline");
+    expect(factValue(row, "Description")).toBe("Explain tool activity in the timeline");
     expect(row.querySelector(".surface-row-model").textContent).toBe("gpt-5.6-sol");
-    expect(row.querySelector(".surface-row-effort").textContent).toBe("high effort");
+    expect(row.querySelector(".surface-row-effort").textContent).toBe("high");
+    expect(factValue(row, "State")).toBe("Running");
   });
 
   it("draws the state mark the model named and nothing for a state it does not recognise", () => {
@@ -491,11 +500,11 @@ describe("the text a viewer clips", () => {
     expect(source).not.toContain(EXPANDED_ATTRIBUTE);
   });
 
-  it("clips every long thing a row can say: its label, its detail and its note", () => {
+  it("clips the summary label but leaves expanded agent details readable in full", () => {
     const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0], { compact: true }));
-    for (const selector of [".surface-row-label", ".surface-row-detail"]) {
-      expect(row.querySelector(selector).matches(CLIP_SELECTOR)).toBe(true);
-    }
+    expect(row.querySelector(".surface-row-label").matches(CLIP_SELECTOR)).toBe(true);
+    expect(row.querySelector(".surface-row-label").matches(PRESSABLE_CLIP_SELECTOR)).toBe(false);
+    expect(row.querySelector(".surface-row-detail").matches(CLIP_SELECTOR)).toBe(false);
     const note = parseHtml(
       checklistItemHtml(surfaceRows(CHECKLIST_ENTRY_KIND, { checklist: [{ id: "t1", subject: "one", description: "two", state: "pending" }] })[0]),
     ).querySelector(".surface-row-note");
@@ -623,8 +632,8 @@ describe("the wire the bridge actually builds", () => {
     expect(painted.querySelector("[data-call-sequence]").dataset.callSequence).toBe(
       String(recorded.subagents[0].call_sequence),
     );
-    expect(painted.textContent).toContain(`${recorded.subagents[0].tokens} tokens`);
-    expect(painted.textContent).toContain(`${recorded.subagents[0].tool_calls} calls`);
+    expect(factValue(painted, "Tokens")).toBe(String(recorded.subagents[0].tokens));
+    expect(factValue(painted, "Tool calls")).toBe(String(recorded.subagents[0].tool_calls));
     expect(painted.querySelector(".surface-row-detail").textContent).toBe(recorded.subagents[0].result);
   });
 

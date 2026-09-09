@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+pub const DEFAULT_INBOUND_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_OUTBOUND_FRAME_BYTES: usize = 1024 * 1024;
+
 /// Every bound one Codex app-server session enforces, constructed once per session
 /// and handed to each component as the group that component owns.
 #[derive(Debug, Clone, Copy)]
@@ -99,8 +102,8 @@ impl AppServerLimits {
 impl Default for AppServerLimits {
     fn default() -> Self {
         AppServerLimits {
-            inbound_frame_bytes: 1024 * 1024,
-            outbound_frame_bytes: 1024 * 1024,
+            inbound_frame_bytes: DEFAULT_INBOUND_FRAME_BYTES,
+            outbound_frame_bytes: DEFAULT_OUTBOUND_FRAME_BYTES,
             stderr_line_bytes: 16 * 1024,
             stderr_total_bytes: 32 * 1024,
             pending_requests: 64,
@@ -125,8 +128,11 @@ mod tests {
         let limits = AppServerLimits::default();
 
         let connection = limits.connection();
-        assert_eq!(connection.inbound_frame_bytes, 1024 * 1024);
-        assert_eq!(connection.outbound_frame_bytes, 1024 * 1024);
+        assert_eq!(connection.inbound_frame_bytes, DEFAULT_INBOUND_FRAME_BYTES);
+        assert_eq!(
+            connection.outbound_frame_bytes,
+            DEFAULT_OUTBOUND_FRAME_BYTES
+        );
         assert_eq!(connection.pending_requests, 64);
 
         let process = limits.process();

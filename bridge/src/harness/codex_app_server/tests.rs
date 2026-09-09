@@ -10,8 +10,8 @@ use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
     checked_in_fixture, corpus_file_names, harness_context, initialize_result, item_envelope,
     item_envelope_at, selected_choice, spawn_options, supported_user_agent, thread_opened,
-    thread_opened_with, CHECKED_IN_FIXTURES, CHILD_THREAD_ID, CHILD_TURN_ID, EXACT_THREAD_ID,
-    SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID, WORKTREE_ROOT,
+    thread_opened_at, thread_opened_with, CHECKED_IN_FIXTURES, CHILD_THREAD_ID, CHILD_TURN_ID,
+    EXACT_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID, WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
@@ -20,14 +20,18 @@ use super::protocol::{
     ParentThreadRoute, PendingOperation, RequestId, RoutedServerRequest, RpcError,
     ServerNotification, ServerRequest, ServerResponse, TurnCompletion, CLIENT_NAME,
 };
+use super::session::CodexAppServerSession;
 use super::state::{CodexSessionState, SessionEffect, SessionEvent, StateError, StateTransition};
 use super::translator::{
     classify_item, CodexActivityTranslator, ItemClassification, ItemReportKind, SuppressionReason,
     ToolSummaryCategory,
 };
 use crate::harness::Harness;
-use crate::harness::{AgentActivity, AgentStatus, ToolOutcome, Turn, TurnChoiceSupport};
+use crate::harness::{
+    AgentActivity, AgentSession, AgentStatus, ToolOutcome, Turn, TurnChoiceSupport,
+};
 use crate::models::{AgentProvider, ModelChoice};
+use crate::pty::HarnessSpec;
 
 fn limits() -> AppServerLimits {
     AppServerLimits {
@@ -373,6 +377,7 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
     assert!(frames[1]["params"].get("effort").is_none());
     assert_eq!(frames[1]["params"]["approvalPolicy"], "never");
     assert_eq!(frames[1]["params"]["sandbox"], "danger-full-access");
+    assert_eq!(frames[1]["params"]["excludeTurns"], true);
     assert_eq!(frames[2]["params"]["model"], SELECTED_MODEL);
     assert_eq!(frames[2]["params"]["effort"], SELECTED_EFFORT);
     assert!(frames[3]["params"].get("model").is_none());
@@ -382,6 +387,195 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
     assert_eq!(frames[4]["params"]["threadId"], THREAD_ID);
     assert_eq!(frames[4]["params"]["turnId"], TURN_ID);
     assert_eq!(frames[5], json!({"method":"initialized"}));
+}
+
+#[test]
+fn thread_resume_excludes_turn_history_without_changing_thread_start() {
+    let encode = |operation: PendingOperation| {
+        let mut bytes = Vec::new();
+        operation.serialize_request(7, &mut bytes).unwrap();
+        serde_json::from_slice::<Value>(&bytes).unwrap()
+    };
+
+    assert_eq!(
+        encode(start_thread()),
+        json!({
+            "id": 7,
+            "method": "thread/start",
+            "params": {
+                "cwd": WORKTREE_ROOT,
+                "model": SELECTED_MODEL,
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access"
+            }
+        })
+    );
+    assert_eq!(
+        encode(resume_thread()),
+        json!({
+            "id": 7,
+            "method": "thread/resume",
+            "params": {
+                "threadId": EXACT_THREAD_ID,
+                "cwd": WORKTREE_ROOT,
+                "model": SELECTED_MODEL,
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+                "excludeTurns": true
+            }
+        })
+    );
+}
+
+#[test]
+fn active_session_completes_from_a_frame_larger_than_one_megabyte() {
+    let connection = AppServerConnection::memory(AppServerLimits::default().connection());
+    let oversized_history = "x".repeat(1024 * 1024);
+    let mut input = serde_json::to_vec(&json!({
+        "method": "turn/completed",
+        "params": {
+            "threadId": THREAD_ID,
+            "turn": {
+                "id": TURN_ID,
+                "items": [{
+                    "type": "agentMessage",
+                    "id": "large-agent-message",
+                    "text": oversized_history,
+                    "phase": "final_answer"
+                }],
+                "itemsView": "summary",
+                "status": "completed",
+                "error": null,
+                "startedAt": 0,
+                "completedAt": 1,
+                "durationMs": 1
+            }
+        }
+    }))
+    .unwrap();
+    assert!(input.len() > 1024 * 1024);
+    input.push(b'\n');
+
+    let event = connection
+        .read_event(&mut Cursor::new(input))
+        .unwrap()
+        .expect("the large completion frame is read");
+    let ConnectionEvent::Notification(inbound) = event else {
+        panic!("expected a completion notification");
+    };
+    let ServerNotification::TurnCompleted { completion, .. } =
+        ServerNotification::decode(&inbound.method, inbound.params).unwrap()
+    else {
+        panic!("expected a decoded turn completion");
+    };
+    let completed = working_state()
+        .transition(
+            SessionEvent::ObservedCompletion(completion),
+            Duration::from_secs(1),
+            AppServerLimits::default().state(),
+        )
+        .unwrap();
+
+    assert_eq!(completed.state.live_status(), Some(AgentStatus::Waiting));
+}
+
+#[test]
+fn spawned_session_stays_live_after_a_large_completion_and_completes_the_next_turn() {
+    let root = tempfile::tempdir().unwrap();
+    let large_completion_path = root.path().join("large-completion.jsonl");
+    let large_completion = json!({
+        "method": "turn/completed",
+        "params": {
+            "threadId": THREAD_ID,
+            "turn": {
+                "id": TURN_ID,
+                "items": [{
+                    "type": "agentMessage",
+                    "id": "large-agent-message",
+                    "text": "x".repeat(1024 * 1024),
+                    "phase": "final_answer"
+                }],
+                "itemsView": "summary",
+                "status": "completed",
+                "error": null,
+                "startedAt": 0,
+                "completedAt": 1,
+                "durationMs": 1
+            }
+        }
+    });
+    let mut large_completion_bytes = serde_json::to_vec(&large_completion).unwrap();
+    assert!(large_completion_bytes.len() > 1024 * 1024);
+    large_completion_bytes.push(b'\n');
+    std::fs::write(&large_completion_path, large_completion_bytes).unwrap();
+
+    let cwd = root.path().display().to_string();
+    let initialize = json!({"id":1,"result":initialize_result(&supported_user_agent())});
+    let opened = json!({"id":2,"result":thread_opened_at(&cwd, THREAD_ID, Some(SELECTED_EFFORT))});
+    let first_started = json!({"id":3,"result":{"turn":{"id":TURN_ID}}});
+    let second_started = json!({"id":4,"result":{"turn":{"id":"turn-next"}}});
+    let second_completed = json!({
+        "method":"turn/completed",
+        "params":{
+            "threadId":THREAD_ID,
+            "turn":{"id":"turn-next","items":[],"itemsView":"summary","status":"completed","error":null}
+        }
+    });
+    let script = format!(
+        "read initialize; printf '%s\\n' '{initialize}'; read initialized; read thread; printf '%s\\n' '{opened}'; read first; printf '%s\\n' '{first_started}'; sleep 0.05; sed -n '1p' '{}'; read second; printf '%s\\n' '{second_started}'; sleep 0.05; printf '%s\\n' '{second_completed}'; read hold",
+        large_completion_path.display()
+    );
+    let spec = HarnessSpec::new("sh").arg("-c").arg(script);
+    let (session, _activity) = CodexAppServerSession::spawn(
+        &spec,
+        root.path().to_path_buf(),
+        selected_choice(),
+        None,
+        AppServerLimits::default(),
+    )
+    .unwrap();
+    let wait_until = |expectation: &str, condition: &mut dyn FnMut() -> bool| {
+        for _ in 0..400 {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the session never {expectation}");
+    };
+
+    wait_until("opened its thread", &mut || session.session_id().is_some());
+    session.send_turn(&Turn::new("first")).unwrap();
+    wait_until("started its first turn", &mut || {
+        session.status() == AgentStatus::Working
+    });
+    wait_until("completed its large first turn", &mut || {
+        session.status() == AgentStatus::Waiting
+    });
+    session.send_turn(&Turn::new("second")).unwrap();
+    wait_until("started its second turn", &mut || {
+        session.status() == AgentStatus::Working
+    });
+    wait_until("completed its second turn", &mut || {
+        session.status() == AgentStatus::Waiting
+    });
+    assert!(!session.exited_within(Duration::from_millis(20)));
+    session.end();
+}
+
+#[test]
+fn frame_larger_than_the_default_inbound_limit_reports_the_observed_lower_bound() {
+    let configured = AppServerLimits::default();
+    let connection = AppServerConnection::memory(configured.connection());
+    let mut input = vec![b'x'; configured.inbound_frame_bytes + 1];
+    input.push(b'\n');
+
+    assert!(matches!(
+        connection.read_event(&mut Cursor::new(input)).unwrap_err(),
+        ConnectionError::FrameTooLarge { limit, observed_at_least }
+            if limit == configured.inbound_frame_bytes
+                && observed_at_least == configured.inbound_frame_bytes + 1
+    ));
 }
 
 #[test]
@@ -429,16 +623,16 @@ fn every_write_path_enforces_the_outbound_frame_limit() {
         || ServerResponse::method_not_found(json!("x".repeat(64)), "method not found");
     assert!(matches!(
         capped.request(PendingOperation::Initialize).unwrap_err(),
-        ConnectionError::FrameTooLarge(16)
+        ConnectionError::FrameTooLarge { limit: 16, .. }
     ));
     assert_eq!(capped.pending_count(), 0);
     assert!(matches!(
         capped.notify(ClientNotification::Initialized).unwrap_err(),
-        ConnectionError::FrameTooLarge(16)
+        ConnectionError::FrameTooLarge { limit: 16, .. }
     ));
     assert!(matches!(
         capped.respond(oversized_response()).unwrap_err(),
-        ConnectionError::FrameTooLarge(16)
+        ConnectionError::FrameTooLarge { limit: 16, .. }
     ));
     let roomy = AppServerConnection::memory(AppServerLimits::default().connection());
     assert!(roomy.respond(oversized_response()).is_ok());

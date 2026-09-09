@@ -72,8 +72,7 @@ impl PendingOperation {
                 writer,
                 id,
                 self.method(),
-                &ThreadOpenParams {
-                    thread_id: None,
+                &ThreadStartParams {
                     cwd,
                     model: model.as_deref(),
                     approval_policy: "never",
@@ -88,12 +87,13 @@ impl PendingOperation {
                 writer,
                 id,
                 self.method(),
-                &ThreadOpenParams {
-                    thread_id: Some(thread_id),
+                &ThreadResumeParams {
+                    thread_id,
                     cwd,
                     model: model.as_deref(),
                     approval_policy: "never",
                     sandbox: "danger-full-access",
+                    exclude_turns: true,
                 },
             ),
             PendingOperation::StartTurn {
@@ -938,13 +938,22 @@ struct EmptyObject {}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ThreadOpenParams<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thread_id: Option<&'a str>,
+struct ThreadStartParams<'a> {
     cwd: &'a str,
     model: Option<&'a str>,
     approval_policy: &'a str,
     sandbox: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadResumeParams<'a> {
+    thread_id: &'a str,
+    cwd: &'a str,
+    model: Option<&'a str>,
+    approval_policy: &'a str,
+    sandbox: &'a str,
+    exclude_turns: bool,
 }
 
 #[derive(Serialize)]

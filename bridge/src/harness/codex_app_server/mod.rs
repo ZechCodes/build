@@ -14,6 +14,7 @@ use crate::orchestrator::SpawnOptions;
 use crate::pty::HarnessSpec;
 
 mod connection;
+mod diagnostics;
 mod limits;
 mod policy;
 mod process;

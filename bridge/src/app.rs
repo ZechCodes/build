@@ -466,7 +466,52 @@ struct MintedCallRow {
     answered: bool,
 }
 
+struct LifecycleDiagnostic<'a> {
+    event: &'a str,
+    origin: &'a str,
+    reason: Option<&'a str>,
+    operation_id: Option<&'a str>,
+    provider_thread_id: Option<&'a str>,
+    caller: Option<&'a std::panic::Location<'a>>,
+}
+
 impl Tab {
+    fn log_lifecycle(&self, diagnostic: LifecycleDiagnostic<'_>) {
+        let Some((owner_id, agent_id)) = self.role.agent() else {
+            return;
+        };
+        let ts_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or_default();
+        let mut entry = json!({
+            "component": "app",
+            "event": diagnostic.event,
+            "ts_utc": now_rfc3339(),
+            "ts_unix_ms": ts_unix_ms,
+            "agent_id": agent_id,
+            "owner_id": owner_id,
+            "origin": diagnostic.origin,
+        });
+        if let Some(instance) = &self.session_instance {
+            entry["session_instance_id"] = json!(instance.id);
+            entry["conversation_id"] = json!(instance.conversation_id);
+        }
+        if let Some(reason) = diagnostic.reason {
+            entry["reason"] = json!(reason);
+        }
+        if let Some(operation_id) = diagnostic.operation_id {
+            entry["operation_id"] = json!(operation_id);
+        }
+        if let Some(provider_thread_id) = diagnostic.provider_thread_id {
+            entry["provider_thread_id"] = json!(provider_thread_id);
+        }
+        if let Some(caller) = diagnostic.caller {
+            entry["caller"] = json!(format!("{}:{}", caller.file(), caller.line()));
+        }
+        eprintln!("build_lifecycle {entry}");
+    }
+
     /// The wire id this tab is demuxed by on the shared terminal socket:
     /// `term-<n>` for a shell, `agent:<agent_id>` for an agent. An agent is
     /// addressed by its own durable identity, never by the run that happens to
@@ -4836,6 +4881,7 @@ impl AppState {
     /// directory they live in is about to go, so their sessions end here,
     /// recorded on the thread, rather than lingering live until the reaper
     /// notices the root is gone.
+    #[track_caller]
     fn retire_agents_of_pruned_worktree(&mut self, root: &std::path::Path) {
         let root = Self::canonical_root(root);
         let ended: Vec<SessionInstance> = self
@@ -4850,7 +4896,9 @@ impl AppState {
         }
     }
 
+    #[track_caller]
     fn retire_agent_tabs(&mut self, root: &std::path::Path) -> Vec<Retirement> {
+        let caller = std::panic::Location::caller();
         let root = Self::canonical_root(root);
         let keys: Vec<TabKey> = self
             .tabs
@@ -4859,7 +4907,7 @@ impl AppState {
             .cloned()
             .collect();
         keys.iter()
-            .filter_map(|key| self.retire_tab(key, "closed"))
+            .filter_map(|key| self.retire_tab_at(key, "closed", caller))
             .collect()
     }
 
@@ -4869,8 +4917,30 @@ impl AppState {
     /// ([`Retirement`]); the close push stays here, under the app mutex,
     /// because it is bounded — the screen's own lock and one channel send per
     /// client, exactly what it has always been.
+    #[track_caller]
     fn retire_tab(&mut self, key: &TabKey, reason: &str) -> Option<Retirement> {
+        self.retire_tab_at(key, reason, std::panic::Location::caller())
+    }
+
+    fn retire_tab_at(
+        &mut self,
+        key: &TabKey,
+        reason: &str,
+        caller: &std::panic::Location<'_>,
+    ) -> Option<Retirement> {
+        let provider_thread_id = self.tabs.get(key).and_then(|tab| {
+            let (owner_id, agent_id) = tab.role.agent()?;
+            self.recorded_resume_id(owner_id, agent_id)
+        });
         let tab = self.tabs.remove(key)?;
+        tab.log_lifecycle(LifecycleDiagnostic {
+            event: "shutdown_requested",
+            origin: "tab_retirement",
+            reason: Some(reason),
+            operation_id: None,
+            provider_thread_id: provider_thread_id.as_deref(),
+            caller: Some(caller),
+        });
         if let Some(screen) = &tab.screen {
             screen.close(reason);
         }
@@ -4883,11 +4953,24 @@ impl AppState {
     /// The clients are told nothing and stay attached, which is what keeps a
     /// browser's terminal where the human left it across an agent restart.
     /// [`ensure_agent_tab`]'s dead-tab replacement, and nothing else.
+    #[track_caller]
     fn retire_tab_keeping_screen(
         &mut self,
         key: &TabKey,
     ) -> Option<(Retirement, Option<ScreenHandle>)> {
+        let provider_thread_id = self.tabs.get(key).and_then(|tab| {
+            let (owner_id, agent_id) = tab.role.agent()?;
+            self.recorded_resume_id(owner_id, agent_id)
+        });
         let tab = self.tabs.remove(key)?;
+        tab.log_lifecycle(LifecycleDiagnostic {
+            event: "shutdown_requested",
+            origin: "dead_tab_replacement",
+            reason: Some("replaced"),
+            operation_id: None,
+            provider_thread_id: provider_thread_id.as_deref(),
+            caller: Some(std::panic::Location::caller()),
+        });
         Some((Retirement::begin(tab.session), tab.screen))
     }
 
@@ -9898,6 +9981,7 @@ impl AppState {
     ///
     /// The per-agent twin of [`retire_agent_tabs`](Self::retire_agent_tabs), which
     /// takes every agent in a worktree because its owner is going away.
+    #[track_caller]
     fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
         self.retire_tab(&key, "closed");
@@ -9915,6 +9999,7 @@ impl AppState {
     /// and report `done` for an issue no longer taking reports. Only this
     /// issue's own agent goes — the checkout's other agents belong to the main
     /// branch and are none of this verb's business.
+    #[track_caller]
     fn retire_issue_session(&mut self, session: Option<(std::path::PathBuf, String)>) {
         if let Some((checkout, agent_id)) = session {
             self.retire_agent(&checkout, &agent_id);
@@ -22574,6 +22659,17 @@ fn preflight_delivery(
         if working && !turn.interrupt {
             return DeliveryPreflight::Deferred;
         }
+        if turn.interrupt {
+            let provider_thread_id = s.recorded_resume_id(&turn.owner, &turn.agent_id);
+            tab.log_lifecycle(LifecycleDiagnostic {
+                event: "interrupt_requested",
+                origin: "delivery_preflight_model_change",
+                reason: Some("replace_session_for_turn_choice"),
+                operation_id: turn.operation_id.as_deref(),
+                provider_thread_id: provider_thread_id.as_deref(),
+                caller: None,
+            });
+        }
         (
             DeliveryPreflight::Proceed { force_fresh: true },
             turn.interrupt.then(|| Arc::clone(&tab.session)),
@@ -22660,6 +22756,17 @@ fn deliver(
         });
         if !exact_instance {
             return Ok(DeliveryOutcome::Delivered(None));
+        }
+        if *interrupt && spawned == Spawned::Warm {
+            let provider_thread_id = s.recorded_resume_id(owner, agent_id);
+            tab.log_lifecycle(LifecycleDiagnostic {
+                event: "interrupt_requested",
+                origin: "deliver_warm_turn",
+                reason: Some("thread_post_interrupt"),
+                operation_id: turn.operation_id.as_deref(),
+                provider_thread_id: provider_thread_id.as_deref(),
+                caller: None,
+            });
         }
         (
             Arc::clone(&tab.session),
@@ -23220,6 +23327,9 @@ fn end_of_session(
             .expect("the tab this pump holds was just found")
             .role
             .clone();
+        let provider_thread_id = role
+            .agent()
+            .and_then(|(owner_id, agent_id)| s.recorded_resume_id(owner_id, agent_id));
         match role.agent() {
             Some(_) => {
                 let Some(instance) = instance else {
@@ -23233,6 +23343,14 @@ fn end_of_session(
                     .tabs
                     .get_mut(key)
                     .expect("the guarded agent tab still exists");
+                tab.log_lifecycle(LifecycleDiagnostic {
+                    event: "session_ended_observed",
+                    origin: "session_output_closed",
+                    reason: Some("agent_session_ended"),
+                    operation_id: None,
+                    provider_thread_id: provider_thread_id.as_deref(),
+                    caller: None,
+                });
                 tab.live = false;
                 // Told in the same acquisition that marks the tab, because a
                 // marked tab is a REPLACEABLE one: the next spawn takes this

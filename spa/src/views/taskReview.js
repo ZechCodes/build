@@ -16,6 +16,8 @@ import { currentRevisionId, MUTATION_THREAD_PAGE } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError, notifySuccess } from "../core/notify.js";
+import { currentCacheScope } from "../core/cacheScope.js";
+import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
 
 export { REVIEW_POLL_MS };
 
@@ -82,21 +84,36 @@ export function createTaskReview({
   // second concurrent run.git_action. It is also the freeze key: while active,
   // the actionbar is left untouched.
   const gitFlight = createSingleFlight();
+  const requestScope = currentCacheScope() || callRpc;
 
   const plug = createReviewPlug({
     isOffline,
     navigate,
     // The diff is this run's, so the run's own change events are what stale it.
     entity: taskId,
-    fetchDiff: async () => {
+    fetchDiff: async (ifDiffKey) => {
       if (!getTask()) return null;
-      const diff = await callRpc("run.diff", { run_id: taskId });
+      const params = { run_id: taskId, ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}) };
+      const diff = await coordinatedRead({
+        key: rpcReadKey({
+          deviceId: currentCacheScope()?.deviceId,
+          requestScope,
+          repository: `run:${taskId}`,
+          call: callRpc,
+          method: "run.diff",
+          params,
+        }),
+        load: () => callRpc("run.diff", params),
+      });
       // Re-read AFTER the round trip: a paint that snapshotted the task before
       // awaiting would render pre-post state if something landed underneath it.
       const task = getTask();
       if (!task) return null;
       return {
         patch: diff.patch,
+        unchanged: diff.unchanged,
+        diff_key: diff.diff_key,
+        file_edited_at: diff.file_edited_at,
         key: task.state,
         commentable: COMMENTABLE_STATES.includes(task.state),
         // Review prioritization: the run's own diff is the one the triage pass

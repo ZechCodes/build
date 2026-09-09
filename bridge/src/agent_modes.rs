@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::models::AgentProvider;
+use crate::models::{legacy_agent_modes_are_tui, AgentProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,16 +33,17 @@ pub struct AgentModes {
 
 impl AgentModes {
     pub fn from_legacy_default(default_harness: AgentProvider) -> Self {
+        let (claude_tui, codex_tui) = legacy_agent_modes_are_tui(default_harness);
         Self {
-            claude: if default_harness == AgentProvider::Claude {
+            claude: if claude_tui {
                 AgentMode::Tui
             } else {
                 AgentMode::Headless
             },
-            codex: if default_harness == AgentProvider::CodexAppServer {
-                AgentMode::Headless
-            } else {
+            codex: if codex_tui {
                 AgentMode::Tui
+            } else {
+                AgentMode::Headless
             },
         }
     }

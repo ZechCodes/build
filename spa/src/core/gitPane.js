@@ -32,9 +32,10 @@ import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
-import { createFileFolds, parseDiff, pathOf } from "./diff.js";
-import { stackClaims } from "./diffRender.js";
-import { fileStackEntries, fileViewFromParsedFile, fileViewFromStatus, openFilePaths } from "./fileEntries.js";
+import { createFileFolds, fileKey, pathOf } from "./diff.js";
+import { fileFoldOf, stackClaims } from "./diffRender.js";
+import { fileStackEntries, fileViewFromStatus } from "./fileEntries.js";
+import { watchEditedTimes } from "./editedTime.js";
 import { createFileDiffs, wholePatch } from "./fileDiffs.js";
 import { timedPaint } from "./paintTiming.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
@@ -50,6 +51,8 @@ import { patchList } from "./patchList.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
+import { createParsedDiffCache } from "./parsedDiffCache.js";
+import { createDiffViewport } from "./diffViewport.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
@@ -378,6 +381,8 @@ export function mountGitPane(
     navigate = null,
   } = {},
 ) {
+  const parsedDiffs = createParsedDiffCache();
+  const viewport = createDiffViewport({ repaint: () => renderAndFetch() });
   const openFile = (navigate && navigate.openFile) || null;
   const cacheScope = currentCacheScope();
   let disposed = false;
@@ -411,7 +416,13 @@ export function mountGitPane(
   };
   // The uncommitted changeset's bodies: git.status names the files and what each
   // one holds, and each file's diff is fetched, cached and answered on its own.
-  const fileDiffs = createFileDiffs({ deviceId: cacheScope?.deviceId, entityId: cacheEntityId, scope, call: callRpc });
+  const fileDiffs = createFileDiffs({
+    deviceId: cacheScope?.deviceId,
+    entityId: cacheEntityId,
+    scope,
+    call: callRpc,
+    requestScope: cacheScope || callRpc,
+  });
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
   let composer = null; // the one box under the diff, mounted once
   // What the reviewer has approved and selected on this surface's files. One
@@ -435,6 +446,10 @@ export function mountGitPane(
   // OPEN changeset's files as the stack draws them, which is what a stamp is of.
   let reviewStamps = new Map();
   let renderedViews = [];
+  let uncommittedSource = null;
+  let uncommittedSourceViews = [];
+  let wholePatchIdentity = null;
+  let wholePatchValue = null;
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
@@ -587,7 +602,24 @@ export function mountGitPane(
 
   /** The uncommitted changeset's files as the stack draws them: shape from the
    *  status, bodies from the per-file cache. */
-  const uncommittedViews = () => (lastStatus.files || []).map(fileViewFromStatus);
+  const uncommittedViews = () => {
+    const files = lastStatus.files || [];
+    if (files === uncommittedSource) return uncommittedSourceViews;
+    uncommittedSource = files;
+    uncommittedSourceViews = files.map(fileViewFromStatus);
+    return uncommittedSourceViews;
+  };
+
+  const uncommittedWholePatch = () => {
+    const files = lastStatus.files || [];
+    const identity = files
+      .map((file) => `${file.path}\x01${fileDiffs.bodyOf(file.path)?.content_key || ""}`)
+      .join("\x02");
+    if (identity === wholePatchIdentity) return wholePatchValue;
+    wholePatchIdentity = identity;
+    wholePatchValue = wholePatch(lastStatus, fileDiffs.bodyOf);
+    return wholePatchValue;
+  };
 
   /** The one renderer for every changeset: a header, the stacked file diffs in
    *  the folds the reader put them in (noise collapsed into its group at the
@@ -607,6 +639,7 @@ export function mountGitPane(
       noiseExpanded: noiseExpanded.has(String(selected)),
       folds,
       changedSince: changedSinceChangeset(reviewStamps, selected, views),
+      ...viewport.renderOptions(),
       // Review prioritization, on the changeset the reviewer has open — the
       // rail is never reordered, only the stack under it. A surface with no run
       // behind it has no pass to read, and a stack whose bodies are still
@@ -622,7 +655,7 @@ export function mountGitPane(
         bar: uncommittedHeaderHtml(lastStatus),
         views: renderedViews,
         stackOptions: {
-          ...stackFor(renderedViews, wholePatch(lastStatus, fileDiffs.bodyOf)),
+          ...stackFor(renderedViews, uncommittedWholePatch()),
           fileMenu,
           bodyOf: fileDiffs.bodyOf,
           empty: "No uncommitted changes.",
@@ -638,7 +671,10 @@ export function mountGitPane(
     }
     // A commit's patch comes whole in its payload, so its files carry their own
     // rows and need no body fetched for them.
-    renderedViews = parseDiff(detail.patch).map(fileViewFromParsedFile);
+    renderedViews = parsedDiffs.views(detail.patch, {
+      revision: detail.hash || selected,
+      defaultEditedAt: Number(detail.time) * 1000,
+    });
     paintChangeset(detailHost, {
       bar: commitHeaderHtml(detail),
       views: renderedViews,
@@ -652,6 +688,7 @@ export function mountGitPane(
       entries: fileStackEntries(views, stackOptions),
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
+    viewport.attach(detailHost.closest(".cdetail-host") || detailHost);
     if (commentLayer) commentLayer.attach(detailHost);
   };
 
@@ -662,11 +699,19 @@ export function mountGitPane(
   const refreshBodies = () => {
     if (disposed || !lastStatus || selected !== "uncommitted") return;
     const views = uncommittedViews();
+    const folds = foldsOfOpenChangeset();
+    const openPaths = new Set(
+      views
+        .filter((view) => {
+          const fold = fileFoldOf(view, { folds, approved: marks.approved });
+          return viewport.shouldLoad(fileKey(view), fold);
+        })
+        .map((view) => view.path),
+    );
     fileDiffs
       .sync({
         status: lastStatus,
-        openPaths: openFilePaths(views, { folds: foldsOfOpenChangeset() }),
-        triaged: Boolean(currentTriage()),
+        openPaths,
       })
       .then(
         (filled) => {
@@ -1291,7 +1336,17 @@ export function mountGitPane(
   ];
 
   const handleClick = (event) => {
-    for (const claim of claims) if (claim(event)) return;
+    const file = event.target.closest?.(".file[data-key]");
+    const foldPress = Boolean(
+      file &&
+      !event.target.closest("button, input, label") &&
+      (event.target.closest(".fhead") || file.classList.contains("capped")),
+    );
+    for (const claim of claims)
+      if (claim(event)) {
+        if (foldPress) viewport.request(file.dataset.key);
+        return;
+      }
     if (disarmConfirm()) render();
     if (event.target.closest(".gitmore")) showMore();
   };
@@ -1426,11 +1481,13 @@ export function mountGitPane(
     intervalMs: GIT_PANE_POLL_MS,
     entity: scope.run_id || scope.worktree_id || null,
   });
+  const editedTimeWatcher = watchEditedTimes(container);
 
   return {
     dispose() {
       disposed = true;
       watcher.dispose();
+      editedTimeWatcher.dispose();
       document.removeEventListener("pointerdown", onOutsidePointerDown);
       if (reviewMounted) {
         review.unmount(); // stop the plug's poll; the view may remount it later
@@ -1441,6 +1498,8 @@ export function mountGitPane(
         drawer = null;
       }
       fileDiffs.dispose();
+      parsedDiffs.clear();
+      viewport.dispose();
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();
       container.onclick = null;

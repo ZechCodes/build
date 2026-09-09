@@ -10,6 +10,7 @@
 // one thing that talks to the wire and the cache.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { coordinatedRead, rpcReadKey } from "./readRequests.js";
 
 /** The local-cache kind one file's body is stored under, sub-keyed by path. */
 export const FILE_DIFF_RECORD_KIND = "filediff";
@@ -90,13 +91,34 @@ function createFillQueue() {
  * against a status shape, `warm` fills the rest in the background, and both
  * answer how many bodies were filled so a caller can repaint only on news.
  */
-export function createFileDiffs({ deviceId, entityId, scope, call }) {
+export function createFileDiffs({
+  deviceId,
+  entityId,
+  scope,
+  call,
+  requestPriority = "foreground",
+  requestScope = call,
+}) {
   let disposed = false;
   const enqueue = createFillQueue();
+  const repository = scope.run_id
+    ? `run:${scope.run_id}`
+    : scope.worktree_id
+      ? `worktree:${scope.project_id || ""}:${scope.worktree_id}`
+      : `project:${scope.project_id || ""}`;
   const bodies = createCachedBodies({
     addressOf: (path) =>
       deviceId && entityId ? { deviceId, entityId, kind: FILE_DIFF_RECORD_KIND, sub: path } : null,
-    fetchMissing: async (paths) => (await call("git.diff", { ...scope, paths })).files || [],
+    fetchMissing: async (paths) => {
+      const params = { ...scope, paths };
+      const key = rpcReadKey({ deviceId, requestScope, repository, call, method: "git.diff", params });
+      const answer = await coordinatedRead({
+        key,
+        priority: requestPriority,
+        load: () => call("git.diff", params),
+      });
+      return answer.files || [];
+    },
     valueOf: (file) => ({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, truncated: Boolean(file.truncated) },

@@ -99,6 +99,16 @@ pub fn codex_mode_of_harness(harness: AgentProvider) -> &'static str {
     mode_of_harness(harness, AgentProvider::Codex)
 }
 
+/// The two terminal-mode defaults inferred from the pre-`agent_modes`
+/// provider setting. Kept beside the other provider compatibility mappings so
+/// provider identity never becomes a second harness dispatch above this layer.
+pub(crate) fn legacy_agent_modes_are_tui(harness: AgentProvider) -> (bool, bool) {
+    (
+        harness == AgentProvider::Claude,
+        harness != AgentProvider::CodexAppServer,
+    )
+}
+
 fn carrier_of_mode(
     mode: &str,
     headless: AgentProvider,

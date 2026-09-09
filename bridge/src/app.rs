@@ -2037,6 +2037,11 @@ pub struct AppState {
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
+    /// Project-list-only gate, kept separate so a lifecycle test's global git
+    /// gate does not also stop the unrelated project.list probe it uses to
+    /// prove the mutex is free.
+    #[cfg(test)]
+    off_lock_project_list_gate: Option<OffLockGate>,
     /// The git work a verb handed to the drain, to run with this mutex
     /// released. Set by exactly one verb per dispatch and taken by the drain
     /// in the same breath, so the `Ok` the verb returned meanwhile is a
@@ -2553,6 +2558,8 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
+            #[cfg(test)]
+            off_lock_project_list_gate: None,
             deferred_work: None,
             pending_rows: Vec::new(),
             finishing_worktrees: std::collections::HashSet::new(),
@@ -7175,7 +7182,7 @@ impl AppState {
             "git.merge_abort" => self.git_merge_abort(params),
             "settings.get" => Ok(self.settings_get()),
             "settings.set" => self.settings_set(params),
-            "project.list" => Ok(self.project_list()),
+            "project.list" => Ok(self.defer_project_list()),
             "project.add" => self.project_add(params),
             "project.create" => self.project_create(params),
             "project.clone" => self.project_clone(params),
@@ -7707,6 +7714,7 @@ impl AppState {
     }
 
     /// All registered projects, for the New-task picker and Settings.
+    #[cfg(test)]
     fn project_list(&self) -> Value {
         let projects: Vec<Value> = self
             .projects
@@ -7714,6 +7722,34 @@ impl AppState {
             .map(|project| self.project_json(project, git_remote_origin(&project.repo_path)))
             .collect();
         json!({ "projects": projects })
+    }
+
+    /// Capture project identity and settings under the app mutex, then leave
+    /// repository and volume probes to the deferred-read drain. The answer is
+    /// a coherent snapshot: registration changes while the probes run affect
+    /// the next list request, not this one.
+    fn defer_project_list(&mut self) -> Value {
+        let projects = self
+            .projects
+            .iter()
+            .map(|project| ProjectListRow {
+                project_id: project.id.clone(),
+                name: project.name.clone(),
+                repo_path: project.repo_path.clone(),
+                worktrees_root: self.project_worktrees_root(&project.id),
+                base_branch: project.base_branch.clone(),
+                isolation: project.isolation,
+                isolation_default: self.isolation,
+            })
+            .collect();
+        self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
+            subject: ReadSubject::ProjectList { projects },
+            issue_id: None,
+            if_diff_key: None,
+            #[cfg(test)]
+            gate: self.off_lock_project_list_gate.clone(),
+        })));
+        Value::Null
     }
 
     /// The wire row for a project: what it is, and the whole isolation picture
@@ -8432,9 +8468,19 @@ impl AppState {
     /// released. The `Value` returned is the placeholder
     /// [`AppState::deferred_work`] documents.
     fn defer_read(&mut self, subject: ReadSubject, issue_id: Option<String>) -> Value {
+        self.defer_conditional_read(subject, issue_id, None)
+    }
+
+    fn defer_conditional_read(
+        &mut self,
+        subject: ReadSubject,
+        issue_id: Option<String>,
+        if_diff_key: Option<&str>,
+    ) -> Value {
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject,
             issue_id,
+            if_diff_key: if_diff_key.map(str::to_string),
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));
@@ -10106,12 +10152,13 @@ impl AppState {
         let worktree_id = require_str(params, "worktree_id")?;
         let external = self.resolve_external_worktree(&project_id, &worktree_id)?;
         let base_branch = self.base_for(&project_id)?;
-        Ok(self.defer_read(
+        Ok(self.defer_conditional_read(
             ReadSubject::Worktree {
                 external: Box::new(external),
                 base_branch,
             },
             None,
+            params.get("if_diff_key").and_then(Value::as_str),
         ))
     }
 
@@ -10813,7 +10860,7 @@ impl AppState {
             self.require_undecided(capture_id)?;
         }
         match action {
-            BridgeAction::ListProjects => Ok(self.project_list()),
+            BridgeAction::ListProjects => Ok(self.defer_project_list()),
             BridgeAction::ListWork => Ok(self.router_work_digest()),
             BridgeAction::ReadConversation {
                 entity_id,
@@ -14238,7 +14285,11 @@ impl AppState {
             base_sha: active.base_sha.clone(),
             base_branch: active.worktree.base_branch.clone(),
         };
-        Ok(self.defer_read(subject, issue_id))
+        Ok(self.defer_conditional_read(
+            subject,
+            issue_id,
+            params.get("if_diff_key").and_then(Value::as_str),
+        ))
     }
 
     /// Immutable stage review surface. Unlike `run.diff`, this never reads the
@@ -17507,6 +17558,28 @@ fn diff_json(diff: &crate::diff::WorktreeDiff) -> Value {
     })
 }
 
+/// Modification times for changed paths that still exist in a checkout.
+/// Deleted paths are omitted because neither Git nor the filesystem retains
+/// their last worktree modification time.
+fn diff_file_edited_at(
+    worktree_path: &std::path::Path,
+    diff: &crate::diff::WorktreeDiff,
+) -> serde_json::Map<String, Value> {
+    diff.files()
+        .iter()
+        .filter_map(|file| {
+            let edited_at = crate::diff::file_edited_at(worktree_path, &file.path)?;
+            Some((file.path.clone(), json!(edited_at)))
+        })
+        .collect()
+}
+
+fn worktree_diff_json(worktree_path: &std::path::Path, diff: &crate::diff::WorktreeDiff) -> Value {
+    let mut value = diff_json(diff);
+    value["file_edited_at"] = Value::Object(diff_file_edited_at(worktree_path, diff));
+    value
+}
+
 /// The wire view of a run stage's execution progress: id, sub-state, immutable
 /// commit boundaries, publication evidence, and its validation report if any.
 fn run_stage_json(progress: &StageProgress) -> Value {
@@ -18521,12 +18594,18 @@ struct DeferredRead {
     /// The issue that asked, when the read came in through an issue surface —
     /// stamped onto the answer, as the issue verbs did before the split.
     issue_id: Option<String>,
+    /// The complete aggregate held by the caller. We still recompute to avoid
+    /// stale filesystem answers, then suppress the equal payload on the wire.
+    if_diff_key: Option<String>,
     #[cfg(test)]
     gate: Option<OffLockGate>,
 }
 
 /// Which diff a deferred read renders.
 enum ReadSubject {
+    /// `project.list` — immutable row inputs captured at request time, with
+    /// repository and volume metadata read while the app mutex is released.
+    ProjectList { projects: Vec<ProjectListRow> },
     /// `project.diff` — a primary checkout's uncommitted work.
     Project {
         project_id: String,
@@ -18556,19 +18635,86 @@ enum ReadSubject {
     },
 }
 
+struct ProjectListRow {
+    project_id: String,
+    name: String,
+    repo_path: std::path::PathBuf,
+    worktrees_root: std::path::PathBuf,
+    base_branch: String,
+    isolation: Option<Isolation>,
+    isolation_default: Isolation,
+}
+
 impl DeferredRead {
     fn run(&self) -> Result<Value, String> {
+        let conditional_key = self.subject.conditional_key()?;
+        if let Some(diff_key) = conditional_key.as_deref() {
+            if self.if_diff_key.as_deref() == Some(diff_key) {
+                return Ok(json!({ "unchanged": true, "diff_key": diff_key }));
+            }
+        }
         let mut rendered = self.subject.render()?;
         if let (Some(issue_id), Some(object)) = (&self.issue_id, rendered.as_object_mut()) {
             object.insert("issue_id".to_string(), json!(issue_id));
+        }
+        if let Some(diff_key) = conditional_key {
+            if let Some(object) = rendered.as_object_mut() {
+                object.insert("diff_key".to_string(), json!(diff_key));
+            }
         }
         Ok(rendered)
     }
 }
 
 impl ReadSubject {
+    fn conditional_key(&self) -> Result<Option<String>, String> {
+        let material = match self {
+            Self::Worktree {
+                external,
+                base_branch,
+            } => format!(
+                "worktree\0{}\0{}\0{:?}\0{}\0{}\0{}",
+                external.id,
+                base_branch,
+                external.branch,
+                external.head_subject,
+                external.dirty_files,
+                crate::diff::key_against_merge_base(&external.path, base_branch)
+                    .map_err(|error| error.to_string())?
+            ),
+            Self::Run {
+                worktree_path,
+                base_sha,
+                base_branch,
+            } => {
+                let (base, delta_key) = match base_sha {
+                    Some(sha) => (
+                        sha.as_str(),
+                        crate::diff::key_against_base(worktree_path, sha)
+                            .map_err(|error| error.to_string())?,
+                    ),
+                    None => (
+                        base_branch.as_str(),
+                        crate::diff::key_against_merge_base(worktree_path, base_branch)
+                            .map_err(|error| error.to_string())?,
+                    ),
+                };
+                format!("run\0{}\0{}", base, delta_key)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(sha256_hex(material.as_bytes())))
+    }
+
     fn render(&self) -> Result<Value, String> {
         match self {
+            Self::ProjectList { projects } => {
+                let projects = projects
+                    .iter()
+                    .map(ProjectListRow::render)
+                    .collect::<Vec<_>>();
+                Ok(json!({ "projects": projects }))
+            }
             Self::Project {
                 project_id,
                 repo_path,
@@ -18614,6 +18760,7 @@ impl ReadSubject {
                     "adoptable": adoptable,
                     "stat": diff.stat().to_json(),
                     "files": diff_file_rows(&diff),
+                    "file_edited_at": diff_file_edited_at(&external.path, &diff),
                     "patch": diff.patch(),
                 }))
             }
@@ -18627,7 +18774,7 @@ impl ReadSubject {
                     None => crate::diff::diff_against_merge_base(worktree_path, base_branch),
                 }
                 .map_err(|error| error.to_string())?;
-                Ok(diff_json(&diff))
+                Ok(worktree_diff_json(worktree_path, &diff))
             }
             Self::Stage {
                 run_id,
@@ -18649,6 +18796,29 @@ impl ReadSubject {
                 Ok(value)
             }
         }
+    }
+}
+
+impl ProjectListRow {
+    fn render(&self) -> Value {
+        let available = IsolationAvailability::of(&self.repo_path, &self.worktrees_root);
+        let requested = self.isolation.unwrap_or(self.isolation_default);
+        let effective = if available.lock_reason(requested).is_none() {
+            requested
+        } else {
+            Isolation::default()
+        };
+        json!({
+            "project_id": self.project_id,
+            "name": self.name,
+            "path": self.repo_path.display().to_string(),
+            "base_branch": self.base_branch,
+            "remote": git_remote_origin(&self.repo_path),
+            "isolation": self.isolation,
+            "isolation_default": self.isolation_default,
+            "isolation_effective": effective,
+            "isolation_available": available,
+        })
     }
 }
 
@@ -24208,6 +24378,47 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    /// Project rows probe repository config and volume capabilities. Those
+    /// reads can be slow on networked volumes, but must neither hold the app
+    /// mutex nor let registration changes tear one response between versions.
+    #[test]
+    fn project_list_reads_metadata_off_lock_from_one_snapshot() {
+        let (dir, repo) = init_repo();
+        let mut app = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let expected = app.project_list();
+        let expected_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_project_list_gate = Some(gate);
+        let state = app.shared();
+
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}));
+        gate_handle.wait_for_arrival();
+
+        let models = frame_on_a_thread(&state, "s-models", "models.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an unrelated foreground read answers while project metadata is blocked");
+        assert_eq!(models["ok"], true, "{models:?}");
+
+        state.lock().unwrap().projects.clear();
+        gate_handle.release();
+        let listed = listed
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the project list answers once its metadata read is released");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+        assert_eq!(listed["result"], expected, "{listed:?}");
+        assert_eq!(listed["result"]["projects"][0]["project_id"], expected_id);
+        assert!(
+            state.lock().unwrap().projects.is_empty(),
+            "the stale response must not restore a project removed while it ran"
         );
     }
 
@@ -31623,6 +31834,7 @@ mod tests {
         let full = file_entry(status, "full.txt");
         assert_eq!(full["staged"], "full");
         assert_eq!(full["index_status"], "A");
+        assert!(full["edited_at"].as_u64().unwrap() > 0);
         let partial = file_entry(status, "README.md");
         assert_eq!(partial["staged"], "partial");
         assert_eq!(partial["index_status"], "M");
@@ -32440,6 +32652,63 @@ mod tests {
             main["holder"]["kind"], "primary_checkout",
             "the checked-out-here branch is the repository's own: {main:?}"
         );
+    }
+
+    #[test]
+    fn worktree_diff_reports_existing_file_mtimes_and_omits_deletions() {
+        let (dir, repo) = init_repo();
+        let checkout = add_external_worktree(&repo, dir.path(), "timestamped", "timestamped");
+        std::fs::write(checkout.join("new.txt"), "new\n").unwrap();
+        std::fs::remove_file(checkout.join("README.md")).unwrap();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let worktree_id = state
+            .scan_external_worktrees_now(&project_id)
+            .unwrap()
+            .into_iter()
+            .find(|worktree| worktree.branch.as_deref() == Some("timestamped"))
+            .unwrap()
+            .id;
+
+        let result = state.handle(req(
+            "worktree.diff",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+
+        assert_eq!(result["ok"], true, "{result:?}");
+        let edited_at = result["result"]["file_edited_at"].as_object().unwrap();
+        assert!(edited_at["new.txt"].as_u64().unwrap() > 0);
+        assert!(edited_at.get("README.md").is_none());
+
+        let diff_key = result["result"]["diff_key"].as_str().unwrap().to_string();
+        let unchanged = state.handle(req(
+            "worktree.diff",
+            json!({
+                "project_id": project_id,
+                "worktree_id": worktree_id,
+                "if_diff_key": diff_key,
+            }),
+        ));
+        assert_eq!(
+            unchanged["result"],
+            json!({ "unchanged": true, "diff_key": diff_key }),
+            "{unchanged:?}"
+        );
+
+        std::fs::write(checkout.join("new.txt"), "newer\n").unwrap();
+        let changed = state.handle(req(
+            "worktree.diff",
+            json!({
+                "project_id": project_id,
+                "worktree_id": worktree_id,
+                "if_diff_key": diff_key,
+            }),
+        ));
+        assert_ne!(changed["result"]["diff_key"], diff_key, "{changed:?}");
+        assert!(changed["result"]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("newer"));
     }
 
     /// Adopting the very worktree Build already runs a run in stays unflagged
@@ -33461,6 +33730,9 @@ mod tests {
             files.contains(&"result-second-half.txt".to_string()),
             "{files:?}"
         );
+        let edited_at = diff["result"]["file_edited_at"].as_object().unwrap();
+        assert!(edited_at["result-first-half.txt"].as_u64().unwrap() > 0);
+        assert!(edited_at["result-second-half.txt"].as_u64().unwrap() > 0);
 
         let merged = state.handle(req(
             "run.git_action",

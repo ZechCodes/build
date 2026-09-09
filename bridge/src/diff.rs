@@ -22,6 +22,18 @@ pub const PLAN_SCOPE_PREFIX: &str = ".build/";
 /// file out of the review surface.
 pub const LARGE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// A worktree path's filesystem modification time as Unix milliseconds.
+/// Missing paths (most commonly deletions) have no honest edit time to report.
+pub(crate) fn file_edited_at(worktree_root: &Path, path: &str) -> Option<u64> {
+    std::fs::symlink_metadata(worktree_root.join(path))
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+}
+
 /// Roll-up counts for the quiet progress state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DiffStat {
@@ -246,6 +258,80 @@ fn diff_tree_to_dirty_workdir(
     let mut opts = dirty_workdir_options(true);
     let diff = repo.diff_tree_to_workdir_with_index(old_tree, Some(&mut opts))?;
     worktree_diff_from_git_diff(&diff)
+}
+
+/// A cheap identity for the complete delta against a fixed base. It walks the
+/// delta but never asks libgit2 to load untracked bodies or print patch lines.
+/// Tracked/index changes carry their object ids; working-tree and untracked
+/// changes also carry filesystem size and nanosecond mtime, matching the
+/// metadata keys used by the git status surface.
+pub fn key_against_base(worktree_path: &Path, base_branch: &str) -> Result<String, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let tree = base_tree(&repo, base_branch)?;
+    dirty_diff_key(&repo, Some(&tree))
+}
+
+pub fn key_against_merge_base(
+    worktree_path: &Path,
+    base_branch: &str,
+) -> Result<String, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let tree = merge_base_tree(&repo, base_branch)?;
+    dirty_diff_key(&repo, Some(&tree))
+}
+
+fn dirty_diff_key(
+    repo: &git2::Repository,
+    old_tree: Option<&git2::Tree<'_>>,
+) -> Result<String, DiffError> {
+    let mut opts = dirty_workdir_options(false);
+    let diff = repo.diff_tree_to_workdir_with_index(old_tree, Some(&mut opts))?;
+    let root = repo.workdir().unwrap_or_else(|| repo.path());
+    let mut material = String::new();
+    if let Some(tree) = old_tree {
+        material.push_str(&tree.id().to_string());
+    }
+    for delta in diff.deltas() {
+        let path = delta_path(&delta);
+        if is_mcp_config(&path) {
+            continue;
+        }
+        let old = delta.old_file();
+        let new = delta.new_file();
+        use std::fmt::Write as _;
+        let _ = write!(
+            material,
+            "\0{:?}\0{}\0{}\0{}\0{:?}\0{:?}",
+            delta.status(),
+            path,
+            old.id(),
+            new.id(),
+            old.mode(),
+            new.mode()
+        );
+        if let Ok(metadata) = std::fs::symlink_metadata(root.join(&path)) {
+            let modified_nanos = metadata
+                .modified()
+                .ok()
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |duration| duration.as_nanos());
+            let _ = write!(material, "\0{}\0{modified_nanos}", metadata.len());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let _ = write!(
+                    material,
+                    "\0{}\0{}\0{}",
+                    metadata.ino(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec()
+                );
+            }
+        } else {
+            material.push_str("\0deleted");
+        }
+    }
+    Ok(fnv1a64_hex(&material))
 }
 
 fn stat_tree_to_dirty_workdir(
@@ -915,6 +1001,33 @@ mod tests {
         // The spy is wired up: the render path does move it.
         diff_uncommitted(&repo).unwrap();
         assert_eq!(patch_prints_on_this_thread(), 1);
+    }
+
+    #[test]
+    fn a_conditional_key_avoids_patch_rendering_and_follows_metadata() {
+        let (_dir, repo) = init_repo();
+        std::fs::write(repo.join("README.md"), "changed\n").unwrap();
+        let path = repo.join("README.md");
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            ),
+        )
+        .unwrap();
+
+        let first = key_against_base(&repo, "main").unwrap();
+        assert_eq!(patch_prints_on_this_thread(), 0);
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_001),
+            ),
+        )
+        .unwrap();
+        let touched = key_against_base(&repo, "main").unwrap();
+
+        assert_ne!(first, touched);
+        assert_eq!(patch_prints_on_this_thread(), 0);
     }
 
     /// The per-file census is the same census as the roll-up: the file list

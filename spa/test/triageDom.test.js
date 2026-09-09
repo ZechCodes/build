@@ -102,18 +102,21 @@ describe("the triage overlay in the Changes pane", () => {
     expect(chip.querySelector(".hrationale").textContent).toBe("changes how the key is sealed");
   });
 
-  it("keeps the collapsed group's diff in the page and opens it on a click", async () => {
+  it("keeps the collapsed group's summary cheap and renders its diff when opened", async () => {
     const container = await open();
-    expect(container.querySelector('.tgroup .file[data-key$=":Cargo.toml"]')).toBeTruthy();
+    expect(container.querySelector('.tgroup .file[data-key$=":Cargo.toml"]')).toBeNull();
+    expect(container.querySelector(".tgroup .tgcount").textContent).toBe("1 file · 1 hunk");
     expect(container.querySelector(".tgrouphead").classList.contains("open")).toBe(false);
     container.querySelector(".tgrouphead").click();
     await settle();
     const group = container.querySelector(".tgrouphead");
     expect(group.classList.contains("open")).toBe(true);
     expect(group.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('.file.tgrouped[data-key$=":Cargo.toml"]')).toBeTruthy();
     container.querySelector(".tgrouphead").click();
     await settle();
     expect(container.querySelector(".tgrouphead").classList.contains("open")).toBe(false);
+    expect(container.querySelector('.file[data-key$=":Cargo.toml"]')).toBeNull();
   });
 
   it("says a changeset is untriaged rather than ordering it silently", async () => {
@@ -244,7 +247,10 @@ describe("disagreeing with the pass in the Changes pane", () => {
       },
     ]);
     expect(container.querySelector(".file.tcritical")).toBeNull();
-    const collapsed = container.querySelector('.tgroup .file[data-key$=":src/crypto.rs"]');
+    expect(container.querySelector('.file[data-key$=":src/crypto.rs"]')).toBeNull();
+    container.querySelector(".tgrouphead").click();
+    await settle();
+    const collapsed = container.querySelector('.file.tgrouped[data-key$=":src/crypto.rs"]');
     expect(collapsed).toBeTruthy();
     const chip = collapsed.querySelector(".hchip.overridden");
     expect(chip.textContent).toContain("your call: collapsed");
@@ -279,6 +285,8 @@ describe("disagreeing with the pass in the Changes pane", () => {
     await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
     await settle();
     expect(container.querySelector(".file.tcritical")).toBeNull();
+    container.querySelector(".tgrouphead").click();
+    await settle();
     expect(container.querySelectorAll(".hchip.overridden").length).toBe(1);
 
     // Now it does, and the surface renders the disagreement from the pass alone.
@@ -420,7 +428,10 @@ describe("the triage overlay on the aggregate review stack", () => {
       note: "",
     });
     expect(host.querySelector(".file.tcritical")).toBeNull();
-    expect(host.querySelector('.tgroup .file[data-key$=":src/crypto.rs"]')).toBeTruthy();
+    expect(host.querySelector('.file[data-key$=":src/crypto.rs"]')).toBeNull();
+    host.querySelector(".tgrouphead").click();
+    await settle();
+    expect(host.querySelector('.file.tgrouped[data-key$=":src/crypto.rs"] .hchip.overridden')).toBeTruthy();
     plug.unmount();
   });
 });

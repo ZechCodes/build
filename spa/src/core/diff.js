@@ -74,19 +74,27 @@ export function createFileFolds() {
 // byte-for-byte. bridge/tests/fixtures/hunk_ids.json is the shared fixture both
 // suites read — change one implementation, change the other, regenerate it.
 
-const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
-const SIXTY_FOUR_BITS = 0xffffffffffffffffn;
+const FNV_OFFSET_HIGH = 0xcbf29ce4;
+const FNV_OFFSET_LOW = 0x84222325;
+const FNV_PRIME_LOW = 0x1b3;
+const TWO_TO_32 = 0x100000000;
 
 /** FNV-1a 64 over the UTF-8 bytes of `text`, as 16 lowercase hex digits.
  *  Identity, not integrity: the only digest the browser ships (crypto.subtle)
  *  is async, and hunk ids have to be assignable inside a synchronous render. */
-function fnv1a64Hex(text) {
-  let hash = FNV_OFFSET_BASIS;
+export function fnv1a64Hex(text) {
+  let high = FNV_OFFSET_HIGH;
+  let low = FNV_OFFSET_LOW;
   for (const byte of new TextEncoder().encode(text)) {
-    hash = ((hash ^ BigInt(byte)) * FNV_PRIME) & SIXTY_FOUR_BITS;
+    low = (low ^ byte) >>> 0;
+
+    // FNV_PRIME is 2^40 + 0x1b3. The low product is still below 2^53,
+    // so its carry is exact; Math.imul supplies each wrapping 32-bit half.
+    const carry = Math.floor((low * FNV_PRIME_LOW) / TWO_TO_32);
+    high = (Math.imul(high, FNV_PRIME_LOW) + carry + (low << 8)) >>> 0;
+    low = Math.imul(low, FNV_PRIME_LOW) >>> 0;
   }
-  return hash.toString(16).padStart(16, "0");
+  return high.toString(16).padStart(8, "0") + low.toString(16).padStart(8, "0");
 }
 
 /** A patch's lines, without the empty tail a trailing newline leaves behind. */

@@ -19,8 +19,10 @@ import { FIRST_PAGE_ITEMS, THREAD_RECORD_KIND, windowFromThreadPayload } from ".
 import { cachedEntityIds, cachedSubKeys, evictEntity, readCached, writeCached } from "./localCache.js";
 import { createFileDiffs } from "./fileDiffs.js";
 import { surfacesCacheAddress, surfacesFingerprint, surfacesFromRecord, surfacesRecord } from "./surfacesCache.js";
+import { coordinatedRead, rpcReadKey } from "./readRequests.js";
 
 const SYNC_LOCK = "build.cacheSync";
+const INITIAL_FILE_WARM_BUDGET = 3;
 
 /** The safety cadence behind push events, and the poll on a bridge without
  *  them. Background freshness, not liveness — an open surface has its own,
@@ -40,6 +42,7 @@ const syncContext = () => {
   return {
     deviceId: (scope && scope.deviceId) || (session && session.deviceId) || null,
     call: App.call,
+    requestScope: scope || session,
     active: () => scope ? scope === App.cacheScope && scope.active() : session === App.session,
   };
 };
@@ -117,18 +120,42 @@ async function refreshTrees(context, entityId, scope) {
 
 /** Keep a warmed review diff fresh — only where the reader has opened the
  *  All-changes view before, which is the record's existence. */
+function diffRead(row, held) {
+  const runId = row.run_id;
+  const method = runId ? "run.diff" : "worktree.diff";
+  const repository = runId ? `run:${runId}` : `worktree:${row.project_id}:${row.worktree_id}`;
+  const baseParams = runId
+    ? { run_id: runId }
+    : { project_id: row.project_id, worktree_id: row.worktree_id };
+  const params = held?.diff_key ? { ...baseParams, if_diff_key: held.diff_key } : baseParams;
+  return { method, repository, params };
+}
+
 async function refreshDiff(context, entityId, row) {
   if (row.kind === "issue") return;
   const warmed = await cachedSubKeys(context.deviceId, entityId, "diff");
   if (!warmed.length) return;
   try {
-    const diff = row.run_id
-      ? await context.call("run.diff", { run_id: row.run_id })
-      : await context.call("worktree.diff", { project_id: row.project_id, worktree_id: row.worktree_id });
-    if (context.active()) {
+    const address = { deviceId: context.deviceId, entityId, kind: "diff" };
+    const cached = await readCached(address);
+    const held = cached?.value;
+    const { method, repository, params } = diffRead(row, held);
+    const diff = await coordinatedRead({
+      key: rpcReadKey({
+        deviceId: context.deviceId,
+        requestScope: context.requestScope,
+        repository,
+        call: context.call,
+        method,
+        params,
+      }),
+      priority: "background",
+      load: () => context.call(method, params),
+    });
+    if (context.active() && !diff.unchanged) {
       await writeCached(
-        { deviceId: context.deviceId, entityId, kind: "diff" },
-        { patch: diff.patch, triage: null, projectId: row.project_id || null },
+        address,
+        { ...held, ...diff, triage: held?.triage || null, projectId: row.project_id || null },
       );
     }
   } catch {
@@ -139,41 +166,45 @@ async function refreshDiff(context, entityId, row) {
 /** Re-read a checkout's git state: the status shape as received (it carries no
  *  patch — each file's body is its own record) and the commit list. Answers the
  *  shape, so the caller can warm the bodies it names. */
+const statusParams = (scope, held) =>
+  held?.status_key ? { ...scope, if_status_key: held.status_key } : scope;
+
+async function persistGitState(context, entityId, address, held, answer, log) {
+  const status = answer?.unchanged ? held : answer;
+  if (!answer?.unchanged) await writeCached(address, status);
+  await writeCached({ deviceId: context.deviceId, entityId, kind: "log" }, log);
+  return status;
+}
+
 async function refreshGitState(context, entityId, scope) {
   try {
-    const [status, log] = await Promise.all([context.call("git.status", scope), context.call("git.log", scope)]);
+    const address = { deviceId: context.deviceId, entityId, kind: "status" };
+    const cached = await readCached(address);
     if (!context.active()) return null;
-    await writeCached({ deviceId: context.deviceId, entityId, kind: "status" }, status);
-    await writeCached({ deviceId: context.deviceId, entityId, kind: "log" }, log);
-    return status;
+    const held = cached && cached.value;
+    const [answer, log] = await Promise.all([context.call("git.status", statusParams(scope, held)), context.call("git.log", scope)]);
+    if (!context.active()) return null;
+    return persistGitState(context, entityId, address, held, answer, log);
   } catch {
     /* offline or mid-switch — the next event or safety poll tries again */
     return null;
   }
 }
 
-/** How long an idle turn may be waited for before the work is done anyway: a
- *  busy or hidden tab may never go idle, and a warm that never runs is a warm
- *  that never fills the cache. */
-const IDLE_DEADLINE_MS = 2000;
-
-/** Run `work` when the tab has nothing better to do — by the deadline at the
- *  latest, or, where the browser offers no idle callback, on the next turn. */
-function whenIdle(work) {
-  return new Promise((resolve, reject) => {
-    const run = () => Promise.resolve().then(work).then(resolve, reject);
-    if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: IDLE_DEADLINE_MS });
-    else setTimeout(run, 0);
-  });
-}
-
 /** Warm the bodies of the files a status names — one bounded git.diff per pass,
  *  asking only for what the cache does not already hold — so opening the
  *  Changes surface expands a file with no round trip, offline included. */
 async function warmFileDiffs(context, entityId, scope, status) {
-  const diffs = createFileDiffs({ deviceId: context.deviceId, entityId, scope, call: context.call });
+  const diffs = createFileDiffs({
+    deviceId: context.deviceId,
+    entityId,
+    scope,
+    call: context.call,
+    requestPriority: "background",
+    requestScope: context.requestScope,
+  });
   try {
-    if (context.active()) await whenIdle(() => context.active() && diffs.warm(status));
+    if (context.active()) await diffs.warm(status, { budget: INITIAL_FILE_WARM_BUDGET });
   } catch {
     /* transient — the next event or safety poll warms it again */
   } finally {

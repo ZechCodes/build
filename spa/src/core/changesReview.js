@@ -17,19 +17,23 @@ import "../styles/surfaces.css";
 import { currentCacheScope } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { createCommentLayer } from "./changesComments.js";
-import { createFileFolds, parseDiff, pathOf } from "./diff.js";
+import { createFileFolds, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
-import { fileViewFromParsedFile } from "./fileEntries.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { createReviewMarks } from "./reviewMarks.js";
+import { watchEditedTimes } from "./editedTime.js";
+import { createParsedDiffCache } from "./parsedDiffCache.js";
+import { createDiffViewport } from "./diffViewport.js";
 
 export const REVIEW_POLL_MS = 1600;
+
+const fileEditedAtOf = (payload) => payload.file_edited_at || {};
 
 /** The bar over the stack: the totals for the WHOLE diff (the changed-only
  *  filter narrows what is drawn, never what is counted), whatever the surface
@@ -92,7 +96,10 @@ export function createReviewPlug({
   const cacheScope = currentCacheScope();
   let host = null;
   let watcher = null;
+  let editedTimeWatcher = null;
   let diffKey = null;
+  let responseDiffKey = null;
+  const parsedDiffs = createParsedDiffCache();
   let renderedFiles = []; // the freshest parsed diff — what a stamp is taken from
   let renderedPatch = ""; // the patch those files came from — where hunk ids live
   let commentableNow = false;
@@ -133,7 +140,8 @@ export function createReviewPlug({
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
    *  wears a hash of its own rows as its content key. */
-  const renderedViews = () => renderedFiles.map(fileViewFromParsedFile);
+  let fileEditedAt = {};
+  const renderedViews = () => renderedFiles;
 
   const commentLayer = submit
     ? createCommentLayer({
@@ -163,6 +171,7 @@ export function createReviewPlug({
   };
 
   let paintChangeset = null;
+  const viewport = createDiffViewport({ repaint: render });
   // Where this surface hosts the plug's git verbs — the git toolbar above the
   // diff. A plug mounted without one (a standalone stack, a test) draws none.
   let gitActionsHost = () => null;
@@ -183,8 +192,9 @@ export function createReviewPlug({
   }
 
   function paintStack() {
-    const changed = changedSinceReview(reviewStamps, renderedViews());
-    const filesToRender = changedOnlyFilter ? renderedFiles.filter((file) => changed.has(file.path)) : renderedFiles;
+    const views = renderedViews();
+    const changed = changedSinceReview(reviewStamps, views);
+    const filesToRender = changedOnlyFilter ? views.filter((file) => changed.has(file.path)) : views;
     const editable = commentableNow && Boolean(commentLayer);
     trayMounted = editable;
     const entries = diffStackEntries(filesToRender, {
@@ -196,6 +206,7 @@ export function createReviewPlug({
       selectable: true,
       folds,
       approvable: true,
+      ...viewport.renderOptions(),
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
       review:
@@ -218,6 +229,7 @@ export function createReviewPlug({
       entries,
       tray: trayMounted ? commentLayer.trayHtml() : "",
     });
+    viewport.attach(host.closest(".cdetail-host") || host);
     if (trayMounted) commentLayer.attach(host);
     paintActions();
     wire();
@@ -299,7 +311,17 @@ export function createReviewPlug({
       onMarksChanged();
     };
     host.onclick = (event) => {
-      for (const claim of claims) if (claim(event)) return;
+      const file = event.target.closest?.(".file[data-key]");
+      const foldPress = Boolean(
+        file &&
+        !event.target.closest("button, input, label") &&
+        (event.target.closest(".fhead") || file.classList.contains("capped")),
+      );
+      for (const claim of claims)
+        if (claim(event)) {
+          if (foldPress) viewport.request(file.dataset.key);
+          return;
+        }
     };
   }
 
@@ -314,56 +336,80 @@ export function createReviewPlug({
    *  and every send re-verifies against the bridge, so the cost of a state
    *  that moved while away is one refused send, not a wrong write; the cost of
    *  hiding the chrome was the whole actionbar popping in a round trip late. */
+  const applyCachedDiff = (value) => {
+    fileEditedAt = fileEditedAtOf(value);
+    renderedFiles = parsedDiffs.views(value.patch, { editedAt: fileEditedAt });
+    renderedPatch = value.patch || "";
+    responseDiffKey = value.diff_key || null;
+    commentableNow = value.commentable !== false && Boolean(commentLayer);
+    triageReport = value.triage || null;
+    if (!value.projectId || value.projectId === triageProject) return;
+    triageProject = value.projectId;
+    trustDial = loadTrustDial(triageProject);
+  };
+
   const seedFromCache = async () => {
     const address = diffAddress();
     const record = address ? await readCached(address) : undefined;
     if (!record || !host || livePainted) return;
-    renderedFiles = parseDiff(record.value.patch);
-    renderedPatch = record.value.patch || "";
-    commentableNow = record.value.commentable !== false && Boolean(commentLayer);
-    triageReport = record.value.triage || null;
-    if (record.value.projectId && record.value.projectId !== triageProject) {
-      triageProject = record.value.projectId;
-      trustDial = loadTrustDial(triageProject);
-    }
+    applyCachedDiff(record.value);
     render();
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
-  const paint = async () => {
+  const paintOnce = async () => {
     if (!host || isOffline()) return;
     let payload;
     try {
-      payload = await fetchDiff();
+      payload = await fetchDiff(responseDiffKey);
     } catch {
       return; // not readable yet (or a handed-off surface) — the poll retries
     }
     if (!host || !payload) return; // unmounted while the RPC was in flight
+    const patchUnchanged = Boolean(payload.unchanged);
+    if (patchUnchanged)
+      payload = {
+        ...payload,
+        patch: renderedPatch,
+        file_edited_at: payload.file_edited_at || fileEditedAt,
+      };
     livePainted = true;
-    renderedFiles = parseDiff(payload.patch);
-    renderedPatch = payload.patch || "";
-    commentableNow = payload.commentable !== false && Boolean(commentLayer);
+    const nextCommentable = payload.commentable !== false && Boolean(commentLayer);
     // The pass, and the project whose dial governs how it is read. A project
     // the plug has not seen before brings its remembered dial with it.
-    if (Object.hasOwn(payload, "triage")) triageReport = payload.triage || null;
+    const nextTriage = Object.hasOwn(payload, "triage") ? payload.triage || null : triageReport;
     if (payload.projectId && payload.projectId !== triageProject) {
       triageProject = payload.projectId;
       trustDial = loadTrustDial(triageProject);
     }
     const key = [
       String(payload.key ?? ""),
-      String(commentableNow),
+      String(nextCommentable),
       String(trustDial),
-      triageFingerprint(currentTriage()),
-      payload.patch,
+      triageFingerprint(overrides ? overrides.apply(nextTriage) : nextTriage),
+      String(payload.diff_key ?? payload.revision ?? payload.patch ?? ""),
+      JSON.stringify(fileEditedAtOf(payload)),
     ].join("\x01");
     // Freeze while the reviewer is mid-comment or the surface has an action in
     // flight, and skip the rebuild when nothing moved (fold state survives too).
     const busy = actionsFrozen() || Boolean(commentLayer && commentLayer.busy());
-    if (host.querySelector(".diffbar") && (key === diffKey || busy)) {
+    if (host.querySelector(".diffbar") && busy) {
       paintActions();
       return;
     }
+    responseDiffKey = payload.diff_key || null;
+    if (host.querySelector(".diffbar") && key === diffKey) {
+      paintActions();
+      return;
+    }
+    fileEditedAt = fileEditedAtOf(payload);
+    const contentKeys = Object.fromEntries((payload.files || []).map((file) => [file.path, file.content_key]));
+    renderedFiles = patchUnchanged
+      ? renderedFiles.map((file) => ({ ...file, editedAt: fileEditedAt[file.path] }))
+      : parsedDiffs.views(payload.patch, { contentKeys, editedAt: fileEditedAt });
+    renderedPatch = payload.patch || "";
+    commentableNow = nextCommentable;
+    triageReport = nextTriage;
     diffKey = key;
     // Only a paint that changed anything rewrites the record — the skip branch
     // above already filtered the every-1.6s sameness out.
@@ -374,8 +420,30 @@ export function createReviewPlug({
         commentable: payload.commentable !== false,
         triage: Object.hasOwn(payload, "triage") ? payload.triage || null : null,
         projectId: payload.projectId || null,
+        file_edited_at: fileEditedAt,
+        diff_key: responseDiffKey,
       });
     render();
+  };
+
+  // Push delivery and the safety timer can land together. Serialize them so a
+  // slower old response can never paint after a newer one; remember one extra
+  // turn so an invalidation received in flight is still observed.
+  let paintFlight = null;
+  let repaintRequested = false;
+  const paint = () => {
+    if (paintFlight) {
+      repaintRequested = true;
+      return;
+    }
+    paintFlight = (async () => {
+      do {
+        repaintRequested = false;
+        await paintOnce();
+      } while (repaintRequested && host);
+    })().finally(() => {
+      paintFlight = null;
+    });
   };
 
   return {
@@ -391,6 +459,7 @@ export function createReviewPlug({
       { gitActions = () => null, readNote = () => "", onComments = () => {}, onMarks = () => {}, reviewMarks = null } = {},
     ) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
+      if (editedTimeWatcher) editedTimeWatcher.dispose();
       host = element;
       gitActionsHost = gitActions;
       noteReader = readNote;
@@ -400,6 +469,7 @@ export function createReviewPlug({
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       livePainted = false;
+      responseDiffKey = null;
       host.innerHTML = '<div class="empty">loading…</div>';
       seedFromCache();
       paint();
@@ -411,6 +481,7 @@ export function createReviewPlug({
         entity,
         pausesWhileHidden: false,
       });
+      editedTimeWatcher = watchEditedTimes(host);
     },
 
     /** What the surface's box under the diff should offer while this plug is
@@ -428,8 +499,12 @@ export function createReviewPlug({
     unmount() {
       if (watcher) watcher.dispose();
       watcher = null;
+      if (editedTimeWatcher) editedTimeWatcher.dispose();
+      editedTimeWatcher = null;
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();
+      parsedDiffs.clear();
+      viewport.dispose();
       if (host) {
         host.onclick = null;
         host.onchange = null;

@@ -115,6 +115,20 @@ describe("following the feed", () => {
 });
 
 describe("keeping active branches warm", () => {
+  it("conditionally refreshes a cached status and keeps the full held shape on an unchanged answer", async () => {
+    const held = warmStatus();
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, held);
+    App.call = vi.fn(async (method, params) => {
+      if (method === "git.status") return { unchanged: true, status_key: held.status_key };
+      if (method === "git.log") return { commits: [], more: false };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: held.status_key });
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.files).toEqual(held.files);
+  });
+
   it("syncs git status and the commit list for an active branch, run-scoped", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);
@@ -169,10 +183,10 @@ describe("keeping active branches warm", () => {
     App.call.mockClear();
     registeredWatchers.find((watcher) => watcher.entity === "run-1").refresh();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
+    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
   });
 
-  it("asks for no body it already holds, and never more than one call's worth", async () => {
+  it("warms only the leading viewport budget instead of every offscreen body", async () => {
     const many = Object.fromEntries(Array.from({ length: 60 }, (_unused, index) => [`f${index}.js`, "line"]));
     const big = worktreeOf(many);
     App.call = vi.fn(async (method, params) => {
@@ -186,7 +200,7 @@ describe("keeping active branches warm", () => {
     await flush();
     const asked = App.call.mock.calls.filter(([method]) => method === "git.diff");
     expect(asked).toHaveLength(1);
-    expect(asked[0][1].paths).toHaveLength(50);
+    expect(asked[0][1].paths).toHaveLength(3);
   });
 
   it("scopes a checkout Build does not own by project and worktree", async () => {
@@ -203,7 +217,7 @@ describe("keeping active branches warm", () => {
     App.call.mockClear();
     watcher.refresh();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1" });
+    expect(App.call).toHaveBeenCalledWith("git.status", { run_id: "run-1", if_status_key: warmStatus().status_key });
   });
 
   it("lets a watcher go, disposed, when its entity leaves the active set", async () => {

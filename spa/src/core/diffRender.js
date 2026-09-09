@@ -10,6 +10,10 @@ import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
 import { fileKey, firstLineOf, untouchedFold } from "./diff.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
+import { editedTimeLabel, editedTimestamp } from "./editedTime.js";
+import { DIFF_ROW_HEIGHT, fileBodyIsVisible, hunkOffsetAt, rowWindowFor, ROW_WINDOW_SIZE } from "./diffWindow.js";
+
+const MAX_HIGHLIGHT_LINE_LENGTH = 20_000;
 
 /** The code-cell HTML for one diff row. On a dotenv file a secret-like line is
  *  masked (a click-to-reveal spoiler span, both old and new values independent);
@@ -21,6 +25,10 @@ function codeCellHtml(text, lang, maskDotenv) {
     const masked = maskedDiffCellHtml(text);
     if (masked !== null) return masked;
   }
+  // A generated/minified line can be megabytes long. Prism's token walk is
+  // superlinear for some grammars; plain escaping keeps every byte readable
+  // and copyable without letting one row monopolize navigation.
+  if (text.length > MAX_HIGHLIGHT_LINE_LENGTH) return esc(text);
   return highlightCode(text, lang);
 }
 
@@ -32,17 +40,22 @@ function codeCellHtml(text, lang, maskDotenv) {
  *  per-line (each row tokenized on its own) — an accepted tradeoff for a
  *  multi-line grammar, since diff rows arrive one line at a time. `maskDotenv`
  *  (set by the caller for a dotenv file path) masks secret-like line content. */
-export function diffRowsHtml(rows, lang = null, { maskDotenv = false, hunkMarks = null, overridable = false } = {}) {
-  let hunkIndex = 0;
+export function diffRowsHtml(
+  rows,
+  lang = null,
+  { maskDotenv = false, hunkMarks = null, overridable = false, hunkOffset = 0, rowOffset = 0 } = {},
+) {
+  let hunkIndex = hunkOffset;
   return rows
     // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
-    .map((r) => {
+    .map((r, index) => {
+      const rowIndex = rowOffset + index + 1;
       if (r.t !== "hunk")
-        return `<tr class="${r.t}" data-ln="${r.n ?? r.o ?? ""}" data-side="${r.t === "del" ? "old" : "new"}" data-old-line="${r.o ?? ""}" data-new-line="${r.n ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`;
+        return `<tr class="${r.t}" aria-rowindex="${rowIndex}" data-ln="${r.n ?? r.o ?? ""}" data-side="${r.t === "del" ? "old" : "new"}" data-old-line="${r.o ?? ""}" data-new-line="${r.n ?? ""}"><td class="ln">${r.o ?? ""}</td><td class="ln">${r.n ?? ""}</td><td class="code">${codeCellHtml(r.text, lang, maskDotenv)}</td></tr>`;
       const mark = hunkMarks ? hunkMarks[hunkIndex] : null;
       hunkIndex++;
       const attributes = mark ? ` data-hunk="${esc(mark.hunk_id || "")}" data-level="${esc(mark.level)}"` : "";
-      return `<tr class="hunk"${attributes}><td class="ln"></td><td class="ln"></td><td class="code">${highlightCode(r.text, lang)}${hunkChipHtml(mark, overridable)}</td></tr>`;
+      return `<tr class="hunk" aria-rowindex="${rowIndex}"${attributes}><td class="ln"></td><td class="ln"></td><td class="code">${codeCellHtml(r.text, lang, false)}${hunkChipHtml(mark, overridable)}</td></tr>`;
     })
     .join("");
 }
@@ -163,9 +176,14 @@ function changedChipHtml(file, changedSince) {
 function approveToggleHtml(file, { approvable, approved }) {
   if (!approvable) return "";
   const pressed = Boolean(approved && approved.has(file.path));
-  return `<button class="fapprove" data-key="${esc(fileKey(file))}" aria-pressed="${pressed}">${ICON_CHECK}<span>${
-    pressed ? "Approved" : "Approve"
-  }</span></button>`;
+  const label = pressed ? "Approved" : "Approve";
+  return `<button class="fapprove" data-key="${esc(fileKey(file))}" aria-pressed="${pressed}" aria-label="${label}" title="${label}">${ICON_CHECK}</button>`;
+}
+
+function editedTimeHtml(editedAt) {
+  const timestamp = editedTimestamp(editedAt);
+  if (timestamp === null) return "";
+  return `<time class="fedited" data-edited-at="${timestamp}" datetime="${new Date(timestamp).toISOString()}">${editedTimeLabel(timestamp)}</time>`;
 }
 
 /// The box that puts a file in the surface's selection — what its bulk verbs
@@ -181,7 +199,7 @@ function selectBoxHtml(file, { selectable, selected }) {
  *  the surface offers on it. */
 export function fileHeadHtml(file, options) {
   return `<div class="fhead">${selectBoxHtml(file, options)}<span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
-        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChipHtml(file, options.changedSince)}${approveToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</div>`;
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${editedTimeHtml(file.editedAt)}${changedChipHtml(file, options.changedSince)}${approveToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</div>`;
 }
 
 // The two boxes a file's body can sit in: the scrolling one the collapse rule
@@ -189,23 +207,53 @@ export function fileHeadHtml(file, options) {
 const BODY_BOX = "dscroll";
 const PEEK_BOX = "dpeek";
 
-function diffTableBoxHtml(boxClass, file, options) {
-  return `<div class="${boxClass}"><table>${diffRowsHtml(file.rows, langForPath(file.path), {
+function spacerRowHtml(className, rows) {
+  return rows > 0 ? `<tr class="drow-spacer ${className}" aria-hidden="true"><td colspan="3" style="height:${rows * DIFF_ROW_HEIGHT}px"></td></tr>` : "";
+}
+
+function diffTableBoxHtml(boxClass, file, options, window = { start: 0, end: file.rows.length }, preserveExtent = false) {
+  const shown = file.rows.slice(window.start, window.end);
+  const before = preserveExtent ? spacerRowHtml("before", window.start) : "";
+  const after = preserveExtent ? spacerRowHtml("after", file.rows.length - window.end) : "";
+  return `<div class="${boxClass}" data-row-count="${file.rows.length}"><table aria-rowcount="${file.rows.length}">${before}${diffRowsHtml(shown, langForPath(file.path), {
           maskDotenv: isDotenvPath(file.path),
           hunkMarks: file.triageHunks || null,
           overridable: options.overridable,
-        })}</table></div>`;
+          hunkOffset: hunkOffsetAt(file.rows, window.start),
+          rowOffset: window.start,
+        })}${after}</table></div>`;
 }
 
 /** One file's diff table, every row of it, in the box the collapse rule hides. */
 export function fileBodyHtml(file, options) {
-  return diffTableBoxHtml(BODY_BOX, file, options);
+  return diffTableBoxHtml(BODY_BOX, file, options, rowWindowFor(file, "open", options.viewport));
 }
 
 /** The rows a collapsed file keeps on screen: the same table in the box that
  *  survives the collapse — a peek is what a folded file is for. */
 export function filePeekHtml(file, options) {
   return diffTableBoxHtml(PEEK_BOX, file, options);
+}
+
+function virtualFileBodyHtml(file, fold) {
+  const rows = file.rows.length;
+  const previewRows = fold === "open" ? Math.min(rows, ROW_WINDOW_SIZE) : rowWindowFor(file, fold).end;
+  const box = fold === "shut" ? PEEK_BOX : BODY_BOX;
+  return `<div class="${box} dvirtual" data-row-count="${rows}" style="height:${previewRows * DIFF_ROW_HEIGHT}px"><table aria-rowcount="${rows}">${spacerRowHtml("virtual", previewRows)}</table></div>`;
+}
+
+/** Fold-aware contents shared by the direct aggregate renderer and cached-body
+ * entries. It deliberately excludes the outer keyed frame. */
+export function fileContentHtml(file, fold, options = {}) {
+  if (!file.rows) return fileNoticeHtml(fold === "shut" ? "expand to load this file" : "loading…");
+  if (!fileBodyIsVisible(file, fold, options.viewport)) return virtualFileBodyHtml(file, fold);
+  const window = rowWindowFor(file, fold, options.viewport);
+  // A viewport-managed open body is always an inner scroller. That keeps a
+  // 100-row body and its offscreen placeholder at the same capped height just
+  // as it does a 100,000-row body.
+  const windowed = fold === "open" && Boolean(options.viewport);
+  const box = `${fold === "shut" ? PEEK_BOX : BODY_BOX}${windowed ? " dwindow" : ""}`;
+  return diffTableBoxHtml(box, file, options, window, windowed);
 }
 
 /** What a file shows where its rows are not there to show: one dim line, in the
@@ -226,12 +274,13 @@ export function fileFrameHtml(file, options, bodyHtml) {
 }
 
 export function diffFileHtml(file, options = {}) {
-  return fileFrameHtml(file, options, fileBodyHtml(file, options));
+  const fold = fileFoldOf(file, options);
+  return fileFrameHtml(file, options, fileContentHtml(file, fold, options));
 }
 
 function openFileButtonHtml(file, openable) {
   if (!openable) return "";
-  return `<button class="fopen" data-open-file="${esc(file.path)}" data-new-line="${firstLineOf(file)}" title="Open this file in Files">${ICON_EXTERNAL_LINK}<span>Open File</span></button>`;
+  return `<button class="fopen" data-open-file="${esc(file.path)}" data-new-line="${firstLineOf(file)}" title="Open this file in Files" aria-label="Open this file in Files">${ICON_EXTERNAL_LINK}</button>`;
 }
 
 export const FILE_ELEMENT = ".file[data-key]";
@@ -282,7 +331,7 @@ export function diffStackEntries(files, { noiseExpanded = false, review = null, 
   const grouped = groupNoiseFiles(files);
   if (!grouped.files.length && !grouped.noise.length)
     return [{ key: "empty", html: `<div class="empty">${esc(empty)}</div>` }];
-  const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions) : [];
+  const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions, files) : [];
   if (!grouped.noise.length) return entries;
   return [...entries, { key: "noise", html: noiseGroupHtml(grouped.noise, noiseExpanded, fileOptions) }];
 }
@@ -328,10 +377,25 @@ function triageGroupHeadHtml(section, expanded) {
 
 function triageGroupHtml(section, fileOptions) {
   return `<div class="tgroup" data-group="${esc(section.name)}">${triageGroupHeadHtml(section, false)}
-    <div class="tgfiles">${diffFilesHtml(section.files, fileOptions)}</div></div>`;
+    <div class="tgfiles"></div></div>`;
 }
 
-function reviewStackEntries(files, review, options) {
+/** Viewport-only paints reuse the parsed triage plan. In particular this keeps
+ * patchHunks' full-patch hashing out of inner diff scroll events. */
+export function createTriagePlanCache(plan = planChangesetTriage) {
+  let last = null;
+  return (sourceFiles, patch, triage, plannedFiles) => {
+    const triageKey = JSON.stringify(triage);
+    if (last?.sourceFiles === sourceFiles && last.patch === patch && last.triageKey === triageKey) return last.value;
+    const value = plan({ files: plannedFiles, patch, triage });
+    last = { sourceFiles, patch, triageKey, value };
+    return value;
+  };
+}
+
+const cachedTriagePlan = createTriagePlanCache();
+
+function reviewStackEntries(files, review, options, sourceFiles) {
   const fileEntries = (list, fileOptions) =>
     list.map((file) => ({ key: fileKey(file), html: fileHtmlFor(fileOptions)(file, fileOptions) }));
   if (!review) return fileEntries(files, options);
@@ -344,7 +408,7 @@ function reviewStackEntries(files, review, options) {
       { key: "triagebar", html: triageBarHtml({ status: "none", counts: {} }, { dial: true, offerDial: Boolean(triage) }) },
       ...fileEntries(files, fileOptions),
     ];
-  const plan = planChangesetTriage({ files, patch, triage });
+  const plan = cachedTriagePlan(sourceFiles, patch, triage, files);
   const bar = triageBarHtml(plan, { dial: false, offerDial: Boolean(triage) && plan.status !== "none" });
   const opened = (name) => Boolean(expandedGroups && expandedGroups.has(name));
   return [

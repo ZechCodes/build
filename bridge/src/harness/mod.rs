@@ -962,7 +962,8 @@ mod tests {
         let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("harness");
-        shipped_rust_sources_under(&harness_modules)
+        let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        shipped_rust_sources_under(&source_root, &harness_modules)
             .iter()
             .flat_map(|path| {
                 let source = std::fs::read_to_string(path).expect("a readable harness module");
@@ -984,19 +985,14 @@ mod tests {
         path.extension().is_some_and(|extension| extension == "rs")
     }
 
-    /// Every Rust source directly inside `directory`, without descending.
-    fn rust_sources_directly_in(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
-        entries(directory)
-            .into_iter()
-            .filter(|path| is_rust_source(path))
-            .collect()
-    }
-
     /// Every Rust source that ships from `directory` and the directories under
     /// it, leaving out the modules the directory's declaring file gates behind
     /// `#[cfg(test)]`, whose whole bodies are test code.
-    fn shipped_rust_sources_under(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
-        let test_only_modules = test_only_modules_declared_for(directory);
+    fn shipped_rust_sources_under(
+        source_root: &std::path::Path,
+        directory: &std::path::Path,
+    ) -> Vec<std::path::PathBuf> {
+        let test_only_modules = test_only_modules_declared_for(source_root, directory);
         let (subdirectories, files): (Vec<_>, Vec<_>) = entries(directory)
             .into_iter()
             .partition(|path| path.is_dir());
@@ -1015,37 +1011,74 @@ mod tests {
             .chain(
                 subdirectories
                     .iter()
-                    .flat_map(|subdirectory| shipped_rust_sources_under(subdirectory)),
+                    .filter(|path| {
+                        let module = path
+                            .file_name()
+                            .expect("a source directory names its module")
+                            .to_string_lossy();
+                        !test_only_modules
+                            .iter()
+                            .any(|test_only| *test_only == module)
+                    })
+                    .flat_map(|subdirectory| shipped_rust_sources_under(source_root, subdirectory)),
             )
             .collect()
     }
 
-    /// The modules that the file declaring `directory`'s children — its
-    /// `mod.rs`, or the sibling `<directory>.rs` — places behind
-    /// `#[cfg(test)]`.
-    fn test_only_modules_declared_for(directory: &std::path::Path) -> Vec<String> {
-        [directory.join("mod.rs"), directory.with_extension("rs")]
+    /// The modules every file declaring `directory`'s children places behind
+    /// `#[cfg(test)]`. A crate source root may be shared by `lib.rs` and
+    /// `main.rs`; a module shipped by either root remains in the walk.
+    fn test_only_modules_declared_for(
+        source_root: &std::path::Path,
+        directory: &std::path::Path,
+    ) -> Vec<String> {
+        let declaring_files = if directory == source_root {
+            vec![source_root.join("lib.rs"), source_root.join("main.rs")]
+        } else {
+            vec![directory.join("mod.rs"), directory.with_extension("rs")]
+        };
+        let declarations: Vec<_> = declaring_files
             .into_iter()
-            .find(|candidate| candidate.is_file())
-            .map(|declaring_file| {
-                std::fs::read_to_string(declaring_file).expect("a readable module file")
+            .filter(|candidate| candidate.is_file())
+            .flat_map(|declaring_file| {
+                let source =
+                    std::fs::read_to_string(declaring_file).expect("a readable module file");
+                out_of_line_module_declarations_in(&source)
             })
-            .map_or_else(Vec::new, |source| test_only_modules_in(&source))
+            .collect();
+        let mut modules: Vec<_> = declarations
+            .iter()
+            .filter(|(_, test_only)| *test_only)
+            .filter(|(candidate, _)| {
+                !declarations
+                    .iter()
+                    .any(|(module, test_only)| module == candidate && !test_only)
+            })
+            .map(|(module, _)| module.clone())
+            .collect();
+        modules.sort();
+        modules.dedup();
+        modules
     }
 
     /// The out-of-line modules (`mod name;`) that `source` declares behind
     /// `#[cfg(test)]`. An inline gated module carries its own body and
     /// declares no file.
     fn test_only_modules_in(source: &str) -> Vec<String> {
+        out_of_line_module_declarations_in(source)
+            .into_iter()
+            .filter_map(|(module, test_only)| test_only.then_some(module))
+            .collect()
+    }
+
+    fn out_of_line_module_declarations_in(source: &str) -> Vec<(String, bool)> {
         syn::parse_file(source)
             .expect("a module the compiler accepts")
             .items
             .into_iter()
             .filter_map(|item| match item {
-                syn::Item::Mod(module)
-                    if module.content.is_none() && is_test_gated(&module.attrs) =>
-                {
-                    Some(module.ident.to_string())
+                syn::Item::Mod(module) if module.content.is_none() => {
+                    Some((module.ident.to_string(), is_test_gated(&module.attrs)))
                 }
                 _ => None,
             })
@@ -1179,26 +1212,26 @@ mod tests {
         finder.offence
     }
 
-    /// Every module that sits above `harness_for`: the crate's top-level
-    /// sources, minus `models.rs`, whose wire table is the one sanctioned
-    /// per-provider list. Read from disk rather than named one by one so a
-    /// module added later is guarded without anyone remembering to list it.
-    fn modules_above_harness_for() -> Vec<(String, String)> {
-        const SANCTIONED_PROVIDER_TABLE: &str = "models.rs";
-
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut modules: Vec<(String, String)> = rust_sources_directly_in(&src)
+    /// Every shipped module that sits above `harness_for`, including nested
+    /// app modules. Only the root `models.rs` provider table and the root
+    /// harness implementation subtree sit below this boundary. Read from disk
+    /// rather than named one by one so a module added later is guarded without
+    /// anyone remembering to list it.
+    fn modules_above_harness_for(src: &std::path::Path) -> Vec<(String, String)> {
+        let harness = src.join("harness");
+        let sanctioned_provider_table = src.join("models.rs");
+        let mut modules: Vec<(String, String)> = shipped_rust_sources_under(src, src)
             .into_iter()
-            .filter(|path| {
-                path.file_name()
-                    .is_some_and(|name| name != SANCTIONED_PROVIDER_TABLE)
-            })
+            .filter(|path| path != &sanctioned_provider_table)
+            .filter(|path| path != &harness.with_extension("rs") && !path.starts_with(&harness))
             .map(|path| {
                 let source = std::fs::read_to_string(&path).expect("a readable src module");
                 (
                     format!(
                         "src/{}",
-                        path.file_name().expect("a named module").to_string_lossy()
+                        path.strip_prefix(src)
+                            .expect("a source under src")
+                            .display()
                     ),
                     source,
                 )
@@ -1214,10 +1247,18 @@ mod tests {
     /// added after it has to be added in two places instead of one.
     #[test]
     fn open_session_is_the_only_provider_dispatch() {
-        let modules = modules_above_harness_for();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let modules = modules_above_harness_for(&src);
         assert!(
-            modules.iter().any(|(path, _)| path == "src/app.rs"),
-            "the scan reached the crate's own modules, so a green run means something"
+            modules.iter().any(|(path, _)| path == "src/lib.rs"),
+            "the scan reached the crate's source facade, so a green run means something"
+        );
+        assert!(
+            modules.iter().any(|(path, _)| {
+                path.strip_prefix("src/app")
+                    .is_some_and(|suffix| suffix == ".rs" || suffix.starts_with('/'))
+            }),
+            "the scan reached the app surface regardless of its facade layout"
         );
 
         for (path, source) in modules {
@@ -1338,6 +1379,107 @@ mod tests {
         );
     }
 
+    fn write_source(source_root: &std::path::Path, relative: &str, source: &str) {
+        let path = source_root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("a source file has a parent"))
+            .expect("fixture directories are writable");
+        std::fs::write(path, source).expect("a fixture source is writable");
+    }
+
+    /// The provider guard follows a shipped app through directory modules, so
+    /// moving the facade from `app.rs` to `app/mod.rs` cannot hide a dispatch.
+    #[test]
+    fn nested_app_dispatch_is_guarded_with_a_mod_rs_facade() {
+        let fixture = tempfile::tempdir().expect("temp source tree");
+        let src = fixture.path().join("src");
+        write_source(
+            &src,
+            "lib.rs",
+            "pub mod app;\npub mod harness;\npub mod models;\n",
+        );
+        write_source(&src, "app/mod.rs", "mod rpc;\n");
+        write_source(&src, "app/rpc/mod.rs", "mod dispatch;\n");
+        write_source(
+            &src,
+            "app/rpc/dispatch.rs",
+            &inside_a_function("if provider == AgentProvider::Codex { launch() }"),
+        );
+        write_source(&src, "harness/mod.rs", "pub fn harness_for() {}\n");
+        write_source(&src, "models.rs", "pub enum AgentProvider { Codex }\n");
+
+        let modules = modules_above_harness_for(&src);
+        let (path, source) = modules
+            .iter()
+            .find(|(path, _)| path == "src/app/rpc/dispatch.rs")
+            .expect("the scan reaches a nested shipped app module");
+        assert_eq!(
+            provider_dispatch_offence(source),
+            Some("compares against AgentProvider::Codex".to_string()),
+            "{path}"
+        );
+        assert!(modules.iter().any(|(path, _)| path == "src/app/mod.rs"));
+    }
+
+    /// Test-only module files and their directory children do not ship, while
+    /// a same-named production module below app is still guarded. The harness
+    /// implementation and root provider wire table are the only exclusions.
+    #[test]
+    fn source_guard_excludes_only_sanctioned_and_test_only_subtrees() {
+        let fixture = tempfile::tempdir().expect("temp source tree");
+        let src = fixture.path().join("src");
+        write_source(
+            &src,
+            "lib.rs",
+            "pub mod app;\npub mod harness;\npub mod models;\n#[cfg(test)]\nmod root_tests;\n\
+             #[cfg(test)]\nmod shared;\n",
+        );
+        write_source(&src, "main.rs", "mod shared;\n");
+        write_source(&src, "shared.rs", "pub fn shipped() {}\n");
+        write_source(
+            &src,
+            "app/mod.rs",
+            "mod models;\n#[cfg(test)]\nmod tests;\n",
+        );
+        write_source(&src, "app/models.rs", "pub fn shipped() {}\n");
+        write_source(&src, "app/tests/mod.rs", "mod support;\n");
+        write_source(
+            &src,
+            "app/tests/support.rs",
+            &inside_a_function("let harness = ClaudeHarness;"),
+        );
+        write_source(&src, "root_tests/mod.rs", "mod support;\n");
+        write_source(
+            &src,
+            "root_tests/support.rs",
+            &inside_a_function("let harness = ClaudeHarness;"),
+        );
+        write_source(&src, "harness/mod.rs", "mod private;\n");
+        write_source(
+            &src,
+            "harness/private.rs",
+            &inside_a_function("let harness = ClaudeHarness;"),
+        );
+        write_source(&src, "models.rs", "pub enum AgentProvider { Codex }\n");
+
+        let paths: Vec<_> = modules_above_harness_for(&src)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        assert!(paths.iter().any(|path| path == "src/app/models.rs"));
+        assert!(paths.iter().any(|path| path == "src/shared.rs"));
+        for excluded in [
+            "src/models.rs",
+            "src/harness/mod.rs",
+            "src/harness/private.rs",
+            "src/app/tests/mod.rs",
+            "src/app/tests/support.rs",
+            "src/root_tests/mod.rs",
+            "src/root_tests/support.rs",
+        ] {
+            assert!(!paths.iter().any(|path| path == excluded), "{paths:?}");
+        }
+    }
+
     /// The walk that finds opened sessions reads every shipped harness module
     /// and none of the test-only ones, so a session type is found wherever it
     /// is implemented and test scaffolding never widens the ban list.
@@ -1346,7 +1488,8 @@ mod tests {
         let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("harness");
-        let walked: Vec<String> = shipped_rust_sources_under(&harness_modules)
+        let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let walked: Vec<String> = shipped_rust_sources_under(&source_root, &harness_modules)
             .iter()
             .map(|path| {
                 path.strip_prefix(&harness_modules)

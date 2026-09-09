@@ -134,6 +134,25 @@ describe("agentRowHtml", () => {
     expect(coreSourceOf("agentSurfacesRender.js")).not.toContain("modelLabel");
   });
 
+  it("keeps the delegated task and reasoning effort visible beside the canonical agent path", () => {
+    const [agent] = agentRows([
+      {
+        id: "thread-1",
+        label: "/root/tool_display",
+        description: "Explain tool activity in the timeline",
+        model: "gpt-5.6-sol",
+        reasoning_effort: "high",
+        state: "running",
+      },
+    ]);
+    const row = parseHtml(agentRowHtml(agent)).firstElementChild;
+
+    expect(row.querySelector(".surface-row-label").textContent).toBe("/root/tool_display");
+    expect(row.querySelector(".surface-row-note").textContent).toBe("Explain tool activity in the timeline");
+    expect(row.querySelector(".surface-row-model").textContent).toBe("gpt-5.6-sol");
+    expect(row.querySelector(".surface-row-effort").textContent).toBe("high effort");
+  });
+
   it("draws the state mark the model named and nothing for a state it does not recognise", () => {
     const marked = parseHtml(agentRowHtml(agentRows([readerEntry])[0]));
     expect(marked.querySelectorAll("[data-outcome]").length).toBe(1);

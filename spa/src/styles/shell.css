@@ -655,10 +655,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row:hover { background:var(--line2); }
 .surface-row-head { display:flex; align-items:baseline; gap:6px; min-width:0; }
 .surface-row-label { flex:1 1 auto; min-width:0; color:var(--ink2); }
-.surface-row-model, .surface-row-note, .surface-row-detail, .surface-row-stat { color:var(--dim);
+.surface-row-model, .surface-row-effort, .surface-row-note, .surface-row-detail, .surface-row-stat { color:var(--dim);
   font-size:10.5px; }
 .surface-row-line { display:flex; align-items:baseline; gap:6px; min-width:0; }
-.surface-row-model { flex:none; }
+.surface-row-model, .surface-row-effort { flex:none; }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }

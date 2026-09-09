@@ -474,7 +474,7 @@ The exhaustive classification and report mapping is one place:
 | `functionCallOutput` | `Suppressed { reason: FunctionCallOutput }`; unpaired raw function output is not surfaced |
 | `plan` | `Suppressed { reason: ExperimentalPlan }`; the experimental Codex plan surface remains deferred |
 | `commandExecution`, `fileChange`, `webSearch`, `imageView`, `sleep`, `imageGeneration`, `collabAgentToolCall`, non-Build `mcpToolCall` | `TrackedTool` with its corresponding `ToolSummaryCategory`; start emits `ToolUse { call_id: item.id }`, and matching completion emits `ToolResult` with `Ok`/`Error` from status, exit code, or error |
-| `subAgentActivity` | `Emitting { report: SubAgentActivity }`; emits bounded `TaskUpdate` from `agentPath` and `kind` (`started`, `interacted`, `interrupted`, or `completed`) |
+| `subAgentActivity` | `Emitting { report: SubAgentActivity }`; completion emits one bounded `TaskUpdate` from `agentPath` and `kind` (`started`, `interacted`, `interrupted`, or `completed`), avoiding duplicate start/completion rows for the same activity |
 | `contextCompaction` | `Emitting { report: ContextCompaction }`; start/completion emit bounded `TaskUpdate` |
 | `enteredReviewMode` | `Emitting { report: EnteredReviewMode }`; completion emits one bounded `TaskUpdate` |
 | `exitedReviewMode` | `Emitting { report: ExitedReviewMode }`; completion emits one bounded `TaskUpdate` |
@@ -524,8 +524,18 @@ signal.
 The harness does not set `features.multi_agent` or otherwise force native
 delegation. Existing Codex configuration remains authoritative. When Codex
 naturally emits `collabAgentToolCall` or `subAgentActivity`, the mappings above
-keep that work visible in the generic conversation. Codex-specific subagent
-surfaces remain deferred.
+keep that work visible in the conversation. A bounded, session-owned subagent
+projection also feeds the existing `AgentSurfaces` interface and its change
+subscription. Parent-owned collaboration items associate agent thread IDs with
+their spawning call, requested model, task, and reported state; subagent activity
+adds the readable agent path and lifecycle updates. Child-thread notifications
+remain isolated from the parent session state machine. Subagent completion is
+observational metadata and never completes a Build task.
+
+Tool summaries carry selected, clipped fields: the command or affected paths,
+search query, or tool target, followed on completion by an output/error excerpt
+and outcome information when supplied. The existing conversation pump pairs the
+call and result; the UI previews the action and expands to show its result.
 
 ### Build MCP configuration
 
@@ -657,10 +667,15 @@ Production uses these conservative defaults:
 | queued user inputs | 16 |
 | aggregate queued input UTF-8 bytes | 256 KiB |
 | open translated items | 256 |
-| aggregate open-item ids/summaries | 128 KiB |
+| aggregate open-item turn/item ids | 128 KiB |
 | completed-item deduplication keys | 256 |
 | aggregate completed-item key bytes | 128 KiB |
 | one emitted activity summary | existing 240-character summary limit |
+| retained native subagents | 128, evicting finished agents first |
+| one retained native subagent identity | 256 UTF-8 bytes |
+| native subagent replay keys | 256, with bounded turn/item identities |
+| native subagent label/task/model/effort | 160 characters per field, plus truncation marker |
+| native subagent result/error | 512 characters, plus truncation marker |
 | notification/response reconciliation | 5 seconds |
 | terminal-source settle grace after child reap | 5 seconds |
 | activity broadcast backlog | existing 1,024 reports |
@@ -685,9 +700,11 @@ recently used keys to satisfy both ledger limits and never fails the session for
 ledger capacity. Stderr is always drained to prevent child deadlock. Its rolling
 decoder retains at most 16 KiB for one line, discards that line's excess bytes
 until newline, and retains at most the newest 32 KiB across lines.
-Protocol-derived summaries are clipped before broadcast; raw command output,
-patches, arguments, image data, and full JSON objects never enter
-`ActivityReport`.
+Protocol-derived summaries are clipped before broadcast. Selected command,
+argument, and output text becomes bounded one-line excerpts; full output streams,
+patch bodies, image data, and arbitrary JSON objects never enter `ActivityReport`.
+Subagent metadata is likewise clipped before retention and the number of retained
+agents is capped.
 
 Parent-owned unknown notification methods and unknown item variants are ignored
 after updating the quiet clock and a bounded diagnostic counter. Unknown fields

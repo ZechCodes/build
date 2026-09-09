@@ -189,7 +189,6 @@ pub enum TranslationError {
 #[derive(Debug, Clone)]
 struct OpenTool {
     turn_id: String,
-    summary: String,
     charge: usize,
 }
 
@@ -378,7 +377,7 @@ impl CodexActivityTranslator {
             return Err(TranslationError::ItemCountLimit(self.limits.open_items));
         }
         let summary = tool_summary(category, item);
-        let charge = id.len() + notification.turn_id.len() + summary.len();
+        let charge = id.len() + notification.turn_id.len();
         if self.open_bytes.saturating_add(charge) > self.limits.open_item_bytes {
             return Err(TranslationError::ItemBytesLimit(
                 self.limits.open_item_bytes,
@@ -388,7 +387,6 @@ impl CodexActivityTranslator {
             id.to_string(),
             OpenTool {
                 turn_id: notification.turn_id.clone(),
-                summary: summary.clone(),
                 charge,
             },
         );
@@ -411,10 +409,7 @@ impl CodexActivityTranslator {
         vec![ActivityReport::own_work(AgentActivity::ToolResult {
             call_id: id.to_string(),
             outcome,
-            summary: one_line(
-                &format!("{} {}", open.summary, outcome_word(outcome)),
-                TOOL_SUMMARY_LIMIT,
-            ),
+            summary: one_line(&tool_result_detail(item, outcome), TOOL_SUMMARY_LIMIT),
         })]
     }
 
@@ -488,9 +483,11 @@ fn emit_item(
         ItemReportKind::Narration if lifecycle == ItemLifecycle::Completed => {
             narration_report(&notification.item).into_iter().collect()
         }
-        ItemReportKind::SubAgentActivity => subagent_report(&notification.item, lifecycle)
-            .into_iter()
-            .collect(),
+        ItemReportKind::SubAgentActivity if lifecycle == ItemLifecycle::Completed => {
+            subagent_report(&notification.item, lifecycle)
+                .into_iter()
+                .collect()
+        }
         ItemReportKind::ContextCompaction => vec![ActivityReport::bounded_task_update(&format!(
             "Context compaction {}",
             lifecycle_word(lifecycle)
@@ -565,23 +562,191 @@ fn outcome_word(outcome: ToolOutcome) -> &'static str {
 
 fn tool_summary(category: ToolSummaryCategory, item: &Value) -> String {
     let summary = match category {
-        ToolSummaryCategory::Command => "Command".to_string(),
-        ToolSummaryCategory::FileChange => "File change".to_string(),
+        ToolSummaryCategory::Command => labeled_value("Command", command_text(item)),
+        ToolSummaryCategory::FileChange => file_change_summary(item),
         ToolSummaryCategory::Mcp => format!(
-            "MCP {}.{}",
+            "MCP {}.{}{}",
             item["server"].as_str().unwrap_or("server"),
-            item["tool"].as_str().unwrap_or("tool")
+            item["tool"].as_str().unwrap_or("tool"),
+            argument_hint(&item["arguments"])
         ),
-        ToolSummaryCategory::WebSearch => "Web search".to_string(),
-        ToolSummaryCategory::ImageView => "Image view".to_string(),
-        ToolSummaryCategory::Sleep => "Sleep".to_string(),
-        ToolSummaryCategory::ImageGeneration => "Image generation".to_string(),
-        ToolSummaryCategory::Collaboration => format!(
-            "Collaboration {}",
-            item["tool"].as_str().unwrap_or("activity")
+        ToolSummaryCategory::WebSearch => labeled_value("Web search", item["query"].as_str()),
+        ToolSummaryCategory::ImageView => labeled_value("Image view", item["path"].as_str()),
+        ToolSummaryCategory::Sleep => labeled_value(
+            "Sleep",
+            item["durationMs"]
+                .as_u64()
+                .map(|value| format!("{value} ms"))
+                .as_deref(),
         ),
+        ToolSummaryCategory::ImageGeneration => labeled_value(
+            "Image generation",
+            item["prompt"]
+                .as_str()
+                .or_else(|| item["description"].as_str()),
+        ),
+        ToolSummaryCategory::Collaboration => collaboration_summary(item),
     };
     one_line(&summary, TOOL_SUMMARY_LIMIT)
+}
+
+fn optional_hint(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" {value}"))
+        .unwrap_or_default()
+}
+
+fn collaboration_summary(item: &Value) -> String {
+    let arguments = argument_hint(&item["arguments"]);
+    let hint = match arguments.is_empty() {
+        true => optional_hint(item["prompt"].as_str()),
+        false => arguments,
+    };
+    format!(
+        "Collaboration {}{hint}",
+        item["tool"].as_str().unwrap_or("activity")
+    )
+}
+
+fn command_text(item: &Value) -> Option<&str> {
+    item["commandActions"]
+        .as_array()
+        .filter(|actions| actions.len() == 1)
+        .and_then(|actions| actions[0]["command"].as_str())
+        .or_else(|| item["command"].as_str())
+}
+
+fn labeled_value(label: &str, value: Option<&str>) -> String {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => format!("{label} {value}"),
+        None => label.to_string(),
+    }
+}
+
+fn argument_hint(arguments: &Value) -> String {
+    const USEFUL_KEYS: &[&str] = &[
+        "query",
+        "path",
+        "url",
+        "command",
+        "description",
+        "prompt",
+        "input",
+        "task",
+    ];
+    let value = arguments.as_str().or_else(|| {
+        let object = arguments.as_object()?;
+        USEFUL_KEYS
+            .iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_str))
+    });
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" {value}"))
+        .unwrap_or_default()
+}
+
+fn file_change_summary(item: &Value) -> String {
+    let Some(changes) = item["changes"].as_array() else {
+        return "File change".to_string();
+    };
+    let described = changes
+        .iter()
+        .filter_map(|change| {
+            let path = change["path"].as_str()?.trim();
+            if path.is_empty() {
+                return None;
+            }
+            let kind = change["kind"]
+                .as_str()
+                .or_else(|| change["kind"]["type"].as_str())
+                .unwrap_or_default();
+            if let Some(destination) = change["kind"]["move_path"].as_str() {
+                return Some(format!("move {path} → {destination}"));
+            }
+            let kind = match kind {
+                "add" | "added" | "create" => "add",
+                "delete" | "deleted" | "remove" => "delete",
+                "rename" | "renamed" => "rename",
+                _ => "edit",
+            };
+            Some(format!("{kind} {path}"))
+        })
+        .collect::<Vec<_>>();
+    match described.is_empty() {
+        true => "File change".to_string(),
+        false => format!("File change {}", described.join(", ")),
+    }
+}
+
+fn tool_result_detail(item: &Value, outcome: ToolOutcome) -> String {
+    if let Some(error) = error_text(&item["error"]) {
+        return error;
+    }
+    match item["type"].as_str().unwrap_or_default() {
+        "commandExecution" => command_result_detail(item, outcome),
+        "fileChange" if outcome == ToolOutcome::Ok => item["changes"]
+            .as_array()
+            .map(|changes| {
+                format!(
+                    "{} file{} changed",
+                    changes.len(),
+                    if changes.len() == 1 { "" } else { "s" }
+                )
+            })
+            .unwrap_or_else(|| outcome_word(outcome).to_string()),
+        "mcpToolCall" | "collabAgentToolCall" => {
+            result_text(&item["result"]).unwrap_or_else(|| outcome_word(outcome).to_string())
+        }
+        _ => result_text(&item["result"]).unwrap_or_else(|| outcome_word(outcome).to_string()),
+    }
+}
+
+fn command_result_detail(item: &Value, outcome: ToolOutcome) -> String {
+    let output = item["aggregatedOutput"]
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let duration = item["durationMs"].as_u64();
+    let exit = item["exitCode"].as_i64().map(|code| match duration {
+        Some(duration) => format!("exit {code} in {duration} ms"),
+        None => format!("exit {code}"),
+    });
+    match (exit, output) {
+        (Some(exit), Some(output)) => format!("{exit}: {output}"),
+        (Some(exit), None) => exit,
+        (None, Some(output)) => output.to_string(),
+        (None, None) => outcome_word(outcome).to_string(),
+    }
+}
+
+fn error_text(error: &Value) -> Option<String> {
+    error
+        .as_str()
+        .or_else(|| error["message"].as_str())
+        .or_else(|| error["error"].as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn result_text(result: &Value) -> Option<String> {
+    result
+        .as_str()
+        .or_else(|| result["text"].as_str())
+        .or_else(|| result["content"].as_str())
+        .or_else(|| {
+            result["content"]
+                .as_array()?
+                .iter()
+                .find_map(|block| block.as_str().or_else(|| block["text"].as_str()))
+        })
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn tool_outcome(item: &Value) -> ToolOutcome {
@@ -590,7 +755,11 @@ fn tool_outcome(item: &Value) -> ToolOutcome {
         Some("failed" | "declined" | "interrupted" | "error")
     );
     let failed_exit = item["exitCode"].as_i64().is_some_and(|code| code != 0);
-    if failed_status || failed_exit || item["error"].is_object() {
+    let has_error = item["error"].is_object()
+        || item["error"]
+            .as_str()
+            .is_some_and(|error| !error.trim().is_empty());
+    if failed_status || failed_exit || has_error {
         ToolOutcome::Error
     } else {
         ToolOutcome::Ok

@@ -20,6 +20,7 @@ mod process;
 mod protocol;
 mod session;
 mod state;
+mod subagents;
 mod translator;
 
 pub struct CodexAppServerHarness;

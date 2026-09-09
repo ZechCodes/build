@@ -47,7 +47,11 @@ pub struct SurfaceAgent {
     pub id: String,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -752,7 +756,9 @@ fn read_workflow_agent(task_id: &str, position: u64, entry: &Value) -> SurfaceAg
     SurfaceAgent {
         id: read_text(entry, "agentId").unwrap_or_else(|| format!("{task_id}:{index}")),
         label: bounded_text(entry, "label").unwrap_or_default(),
+        description: None,
         model: bounded_text(entry, "model"),
+        reasoning_effort: None,
         state: entry["state"]
             .as_str()
             .and_then(|token| wire_agent_state(token, started_at.is_some()))

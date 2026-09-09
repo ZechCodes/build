@@ -2357,7 +2357,7 @@ fn suppressed_items_need_no_id_and_consume_no_ledgers() {
 }
 
 #[test]
-fn completed_speech_and_tools_translate_without_raw_payloads() {
+fn completed_speech_and_tools_translate_with_bounded_readable_details() {
     let mut translator = CodexActivityTranslator::new(limits().translator());
     let reasoning = translator
         .translate(
@@ -2388,24 +2388,134 @@ fn completed_speech_and_tools_translate_without_raw_payloads() {
         .translate(
             "item/started",
             &item_envelope(
-                json!({"id":"c","type":"commandExecution","command":"secret command","status":"inProgress"}),
+                json!({"id":"c","type":"commandExecution","command":"shell -lc wrapped","commandActions":[{"type":"unknown","command":"cargo test --lib"}],"status":"inProgress"}),
             ),
         )
         .unwrap();
-    assert!(
-        matches!(&started[0].activity, AgentActivity::ToolUse { call_id, summary } if call_id == "c" && !summary.contains("secret"))
+    assert_eq!(
+        started[0].activity,
+        AgentActivity::ToolUse {
+            call_id: "c".to_string(),
+            summary: "Command cargo test --lib".to_string(),
+        }
     );
     let completed = translator
         .translate(
             "item/completed",
             &item_envelope(
-                json!({"id":"c","type":"commandExecution","command":"secret command","aggregatedOutput":"secret output","status":"completed","exitCode":0}),
+                json!({"id":"c","type":"commandExecution","command":"shell -lc wrapped","aggregatedOutput":"test result: ok\n4 passed","status":"completed","exitCode":0}),
             ),
         )
         .unwrap();
-    assert!(
-        matches!(&completed[0].activity, AgentActivity::ToolResult { call_id, outcome: ToolOutcome::Ok, summary } if call_id == "c" && !summary.contains("secret"))
+    assert_eq!(
+        completed[0].activity,
+        AgentActivity::ToolResult {
+            call_id: "c".to_string(),
+            outcome: ToolOutcome::Ok,
+            summary: "exit 0: test result: ok 4 passed".to_string(),
+        }
     );
+}
+
+#[test]
+fn tool_summaries_select_safe_fields_and_never_dump_objects_or_diffs() {
+    let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
+    let cases = [
+        (
+            json!({"id":"files","type":"fileChange","changes":[
+                {"path":"src/new.rs","kind":{"type":"add"},"diff":"PRIVATE PATCH"},
+                {"path":"src/old.rs","kind":{"type":"delete"},"diff":"PRIVATE PATCH"}
+            ],"status":"inProgress"}),
+            "File change add src/new.rs, delete src/old.rs",
+        ),
+        (
+            json!({"id":"mcp","type":"mcpToolCall","server":"github","tool":"search","arguments":{"query":"rust parser","token":"PRIVATE TOKEN"},"status":"inProgress"}),
+            "MCP github.search rust parser",
+        ),
+        (
+            json!({"id":"web","type":"webSearch","query":"Codex app server","action":{"type":"search","query":"PRIVATE ACTION"}}),
+            "Web search Codex app server",
+        ),
+        (
+            json!({"id":"image","type":"imageView","path":"/tmp/screenshot.png"}),
+            "Image view /tmp/screenshot.png",
+        ),
+    ];
+    for (item, expected) in cases {
+        let reports = translator
+            .translate("item/started", &item_envelope(item))
+            .unwrap();
+        let AgentActivity::ToolUse { summary, .. } = &reports[0].activity else {
+            panic!("expected tool use");
+        };
+        assert_eq!(summary, expected);
+        assert!(!summary.contains("PRIVATE"));
+        assert!(!summary.contains('{'));
+    }
+}
+
+#[test]
+fn tool_results_report_errors_exit_codes_and_text_without_dumping_objects() {
+    let mut translator = CodexActivityTranslator::new(limits().translator());
+    for (started, completed, expected_outcome, expected_detail) in [
+        (
+            json!({"id":"failed","type":"commandExecution","command":"false","status":"inProgress"}),
+            json!({"id":"failed","type":"commandExecution","command":"false","status":"failed","exitCode":1,"aggregatedOutput":null}),
+            ToolOutcome::Error,
+            "exit 1",
+        ),
+        (
+            json!({"id":"mcp-result","type":"mcpToolCall","server":"docs","tool":"lookup","arguments":{"query":"limits"},"status":"inProgress"}),
+            json!({"id":"mcp-result","type":"mcpToolCall","server":"docs","tool":"lookup","status":"completed","result":{"content":[{"type":"text","text":"Found the limit"}],"structuredContent":{"private":"DO NOT DUMP"}}}),
+            ToolOutcome::Ok,
+            "Found the limit",
+        ),
+        (
+            json!({"id":"mcp-error","type":"mcpToolCall","server":"docs","tool":"lookup","status":"inProgress"}),
+            json!({"id":"mcp-error","type":"mcpToolCall","server":"docs","tool":"lookup","status":"failed","error":{"message":"permission denied","private":"DO NOT DUMP"}}),
+            ToolOutcome::Error,
+            "permission denied",
+        ),
+    ] {
+        translator
+            .translate("item/started", &item_envelope(started))
+            .unwrap();
+        let reports = translator
+            .translate("item/completed", &item_envelope(completed))
+            .unwrap();
+        let AgentActivity::ToolResult {
+            outcome, summary, ..
+        } = &reports[0].activity
+        else {
+            panic!("expected tool result");
+        };
+        assert_eq!(*outcome, expected_outcome);
+        assert!(summary.contains(expected_detail), "{summary}");
+        assert!(!summary.contains("DO NOT DUMP"));
+        assert!(!summary.contains('{'));
+    }
+}
+
+#[test]
+fn long_tool_call_and_result_summaries_remain_bounded() {
+    let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
+    let long = "λ\n".repeat(400);
+    translator
+        .translate(
+            "item/started",
+            &item_envelope(
+                json!({"id":"long","type":"commandExecution","command":long,"status":"inProgress"}),
+            ),
+        )
+        .unwrap();
+    let reports = translator
+        .translate("item/completed", &item_envelope(json!({"id":"long","type":"commandExecution","status":"completed","exitCode":0,"aggregatedOutput":long})))
+        .unwrap();
+    let AgentActivity::ToolResult { summary, .. } = &reports[0].activity else {
+        panic!("expected tool result");
+    };
+    assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT + 1);
+    assert_eq!(summary.lines().count(), 1);
 }
 
 #[test]
@@ -2733,6 +2843,27 @@ fn every_required_tool_kind_emits_one_paired_call() {
 }
 
 #[test]
+fn subagent_activity_emits_only_on_completion() {
+    let mut translator = CodexActivityTranslator::new(limits().translator());
+    let item = item_envelope(json!({
+        "id":"subagent-once",
+        "type":"subAgentActivity",
+        "agentPath":"/root/worker",
+        "kind":"interacted"
+    }));
+    assert!(translator
+        .translate("item/started", &item)
+        .unwrap()
+        .is_empty());
+    let completed = translator.translate("item/completed", &item).unwrap();
+    assert_eq!(completed.len(), 1);
+    assert!(matches!(
+        &completed[0].activity,
+        AgentActivity::TaskUpdate { summary } if summary == "/root/worker - interacted"
+    ));
+}
+
+#[test]
 fn build_mcp_dynamic_and_unknown_items_are_suppressed() {
     let mut translator = CodexActivityTranslator::new(limits().translator());
     for item in [
@@ -2771,9 +2902,9 @@ fn open_tools_close_unanswered_and_release_limits() {
 }
 
 #[test]
-fn completing_an_item_releases_its_aggregate_byte_charge() {
+fn completing_an_item_releases_its_retained_key_byte_charge() {
     let mut bounded = limits();
-    bounded.open_item_bytes = 20;
+    bounded.open_item_bytes = TURN_ID.len() + "a".len();
     let mut translator = CodexActivityTranslator::new(bounded.translator());
     let envelope = |id: &str, status: &str| {
         item_envelope(json!({"id":id,"type":"webSearch","query":"not retained","status":status}))

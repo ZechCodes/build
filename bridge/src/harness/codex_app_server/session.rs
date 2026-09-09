@@ -18,7 +18,9 @@ use super::protocol::{
     ParentThreadFilter, ParentThreadRoute, RoutedServerRequest, ServerNotification,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
+use super::subagents::CodexSubagents;
 use super::translator::CodexActivityTranslator;
+use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentSession, AgentStatus, HarnessError, SessionStatusSnapshot, Turn,
     TurnChoiceSupport,
@@ -156,6 +158,8 @@ struct SessionCore {
     process: Arc<AppServerProcess>,
     state: Mutex<CodexSessionState>,
     translator: Mutex<CodexActivityTranslator>,
+    subagents: Mutex<CodexSubagents>,
+    surfaces_revision: SurfaceRevision,
     activity: Mutex<Option<broadcast::Sender<ActivityReport>>>,
     status: watch::Sender<SessionStatusSnapshot>,
     terminal: Mutex<TerminalSnapshot>,
@@ -199,6 +203,8 @@ impl CodexAppServerSession {
                 resume_id,
             )),
             translator: Mutex::new(CodexActivityTranslator::new(limits.translator())),
+            subagents: Mutex::new(CodexSubagents::default()),
+            surfaces_revision: SurfaceRevision::default(),
             activity: Mutex::new(Some(sender)),
             status,
             terminal: Mutex::new(TerminalSnapshot::default()),
@@ -391,6 +397,9 @@ impl SessionCore {
     }
 
     fn translate(&self, notification: &ServerNotification) -> Result<(), HarnessError> {
+        if self.subagents.lock().unwrap().apply(notification) {
+            self.surfaces_revision.bump();
+        }
         let reports = self
             .translator
             .lock()
@@ -453,6 +462,9 @@ impl SessionCore {
         let previous = self.status.borrow().clone();
         if let Some(next) = previous.transition(ended) {
             self.status.send_replace(next);
+        }
+        if self.subagents.lock().unwrap().settle_running() {
+            self.surfaces_revision.bump();
         }
         self.report_all(self.translator.lock().unwrap().close_all());
         self.close_activity();
@@ -575,6 +587,14 @@ impl AgentSession for CodexAppServerSession {
 
     fn active_model(&self) -> Option<String> {
         self.core.state.lock().unwrap().active_model()
+    }
+
+    fn surfaces(&self) -> Option<AgentSurfaces> {
+        self.core.subagents.lock().unwrap().snapshot()
+    }
+
+    fn surfaces_changed(&self) -> Option<watch::Receiver<u64>> {
+        Some(self.core.surfaces_revision.subscribe())
     }
 
     #[cfg(test)]
@@ -792,6 +812,59 @@ mod tests {
             ),
             ParentThreadRoute::Parent
         );
+    }
+
+    #[test]
+    fn parent_subagent_items_publish_surfaces_while_child_items_stay_isolated() {
+        let root = tempfile::tempdir().unwrap();
+        let child = serde_json::to_string(&json!({
+            "method":"item/completed",
+            "params":{
+                "threadId":CHILD_THREAD_ID,
+                "turnId":CHILD_TURN_ID,
+                "item":{"id":"child-own","type":"subAgentActivity","agentPath":"hidden","agentThreadId":"grandchild","kind":"started"}
+            }
+        })).unwrap();
+        let parent = serde_json::to_string(&json!({
+            "method":"item/completed",
+            "params":{
+                "threadId":THREAD_ID,
+                "turnId":TURN_ID,
+                "item":{
+                    "id":"spawn-call","type":"collabAgentToolCall","tool":"spawnAgent",
+                    "status":"inProgress","prompt":"Inspect parser","model":"gpt-5.6-sol",
+                    "reasoningEffort":"high","receiverThreadIds":[CHILD_THREAD_ID],
+                    "senderThreadId":THREAD_ID,
+                    "agentsStates":{CHILD_THREAD_ID:{"status":"running","message":null}}
+                }
+            }
+        }))
+        .unwrap();
+        let turn_response = serde_json::to_string(&json!({
+            "id":3,"result":{"turn":{"id":TURN_ID}}
+        }))
+        .unwrap();
+        let traffic =
+            format!("read turn; printf '%s\\n' '{turn_response}' '{child}' '{parent}'; sleep 1");
+        let script = opened_thread_script(root.path(), &traffic);
+        let (session, _activity) = scripted_session(root.path(), &script);
+        let revision = session.surfaces_changed().unwrap();
+        wait_until("opened its parent thread", || {
+            session.session_id().is_some()
+        });
+        session.send_turn(&Turn::new("delegate")).unwrap();
+
+        wait_until("published its subagent surface", || {
+            session.surfaces().is_some()
+        });
+        assert!(*revision.borrow() > 0);
+        let agents = session.surfaces().unwrap().subagents;
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, CHILD_THREAD_ID);
+        assert_eq!(agents[0].description.as_deref(), Some("Inspect parser"));
+        assert_eq!(agents[0].reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(agents[0].spawning_call_id.as_deref(), Some("spawn-call"));
+        session.end();
     }
 
     #[test]

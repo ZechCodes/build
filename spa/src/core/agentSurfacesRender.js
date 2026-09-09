@@ -106,10 +106,11 @@ function agentStatsHtml(row) {
 
 function agentLineHtml(row) {
   const detail = row.error || row.result || row.lastTool;
-  if (!row.model && !detail) return "";
+  if (!row.model && !row.reasoningEffort && !detail) return "";
   const detailClass = row.error ? `${ROW_DETAIL_CLASS} ${ROW_ERROR_CLASS}` : ROW_DETAIL_CLASS;
   return `<div class="surface-row-line">
       ${row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : ""}
+      ${row.reasoningEffort ? `<span class="surface-row-effort">${esc(row.reasoningEffort)} effort</span>` : ""}
       ${detail ? clippedTextHtml(detail, { className: detailClass }) : ""}
     </div>`;
 }
@@ -125,7 +126,8 @@ function spawningCallHtml(row) {
 export function agentRowHtml(row, { compact = false } = {}) {
   return surfaceRowHtml("surface-agent", row, {
     trailing: spawningCallHtml(row),
-    body: `${agentLineHtml(row)}
+    body: `${noteHtml(row.description, row.subject)}
+    ${agentLineHtml(row)}
     ${compact ? "" : agentStatsHtml(row)}`,
   });
 }

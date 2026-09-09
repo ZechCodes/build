@@ -220,7 +220,9 @@ function lastToolText(lastTool) {
 function agentRow(entry, modelLabel) {
   return {
     label: entry.label || "",
+    description: entry.description,
     model: entry.model ? modelLabel(entry.model) : "",
+    reasoningEffort: entry.reasoning_effort,
     tokens: Number.isFinite(entry.tokens) ? entry.tokens : null,
     toolCalls: Number.isFinite(entry.tool_calls) ? entry.tool_calls : null,
     lastTool: lastToolText(entry.last_tool),

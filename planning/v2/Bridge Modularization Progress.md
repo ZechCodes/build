@@ -12,11 +12,11 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 4 | Extract conversation application methods and request parsing | Complete |
 | 5 | Extract project, configuration, and capture application methods | Complete |
 | 5b | Give project registration, entity binding, and retained paths their own registry | Complete |
-| 6 | Extract issue, run, worktree, board, and protocol adapters | Prepared outside repository |
-| 7 | Give session registration and spawn reservations their own component | Planned |
-| 8 | Give delivery queues, receipts, and in-flight accounting their own component | Planned |
-| 9 | Give board attention and caches their own component | Planned |
-| 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Planned |
+| 6 | Extract issue, run, worktree, board, and protocol adapters | Complete |
+| 7 | Give session registration and spawn reservations their own component | Prepared outside repository |
+| 8 | Give delivery queues, receipts, and in-flight accounting their own component | Prepared outside repository |
+| 9 | Give board attention and caches their own component | Prepared outside repository |
+| 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Prepared outside repository |
 | Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Prepared outside repository |
 
 Each stage is committed after its source review and validation. Mechanical
@@ -149,3 +149,24 @@ claimed. Semgrep reports no findings across all 48 changed Rust files.
 The full suite reports 2,192 passed, one failed, and seven ignored; all 2,117
 exercised library tests pass. The only failure remains the previously reproduced
 `concurrency_load` output floor, at 75,226 bytes. Staged Gitleaks passes.
+
+## Stage 6
+
+The remaining application adapters now live under issue, run, worktree, board,
+protocol, and runtime modules. `app.rs` is 741 lines of composition, construction,
+and facade exports; the largest extracted production file is 1,456 lines.
+Production imports name their owners explicitly, and the public app paths remain
+available. The earlier project, configuration, capture, and conversation modules
+are unchanged in this stage. State ownership changes remain separate stages.
+
+The crate-wide staged audit preserves all 5,470 functions and 1,031 data
+declarations. All 104 reported function pairs have identical bodies and
+attributes; only trailing parameter commas differ after formatting. The separate
+structural audit retains all 765 app tests and all 119 RPC route arms and 13
+frame-dispatch arms. Compilation, formatting, all-target Clippy, and all 121 focused runtime tests
+pass. Test-only imports are scoped to test builds; unused facade aliases were
+removed without changing function bodies. The final source audit is identical
+to the reviewed report; Semgrep reports no findings across all 43 changed Rust
+files. The full suite reports 2,192 passed, one failed, and seven ignored; all
+2,117 exercised library tests pass. The sole failure is the previously reproduced
+`concurrency_load` output floor, at 77,820 bytes. Staged Gitleaks passes.

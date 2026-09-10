@@ -1,6 +1,6 @@
 # Bridge Modularization Strategy
 
-**Status:** Stages 1–7 implemented; delivery and board ownership and lifecycle reversal remain
+**Status:** Stages 1–8 implemented; board ownership and lifecycle reversal remain
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
 ## Why this work is needed

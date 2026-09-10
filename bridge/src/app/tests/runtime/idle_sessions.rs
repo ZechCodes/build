@@ -729,7 +729,7 @@ fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_entity() {
         RunState::Building,
     );
     let turn = unreachable_turn(&mut app, "run-unreachable");
-    app.pending_agent_turns.push(turn);
+    app.delivery_queue.enqueue(turn);
     let state = app.shared();
 
     deliver_pending_agent_turns(&state);
@@ -780,7 +780,7 @@ fn a_start_that_never_reached_a_harness_says_so_on_its_agent() {
         RunState::Building,
     );
     let turn = unreachable_turn(&mut app, "run-no-start");
-    app.pending_agent_turns.push(turn);
+    app.delivery_queue.enqueue(turn);
     let state = app.shared();
 
     deliver_pending_agent_turns(&state);
@@ -808,14 +808,14 @@ fn a_fresh_turn_forgets_the_last_start_failure() {
     let mut app = qa_state(&repo, dir.path());
     insert_run(&mut app, &repo, dir.path(), "run-retry", RunState::Building);
     let turn = unreachable_turn(&mut app, "run-retry");
-    app.pending_agent_turns.push(turn);
+    app.delivery_queue.enqueue(turn);
     let state = app.shared();
     deliver_pending_agent_turns(&state);
 
     {
         let mut app = state.lock().unwrap();
         let turn = unreachable_turn(&mut app, "run-retry");
-        app.pending_agent_turns.push(turn);
+        app.delivery_queue.enqueue(turn);
     }
     // Taken, not delivered: the point is that reaching for the agent is
     // what forgets the last failure, before anything is known about how
@@ -862,7 +862,7 @@ fn a_start_for_an_entity_whose_session_is_over_says_so_on_its_agent() {
         s.projects.bind_entity(plan_id.to_string(), project_id);
         s.plans.insert(plan_id.to_string(), active);
         let turn = unreachable_turn(&mut s, plan_id);
-        s.pending_agent_turns.push(turn);
+        s.delivery_queue.enqueue(turn);
     }
 
     deliver_pending_agent_turns(&state);
@@ -921,9 +921,9 @@ fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_plan() {
     let state = app.shared();
     {
         let mut app = state.lock().unwrap();
-        app.pending_agent_turns.clear();
+        app.delivery_queue.clear_queued();
         let turn = unreachable_turn(&mut app, &plan_id);
-        app.pending_agent_turns.push(turn);
+        app.delivery_queue.enqueue(turn);
     }
 
     deliver_pending_agent_turns(&state);
@@ -963,15 +963,15 @@ fn a_working_plan_with_no_agent_tab_is_an_anomaly_not_a_skip() {
     let mut state = qa_state(&repo, dir.path());
     let plan_id = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "tabless" }))));
     state.plans.get_mut(&plan_id).unwrap().plan.state = PlanState::Drafting;
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     let turn = unreachable_turn(&mut state, &plan_id);
-    state.pending_agent_turns.push(turn);
+    state.delivery_queue.enqueue(turn);
     assert!(
         state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
         "a queued turn means the planning agent is coming, not missing"
     );
 
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     assert_eq!(
         state.mark_idle_tasks(Duration::from_secs(3600)),
         vec![plan_id.clone()],
@@ -1002,7 +1002,7 @@ fn a_delivery_that_panics_gives_its_in_flight_marks_back() {
         RunState::Building,
     );
     let turn = unreachable_turn(&mut app, "run-panicked");
-    app.pending_agent_turns.push(turn);
+    app.delivery_queue.enqueue(turn);
     let state = app.shared();
     let turns = state.lock().unwrap().take_pending_turns();
     assert!(
@@ -1033,7 +1033,7 @@ fn a_delivery_that_panics_gives_its_in_flight_marks_back() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(
-        s.turns_in_flight.is_empty(),
+        s.delivery_queue.is_idle(),
         "an unwinding delivery gives its in-flight marks back"
     );
     assert_eq!(
@@ -1076,7 +1076,7 @@ fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
     let first = post("start on this");
     assert_eq!(first["ok"], true, "{first:?}");
     assert_eq!(
-        state.lock().unwrap().pending_agent_turns.len(),
+        state.lock().unwrap().delivery_queue.queued_len(),
         1,
         "the first message wakes the agent"
     );
@@ -1085,7 +1085,7 @@ fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
     let _delivering = state.lock().unwrap().take_pending_turns();
     {
         let s = state.lock().unwrap();
-        assert!(s.pending_agent_turns.is_empty());
+        assert!(s.delivery_queue.queued_is_empty());
         assert!(s.session_registry.test_counts().claims == 0);
     }
 
@@ -1095,7 +1095,7 @@ fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
         "the message is durable on the thread either way: {second:?}"
     );
     assert!(
-        state.lock().unwrap().pending_agent_turns.is_empty(),
+        state.lock().unwrap().delivery_queue.queued_is_empty(),
         "a second turn was queued behind the one already coming"
     );
 }
@@ -1123,7 +1123,7 @@ fn a_message_posted_during_a_textless_start_queues_its_own_turn() {
     );
     let root = app.entity_agent_root("run-started-bare").unwrap();
     let agent_id = primary_agent_id(&app, "run-started-bare");
-    app.pending_agent_turns.push(PendingAgentTurn {
+    app.delivery_queue.enqueue(PendingAgentTurn {
         operation_id: None,
         root: root.clone(),
         owner: "run-started-bare".into(),
@@ -1141,7 +1141,7 @@ fn a_message_posted_during_a_textless_start_queues_its_own_turn() {
 
     // Off the queue, mid-delivery: the harness is coming, with nothing to say.
     let _delivering = state.lock().unwrap().take_pending_turns();
-    assert!(state.lock().unwrap().pending_agent_turns.is_empty());
+    assert!(state.lock().unwrap().delivery_queue.queued_is_empty());
 
     let posted = state.lock().unwrap().handle(req(
         "thread.post",
@@ -1150,11 +1150,11 @@ fn a_message_posted_during_a_textless_start_queues_its_own_turn() {
     assert_eq!(posted["ok"], true, "{posted:?}");
     let s = state.lock().unwrap();
     assert_eq!(
-        s.pending_agent_turns.len(),
+        s.delivery_queue.queued_len(),
         1,
         "a start that says nothing is not the turn that reads this message"
     );
-    let queued = &s.pending_agent_turns[0];
+    let queued = &s.delivery_queue.queued_nth(0).unwrap();
     assert_eq!(queued.agent_id, agent_id);
     assert!(
         queued.says_something(),
@@ -1185,8 +1185,8 @@ fn settling_one_agents_turn_leaves_the_other_agents_mark_in_flight() {
     second.agent_id = "agent-second".into();
     let root = first.root.clone();
     let first_agent = first.agent_id.clone();
-    state.pending_agent_turns.push(first);
-    state.pending_agent_turns.push(second);
+    state.delivery_queue.enqueue(first);
+    state.delivery_queue.enqueue(second);
 
     let mut delivering = state.take_pending_turns();
     let (delivered, mark) = delivering.next_turn().expect("the first turn");
@@ -1229,7 +1229,7 @@ fn a_run_whose_turn_is_still_on_its_way_is_not_demoted() {
         RunState::Building,
     );
     let turn = unreachable_turn(&mut state, "run-dispatching");
-    state.pending_agent_turns.push(turn);
+    state.delivery_queue.enqueue(turn);
     assert!(
         state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
         "a queued turn means the agent is coming, not missing"
@@ -1237,7 +1237,7 @@ fn a_run_whose_turn_is_still_on_its_way_is_not_demoted() {
 
     // Mid-delivery — off the queue, not yet a tab — is the same story.
     let mut delivering = state.take_pending_turns();
-    assert!(state.pending_agent_turns.is_empty());
+    assert!(state.delivery_queue.queued_is_empty());
     assert!(
         state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
         "a turn mid-delivery means the agent is coming, not missing"

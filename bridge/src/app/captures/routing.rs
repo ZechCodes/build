@@ -139,7 +139,7 @@ impl AppState {
         capture_id: &str,
         action: BridgeAction,
     ) -> (Result<Value, String>, Option<DeferredWork>) {
-        let queued_before = self.pending_agent_turns.len();
+        let queued_before = self.delivery_queue.checkpoint();
         let answered = self.on_router_mcp_action(capture_id, action);
         if answered.is_err() {
             self.drop_turns_queued_since(queued_before);
@@ -192,7 +192,7 @@ impl AppState {
         );
         self.projects
             .bind_entity(capture_id.to_string(), project_id);
-        self.pending_agent_turns.push(PendingAgentTurn {
+        self.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
             root: Self::canonical_root(session.scratch_dir()),
             owner: capture_id.to_string(),

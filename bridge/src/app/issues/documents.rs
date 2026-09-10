@@ -175,39 +175,7 @@ pub(in crate::app) fn attach_plan_operation_turn(
     state: &mut AppState,
     receipt: &OperationReceipt,
 ) -> Result<(), String> {
-    let delivery = receipt
-        .delivery
-        .as_ref()
-        .ok_or("thread.post: accepted plan operation has no delivery intent")?;
-    let payload = delivery
-        .payload
-        .as_ref()
-        .ok_or("thread.post: accepted plan operation has no bounded payload")?;
-    let turn = state
-        .pending_agent_turns
-        .iter_mut()
-        .rev()
-        .find(|turn| {
-            turn.operation_id.is_none()
-                && turn.owner == delivery.owner_id
-                && turn.agent_id == delivery.agent_id
-        })
-        .ok_or("thread.post: plan session opened without a delivery turn")?;
-    turn.operation_id = Some(receipt.operation_id.clone());
-    turn.conversation_id = receipt.conversation_id.clone();
-    turn.model_choice = delivery.model_choice.clone();
-    turn.choice_revision = delivery.choice_revision;
-    turn.interrupt = delivery.interrupt;
-    let exact_cold = payload.delivery_prompt(&receipt.operation_id, true);
-    let exact_warm = payload.delivery_prompt(&receipt.operation_id, false);
-    if let Some(say) = turn.say.as_mut() {
-        say.cold.push_str("\n\n");
-        say.cold.push_str(&exact_cold);
-        say.warm = exact_warm;
-    }
-    turn.wants_catch_up = false;
-    turn.survives_refusal = true;
-    Ok(())
+    state.delivery_queue.attach_plan_operation(receipt)
 }
 
 impl AppState {

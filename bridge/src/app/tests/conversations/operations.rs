@@ -293,7 +293,7 @@ async fn thread_post_addressed_to_issue_nudges_its_live_implementation_agent() {
     // `planned_run_in_review` stages lifecycle turns for the real spawn.
     // This test installs that live session by hand, so those cold turns
     // have already happened and only the post's nudge remains deliverable.
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     let state = state.shared();
     let handler = AppState::handler(Arc::clone(&state));
 
@@ -493,7 +493,7 @@ fn explicit_issue_post_never_executes_its_implementation_alias() {
     let (issue_id, run_id) = planned_run_in_review(&mut state, "explicit issue address");
     let issue_agent = state.plans[&issue_id].agents.sole().id.clone();
     let execution_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let posted = state.handle(req(
         "thread.post",
@@ -507,7 +507,7 @@ fn explicit_issue_post_never_executes_its_implementation_alias() {
 
     assert_eq!(posted["ok"], true, "{posted:?}");
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "the Issue workspace was handed off, so its explicitly addressed agent has no PTY; \
          the post must not silently reach implementation agent {execution_agent}"
     );
@@ -525,8 +525,8 @@ fn explicit_issue_post_never_executes_its_implementation_alias() {
 
 fn queued_operation_turn<'a>(state: &'a AppState, operation_id: &str) -> &'a PendingAgentTurn {
     state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.operation_id.as_deref() == Some(operation_id))
         .expect("the accepted operation queued its immutable turn")
 }

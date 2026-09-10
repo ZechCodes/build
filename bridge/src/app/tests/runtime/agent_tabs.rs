@@ -404,8 +404,8 @@ async fn done_then_a_warm_turn_stays_in_one_open_session() {
         state
             .lock()
             .unwrap()
-            .pending_agent_turns
-            .push(PendingAgentTurn {
+            .delivery_queue
+            .enqueue(PendingAgentTurn {
                 operation_id: None,
                 root: AppState::canonical_root(&root),
                 owner: "run-lineage".into(),

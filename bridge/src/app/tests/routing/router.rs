@@ -56,8 +56,8 @@ fn a_capture_puts_a_router_on_it_in_a_scratch_directory_of_its_own() {
     );
 
     let turn = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.owner == capture_id)
         .expect("the router is given a turn");
     assert_eq!(turn.agent_id, agent_id);
@@ -85,14 +85,14 @@ fn a_capture_being_routed_is_never_given_a_second_router() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (capture_id, agent_id) = captured(&mut state, "ship it");
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     state.begin_routing(&capture_id).unwrap();
     state.begin_routing(&capture_id).unwrap();
 
     assert_eq!(state.router_sessions[&capture_id].agent_id(), agent_id);
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "the router already deciding this capture is the one deciding it"
     );
 }
@@ -139,8 +139,8 @@ fn routing_a_capture_to_an_issue_starts_its_planning_agent_on_the_primary_checko
     );
 
     let turns: Vec<&PendingAgentTurn> = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .filter(|turn| turn.owner == issue_id)
         .collect();
     assert_eq!(turns.len(), 1, "exactly one first turn: {}", turns.len());
@@ -204,8 +204,8 @@ fn a_routed_issue_whose_agent_is_already_coming_is_not_started_twice() {
     );
     assert_eq!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .filter(|turn| turn.owner == issue_id)
             .count(),
         1,
@@ -219,7 +219,7 @@ fn a_routed_issue_whose_agent_is_already_coming_is_not_started_twice() {
         "a harness already coming up is the one that reads the capture"
     );
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "a harness already coming up is the one that reads the capture"
     );
 
@@ -233,7 +233,7 @@ fn a_routed_issue_whose_agent_is_already_coming_is_not_started_twice() {
         "an issue with a planning session already open is not dispatched again"
     );
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "an issue with a planning session already open is not dispatched again"
     );
 }
@@ -280,8 +280,8 @@ fn routing_to_an_issue_whose_workspace_cannot_be_written_keeps_the_route() {
     );
     assert!(
         !state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.owner == issue_id),
         "no turn was queued for an agent that has nowhere to work"
     );
@@ -305,8 +305,8 @@ fn routing_to_an_issue_whose_workspace_cannot_be_written_keeps_the_route() {
     assert!(state.plans[&issue_id].workspace.is_some());
     assert_eq!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .filter(|turn| turn.owner == issue_id)
             .count(),
         1
@@ -343,7 +343,7 @@ fn dispatch_branch_puts_an_agent_on_a_branch_and_writes_the_route_through() {
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "finish the toast on the login branch");
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let dispatched = state
         .router_action(
@@ -359,12 +359,12 @@ fn dispatch_branch_puts_an_agent_on_a_branch_and_writes_the_route_through() {
     let branch = dispatched["branch"].as_str().unwrap().to_string();
     assert!(dispatched["run_id"].is_string());
     assert_eq!(
-        state.pending_agent_turns.len(),
+        state.delivery_queue.queued_len(),
         1,
         "a dispatch is an agent already working"
     );
     assert_eq!(
-        state.pending_agent_turns[0].owner,
+        state.delivery_queue.queued_nth(0).unwrap().owner,
         dispatched["run_id"].as_str().unwrap(),
         "the only turn is the dispatch's own"
     );
@@ -499,7 +499,7 @@ fn choosing_an_option_answers_the_router_in_its_own_terms() {
     let (capture_id, _) = captured(&mut state, "make the thing faster");
     asked_with_two_options(&mut state, &capture_id);
     state.settle_router_session(&capture_id);
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let answered = state.handle(req(
         "capture.answer",
@@ -519,8 +519,8 @@ fn choosing_an_option_answers_the_router_in_its_own_terms() {
     );
 
     let turn = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.owner == capture_id)
         .expect("the router is re-fired with the choice in hand");
     assert!(turn.said().cold.contains("proj-do"), "{}", turn.said().cold);
@@ -721,7 +721,7 @@ fn an_answer_re_fires_the_router_with_the_answer_in_hand() {
         "unrouted",
         "a router that asked is not a router that failed"
     );
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let answered = state.handle(req(
         "capture.answer",
@@ -738,8 +738,8 @@ fn an_answer_re_fires_the_router_with_the_answer_in_hand() {
         "a fresh session decides again"
     );
     let turn = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.owner == capture_id)
         .expect("the router is re-fired");
     assert!(
@@ -790,7 +790,7 @@ fn cancelling_a_capture_wipes_its_scratch_once_the_router_is_reaped() {
     let mut app = qa_state(&repo, dir.path());
     let (capture_id, agent_id) = captured(&mut app, "make the thing faster");
     // The router's first turn already reached the harness below.
-    app.pending_agent_turns.clear();
+    app.delivery_queue.clear_queued();
     let scratch = app.router_sessions[&capture_id].scratch_dir().to_path_buf();
     let root = AppState::canonical_root(&scratch);
     let (death, death_handle) = OffLockGate::new();
@@ -994,8 +994,8 @@ fn rerouting_off_an_issue_only_its_own_agent_touched_stops_the_agent_and_archive
     let agent_id = primary_agent_id(&state, &guessed);
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.owner == guessed),
         "the route started the planning agent"
     );
@@ -1017,8 +1017,8 @@ fn rerouting_off_an_issue_only_its_own_agent_touched_stops_the_agent_and_archive
     );
     assert!(
         !state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.agent_id == agent_id),
         "the planning agent goes with the issue it was planning"
     );
@@ -1070,8 +1070,8 @@ fn rerouting_keeps_a_destination_that_has_been_worked() {
     );
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.agent_id == agent_id),
         "and its agent is nobody's to stop either"
     );
@@ -1253,8 +1253,8 @@ fn a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run
     );
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .all(|turn| !turn.owner.starts_with("run-")),
         "the refused dispatch left a turn queued for a run that does not exist"
     );
@@ -1299,15 +1299,15 @@ fn a_reroute_with_no_destination_re_fires_the_router() {
         },
     );
     assert_eq!(capture_record(&mut state, &capture_id)["state"], "failed");
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let retried = state.handle(req("capture.reroute", json!({ "capture_id": capture_id })));
     assert_eq!(retried["ok"], true, "{retried:?}");
     assert_eq!(retried["result"]["state"], "routing");
     assert_ne!(state.router_sessions[&capture_id].agent_id(), primary_agent);
     assert!(state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .any(|turn| turn.owner == capture_id));
 }
 

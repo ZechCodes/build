@@ -6,8 +6,7 @@ use super::read::thread_detail;
 use super::{AppState, ConversationAddress};
 use crate::app::{
     named_agent_id, plan_state_str, require_str, run_state_str, ImplementationTarget,
-    PendingAgentTurn, PendingOperationAcceptance, PlanDraftingStarted, TurnText,
-    NEW_THREAD_MESSAGES_PROMPT,
+    PendingAgentTurn, PlanDraftingStarted, TurnText, NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::operation::{
     thread_post_request_hash, DeliveryIntent, OperationReceipt, OperationStatus, THREAD_POST_METHOD,
@@ -528,10 +527,8 @@ impl AppState {
             ),
             delivery,
         };
-        self.pending_operation_acceptance = Some(PendingOperationAcceptance {
-            conversation_owner_id: address.conversation_entity_id.clone(),
-            receipt: receipt.clone(),
-        });
+        self.operation_ledger
+            .stage_acceptance(address.conversation_entity_id.clone(), receipt.clone());
         Ok(Some(receipt))
     }
 
@@ -559,7 +556,7 @@ impl AppState {
                 warm: payload.delivery_prompt(&receipt.operation_id, false),
             })
         });
-        self.pending_agent_turns.push(PendingAgentTurn {
+        self.delivery_queue.enqueue(PendingAgentTurn {
             operation_id,
             root,
             owner: delivery.owner_id.clone(),
@@ -605,7 +602,7 @@ impl AppState {
             Some(store) => store
                 .operation(operation_id)
                 .map_err(|error| format!("operation store: {error}")),
-            None => Ok(self.operations.get(operation_id).cloned()),
+            None => Ok(self.operation_ledger.cached(operation_id).cloned()),
         }
     }
 
@@ -621,21 +618,22 @@ impl AppState {
                 .transition_operation(operation_id, expected, next, execution_error)
                 .map_err(|error| format!("operation store: {error}"))?,
             None => self
-                .operations
-                .get(operation_id)
-                .is_some_and(|receipt| receipt.status == expected),
+                .operation_ledger
+                .cached_has_status(operation_id, expected),
         };
         if changed {
-            if let Some(receipt) = self.operations.get_mut(operation_id) {
-                receipt.status = next;
-                receipt.execution_error = execution_error.map(str::to_string);
-                let entity_id = receipt.entity_id.clone();
+            // Store success is authoritative. This update is unconditional with
+            // respect to stale cached status and absent cache is not a failure.
+            if let Some(entity_id) = self.operation_ledger.record_transition_if_cached(
+                operation_id,
+                next,
+                execution_error,
+            ) {
                 self.note_entity_changed(&entity_id);
             }
         }
         Ok(changed)
     }
-
     pub(in crate::app) fn settle_accepted_operation_error(
         &mut self,
         receipt: &OperationReceipt,

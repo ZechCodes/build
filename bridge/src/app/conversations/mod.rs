@@ -3,6 +3,7 @@ use serde_json::Value;
 
 mod attachments;
 mod inputs;
+pub(in crate::app) mod operation_ledger;
 mod post;
 mod read;
 

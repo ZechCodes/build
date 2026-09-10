@@ -463,8 +463,8 @@ fn the_catch_up_packet_is_composed_when_the_turn_is_delivered() {
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("the message queued a turn");
     assert!(
         queued.wants_catch_up,

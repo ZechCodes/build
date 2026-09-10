@@ -303,14 +303,14 @@ fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-in-flight");
     let root = state.entity_agent_root(&run_id).unwrap();
     let agent_id = primary_agent_id(&state, &run_id);
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     let first = state.handle(req(
         "thread.post",
         json!({ "entity_id": run_id, "body": "the first thing" }),
     ));
     assert_eq!(first["ok"], true, "{first:?}");
     assert_eq!(
-        state.pending_agent_turns.len(),
+        state.delivery_queue.queued_len(),
         1,
         "the first message is what brings the agent back"
     );
@@ -324,9 +324,9 @@ fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
 
     assert_eq!(posted["ok"], true, "{posted:?}");
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "the harness already starting is the one that reads this; {} turns were queued",
-        state.pending_agent_turns.len()
+        state.delivery_queue.queued_len()
     );
 
     // …and with nothing in flight, the same message is what brings the
@@ -340,11 +340,11 @@ fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
     ));
     assert_eq!(again["ok"], true, "{again:?}");
     assert_eq!(
-        state.pending_agent_turns.len(),
+        state.delivery_queue.queued_len(),
         1,
         "one revival, addressed to the agent that was spoken to"
     );
-    let queued = &state.pending_agent_turns[0];
+    let queued = &state.delivery_queue.queued_nth(0).unwrap();
     assert_eq!(queued.agent_id, agent_id);
     assert_eq!(queued.root, root);
     assert_eq!(queued.owner, run_id);

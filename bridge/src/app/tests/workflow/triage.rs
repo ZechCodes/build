@@ -57,7 +57,7 @@ fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
         "fn a() {}\n",
     )
     .unwrap();
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     state.on_agent_done(
         &run_id,
@@ -76,8 +76,8 @@ fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
     );
 
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a finished diff is ordered for review");
     assert_eq!(queued.phase, "triage");
     assert_eq!(queued.owner, run_id);
@@ -112,7 +112,7 @@ fn a_completed_build_does_not_queue_triage_while_the_setting_is_off() {
         "fn a() {}\n",
     )
     .unwrap();
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     state.on_agent_done(
         &run_id,
@@ -126,8 +126,8 @@ fn a_completed_build_does_not_queue_triage_while_the_setting_is_off() {
 
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .all(|turn| turn.phase != "triage"),
         "the default-off setting starts no triage work"
     );
@@ -170,7 +170,7 @@ fn a_triage_ships_with_the_run_and_goes_stale_when_the_diff_moves() {
 
     // The diff moves: a second turn, a second revision.
     std::fs::write(worktree.join("crypto.rs"), "fn a() {}\nfn b() {}\n").unwrap();
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     state.on_agent_done(
         &run_id,
         DoneReport {
@@ -194,8 +194,8 @@ fn a_triage_ships_with_the_run_and_goes_stale_when_the_diff_moves() {
     let (_, second_revision) = diff_vocabulary(&state, &run_id);
     assert_ne!(first_revision, second_revision);
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a new revision is triaged again");
     assert_eq!(queued.phase, "triage");
     assert!(
@@ -226,7 +226,7 @@ fn disabling_triage_drops_queued_passes_but_keeps_the_last_report() {
     state.on_agent_done(&run_id, done_triage(&revision, &hunk_ids));
 
     std::fs::write(worktree.join("crypto.rs"), "fn a() {}\nfn b() {}\n").unwrap();
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     state.on_agent_done(
         &run_id,
         DoneReport {
@@ -238,8 +238,8 @@ fn disabling_triage_drops_queued_passes_but_keeps_the_last_report() {
     );
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.phase == "triage"),
         "the enabled account queued a replacement pass"
     );
@@ -248,8 +248,8 @@ fn disabling_triage_drops_queued_passes_but_keeps_the_last_report() {
     assert_eq!(disabled["ok"], true, "{disabled:?}");
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .all(|turn| turn.phase != "triage"),
         "a pass that has not started is cancelled"
     );
@@ -285,7 +285,7 @@ fn disabling_triage_stops_a_pass_already_drained_for_delivery() {
         "fn a() {}\n",
     )
     .unwrap();
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     state.on_agent_done(
         &run_id,
         DoneReport {
@@ -299,7 +299,7 @@ fn disabling_triage_stops_a_pass_already_drained_for_delivery() {
     let turns = state.lock().unwrap().take_pending_turns();
     {
         let mut app = state.lock().unwrap();
-        assert!(app.turns_in_flight.holds_owner(&run_id));
+        assert!(app.delivery_queue.holds_owner(&run_id));
         let disabled = app.handle(req("settings.set", json!({ "triage_enabled": false })));
         assert_eq!(disabled["ok"], true, "{disabled:?}");
     }
@@ -312,7 +312,7 @@ fn disabling_triage_stops_a_pass_already_drained_for_delivery() {
         "the drained triage turn was discarded before opening an agent tab"
     );
     assert!(
-        app.turns_in_flight.is_empty(),
+        app.delivery_queue.is_idle(),
         "discarding the turn settles its delivery mark"
     );
 }
@@ -389,14 +389,14 @@ fn a_report_that_changed_nothing_does_not_ask_for_the_same_triage_twice() {
     let (hunk_ids, revision) = diff_vocabulary(&state, &run_id);
     state.on_agent_done(&run_id, done_triage(&revision, &hunk_ids));
 
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     state.on_agent_done(&run_id, build());
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "an unchanged diff is already ordered: {:?}",
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .map(|turn| turn.phase)
             .collect::<Vec<_>>()
     );

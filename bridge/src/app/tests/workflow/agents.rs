@@ -404,8 +404,8 @@ fn a_refused_agent_remove_that_dropped_an_earlier_turn_is_answered_not_a_panic()
     assert_eq!(posted["ok"], true, "{posted:?}");
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.agent_id == second_agent),
         "the fixture needs a turn queued for the agent before the request starts"
     );
@@ -426,8 +426,8 @@ fn a_refused_agent_remove_that_dropped_an_earlier_turn_is_answered_not_a_panic()
     );
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .all(|turn| turn.agent_id != second_agent),
         "the retired agent's turn outlived it"
     );
@@ -1251,8 +1251,8 @@ fn request_changes_lands_on_the_named_agents_conversation() {
     );
 
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a change request is a turn");
     assert_eq!(queued.agent_id, second_agent);
     assert_ne!(queued.agent_id, primary_agent);
@@ -1283,7 +1283,7 @@ fn request_changes_lands_on_the_named_agents_conversation() {
         primary_thread(&state.plans[&issue_id].agents).items
     );
     assert_eq!(
-        state.pending_agent_turns.last().unwrap().agent_id,
+        state.delivery_queue.queued_last().unwrap().agent_id,
         primary_agent
     );
 

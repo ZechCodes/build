@@ -464,7 +464,7 @@ async fn an_immediately_exiting_harness_leaves_one_closed_session() {
     let agent_id = crate::agent::derived_agent_id("run-exits");
     {
         let mut app = state.lock().unwrap();
-        app.pending_agent_turns.push(PendingAgentTurn {
+        app.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
             root: AppState::canonical_root(&root),
             owner: "run-exits".into(),

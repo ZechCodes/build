@@ -14,7 +14,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 5b | Give project registration, entity binding, and retained paths their own registry | Complete |
 | 6 | Extract issue, run, worktree, board, and protocol adapters | Complete |
 | 7 | Give session registration and spawn reservations their own component | Complete |
-| 8 | Give delivery queues, receipts, and in-flight accounting their own component | Prepared outside repository |
+| 8 | Give delivery queues, receipts, and in-flight accounting their own component | Complete |
 | 9 | Give board attention and caches their own component | Prepared outside repository |
 | 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Prepared outside repository |
 | Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Prepared outside repository |
@@ -199,3 +199,28 @@ bodies and test fixture access, so byte-equivalent bodies are not claimed.
 Semgrep reports no findings across all 38 changed Rust files. The full suite reports 2,202 passed, one failed, and seven ignored; all 2,127
 exercised library tests pass. The only failure is the previously reproduced
 `concurrency_load` output floor, at 80,414 bytes. Staged Gitleaks passes.
+
+## Stage 8
+
+`DeliveryQueue` owns queued turns, refusal checkpoints, and owner/agent in-flight
+counts. Runtime retains a separate RAII mark for each popped turn and the weak
+application handle used to settle during unwinding. Every ready turn is prepared
+before tickets are minted; held and ready order, claim-error requeue, false-claim
+settlement, and the single deferred-delivery settlement tail remain unchanged.
+`OperationLedger` owns the receipt mirror and pending acceptance. A matching
+acceptance stays consumed on both Store success and failure; Store reads and
+transitions remain authoritative, and boot restore does not hydrate the mirror.
+The accepted-plan attachment operation preserves its exact target and payload.
+
+`app.rs` is 696 lines. The queue and ledger cores are 205 and 90 lines, with
+conventional child test modules. Independent production and test review found no
+remaining issue. All 775 baseline app tests remain, with nine new component
+invariants. All 119 route and 13 frame-dispatch names are unchanged. The source
+inventory records the expected ownership changes: 5,550 functions become 5,579
+and 1,044 data declarations become 1,047; public function signatures and bodies
+have no inventory differences. Existing test assertions, diagnostics, literals,
+and timing are preserved through the fixture migration. Formatting, all-target
+compilation, all-target Clippy, and 13 focused tests pass. Semgrep reports no
+findings across all 42 changed Rust files. The full suite reports 2,211 passed, one failed, and seven ignored; all 2,136
+exercised library tests pass. The sole failure remains the previously reproduced
+`concurrency_load` output floor, at 75,226 bytes. Staged Gitleaks passes.

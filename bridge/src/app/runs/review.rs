@@ -194,13 +194,12 @@ impl AppState {
                     Some(&run_agent_id),
                 )
                 .map_err(err)?;
-            self.pending_agent_turns
-                .push(PendingAgentTurn::for_run_agent(
-                    &run_id,
-                    &run_agent_id,
-                    &active,
-                    turn,
-                ));
+            self.delivery_queue.enqueue(PendingAgentTurn::for_run_agent(
+                &run_id,
+                &run_agent_id,
+                &active,
+                turn,
+            ));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
         let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
@@ -228,8 +227,8 @@ impl AppState {
                 .orch_for(&project_id)?
                 .dispatch_run_stage(&mut active, &plan_docs, &stage_id, model_override)
                 .map_err(err)?;
-            self.pending_agent_turns
-                .push(PendingAgentTurn::for_run(&run_id, &mut active, turn));
+            self.delivery_queue
+                .enqueue(PendingAgentTurn::for_run(&run_id, &mut active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
         let persisted = self.finish_run_mutation(run_id.clone(), active);
@@ -260,8 +259,8 @@ impl AppState {
                 .orch_for(&project_id)?
                 .fix_run_stage(&mut active, &plan_docs, &stage_id, &note)
                 .map_err(err)?;
-            self.pending_agent_turns
-                .push(PendingAgentTurn::for_run(&run_id, &mut active, turn));
+            self.delivery_queue
+                .enqueue(PendingAgentTurn::for_run(&run_id, &mut active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
         let persisted = self.finish_run_mutation(run_id.clone(), active);
@@ -299,8 +298,8 @@ impl AppState {
                 .orch_for(&project_id)?
                 .send_run_stage_notes(&mut active, plan, &stage_id)
                 .map_err(err)?;
-            self.pending_agent_turns
-                .push(PendingAgentTurn::for_run(&run_id, &mut active, turn));
+            self.delivery_queue
+                .enqueue(PendingAgentTurn::for_run(&run_id, &mut active, turn));
             if self.qa_agent {
                 self.qa_simulate_run_stage_revise(&project_id, &mut active, plan)?;
             }
@@ -374,8 +373,8 @@ impl AppState {
                     .orch_for(&project_id)?
                     .dispatch_run_stage(&mut active, &plan_docs, &next, None)
                     .map_err(err)?;
-                self.pending_agent_turns
-                    .push(PendingAgentTurn::for_run(run_id, &mut active, turn));
+                self.delivery_queue
+                    .enqueue(PendingAgentTurn::for_run(run_id, &mut active, turn));
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)
             })();
             let persisted = self.finish_run_mutation(run_id.to_string(), active);

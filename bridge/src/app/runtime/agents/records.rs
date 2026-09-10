@@ -715,11 +715,7 @@ impl AppState {
     /// perfectly healthy. Everywhere else, a working entity without one is an
     /// anomaly.
     pub(in crate::app) fn agent_turn_is_undelivered(&self, owner: &str) -> bool {
-        self.turns_in_flight.holds_owner(owner)
-            || self
-                .pending_agent_turns
-                .iter()
-                .any(|turn| turn.owner == owner)
+        self.delivery_queue.holds_owner(owner)
     }
 
     /// Is a turn that will TELL this agent to read its thread already coming?
@@ -750,10 +746,6 @@ impl AppState {
         agent_id: &str,
     ) -> bool {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
-        self.turns_in_flight.holds_agent(&key)
-            || self
-                .pending_agent_turns
-                .iter()
-                .any(|queued| queued.says_something() && queued.tab_key() == key)
+        self.delivery_queue.holds_agent(&key)
     }
 }

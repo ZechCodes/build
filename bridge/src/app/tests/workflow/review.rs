@@ -786,8 +786,8 @@ fn run_request_changes_delivers_to_the_agent_instead_of_respawning() {
         "a verb queues a turn; only delivery — off the state lock — spawns"
     );
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a change request is a turn for the worktree's agent");
     assert_eq!(queued.owner, run_id);
     assert_eq!(
@@ -868,8 +868,8 @@ fn run_message_delivers_to_the_agent_instead_of_respawning() {
     );
 
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a message is a turn for the worktree's agent");
     assert_eq!(queued.owner, "run-message");
     assert_eq!(
@@ -917,7 +917,7 @@ fn dispatching_a_stage_queues_its_prompt_for_the_worktrees_one_agent() {
     let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
     let run_id = run_id_of(&run);
     let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let dispatched = state.handle(req(
         "run.stage_dispatch",
@@ -930,8 +930,8 @@ fn dispatching_a_stage_queues_its_prompt_for_the_worktrees_one_agent() {
     );
 
     let queued = state
-        .pending_agent_turns
-        .first()
+        .delivery_queue
+        .queued_first()
         .expect("a stage dispatch is a turn for the worktree's agent");
     assert_eq!(queued.owner, run_id);
     assert_eq!(queued.root, root);
@@ -1015,7 +1015,7 @@ fn fixing_a_failed_stage_queues_its_fix_prompt_for_the_worktrees_one_agent() {
         StageProgressState::Validated { passed: false },
         "the fix verb only applies to a stage whose validation failed"
     );
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let fixed = state.handle(req(
         "run.stage_fix",
@@ -1037,8 +1037,8 @@ fn fixing_a_failed_stage_queues_its_fix_prompt_for_the_worktrees_one_agent() {
     );
 
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a stage fix is a turn for the worktree's agent");
     assert_eq!(queued.owner, run_id);
     assert_eq!(
@@ -1097,7 +1097,7 @@ fn sending_stage_notes_mid_run_queues_a_revision_turn_for_the_worktrees_one_agen
     // The scripted agent answers the revision itself, which would swallow
     // the very dispatch under test.
     state.qa_agent = false;
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let sent = state.handle(req(
         "run.stage_send_notes",
@@ -1110,8 +1110,8 @@ fn sending_stage_notes_mid_run_queues_a_revision_turn_for_the_worktrees_one_agen
     );
 
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("stage notes are a turn for the run worktree's agent");
     assert_eq!(queued.owner, run_id);
     assert_eq!(
@@ -1167,7 +1167,7 @@ fn auto_advance_queues_the_next_stages_turn_for_the_worktrees_one_agent() {
         StageProgressState::Validated { passed: true },
         "the first stage passed, so the next one is dispatchable"
     );
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     let armed = state.handle(req(
         "run.set_auto_advance",
@@ -1185,8 +1185,8 @@ fn auto_advance_queues_the_next_stages_turn_for_the_worktrees_one_agent() {
     );
 
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("run-all dispatches the next stage as a turn for the worktree's agent");
     assert_eq!(queued.owner, run_id);
     assert_eq!(
@@ -1546,7 +1546,7 @@ fn a_built_stage_queues_its_validation_turn_for_the_worktrees_agent() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (run_id, root) = run_awaiting_a_real_stage_build(&mut state, "hand off to validation");
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
 
     state.on_agent_done(
         &run_id,
@@ -1564,8 +1564,8 @@ fn a_built_stage_queues_its_validation_turn_for_the_worktrees_agent() {
         "the report moved the stage to its validation gate"
     );
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a built stage hands itself to validation as a turn");
     assert_eq!(queued.phase, "validate");
     assert_eq!(queued.owner, run_id);

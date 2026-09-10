@@ -370,7 +370,7 @@ impl AppState {
         turn: AgentTurn,
     ) {
         if let Some(pending) = PendingAgentTurn::for_plan(plan_id, active, turn) {
-            self.pending_agent_turns.push(pending);
+            self.delivery_queue.enqueue(pending);
         }
     }
 }

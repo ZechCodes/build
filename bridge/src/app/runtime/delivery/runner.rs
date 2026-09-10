@@ -95,7 +95,7 @@ impl DeliveryRunner {
                     Err(error) => {
                         eprintln!("claim delivery {operation_id}: {error}");
                         let mut app = timer.lock(state);
-                        app.pending_agent_turns.push(turn);
+                        app.delivery_queue.requeue(turn);
                         mark.settle(&mut app);
                         continue;
                     }
@@ -132,7 +132,7 @@ impl DeliveryRunner {
                 Ok(DeliveryOutcome::Delivered(None)) => s.record_agent_start_declined(&turn),
                 Ok(DeliveryOutcome::Delivered(Some(_))) => {}
                 Ok(DeliveryOutcome::Deferred) => {
-                    s.pending_agent_turns.push(turn);
+                    s.delivery_queue.requeue(turn);
                 }
                 // The turn stays durable on the thread — the agent picks it up
                 // with `read_unread_messages` the next time a tab opens — but

@@ -1,14 +1,8 @@
 use crate::app::{locate_conversations, plan_state_str, run_state_str, AppState, DigestScope};
-use crate::operation::OperationReceipt;
 use crate::orchestrator::{ActivePlan, ActiveRun};
 use crate::store::{now_rfc3339, PersistedPlan, PersistedRun, Store};
 use crate::thread::ThreadDetail;
 use serde_json::Value;
-
-pub(in crate::app) struct PendingOperationAcceptance {
-    pub(in crate::app) conversation_owner_id: String,
-    pub(in crate::app) receipt: OperationReceipt,
-}
 
 impl AppState {
     /// Write a plan's durable core to the store (atomic replace). A no-op
@@ -22,7 +16,7 @@ impl AppState {
         active: &ActivePlan,
     ) -> Result<(), String> {
         if self.store.is_none() {
-            self.remember_in_memory_acceptance(plan_id);
+            self.operation_ledger.remember_in_memory_acceptance(plan_id);
             return Ok(());
         }
         let now = now_rfc3339();
@@ -55,7 +49,7 @@ impl AppState {
             updated_at,
             state_changed_at: self.entity_state_changed_at.get(plan_id).cloned(),
         };
-        let acceptance = self.take_operation_acceptance(plan_id);
+        let acceptance = self.operation_ledger.consume_acceptance_for(plan_id);
         match acceptance.as_ref() {
             Some(acceptance) => self
                 .store
@@ -83,7 +77,7 @@ impl AppState {
         active: &ActiveRun,
     ) -> Result<(), String> {
         if self.store.is_none() {
-            self.remember_in_memory_acceptance(run_id);
+            self.operation_ledger.remember_in_memory_acceptance(run_id);
             return Ok(());
         }
         let now = now_rfc3339();
@@ -127,7 +121,7 @@ impl AppState {
         // One write path, whether or not the run belongs to an Issue: the
         // `issue_id` column is `record.plan_id`, so asking the store whether
         // the Issue exists first only bought a lock acquisition per save.
-        let acceptance = self.take_operation_acceptance(run_id);
+        let acceptance = self.operation_ledger.consume_acceptance_for(run_id);
         match acceptance.as_ref() {
             Some(acceptance) => self
                 .store
@@ -144,28 +138,6 @@ impl AppState {
         }
         .map_err(|e| format!("run store: {e}"))?;
         Ok(())
-    }
-
-    pub(in crate::app) fn take_operation_acceptance(
-        &mut self,
-        owner_id: &str,
-    ) -> Option<PendingOperationAcceptance> {
-        if self
-            .pending_operation_acceptance
-            .as_ref()
-            .is_some_and(|pending| pending.conversation_owner_id == owner_id)
-        {
-            self.pending_operation_acceptance.take()
-        } else {
-            None
-        }
-    }
-
-    pub(in crate::app) fn remember_in_memory_acceptance(&mut self, owner_id: &str) {
-        if let Some(acceptance) = self.take_operation_acceptance(owner_id) {
-            self.operations
-                .insert(acceptance.receipt.operation_id.clone(), acceptance.receipt);
-        }
     }
 
     /// The shared tail of every plan mutation: stamp times, persist the durable

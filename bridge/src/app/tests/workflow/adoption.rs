@@ -87,8 +87,8 @@ fn a_post_to_an_agentless_branch_creates_the_agent_that_hears_it() {
     assert_eq!(minted.ordinal, 1);
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.owner == run_id && turn.agent_id == minted.id),
         "and the turn is addressed to it"
     );
@@ -209,8 +209,8 @@ fn a_queued_turn_spends_the_agents_own_harness() {
     ));
     assert_eq!(addressed["ok"], true, "{addressed:?}");
     let queued = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.agent_id == codex_agent)
         .expect("the turn is addressed to the agent the comments named");
     assert_eq!(
@@ -226,7 +226,7 @@ fn a_queued_turn_spends_the_agents_own_harness() {
 
     // And with the first agent gone, the codex agent IS the primary — the
     // agent every verb that names none now reaches.
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     let removed = state.handle(req(
         "agent.remove",
         json!({ "entity_id": run_id, "agent_id": planted }),
@@ -241,8 +241,8 @@ fn a_queued_turn_spends_the_agents_own_harness() {
     ));
     assert_eq!(messaged["ok"], true, "{messaged:?}");
     let queued = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.agent_id == codex_agent)
         .expect("the turn is addressed to the agent that is left");
     assert_eq!(queued.model_choice.provider, AgentProvider::Codex);

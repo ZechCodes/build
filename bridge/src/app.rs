@@ -98,8 +98,8 @@ pub(in crate::app) use self::runtime::delivery::preflight::{
 pub(in crate::app) use self::runtime::delivery::runner::{DeliveryRunner, AGENT_DELIVERY_METHOD};
 pub(in crate::app) use self::runtime::delivery::types::{
     DeliveryOutcome, DeliveryPreflight, ImplementationTarget, PendingAgentTurn, PendingTurns,
-    TurnText, TurnsInFlight, AGENT_START_DECLINED_SESSION_OVER, NO_TERMINAL_LEFT,
-    SPAWN_NEVER_OPENED, TAB_CLOSED_UNDER_A_TURN,
+    TurnText, AGENT_START_DECLINED_SESSION_OVER, NO_TERMINAL_LEFT, SPAWN_NEVER_OPENED,
+    TAB_CLOSED_UNDER_A_TURN,
 };
 pub use self::runtime::lifecycle::{DiscardSettlement, ImplementationCaller, PlanSessionOpening};
 pub(in crate::app) use self::runtime::pumps::{
@@ -142,7 +142,6 @@ pub(in crate::app) use self::runtime::terminals::{
     require_shell_kind, shell_harness_spec, terminal_size, MAX_USER_TERMINALS,
 };
 pub(in crate::app) use self::streams::{sha256_hex, stream_start, StreamState};
-pub(in crate::app) use self::transactions::PendingOperationAcceptance;
 pub use self::worktrees::dispatch::{BranchDispatched, BranchJoined};
 #[cfg(test)]
 pub(in crate::app) use self::worktrees::finish::run_finish_git_steps;
@@ -206,7 +205,6 @@ use crate::lifecycle::WorktreeLifecycleJob;
 use crate::mcp::{BridgeAction, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
-use crate::operation::OperationReceipt;
 use crate::orchestrator::{ActivePlan, ActiveRun, Agent, ResumeIdProbe, SessionLocatorFactory};
 #[cfg(test)]
 use crate::orchestrator::{
@@ -370,7 +368,7 @@ pub struct AppState {
     /// in the same breath, so the `Ok` the verb returned meanwhile is a
     /// placeholder no client ever sees.
     ///
-    /// DELIBERATE, and the same split as [`AppState::pending_agent_turns`]:
+    /// DELIBERATE, and the same split as [`AppState::delivery_queue`]:
     /// under the lock a verb DECIDES (validates, claims the checkout,
     /// snapshots the paths), and the drain — [`dispatch_frame`], or
     /// [`AppState::dispatch`] itself where there is no `Arc` to release
@@ -406,10 +404,6 @@ pub struct AppState {
     /// registry over one id space: there is no second place a terminal can be,
     /// so no verb has to ask which kind of thing an id names before serving it.
     session_registry: SessionRegistry,
-    /// Roots with an agent spawn in flight. The state lock is dropped across
-    /// the spawn (it blocks for seconds), so the reservation — taken under the
-    /// same lock acquisition that observed the tab's absence — is what keeps a
-    /// second delivery from starting a second harness in one worktree.
     /// Turns queued by the verbs running under the state lock, drained by
     /// [`dispatch_frame`] once that lock is free. The synchronous test entry
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
@@ -422,24 +416,13 @@ pub struct AppState {
     /// for as long as the spawn takes. The split is the contract: under the
     /// lock a verb RECORDS what to say (a `PendingAgentTurn`), and
     /// [`DeliveryRunner`] SAYS it on a thread of its own, after the frame that
-    /// queued it has answered. Everything that has to look agentless-versus-in-flight
-    /// ([`AppState::turns_in_flight`], the idle sweep) exists to cover
-    /// the gap this split opens; none of it is optional.
-    pending_agent_turns: Vec<PendingAgentTurn>,
-    /// Receipts loaded from SQLite plus operations accepted in this process.
-    /// The database remains authoritative; this mirror keeps retry/status
-    /// checks under the app's existing single state lock.
-    operations: HashMap<String, OperationReceipt>,
-    /// The one post currently entering persistence. The canonical
-    /// conversation-owner save consumes it so message, receipt and delivery
-    /// intent use one SQLite commit.
-    pending_operation_acceptance: Option<PendingOperationAcceptance>,
-    /// The turns that have left [`AppState::pending_agent_turns`] and are being
-    /// delivered right now. Between a verb's transition and the tab its turn
-    /// spawns, a working entity legitimately has no agent tab yet — the queue
-    /// and this are what tell the daemon the difference between an agent on its
-    /// way and an agent that never arrived.
-    turns_in_flight: TurnsInFlight,
+    /// queued it has answered. The queue's in-flight counters let the idle
+    /// sweep distinguish an agent on its way from one that never arrived.
+    delivery_queue: self::runtime::delivery::queue::DeliveryQueue,
+    /// Operation receipts cached only for Store-free execution, plus the one
+    /// acceptance awaiting its canonical owner persistence. SQLite remains
+    /// authoritative whenever configured.
+    operation_ledger: self::conversations::operation_ledger::OperationLedger,
     /// Weak self-handle set once at [`AppState::shared`] time, so `&mut self`
     /// hooks can spawn pump tasks that need the `Arc`. Dispatch paths that run
     /// in tests without an Arc simply skip pump spawning (they assert on
@@ -588,10 +571,8 @@ impl AppState {
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
             session_registry: SessionRegistry::new(),
-            pending_agent_turns: Vec::new(),
-            operations: HashMap::new(),
-            pending_operation_acceptance: None,
-            turns_in_flight: TurnsInFlight::default(),
+            delivery_queue: Default::default(),
+            operation_ledger: Default::default(),
             self_handle: None,
             next_stream: 1,
             qa_agent,

@@ -213,7 +213,7 @@ async fn a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_f
         let mut app = state.lock().unwrap();
         let project_id = app.project_at(0).id.clone();
         let (capture_id, agent_id) = captured(&mut app, "finish the toast on the login branch");
-        app.pending_agent_turns.clear();
+        app.delivery_queue.clear_queued();
         let session_token = uuid::Uuid::new_v4().to_string();
         app.session_registry
             .test_install_token(agent_id.clone(), session_token.clone());
@@ -344,7 +344,7 @@ fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
     // to its gate; from here each plan must stay where its verb puts it.
     state.qa_agent = false;
 
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     let sent = state.handle(req(
         "plan.send_notes",
         json!({ "plan_id": notes_plan, "comments": "make stage two smaller" }),
@@ -355,8 +355,8 @@ fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
         "a verb queues a turn; only delivery — off the state lock — spawns"
     );
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("plan notes are a turn for the issue's agent");
     assert_eq!(queued.owner, notes_plan);
     assert_eq!(
@@ -385,15 +385,15 @@ fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
     assert!(durable, "the notes stay durable on the plan's thread");
 
     // A freeform message reaches the same agent while the plan drafts.
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     let messaged = state.handle(req(
         "plan.message",
         json!({ "plan_id": notes_plan, "message": "prefer smaller stages" }),
     ));
     assert_eq!(messaged["ok"], true, "{messaged:?}");
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("a plan message is a turn for the issue's agent");
     assert_eq!(queued.owner, notes_plan);
     assert_eq!(queued.root, notes_root);
@@ -415,15 +415,15 @@ fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
     assert!(durable, "the message stays durable on the plan's thread");
 
     // A stage's open comments are the payload of a per-stage revision.
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     let stage_notes = state.handle(req(
         "plan.stage_send_notes",
         json!({ "plan_id": stage_plan, "stage_id": "first-half" }),
     ));
     assert_eq!(stage_notes["ok"], true, "{stage_notes:?}");
     let queued = state
-        .pending_agent_turns
-        .last()
+        .delivery_queue
+        .queued_last()
         .expect("stage notes are a turn for the issue's agent");
     assert_eq!(queued.owner, stage_plan);
     assert_eq!(queued.root, stage_root);

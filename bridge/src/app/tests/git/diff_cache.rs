@@ -550,7 +550,7 @@ async fn delete_the_checkout(state: &Arc<Mutex<AppState>>, checkout: &std::path:
         loop {
             {
                 let app = state.lock().unwrap();
-                if app.pending_agent_turns.is_empty() && app.turns_in_flight.is_empty() {
+                if app.delivery_queue.queued_is_empty() && app.delivery_queue.is_idle() {
                     break;
                 }
             }

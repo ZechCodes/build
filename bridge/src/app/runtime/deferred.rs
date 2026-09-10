@@ -451,7 +451,7 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> (Result<Value, String>, Option<DeferredWork>) {
-        let queued_before = self.pending_agent_turns.len();
+        let queued_before = self.delivery_queue.checkpoint();
         let outcome = self.route(method, params);
         if outcome.is_err() {
             self.drop_turns_queued_since(queued_before);
@@ -488,7 +488,7 @@ impl AppState {
             DeferredOutcome::Git { git, .. } => git.invalidates,
             DeferredOutcome::Read(_) => false,
         };
-        let queued_before = self.pending_agent_turns.len();
+        let queued_before = self.delivery_queue.checkpoint();
         let applied = match done {
             DeferredOutcome::Lifecycle(outcome) => self.apply_lifecycle(*outcome),
             DeferredOutcome::Finish { epilogue, finished } => {
@@ -534,11 +534,11 @@ impl AppState {
     ///
     /// [`dispatch_deferring`]: AppState::dispatch_deferring
     /// [`apply_deferred`]: AppState::apply_deferred
-    pub(in crate::app) fn drop_turns_queued_since(&mut self, queued_before: usize) {
-        let queued_by_others = queued_before.min(self.pending_agent_turns.len());
-        let mut queued_by_this_request = self.pending_agent_turns.split_off(queued_by_others);
-        queued_by_this_request.retain(|turn| turn.survives_refusal);
-        self.pending_agent_turns.append(&mut queued_by_this_request);
+    pub(in crate::app) fn drop_turns_queued_since(
+        &mut self,
+        queued_before: crate::app::runtime::delivery::queue::DeliveryCheckpoint,
+    ) {
+        self.delivery_queue.refuse_since(queued_before);
     }
 
     /// Hand a resolved diff to the drain, which renders it with the mutex
@@ -623,15 +623,6 @@ impl AppState {
     pub(in crate::app) fn release_row(&mut self, entity_id: &str) {
         self.pending_rows.retain(|row| row.entity_id != entity_id);
         self.note_board_changed();
-    }
-
-    /// Whether a lifecycle verb is holding this entity's checkout open right
-    /// now. Nothing may touch that directory while its git runs — see
-    /// [`AppState::take_pending_turns`], which is what would.
-    pub(in crate::app) fn checkout_is_in_flight(&self, entity_id: &str) -> bool {
-        self.pending_rows
-            .iter()
-            .any(|row| row.entity_id == entity_id)
     }
 
     /// The lifecycle verbs in flight, as rows the board shows beside the

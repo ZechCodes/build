@@ -60,8 +60,8 @@ impl AppState {
         self.isolation = isolation;
         self.triage_enabled = triage_enabled;
         if !triage_enabled {
-            self.pending_agent_turns
-                .retain(|turn| turn.phase != "triage");
+            self.delivery_queue
+                .retain_queued(|turn| turn.phase != "triage");
         }
         Ok(self.settings_get())
     }

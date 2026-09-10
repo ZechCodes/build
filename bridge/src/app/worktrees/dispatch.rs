@@ -269,7 +269,7 @@ impl AppState {
         // cold one gets that nudge wrapped in the packet it has no other way to
         // reconstruct. The spawn itself happens in `DeliveryRunner`, with the
         // state lock free and this frame already answered.
-        self.pending_agent_turns.push(PendingAgentTurn {
+        self.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
             root,
             owner: run_id.to_string(),

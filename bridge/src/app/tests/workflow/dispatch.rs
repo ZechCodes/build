@@ -68,8 +68,8 @@ fn branch_dispatch_cuts_a_branch_and_puts_an_agent_to_work_on_it() {
     // The harness is told, through the same queue every other verb speaks
     // to an agent with: cold spawns it with the instruction in its catch-up
     // packet, warm is the read-your-messages nudge `thread.post` writes.
-    assert_eq!(state.pending_agent_turns.len(), 1, "one turn was queued");
-    let queued = &state.pending_agent_turns[0];
+    assert_eq!(state.delivery_queue.queued_len(), 1, "one turn was queued");
+    let queued = &state.delivery_queue.queued_nth(0).unwrap();
     assert_eq!(queued.owner, run_id);
     assert_eq!(queued.agent_id, agent_id);
     assert_eq!(queued.root, AppState::canonical_root(&active.worktree.path));
@@ -200,8 +200,8 @@ fn branch_dispatch_onto_an_existing_branch_reuses_it_and_adds_an_agent() {
         dispatched_instruction(&state, &run_id, &agent_id),
         "Also cover the empty case"
     );
-    assert_eq!(state.pending_agent_turns.len(), 1);
-    let queued = &state.pending_agent_turns[0];
+    assert_eq!(state.delivery_queue.queued_len(), 1);
+    let queued = &state.delivery_queue.queued_nth(0).unwrap();
     assert_eq!(queued.agent_id, agent_id);
     assert_eq!(
         queued.model_choice.provider,
@@ -241,7 +241,7 @@ fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
             "{step:?} left its reservation on the board"
         );
         assert!(
-            state.pending_agent_turns.is_empty(),
+            state.delivery_queue.queued_is_empty(),
             "{step:?} left a turn queued"
         );
         assert!(
@@ -302,7 +302,7 @@ fn a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board() {
         "the failed apply left its row on the board"
     );
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "the failed apply queued a turn for an agent that does not exist"
     );
     let checkout = crate::worktree::canonical_root(
@@ -343,8 +343,8 @@ fn a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board() {
 fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
     fn queued_owners(state: &AppState) -> Vec<String> {
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .map(|turn| turn.owner.clone())
             .collect()
     }
@@ -352,7 +352,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "finish the toast");
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     state.dispatch_fault = Some(BranchDispatchStep::Settle);
 
     let opened = state
@@ -368,7 +368,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
         .unwrap_err();
     assert!(opened.contains("Settle"), "{opened}");
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "the router's dispatch left a turn queued for a run the store never got: {:?}",
         queued_owners(&state)
     );
@@ -381,7 +381,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
     // all and so answers without a deferral.
     state.dispatch_fault = None;
     adopted_run(&mut state, &repo, dir.path(), "feature-running");
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     state.dispatch_fault = Some(BranchDispatchStep::Settle);
 
     let joined = state.handle(req(
@@ -395,7 +395,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
 
     assert_eq!(joined["ok"], false, "{joined:?}");
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "joining a run left a turn queued for a dispatch that failed: {:?}",
         queued_owners(&state)
     );
@@ -405,7 +405,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
     state.dispatch_fault = None;
     adopted_run(&mut state, &repo, dir.path(), "feature-elsewhere");
     let (second_capture, _) = captured(&mut state, "and this too");
-    state.pending_agent_turns.clear();
+    state.delivery_queue.clear_queued();
     state.dispatch_fault = Some(BranchDispatchStep::Settle);
 
     let routed = state
@@ -421,7 +421,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
         .unwrap_err();
     assert!(routed.contains("Settle"), "{routed}");
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "the router's join left a turn queued for a dispatch that failed: {:?}",
         queued_owners(&state)
     );
@@ -494,7 +494,7 @@ fn branch_dispatch_cleanup_never_destroys_a_checkout_it_only_found() {
     assert!(by_hand.is_dir(), "the checkout was destroyed");
     assert!(by_hand.join("mine.txt").is_file(), "its work was destroyed");
     assert!(state.runs.is_empty(), "the adoption was undone");
-    assert!(state.pending_agent_turns.is_empty());
+    assert!(state.delivery_queue.queued_is_empty());
 
     // A branch Build already runs: cleanup leaves the run and its checkout
     // standing, with the agent roster it had before the call.
@@ -516,7 +516,7 @@ fn branch_dispatch_cleanup_never_destroys_a_checkout_it_only_found() {
     assert!(worktree.is_dir(), "the running checkout was destroyed");
     assert!(state.runs.contains_key(&run_id), "the run was released");
     assert_eq!(state.runs[&run_id].agents.len(), agents_before);
-    assert!(state.pending_agent_turns.is_empty());
+    assert!(state.delivery_queue.queued_is_empty());
 }
 
 /// A branch the repository's own checkout is on is one git refuses to

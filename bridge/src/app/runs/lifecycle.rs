@@ -606,10 +606,9 @@ impl AppState {
 
         self.projects
             .bind_entity(run_id.clone(), project_id.clone());
-        self.pending_agent_turns
-            .push(PendingAgentTurn::for_run_agent(
-                &run_id, &agent_id, &active, turn,
-            ));
+        self.delivery_queue.enqueue(PendingAgentTurn::for_run_agent(
+            &run_id, &agent_id, &active, turn,
+        ));
         if self.qa_agent {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
@@ -677,8 +676,8 @@ impl AppState {
                 .orch_for(&project_id)?
                 .message_run(&mut active, &plan_docs, NEW_THREAD_MESSAGES_PROMPT)
                 .map_err(err)?;
-            self.pending_agent_turns
-                .push(PendingAgentTurn::for_run(&run_id, &mut active, turn));
+            self.delivery_queue
+                .enqueue(PendingAgentTurn::for_run(&run_id, &mut active, turn));
             if self.qa_agent && active.run.state == RunState::Building {
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
             }

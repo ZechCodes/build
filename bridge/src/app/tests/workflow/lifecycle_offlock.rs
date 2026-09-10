@@ -1062,7 +1062,7 @@ fn a_turn_queued_for_a_restoring_checkout_never_sends_its_run_to_recovery() {
     let run_id = run_id_of(&run);
     let worktree = app.runs[&run_id].worktree.path.clone();
     assert!(
-        !app.pending_agent_turns.is_empty(),
+        !app.delivery_queue.queued_is_empty(),
         "the implementation queued its agent's first turn"
     );
     assert!(Command::new("git")

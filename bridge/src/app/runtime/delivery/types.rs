@@ -4,7 +4,6 @@ use crate::operation::OperationReceipt;
 use crate::orchestrator::{ActivePlan, ActiveRun, AgentTurn};
 use crate::store::now_rfc3339;
 use crate::timing::FrameClock;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// An [`AgentTurn`] addressed to a worktree, waiting for the state lock to be
@@ -301,9 +300,6 @@ pub(in crate::app) enum DeliveryPreflight {
 pub(in crate::app) struct PendingTurns {
     pub(in crate::app) turns: std::collections::VecDeque<(PendingAgentTurn, TurnMark)>,
     pub(in crate::app) state: SettlingHandle,
-    /// The clock the delivery times itself by, taken under the acquisition
-    /// that took the turns so the runner never takes the app mutex just to
-    /// find it.
     pub(in crate::app) clock: Arc<FrameClock>,
 }
 
@@ -311,8 +307,6 @@ impl PendingTurns {
     pub(in crate::app) fn is_empty(&self) -> bool {
         self.turns.is_empty()
     }
-
-    /// The next turn to deliver, with the mark to settle once it has landed.
     pub(in crate::app) fn next_turn(&mut self) -> Option<(PendingAgentTurn, TurnMark)> {
         self.turns.pop_front()
     }
@@ -324,120 +318,40 @@ impl Drop for PendingTurns {
         if undelivered.is_empty() {
             return;
         }
-        self.state.settle(|s| {
+        self.state.settle(|app| {
             for (_, mark) in undelivered {
-                mark.settle(s);
+                mark.settle(app);
             }
         });
     }
 }
 
-/// The turns that have left [`AppState::pending_agent_turns`] and have not yet
-/// reached an agent.
-///
-/// Counted under two keys, because two questions are asked of the same fact and
-/// neither answers the other. The idle sweep asks about an OWNER: between a
-/// verb's transition and the tab its turn spawns, a working entity legitimately
-/// has no agent tab. The verbs that would queue a second turn ask about an
-/// AGENT TAB: a harness already on its way with words for it is the one that
-/// reads the next message, and a turn queued behind it is a duplicate nudge.
-/// Every turn counts under its owner; only a turn that says something counts
-/// under its agent, because only that turn tells the agent to read.
-///
-/// Counted rather than flagged, because one batch can carry several turns for
-/// one owner and several for one agent.
-#[derive(Default)]
-pub(in crate::app) struct TurnsInFlight {
-    pub(in crate::app) owners: HashMap<String, usize>,
-    pub(in crate::app) agents: HashMap<TabKey, usize>,
-}
-
-impl TurnsInFlight {
-    pub(in crate::app) fn take(
-        &mut self,
-        turn: &PendingAgentTurn,
-        state: SettlingHandle,
-    ) -> TurnMark {
-        let mark = TurnMark {
-            owner: turn.owner.clone(),
-            told_agent: turn.says_something().then(|| turn.tab_key()),
-            state,
-            settled: false,
-        };
-        *self.owners.entry(mark.owner.clone()).or_default() += 1;
-        if let Some(agent) = &mark.told_agent {
-            *self.agents.entry(agent.clone()).or_default() += 1;
-        }
-        mark
-    }
-
-    pub(in crate::app) fn give_back(&mut self, mark: &TurnMark) {
-        Self::drop_one(&mut self.owners, &mark.owner);
-        if let Some(agent) = &mark.told_agent {
-            Self::drop_one(&mut self.agents, agent);
-        }
-    }
-
-    pub(in crate::app) fn holds_owner(&self, owner: &str) -> bool {
-        self.owners.contains_key(owner)
-    }
-
-    pub(in crate::app) fn holds_agent(&self, key: &TabKey) -> bool {
-        self.agents.contains_key(key)
-    }
-
-    /// Nothing is being delivered, for a test waiting out the deliveries a verb
-    /// it called triggered.
-    #[cfg(test)]
-    pub(in crate::app) fn is_empty(&self) -> bool {
-        self.owners.is_empty() && self.agents.is_empty()
-    }
-
-    pub(in crate::app) fn drop_one<K: std::hash::Hash + Eq>(
-        counts: &mut HashMap<K, usize>,
-        key: &K,
-    ) {
-        let Some(count) = counts.get_mut(key) else {
-            return;
-        };
-        *count -= 1;
-        if *count == 0 {
-            counts.remove(key);
-        }
-    }
-}
-
-/// One turn's pair of marks, owed back by whoever took them.
-///
-/// Given back by [`TurnMark::settle`] under a lock the caller holds once the
-/// turn has landed, and by [`Drop`] on any path that never got there — a
-/// delivery that panicked after the turn left its batch and before it was
-/// settled. The same guard [`SpawnClaim`] is, one phase earlier: a mark that
-/// outlived its delivery would spare its owner from the idle sweep forever.
 pub(in crate::app) struct TurnMark {
-    pub(in crate::app) owner: String,
-    /// The agent this turn will tell to read its thread — `None` for a turn
-    /// that says nothing.
-    pub(in crate::app) told_agent: Option<TabKey>,
-    pub(in crate::app) state: SettlingHandle,
-    pub(in crate::app) settled: bool,
+    ticket: Option<super::queue::DeliveryTicket>,
+    state: SettlingHandle,
 }
 
 impl TurnMark {
-    /// Give this turn's marks back, under a lock the caller holds. Consumes the
-    /// mark, so one turn settles once.
-    pub(in crate::app) fn settle(mut self, s: &mut AppState) {
-        s.turns_in_flight.give_back(&self);
-        self.settled = true;
+    fn new(ticket: super::queue::DeliveryTicket, state: SettlingHandle) -> Self {
+        Self {
+            ticket: Some(ticket),
+            state,
+        }
+    }
+    pub(in crate::app) fn settle(mut self, app: &mut AppState) {
+        if let Some(ticket) = self.ticket.take() {
+            app.delivery_queue.settle(ticket);
+        }
     }
 }
 
 impl Drop for TurnMark {
     fn drop(&mut self) {
-        if self.settled {
+        let Some(ticket) = self.ticket.take() else {
             return;
-        }
-        self.state.settle(|s| s.turns_in_flight.give_back(self));
+        };
+        self.state
+            .settle(move |app| app.delivery_queue.settle(ticket));
     }
 }
 
@@ -476,32 +390,13 @@ pub(in crate::app) const NO_TERMINAL_LEFT: &str = "no_terminal";
 pub(in crate::app) const SPAWN_NEVER_OPENED: &str = "spawn_failed";
 
 impl AppState {
-    /// Take everything the verbs that just ran queued, and mark it in flight in
-    /// the same breath.
-    ///
-    /// One acquisition for both halves, because between them a turn on its way
-    /// would be in neither the queue nor the marks: the idle sweep reading that
-    /// demotes a run whose agent is coming, and a second message reading it
-    /// queues a duplicate turn behind the one already on its way.
-    ///
-    /// A turn for an entity whose checkout is being cut, put back or removed
-    /// right now stays in the queue — the same acquisition reads the rows the
-    /// lifecycle verbs reserved. Spawning that entity's agent scaffolds its
-    /// checkout directory, and `git worktree add` refuses a path that has
-    /// reappeared under it, which a restore reads as a lost branch and answers
-    /// by handing a healthy run to the recovery agent.
     pub(in crate::app) fn take_pending_turns(&mut self) -> PendingTurns {
-        let (held, mut queued): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_agent_turns)
-            .into_iter()
-            .partition(|turn| self.checkout_is_in_flight(&turn.owner));
-        // Back in the queue, in the order they were made: the drain that runs
-        // after the job's epilogue takes them, and every frame drains.
-        self.pending_agent_turns = held;
-        for turn in &mut queued {
+        let pending_rows = &self.pending_rows;
+        let mut ready = self
+            .delivery_queue
+            .take_ready(|turn| pending_rows.iter().any(|row| row.entity_id == turn.owner));
+        for turn in &mut ready {
             self.forget_agent_start_error(&turn.owner, &turn.agent_id);
-            // The one door every cold prompt passes: the conversation is read and
-            // closed onto the prompt HERE, so the packet carries what the store
-            // holds under the tail and what was said while the turn waited.
             if !turn.wants_catch_up {
                 continue;
             }
@@ -510,13 +405,12 @@ impl AppState {
             }
         }
         let state = self.settling_handle();
-        let turns = queued
-            .into_iter()
-            .map(|turn| {
-                let mark = self.turns_in_flight.take(&turn, state.clone());
-                (turn, mark)
-            })
-            .collect();
+        let mut turns = std::collections::VecDeque::with_capacity(ready.len());
+        for turn in ready {
+            let ticket = self.delivery_queue.start(&turn);
+            let mark = TurnMark::new(ticket, state.clone());
+            turns.push_back((turn, mark));
+        }
         PendingTurns {
             turns,
             state,

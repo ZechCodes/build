@@ -189,7 +189,7 @@ pub(in crate::app) fn agent_start(
     let agent = {
         let mut s = timer.lock(state);
         let agent = s.addressed_agent(params)?;
-        s.pending_agent_turns.push(PendingAgentTurn {
+        s.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
             root: agent.root.clone(),
             owner: agent.entity_id.clone(),
@@ -1036,8 +1036,8 @@ impl AppState {
         self.retire_tab(&key, "closed");
         self.session_registry.remove_waiting_screen(&key, "closed");
         self.session_registry.revoke_mcp_token(agent_id);
-        self.pending_agent_turns
-            .retain(|turn| turn.agent_id != agent_id);
+        self.delivery_queue
+            .retain_queued(|turn| turn.agent_id != agent_id);
     }
 
     /// End an issue's agent session, because the gate that just closed ended

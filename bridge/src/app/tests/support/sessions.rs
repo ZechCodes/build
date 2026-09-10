@@ -300,7 +300,7 @@ pub(in crate::app::tests) async fn wait_for<T>(
 pub(in crate::app::tests) async fn wait_for_deliveries(state: &Arc<Mutex<AppState>>) {
     wait_for(Duration::from_secs(20), || {
         let s = state.lock().unwrap();
-        (s.pending_agent_turns.is_empty() && s.turns_in_flight.is_empty()).then_some(())
+        (s.delivery_queue.queued_is_empty() && s.delivery_queue.is_idle()).then_some(())
     })
     .await
     .expect("every queued turn reached its agent");

@@ -414,7 +414,7 @@ impl AppState {
                 triage_due = self.triage_enabled
                     && crate::orchestrator::triage_is_due(&report_for_thread, next.is_some());
                 if let Some(turn) = next {
-                    self.pending_agent_turns.push(PendingAgentTurn::for_run(
+                    self.delivery_queue.enqueue(PendingAgentTurn::for_run(
                         run_id,
                         &mut active,
                         turn,
@@ -573,7 +573,7 @@ impl AppState {
                     })
                 });
                 if let Some(turn) = turn {
-                    self.pending_agent_turns.push(PendingAgentTurn::for_run(
+                    self.delivery_queue.enqueue(PendingAgentTurn::for_run(
                         run_id,
                         &mut active,
                         turn,

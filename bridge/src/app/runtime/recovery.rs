@@ -394,7 +394,7 @@ impl AppState {
         for receipt in operations {
             if receipt.status == OperationStatus::Queued {
                 if let Some(turn) = PendingAgentTurn::for_delivery_operation(&receipt) {
-                    self.pending_agent_turns.push(turn);
+                    self.delivery_queue.enqueue(turn);
                 }
             }
         }
@@ -694,7 +694,7 @@ impl AppState {
                         &stages,
                     );
                     match PendingAgentTurn::for_recovery(&run_id, &active, &repo_path, prompt) {
-                        Some(turn) => self.pending_agent_turns.push(turn),
+                        Some(turn) => self.delivery_queue.enqueue(turn),
                         None => eprintln!("recover {run_id}: no agent to hand the recovery to"),
                     }
                     state_changed = true;
@@ -966,7 +966,7 @@ impl AppState {
             .map(|project| project.repo_path.clone())
             .ok_or("unknown project_id")?;
         match PendingAgentTurn::for_recovery(run_id, active, &project_root, prompt) {
-            Some(turn) => self.pending_agent_turns.push(turn),
+            Some(turn) => self.delivery_queue.enqueue(turn),
             None => eprintln!("recover {run_id}: no agent to hand the recovery to"),
         }
         Ok(())

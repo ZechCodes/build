@@ -27,7 +27,7 @@ fn issue_create_without_dispatch_files_an_inert_issue() {
         "an inert issue has no session and so no workspace"
     );
     assert!(
-        state.pending_agent_turns.is_empty(),
+        state.delivery_queue.queued_is_empty(),
         "no session was dispatched"
     );
     // The goal is the conversation's first message, and no agent has read it.
@@ -98,11 +98,11 @@ fn an_issue_agent_runs_on_the_primary_checkout_and_cuts_no_worktree() {
     // The turn — and therefore the PTY it spawns — is addressed to the
     // primary checkout.
     assert_eq!(
-        state.pending_agent_turns.len(),
+        state.delivery_queue.queued_len(),
         1,
         "one turn was dispatched"
     );
-    assert_eq!(state.pending_agent_turns[0].root, primary);
+    assert_eq!(state.delivery_queue.queued_nth(0).unwrap().root, primary);
     assert_eq!(
         state.entity_agent_root(&issue_id).unwrap(),
         primary,
@@ -166,11 +166,11 @@ fn the_first_message_to_an_inert_issue_starts_its_planning_session() {
         .clone();
     assert!(docs_dir.is_dir(), "{docs_dir:?}");
     assert_eq!(
-        state.pending_agent_turns.len(),
+        state.delivery_queue.queued_len(),
         1,
         "exactly one turn was dispatched"
     );
-    let queued = &state.pending_agent_turns[0];
+    let queued = &state.delivery_queue.queued_nth(0).unwrap();
     assert_eq!(queued.owner, issue_id);
     let delivered =
         state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.said().cold);
@@ -197,7 +197,7 @@ fn the_first_message_to_an_inert_issue_starts_its_planning_session() {
         Some(docs_dir),
         "the same planning workspace"
     );
-    assert_eq!(state.pending_agent_turns.len(), 1, "no second dispatch");
+    assert_eq!(state.delivery_queue.queued_len(), 1, "no second dispatch");
 }
 
 #[test]
@@ -741,8 +741,8 @@ fn issue_implements_into_an_existing_worktree_with_a_fresh_agent() {
     assert_ne!(implementing, primary_agent);
     assert!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .any(|turn| turn.owner == run_id && turn.agent_id == implementing),
         "the build turn is addressed to the fresh agent"
     );
@@ -1037,8 +1037,8 @@ fn missing_original_branch_starts_nonce_bound_recovery_instead_of_archiving() {
     assert!(recovery.id.starts_with("recovery-"));
     assert_eq!(recovery.requested_stage_id, "second-half");
     let recovery_turn = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.owner == run_id && turn.phase == "recover")
         .expect("recovery turn is queued");
     assert!(
@@ -1239,8 +1239,8 @@ fn restart_with_pending_verified_recovery_boots_and_requeues_the_same_primed_att
     );
     assert_eq!(recovery.state, crate::run::RecoveryState::Started);
     let turn = state
-        .pending_agent_turns
-        .iter()
+        .delivery_queue
+        .queued()
         .find(|turn| turn.owner == run_id && turn.phase == "recover")
         .expect("restart requeues the recovery agent");
     assert!(

@@ -432,8 +432,8 @@ fn a_vague_idea_becomes_a_planned_issue_on_the_best_guess_project() {
     );
     assert_eq!(
         state
-            .pending_agent_turns
-            .iter()
+            .delivery_queue
+            .queued()
             .filter(|turn| turn.owner == issue_id)
             .count(),
         1,

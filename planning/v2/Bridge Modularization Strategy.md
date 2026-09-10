@@ -1,6 +1,6 @@
 # Bridge Modularization Strategy
 
-**Status:** Proposed
+**Status:** Stages 1–2 implemented; production extraction remains planned
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
 ## Why this work is needed
@@ -228,11 +228,65 @@ Validation on 2026-09-09:
 
 ### PR 2: Extract the app test tree
 
-Move the `#[cfg(test)]` body beginning at `bridge/src/app.rs:23774` into
-`app/tests/`, grouped by the production ownership above. Keep common builders
-in `tests/mod.rs`, and move a fixture only when two or more groups use it.
-Do not change production code in this PR. Keep merge regressions as their own
-test module rather than textually hiding them in the facade.
+The `#[cfg(test)]` body formerly beginning at `bridge/src/app.rs:23774` now
+lives in `app/tests/`. The facade is 23,775 lines, down from 61,274; its
+23,773-line production prefix is byte-for-byte unchanged. The seven former
+`app_merge_regressions.rs` tests are an ordinary child module rather than an
+`include!` expansion.
+
+Capability directories cover configuration, conversations, workflow, runtime,
+git, board, protocol, and routing. Smaller root modules cover filesystem,
+shell, harness models, push, RTC, and merge regressions. Each capability has
+separate scenario files to avoid replacing the original monolith with another
+oversized test file. The tree contains 59 Rust files; the largest scenario file
+is 1,583 lines.
+
+`tests/mod.rs` keeps the common imports, request/screen helpers, and untimed
+delivery wrappers. `tests/support/` owns shared session fixtures and workflow
+builders, and provides a common import surface for fixtures owned by a specific
+capability. Cross-module fixture visibility is restricted to `crate::app::tests`;
+production visibility remains unchanged. Tests that intentionally call the real
+timed pump functions now name `crate::app::spawn_*`, preserving the distinction
+from the untimed wrappers after relocation.
+
+Preservation checks compare all 746 test cases and 222 helper items with the
+pre-extraction source, including decoded literal values inside macros. Only
+test-module visibility and the necessary production-pump paths are normalized.
+The remaining syntax differences were reviewed as rustfmt-only changes
+(trailing commas and a redundant closure block). Compiled test discovery also
+checks the complete app test-name inventory; the test module paths change with
+the capability layout, while test function names remain unchanged.
+
+Validation on 2026-09-09:
+
+- `cargo fmt --all -- --check` and
+  `cargo clippy --all-targets -- -D warnings` pass.
+- Compiled discovery retains all 746 app tests and 2,065 total library test
+  cases. Independent source review preserves all 222 helper items, test
+  attributes, assertions, and fixture values; it finds no extraction blocker.
+- `cargo test --all --no-fail-fast` exercises every target and reports 2,131
+  passed, 4 failed, and 7 ignored. The library accounts for 2,058 passed,
+  1 failed, and 6 ignored; the other targets account for 73 passed, 3 failed,
+  and 1 ignored. Doctests pass with no cases.
+- The unchanged push test `an_entity_change_names_the_entity_that_moved`
+  observes two notification pairs instead of one during the parallel suite;
+  an isolated retry passes. Its setup uses a fixed 300 ms settling wait while
+  the captured background delivery takes 356.9 ms, consistent with setup
+  notifications spilling into the assertion window. The test and its helper
+  chain are unchanged apart from test-only visibility.
+- `concurrency_load` again fails its pre-existing output-floor assertion at
+  `tests/concurrency_load.rs:152`, with 75,226 bytes. Stage 1 reproduced this
+  assertion on the original source; no runtime code or threshold changed here.
+- Two unchanged Pi extension tests exceed their four-second wall-clock
+  assertions in the full run. Their integration target is independent of
+  `app/tests/`; rerunning the complete target with `--test-threads=1` passes
+  all 17 tests, including both previously timed-out cases.
+- Semgrep reports no findings with 51 applicable rules on `app.rs` and all
+  59 extracted Rust test files. The test-tree scan explicitly includes files
+  normally excluded by the repository's test-directory ignore rule. Gitleaks
+  reports no secrets in the staged diff.
+- Live Python interop remains unexercised because
+  `BUILD_SECURE_TRANSPORT_PY` is unset; configured ignored tests remain ignored.
 
 ### PR 3: Remove leaf-to-app utility dependencies
 

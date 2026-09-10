@@ -40,6 +40,7 @@ let peekCloseTimer = null;
    it, which would peek the rail right back open; a hover that soon after a
    collapse is that artifact, not a request. */
 const PEEK_AFTER_COLLAPSE_MS = 300;
+const HOVER_PEEK_QUERY = "(hover: hover) and (pointer: fine)";
 let collapsedAt = 0;
 
 function peekWanted() {
@@ -55,6 +56,31 @@ function setInboxPeek(on) {
 function schedulePeekClose() {
   clearTimeout(peekCloseTimer);
   peekCloseTimer = setTimeout(() => setInboxPeek(false), PEEK_CLOSE_DELAY_MS);
+}
+
+/** Hover peek belongs to a mouse or trackpad. Touch browsers synthesize mouse
+ *  enter/leave events around a tap; letting those events move the rail over the
+ *  touched control can remove its click target before activation arrives. */
+function wireHoverPeek(open, rail) {
+  const capability = window.matchMedia?.(HOVER_PEEK_QUERY);
+  const hoverCapable = () => capability?.matches === true;
+  const capabilityChanged = () => {
+    if (!hoverCapable()) setInboxPeek(false);
+  };
+
+  open.onmouseenter = () => {
+    if (hoverCapable() && peekWanted()) setInboxPeek(true);
+  };
+  open.onmouseleave = () => {
+    if (hoverCapable()) schedulePeekClose();
+  };
+  rail.onmouseenter = () => {
+    if (hoverCapable() && document.body.classList.contains("inbox-peek")) setInboxPeek(true);
+  };
+  rail.onmouseleave = () => {
+    if (hoverCapable() && document.body.classList.contains("inbox-peek")) schedulePeekClose();
+  };
+  capability?.addEventListener?.("change", capabilityChanged);
 }
 
 /** Navigating from the rail on a narrow viewport puts the rail away, so the
@@ -106,17 +132,8 @@ export function initInboxRail() {
   const open = $("#inbox-open");
   subscribeInboxAttentionCount(paintAttentionCount);
   open.onclick = () => setInboxCollapsed(false);
-  open.onmouseenter = () => {
-    if (peekWanted()) setInboxPeek(true);
-  };
-  open.onmouseleave = schedulePeekClose;
   const rail = $("#inbox-rail");
-  rail.onmouseenter = () => {
-    if (document.body.classList.contains("inbox-peek")) setInboxPeek(true);
-  };
-  rail.onmouseleave = () => {
-    if (document.body.classList.contains("inbox-peek")) schedulePeekClose();
-  };
+  wireHoverPeek(open, rail);
   $("#inbox-scrim").onclick = () => setInboxCollapsed(true);
   const views = $("#inbox-views");
   views.onclick = (event) => {

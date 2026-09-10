@@ -26,6 +26,21 @@ const hover = (element, type) =>
 
 let setInboxCollapsed, initInboxRail;
 let publishInboxAttentionCount;
+let hoverCapability;
+
+function mediaCapability(matches) {
+  const listeners = new Set();
+  return {
+    matches,
+    addEventListener: vi.fn((type, listener) => {
+      if (type === "change") listeners.add(listener);
+    }),
+    change(next) {
+      this.matches = next;
+      listeners.forEach((listener) => listener({ matches: next }));
+    },
+  };
+}
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -33,6 +48,8 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
   localStorage.clear();
+  hoverCapability = mediaCapability(true);
+  vi.stubGlobal("matchMedia", vi.fn(() => hoverCapability));
   ({ setInboxCollapsed, initInboxRail } = await import("../src/core/inboxShell.js"));
   ({ publishInboxAttentionCount } = await import("../src/core/inboxAttention.js"));
   initInboxRail();
@@ -40,6 +57,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("the inbox head", () => {
@@ -77,6 +95,50 @@ describe("the collapsed rail's hover peek", () => {
     expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
     // The stored choice is untouched: a peek is not a decision.
     expect(localStorage.getItem("build.inbox.collapsed")).toBe("1");
+  });
+
+  it("does not peek for compatibility mouse events on a touch-only device", async () => {
+    vi.resetModules();
+    document.body.innerHTML = bodyHtml;
+    document.body.className = "";
+    localStorage.clear();
+    hoverCapability = mediaCapability(false);
+    vi.stubGlobal("matchMedia", vi.fn(() => hoverCapability));
+    ({ setInboxCollapsed, initInboxRail } = await import("../src/core/inboxShell.js"));
+    initInboxRail();
+    setInboxCollapsed(true);
+    vi.advanceTimersByTime(400);
+
+    const toggle = document.getElementById("inbox-open");
+    hover(toggle, "mouseenter");
+    hover(toggle, "mouseleave");
+
+    expect(document.body.classList.contains("inbox-peek")).toBe(false);
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
+    expect(matchMedia).toHaveBeenCalledWith("(hover: hover) and (pointer: fine)");
+
+    toggle.click();
+    vi.runAllTimers();
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(false);
+    expect(document.body.classList.contains("inbox-peek")).toBe(false);
+  });
+
+  it("ends a live peek and cancels its close timer when hover capability is lost", () => {
+    const toggle = document.getElementById("inbox-open");
+    hover(toggle, "mouseenter");
+    hover(toggle, "mouseleave");
+    expect(document.body.classList.contains("inbox-peek")).toBe(true);
+
+    hoverCapability.change(false);
+    expect(document.body.classList.contains("inbox-peek")).toBe(false);
+    hover(toggle, "mouseenter");
+    expect(document.body.classList.contains("inbox-peek")).toBe(false);
+
+    hoverCapability.change(true);
+    hover(toggle, "mouseenter");
+    expect(document.body.classList.contains("inbox-peek")).toBe(true);
+    vi.advanceTimersByTime(150);
+    expect(document.body.classList.contains("inbox-peek")).toBe(true);
   });
 
   it("puts the rail away when the pointer leaves the toggle", () => {

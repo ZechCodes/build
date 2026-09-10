@@ -1,0 +1,18 @@
+.file-mode-tray { display:flex; align-items:center; gap:4px; }
+.file-mode { border:1px solid var(--line); border-radius:7px; padding:3px 8px;
+  background:transparent; color:var(--dim); font:inherit; cursor:pointer; }
+.file-mode.active { border-color:var(--green); color:var(--green); }
+.file-edit-actions { display:flex; align-items:center; gap:7px; }
+.file-edit-actions[hidden] { display:none; }
+.file-reload[hidden] { display:none; }
+.file-dirty { color:var(--green); font-size:11px; }
+.file-editor { flex:1; width:100%; min-height:100%; resize:none; border:0; border-radius:0;
+  box-sizing:border-box; padding:14px; background:var(--bg); color:var(--ink); font:12.5px/1.55 var(--mono); tab-size:2; }
+.file-editor:focus { outline:none; }
+@media (max-width: 720px) {
+  .fphead { flex-wrap:wrap; }
+  .fphead .fppath { flex:1 1 100%; }
+  .file-mode-tray { flex:1 1 auto; min-width:0; }
+  .file-edit-actions { flex:0 0 auto; margin-left:auto; }
+  .file-editor { font-size:16px; }
+}

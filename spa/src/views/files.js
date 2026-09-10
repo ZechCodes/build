@@ -15,6 +15,10 @@ import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
+import { confirmAction } from "../core/confirm.js";
+import { createFileViewerState, encodeBase64Text, fileModeTrayHtml, fileViewerModes } from "../core/fileViewer.js";
+import { mountFileEditor } from "../core/fileEditor.js";
+import { captureFileSelection } from "../core/fileSelection.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
 
@@ -143,7 +147,7 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection. Returns { dispose() }.
  */
-export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen = null }) {
+export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen = null, viewingContext = null }) {
   const cacheScope = currentCacheScope();
   let disposed = false;
   // The tree and the preview are the two columns of the shell's two-column
@@ -174,6 +178,66 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
   let dir = openAt ? parentPath(openAt.path) : ""; // current directory, relative to the scope root
   let requestedLine = openAt && openAt.line ? { path: openAt.path, line: openAt.line } : null;
   let sourceOverride = false; // per-selected-file "view source" toggle
+  let viewerState = null;
+  let editor = null;
+  let selectedPath = null;
+  let savingState = null;
+
+  const onBeforeUnload = (event) => {
+    if (!viewerState?.snapshot().dirty) return;
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
+
+  const discardDirty = async () => !viewerState?.snapshot().dirty || confirmAction({
+    title: "Discard file edits?",
+    intro: `Your unsaved changes to ${selectedPath} will be lost.`,
+    confirmLabel: "Discard edits",
+    danger: true,
+  });
+
+  const publishFileContext = () => {
+    if (!viewingContext || !selectedPath) return;
+    viewingContext.set({ version: 1, items: [{ kind: "file", path: selectedPath }] });
+  };
+
+  const publishContextSelection = (items) => {
+    if (!viewingContext) return;
+    if (viewingContext.setSelection) viewingContext.setSelection(items);
+    else viewingContext.set({ version: 1, items: [{ kind: "file", path: selectedPath }, ...items] });
+  };
+
+  const publishEditorSelection = () => {
+    const snapshot = viewerState?.snapshot();
+    const items = [];
+    if (snapshot?.mode === "edit" && snapshot.selection.end > snapshot.selection.start) {
+      items.push({
+        kind: "selection",
+        path: selectedPath,
+        text: snapshot.value.slice(snapshot.selection.start, snapshot.selection.end),
+        ...(snapshot.dirty ? { unsaved: true } : {}),
+      });
+    }
+    publishContextSelection(items);
+  };
+
+  const composerHasFocus = () => Boolean(document.activeElement?.closest?.(".thread-composer"));
+  const selectionBelongsToReadingLayer = (selection, readingLayer) =>
+    !selection?.anchorNode || readingLayer?.contains(selection.anchorNode);
+
+  const onDocumentSelectionChange = () => {
+    if (!selectedPath || viewerState?.snapshot().mode === "edit") return;
+    const readingLayer = previewEl.querySelector(".file-reading-layer");
+    const selection = document.getSelection();
+    const items = captureFileSelection(readingLayer, selectedPath, selection);
+    if (items.length) {
+      publishContextSelection(items);
+      return;
+    }
+    if (!composerHasFocus() && selectionBelongsToReadingLayer(selection, readingLayer)) publishContextSelection([]);
+  };
+  document.addEventListener("selectionchange", onDocumentSelectionChange);
 
   const renderTree = (entries) => {
     treeListEl.innerHTML = filesTreeHtml(dir, entries);
@@ -194,6 +258,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
   const loadTree = async (nextDir) => {
+    if (!await discardDirty()) return;
     const request = ++treeRequest;
     const address = treeAddress(nextDir);
     if (address) {
@@ -230,15 +295,61 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     }
   };
 
-  const selectFile = async (path, row) => {
-    if (disposed) return;
-    if (requestedLine && requestedLine.path !== path) requestedLine = null;
-    // The tab names the file it is standing in, so the URL can say so too.
-    if (onFileOpen) onFileOpen(path);
-    treeEl.querySelectorAll(".frow.sel").forEach((r) => r.classList.remove("sel"));
-    if (row) row.classList.add("sel");
+  const setText = (element, value) => {
+    if (element) element.textContent = value;
+  };
+
+  const beginSave = (submittedState) => {
+    savingState = submittedState;
+    previewEl.querySelector(".file-save").disabled = true;
+    setText(previewEl.querySelector(".file-save-status"), "");
+    const reload = previewEl.querySelector(".file-reload");
+    if (reload) reload.hidden = true;
+  };
+
+  const finishSave = (submittedState, written, submittedValue) => {
+    submittedState.saved(written, submittedValue);
+    savingState = null;
+    if (disposed || viewerState !== submittedState) return;
+    setText(previewEl.querySelector(".fpsize"), `${Number(written.size) || 0} bytes`);
+    setText(treeEl.querySelector(".frow.sel .fsize"), String(Number(written.size) || 0));
+    paintEditStatus();
+    publishEditorSelection();
+  };
+
+  const failSave = (submittedState, error) => {
+    savingState = null;
+    if (disposed || viewerState !== submittedState) return;
+    setText(previewEl.querySelector(".file-save-status"), error.message || "Save failed");
+    const reload = previewEl.querySelector(".file-reload");
+    if (reload) reload.hidden = !String(error.message).includes("revision conflict");
+    previewEl.querySelector(".file-save").disabled = false;
+  };
+
+  const maySelectFile = async (path) => {
+    if (disposed) return false;
+    return path === selectedPath || discardDirty();
+  };
+
+  const beginFileSelection = (path, row) => {
+    if (requestedLine?.path !== path) requestedLine = null;
+    onFileOpen?.(path);
+    treeEl.querySelectorAll(".frow.sel").forEach((selected) => selected.classList.remove("sel"));
+    row?.classList.add("sel");
     sourceOverride = false;
+    editor?.dispose();
+    editor = null;
+    viewerState = null;
+    selectedPath = path;
+    viewingContext?.clearSelection?.();
+    publishFileContext();
     showPlaceholder("loading");
+  };
+
+  const selectFile = async (path, row) => {
+    if (!await maySelectFile(path)) return;
+    // The tab names the file it is standing in, so the URL can say so too.
+    beginFileSelection(path, row);
     const result = await readFile(path);
     if (disposed) return;
     if (result.error) {
@@ -270,34 +381,127 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     }
   };
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
-  const renderPreview = (path, file) => {
-    previewEl.classList.remove("idle");
+  const saveEditor = async (path) => {
+    const submittedState = viewerState;
+    if (savingState === submittedState) return;
+    const snapshot = submittedState.snapshot();
+    const submittedValue = snapshot.value;
+    beginSave(submittedState);
+    try {
+      const written = await callRpc("fs.write", {
+        ...scope,
+        path,
+        content_b64: encodeBase64Text(snapshot.value),
+        expected_revision: snapshot.revision,
+      });
+      finishSave(submittedState, written, submittedValue);
+    } catch (error) {
+      failSave(submittedState, error);
+    }
+  };
+
+  const reloadEditor = async (path) => {
+    if (!await discardDirty()) return;
+    const result = await readFile(path);
+    if (result.error) {
+      previewEl.querySelector(".file-save-status").textContent = result.error.message || "Reload failed";
+      return;
+    }
+    editor?.dispose();
+    editor = null;
+    renderPreview(path, result.file);
+  };
+
+  const paintEditor = (path, snapshot) => {
+    const bodyHost = previewEl.querySelector(".file-editor-layer");
+    editor = mountFileEditor(bodyHost, {
+      value: snapshot.value,
+      selection: snapshot.selection,
+      onEdit: (value, selection) => {
+        viewerState.edit(value, selection);
+        paintEditStatus();
+        publishEditorSelection();
+      },
+      onSelection: (selection) => {
+        viewerState.edit(viewerState.snapshot().value, selection);
+        publishEditorSelection();
+      },
+    });
+    previewEl.querySelector(".file-save").onclick = () => saveEditor(path);
+    previewEl.querySelector(".file-reload").onclick = () => reloadEditor(path);
+    paintEditStatus();
+  };
+
+  const paintEditStatus = () => {
+    const snapshot = viewerState.snapshot();
+    const dirty = previewEl.querySelector(".file-dirty");
+    const save = previewEl.querySelector(".file-save");
+    if (dirty) dirty.hidden = !snapshot.dirty;
+    if (save) save.disabled = !snapshot.dirty || savingState === viewerState;
+  };
+
+  const previewFile = (snapshot) => snapshot.modes.length ? ({
+      ...snapshot.file,
+      content_b64: encodeBase64Text(snapshot.value),
+      size: new TextEncoder().encode(snapshot.value).length,
+    }) : snapshot.file;
+
+  const paintReadingMode = (path, snapshot) => {
+    const host = previewEl.querySelector(".file-reading-layer");
+    const file = previewFile(snapshot);
     const mode = previewModeFor(file.mime, file.truncated);
-    const canToggle = previewHasSourceToggle(mode);
-    const toggle = canToggle
-      ? `<button class="btn mini" id="fsrctoggle">${sourceOverride ? "view rendered" : "view source"}</button>`
-      : "";
-    // A dotenv file's source view masks secret-like values. renderDotenvSourceHtml
-    // keeps every masked value OUT of the returned HTML (dots only) — the values
-    // ride back in `secrets` and are wired in after mount.
+    sourceOverride = snapshot.mode === "source";
     const dotenv = shouldMaskDotenv(path, mode, sourceOverride)
-      ? renderDotenvSourceHtml(decodeBase64Text(file.content_b64))
+      ? renderDotenvSourceHtml(snapshot.value)
       : null;
     const truncNotice = dotenv && file.truncated ? `<div class="ftrunc">truncated at 1 MiB</div>` : "";
-    const revealAll =
-      dotenv && dotenv.secrets.length ? `<button class="btn mini" id="fpreveal">Reveal all</button>` : "";
-    previewEl.innerHTML = `
-      <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${revealAll}${toggle}</div>
-      <div class="fpbody">${dotenv ? dotenv.html + truncNotice : previewBodyHtml(path, file, sourceOverride)}</div>`;
+    host.innerHTML = dotenv ? dotenv.html + truncNotice : previewBodyHtml(path, file, sourceOverride);
     if (dotenv) wireDotenvSpoilers(dotenv.secrets);
     scrollRequestedLineIntoView(path);
-    const toggleBtn = previewEl.querySelector("#fsrctoggle");
-    if (toggleBtn)
-      toggleBtn.onclick = () => {
-        sourceOverride = !sourceOverride;
-        renderPreview(path, file);
+  };
+
+  const showViewerMode = (path) => {
+    const snapshot = viewerState.snapshot();
+    const editing = snapshot.mode === "edit";
+    previewEl.querySelector(".file-reading-layer").hidden = editing;
+    previewEl.querySelector(".file-editor-layer").hidden = !editing;
+    const editActions = previewEl.querySelector(".file-edit-actions");
+    if (editActions) editActions.hidden = !editing;
+    previewEl.querySelectorAll("[data-file-mode]").forEach((button) => {
+      const active = button.dataset.fileMode === snapshot.mode;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    if (editing && !editor) paintEditor(path, snapshot);
+    else if (!editing) paintReadingMode(path, snapshot);
+    paintEditStatus();
+    if (editing) publishEditorSelection();
+  };
+
+  const paintViewer = (path) => {
+    const snapshot = viewerState.snapshot();
+    previewEl.classList.remove("idle");
+    const actions = snapshot.modes.includes("edit") ? '<div class="file-edit-actions" hidden><span class="file-dirty" hidden>Unsaved</span><span class="file-save-status"></span><button type="button" class="btn mini file-reload" hidden>Reload</button><button type="button" class="btn mini file-save">Save</button></div>' : "";
+    const tray = fileModeTrayHtml(snapshot.modes, snapshot.mode);
+    const file = snapshot.file;
+    previewEl.innerHTML = `
+      <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${tray}${actions}</div>
+      <div class="fpbody file-reading-layer"></div><div class="fpbody file-editor-layer"></div>`;
+    previewEl.querySelectorAll("[data-file-mode]").forEach((button) => {
+      button.onclick = () => {
+        if (editor) viewerState.edit(viewerState.snapshot().value, editor.selection());
+        viewerState.choose(button.dataset.fileMode);
+        showViewerMode(path);
       };
+    });
+    showViewerMode(path);
+  };
+
+  const renderPreview = (path, file) => {
+    viewingContext?.clearSelection?.();
+    const text = fileViewerModes(file).length ? decodeBase64Text(file.content_b64) : "";
+    viewerState = createFileViewerState({ file, text });
+    paintViewer(path);
   };
 
   const scrollRequestedLineIntoView = (path) => {
@@ -319,8 +523,13 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     dispose() {
       disposed = true;
       treeRequest += 1;
+      editor?.dispose();
+      viewingContext?.clear?.();
+      document.removeEventListener("selectionchange", onDocumentSelectionChange);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       drawer.dispose();
     },
+    canLeave: discardDirty,
   };
 }
 

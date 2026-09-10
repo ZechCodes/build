@@ -1,6 +1,7 @@
 use super::inputs::{
-    append_operation_reviewer_messages, optional_choice_revision, optional_operation_id,
-    parse_option_choice, parse_thread_post_messages, required_operation_id, with_post_receipt,
+    append_operation_reviewer_messages, normalize_post_viewing_contexts, optional_choice_revision,
+    optional_operation_id, parse_option_choice, parse_thread_post_messages, parse_viewing_context,
+    required_operation_id, with_post_receipt, ReviewerMessage,
 };
 use super::read::thread_detail;
 use super::{AppState, ConversationAddress};
@@ -45,6 +46,8 @@ impl AppState {
     /// simply waits for the next session's catch-up. Refused only where no
     /// conversation remains to post to: a terminal or unknown entity.
     pub(in crate::app) fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
+        let normalized_params = normalize_post_viewing_contexts(params)?;
+        let params = &normalized_params;
         let entity_id = require_str(params, "entity_id")?;
         if !self.plans.contains_key(&entity_id) && !self.runs.contains_key(&entity_id) {
             return Err("unknown conversation owner".to_string());
@@ -133,14 +136,15 @@ impl AppState {
         }
         let attachments = self.parse_message_attachments(&entity_id, params)?;
         let messages = match &choice {
-            Some(choice) => vec![(
-                active
+            Some(choice) => vec![ReviewerMessage {
+                body: active
                     .agents
                     .resolve(Some(&address.conversation_id))?
                     .thread
                     .option_reply_text(choice)?,
-                None,
-            )],
+                anchor: None,
+                viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+            }],
             None => parse_thread_post_messages(
                 params,
                 crate::thread::ArtifactKind::Plan,
@@ -331,10 +335,11 @@ impl AppState {
         }
         let attachments = self.parse_message_attachments(&entity_id, params)?;
         let messages = match &choice {
-            Some(choice) => vec![(
-                self.conversation_at(&address)?.option_reply_text(choice)?,
-                None,
-            )],
+            Some(choice) => vec![ReviewerMessage {
+                body: self.conversation_at(&address)?.option_reply_text(choice)?,
+                anchor: None,
+                viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+            }],
             None => parse_thread_post_messages(
                 params,
                 crate::thread::ArtifactKind::Diff,
@@ -405,7 +410,7 @@ impl AppState {
         address: &ConversationAddress,
         choice_revision: u64,
         operation_id: Option<String>,
-        messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+        messages: Vec<ReviewerMessage>,
         attachments: Vec<crate::thread::MessageAttachment>,
         choice: Option<&crate::thread::OptionChoice>,
         mut delivery: Option<DeliveryIntent>,

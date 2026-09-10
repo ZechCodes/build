@@ -240,7 +240,17 @@ impl Thread {
     pub fn post_user(
         &mut self,
         body: impl Into<String>,
+        anchor: Option<MessageAnchor>,
+        now: impl Into<String>,
+    ) -> String {
+        self.post_user_with_context(body, anchor, None, now)
+    }
+
+    pub fn post_user_with_context(
+        &mut self,
+        body: impl Into<String>,
         mut anchor: Option<MessageAnchor>,
+        viewing_context: Option<super::ViewingContext>,
         now: impl Into<String>,
     ) -> String {
         if let Some(anchor) = &mut anchor {
@@ -248,13 +258,17 @@ impl Thread {
                 anchor.revision_id = self.current_revision(anchor.artifact).map(|r| r.id.clone());
             }
         }
-        self.post_message(
+        let id = self.post_message(
             MessageRole::User,
             body.into(),
             anchor,
             Vec::new(),
             now.into(),
-        )
+        );
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.viewing_context = viewing_context.map(Box::new);
+        }
+        id
     }
     /// A reviewer message that came with files. The attachments are set on the
     /// message [`post_user`](Self::post_user) just pushed — the last item on the
@@ -267,7 +281,18 @@ impl Thread {
         attachments: Vec<MessageAttachment>,
         now: impl Into<String>,
     ) -> String {
-        let id = self.post_user(body, anchor, now);
+        self.post_user_with_context_and_attachments(body, anchor, None, attachments, now)
+    }
+
+    pub fn post_user_with_context_and_attachments(
+        &mut self,
+        body: impl Into<String>,
+        anchor: Option<MessageAnchor>,
+        viewing_context: Option<super::ViewingContext>,
+        attachments: Vec<MessageAttachment>,
+        now: impl Into<String>,
+    ) -> String {
+        let id = self.post_user_with_context(body, anchor, viewing_context, now);
         if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
             message.attachments = attachments;
         }
@@ -289,6 +314,20 @@ impl Thread {
         body: impl Into<String>,
         now: impl Into<String>,
     ) -> String {
+        self.post_doc_comment_with_context(issue_id, stage_id, path, anchor, body, None, now)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn post_doc_comment_with_context(
+        &mut self,
+        issue_id: &str,
+        stage_id: &str,
+        path: &str,
+        anchor: Option<DocAnchor>,
+        body: impl Into<String>,
+        viewing_context: Option<super::ViewingContext>,
+        now: impl Into<String>,
+    ) -> String {
         let anchor = anchor.unwrap_or_default();
         let message_anchor = MessageAnchor {
             artifact: ArtifactKind::Doc,
@@ -305,13 +344,17 @@ impl Thread {
             stage_id: stage_id.to_string(),
             path: path.to_string(),
         }];
-        self.post_message(
+        let id = self.post_message(
             MessageRole::User,
             body.into(),
             Some(message_anchor),
             links,
             now.into(),
-        )
+        );
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.viewing_context = viewing_context.map(Box::new);
+        }
+        id
     }
     /// Every plan-doc comment on this conversation, oldest first.
     pub fn doc_comments(&self) -> Vec<DocComment> {
@@ -573,6 +616,7 @@ impl Thread {
             completion_report: None,
             source: MessageSource::Chat,
             operation_id: None,
+            viewing_context: None,
             body,
             created_at: now,
             seen_at: None,

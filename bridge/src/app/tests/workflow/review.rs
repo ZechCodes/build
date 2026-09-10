@@ -449,13 +449,26 @@ fn plan_comments_crud_and_stage_send_notes_resolve() {
 
     let general = state.handle(req(
         "plan.comment_add",
-        json!({ "plan_id": plan_id, "stage_id": "first-half", "body": "split further" }),
+        json!({
+            "plan_id": plan_id,
+            "stage_id": "first-half",
+            "body": "split further",
+            "viewing_context": { "version": 1, "items": [{ "kind": "file", "path": "src/lib.rs" }] },
+        }),
     ));
     assert_eq!(
         general["result"]["comment"]["anchor"],
         Value::Null,
         "{general:?}"
     );
+    assert!(primary_thread(&state.plans[&plan_id].agents)
+        .items
+        .iter()
+        .any(|item| {
+            matches!(item, crate::thread::ThreadItem::Message(message)
+            if message.body == "split further"
+                && message.viewing_context.as_ref().is_some_and(|context| context.items.len() == 1))
+        }));
     let anchored = state.handle(req(
         "plan.comment_add",
         json!({
@@ -823,7 +836,8 @@ fn run_request_changes_delivers_to_the_agent_instead_of_respawning() {
                     "line_end": 12,
                     "heading_path": [],
                     "snippet": "fn old_name()"
-                }
+                },
+                "viewing_context": { "version": 1, "items": [{ "kind": "diff", "path": "src/lib.rs", "mode": "all" }] }
             }]
         }),
     ));
@@ -833,6 +847,7 @@ fn run_request_changes_delivers_to_the_agent_instead_of_respawning() {
         item["type"] == "message"
             && item["data"]["body"] == "Use the public name"
             && item["data"]["anchor"]["path"] == "src/lib.rs"
+            && item["data"]["viewing_context"]["items"][0]["mode"] == "all"
     }));
     let bad = state.handle(req("run.request_changes", json!({ "run_id": run_id })));
     assert!(
@@ -859,7 +874,11 @@ fn run_message_delivers_to_the_agent_instead_of_respawning() {
 
     let sent = state.handle(req(
         "run.message",
-        json!({ "run_id": "run-message", "message": "prefer the smaller helper" }),
+        json!({
+            "run_id": "run-message",
+            "message": "prefer the smaller helper",
+            "viewing_context": { "version": 1, "items": [{ "kind": "commit", "sha": "0123456789ABCDEF0123456789ABCDEF01234567" }] },
+        }),
     ));
     assert_eq!(sent["ok"], true, "{sent:?}");
     assert!(
@@ -892,7 +911,12 @@ fn run_message_delivers_to_the_agent_instead_of_respawning() {
         .iter()
         .any(|item| {
             matches!(item, crate::thread::ThreadItem::Message(m)
-            if m.body == "prefer the smaller helper")
+            if m.body == "prefer the smaller helper"
+                && m.viewing_context.as_ref().is_some_and(|context| matches!(
+                    &context.items[0],
+                    crate::thread::ViewingContextItem::Commit { sha }
+                        if sha == "0123456789abcdef0123456789abcdef01234567"
+                )))
         });
     assert!(posted, "the reviewer's words stay durable on the thread");
 }

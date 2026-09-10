@@ -402,6 +402,11 @@ pub struct ThreadMessage {
     /// the legacy catch-all unread mailbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
+    /// The UI state the reviewer deliberately sent with these words. Kept as
+    /// structured message metadata so rendering can show it without rewriting
+    /// the body, and old records remain byte-compatible when it is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewing_context: Option<Box<ViewingContext>>,
     /// Completion is metadata on an otherwise ordinary message. Set by a
     /// completed [`outcome`](Self::outcome) and by nothing else, so a client
     /// that knows only this field renders a completion exactly as it always
@@ -473,6 +478,135 @@ pub struct ThreadMessage {
     /// said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answers_options_of: Option<String>,
+}
+
+pub const MAX_VIEWING_CONTEXT_ITEMS: usize = 100;
+pub const MAX_VIEWING_CONTEXT_PATH_BYTES: usize = 4 * 1024;
+pub const MAX_VIEWING_CONTEXT_EXCERPT_BYTES: usize = 32 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewingContext {
+    pub version: u8,
+    pub items: Vec<ViewingContextItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffViewingMode {
+    Uncommitted,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionSide {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ViewingContextItem {
+    File {
+        path: String,
+    },
+    Commit {
+        sha: String,
+    },
+    Diff {
+        path: String,
+        mode: DiffViewingMode,
+    },
+    Selection {
+        path: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_start: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_end: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        side: Option<SelectionSide>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        unsaved: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        truncated: bool,
+    },
+}
+
+impl ViewingContext {
+    pub fn normalize(mut self) -> Result<Self, String> {
+        for item in &mut self.items {
+            if let ViewingContextItem::Commit { sha } = item {
+                sha.make_ascii_lowercase();
+            }
+        }
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.version != 1 {
+            return Err("viewing_context.version must be 1".to_string());
+        }
+        if self.items.is_empty() {
+            return Err("viewing_context.items must not be empty".to_string());
+        }
+        if self.items.len() > MAX_VIEWING_CONTEXT_ITEMS {
+            return Err(format!(
+                "viewing_context.items must contain at most {MAX_VIEWING_CONTEXT_ITEMS} entries"
+            ));
+        }
+        let mut excerpt_bytes = 0usize;
+        for item in &self.items {
+            match item {
+                ViewingContextItem::File { path } | ViewingContextItem::Diff { path, .. } => {
+                    validate_viewing_path(path)?
+                }
+                ViewingContextItem::Commit { sha } => {
+                    if !matches!(sha.len(), 40 | 64)
+                        || !sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    {
+                        return Err("viewing_context commit sha must be a full 40 or 64 character object id".to_string());
+                    }
+                }
+                ViewingContextItem::Selection {
+                    path,
+                    text,
+                    line_start,
+                    line_end,
+                    ..
+                } => {
+                    validate_viewing_path(path)?;
+                    excerpt_bytes = excerpt_bytes.saturating_add(text.len());
+                    if text.is_empty() {
+                        return Err("viewing_context selection text must not be empty".to_string());
+                    }
+                    if line_start.is_some_and(|line| line == 0)
+                        || line_end.is_some_and(|line| line == 0)
+                        || (line_start.is_none() && line_end.is_some())
+                        || matches!((line_start, line_end), (Some(start), Some(end)) if start > end)
+                    {
+                        return Err("viewing_context selection line range is invalid".to_string());
+                    }
+                }
+            }
+        }
+        if excerpt_bytes > MAX_VIEWING_CONTEXT_EXCERPT_BYTES {
+            return Err(format!("viewing_context selection excerpts exceed {MAX_VIEWING_CONTEXT_EXCERPT_BYTES} bytes"));
+        }
+        Ok(())
+    }
+}
+
+fn validate_viewing_path(path: &str) -> Result<(), String> {
+    if path.is_empty()
+        || path.len() > MAX_VIEWING_CONTEXT_PATH_BYTES
+        || !crate::plan::is_worktree_contained_path(path)
+    {
+        return Err(format!("viewing_context path must be a scope-relative path of at most {MAX_VIEWING_CONTEXT_PATH_BYTES} bytes"));
+    }
+    Ok(())
 }
 
 /// Where a plan-doc comment points inside a stage document: the passage the

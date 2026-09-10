@@ -1,5 +1,62 @@
 use super::*;
 
+#[test]
+fn thread_post_persists_and_delivers_each_messages_viewing_context() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_issue_id, run_id) = planned_run_in_review(&mut state, "context delivery");
+    let context = json!({
+        "version": 1,
+        "items": [{ "kind": "selection", "path": "src/lib.rs", "text": "chosen", "line_start": 2, "line_end": 2, "side": "new" }]
+    });
+
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": run_id,
+            "messages": [
+                { "body": "first", "viewing_context": context },
+                { "body": "second", "viewing_context": context }
+            ]
+        }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+
+    let unread = state
+        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+        .unwrap();
+    let delivered = unread["messages"].as_array().unwrap();
+    let contextual: Vec<_> = delivered
+        .iter()
+        .filter(|message| message["body"] == "first" || message["body"] == "second")
+        .collect();
+    assert_eq!(contextual.len(), 2);
+    assert!(contextual
+        .iter()
+        .all(|message| message["viewing_context"] == context));
+}
+
+#[test]
+fn thread_post_refuses_invalid_viewing_context_before_appending() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_issue_id, run_id) = planned_run_in_review(&mut state, "context validation");
+    let before = primary_thread(&state.runs[&run_id].agents).items.len();
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": run_id,
+            "body": "do not append",
+            "viewing_context": { "version": 1, "items": [{ "kind": "file", "path": "../outside" }] }
+        }),
+    ));
+    assert_eq!(posted["ok"], false, "{posted:?}");
+    assert_eq!(
+        primary_thread(&state.runs[&run_id].agents).items.len(),
+        before
+    );
+}
+
 // ---- thread.post: the non-dispatching conversation write ---------------
 
 fn suggested(labels: &[(&str, Option<&str>)]) -> Vec<crate::thread::MessageOption> {
@@ -46,6 +103,7 @@ fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
         json!({
             "entity_id": run_id,
             "option_reply": { "message_id": offer_id, "option_ids": ["option-1"] },
+            "viewing_context": { "version": 1, "items": [{ "kind": "file", "path": "src/lib.rs" }] },
         }),
     ));
     assert_eq!(pressed["ok"], true, "{pressed:?}");
@@ -72,6 +130,7 @@ fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
     assert_eq!(last["body"], "Revert the commit that turned the tests red.");
     assert_eq!(last["role"], "user");
     assert_eq!(last["answers_options_of"], offer_id.as_str());
+    assert_eq!(last["viewing_context"]["items"][0]["path"], "src/lib.rs");
 }
 
 /// The race the disabled chips cannot cover: something is said between the

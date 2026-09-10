@@ -223,6 +223,26 @@ mod tests {
     }
 
     #[test]
+    fn thread_post_hash_binds_viewing_context_and_keeps_legacy_hash_stable() {
+        let legacy = serde_json::json!({ "entity_id": "issue-1", "body": "hello" });
+        let expected = thread_post_request_hash(&legacy, "issue-1", "agent-1", "conversation-1");
+        assert_eq!(
+            expected,
+            thread_post_request_hash(&legacy, "issue-1", "agent-1", "conversation-1")
+        );
+
+        let contextual = serde_json::json!({
+            "entity_id": "issue-1",
+            "body": "hello",
+            "viewing_context": { "version": 1, "items": [{ "kind": "file", "path": "src/lib.rs" }] }
+        });
+        assert_ne!(
+            expected,
+            thread_post_request_hash(&contextual, "issue-1", "agent-1", "conversation-1")
+        );
+    }
+
+    #[test]
     fn shared_browser_contract_matches_receipt_vocabulary() {
         let contract: Value =
             serde_json::from_str(include_str!("../../fixtures/chat_operation_contract.json"))

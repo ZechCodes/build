@@ -64,6 +64,10 @@ async fn the_greeting_announces_push_events() {
     assert_eq!(hello["ok"], true, "{hello:?}");
     assert_eq!(hello["result"]["push_events"], true, "{hello:?}");
     assert_eq!(
+        hello["result"]["message_context"]["version"], 1,
+        "{hello:?}"
+    );
+    assert_eq!(
         hello["result"]["events"],
         json!(["board.changed", "entity.changed"]),
         "{hello:?}"
@@ -78,6 +82,7 @@ async fn the_greeting_announces_push_events() {
     let ping = call(&handler, "ping", json!({}));
     assert_eq!(ping["result"]["pong"], true, "{ping:?}");
     assert_eq!(ping["result"]["push_events"], true, "{ping:?}");
+    assert_eq!(ping["result"]["message_context"]["version"], 1, "{ping:?}");
 }
 
 /// Greeting twice — a browser that reconnected — leaves one subscription,

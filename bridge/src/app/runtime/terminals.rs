@@ -218,6 +218,7 @@ pub(in crate::app) fn session_hello(
             "status_method": "thread.operation",
             "states": ["queued", "claimed", "delivered", "uncertain"],
         },
+        "message_context": { "version": 1 },
     }))
 }
 

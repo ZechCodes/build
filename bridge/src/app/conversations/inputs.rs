@@ -5,6 +5,13 @@ use crate::operation::{OperationPayload, OperationReceipt};
 use crate::store::now_rfc3339;
 use serde_json::{json, Value};
 
+#[derive(Debug, Clone)]
+pub(in crate::app) struct ReviewerMessage {
+    pub body: String,
+    pub anchor: Option<crate::thread::MessageAnchor>,
+    pub viewing_context: Option<crate::thread::ViewingContext>,
+}
+
 pub(in crate::app) const MAX_OPERATION_ID_BYTES: usize = 128;
 
 pub(in crate::app) fn apply_thread_action(
@@ -170,7 +177,7 @@ pub(in crate::app) fn parse_thread_inputs(
     params: &Value,
     artifact: crate::thread::ArtifactKind,
     legacy_field: &str,
-) -> Result<Vec<(String, Option<crate::thread::MessageAnchor>)>, String> {
+) -> Result<Vec<ReviewerMessage>, String> {
     if let Some(messages) = params.get("messages") {
         let messages = messages
             .as_array()
@@ -195,7 +202,12 @@ pub(in crate::app) fn parse_thread_inputs(
                 }
                 let anchor =
                     parse_message_anchor(message.get("anchor").unwrap_or(&Value::Null), artifact)?;
-                Ok((body.to_string(), anchor))
+                let viewing_context = parse_viewing_context(message.get("viewing_context"))?;
+                Ok(ReviewerMessage {
+                    body: body.to_string(),
+                    anchor,
+                    viewing_context,
+                })
             })
             .collect();
     }
@@ -208,7 +220,43 @@ pub(in crate::app) fn parse_thread_inputs(
     if body.len() > 32_000 {
         return Err(format!("{legacy_field} exceeds 32000 bytes"));
     }
-    Ok(vec![(body.to_string(), None)])
+    Ok(vec![ReviewerMessage {
+        body: body.to_string(),
+        anchor: None,
+        viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+    }])
+}
+
+pub(in crate::app) fn parse_viewing_context(
+    value: Option<&Value>,
+) -> Result<Option<crate::thread::ViewingContext>, String> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let context: crate::thread::ViewingContext = serde_json::from_value(value.clone())
+        .map_err(|error| format!("invalid viewing_context: {error}"))?;
+    context.normalize().map(Some)
+}
+
+pub(in crate::app) fn normalize_post_viewing_contexts(params: &Value) -> Result<Value, String> {
+    let mut normalized = params.clone();
+    if let Some(messages) = normalized.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            normalize_context_field(message)?;
+        }
+    } else {
+        normalize_context_field(&mut normalized)?;
+    }
+    Ok(normalized)
+}
+
+fn normalize_context_field(container: &mut Value) -> Result<(), String> {
+    let context = parse_viewing_context(container.get("viewing_context"))?;
+    if let Some(context) = context {
+        container["viewing_context"] =
+            serde_json::to_value(context).expect("viewing context always serializes");
+    }
+    Ok(())
 }
 
 pub(in crate::app) fn optional_operation_id(params: &Value) -> Result<Option<String>, String> {
@@ -254,16 +302,26 @@ pub(in crate::app) fn parse_thread_post_input(
     params: &Value,
     artifact: crate::thread::ArtifactKind,
     carries_attachments: bool,
-) -> Result<Vec<(String, Option<crate::thread::MessageAnchor>)>, String> {
+) -> Result<Vec<ReviewerMessage>, String> {
     let body = params.get("body").cloned().unwrap_or(Value::Null);
     let anchor = params.get("anchor").cloned().unwrap_or(Value::Null);
     let empty_body = body.as_str().map(str::trim).unwrap_or_default().is_empty();
     if carries_attachments && empty_body {
         let anchor = parse_message_anchor(&anchor, artifact)?;
-        return Ok(vec![(String::new(), anchor)]);
+        return Ok(vec![ReviewerMessage {
+            body: String::new(),
+            anchor,
+            viewing_context: parse_viewing_context(params.get("viewing_context"))?,
+        }]);
     }
     parse_thread_inputs(
-        &json!({ "messages": [{ "body": body, "anchor": anchor }] }),
+        &json!({
+            "messages": [{
+                "body": body,
+                "anchor": anchor,
+                "viewing_context": params.get("viewing_context"),
+            }]
+        }),
         artifact,
         "body",
     )
@@ -273,7 +331,7 @@ pub(in crate::app) fn parse_thread_post_messages(
     params: &Value,
     artifact: crate::thread::ArtifactKind,
     carries_attachments: bool,
-) -> Result<Vec<(String, Option<crate::thread::MessageAnchor>)>, String> {
+) -> Result<Vec<ReviewerMessage>, String> {
     if params.get("messages").is_some() {
         return parse_thread_inputs(params, artifact, "body");
     }
@@ -334,12 +392,18 @@ pub(in crate::app) fn parse_option_choice(
 /// reviewer's words still land, unmarked, rather than vanishing.
 pub(in crate::app) fn append_reviewer_messages(
     thread: &mut crate::thread::Thread,
-    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+    messages: Vec<ReviewerMessage>,
     attachments: Vec<crate::thread::MessageAttachment>,
     choice: Option<&crate::thread::OptionChoice>,
 ) -> Option<u64> {
     if let Some(choice) = choice {
         if thread.post_option_reply(choice, &now_rfc3339()).is_ok() {
+            if let Some(crate::thread::ThreadItem::Message(reply)) = thread.items.last_mut() {
+                reply.viewing_context = messages
+                    .first()
+                    .and_then(|message| message.viewing_context.clone())
+                    .map(Box::new);
+            }
             return last_appended_sequence(thread);
         }
     }
@@ -348,7 +412,7 @@ pub(in crate::app) fn append_reviewer_messages(
 
 pub(in crate::app) fn append_operation_reviewer_messages(
     thread: &mut crate::thread::Thread,
-    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+    messages: Vec<ReviewerMessage>,
     attachments: Vec<crate::thread::MessageAttachment>,
     choice: Option<&crate::thread::OptionChoice>,
     operation_id: Option<&str>,
@@ -376,7 +440,7 @@ pub(in crate::app) fn append_operation_reviewer_messages(
 
 pub(in crate::app) fn append_user_thread_messages(
     thread: &mut crate::thread::Thread,
-    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+    messages: Vec<ReviewerMessage>,
 ) -> Option<u64> {
     append_user_thread_messages_with_attachments(thread, messages, Vec::new())
 }
@@ -392,16 +456,27 @@ pub(in crate::app) fn last_appended_sequence(thread: &crate::thread::Thread) -> 
 /// with its closing note rather than its first line comment.
 pub(in crate::app) fn append_user_thread_messages_with_attachments(
     thread: &mut crate::thread::Thread,
-    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+    messages: Vec<ReviewerMessage>,
     attachments: Vec<crate::thread::MessageAttachment>,
 ) -> Option<u64> {
     let now = now_rfc3339();
     let last = messages.len().saturating_sub(1);
-    for (index, (body, anchor)) in messages.into_iter().enumerate() {
+    for (index, message) in messages.into_iter().enumerate() {
         if index == last && !attachments.is_empty() {
-            thread.post_user_with_attachments(body, anchor, attachments.clone(), &now);
+            thread.post_user_with_context_and_attachments(
+                message.body,
+                message.anchor,
+                message.viewing_context,
+                attachments.clone(),
+                &now,
+            );
         } else {
-            thread.post_user(body, anchor, &now);
+            thread.post_user_with_context(
+                message.body,
+                message.anchor,
+                message.viewing_context,
+                &now,
+            );
         }
     }
     last_appended_sequence(thread)

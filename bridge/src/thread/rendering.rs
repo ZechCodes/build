@@ -185,14 +185,15 @@ pub(super) fn catch_up_lines<'a>(
         .rev()
         .filter_map(|item| match item {
             ThreadItem::Message(message) => Some(format!(
-                "- {}{}: {}{}",
+                "- {}{}: {}{}{}",
                 message.role.as_str(),
                 match message.reported_outcome() {
                     Some(outcome) => format!(" [{}]", outcome.as_str()),
                     None => String::new(),
                 },
                 message.body.replace('\n', " "),
-                attachment_note(&message.attachments)
+                attachment_note(&message.attachments),
+                viewing_context_note(message.viewing_context.as_deref())
             )),
             ThreadItem::Event(_) => None,
         })
@@ -200,6 +201,15 @@ pub(super) fn catch_up_lines<'a>(
         .collect();
     lines.reverse();
     lines.join("\n")
+}
+
+/// Render message context exactly once in markdown catch-up. On the wire it
+/// remains structured metadata on the message itself.
+pub(super) fn viewing_context_note(context: Option<&super::ViewingContext>) -> String {
+    context.map_or_else(String::new, |context| {
+        let json = serde_json::to_string(context).expect("viewing context always serializes");
+        format!(" [viewing context: {json}]")
+    })
 }
 
 /// The trailer that names a message's files in prose form. The catch-up packet

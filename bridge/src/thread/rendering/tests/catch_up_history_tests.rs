@@ -2,6 +2,33 @@ use super::*;
 
 const NOW: &str = "2026-08-29T09:00:00Z";
 
+#[test]
+fn catch_up_renders_viewing_context_once_beside_the_message() {
+    let mut thread = Thread::for_agent("agent-a");
+    thread.post_user_with_context(
+        "change this",
+        None,
+        Some(ViewingContext {
+            version: 1,
+            items: vec![ViewingContextItem::Selection {
+                path: "src/lib.rs".into(),
+                text: "let old = true;".into(),
+                line_start: Some(4),
+                line_end: Some(4),
+                side: Some(SelectionSide::New),
+                unsaved: false,
+                truncated: false,
+            }],
+        }),
+        NOW,
+    );
+
+    let prompt = thread.catch_up_markdown(10);
+    assert_eq!(prompt.matches("viewing context:").count(), 1);
+    assert!(prompt.contains("src/lib.rs"));
+    assert!(prompt.contains("let old = true;"));
+}
+
 /// A conversation stored whole, and the process that booted onto the last
 /// `tail` items of it — which is where an activity-heavy session leaves
 /// its replacement.

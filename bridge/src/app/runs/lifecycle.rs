@@ -1,10 +1,11 @@
 use crate::app::WorktreeLifecycleJob;
 use crate::app::{
     abandoned_branch_summary, close_abandoned_run_conversations, err, has_agent_choice,
-    model_choice_from, parse_worktree_finish_action, reconcile_missing_run_worktree,
-    record_current_stage_started, require_str, run_state_str, thread_detail, AppState, DigestScope,
-    FinishKind, FinishRequirement, ImplementationCaller, PendingAgentTurn, PlannedFinish,
-    RunFinishEpilogue, WorktreeFinishJob, NEW_THREAD_MESSAGES_PROMPT,
+    model_choice_from, parse_viewing_context, parse_worktree_finish_action,
+    reconcile_missing_run_worktree, record_current_stage_started, require_str, run_state_str,
+    thread_detail, AppState, DigestScope, FinishKind, FinishRequirement, ImplementationCaller,
+    PendingAgentTurn, PlannedFinish, RunFinishEpilogue, WorktreeFinishJob,
+    NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::lifecycle::{
     AdoptCheckout, AdoptImplementation, AdoptionTarget, DiscardCheckout, DiscardedCheckout,
@@ -494,6 +495,7 @@ impl AppState {
     pub(in crate::app) fn run_message(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let message = require_str(params, "message")?;
+        let viewing_context = parse_viewing_context(params.get("viewing_context"))?;
         let project_id = self.project_of(&run_id)?;
         let plan_docs = {
             let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
@@ -503,7 +505,7 @@ impl AppState {
         self.note_user_message(&run_id);
         let agent_id = self.ensure_primary_agent(&run_id)?;
         self.edit_agent_conversation(&run_id, &agent_id, |thread, _artifact| {
-            thread.post_user(&message, None, now_rfc3339());
+            thread.post_user_with_context(&message, None, viewing_context, now_rfc3339());
             Ok(())
         })?;
         let mut active = self.take_run(&run_id)?;

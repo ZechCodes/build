@@ -1,7 +1,7 @@
 use crate::app::{
-    append_user_thread_messages, err, issue_session, parse_thread_inputs, plan_stage_json,
-    plan_state_str, require_str, scheduler_request, stage_doc_state_str, thread_detail, AppState,
-    PlanSessionOpening, NEW_THREAD_MESSAGES_PROMPT,
+    append_user_thread_messages, err, issue_session, parse_thread_inputs, parse_viewing_context,
+    plan_stage_json, plan_state_str, require_str, scheduler_request, stage_doc_state_str,
+    thread_detail, AppState, PlanSessionOpening, NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::operation::OperationReceipt;
 use crate::plan::{ImplementationIntent, PlanState, StageDocState};
@@ -410,15 +410,18 @@ impl AppState {
     pub(in crate::app) fn plan_message(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let message = require_str(params, "message")?;
+        let viewing_context = parse_viewing_context(params.get("viewing_context"))?;
         let project_id = self.project_of(&plan_id)?;
         // The user's own words, so the anchor gets its chance — before the
         // record leaves its map (see `note_user_message`).
         self.note_user_message(&plan_id);
         let mut active = self.take_plan(&plan_id)?;
-        active
-            .agents
-            .sole_thread_mut()
-            .post_user(&message, None, now_rfc3339());
+        active.agents.sole_thread_mut().post_user_with_context(
+            &message,
+            None,
+            viewing_context,
+            now_rfc3339(),
+        );
         // Pure legality first, and the message is durable either way: a plan
         // that refuses the freeform channel still heard what was said.
         let gated = crate::orchestrator::gate_plan_message(&active, NEW_THREAD_MESSAGES_PROMPT)
@@ -522,6 +525,7 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let body = require_str(params, "body")?;
+        let viewing_context = parse_viewing_context(params.get("viewing_context"))?;
         let mut active = self.take_plan(&plan_id)?;
         let mut minted: Option<crate::thread::DocComment> = None;
         let outcome = (|| -> Result<(), String> {
@@ -541,14 +545,18 @@ impl AppState {
             }
             let anchor = parse_comment_anchor(params.get("anchor"))?;
             let path = active.stages[index].path.clone();
-            let id = active.agents.sole_thread_mut().post_doc_comment(
-                &plan_id,
-                &stage_id,
-                &path,
-                anchor,
-                body.clone(),
-                now_rfc3339(),
-            );
+            let id = active
+                .agents
+                .sole_thread_mut()
+                .post_doc_comment_with_context(
+                    &plan_id,
+                    &stage_id,
+                    &path,
+                    anchor,
+                    body.clone(),
+                    viewing_context,
+                    now_rfc3339(),
+                );
             minted = active
                 .agents
                 .sole_thread()

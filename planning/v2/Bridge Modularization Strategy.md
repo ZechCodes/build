@@ -1,6 +1,6 @@
 # Bridge Modularization Strategy
 
-**Status:** Stages 1–4 implemented; project, configuration, and capture extraction is next
+**Status:** Stages 1–5 implemented; project registry ownership is next
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
 ## Why this work is needed

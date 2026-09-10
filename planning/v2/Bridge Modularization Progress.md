@@ -10,7 +10,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | --- | --- | --- |
 | 3 | Move encoding, filesystem-scope, shell, and independent QA utilities to their owners | Complete |
 | 4 | Extract conversation application methods and request parsing | Complete |
-| 5 | Extract project, configuration, and capture application methods | Prepared outside repository |
+| 5 | Extract project, configuration, and capture application methods | Complete |
 | 5b | Give project registration, entity binding, and retained paths their own registry | Planned |
 | 6 | Extract issue, run, worktree, board, and protocol adapters | Prepared outside repository |
 | 7 | Give session registration and spawn reservations their own component | Planned |
@@ -83,7 +83,9 @@ persistence stays in the application coordinator for the later ownership stage.
 Production imports are explicit, and moved internal items remain app-scoped.
 
 The staged crate-wide audit retains all 5,434 functions and the exact test,
-literal, branch, and public-function inventories. Its eight reviewed function
+literal, branch, and public-function inventories. The declaration audit also
+preserves all 1,028 structs, enums, aliases, constants, and statics, including
+their attributes and field types. Its eight reviewed function
 pairs differ only by trailing commas in signatures wrapped by rustfmt after
 the required visibility change; their bodies are unchanged. Focused conversation
 tests pass 51 cases with one configured ignore. Formatting, compilation, and
@@ -92,3 +94,24 @@ seven ignored; all 2,109 exercised library tests pass. The only failure is the
 known `concurrency_load` output floor, at 80,414 bytes. Semgrep finds no issues
 across all eight changed Rust files, and staged Gitleaks passes. The complexity
 ratchet remains 28; its explanatory comment now survives module relocation.
+
+## Stage 5
+
+Project registration and requests, configuration parsing and persistence, and
+capture storage and routing now live in nine modules under `app/projects/`,
+`app/config/`, and `app/captures/`. Each module is under 700 lines; `app.rs` is
+19,803 lines. This stage moves 100 declarations without changing their bodies.
+Public `app::ConfigError`, `app::RoutedCapture`, `app::ProjectAdded`, and
+`app::ProjectRemoteSet` exports remain available. Project registry ownership is
+a separate next step; configuration persistence order and direct registration
+behavior remain unchanged here.
+
+Formatting, all-target compilation, and all-target Clippy pass. All 64 focused
+configuration tests and 43 routing tests pass. The full crate audit preserves
+all 5,434 functions and 1,028 data declarations, including test attributes and
+bodies, field types, literals, and branch counts. Its nine reviewed function
+pairs differ only by trailing parameter commas; all bodies are exact. Semgrep
+finds no issues across the ten changed Rust files, and staged Gitleaks passes.
+The full suite reports 2,184 passed, one failed, and seven ignored; all 2,109
+exercised library tests pass. The sole failure remains the previously reproduced
+`concurrency_load` output floor, at 80,414 bytes.

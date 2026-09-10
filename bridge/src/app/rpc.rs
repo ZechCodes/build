@@ -310,7 +310,11 @@ impl AppState {
             // `push_events` rides the probe as well as the greeting: a client
             // that only ever pings can still tell whether this bridge will
             // invalidate for it, and an old client ignores the extra field.
-            "ping" => Ok(json!({ "pong": true, "push_events": true })),
+            "ping" => Ok(json!({
+                "pong": true,
+                "push_events": true,
+                "message_context": { "version": 1 },
+            })),
             // What a start leads with is the account's answer, so the default
             // provider is the account's default harness. `models`/`efforts` are
             // that harness's catalog, repeated at the top level for clients
@@ -332,6 +336,7 @@ impl AppState {
             "fs.list" => self.fs_list(params),
             "fs.tree" => self.fs_tree(params),
             "fs.read" => self.fs_read(params),
+            "fs.write" => self.fs_write(params),
             "project.diff" => self.project_diff(params),
             "git.log" => self.git_log(params),
             "git.show" => self.git_show(params),

@@ -235,6 +235,9 @@ fn fs_read_round_trips_content_and_infers_mime() {
     assert_eq!(decoded, b"# hi\n");
     assert_eq!(md["result"]["truncated"], false);
     assert_eq!(md["result"]["size"], 5);
+    assert_eq!(md["result"]["editable"], true);
+    assert_eq!(md["result"]["encoding"], "utf-8");
+    assert_eq!(md["result"]["revision"], sha256_hex(b"# hi\n"));
 
     assert_eq!(read("page.html")["result"]["mime"], "text/html");
     assert_eq!(read("icon.svg")["result"]["mime"], "image/svg+xml");
@@ -246,12 +249,148 @@ fn fs_read_round_trips_content_and_infers_mime() {
         read("blob.bin")["result"]["mime"],
         "application/octet-stream"
     );
+    assert_eq!(read("blob.bin")["result"]["editable"], false);
 
     let missing = read("nope.txt");
     assert_eq!(missing["ok"], false, "{missing:?}");
 
     let dir_read = read("");
     assert_eq!(dir_read["ok"], false, "{dir_read:?}");
+}
+
+#[test]
+fn fs_write_replaces_text_when_revision_matches_and_refuses_stale_writes() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    let path = repo.join("notes.md");
+    std::fs::write(&path, "before\n").unwrap();
+
+    let initial = state.handle(req(
+        "fs.read",
+        json!({ "project_id": project_id, "path": "notes.md" }),
+    ));
+    let revision = initial["result"]["revision"].as_str().unwrap();
+    let updated = state.handle(req(
+        "fs.write",
+        json!({
+            "project_id": project_id,
+            "path": "notes.md",
+            "content_b64": b64encode(b"after\n"),
+            "expected_revision": revision,
+        }),
+    ));
+    assert_eq!(updated["ok"], true, "{updated:?}");
+    assert_eq!(updated["result"]["editable"], true);
+    assert_eq!(updated["result"]["encoding"], "utf-8");
+    assert_eq!(updated["result"]["revision"], sha256_hex(b"after\n"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "after\n");
+
+    let stale = state.handle(req(
+        "fs.write",
+        json!({
+            "project_id": project_id,
+            "path": "notes.md",
+            "content_b64": b64encode(b"lost\n"),
+            "expected_revision": revision,
+        }),
+    ));
+    assert_eq!(stale["ok"], false, "{stale:?}");
+    assert!(stale["error"]
+        .as_str()
+        .unwrap()
+        .contains("revision conflict"));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+}
+
+#[test]
+fn fs_write_rejects_binary_oversized_invalid_utf8_and_symlinks() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    std::fs::write(repo.join("binary.bin"), [0, 1, 2]).unwrap();
+    std::os::unix::fs::symlink(repo.join("README.md"), repo.join("link.txt")).unwrap();
+
+    let write = |state: &mut AppState, path: &str, content: Vec<u8>, revision: &str| {
+        state.handle(req(
+            "fs.write",
+            json!({
+                "project_id": project_id,
+                "path": path,
+                "content_b64": b64encode(&content),
+                "expected_revision": revision,
+            }),
+        ))
+    };
+
+    for (path, content, revision) in [
+        ("binary.bin", b"text\n".to_vec(), sha256_hex(&[0, 1, 2])),
+        ("README.md", vec![0xff], sha256_hex(b"# Test Repo\n")),
+        (
+            "README.md",
+            vec![b'x'; FS_READ_MAX_BYTES as usize + 1],
+            sha256_hex(b"# Test Repo\n"),
+        ),
+        ("link.txt", b"text\n".to_vec(), sha256_hex(b"# Test Repo\n")),
+    ] {
+        let response = write(&mut state, path, content, &revision);
+        assert_eq!(response["ok"], false, "{path}: {response:?}");
+    }
+    assert_eq!(std::fs::read(repo.join("binary.bin")).unwrap(), [0, 1, 2]);
+}
+
+#[test]
+fn fs_write_uses_the_same_worktree_for_external_and_run_scopes() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let worktree = add_external_worktree(&repo, dir.path(), "file-edit", "file-edit");
+    let worktree_id = state
+        .scan_external_worktrees_now(&project_id)
+        .unwrap()
+        .into_iter()
+        .find(|item| item.branch.as_deref() == Some("file-edit"))
+        .unwrap()
+        .id;
+    std::fs::write(worktree.join("notes.txt"), "one\n").unwrap();
+
+    let external_scope = json!({
+        "project_id": project_id,
+        "worktree_id": worktree_id,
+        "path": "notes.txt",
+    });
+    let external_read = state.handle(req("fs.read", external_scope.clone()));
+    let mut external_write = external_scope.clone();
+    external_write["content_b64"] = json!(b64encode(b"two\n"));
+    external_write["expected_revision"] = external_read["result"]["revision"].clone();
+    assert_eq!(state.handle(req("fs.write", external_write))["ok"], true);
+
+    let adopted = state.handle(req(
+        "run.adopt",
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
+    ));
+    assert_eq!(adopted["ok"], true, "{adopted:?}");
+    let run_id = run_id_of(&adopted);
+    let run_scope = json!({ "run_id": run_id, "path": "notes.txt" });
+    let run_read = state.handle(req("fs.read", run_scope.clone()));
+    assert_eq!(run_read["ok"], true, "{run_read:?}");
+    let mut run_write = run_scope;
+    run_write["content_b64"] = json!(b64encode(b"three\n"));
+    run_write["expected_revision"] = run_read["result"]["revision"].clone();
+    assert_eq!(state.handle(req("fs.write", run_write))["ok"], true);
+    assert_eq!(std::fs::read_to_string(worktree.join("notes.txt")).unwrap(), "three\n");
 }
 
 #[test]
@@ -277,6 +416,8 @@ fn fs_read_truncates_oversized_files() {
     assert_eq!(res["ok"], true, "{res:?}");
     assert_eq!(res["result"]["size"], real_size as u64);
     assert_eq!(res["result"]["truncated"], true);
+    assert_eq!(res["result"]["editable"], false);
+    assert!(res["result"]["revision"].is_null());
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(res["result"]["content_b64"].as_str().unwrap())
         .unwrap();
@@ -305,6 +446,17 @@ fn fs_read_rejects_lexical_and_symlink_escapes() {
         "/tmp/test-mcp.sock",
     );
     let project_id = state.project_at(0).id.clone();
+
+    let fifo_path = repo.join("pipe");
+    let fifo = std::ffi::CString::new(fifo_path.to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a valid NUL-terminated path in the temporary repo.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let fifo_read = state.handle(req(
+        "fs.read",
+        json!({ "project_id": project_id, "path": "pipe" }),
+    ));
+    assert_eq!(fifo_read["ok"], false, "{fifo_read:?}");
+    assert_eq!(fifo_read["error"], "not a file");
 
     // Lexical escape: caught before any filesystem access.
     let lexical = state.handle(req(

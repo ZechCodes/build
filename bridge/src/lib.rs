@@ -80,6 +80,7 @@ pub mod router;
 pub mod rtc;
 pub mod run;
 pub mod screen;
+pub(crate) mod scoped_file;
 pub mod service;
 pub mod store;
 pub mod templates;

@@ -20,7 +20,8 @@ import { describe, it, expect } from "vitest";
 // thread state instead of branching across ambient maps.
 // Main's toolbar/composer extraction and chat state ownership together retire
 // four counted functions, with no new exemption added.
-const RATCHETED_FUNCTIONS = 71;
+// The editable file viewer splits file-selection setup from its async read.
+const RATCHETED_FUNCTIONS = 70;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

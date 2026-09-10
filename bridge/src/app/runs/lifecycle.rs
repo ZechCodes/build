@@ -151,11 +151,11 @@ impl RunAdopted {
             self.scope == AdoptionScope::PrimaryCheckout,
         );
         if was_dismissed || first_observed_at.is_some() {
-            let attention = state.attention.entry(self.run_id.clone()).or_default();
-            attention.first_observed_at = first_observed_at;
-            if was_dismissed {
-                attention.dismiss_messages();
-            }
+            state.board.attention_mut().transfer_adopted_row(
+                &self.run_id,
+                first_observed_at,
+                was_dismissed,
+            );
             state.persist_attention();
         }
         state.note_worktree_gone(&self.project_id, &self.checkout.path);
@@ -945,11 +945,8 @@ impl AppState {
     /// itself went in the decide phase; this is the bookkeeping beside it.
     pub(in crate::app) fn forget_run(&mut self, run_id: &str) {
         self.projects.unbind_entity(run_id);
-        self.entity_created_at.remove(run_id);
-        self.entity_updated_at.remove(run_id);
-        self.entity_state_changed_at.remove(run_id);
-        self.entity_last_state.remove(run_id);
-        self.run_files_changed_at.remove(run_id);
+        self.board.attention_mut().remove_entity_clocks(run_id);
+        self.board.diff_mut().remove_run_files_changed_at(run_id);
         self.invalidate_run_stat(run_id);
     }
 
@@ -1197,11 +1194,8 @@ impl AppState {
             }
         }
         self.projects.unbind_entity(&run_id);
-        self.entity_created_at.remove(&run_id);
-        self.entity_updated_at.remove(&run_id);
-        self.entity_state_changed_at.remove(&run_id);
-        self.entity_last_state.remove(&run_id);
-        self.run_files_changed_at.remove(&run_id);
+        self.board.attention_mut().remove_entity_clocks(&run_id);
+        self.board.diff_mut().remove_run_files_changed_at(&run_id);
         self.reap_orphaned_terminals();
         Ok(archived_worktree)
     }

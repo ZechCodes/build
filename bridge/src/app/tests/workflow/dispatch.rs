@@ -250,16 +250,10 @@ fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
         );
         assert!(
             state
-                .project_at(0)
-                .external_scan
-                .as_ref()
+                .external_scan_of(&project_id)
                 .is_some_and(|cache| cache.worktrees.is_empty()),
             "{step:?} left a checkout on the board that is not on disk: {:?}",
-            state
-                .project_at(0)
-                .external_scan
-                .as_ref()
-                .map(|c| &c.worktrees)
+            state.external_scan_of(&project_id).map(|c| &c.worktrees)
         );
         state.dispatch_fault = None;
         assert!(
@@ -314,16 +308,10 @@ fn a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board() {
     assert!(checkout.is_dir(), "the git that succeeded was undone");
     assert!(
         state
-            .project_at(0)
-            .external_scan
-            .as_ref()
+            .external_scan_of(&project_id)
             .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
         "the checkout it cut is invisible until the next full rescan: {:?}",
-        state
-            .project_at(0)
-            .external_scan
-            .as_ref()
-            .map(|c| &c.worktrees)
+        state.external_scan_of(&project_id).map(|c| &c.worktrees)
     );
     // And it is adoptable from that card: nothing about it is half-owned.
     state.dispatch_fault = None;

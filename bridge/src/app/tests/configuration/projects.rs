@@ -117,7 +117,7 @@ fn project_list_reads_metadata_off_lock_from_one_snapshot() {
         .expect("an unrelated foreground read answers while project metadata is blocked");
     assert_eq!(models["ok"], true, "{models:?}");
 
-    state.lock().unwrap().projects.clear();
+    state.lock().unwrap().clear_projects_for_test();
     gate_handle.release();
     let listed = listed
         .recv_timeout(Duration::from_secs(30))

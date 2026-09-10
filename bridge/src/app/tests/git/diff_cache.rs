@@ -209,7 +209,7 @@ async fn a_refresh_overtaken_by_a_mutation_publishes_nothing() {
     // Whatever the refresh found describes the tree from before it.
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert!(
-        !state.lock().unwrap().run_stat_cache.contains_key(&run_id),
+        !state.lock().unwrap().has_cached_run_stat(&run_id),
         "the overtaken refresh put its numbers back on the board"
     );
 }
@@ -524,10 +524,10 @@ fn attention_survives_a_stamp_taken_before_the_first_scan() {
 
     let seen = state.handle(req("entity.seen", json!({ "entity_id": worktree_id })));
     assert_eq!(seen["ok"], true, "{seen:?}");
-    assert!(state.attention.contains_key(&worktree_id));
+    assert!(state.has_attention(&worktree_id));
 
     // A restart: the map comes back from the store, the scan has not run.
-    state.project_at_mut(0).external_scan = None;
+    state.clear_external_scan_for_test(&project_id);
     state.persist_attention();
 
     let reloaded = Store::new(dir.path().join("store"))
@@ -623,7 +623,7 @@ impl OffLockJob for ProbeJob {
     type Claim = std::sync::mpsc::Sender<&'static str>;
     type Decided = &'static str;
 
-    fn claim(&self) -> Self::Claim {
+    fn claim(&mut self) -> Self::Claim {
         self.outcomes.clone()
     }
 
@@ -800,8 +800,7 @@ async fn dismissing_the_primary_row_before_its_walk_lands_is_refused() {
         !state
             .lock()
             .unwrap()
-            .attention
-            .contains_key(&crate::attention::primary_row_key(&project_id)),
+            .has_attention(&crate::attention::primary_row_key(&project_id)),
         "a dismissal was written against a head nothing had read yet"
     );
 
@@ -836,13 +835,13 @@ fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
     let described = crate::worktree::describe_checkout(&path, "main", crate::worktree::unix_now())
         .expect("it is a checkout");
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
-    state.diff_refreshes_in_flight.insert(scan.clone());
+    let _claim = state.claim_diff_refresh_for_test(scan.clone());
     state.changes.flush();
 
     state.note_worktree_appeared(&project_id, described);
 
     assert!(
-        state.diff_refreshes_in_flight.contains(&scan),
+        state.diff_refresh_is_running(&scan),
         "the create dropped the first scan its checkout would have arrived on"
     );
     assert!(
@@ -865,13 +864,13 @@ fn a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone() {
     add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
     state.scan_external_worktrees_now(&project_id).unwrap();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
-    state.diff_refreshes_in_flight.insert(scan.clone());
+    let _claim = state.claim_diff_refresh_for_test(scan.clone());
     state.changes.flush();
 
     state.note_worktree_gone(&project_id, &dir.path().join("never-in-the-list"));
 
     assert!(
-        !state.diff_refreshes_superseded.contains(&scan),
+        !state.diff_refresh_is_superseded(&scan),
         "a removal that removed nothing superseded the running scan"
     );
     assert!(
@@ -895,13 +894,13 @@ fn re_noting_an_unchanged_checkout_leaves_the_running_scan_alone() {
     add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
     let known = state.scan_external_worktrees_now(&project_id).unwrap()[0].clone();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
-    state.diff_refreshes_in_flight.insert(scan.clone());
+    let _claim = state.claim_diff_refresh_for_test(scan.clone());
     state.changes.flush();
 
     state.note_worktree_appeared(&project_id, known);
 
     assert!(
-        !state.diff_refreshes_superseded.contains(&scan),
+        !state.diff_refresh_is_superseded(&scan),
         "re-noting an unchanged checkout superseded the running scan"
     );
     assert!(
@@ -927,7 +926,7 @@ fn attention_for_a_dead_run_is_pruned_before_the_first_scan() {
         assert_eq!(seen["ok"], true, "{seen:?}");
     }
 
-    state.project_at_mut(0).external_scan = None;
+    state.clear_external_scan_for_test(&project_id);
     state.persist_attention();
 
     let reloaded = Store::new(dir.path().join("store"))
@@ -990,9 +989,7 @@ fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
     add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
     state.scan_external_worktrees_now(&project_id).unwrap();
     let scanned_at = state
-        .project_at(0)
-        .external_scan
-        .as_ref()
+        .external_scan_of(&project_id)
         .expect("seeded above")
         .scanned_at;
 
@@ -1007,9 +1004,7 @@ fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
         .to_string();
 
     let cache = state
-        .project_at(0)
-        .external_scan
-        .as_ref()
+        .external_scan_of(&project_id)
         .expect("the create emptied the whole project's scan");
     assert!(
         cache.worktrees.iter().any(|w| w.id == worktree_id),
@@ -1058,11 +1053,7 @@ fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
 /// claims a rescan.
 fn age_out_scan(state: &Arc<Mutex<AppState>>, project_id: &str) {
     let mut app = state.lock().unwrap();
-    let cache = app
-        .project_mut(project_id)
-        .and_then(|project| project.external_scan.as_mut())
-        .expect("a scan to age");
-    cache.scanned_at -= EXTERNAL_SCAN_INTERVAL + Duration::from_secs(1);
+    app.age_external_scan_for_test(project_id, EXTERNAL_SCAN_INTERVAL + Duration::from_secs(1));
 }
 
 /// A create that lands while a scan of the same repository is walking it.
@@ -1148,7 +1139,7 @@ fn an_invalidated_stat_discards_the_compute_it_overtook() {
     let mut state = qa_state(&repo, dir.path());
     let run_id = "run-1".to_string();
     let key = DiffCacheKey::RunStat(run_id.clone());
-    state.diff_refreshes_in_flight.insert(key.clone());
+    let claim = state.claim_diff_refresh_for_test(key.clone());
 
     state.invalidate_run_stat(&run_id);
     assert!(
@@ -1157,14 +1148,14 @@ fn an_invalidated_stat_discards_the_compute_it_overtook() {
     );
 
     state.publish_diff_refresh(
-        &key,
+        claim,
         Some(DiffCacheEntry::RunStat {
             run_id: run_id.clone(),
             stat: json!({ "files_changed": 3 }),
         }),
     );
     assert!(
-        !state.run_stat_cache.contains_key(&run_id),
+        !state.has_cached_run_stat(&run_id),
         "a stat read before the mutation was published as the run's current one"
     );
     assert!(

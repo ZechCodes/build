@@ -248,9 +248,10 @@ impl AppState {
             .filter(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(issue_id))
             .collect::<Vec<_>>();
         implementations.sort_by_key(|run| {
-            self.entity_created_at
-                .get(&run.run.id.0)
-                .cloned()
+            self.board
+                .attention()
+                .clock(&run.run.id.0)
+                .created_at
                 .unwrap_or_default()
         });
         implementations
@@ -329,7 +330,7 @@ impl AppState {
                     "branch": run.worktree.branch(),
                     "worktree_path": run.worktree.path.display().to_string(),
                     "recovery": run.recovery,
-                    "created_at": self.entity_created_at.get(&run.run.id.0),
+                    "created_at": self.board.attention().clock(&run.run.id.0).created_at,
                 })
             })
             .collect::<Vec<_>>();
@@ -411,9 +412,9 @@ impl AppState {
                 .store
                 .as_ref()
                 .is_some_and(|store| store.has_plan_docs(plan_id)),
-            "created_at": self.entity_created_at.get(plan_id),
-            "updated_at": self.entity_updated_at.get(plan_id),
-            "state_changed_at": self.entity_state_changed_at.get(plan_id),
+            "created_at": self.board.attention().clock(plan_id).created_at,
+            "updated_at": self.board.attention().clock(plan_id).updated_at,
+            "state_changed_at": self.board.attention().clock(plan_id).state_changed_at,
             "stages": active
                 .stages
                 .iter()

@@ -6,10 +6,11 @@ use super::*;
 /// a test that changes git state and re-polls would otherwise be answered
 /// from the poll before it.
 pub(in crate::app::tests) fn work_item_rows(state: &mut AppState) -> Vec<Value> {
-    state.run_stat_cache.clear();
-    for index in 0..state.projects.len() {
-        state.project_at_mut(index).primary_summary = None;
-        state.project_at_mut(index).external_scan = None;
+    state.board.diff_mut().clear_run_stats();
+    let project_ids = state.projects.ids().map(str::to_string).collect::<Vec<_>>();
+    for project_id in project_ids {
+        state.board.diff_mut().clear_primary_summary(&project_id);
+        state.board.diff_mut().clear_external_scan(&project_id);
     }
     state.handle(req("board.list", json!({})))["result"]["items"]
         .as_array()
@@ -239,7 +240,12 @@ fn every_feed_row_carries_the_anchor_it_sorts_by() {
 
     // An issue enters the list where it was filed, and the detail surface
     // agrees with the row.
-    let filed_at = state.entity_created_at[&issue_id].clone();
+    let filed_at = state
+        .board
+        .attention()
+        .clock(&issue_id)
+        .created_at
+        .expect("the issue has a creation clock");
     let issue = rows
         .iter()
         .find(|row| row["issue_id"] == json!(issue_id.clone()))
@@ -264,9 +270,14 @@ fn a_message_after_half_a_day_of_silence_moves_the_anchor() {
     // Filed yesterday, and nothing said about it since.
     let filed_at = hours_ago(30);
     state
-        .entity_created_at
-        .insert(issue_id.clone(), filed_at.clone());
-    let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+        .board
+        .attention_mut()
+        .set_created_at(&issue_id, filed_at.clone());
+    let attention = state
+        .board
+        .attention_mut()
+        .attention_mut_for_test(&issue_id)
+        .expect("it is anchored");
     attention.anchor_at = Some(filed_at.clone());
     attention.last_user_message_at = Some(hours_ago(13));
     assert_eq!(issue_row(&mut state, &issue_id)["anchor"], json!(filed_at));
@@ -310,7 +321,11 @@ fn an_agent_working_all_night_leaves_the_anchor_alone() {
     let mut state = qa_state(&repo, dir.path());
     let issue_id = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "implement me" }))));
     let anchored_at = hours_ago(30);
-    let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+    let attention = state
+        .board
+        .attention_mut()
+        .attention_mut_for_test(&issue_id)
+        .expect("it is anchored");
     attention.anchor_at = Some(anchored_at.clone());
     attention.last_user_message_at = Some(anchored_at.clone());
 
@@ -416,8 +431,17 @@ fn anchors_survive_a_restart_and_a_record_from_before_them_is_seeded() {
         )));
         // A record from before anchors: the attention map has everything
         // else about it and nothing about where it sits.
-        let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
-        attention.anchor_at = None;
+        state
+            .board
+            .attention_mut()
+            .attention_mut_for_test(&issue_id)
+            .expect("it is anchored")
+            .anchor_at = None;
+        let attention = state
+            .board
+            .attention_mut()
+            .attention_mut_for_test(&issue_id)
+            .expect("it is anchored");
         attention.last_user_message_at = None;
         attention.interact(&now_rfc3339());
         state.persist_attention();
@@ -425,14 +449,19 @@ fn anchors_survive_a_restart_and_a_record_from_before_them_is_seeded() {
     };
 
     let mut booted = qa_state(&repo, dir.path());
-    let created_at = booted.entity_created_at[&issue_id].clone();
+    let created_at = booted
+        .board
+        .attention()
+        .clock(&issue_id)
+        .created_at
+        .expect("the recovered issue has a creation clock");
     assert_eq!(
         booted.anchor_of(&issue_id),
         created_at,
         "boot anchors it where it was created, not where the restart was"
     );
     assert_eq!(
-        booted.attention[&issue_id].anchor_at.as_deref(),
+        booted.board.attention().anchor_at(&issue_id),
         Some(created_at.as_str()),
         "and writes it down"
     );
@@ -440,8 +469,9 @@ fn anchors_survive_a_restart_and_a_record_from_before_them_is_seeded() {
     // Pick it up, restart again: the anchor the user moved is the anchor
     // the next boot finds.
     booted
-        .attention
-        .get_mut(&issue_id)
+        .board
+        .attention_mut()
+        .attention_mut_for_test(&issue_id)
         .expect("anchored above")
         .last_user_message_at = Some(hours_ago(13));
     booted.handle(req(
@@ -651,13 +681,15 @@ fn the_feed_arrives_oldest_first() {
         json!({ "goal": "filed yesterday", "dispatch": false }),
     )));
     state
-        .attention
-        .get_mut(&older)
+        .board
+        .attention_mut()
+        .attention_mut_for_test(&older)
         .expect("anchored at creation")
         .anchor_at = Some(hours_ago(200));
     state
-        .attention
-        .get_mut(&newer)
+        .board
+        .attention_mut()
+        .attention_mut_for_test(&newer)
         .expect("anchored at creation")
         .anchor_at = Some(hours_ago(20));
 
@@ -673,8 +705,9 @@ fn the_feed_arrives_oldest_first() {
 
     // Picking the older one back up sends it to the bottom.
     state
-        .attention
-        .get_mut(&older)
+        .board
+        .attention_mut()
+        .attention_mut_for_test(&older)
         .expect("anchored above")
         .last_user_message_at = Some(hours_ago(13));
     state.handle(req(
@@ -704,7 +737,7 @@ fn a_moving_diffstat_is_what_dates_a_branch_between_commits() {
         stat: stat(1),
     });
     assert!(
-        !state.run_files_changed_at.contains_key(&run_id),
+        state.board.diff().run_files_changed_at(&run_id).is_none(),
         "the first compute has nothing to disagree with"
     );
 
@@ -713,7 +746,7 @@ fn a_moving_diffstat_is_what_dates_a_branch_between_commits() {
         stat: stat(1),
     });
     assert!(
-        !state.run_files_changed_at.contains_key(&run_id),
+        state.board.diff().run_files_changed_at(&run_id).is_none(),
         "an unchanged tree is not a change"
     );
 
@@ -722,9 +755,10 @@ fn a_moving_diffstat_is_what_dates_a_branch_between_commits() {
         stat: stat(2),
     });
     let changed_at = state
-        .run_files_changed_at
-        .get(&run_id)
-        .cloned()
+        .board
+        .diff()
+        .run_files_changed_at(&run_id)
+        .map(str::to_string)
         .expect("files moved");
     assert!(changed_at > hours_ago(1), "stamped now: {changed_at}");
 
@@ -735,8 +769,8 @@ fn a_moving_diffstat_is_what_dates_a_branch_between_commits() {
         stat: stat(9),
     });
     assert_eq!(
-        state.run_files_changed_at.get(&run_id),
-        Some(&changed_at),
+        state.board.diff().run_files_changed_at(&run_id),
+        Some(changed_at.as_str()),
         "a recompute after an invalidation had nothing to compare against"
     );
 }

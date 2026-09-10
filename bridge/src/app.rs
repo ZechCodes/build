@@ -12,6 +12,7 @@
 //! over MCP; the orchestrator code path is identical.
 
 mod board;
+mod board_index;
 mod captures;
 mod config;
 mod fs;
@@ -28,12 +29,15 @@ mod transactions;
 mod worktrees;
 
 #[cfg(test)]
+pub(in crate::app) use self::board::cache::DiffCacheKey;
+#[cfg(test)]
 pub(in crate::app) use self::board::cache::EXTERNAL_SCAN_INTERVAL;
 pub(in crate::app) use self::board::cache::{
-    scan_may_yet_show_it, DiffCacheEntry, DiffCacheKey, DiffComputeObserver, ExternalScanCache,
-    ExternalWorktreeRows, PRIMARY_SUMMARY_TTL,
+    scan_may_yet_show_it, DiffCacheEntry, DiffComputeObserver, ExternalWorktreeRows,
+    PRIMARY_SUMMARY_TTL,
 };
 pub(in crate::app) use self::board::views::{working_time_json, EntitylessRow};
+pub(in crate::app) use self::board_index::{BoardIndex, CacheEffect, RefreshClaim};
 #[cfg(test)]
 pub(in crate::app) use self::fs::FS_READ_MAX_BYTES;
 pub(in crate::app) use self::git::deferred::{DeferredGit, GitCallScope, ScopedGitCall};
@@ -177,7 +181,6 @@ use std::time::Duration;
 use portable_pty::PtySize;
 #[cfg(test)]
 use serde_json::json;
-use serde_json::Value;
 #[cfg(test)]
 use tokio::sync::broadcast;
 
@@ -225,11 +228,11 @@ use crate::run::{
 use crate::screen::ScreenHandle;
 #[cfg(test)]
 use crate::screen::TERM_FLUSH_MS;
+use crate::store::Store;
 #[cfg(test)]
 use crate::store::{
     now_rfc3339, PersistedPlan, PersistedRun, WorktreeFinishAction, WorktreeFinishStatus,
 };
-use crate::store::{PersistedArchivedWorktree, Store};
 pub use crate::terminal_environment::{capture_login_path, resolve_term_shell};
 #[cfg(test)]
 use crate::thread::{SessionInstance, ThreadDetail};
@@ -303,52 +306,8 @@ pub struct AppState {
     /// The provider/model routing runs on when the config file names one.
     /// `None` is the account default at low effort.
     router_choice: Option<ModelChoice>,
-    /// Finished external worktrees keyed by their stable path-derived id.
-    /// Loaded from the store at boot; project association is resolved by the
-    /// canonical project path because project ids are re-minted.
-    archived_worktrees: HashMap<String, PersistedArchivedWorktree>,
-    /// entity id → its RFC 3339 creation time, carried across saves (and restarts).
-    entity_created_at: HashMap<String, String>,
-    /// entity id → its RFC 3339 last-mutation time (stamped on every mutation).
-    entity_updated_at: HashMap<String, String>,
-    /// entity id → the RFC 3339 time of its last *state transition* (vs
-    /// `entity_updated_at`, which moves on every mutation).
-    entity_state_changed_at: HashMap<String, String>,
-    /// When the human last touched each entity, and whether they have seen where
-    /// it got to — the rail's ordering and colour. Keyed by run id, plan id, or
-    /// worktree id alike (a bare worktree has no record of its own).
-    attention: HashMap<String, crate::attention::Attention>,
-    /// thread id → how far that conversation had got when a mutation tail last
-    /// looked at it. A push fires when an attention-class item lands past it.
-    /// Keyed by conversation rather than by entity because a planned run and
-    /// its Issue share one thread, and one piece of news is one notification.
-    conversation_attention_sequence: HashMap<String, u64>,
-    /// entity id → the wire state string last seen by a mutation tail, so
-    /// `entity_state_changed_at` only moves on real transitions.
-    entity_last_state: HashMap<String, String>,
-    /// run id → cached `board.list` diffstat, so the poll surface never runs
-    /// per-run git work more than once per TTL window.
-    run_stat_cache: HashMap<String, (std::time::Instant, Value)>,
-    /// run id → when this run's files were last seen to change (RFC 3339).
-    ///
-    /// The diff cache above IS the watcher: its numbers are recomputed from the
-    /// checkout on a cadence, and two consecutive computes disagreeing means
-    /// work landed on disk. Stamping it there costs one comparison of values
-    /// already in hand — a real per-checkout watcher would cost a file handle
-    /// per worktree and a thread to drain it. Derived, so it is not persisted:
-    /// after a restart a run dates itself by its HEAD commit and its
-    /// conversation until the next change is observed.
-    run_files_changed_at: HashMap<String, String>,
-    /// Diff-cache entries with a refresh running right now. Single-flight: a
-    /// poll that finds one of these stale serves the value it has and adds no
-    /// second worktree scan to the disk.
-    diff_refreshes_in_flight: std::collections::HashSet<DiffCacheKey>,
-    /// Of those, the ones a mutation has overtaken — see
-    /// [`supersede_diff_refresh`](AppState::supersede_diff_refresh). The claim
-    /// is also the right to publish, and these have lost it: what they compute
-    /// describes the tree as it was before the mutation, and is dropped rather
-    /// than put back on the board.
-    diff_refreshes_superseded: std::collections::HashSet<DiffCacheKey>,
+    /// Board-owned attention, clocks, caches, refresh claims, and archive mirror.
+    board: BoardIndex,
     /// Test seam: see [`DiffComputeObserver`]. `None` in production.
     diff_compute_observer: Option<DiffComputeObserver>,
     /// Whether a [`sweep_vanished_runs`](AppState::sweep_vanished_runs) is
@@ -399,8 +358,8 @@ pub struct AppState {
     /// The shell user terminals spawn (resolved once; see [`resolve_term_shell`]).
     term_shell: String,
     streams: HashMap<String, StreamState>,
-    /// Every live PTY the daemon owns — the human's shells and each worktree's
-    /// one agent alike — keyed by (canonical worktree root, tab id). One
+    /// Every live PTY the daemon owns — human shells and agent sessions — keyed
+    /// by (canonical worktree root, tab id). One
     /// registry over one id space: there is no second place a terminal can be,
     /// so no verb has to ask which kind of thing an id names before serving it.
     session_registry: SessionRegistry,
@@ -544,17 +503,7 @@ impl AppState {
             state_root,
             bridge_exe,
             router_choice: None,
-            archived_worktrees: HashMap::new(),
-            entity_created_at: HashMap::new(),
-            entity_updated_at: HashMap::new(),
-            entity_state_changed_at: HashMap::new(),
-            attention: HashMap::new(),
-            conversation_attention_sequence: HashMap::new(),
-            entity_last_state: HashMap::new(),
-            run_stat_cache: HashMap::new(),
-            run_files_changed_at: HashMap::new(),
-            diff_refreshes_in_flight: std::collections::HashSet::new(),
-            diff_refreshes_superseded: std::collections::HashSet::new(),
+            board: BoardIndex::new(HashMap::new(), HashMap::new()),
             vanished_run_sweep_in_flight: false,
             diff_compute_observer: None,
             #[cfg(test)]

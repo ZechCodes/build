@@ -419,7 +419,9 @@ impl AppState {
         if let Some(run) = &scope.run {
             let run_id = run.run_id.clone();
             self.invalidate_run_stat(&run_id);
-            self.entity_updated_at.insert(run_id, now_rfc3339());
+            self.board
+                .attention_mut()
+                .record_updated(&run_id, now_rfc3339());
         }
         if let Some(project_id) = scope.project_id.clone() {
             self.invalidate_primary_summary(&project_id);

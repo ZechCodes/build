@@ -321,9 +321,9 @@ async fn protocol_status_completion_records_activity_without_a_board_poll() {
             let matches = state
                 .lock()
                 .unwrap()
-                .attention
-                .get("run-status-watch")
-                .and_then(|attention| attention.last_worked_at.as_deref())
+                .board
+                .attention()
+                .last_worked_at("run-status-watch")
                 == completed.last_worked_at.as_deref();
             if matches {
                 break true;
@@ -875,7 +875,13 @@ async fn stamping_happens_on_the_path_the_relay_uses() {
         .unwrap()
         .to_string();
     assert!(
-        state.lock().unwrap().attention.contains_key(&worktree_id),
+        state
+            .lock()
+            .unwrap()
+            .board
+            .attention()
+            .attention(&worktree_id)
+            .is_some(),
         "the wire path must stamp too"
     );
 }

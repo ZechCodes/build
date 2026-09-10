@@ -198,9 +198,9 @@ impl AppState {
             "can_finish": !primary
                 && (active.run.state == RunState::Merged
                     || (active.run.state == RunState::Review && active.worktree.path.exists())),
-            "created_at": self.entity_created_at.get(run_id),
-            "updated_at": self.entity_updated_at.get(run_id),
-            "state_changed_at": self.entity_state_changed_at.get(run_id),
+            "created_at": self.board.attention().clock(run_id).created_at,
+            "updated_at": self.board.attention().clock(run_id).updated_at,
+            "state_changed_at": self.board.attention().clock(run_id).state_changed_at,
             "stages": active
                 .stages
                 .iter()

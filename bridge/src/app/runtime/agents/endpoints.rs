@@ -985,7 +985,7 @@ impl AppState {
                 } else {
                     &agent.thread
                 };
-                let attention = self.attention.get(&entity_id)?;
+                let attention = self.board.attention().attention(&entity_id)?;
                 let sequence = thread.last_message_sequence();
                 let crossed = match attention.dismissed_line_for(&agent.id, position == 0) {
                     Some(line) => sequence > line,
@@ -1005,14 +1005,13 @@ impl AppState {
         };
         let persisted = self.finish_run_mutation(entity_id.clone(), active);
         self.retire_agent(&root, &removed.id);
-        if let Some(attention) = self.attention.get_mut(&entity_id) {
-            // Nothing prunes cursors by agent, so one left behind here would
-            // outlive the daemon it was written in.
-            attention.agent_read_sequences.remove(&removed.id);
-            if removed_agent_revived_clear {
-                attention.invalidate_dismissal();
-            }
-        }
+        // Nothing prunes cursors by agent, so one left behind here would
+        // outlive the daemon it was written in.
+        self.board.attention_mut().remove_agent_cursor(
+            &entity_id,
+            &removed.id,
+            removed_agent_revived_clear,
+        );
         self.persist_attention();
         persisted?;
         self.touch_attention(&entity_id);

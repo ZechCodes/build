@@ -1,5 +1,5 @@
 use crate::app::config::configured_isolation;
-use crate::app::{expand_tilde, AppState, ExternalScanCache};
+use crate::app::{expand_tilde, AppState};
 use crate::isolation::Isolation;
 use crate::orchestrator::{ActiveRun, Orchestrator};
 use crate::templates::Templates;
@@ -28,20 +28,6 @@ pub(in crate::app) struct Project {
     /// Which isolation this project's new checkouts are made with, when the
     /// account's answer is not the one wanted here. `None` inherits it.
     pub(in crate::app) isolation: Option<Isolation>,
-    /// Cached external-worktree scan, refreshed at most every
-    /// `EXTERNAL_SCAN_INTERVAL`. `None` until the first scan lands: a read
-    /// answers `scanning` rather than taking one.
-    pub(in crate::app) external_scan: Option<ExternalScanCache>,
-    /// When the last scan that could not read this repository gave up. A broken
-    /// repo settles on this — the board stops saying it is scanning and the
-    /// interval keeps every poll from claiming another walk — while the list of
-    /// checkouts stays whatever the last readable scan left, because a failure
-    /// is no evidence that they are gone.
-    pub(in crate::app) external_scan_failed_at: Option<std::time::Instant>,
-    /// Cached `task.list.primary_changes` entry for this project, refreshed at
-    /// most every `PRIMARY_SUMMARY_TTL` (spec §5.3) — same discipline as
-    /// `external_scan` / the task-stat cache.
-    pub(in crate::app) primary_summary: Option<(std::time::Instant, Value)>,
 }
 
 /// The default folder cloned repos land in, `~/.build/projects`.
@@ -111,9 +97,7 @@ impl AppState {
             }
             let id = self.add_project(repo, base);
             let isolation = configured_isolation(project, "project isolation");
-            if let Some(registered) = self.projects.get_mut(&id) {
-                registered.isolation = isolation;
-            }
+            self.projects.set_isolation(&id, isolation);
         }
     }
 
@@ -171,19 +155,26 @@ impl AppState {
                     base_branch: base_branch.to_string(),
                     orch,
                     isolation: None,
-                    external_scan: None,
-                    external_scan_failed_at: None,
-                    primary_summary: None,
                 }
             })
     }
 
     fn insert_project(&mut self, project: ProjectCandidate) -> String {
         let id = self.projects.publish(project).into_string();
+        self.board.diff_mut().register_project(id.clone());
         // A project is a section of the feed; registering one adds every row
         // its checkouts stand behind.
         self.note_board_changed();
         id
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn clear_projects_for_test(&mut self) {
+        let project_ids = self.projects.ids().map(str::to_string).collect::<Vec<_>>();
+        self.projects.clear();
+        for project_id in project_ids {
+            self.board.diff_mut().remove_project(&project_id);
+        }
     }
 
     /// The path of every Build-bound worktree — one per run: they are Build's,
@@ -213,13 +204,6 @@ impl AppState {
     /// resolves it through here.
     pub(in crate::app) fn project(&self, project_id: &str) -> Option<&Project> {
         self.projects.get(project_id)
-    }
-
-    /// One registered project, to be written to. Every edit of a project's
-    /// caches resolves it through here; a project that has since been removed
-    /// is `None`, and the write that found it so is dropped.
-    pub(in crate::app) fn project_mut(&mut self, project_id: &str) -> Option<&mut Project> {
-        self.projects.get_mut(project_id)
     }
 
     /// The registered project a client names by id, or the one refusal every

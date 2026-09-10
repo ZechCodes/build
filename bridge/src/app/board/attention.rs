@@ -19,6 +19,11 @@ pub(in crate::app) struct ConversationNews {
 }
 
 impl AppState {
+    #[cfg(test)]
+    pub(in crate::app) fn has_attention(&self, entity_id: &str) -> bool {
+        self.board.attention().attention(entity_id).is_some()
+    }
+
     /// Move `entity_state_changed_at` only when the entity's wire state
     /// actually differs from the last one a mutation tail observed. A fresh
     /// entity's first mutation stamps it — creation is a state change.
@@ -28,12 +33,9 @@ impl AppState {
         state: String,
         now: String,
     ) {
-        if self.entity_last_state.get(entity_id) == Some(&state) {
-            return;
-        }
-        self.entity_state_changed_at
-            .insert(entity_id.to_string(), now);
-        self.entity_last_state.insert(entity_id.to_string(), state);
+        self.board
+            .attention_mut()
+            .observe_state(entity_id, state, now);
     }
 
     /// Record where every live conversation has got to, without pushing. Called
@@ -60,7 +62,11 @@ impl AppState {
                     .map(|thread| (thread.id.clone(), thread.last_sequence()))
             })
             .collect();
-        self.conversation_attention_sequence.extend(sequences);
+        for (conversation_id, sequence) in sequences {
+            self.board
+                .attention_mut()
+                .seed_conversation(conversation_id, sequence);
+        }
     }
 
     /// Boot migration: give every stored entity the inbox anchor it would have
@@ -79,8 +85,9 @@ impl AppState {
             .map(|(id, plan)| (id, &plan.agents))
             .chain(self.runs.iter().map(|(id, run)| (id, &run.agents)))
             .filter(|(id, _)| {
-                self.attention
-                    .get(id.as_str())
+                self.board
+                    .attention()
+                    .attention(id.as_str())
                     .is_none_or(|attention| attention.anchor_at.is_none())
             })
             .map(|(id, roster)| {
@@ -108,9 +115,10 @@ impl AppState {
                     .collect();
                 said_at.sort();
                 let created_at = self
-                    .entity_created_at
-                    .get(id)
-                    .cloned()
+                    .board
+                    .attention()
+                    .clock(id)
+                    .created_at
                     .unwrap_or_else(now_rfc3339);
                 (id.clone(), created_at, said_at)
             })
@@ -119,11 +127,9 @@ impl AppState {
             return;
         }
         for (entity_id, created_at, said_at) in histories {
-            let attention = self.attention.entry(entity_id).or_default();
-            attention.seed_anchor(&created_at);
-            for at in said_at {
-                attention.note_user_message(&at);
-            }
+            self.board
+                .attention_mut()
+                .seed_anchor_from_history(&entity_id, &created_at, &said_at);
         }
         self.persist_attention();
     }
@@ -136,9 +142,10 @@ impl AppState {
         thread: &crate::thread::Thread,
     ) -> ConversationNews {
         let observed = self
-            .conversation_attention_sequence
-            .get(&thread.id)
-            .copied();
+            .board
+            .attention()
+            .conversation_watermark(&thread.id)
+            .previous;
         ConversationNews {
             thread_id: thread.id.clone(),
             sequence: thread.last_sequence(),
@@ -160,9 +167,9 @@ impl AppState {
         state_kind: Option<&'static str>,
     ) {
         let first_look = self
-            .conversation_attention_sequence
-            .insert(news.thread_id, news.sequence)
-            .is_none();
+            .board
+            .attention_mut()
+            .advance_conversation(news.thread_id, news.sequence);
         if first_look || self.notifier.is_none() {
             return;
         }
@@ -231,10 +238,9 @@ impl AppState {
         now: &str,
     ) {
         if self
-            .attention
-            .entry(entity_id.to_string())
-            .or_default()
-            .observe_working(working, now)
+            .board
+            .attention_mut()
+            .observe_working(entity_id, working, now)
         {
             self.persist_attention();
         }
@@ -243,10 +249,7 @@ impl AppState {
     /// Record that the human acted on `id`, now.
     pub(in crate::app) fn touch_attention(&mut self, id: &str) {
         let now = now_rfc3339();
-        self.attention
-            .entry(id.to_string())
-            .or_default()
-            .interact(&now);
+        self.board.attention_mut().interact(id, &now);
         self.persist_attention();
     }
 
@@ -268,11 +271,9 @@ impl AppState {
             return;
         };
         let read_through = self.conversation_last_sequences(id, agent_id, report);
-        let attention = self.attention.entry(id.to_string()).or_default();
-        attention.see(&state_changed_at);
-        for (agent_id, sequence) in read_through {
-            attention.read_through(&agent_id, sequence);
-        }
+        self.board
+            .attention_mut()
+            .mark_seen(id, Some(&state_changed_at), &read_through);
         self.persist_attention();
     }
 
@@ -341,7 +342,7 @@ impl AppState {
         let entity_ids: Vec<String> = self.plans.keys().chain(self.runs.keys()).cloned().collect();
         let mut changed = false;
         for id in entity_ids {
-            let Some(attention) = self.attention.get(&id) else {
+            let Some(attention) = self.board.attention().attention(&id) else {
                 continue;
             };
             if attention.dismissal_tracks_messages {
@@ -359,9 +360,11 @@ impl AppState {
                         )
                     },
                 );
-            changed |= self.attention.get_mut(&id).is_some_and(|attention| {
-                attention.migrate_dismissal_to_messages(&message_lines, was_still_dismissed)
-            });
+            changed |= self.board.attention_mut().migrate_dismissal_to_messages(
+                &id,
+                &message_lines,
+                was_still_dismissed,
+            );
         }
         if changed {
             self.persist_attention();
@@ -542,27 +545,22 @@ impl AppState {
     /// How far the human has read one agent's conversation, folding in the
     /// pre-agent cursor the entity's first agent inherited.
     pub(in crate::app) fn read_cursor(&self, entity_id: &str, agent_id: &str) -> u64 {
-        let Some(attention) = self.attention.get(entity_id) else {
-            return 0;
-        };
-        let inherited = if self
+        let is_primary = self
             .entity_agents(entity_id)
-            .is_ok_and(|roster| roster.is_primary(agent_id))
-        {
-            attention.last_read_sequence
-        } else {
-            0
-        };
-        attention.cursor_for(agent_id).max(inherited)
+            .is_ok_and(|roster| roster.is_primary(agent_id));
+        self.board
+            .attention()
+            .read_cursor(entity_id, agent_id, is_primary)
     }
 
     /// The entity's state clock — what a `seen` stamp is versioned against. A
     /// bare worktree has no lifecycle of its own, so seeing it is simply now.
     pub(in crate::app) fn entity_state_clock(&self, id: &str) -> Option<String> {
         Some(
-            self.entity_state_changed_at
-                .get(id)
-                .cloned()
+            self.board
+                .attention()
+                .clock(id)
+                .state_changed_at
                 .unwrap_or_else(now_rfc3339),
         )
     }
@@ -587,7 +585,14 @@ impl AppState {
             .chain(self.attention_worktree_ids())
             .chain(self.live_row_keys())
             .collect();
-        if let Err(e) = store.save_attention(&self.attention, &live) {
+        let attention = self
+            .board
+            .attention()
+            .persistence()
+            .into_entries()
+            .into_iter()
+            .collect();
+        if let Err(e) = store.save_attention(&attention, &live) {
             eprintln!("attention: {e}");
         }
     }
@@ -602,13 +607,14 @@ impl AppState {
     /// ([`forget_row_dismissals`](Self::forget_row_dismissals)) rather than
     /// waiting to be pruned.
     pub(in crate::app) fn live_row_keys(&self) -> Vec<String> {
-        self.attention
-            .keys()
+        self.board
+            .attention()
+            .attention_ids()
             .filter(|key| {
                 crate::attention::RowKey::parse(key)
                     .is_some_and(|row| self.projects.iter().any(|p| p.id == row.project_id()))
             })
-            .cloned()
+            .map(str::to_string)
             .collect()
     }
 
@@ -619,18 +625,36 @@ impl AppState {
     /// a checkout is kept and the write after the first scan prunes; a key of
     /// any other shape answers to the map that owns it either way.
     pub(in crate::app) fn attention_worktree_ids(&self) -> Vec<String> {
-        if self.projects.iter().any(|p| p.external_scan.is_none()) {
+        let project_ids: Vec<String> = self
+            .projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect();
+        if project_ids.iter().any(|project_id| {
+            !self
+                .board
+                .diff()
+                .external_scan(project_id)
+                .has_readable_scan
+        }) {
             return self
-                .attention
-                .keys()
+                .board
+                .attention()
+                .attention_ids()
                 .filter(|key| crate::worktree::is_checkout_id(key))
-                .cloned()
+                .map(str::to_string)
                 .collect();
         }
-        self.projects
+        project_ids
             .iter()
-            .filter_map(|p| p.external_scan.as_ref())
-            .flat_map(|cache| cache.worktrees.iter().map(|w| w.id.clone()))
+            .flat_map(|project_id| {
+                self.board
+                    .diff()
+                    .external_scan(project_id)
+                    .worktrees
+                    .iter()
+                    .map(|worktree| worktree.id.clone())
+            })
             .collect()
     }
 
@@ -673,7 +697,7 @@ impl AppState {
         if !self.entity_takes_attention(&entity_id) {
             return Err(format!("entity.mute: unknown entity {entity_id}"));
         }
-        self.attention.entry(entity_id.clone()).or_default().muted = muted;
+        self.board.attention_mut().set_muted(&entity_id, muted);
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "muted": muted }))
     }
@@ -729,11 +753,9 @@ impl AppState {
         // each agent numbers its conversation from 1, so a sequence taken off
         // the first agent says nothing about where the second one has got to.
         let lines = self.dismissal_lines(&entity_id);
-        let attention = self.attention.entry(entity_id.clone()).or_default();
-        attention.dismiss_messages();
-        for (agent_id, last_attention_sequence) in lines {
-            attention.dismiss_agent_through(&agent_id, last_attention_sequence);
-        }
+        self.board
+            .attention_mut()
+            .set_entity_dismissal(&entity_id, &lines);
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "dismissed": true }))
     }
@@ -741,10 +763,9 @@ impl AppState {
     /// Write one entity-less row's dismissal: cleared at the commit it is
     /// sitting on, which is what brings it back.
     pub(in crate::app) fn clear_row(&mut self, row: &EntitylessRow) {
-        self.attention
-            .entry(row.key.clone())
-            .or_default()
-            .dismiss_at_head(row.head.as_deref());
+        self.board
+            .attention_mut()
+            .dismiss_row_at_head(&row.key, row.head.as_deref());
         self.persist_attention();
     }
 
@@ -908,10 +929,7 @@ impl AppState {
             .into_iter()
             .chain(primary.then(|| crate::attention::primary_row_key(project_id)))
             .collect();
-        let removed: Vec<crate::attention::Attention> = keys
-            .iter()
-            .filter_map(|key| self.attention.remove(key))
-            .collect();
+        let removed = self.board.attention_mut().take_row_attentions(&keys);
         let dismissed = removed
             .iter()
             .any(|attention| attention.is_dismissed_at_head(None));
@@ -928,9 +946,7 @@ impl AppState {
     /// Whether an entity-less row has been cleared out of the inbox: the human
     /// dismissed it, and it is still sitting on the commit they left it on.
     pub(in crate::app) fn row_is_dismissed(&self, key: &str, head: Option<&str>) -> bool {
-        self.attention
-            .get(key)
-            .is_some_and(|attention| attention.is_dismissed_at_head(head))
+        self.board.attention().row_is_dismissed(key, head)
     }
 
     /// Whether `entity_id` names something the attention map keeps a record
@@ -955,17 +971,15 @@ impl AppState {
     /// seen comparison happens HERE, against the state clock, so every surface
     /// agrees on it rather than each re-deriving it.
     pub(in crate::app) fn attention_json(&self, id: &str) -> Value {
-        let attention = self.attention.get(id).cloned().unwrap_or_default();
-        let created_at = self
-            .entity_created_at
-            .get(id)
+        let attention = self
+            .board
+            .attention()
+            .attention(id)
             .cloned()
-            .unwrap_or_else(now_rfc3339);
-        let state_changed_at = self
-            .entity_state_changed_at
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| created_at.clone());
+            .unwrap_or_default();
+        let clock = self.board.attention().clock(id);
+        let created_at = clock.created_at.unwrap_or_else(now_rfc3339);
+        let state_changed_at = clock.state_changed_at.unwrap_or_else(|| created_at.clone());
         json!({
             "resume_at": attention.sort_key(&created_at),
             "interacted": attention.last_interaction_at.is_some(),
@@ -984,11 +998,12 @@ impl AppState {
     /// made it.
     pub(in crate::app) fn anchor_of(&self, entity_id: &str) -> String {
         let created_at = self
-            .entity_created_at
-            .get(entity_id)
-            .cloned()
+            .board
+            .attention()
+            .clock(entity_id)
+            .created_at
             .unwrap_or_else(now_rfc3339);
-        match self.attention.get(entity_id) {
+        match self.board.attention().attention(entity_id) {
             Some(attention) => attention.anchor(&created_at),
             None => created_at,
         }
@@ -998,15 +1013,18 @@ impl AppState {
     /// mutation can call it and only the first one does anything.
     pub(in crate::app) fn seed_anchor(&mut self, entity_id: &str) {
         let created_at = self
-            .entity_created_at
-            .get(entity_id)
-            .cloned()
+            .board
+            .attention()
+            .clock(entity_id)
+            .created_at
             .unwrap_or_else(now_rfc3339);
-        let attention = self.attention.entry(entity_id.to_string()).or_default();
-        if attention.anchor_at.is_some() {
+        if !self
+            .board
+            .attention_mut()
+            .seed_anchor(entity_id, &created_at)
+        {
             return;
         }
-        attention.seed_anchor(&created_at);
         self.persist_attention();
     }
 
@@ -1023,14 +1041,15 @@ impl AppState {
     /// checked out would be dropped on the way to disk.
     pub(in crate::app) fn note_user_message(&mut self, entity_id: &str) {
         let created_at = self
-            .entity_created_at
-            .get(entity_id)
-            .cloned()
+            .board
+            .attention()
+            .clock(entity_id)
+            .created_at
             .unwrap_or_else(now_rfc3339);
         let now = now_rfc3339();
-        let attention = self.attention.entry(entity_id.to_string()).or_default();
-        attention.seed_anchor(&created_at);
-        attention.note_user_message(&now);
+        let attention = self.board.attention_mut();
+        attention.seed_anchor(entity_id, &created_at);
+        attention.note_user_message(entity_id, &now);
         self.persist_attention();
     }
 
@@ -1041,10 +1060,9 @@ impl AppState {
             return;
         };
         let anchor = capture.anchor().to_string();
-        self.attention
-            .entry(entity_id.to_string())
-            .or_default()
-            .inherit_anchor(&anchor, None);
+        self.board
+            .attention_mut()
+            .inherit_anchor(entity_id, &anchor);
         self.persist_attention();
     }
 }

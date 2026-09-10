@@ -507,10 +507,7 @@ impl AppState {
         }
         self.plans.remove(&plan_id);
         self.projects.unbind_entity(&plan_id);
-        self.entity_created_at.remove(&plan_id);
-        self.entity_updated_at.remove(&plan_id);
-        self.entity_state_changed_at.remove(&plan_id);
-        self.entity_last_state.remove(&plan_id);
+        self.board.attention_mut().remove_entity_clocks(&plan_id);
         self.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
     }

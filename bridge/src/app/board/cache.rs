@@ -5,10 +5,13 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::store::now_rfc3339;
 use crate::worktree::{ExternalWorktree, WorktreeManager};
 
-use super::super::{AppState, OffLockJob};
+use super::super::board_index::CachePublication;
+pub(in crate::app) use super::super::board_index::{
+    DiffCacheEntry, DiffCacheKey, ExternalScanCache,
+};
+use super::super::{AppState, CacheEffect, OffLockJob, RefreshClaim};
 
 /// External-worktree scans are refreshed at most this often per project; the
 /// board polls task.list every ~1.6 s and must never trigger a full rescan per
@@ -23,37 +26,32 @@ pub(in crate::app) const TASK_STAT_TTL: Duration = Duration::from_secs(10);
 /// from cache before the next poll recomputes it (spec §5.3).
 pub(in crate::app) const PRIMARY_SUMMARY_TTL: Duration = Duration::from_secs(10);
 
-/// One project's cached external-worktree scan.
-pub(in crate::app) struct ExternalScanCache {
-    pub(in crate::app) scanned_at: std::time::Instant,
-    pub(in crate::app) worktrees: Vec<ExternalWorktree>,
-}
-
 /// A claimed diff-cache refresh on its way to the blocking pool: the git work
 /// and the test seam that watches it start.
 pub(in crate::app) struct DiffRefreshJob {
     pub(in crate::app) refresh: DiffCacheRefresh,
+    pub(in crate::app) claim: Option<RefreshClaim>,
     pub(in crate::app) observer: Option<DiffComputeObserver>,
 }
 
 impl OffLockJob for DiffRefreshJob {
-    type Claim = DiffCacheKey;
+    type Claim = RefreshClaim;
     type Decided = Option<DiffCacheEntry>;
 
-    fn claim(&self) -> DiffCacheKey {
-        self.refresh.key()
+    fn claim(&mut self) -> RefreshClaim {
+        self.claim.take().expect("diff refresh claim taken once")
     }
 
     fn decide(self) -> Option<DiffCacheEntry> {
         self.refresh.compute(self.observer.as_ref())
     }
 
-    fn apply(state: &mut AppState, key: DiffCacheKey, entry: Option<DiffCacheEntry>) {
-        state.publish_diff_refresh(&key, entry);
+    fn apply(state: &mut AppState, claim: RefreshClaim, entry: Option<DiffCacheEntry>) {
+        state.publish_diff_refresh(claim, entry);
     }
 
-    fn abandon(state: &mut AppState, key: DiffCacheKey) {
-        state.release_diff_refresh(&key);
+    fn abandon(state: &mut AppState, claim: RefreshClaim) {
+        state.release_diff_refresh(claim);
     }
 }
 
@@ -150,15 +148,6 @@ pub(in crate::app) fn scan_may_yet_show_it(settled: bool) -> &'static str {
     }
 }
 
-/// One entry of the diff caches the poll surfaces read: a run's diffstat, a
-/// project's external-worktree scan, a project's primary-checkout summary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(in crate::app) enum DiffCacheKey {
-    RunStat(String),
-    ExternalScan(String),
-    PrimarySummary(String),
-}
-
 /// A diff-cache entry to compute, carrying every input the git work needs.
 ///
 /// It borrows nothing from [`AppState`] on purpose: a refresh runs on a thread
@@ -184,27 +173,6 @@ pub(in crate::app) enum DiffCacheRefresh {
         project_id: String,
         repo_path: std::path::PathBuf,
         base_branch: String,
-    },
-}
-
-/// What a refresh computed, on its way back into the cache.
-pub(in crate::app) enum DiffCacheEntry {
-    RunStat {
-        run_id: String,
-        stat: Value,
-    },
-    ExternalScan {
-        project_id: String,
-        worktrees: Vec<ExternalWorktree>,
-    },
-    /// The scan ran and could not read the repository. Stored so a project
-    /// whose repo is gone settles instead of being walked again by every poll.
-    ExternalScanUnreadable {
-        project_id: String,
-    },
-    PrimarySummary {
-        project_id: String,
-        summary: Value,
     },
 }
 
@@ -342,39 +310,15 @@ pub(in crate::app) fn primary_changes_summary(
 }
 
 impl AppState {
-    /// A project's primary-checkout summary, as of `now`.
-    pub(in crate::app) fn store_primary_summary(
-        &mut self,
-        project_id: &str,
-        summary: Value,
-        now: std::time::Instant,
-    ) {
-        let Some(project) = self.project_mut(project_id) else {
-            return;
-        };
-        let changed = project
-            .primary_summary
-            .as_ref()
-            .is_none_or(|(_, previous)| previous != &summary);
-        project.primary_summary = Some((now, summary));
-        if changed {
-            self.note_board_changed();
-        }
-    }
-
     /// Drop a run's cached diffstat — the mutation that calls this just changed
     /// the tree it described. Any refresh in flight is superseded with it.
     pub(in crate::app) fn invalidate_run_stat(&mut self, run_id: &str) {
-        self.run_stat_cache.remove(run_id);
-        self.supersede_diff_refresh(&DiffCacheKey::RunStat(run_id.to_string()));
+        self.board.diff_mut().invalidate_run_stat(run_id);
     }
 
     /// Drop a project's cached primary-checkout summary, same reasoning.
     pub(in crate::app) fn invalidate_primary_summary(&mut self, project_id: &str) {
-        if let Some(project) = self.project_mut(project_id) {
-            project.primary_summary = None;
-        }
-        self.supersede_diff_refresh(&DiffCacheKey::PrimarySummary(project_id.to_string()));
+        self.board.diff_mut().invalidate_primary_summary(project_id);
     }
 
     /// The runs of a project that have not finished, with the id each is
@@ -403,15 +347,13 @@ impl AppState {
     /// invalidates the browser when it lands.
     pub(in crate::app) fn external_worktrees(&mut self, project_id: &str) -> ScanRead {
         if let Some(refresh) = self.external_scan_refresh(project_id) {
-            let settled_at = self.scan_settled_at(project_id);
+            let settled_at = self.board.diff().external_scan(project_id).settled_at;
             self.refresh_if_stale(settled_at, EXTERNAL_SCAN_INTERVAL, refresh);
         }
+        let scan = self.board.diff().external_scan(project_id);
         ScanRead {
-            worktrees: self
-                .external_scan_of(project_id)
-                .map(|cache| cache.worktrees.clone())
-                .unwrap_or_default(),
-            settled: self.scan_settled_at(project_id).is_some(),
+            worktrees: scan.worktrees.to_vec(),
+            settled: scan.settled_at.is_some(),
         }
     }
 
@@ -422,16 +364,11 @@ impl AppState {
         project_id: &str,
         worktree: ExternalWorktree,
     ) {
-        self.amend_external_scan(project_id, |worktrees| {
-            let replaced = worktrees
-                .iter()
-                .position(|known| known.path == worktree.path)
-                .map(|index| worktrees.remove(index));
-            let changed = replaced.as_ref() != Some(&worktree);
-            worktrees.push(worktree);
-            crate::worktree::sort_checkouts(worktrees);
-            changed
-        });
+        let effects = self
+            .board
+            .diff_mut()
+            .note_worktree_appeared(project_id, worktree);
+        self.apply_cache_effects(effects);
     }
 
     /// A checkout that is gone, or that a run has taken ownership of: it leaves
@@ -439,11 +376,11 @@ impl AppState {
     /// to a run was never in the list, so this is routinely a no-op.
     pub(in crate::app) fn note_worktree_gone(&mut self, project_id: &str, path: &std::path::Path) {
         let canonical = Self::canonical_root(path);
-        self.amend_external_scan(project_id, |worktrees| {
-            let before = worktrees.len();
-            worktrees.retain(|known| known.path != canonical);
-            before != worktrees.len()
-        });
+        let effects = self
+            .board
+            .diff_mut()
+            .note_worktree_gone(project_id, &canonical);
+        self.apply_cache_effects(effects);
     }
 
     /// The one checkout of a project that `is_it` names, or the refusal that
@@ -490,12 +427,11 @@ impl AppState {
     pub(in crate::app) fn primary_summary_of(
         &self,
         project_id: &str,
-    ) -> Option<&(std::time::Instant, Value)> {
-        self.projects
-            .iter()
-            .find(|p| p.id == project_id)?
-            .primary_summary
-            .as_ref()
+    ) -> Option<(std::time::Instant, &Value)> {
+        self.board
+            .diff()
+            .primary_summary(project_id)
+            .map(|cached| (cached.computed_at, cached.value))
     }
 
     // ---- the poll surfaces' diff caches (stale-while-revalidate) -------------
@@ -559,7 +495,38 @@ impl AppState {
     /// test that holds a compute open has no other way to see it.
     #[cfg(test)]
     pub(in crate::app) fn diff_refresh_is_running(&self, key: &DiffCacheKey) -> bool {
-        self.diff_refreshes_in_flight.contains(key)
+        self.board.diff().refresh_is_running(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn claim_diff_refresh_for_test(
+        &mut self,
+        key: DiffCacheKey,
+    ) -> RefreshClaim {
+        self.board
+            .diff_mut()
+            .claim_refresh(key)
+            .expect("test refresh claim must be free")
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn diff_refresh_is_superseded(&self, key: &DiffCacheKey) -> bool {
+        self.board.diff().refresh_is_superseded(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn has_cached_run_stat(&self, run_id: &str) -> bool {
+        self.board.diff().has_run_stat(run_id)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn clear_external_scan_for_test(&mut self, project_id: &str) {
+        self.board.diff_mut().clear_external_scan(project_id);
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn age_external_scan_for_test(&mut self, project_id: &str, age: Duration) {
+        self.board.diff_mut().age_external_scan(project_id, age);
     }
 
     /// Recompute this entry behind whatever the caller is about to answer with.
@@ -568,11 +535,12 @@ impl AppState {
     /// call, and one that starts here runs on a thread that holds nothing. No
     /// age test — the caller has already decided it wants the git work done.
     pub(in crate::app) fn refresh_now(&mut self, refresh: DiffCacheRefresh) {
-        if !self.diff_refreshes_in_flight.insert(refresh.key()) {
+        let Some(claim) = self.board.diff_mut().claim_refresh(refresh.key()) else {
             return;
-        }
+        };
         self.run_off_lock(DiffRefreshJob {
             refresh,
+            claim: Some(claim),
             observer: self.diff_compute_observer.clone(),
         });
     }
@@ -597,37 +565,25 @@ impl AppState {
     /// on purpose, so what it computed is dropped and only the claim goes back.
     pub(in crate::app) fn publish_diff_refresh(
         &mut self,
-        key: &DiffCacheKey,
+        claim: RefreshClaim,
         entry: Option<DiffCacheEntry>,
     ) {
-        let claimed = self.diff_refreshes_in_flight.remove(key);
-        let superseded = self.diff_refreshes_superseded.remove(key);
-        if !claimed || superseded {
-            return;
-        }
-        if let Some(entry) = entry {
-            self.store_diff_entry(entry);
+        match self
+            .board
+            .diff_mut()
+            .publish_refresh(claim, entry, std::time::Instant::now())
+        {
+            CachePublication::Settled(effects) => self.apply_cache_effects(effects),
+            CachePublication::RunStatChanged(pending) => {
+                self.note_entity_settled(pending.run_id());
+                self.board.diff_mut().commit_changed_run_stat(pending);
+            }
         }
     }
 
     /// Let a claim go without publishing anything.
-    pub(in crate::app) fn release_diff_refresh(&mut self, key: &DiffCacheKey) {
-        self.diff_refreshes_in_flight.remove(key);
-        self.diff_refreshes_superseded.remove(key);
-    }
-
-    /// Overtake whatever refresh of this entry is running: the caller has just
-    /// written something newer than that refresh can possibly know about, so
-    /// its result is dropped when it lands.
-    ///
-    /// The claim is deliberately kept until then. Releasing it instead — which
-    /// is what the caches did before — lets the very next read start a second
-    /// compute of the same thing behind the first, and then lets the first,
-    /// pre-edit one land on top of the edit and discard the second's answer.
-    pub(in crate::app) fn supersede_diff_refresh(&mut self, key: &DiffCacheKey) {
-        if self.diff_refreshes_in_flight.contains(key) {
-            self.diff_refreshes_superseded.insert(key.clone());
-        }
+    pub(in crate::app) fn release_diff_refresh(&mut self, claim: RefreshClaim) {
+        self.board.diff_mut().release_refresh(claim);
     }
 
     /// Write a computed entry into the cache it belongs to. The one place a
@@ -635,20 +591,17 @@ impl AppState {
     /// cache's own write, and an entry whose run or project has since gone is
     /// dropped by it.
     pub(in crate::app) fn store_diff_entry(&mut self, entry: DiffCacheEntry) {
-        let now = std::time::Instant::now();
         match entry {
-            DiffCacheEntry::RunStat { run_id, stat } => self.store_run_stat(run_id, stat, now),
-            DiffCacheEntry::ExternalScan {
-                project_id,
-                worktrees,
-            } => self.store_external_scan(&project_id, worktrees, now),
-            DiffCacheEntry::ExternalScanUnreadable { project_id } => {
-                self.store_scan_failure(&project_id, now)
+            DiffCacheEntry::RunStat { run_id, stat } => {
+                self.store_run_stat(run_id, stat, std::time::Instant::now());
             }
-            DiffCacheEntry::PrimarySummary {
-                project_id,
-                summary,
-            } => self.store_primary_summary(&project_id, summary, now),
+            entry => {
+                let effects = self
+                    .board
+                    .diff_mut()
+                    .store_entry_for_adapter(entry, std::time::Instant::now());
+                self.apply_cache_effects(effects);
+            }
         }
     }
 
@@ -659,68 +612,8 @@ impl AppState {
         stat: Value,
         now: std::time::Instant,
     ) {
-        // Two computes that disagree are files that changed. Only when there
-        // was something to disagree with: an invalidated entry recomputes from
-        // nothing, and that is a mutation, not a filesystem event.
-        let (first, changed) = match self.run_stat_cache.get(&run_id) {
-            Some((_, previous)) => (false, previous != &stat),
-            None => (true, false),
-        };
-        if changed {
-            self.run_files_changed_at
-                .insert(run_id.clone(), now_rfc3339());
-            // This cache IS the git watcher: two computes that disagree are
-            // files that landed in the checkout, which is exactly what an
-            // entity's diff surface is showing. It fires as fast as an agent
-            // writes files, so the entity's own event is paced.
-            self.note_entity_settled(&run_id);
-        }
-        self.run_stat_cache.insert(run_id, (now, stat));
-        // A board answered `stat: null` for this run and claimed this refresh;
-        // nothing else will ever tell it the number arrived.
-        if first {
-            self.note_board_changed();
-        }
-    }
-
-    /// A project's checkouts, as one walk of its repository found them.
-    pub(in crate::app) fn store_external_scan(
-        &mut self,
-        project_id: &str,
-        worktrees: Vec<ExternalWorktree>,
-        now: std::time::Instant,
-    ) {
-        let Some(project) = self.project_mut(project_id) else {
-            return;
-        };
-        // A board answered "still scanning", or answered from a list this one
-        // disagrees with. Either way the rows the browser is holding are not
-        // the rows this daemon would send now, so it is told to ask again.
-        let changed = project
-            .external_scan
-            .as_ref()
-            .is_none_or(|cache| cache.worktrees != worktrees);
-        project.external_scan = Some(ExternalScanCache {
-            scanned_at: now,
-            worktrees,
-        });
-        project.external_scan_failed_at = None;
-        if changed {
-            self.note_board_changed();
-        }
-    }
-
-    /// A repository this daemon could not read, so the interval is measured
-    /// from the attempt rather than from a list that never arrived.
-    pub(in crate::app) fn store_scan_failure(&mut self, project_id: &str, now: std::time::Instant) {
-        let Some(project) = self.project_mut(project_id) else {
-            return;
-        };
-        let settling = project.external_scan_failed_at.is_none();
-        project.external_scan_failed_at = Some(now);
-        if settling {
-            self.note_board_changed();
-        }
+        let publication = self.board.diff_mut().prepare_run_stat(run_id, stat, now);
+        self.apply_cache_publication(publication);
     }
 
     /// A run's diffstat for the `board.list` poll surface, held for
@@ -729,33 +622,29 @@ impl AppState {
     /// about to be) forever.
     pub(in crate::app) fn run_stat(&mut self, run_id: &str) -> Option<Value> {
         if let Some(refresh) = self.run_stat_refresh(run_id) {
-            let computed_at = self.run_stat_cache.get(run_id).map(|(at, _)| *at);
+            let computed_at = self
+                .board
+                .diff()
+                .run_stat(run_id)
+                .map(|cached| cached.computed_at);
             self.refresh_if_stale(computed_at, TASK_STAT_TTL, refresh);
         }
-        self.run_stat_cache
-            .get(run_id)
-            .map(|(_, stat)| stat.clone())
+        self.board
+            .diff()
+            .run_stat(run_id)
+            .map(|cached| cached.value.clone())
     }
 
     /// When this project's last scan attempt settled, whether it landed a list
     /// or gave up on a repository it could not read. What the interval is
     /// measured from, so a broken repo is not walked again by every poll.
     pub(in crate::app) fn scan_settled_at(&self, project_id: &str) -> Option<std::time::Instant> {
-        let project = self.project(project_id)?;
-        project
-            .external_scan
-            .as_ref()
-            .map(|cache| cache.scanned_at)
-            .max(project.external_scan_failed_at)
+        self.board.diff().external_scan(project_id).settled_at
     }
 
     /// The last scan of a project's checkouts, if one has ever landed.
     pub(in crate::app) fn external_scan_of(&self, project_id: &str) -> Option<&ExternalScanCache> {
-        self.projects
-            .iter()
-            .find(|p| p.id == project_id)?
-            .external_scan
-            .as_ref()
+        self.board.diff().external_scan_cache(project_id)
     }
 
     /// Scan one project's checkouts here and now, with the app mutex in hand.
@@ -797,31 +686,21 @@ impl AppState {
         }
     }
 
-    /// Edit a project's last scan in place. A scan in flight described the
-    /// repository as it was before this change, so the edit supersedes it and
-    /// whatever it finds is dropped — the amended list is the newer truth. A
-    /// project that has never been scanned is left alone, and so is the scan it
-    /// has running: there is nothing here that scan is out of date about, and
-    /// its first list is what shows the checkout.
-    ///
-    /// `amend` answers whether it changed the list. An amendment that changed
-    /// nothing is not an edit: it neither overtakes the running scan nor
-    /// tells the browser about a board that is as it was.
-    pub(in crate::app) fn amend_external_scan(
-        &mut self,
-        project_id: &str,
-        amend: impl FnOnce(&mut Vec<ExternalWorktree>) -> bool,
-    ) {
-        let amended = self
-            .project_mut(project_id)
-            .and_then(|project| project.external_scan.as_mut())
-            // The stamp is not touched: this edit knows about one checkout, and
-            // the rest of the list is exactly as old as it was.
-            .is_some_and(|cache| amend(&mut cache.worktrees));
-        if !amended {
-            return;
+    fn apply_cache_effects(&self, effects: Vec<CacheEffect>) {
+        for effect in effects {
+            match effect {
+                CacheEffect::BoardChanged => self.note_board_changed(),
+            }
         }
-        self.supersede_diff_refresh(&DiffCacheKey::ExternalScan(project_id.to_string()));
-        self.note_board_changed();
+    }
+
+    fn apply_cache_publication(&mut self, publication: CachePublication) {
+        match publication {
+            CachePublication::Settled(effects) => self.apply_cache_effects(effects),
+            CachePublication::RunStatChanged(pending) => {
+                self.note_entity_settled(pending.run_id());
+                self.board.diff_mut().commit_changed_run_stat(pending);
+            }
+        }
     }
 }

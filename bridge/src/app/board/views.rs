@@ -197,12 +197,14 @@ impl AppState {
                     .max()
                     .map(str::to_string);
                 let worked_at = self
-                    .attention
-                    .get(id)
+                    .board
+                    .attention()
+                    .attention(id)
                     .and_then(|attention| attention.last_worked_at.clone());
                 let first_observed_at = self
-                    .attention
-                    .get(id)
+                    .board
+                    .attention()
+                    .attention(id)
                     .and_then(|attention| attention.first_observed_at.clone());
                 return conversation_at
                     .into_iter()
@@ -225,9 +227,10 @@ impl AppState {
         // Resolved up front: the loop below holds a &mut borrow of the scan
         // cache, and attention_json needs &self.
         let attention_of: std::collections::HashMap<String, Value> = self
-            .attention
-            .keys()
-            .map(|id| (id.clone(), self.attention_json(id)))
+            .board
+            .attention()
+            .attention_ids()
+            .map(|id| (id.to_string(), self.attention_json(id)))
             .collect();
         // Read off the tab registry, which is where an agent can be — there is
         // no longer anywhere else for one to run. The worktree id is derived
@@ -340,7 +343,7 @@ impl AppState {
     /// one itself.
     pub(in crate::app) fn primary_summary(&mut self, project_id: &str) -> Option<Value> {
         if let Some(refresh) = self.primary_summary_refresh(project_id) {
-            let computed_at = self.primary_summary_of(project_id).map(|(at, _)| *at);
+            let computed_at = self.primary_summary_of(project_id).map(|(at, _)| at);
             self.refresh_if_stale(computed_at, PRIMARY_SUMMARY_TTL, refresh);
         }
         self.primary_summary_of(project_id)
@@ -503,7 +506,7 @@ impl AppState {
         let crossed: Vec<String> = entity_ids
             .into_iter()
             .filter(|id| {
-                let Some(attention) = self.attention.get(id) else {
+                let Some(attention) = self.board.attention().attention(id) else {
                     return false;
                 };
                 attention.dismissal_tracks_messages
@@ -521,9 +524,7 @@ impl AppState {
             return;
         }
         for id in crossed {
-            if let Some(attention) = self.attention.get_mut(&id) {
-                attention.invalidate_dismissal();
-            }
+            self.board.attention_mut().invalidate_dismissal(&id);
         }
         self.persist_attention();
     }
@@ -548,7 +549,7 @@ impl AppState {
         });
         let mut changed = false;
         for key in primary_keys.chain(external_keys) {
-            changed |= self.attention.entry(key).or_default().observe(&now);
+            changed |= self.board.attention_mut().observe_row(&key, &now);
         }
         if changed {
             self.persist_attention();
@@ -665,8 +666,9 @@ impl AppState {
             // dates itself by its own last commit, which is the only history it
             // has. Same for its last activity, plus whatever its agent painted.
             "anchor": sync.head_committed_at,
-            "last_activity": self.attention
-                .get(&crate::attention::primary_row_key(&project_id))
+            "last_activity": self.board
+                .attention()
+                .attention(&crate::attention::primary_row_key(&project_id))
                 .and_then(|attention| attention.first_observed_at.clone()),
             // The repository is not a worktree to file away.
             "can_finish": false,
@@ -733,12 +735,14 @@ impl AppState {
             // See the primary row: a bare checkout is dated by its own commits,
             // unless the user has acted on it here and given it an anchor.
             "anchor": self
-                .attention
-                .get(&worktree_id)
+                .board
+                .attention()
+                .attention(&worktree_id)
                 .and_then(|attention| attention.anchor_at.clone())
                 .or_else(|| sync.head_committed_at.clone()),
-            "last_activity": self.attention
-                .get(&match &branch {
+            "last_activity": self.board
+                .attention()
+                .attention(&match &branch {
                     Some(branch) => crate::attention::branch_row_key(&project_id, branch),
                     None => worktree_id.clone(),
                 })
@@ -852,9 +856,7 @@ impl AppState {
     }
 
     pub(in crate::app) fn is_muted(&self, entity_id: &str) -> bool {
-        self.attention
-            .get(entity_id)
-            .is_some_and(|attention| attention.muted)
+        self.board.attention().is_muted(entity_id)
     }
 
     /// Whether this row was cleared and no user or agent has spoken on any of
@@ -866,7 +868,7 @@ impl AppState {
     /// the line the human drew.
     ///
     pub(in crate::app) fn is_dismissed(&self, entity_id: &str) -> bool {
-        let Some(attention) = self.attention.get(entity_id) else {
+        let Some(attention) = self.board.attention().attention(entity_id) else {
             return false;
         };
         let lines = self.dismissal_lines(entity_id);

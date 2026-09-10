@@ -202,10 +202,9 @@ impl AppState {
         self.record_agent_working_since(owner, agent_id, None);
         if !self.entity_agents_working(owner)
             && self
-                .attention
-                .entry(owner.to_string())
-                .or_default()
-                .observe_working(false, &now)
+                .board
+                .attention_mut()
+                .observe_working(owner, false, &now)
         {
             self.persist_attention();
         }
@@ -504,16 +503,12 @@ impl AppState {
             matches!(snapshot.status, AgentStatus::Working).then(|| snapshot.changed_at.clone());
         self.record_agent_working_since(owner, agent_id, working_since);
         let working = self.entity_agents_working(owner);
-        if self
-            .attention
-            .entry(owner.to_string())
-            .or_default()
-            .observe_status(
-                working,
-                &snapshot.changed_at,
-                snapshot.last_worked_at.as_deref(),
-            )
-        {
+        if self.board.attention_mut().observe_status(
+            owner,
+            working,
+            &snapshot.changed_at,
+            snapshot.last_worked_at.as_deref(),
+        ) {
             self.persist_attention();
             self.note_entity_changed(owner);
         }

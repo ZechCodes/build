@@ -9,7 +9,9 @@ use crate::harness::stream_fixtures::{
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{AgentSession, HarnessError, Turn};
 use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
+use crate::store::PersistedArchivedWorktree;
 use crate::timing::{recording_clock, SLOW_FRAME};
+use serde_json::Value;
 
 /// The frame path as a test that is not measuring a frame calls it.
 ///

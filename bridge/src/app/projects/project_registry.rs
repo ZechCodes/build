@@ -2,6 +2,8 @@ use super::Project;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::isolation::Isolation;
+
 /// The stable id assigned to one registered project.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ProjectId(String);
@@ -64,13 +66,21 @@ impl ProjectRegistry {
             .find(|project| project.id == project_id)
     }
 
-    /// Temporary mutation seam for board caches and configured isolation.
-    /// Stage 9 moves the caches to BoardIndex and leaves a narrow isolation
-    /// update rather than retaining general mutable access.
-    pub(in crate::app) fn get_mut(&mut self, project_id: &str) -> Option<&mut Project> {
-        self.projects
+    /// Update only the registered project's configuration-owned isolation.
+    pub(in crate::app) fn set_isolation(
+        &mut self,
+        project_id: &str,
+        isolation: Option<Isolation>,
+    ) -> bool {
+        let Some(project) = self
+            .projects
             .iter_mut()
             .find(|project| project.id == project_id)
+        else {
+            return false;
+        };
+        project.isolation = isolation;
+        true
     }
 
     pub(in crate::app) fn find_by_canonical_path(&self, path: &Path) -> Option<&Project> {

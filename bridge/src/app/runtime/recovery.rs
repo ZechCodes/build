@@ -135,7 +135,7 @@ impl OffLockJob for VanishedRunSweep {
     type Claim = ();
     type Decided = Vec<DecidedVanishedRun>;
 
-    fn claim(&self) {}
+    fn claim(&mut self) {}
 
     /// The git half — a bounded fetch and two graph walks per completed stage,
     /// per run.
@@ -372,17 +372,27 @@ impl AppState {
         &mut self,
         stored: StoredTasks,
     ) -> Result<(), String> {
-        self.attention = stored.attention;
-        self.store = Some(stored.store);
-        self.archived_worktrees = stored
-            .archived_worktrees
-            .into_iter()
-            .map(|record| (record.worktree_id.clone(), record))
-            .collect();
-        self.recover_captures(stored.captures)?;
+        let StoredTasks {
+            store,
+            plans,
+            runs,
+            archived_worktrees,
+            captures,
+            attention,
+            operations,
+        } = stored;
+        self.board.attention_mut().replace_entries(attention);
+        self.store = Some(store);
+        self.board.replace_archived(
+            archived_worktrees
+                .into_iter()
+                .map(|record| (record.worktree_id.clone(), record))
+                .collect(),
+        );
+        self.recover_captures(captures)?;
         self.recover_completed_worktree_finishes();
-        self.restore_plans_before_runs(stored.plans, stored.runs)?;
-        self.restore_operations(stored.operations);
+        self.restore_plans_before_runs(plans, runs)?;
+        self.restore_operations(operations);
         self.seed_conversation_attention_sequences();
         self.seed_anchors_for_records_without_one();
         self.migrate_legacy_dismissals();
@@ -485,22 +495,20 @@ impl AppState {
         // records carry none — fall back to their updated_at. Seed the
         // last-observed state from the (post-recovery) plan so the first
         // post-boot mutation in the same state doesn't false-stamp.
-        self.entity_state_changed_at.insert(
+        let state_changed_at = if state_changed {
+            now_rfc3339()
+        } else {
+            record
+                .state_changed_at
+                .unwrap_or_else(|| record.updated_at.clone())
+        };
+        self.board.attention_mut().restore_entity_clocks(
             plan_id.clone(),
-            if state_changed {
-                now_rfc3339()
-            } else {
-                record
-                    .state_changed_at
-                    .unwrap_or_else(|| record.updated_at.clone())
-            },
+            record.created_at,
+            record.updated_at,
+            state_changed_at,
+            plan_state_str(&active.plan.state),
         );
-        self.entity_last_state
-            .insert(plan_id.clone(), plan_state_str(&active.plan.state));
-        self.entity_created_at
-            .insert(plan_id.clone(), record.created_at);
-        self.entity_updated_at
-            .insert(plan_id.clone(), record.updated_at);
         if state_changed {
             self.persist_plan_record(&plan_id, &active)?;
         }
@@ -826,22 +834,20 @@ impl AppState {
         // Same restore discipline as recover_plan: a boot transition stamps
         // now, otherwise keep the record's stamp (falling back to updated_at
         // for pre-field records); seed last-state from the recovered run.
-        self.entity_state_changed_at.insert(
+        let state_changed_at = if state_changed {
+            now_rfc3339()
+        } else {
+            record
+                .state_changed_at
+                .unwrap_or_else(|| record.updated_at.clone())
+        };
+        self.board.attention_mut().restore_entity_clocks(
             run_id.clone(),
-            if state_changed {
-                now_rfc3339()
-            } else {
-                record
-                    .state_changed_at
-                    .unwrap_or_else(|| record.updated_at.clone())
-            },
+            record.created_at,
+            record.updated_at,
+            state_changed_at,
+            run_state_str(&active.run.state),
         );
-        self.entity_last_state
-            .insert(run_id.clone(), run_state_str(&active.run.state));
-        self.entity_created_at
-            .insert(run_id.clone(), record.created_at);
-        self.entity_updated_at
-            .insert(run_id.clone(), record.updated_at);
         if state_changed {
             self.persist_run_record(&run_id, &active)?;
         }
@@ -850,19 +856,19 @@ impl AppState {
     }
 
     pub(in crate::app) fn close_recovered_working_intervals(&mut self) {
-        let mut changed = false;
-        for attention in self.attention.values_mut() {
-            changed |= attention.close_recovered_working_interval();
-        }
-        if changed {
+        if self
+            .board
+            .attention_mut()
+            .close_recovered_working_intervals()
+        {
             self.persist_attention();
         }
     }
 
     pub(in crate::app) fn recover_completed_worktree_finishes(&mut self) {
         let recoverable = self
-            .archived_worktrees
-            .values()
+            .board
+            .archived_values()
             .filter(|record| {
                 record.status == WorktreeFinishStatus::Pending
                     && finish_git_steps_are_complete(record)
@@ -870,7 +876,11 @@ impl AppState {
             .map(|record| record.worktree_id.clone())
             .collect::<Vec<_>>();
         for worktree_id in recoverable {
-            let mut record = self.archived_worktrees[&worktree_id].clone();
+            let mut record = self
+                .board
+                .archived(&worktree_id)
+                .expect("collected archived worktree must remain present")
+                .clone();
             record.status = WorktreeFinishStatus::Archived;
             record.archived_at = Some(now_rfc3339());
             let result = self
@@ -880,7 +890,7 @@ impl AppState {
                 .save_archived_worktree(&record);
             match result {
                 Ok(()) => {
-                    self.archived_worktrees.insert(worktree_id, record);
+                    self.board.insert_archived(record);
                 }
                 Err(error) => {
                     eprintln!("recover worktree finish {worktree_id}: {error}");

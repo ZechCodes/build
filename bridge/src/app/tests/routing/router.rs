@@ -1263,21 +1263,15 @@ fn a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run
         "the refused dispatch left its row on the board"
     );
     assert!(
-        state
-            .project_at(0)
-            .external_scan
-            .as_ref()
-            .is_some_and(|cache| {
-                cache
-                    .worktrees
-                    .iter()
-                    .any(|worktree| worktree.branch.as_deref() == Some("build/add-the-csv-export"))
-            }),
+        state.external_scan_of(&project_id).is_some_and(|cache| {
+            cache
+                .worktrees
+                .iter()
+                .any(|worktree| worktree.branch.as_deref() == Some("build/add-the-csv-export"))
+        }),
         "the checkout the git cut is not on the board: {:?}",
         state
-            .project_at(0)
-            .external_scan
-            .as_ref()
+            .external_scan_of(&project_id)
             .map(|cache| &cache.worktrees)
     );
 }

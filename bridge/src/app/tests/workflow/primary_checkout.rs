@@ -590,10 +590,9 @@ fn discarding_a_run_drops_the_stat_the_board_cached_for_it() {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut app, &repo, dir.path(), "counted");
-        app.run_stat_cache.insert(
-            run_id.clone(),
-            (std::time::Instant::now(), json!({ "files": 3 })),
-        );
+        app.board
+            .diff_mut()
+            .seed_run_stat(run_id.clone(), json!({ "files": 3 }));
         let verb = match terminal {
             false => "run.abandon",
             true => {
@@ -608,7 +607,7 @@ fn discarding_a_run_drops_the_stat_the_board_cached_for_it() {
             .expect("the discard answers");
         assert_eq!(discarded["ok"], true, "{verb}: {discarded:?}");
         assert!(
-            !state.lock().unwrap().run_stat_cache.contains_key(&run_id),
+            !state.lock().unwrap().board.diff().has_run_stat(&run_id),
             "{verb} served the board a stat read off a checkout it let go of"
         );
     }

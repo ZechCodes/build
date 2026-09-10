@@ -21,7 +21,7 @@ use std::time::Duration;
 pub(in crate::app) trait OffLockJob: Send + 'static {
     type Claim: Send + 'static;
     type Decided: Send + 'static;
-    fn claim(&self) -> Self::Claim;
+    fn claim(&mut self) -> Self::Claim;
     /// MUST run with the state lock released.
     fn decide(self) -> Self::Decided;
     fn apply(state: &mut AppState, claim: Self::Claim, decided: Self::Decided);
@@ -391,7 +391,7 @@ impl ProjectListRow {
 /// (the synchronous unit tests), so the caller can decide what to do with it.
 pub(in crate::app) fn spawn_off_lock<J: OffLockJob>(
     state: Arc<Mutex<AppState>>,
-    job: J,
+    mut job: J,
 ) -> Result<(), J> {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return Err(job);
@@ -431,7 +431,7 @@ impl AppState {
     /// The synchronous tests have no runtime and no mutex — nobody is waiting
     /// on this thread — so there the job decides here, and the read that
     /// claimed it is answered from what it found.
-    pub(in crate::app) fn decide_without_a_runtime<J: OffLockJob>(&mut self, job: J) {
+    pub(in crate::app) fn decide_without_a_runtime<J: OffLockJob>(&mut self, mut job: J) {
         let claim = job.claim();
         #[cfg(test)]
         J::apply(self, claim, job.decide());
@@ -828,8 +828,7 @@ impl AppState {
             .as_ref()
             .map(|record| std::path::PathBuf::from(&record.worktree_path));
         if let Some(record) = outcome.record {
-            self.archived_worktrees
-                .insert(record.worktree_id.clone(), record);
+            self.board.insert_archived(record);
         }
         let archived = outcome.result.inspect(|_| {
             self.reap_orphaned_terminals();

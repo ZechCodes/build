@@ -540,10 +540,9 @@ fn run_create_opens_its_implementation_with_the_state_lock_free() {
             .worktree
             .path,
     );
+    let project_id = app.project_at(0).id.clone();
     assert!(
-        !app.project_at(0)
-            .external_scan
-            .as_ref()
+        !app.external_scan_of(&project_id)
             .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
         "the run's own checkout is on the board as an unbound card too"
     );
@@ -729,14 +728,10 @@ fn an_implementation_whose_apply_fails_leaves_its_checkout_on_the_board() {
     );
     assert!(checkout.is_dir(), "the git that succeeded was undone");
     assert!(
-        app.project_at(0)
-            .external_scan
-            .as_ref()
+        app.external_scan_of(&project_id)
             .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
         "the checkout it cut is invisible until the next full rescan: {:?}",
-        app.project_at(0)
-            .external_scan
-            .as_ref()
+        app.external_scan_of(&project_id)
             .map(|cache| &cache.worktrees)
     );
 }
@@ -1437,7 +1432,7 @@ fn a_git_mutation_whose_run_vanished_mid_work_drops_its_cache_write() {
 
     let app = state.lock().unwrap();
     assert!(
-        !app.entity_updated_at.contains_key(&run_id),
+        app.board.attention().clock(&run_id).updated_at.is_none(),
         "the commit stamped a run that had already left the board"
     );
 }

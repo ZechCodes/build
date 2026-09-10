@@ -543,9 +543,10 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         lineages.sort_by_key(|run| {
-            self.entity_created_at
-                .get(&run.run.id.0)
-                .cloned()
+            self.board
+                .attention()
+                .clock(&run.run.id.0)
+                .created_at
                 .unwrap_or_default()
         });
         let run_id = lineages

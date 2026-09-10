@@ -161,10 +161,10 @@ impl AppState {
                 &project.orch.worktrees().availability(),
             )?),
         };
-        self.projects
-            .get_mut(&project_id)
-            .expect("the project was just resolved")
-            .isolation = isolation;
+        assert!(
+            self.projects.set_isolation(&project_id, isolation),
+            "the project was just resolved"
+        );
         self.persist();
         let project = self
             .projects

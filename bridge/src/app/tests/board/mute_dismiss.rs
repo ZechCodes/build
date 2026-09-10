@@ -356,10 +356,9 @@ fn an_old_style_dismissal_still_clears_a_single_agent_row() {
     // number, with no agent named.
     let line = primary_thread(&state.plans[&issue_id].agents).last_sequence();
     state
-        .attention
-        .entry(run_id.clone())
-        .or_default()
-        .dismissed_through = line;
+        .board
+        .attention_mut()
+        .set_legacy_dismissed_through(&run_id, line);
     let row = work_item_row_for(&mut state, &run_id);
     assert_eq!(row["dismissed"], true, "{row:?}");
 

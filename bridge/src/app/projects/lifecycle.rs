@@ -46,7 +46,7 @@ struct RemoveUnregisteredProject {
 impl OffLockJob for RemoveUnregisteredProject {
     type Claim = ();
     type Decided = ();
-    fn claim(&self) {}
+    fn claim(&mut self) {}
     fn decide(self) {
         if let Err(error) = std::fs::remove_dir_all(&self.path) {
             eprintln!(

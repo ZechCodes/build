@@ -121,8 +121,5 @@ fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
         ),
         id,
         isolation: None,
-        external_scan: None,
-        external_scan_failed_at: None,
-        primary_summary: None,
     }
 }

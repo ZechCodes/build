@@ -334,9 +334,10 @@ fn agent_remove_takes_an_added_agent_back_off_the_branch() {
         assert_eq!(posted["ok"], true, "{posted:?}");
         state.handle(req("entity.seen", json!({ "entity_id": run_id })));
         assert!(
-            state.attention[&run_id]
-                .agent_read_sequences
-                .contains_key(&second_agent),
+            state
+                .board
+                .attention()
+                .has_agent_cursor(&run_id, &second_agent),
             "the fixture needs a cursor to remove"
         );
 
@@ -359,9 +360,10 @@ fn agent_remove_takes_an_added_agent_back_off_the_branch() {
             "the conversation goes with the agent"
         );
         assert!(
-            !state.attention[&run_id]
-                .agent_read_sequences
-                .contains_key(&second_agent),
+            !state
+                .board
+                .attention()
+                .has_agent_cursor(&run_id, &second_agent),
             "and so does the cursor that tracked it"
         );
 

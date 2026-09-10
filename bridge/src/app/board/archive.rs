@@ -32,8 +32,8 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         let worktrees = self
-            .archived_worktrees
-            .values()
+            .board
+            .archived_values()
             .filter(|record| {
                 record.project_path == project_path
                     && record.status == WorktreeFinishStatus::Archived
@@ -77,7 +77,7 @@ impl AppState {
             }
             let branch = active.worktree.branch();
             let project_path = self.project_path_for(run_id);
-            let record = self.archived_worktrees.values().find(|record| {
+            let record = self.board.archived_values().find(|record| {
                 record.status == WorktreeFinishStatus::Archived
                     && record.project_path == project_path
                     && record.branch.as_deref() == Some(branch.as_str())
@@ -95,7 +95,12 @@ impl AppState {
             object.insert("state".into(), json!(run_state_str(&active.run.state)));
             object.insert(
                 "finished_at".into(),
-                json!(self.entity_state_changed_at.get(run_id)),
+                json!(self
+                    .board
+                    .attention()
+                    .clock(run_id)
+                    .state_changed_at
+                    .as_ref()),
             );
             object.insert("run_id".into(), json!(run_id));
             object.insert(
@@ -112,7 +117,7 @@ impl AppState {
             items.push(row);
         }
 
-        for record in self.archived_worktrees.values() {
+        for record in self.board.archived_values() {
             if record.status != WorktreeFinishStatus::Archived {
                 continue;
             }

@@ -20,12 +20,12 @@ impl AppState {
             return Ok(());
         }
         let now = now_rfc3339();
-        let created_at = self
-            .entity_created_at
-            .entry(plan_id.to_string())
-            .or_insert_with(|| now.clone())
-            .clone();
-        let updated_at = self.entity_updated_at.get(plan_id).cloned().unwrap_or(now);
+        self.board
+            .attention_mut()
+            .record_created_if_absent(plan_id, now.clone());
+        let clock = self.board.attention().clock(plan_id);
+        let created_at = clock.created_at.expect("created clock was seeded");
+        let updated_at = clock.updated_at.unwrap_or(now);
         let project_path = self.project_path_for(plan_id);
         let record = PersistedPlan {
             id: plan_id.to_string(),
@@ -47,7 +47,7 @@ impl AppState {
             last_error: active.last_error.clone(),
             created_at,
             updated_at,
-            state_changed_at: self.entity_state_changed_at.get(plan_id).cloned(),
+            state_changed_at: clock.state_changed_at,
         };
         let acceptance = self.operation_ledger.consume_acceptance_for(plan_id);
         match acceptance.as_ref() {
@@ -81,12 +81,12 @@ impl AppState {
             return Ok(());
         }
         let now = now_rfc3339();
-        let created_at = self
-            .entity_created_at
-            .entry(run_id.to_string())
-            .or_insert_with(|| now.clone())
-            .clone();
-        let updated_at = self.entity_updated_at.get(run_id).cloned().unwrap_or(now);
+        self.board
+            .attention_mut()
+            .record_created_if_absent(run_id, now.clone());
+        let clock = self.board.attention().clock(run_id);
+        let created_at = clock.created_at.expect("created clock was seeded");
+        let updated_at = clock.updated_at.unwrap_or(now);
         let project_path = self.project_path_for(run_id);
         let record = PersistedRun {
             id: run_id.to_string(),
@@ -116,7 +116,7 @@ impl AppState {
             last_error: active.last_error.clone(),
             created_at,
             updated_at,
-            state_changed_at: self.entity_state_changed_at.get(run_id).cloned(),
+            state_changed_at: clock.state_changed_at,
         };
         // One write path, whether or not the run belongs to an Issue: the
         // `issue_id` column is `record.plan_id`, so asking the store whether
@@ -149,10 +149,12 @@ impl AppState {
         active: ActivePlan,
     ) -> Result<(), String> {
         let now = now_rfc3339();
-        self.entity_created_at
-            .entry(plan_id.clone())
-            .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(plan_id.clone(), now.clone());
+        self.board
+            .attention_mut()
+            .record_created_if_absent(&plan_id, now.clone());
+        self.board
+            .attention_mut()
+            .record_updated(&plan_id, now.clone());
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.conversation_news(active.agents.sole_thread());
@@ -193,10 +195,12 @@ impl AppState {
         active: ActiveRun,
     ) -> Result<(), String> {
         let now = now_rfc3339();
-        self.entity_created_at
-            .entry(run_id.clone())
-            .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(run_id.clone(), now.clone());
+        self.board
+            .attention_mut()
+            .record_created_if_absent(&run_id, now.clone());
+        self.board
+            .attention_mut()
+            .record_updated(&run_id, now.clone());
         self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
         self.invalidate_run_stat(&run_id);

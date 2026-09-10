@@ -601,11 +601,8 @@ impl AppState {
                 }
                 self.runs.remove(run_id);
                 self.projects.unbind_entity(run_id);
-                self.entity_created_at.remove(run_id);
-                self.entity_updated_at.remove(run_id);
-                self.entity_state_changed_at.remove(run_id);
-                self.entity_last_state.remove(run_id);
-                self.run_files_changed_at.remove(run_id);
+                self.board.attention_mut().remove_entity_clocks(run_id);
+                self.board.diff_mut().remove_run_files_changed_at(run_id);
                 self.invalidate_run_stat(run_id);
                 self.rescan_external_worktrees(project_id);
             }

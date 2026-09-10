@@ -15,7 +15,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 6 | Extract issue, run, worktree, board, and protocol adapters | Complete |
 | 7 | Give session registration and spawn reservations their own component | Complete |
 | 8 | Give delivery queues, receipts, and in-flight accounting their own component | Complete |
-| 9 | Give board attention and caches their own component | Prepared outside repository |
+| 9 | Give board attention and caches their own component | Complete |
 | 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Prepared outside repository |
 | Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Prepared outside repository |
 
@@ -224,3 +224,31 @@ compilation, all-target Clippy, and 13 focused tests pass. Semgrep reports no
 findings across all 42 changed Rust files. The full suite reports 2,211 passed, one failed, and seven ignored; all 2,136
 exercised library tests pass. The sole failure remains the previously reproduced
 `concurrency_load` output floor, at 75,226 bytes. Staged Gitleaks passes.
+
+## Stage 9
+
+The board ownership stage groups attention entries and clocks, notification
+watermarks, archive projections, and diff caches behind `BoardIndex`. Store and
+filesystem effects remain in application adapters. Refresh claims remain owned
+by the existing outer worker across blocking work, with explicit settlement;
+the component introduces no cancellation or drop behavior. Project publication
+registers its cache slot before board effects, and the existing test-only project
+clear operation clears cache payloads without releasing outstanding claims.
+
+Independent production and test review retains exact attention persistence,
+notification watermark, archive hydration, scan failure, and claim settlement
+boundaries. All 784 existing app tests remain, with 14 new BoardIndex tests.
+Test fixture setters retain their original field scope and missing-entry
+diagnostics. `app.rs` is 645 lines; the board facade, attention index, and
+cache core are 83, 409, and 471 lines. Formatting, all-target compilation,
+and Clippy with warnings denied pass. Focused runs pass 14 BoardIndex,
+17 branch-feed, and 24 diff-cache tests. The structural audit retains all
+132 RPC names and adds only the 14 reviewed tests. Public function inventories
+have no differences. The ownership source inventory records 5,579 functions
+becoming 5,684 and 1,047 data declarations becoming 1,060. The full suite and
+security checks use frozen source. The expanded audit accounts for all 18
+baseline-only internal signatures through BoardIndex and claim APIs; existing
+literal values and public paths remain preserved. Semgrep reports no findings
+across all 38 changed Rust files. The full suite reports 2,225 passed, one failed, and seven ignored; all 2,150
+exercised library tests pass. The sole failure remains the previously reproduced
+`concurrency_load` output floor at 75,226 bytes. Staged Gitleaks passes.

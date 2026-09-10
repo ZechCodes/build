@@ -149,7 +149,7 @@ impl AppState {
         // A completed record makes the mutation idempotent. A pending record is
         // the crash/failure-safe resume point and uses only the same server ids.
         let mut resume = None;
-        if let Some(record) = self.archived_worktrees.get(&worktree_id).cloned() {
+        if let Some(record) = self.board.archived(&worktree_id).cloned() {
             if record.project_path == canonical_project_path {
                 if record.action != action {
                     return Err(format!(

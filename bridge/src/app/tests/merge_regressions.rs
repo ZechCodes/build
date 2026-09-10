@@ -214,11 +214,16 @@ async fn merged_provider_spawn_leaves_the_mutex_free(provider: AgentProvider, fa
     assert_eq!(result.is_err(), fails, "{provider:?}: {result:?}");
     let session = {
         let app = state.lock().unwrap();
-        assert!(app.agent_spawns_in_flight.is_empty());
+        assert!(app.session_registry.test_counts().claims == 0);
         if fails {
-            assert!(app.mcp_session_tokens.is_empty());
+            assert!(app.session_registry.test_counts().tokens == 0);
         }
-        app.tabs.values().next().map(|tab| Arc::clone(&tab.session))
+        let session = app
+            .session_registry
+            .test_tabs()
+            .next()
+            .map(|(_, tab)| Arc::clone(&tab.session));
+        session
     };
     if let Some(session) = session {
         session.end();

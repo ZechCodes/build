@@ -163,11 +163,11 @@ async fn the_activity_stream_closing_ends_the_session_the_way_a_pty_eof_does() {
     .expect("the session lineage closes when the stream does");
     let s = state.lock().unwrap();
     assert!(
-        !s.tabs[&key].live,
+        !s.session_registry.test_tab(&key).unwrap().live,
         "and the tab stops reading as live, so nothing else has to guess"
     );
     assert!(
-        s.tabs.contains_key(&key),
+        s.session_registry.contains(&key),
         "the tab is RETAINED, exactly as an agent tab whose PTY ended is"
     );
 }
@@ -310,9 +310,12 @@ async fn a_headless_agent_turns_a_message_into_activity_and_leaves() {
     );
 
     let s = state.lock().unwrap();
-    assert!(!s.tabs[&key].live, "the tab stops reading as live");
     assert!(
-        s.tabs[&key].screen.is_none(),
+        !s.session_registry.test_tab(&key).unwrap().live,
+        "the tab stops reading as live"
+    );
+    assert!(
+        s.session_registry.test_tab(&key).unwrap().screen.is_none(),
         "and never had a grid to be retained"
     );
 }
@@ -599,7 +602,14 @@ async fn a_subagents_rows_fold_under_the_call_that_spawned_them() {
 
     drop(activity);
     wait_for(Duration::from_secs(5), || {
-        (!state.lock().unwrap().tabs[&key].live).then_some(())
+        (!state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live)
+            .then_some(())
     })
     .await
     .expect("the stream closing ends the session");
@@ -614,7 +624,11 @@ async fn a_subagents_rows_fold_under_the_call_that_spawned_them() {
         "a call answered while the session ran is not re-resolved when it ends: {after_close:?}"
     );
     assert!(
-        s.tabs[&key].call_sequences.is_empty(),
+        s.session_registry
+            .test_tab(&key)
+            .unwrap()
+            .call_sequences
+            .is_empty(),
         "and the session's pairing dies with it"
     );
 }
@@ -717,7 +731,11 @@ async fn the_death_rites_close_the_calls_the_session_died_over() {
         "the calls close before the session does: {closed:?} then {ended}"
     );
     assert!(
-        s.tabs[&key].call_sequences.is_empty(),
+        s.session_registry
+            .test_tab(&key)
+            .unwrap()
+            .call_sequences
+            .is_empty(),
         "and the pairing is cleared beside the tab going not live"
     );
 }

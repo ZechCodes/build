@@ -47,9 +47,8 @@ async fn a_spawn_that_outlives_the_merge_that_pruned_its_checkout_is_stranded() 
     {
         let mut s = state.lock().unwrap();
         let tab = s
-            .tabs
-            .values_mut()
-            .find(|tab| tab.role.agent().is_some_and(|(owner, _)| owner == run_id))
+            .session_registry
+            .test_agent_by_owner_mut(&run_id)
             .expect("the first stage's agent");
         tab.session.end();
         tab.live = false;
@@ -79,8 +78,9 @@ async fn a_spawn_that_outlives_the_merge_that_pruned_its_checkout_is_stranded() 
     let spawned = state
         .lock()
         .unwrap()
-        .tabs
-        .values()
+        .session_registry
+        .test_tabs()
+        .map(|(_, tab)| tab)
         .any(|tab| tab.role.agent().is_some_and(|(owner, _)| owner == run_id));
     assert!(!spawned, "a run whose checkout is gone keeps no agent");
     assert!(
@@ -123,7 +123,14 @@ async fn agent_attach_streams_a_live_run_and_retains_the_last_screen() {
 
     // The agent's process ends → clients hear agent_session_ended and the
     // tab keeps showing the last screen.
-    state.lock().unwrap().tabs[&tab_key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&tab_key)
+        .unwrap()
+        .session
+        .end();
     wait_for_push(&mut pushes, &key, |p| {
         p["type"] == "term.closed"
             && p["term_id"] == wire_id
@@ -213,7 +220,11 @@ async fn agent_attach_addresses_a_worktree_by_scope_before_any_run_owns_it() {
     .expect("the agent tab spawns");
     let wire_id = tab.wire_id();
     let key = derived_agent_key(&root, "run-x");
-    state.lock().unwrap().tabs.insert(key.clone(), tab);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), tab);
     spawn_tab_pumps(&state, key.clone(), rx);
 
     let live = handler.call(
@@ -265,7 +276,11 @@ async fn agent_attach_names_the_provider_that_painted_the_screen() {
     )
     .expect("the agent tab spawns");
     let key = derived_agent_key(&root, "run-codex");
-    state.lock().unwrap().tabs.insert(key.clone(), tab);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), tab);
     spawn_tab_pumps(&state, key.clone(), rx);
 
     let ran = handler.call(
@@ -381,8 +396,14 @@ async fn a_client_attached_before_the_first_spawn_streams_the_session_it_waited_
     );
 
     let s = state.lock().unwrap();
-    let screen =
-        screen_of(&s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-waited-for")]);
+    let screen = screen_of(
+        s.session_registry
+            .test_tab(&derived_agent_key(
+                &AppState::canonical_root(&repo),
+                "run-waited-for",
+            ))
+            .unwrap(),
+    );
     assert_eq!(
         screen.size(),
         (100, 30),
@@ -417,11 +438,18 @@ async fn a_client_attaching_inside_a_respawn_is_carried_without_rewinding_the_cu
     )
     .expect("the first delivery spawns");
     wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
     let retained_total = loop {
         {
             let s = state.lock().unwrap();
-            let tab = &s.tabs[&key];
+            let tab = &s.session_registry.test_tab(&key).unwrap();
             if !tab.live {
                 break screen_of(tab).cursor();
             }
@@ -436,7 +464,8 @@ async fn a_client_attaching_inside_a_respawn_is_carried_without_rewinding_the_cu
         let mut s = state.lock().unwrap();
         let waiting = ScreenHandle::new(&key.tab_id, 90, 25);
         waiting.attach(&sender, None);
-        s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
+        s.session_registry
+            .test_remember_waiting_screen(key.clone(), waiting);
     }
 
     let (wire_id, spawned) = deliver(
@@ -531,7 +560,8 @@ async fn a_headless_spawn_closes_the_screens_that_were_waiting_for_a_terminal() 
         let mut s = state.lock().unwrap();
         let waiting = ScreenHandle::new(&key.tab_id, 90, 25);
         waiting.attach(&sender, None);
-        s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
+        s.session_registry
+            .test_remember_waiting_screen(key.clone(), waiting);
     }
 
     deliver(
@@ -557,10 +587,10 @@ async fn a_headless_spawn_closes_the_screens_that_were_waiting_for_a_terminal() 
 
     let s = state.lock().unwrap();
     assert!(
-        s.agent_screens_awaiting_spawn.is_empty(),
+        s.session_registry.test_counts().waiting_screens == 0,
         "and the screen is not left behind for some later spawn to inherit"
     );
-    let tab = &s.tabs[&key];
+    let tab = &s.session_registry.test_tab(&key).unwrap();
     assert!(
         tab.screen.is_none(),
         "a session with no terminal has no grid, so there is none to hand anyone"
@@ -569,7 +599,7 @@ async fn a_headless_spawn_closes_the_screens_that_were_waiting_for_a_terminal() 
         tab.live,
         "the agent itself is running — it just has no basement"
     );
-    s.tabs[&key].session.end();
+    s.session_registry.test_tab(&key).unwrap().session.end();
 }
 
 /// The same rule for the other screen a spawn can be holding: the grid the
@@ -601,11 +631,25 @@ async fn a_headless_respawn_closes_the_grid_the_terminal_left_behind() {
     let (sender, mut pushes, session_key) = SessionSender::observable("watching");
     {
         let s = state.lock().unwrap();
-        screen_of(&s.tabs[&key]).attach(&sender, None);
+        screen_of(s.session_registry.test_tab(&key).unwrap()).attach(&sender, None);
     }
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
     wait_for(Duration::from_secs(5), || {
-        (!state.lock().unwrap().tabs[&key].live).then_some(())
+        (!state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live)
+            .then_some(())
     })
     .await
     .expect("the dead session leaves a retained screen behind");
@@ -639,10 +683,10 @@ async fn a_headless_respawn_closes_the_grid_the_terminal_left_behind() {
     );
     let s = state.lock().unwrap();
     assert!(
-        s.tabs[&key].screen.is_none(),
+        s.session_registry.test_tab(&key).unwrap().screen.is_none(),
         "and the retained grid is not hung on a session that cannot paint it"
     );
-    s.tabs[&key].session.end();
+    s.session_registry.test_tab(&key).unwrap().session.end();
 }
 
 /// A spawn that never opens closes the grid it took.
@@ -676,11 +720,25 @@ async fn a_spawn_that_fails_closes_the_grid_it_took_from_the_dead_session() {
     let (sender, mut pushes, session_key) = SessionSender::observable("watching");
     {
         let s = state.lock().unwrap();
-        screen_of(&s.tabs[&key]).attach(&sender, None);
+        screen_of(s.session_registry.test_tab(&key).unwrap()).attach(&sender, None);
     }
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
     wait_for(Duration::from_secs(5), || {
-        (!state.lock().unwrap().tabs[&key].live).then_some(())
+        (!state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live)
+            .then_some(())
     })
     .await
     .expect("the dead session leaves a retained screen behind");
@@ -714,7 +772,7 @@ async fn a_spawn_that_fails_closes_the_grid_it_took_from_the_dead_session() {
     assert_eq!(closed["type"], "term.closed", "{closed:?}");
     assert_eq!(closed["term_id"], key.tab_id, "{closed:?}");
     assert!(
-        !state.lock().unwrap().tabs.contains_key(&key),
+        !state.lock().unwrap().session_registry.contains(&key),
         "the failed spawn leaves no tab behind either"
     );
 }
@@ -745,17 +803,34 @@ async fn a_reservation_that_cannot_resolve_its_project_takes_nothing_from_the_re
     )
     .expect("the first delivery spawns a PTY");
     wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
     wait_for(Duration::from_secs(5), || {
-        (!state.lock().unwrap().tabs[&key].live).then_some(())
+        (!state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live)
+            .then_some(())
     })
     .await
     .expect("the dead session leaves a retained screen behind");
     let (sender, mut pushes, session_key) = SessionSender::observable("watching");
     let token_before = {
         let s = state.lock().unwrap();
-        screen_of(&s.tabs[&key]).attach(&sender, None);
-        s.mcp_session_tokens[&agent_id].clone()
+        screen_of(s.session_registry.test_tab(&key).unwrap()).attach(&sender, None);
+        s.session_registry
+            .test_token(&agent_id)
+            .unwrap()
+            .to_string()
     };
 
     // The owner's project binding is gone, so the reservation cannot say
@@ -779,19 +854,20 @@ async fn a_reservation_that_cannot_resolve_its_project_takes_nothing_from_the_re
 
     let s = state.lock().unwrap();
     let dead = s
-        .tabs
-        .get(&key)
+        .session_registry
+        .test_tab(&key)
         .expect("the dead tab is still in the registry");
     assert!(
         dead.screen.is_some(),
         "and still holds the grid its clients are attached to"
     );
     assert_eq!(
-        s.mcp_session_tokens[&agent_id], token_before,
+        s.session_registry.test_token(&agent_id).unwrap(),
+        token_before,
         "no token was registered for a child that never existed"
     );
     assert!(
-        s.agent_spawns_in_flight.is_empty(),
+        s.session_registry.test_counts().claims == 0,
         "no claim was left behind"
     );
     drop(s);
@@ -826,7 +902,8 @@ fn the_reaper_drops_an_agent_screen_whose_worktree_vanished_before_a_spawn() {
         let mut s = state.lock().unwrap();
         let waiting = ScreenHandle::new(&key.tab_id, 80, 24);
         waiting.attach(&sender, None);
-        s.agent_screens_awaiting_spawn.insert(key, waiting);
+        s.session_registry
+            .test_remember_waiting_screen(key, waiting);
     }
     std::fs::remove_dir_all(&vanishing).unwrap();
 
@@ -836,8 +913,10 @@ fn the_reaper_drops_an_agent_screen_whose_worktree_vanished_before_a_spawn() {
         state
             .lock()
             .unwrap()
-            .agent_screens_awaiting_spawn
-            .is_empty(),
+            .session_registry
+            .test_counts()
+            .waiting_screens
+            == 0,
         "a screen for a directory that is gone is never handed to a future spawn"
     );
     let closed = SessionSender::decrypt_push(
@@ -880,8 +959,8 @@ async fn a_session_that_ended_while_waiting_is_not_carried_onto_the_agent() {
         state
             .lock()
             .unwrap()
-            .agent_screens_awaiting_spawn
-            .values()
+            .session_registry
+            .test_waiting_screens()
             .all(|screen| screen.attached() == 0),
         "an ended session is detached from the screen it was waiting on"
     );
@@ -898,7 +977,13 @@ async fn a_session_that_ended_while_waiting_is_not_carried_onto_the_agent() {
     .expect("the delivery spawns the worktree's agent");
 
     let s = state.lock().unwrap();
-    let tab = &s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-closed-client")];
+    let tab = s
+        .session_registry
+        .test_tab(&derived_agent_key(
+            &AppState::canonical_root(&repo),
+            "run-closed-client",
+        ))
+        .unwrap();
     assert!(
         screen_of(tab).attached() == 0,
         "a session that ended is never carried onto the agent it waited for"
@@ -937,8 +1022,8 @@ async fn a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_th
     let in_flight = state
         .lock()
         .unwrap()
-        .agent_screens_awaiting_spawn
-        .values()
+        .session_registry
+        .test_waiting_screens()
         .next()
         .expect("the first attach left a screen waiting for the spawn")
         .clone();
@@ -960,7 +1045,7 @@ async fn a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_th
     let key = derived_agent_key(&AppState::canonical_root(&repo), "run-attach-race");
     {
         let s = state.lock().unwrap();
-        let screen = screen_of(&s.tabs[&key]);
+        let screen = screen_of(s.session_registry.test_tab(&key).unwrap());
         assert_eq!(
             screen.attached_sessions(),
             vec!["arriving".to_string()],
@@ -976,7 +1061,14 @@ async fn a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_th
         push["type"] == "term.reset" && push["term_id"] == wire_id
     })
     .await;
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
 }
 
 #[tokio::test]

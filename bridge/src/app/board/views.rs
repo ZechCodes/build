@@ -1,6 +1,5 @@
 use crate::app::{
-    agent_is_working, plan_state_str, run_state_str, DigestScope, ExternalWorktreeRows, Tab,
-    TabRole, PRIMARY_SUMMARY_TTL,
+    plan_state_str, run_state_str, DigestScope, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL,
 };
 use crate::run::RunState;
 use crate::store::now_rfc3339;
@@ -53,16 +52,6 @@ pub(in crate::app) struct WorkItemStat {
     /// When this branch last got a commit (RFC 3339), or `None` when the
     /// checkout could not be read.
     pub(in crate::app) head_committed_at: Option<String>,
-}
-
-/// `(agent_working, can_finish)` for one worktree's managed agent tab. Finish
-/// is advisory and must remain false until that managed agent has existed.
-pub(in crate::app) fn worktree_agent_signals(agent_tab: Option<&Tab>) -> (bool, bool) {
-    let Some(agent_tab) = agent_tab.filter(|tab| matches!(tab.role, TabRole::Agent { .. })) else {
-        return (false, false);
-    };
-    let agent_working = agent_is_working(agent_tab);
-    (agent_working, !agent_working)
 }
 
 /// The `state` a branch row reports when nothing is driving it: a checkout
@@ -245,13 +234,13 @@ impl AppState {
         // from the tab's root, so a worktree reports its own agent whatever
         // entity (or none) currently owns it.
         let agent_signals: HashMap<String, (bool, bool)> = self
-            .tabs
-            .values()
-            .filter(|tab| matches!(tab.role, TabRole::Agent { .. }))
-            .map(|tab| {
+            .session_registry
+            .agent_working_roots()
+            .into_iter()
+            .map(|(root, working)| {
                 (
-                    crate::worktree::external_worktree_id(&tab.root),
-                    worktree_agent_signals(Some(tab)),
+                    crate::worktree::external_worktree_id(&root),
+                    (working, !working),
                 )
             })
             .collect();
@@ -921,9 +910,7 @@ impl AppState {
     /// none) currently owns it.
     pub(in crate::app) fn checkout_agent_working(&self, root: &std::path::Path) -> bool {
         let root = Self::canonical_root(root);
-        self.tabs
-            .iter()
-            .any(|(key, tab)| key.root == root && key.is_agent() && agent_is_working(tab))
+        self.session_registry.agent_is_working_at(&root)
     }
 
     pub(in crate::app) fn entity_agents_working(&self, entity_id: &str) -> bool {

@@ -59,11 +59,15 @@ fn background_rows(state: &Arc<Mutex<AppState>>, run_id: &str) -> Vec<String> {
 /// own status says.
 fn age_past_the_idle_threshold(state: &Arc<Mutex<AppState>>, key: &TabKey) {
     let mut s = state.lock().unwrap();
-    s.tabs[key]
+    s.session_registry
+        .test_tab(key)
+        .unwrap()
         .session
         .backdate_last_output(Duration::from_secs(600));
-    s.tabs.get_mut(key).unwrap().last_delivered_at =
-        Some(std::time::Instant::now() - Duration::from_secs(600));
+    s.session_registry
+        .test_tab_mut(key)
+        .unwrap()
+        .last_delivered_at = Some(std::time::Instant::now() - Duration::from_secs(600));
 }
 
 /// The failure this step ends, from the sweep's side: a headless agent whose
@@ -256,12 +260,15 @@ async fn a_child_that_exits_with_a_task_live_is_ended_and_gets_the_usual_rites()
     let s = state.lock().unwrap();
     assert!(
         matches!(
-            s.tabs[&key].session.status(),
+            s.session_registry.test_tab(&key).unwrap().session.status(),
             AgentStatus::Ended { code: Some(_) }
         ),
         "a roster outstanding does not keep a dead child working"
     );
-    assert!(!s.tabs[&key].live, "the tab stops reading as live");
+    assert!(
+        !s.session_registry.test_tab(&key).unwrap().live,
+        "the tab stops reading as live"
+    );
 }
 
 /// Everything the conversation says happened, so a test can assert what did
@@ -929,14 +936,18 @@ async fn a_terminal_locator_never_authorizes_a_fresh_sessions_resume_identity() 
     state
         .lock()
         .unwrap()
-        .tabs
-        .get(&key)
+        .session_registry
+        .test_tab(&key)
         .expect("the agent tab")
         .session
         .end();
     wait_for(Duration::from_secs(10), || {
         let s = state.lock().unwrap();
-        (!s.tabs.get(&key).expect("the agent tab").live).then_some(())
+        (!s.session_registry
+            .test_tab(&key)
+            .expect("the agent tab")
+            .live)
+            .then_some(())
     })
     .await
     .expect("the pump notices the harness left");
@@ -1002,7 +1013,7 @@ async fn a_fresh_terminal_close_does_not_persist_a_locator_guess() {
     let key = derived_agent_key(&root, "run-brief");
     wait_for(Duration::from_secs(10), || {
         let s = state.lock().unwrap();
-        (!s.tabs.get(&key)?.live).then_some(())
+        (!s.session_registry.test_tab(&key)?.live).then_some(())
     })
     .await
     .expect("the harness leaves on its own");
@@ -1152,7 +1163,7 @@ async fn a_session_that_ends_keeps_the_model_it_last_ran() {
     let key = derived_agent_key(&root, "run-outlives");
     wait_for(Duration::from_secs(10), || {
         let s = state.lock().unwrap();
-        (!s.tabs.get(&key)?.live).then_some(())
+        (!s.session_registry.test_tab(&key)?.live).then_some(())
     })
     .await
     .expect("the child leaves on its own");
@@ -1227,7 +1238,7 @@ async fn a_terminal_that_named_nothing_keeps_the_name_its_record_already_had() {
     let key = derived_agent_key(&root, "run-quiet");
     wait_for(Duration::from_secs(10), || {
         let s = state.lock().unwrap();
-        (!s.tabs.get(&key)?.live).then_some(())
+        (!s.session_registry.test_tab(&key)?.live).then_some(())
     })
     .await
     .expect("the harness leaves on its own");

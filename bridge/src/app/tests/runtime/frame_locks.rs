@@ -240,7 +240,7 @@ async fn agent_start_answers_with_the_reserved_tab_before_the_harness_is_up() {
         "the reply addresses the tab the spawn is about to fill: {started:?}"
     );
     assert!(
-        !state.lock().unwrap().tabs.contains_key(&key),
+        !state.lock().unwrap().session_registry.contains(&key),
         "and it answered before that tab existed"
     );
 
@@ -345,8 +345,15 @@ async fn two_callers_of_one_tab_spawn_one_harness_without_spinning() {
     );
     assert_eq!(won_id, lost_id, "both callers address one tab");
     let s = state.lock().unwrap();
-    assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
-    assert!(s.agent_spawns_in_flight.is_empty(), "the claim went back");
+    assert_eq!(
+        s.session_registry.test_counts().tabs,
+        1,
+        "one worktree, one agent"
+    );
+    assert!(
+        s.session_registry.test_counts().claims == 0,
+        "the claim went back"
+    );
 }
 
 /// A spawn that unwinds gives its claim back too.
@@ -390,7 +397,7 @@ async fn a_spawn_that_panics_gives_its_claim_back() {
         "the probe's panic unwinds the spawn"
     );
     assert!(
-        state.lock().unwrap().agent_spawns_in_flight.is_empty(),
+        state.lock().unwrap().session_registry.test_counts().claims == 0,
         "the claim went back with the unwinding spawn"
     );
 
@@ -444,7 +451,7 @@ fn a_claim_dropped_by_a_panic_under_the_app_mutex_does_not_deadlock() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(
-        s.agent_spawns_in_flight.is_empty(),
+        s.session_registry.test_counts().claims == 0,
         "a panic under the publishing lock kept the claim"
     );
 }
@@ -507,7 +514,11 @@ async fn a_streaming_pty_never_takes_the_app_mutex() {
     let screen = screen_of(&tab).clone();
     let session = Arc::clone(&tab.session);
     let pumps = tab.pumps(output);
-    state.lock().unwrap().tabs.insert(key.clone(), tab);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), tab);
     crate::app::spawn_tab_pumps(&state, key, pumps);
 
     // The app mutex is held for the whole of this, the way a slow frame
@@ -556,7 +567,15 @@ async fn a_frame_answers_while_a_screen_lock_is_held() {
         .unwrap()
         .tab_key_of_wire_id("term-1")
         .expect("the shell is registered");
-    let screen = screen_of(&state.lock().unwrap().tabs[&key]).clone();
+    let screen = screen_of(
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap(),
+    )
+    .clone();
 
     let held = screen.hold();
     assert!(
@@ -570,7 +589,14 @@ async fn a_frame_answers_while_a_screen_lock_is_held() {
     assert_eq!(answered["ok"], true, "{answered:?}");
     drop(held);
 
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
 }
 
 /// A harness that has stopped draining its pty blocks the write to it for
@@ -584,7 +610,7 @@ async fn term_input_to_a_pty_that_is_not_draining_leaves_the_app_mutex_free() {
     let agent_id = "agent-wedged";
     let key = TabKey::agent(&root, agent_id);
     let (gate, gate_handle) = OffLockGate::new();
-    state.lock().unwrap().tabs.insert(
+    state.lock().unwrap().session_registry.test_insert_tab(
         key.clone(),
         gated_tab(
             &root,
@@ -786,7 +812,7 @@ async fn killing_a_wedged_harness_never_holds_the_app_mutex() {
         root: root.clone(),
         tab_id: "term-1".to_string(),
     };
-    state.lock().unwrap().tabs.insert(
+    state.lock().unwrap().session_registry.test_insert_tab(
         key.clone(),
         gated_tab(
             &root,
@@ -817,7 +843,7 @@ async fn killing_a_wedged_harness_never_holds_the_app_mutex() {
         .expect("an unrelated read is answered while a harness will not die");
     assert_eq!(answered["ok"], true, "{answered:?}");
     assert!(
-        !state.lock().unwrap().tabs.contains_key(&key),
+        !state.lock().unwrap().session_registry.contains(&key),
         "the tab is out of the registry the moment the verb answers"
     );
 
@@ -837,7 +863,7 @@ async fn a_close_after_a_wedged_kill_still_reaches_its_clients() {
         root: root.clone(),
         tab_id: "term-1".to_string(),
     };
-    state.lock().unwrap().tabs.insert(
+    state.lock().unwrap().session_registry.test_insert_tab(
         key.clone(),
         gated_tab(
             &root,
@@ -892,8 +918,8 @@ async fn a_closed_tab_stops_painting_before_its_harness_dies() {
     state
         .lock()
         .unwrap()
-        .tabs
-        .insert(key.clone(), gated_tab(&root, TabRole::Shell, harness));
+        .session_registry
+        .test_insert_tab(key.clone(), gated_tab(&root, TabRole::Shell, harness));
     spawn_tab_pumps(
         &state,
         key.clone(),
@@ -969,7 +995,11 @@ async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
     let (replaced, output) = spawn_one();
     let dying = Arc::clone(&replaced.session);
     let pumps = replaced.pumps(output);
-    state.lock().unwrap().tabs.insert(key.clone(), replaced);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), replaced);
     crate::app::spawn_tab_pumps(&state, key.clone(), pumps);
 
     // The replacement takes the tab over while the first session is still
@@ -977,7 +1007,11 @@ async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
     let (replacement, output) = spawn_one();
     let living = Arc::clone(&replacement.session);
     let pumps = replacement.pumps(output);
-    state.lock().unwrap().tabs.insert(key.clone(), replacement);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), replacement);
     crate::app::spawn_tab_pumps(&state, key.clone(), pumps);
 
     dying.end();
@@ -989,7 +1023,13 @@ async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert!(
-        state.lock().unwrap().tabs[&key].live,
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live,
         "a dead session's EOF closed the tab that replaced it"
     );
     living.end();
@@ -1028,7 +1068,11 @@ async fn a_late_self_report_never_lands_on_the_session_that_replaced_it() {
     let session = Arc::clone(&dying.session);
     let instance = dying.session_instance.clone();
     let screen = screen_of(&dying).clone();
-    state.lock().unwrap().tabs.insert(key.clone(), dying);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), dying);
 
     let rites = {
         let state = Arc::clone(&state);
@@ -1047,8 +1091,8 @@ async fn a_late_self_report_never_lands_on_the_session_that_replaced_it() {
     // names its own conversation, and it is holding a turn.
     {
         let mut s = state.lock().unwrap();
-        s.tabs
-            .insert(key.clone(), gated_tab(&root, role, GatedHarness::new()));
+        s.session_registry
+            .test_insert_tab(key.clone(), gated_tab(&root, role, GatedHarness::new()));
         s.record_agent_resume_id(
             &run_id,
             &agent_id,
@@ -1064,7 +1108,7 @@ async fn a_late_self_report_never_lands_on_the_session_that_replaced_it() {
 
     let s = state.lock().unwrap();
     assert!(
-        s.tabs[&key].live,
+        s.session_registry.test_tab(&key).unwrap().live,
         "the dead session's rites marked its replacement dead"
     );
     assert_eq!(
@@ -1118,7 +1162,11 @@ async fn a_replacement_cannot_slip_between_a_session_ending_and_its_close() {
     let screen = screen_of(&dying).clone();
     let (sender, mut pushes, session_key) = SessionSender::observable("watching");
     screen.attach(&sender, None);
-    state.lock().unwrap().tabs.insert(key.clone(), dying);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), dying);
 
     // The screen is busy the way a flooding pump makes it busy, so the
     // rites park inside the close they owe.
@@ -1140,7 +1188,7 @@ async fn a_replacement_cannot_slip_between_a_session_ending_and_its_close() {
     let mut replaceable = false;
     while !replaceable && std::time::Instant::now() < deadline {
         if let Ok(s) = state.try_lock() {
-            replaceable = !s.tabs[&key].live;
+            replaceable = !s.session_registry.test_tab(&key).unwrap().live;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1202,7 +1250,11 @@ async fn a_replaced_sessions_late_activity_close_leaves_the_replacement_alone() 
     );
     let session = Arc::clone(&reporting.session);
     let instance = reporting.session_instance.clone();
-    state.lock().unwrap().tabs.insert(key.clone(), reporting);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), reporting);
     let (activity, subscribed) = broadcast::channel(4);
     crate::app::spawn_activity_pump(
         &state,
@@ -1218,8 +1270,8 @@ async fn a_replaced_sessions_late_activity_close_leaves_the_replacement_alone() 
 
     {
         let mut s = state.lock().unwrap();
-        s.tabs
-            .insert(key.clone(), gated_tab(&root, role, GatedHarness::new()));
+        s.session_registry
+            .test_insert_tab(key.clone(), gated_tab(&root, role, GatedHarness::new()));
         s.record_agent_resume_id(
             &run_id,
             &agent_id,
@@ -1233,7 +1285,7 @@ async fn a_replaced_sessions_late_activity_close_leaves_the_replacement_alone() 
 
     let s = state.lock().unwrap();
     assert!(
-        s.tabs[&key].live,
+        s.session_registry.test_tab(&key).unwrap().live,
         "a closed stream marked the tab that replaced it dead"
     );
     assert_eq!(
@@ -1263,12 +1315,20 @@ async fn a_client_attaching_to_a_tab_that_just_closed_is_told_so() {
         root: root.clone(),
         tab_id: "term-1".to_string(),
     };
-    state.lock().unwrap().tabs.insert(
+    state.lock().unwrap().session_registry.test_insert_tab(
         key.clone(),
         gated_tab(&root, TabRole::Shell, GatedHarness::new()),
     );
     // What an attach already in flight is holding.
-    let screen = screen_of(&state.lock().unwrap().tabs[&key]).clone();
+    let screen = screen_of(
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap(),
+    )
+    .clone();
 
     let closed = handler.call(
         SessionSender::detached("s-close"),
@@ -1318,8 +1378,8 @@ async fn telling_an_inherited_child_its_size_never_holds_the_app_mutex() {
     state
         .lock()
         .unwrap()
-        .agent_screens_awaiting_spawn
-        .insert(key.clone(), waiting);
+        .session_registry
+        .test_remember_waiting_screen(key.clone(), waiting);
 
     let told = {
         let state = Arc::clone(&state);
@@ -1329,7 +1389,7 @@ async fn telling_an_inherited_child_its_size_never_holds_the_app_mutex() {
             let inherited = {
                 let mut s = state.lock().unwrap();
                 let inherited = inherit_waiting_clients(&mut s, &key, &born);
-                s.tabs.insert(key, born);
+                s.session_registry.test_insert_tab(key, born);
                 inherited
             };
             inherited
@@ -1352,7 +1412,15 @@ async fn telling_an_inherited_child_its_size_never_holds_the_app_mutex() {
         true
     );
     assert_eq!(
-        screen_of(&state.lock().unwrap().tabs[&key]).attached_sessions(),
+        screen_of(
+            state
+                .lock()
+                .unwrap()
+                .session_registry
+                .test_tab(&key)
+                .unwrap()
+        )
+        .attached_sessions(),
         vec!["waiting-client".to_string()],
         "the client that was waiting is on the new screen the moment the tab is published"
     );
@@ -1401,7 +1469,7 @@ async fn an_agent_tabs_last_reading_leaves_the_app_mutex_free() {
             GatedHarness::new().naming_its_conversation_through(gate, "conversation-7"),
         );
         tab.session_instance = instance;
-        app.tabs.insert(key.clone(), tab);
+        app.session_registry.test_insert_tab(key.clone(), tab);
     }
 
     let captured = {
@@ -1473,7 +1541,7 @@ async fn a_late_name_capture_cannot_overwrite_its_replacement_session() {
             GatedHarness::new().naming_its_conversation_through(gate, "stale-S1-name"),
         );
         tab.session_instance = Some(first);
-        app.tabs.insert(key.clone(), tab);
+        app.session_registry.test_insert_tab(key.clone(), tab);
     }
     let captured = {
         let state = Arc::clone(&state);
@@ -1510,7 +1578,7 @@ async fn a_late_name_capture_cannot_overwrite_its_replacement_session() {
             GatedHarness::new(),
         );
         tab.session_instance = Some(replacement.clone());
-        app.tabs.insert(key, tab);
+        app.session_registry.test_insert_tab(key, tab);
         replacement
     };
 

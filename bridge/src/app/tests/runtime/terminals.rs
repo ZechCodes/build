@@ -48,7 +48,7 @@ pub(in crate::app::tests) fn output_text(pushes: &[Value], term_id: &str) -> Str
 fn tab_pid(state: &Arc<Mutex<AppState>>, wire_id: &str) -> Option<u32> {
     let s = state.lock().unwrap();
     let key = s.tab_key_of_wire_id(wire_id).ok()?;
-    agent_pid(&s.tabs[&key])
+    agent_pid(s.session_registry.test_tab(&key).unwrap())
 }
 
 /// True once `pid` is fully gone from the process table (killed AND reaped —
@@ -359,7 +359,7 @@ async fn a_worktree_spelled_two_ways_holds_one_set_of_tabs() {
     );
 
     let s = state.lock().unwrap();
-    let keys: Vec<&TabKey> = s.tabs.keys().collect();
+    let keys: Vec<&TabKey> = s.session_registry.test_tabs().map(|(key, _)| key).collect();
     assert!(
         keys.iter().all(|key| key.root == canonical_root),
         "every tab is keyed by the canonical root ({canonical_root:?}): {keys:?}"
@@ -477,7 +477,10 @@ async fn term_close_refuses_the_agent_tab() {
 
     let s = state.lock().unwrap();
     let key = derived_agent_key(&AppState::canonical_root(&root), "run-unclosable");
-    let tab = s.tabs.get(&key).expect("the agent tab is still registered");
+    let tab = s
+        .session_registry
+        .test_tab(&key)
+        .expect("the agent tab is still registered");
     assert!(tab.live, "and its session was never killed");
     assert!(tab.session_is_live());
 }

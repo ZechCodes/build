@@ -304,7 +304,7 @@ fn external_worktree_json_sets_can_finish_for_an_idle_agent_tab() {
     tab.session
         .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
     let key = derived_agent_key(&root, "idle-agent-owner");
-    state.tabs.insert(key.clone(), tab);
+    state.session_registry.test_insert_tab(key.clone(), tab);
 
     let board = state.handle(req("board.list", json!({})));
     let entry = board["result"]["external_worktrees"]
@@ -315,7 +315,12 @@ fn external_worktree_json_sets_can_finish_for_an_idle_agent_tab() {
         .unwrap();
     assert_eq!(entry["agent_working"], false, "{entry:?}");
     assert_eq!(entry["can_finish"], true, "{entry:?}");
-    state.tabs.remove(&key).unwrap().session.end();
+    state
+        .session_registry
+        .test_remove_tab(&key)
+        .unwrap()
+        .session
+        .end();
 }
 
 #[tokio::test]
@@ -340,7 +345,7 @@ async fn worktree_finish_closes_and_reaps_scoped_terminals() {
     let (term_key, pid) = {
         let app = state.lock().unwrap();
         let term_key = app.tab_key_of_wire_id(&term_id).unwrap();
-        let pid = agent_pid(&app.tabs[&term_key]).unwrap();
+        let pid = agent_pid(app.session_registry.test_tab(&term_key).unwrap()).unwrap();
         (term_key, pid)
     };
 
@@ -352,7 +357,7 @@ async fn worktree_finish_closes_and_reaps_scoped_terminals() {
         ),
     );
     assert_eq!(finished["ok"], true, "{finished:?}");
-    assert!(!state.lock().unwrap().tabs.contains_key(&term_key));
+    assert!(!state.lock().unwrap().session_registry.contains(&term_key));
     assert!(
         process_reaped(pid),
         "scoped terminal must be killed and reaped"

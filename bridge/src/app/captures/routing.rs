@@ -649,7 +649,7 @@ impl AppState {
             )
             .into_iter()
             .collect();
-        self.mcp_session_tokens.remove(session.agent_id());
+        self.session_registry.revoke_mcp_token(session.agent_id());
         self.projects.unbind_live_entity(capture_id);
         // Bridge-owned, per capture, and holding nothing but what the harness
         // wrote for itself — so it goes with the session that made it.

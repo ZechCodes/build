@@ -308,7 +308,7 @@ fn disabling_triage_stops_a_pass_already_drained_for_delivery() {
 
     let app = state.lock().unwrap();
     assert!(
-        app.tabs.is_empty(),
+        app.session_registry.test_counts().tabs == 0,
         "the drained triage turn was discarded before opening an agent tab"
     );
     assert!(

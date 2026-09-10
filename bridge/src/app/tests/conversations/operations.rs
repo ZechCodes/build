@@ -173,8 +173,9 @@ async fn thread_post_reaches_the_live_agent_at_a_review_gate() {
         RunState::Review,
         warm_tui_spec(),
     );
-    let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
-    let mut output = agent_terminal(&state.tabs[&key]).subscribe();
+    let pid_before =
+        agent_pid(state.session_registry.test_tab(&key).unwrap()).expect("a live agent");
+    let mut output = agent_terminal(state.session_registry.test_tab(&key).unwrap()).subscribe();
     let state = state.shared();
     let handler = AppState::handler(Arc::clone(&state));
 
@@ -189,7 +190,14 @@ async fn thread_post_reaches_the_live_agent_at_a_review_gate() {
         "the gate does not move"
     );
     assert_eq!(
-        agent_pid(&state.lock().unwrap().tabs[&key]),
+        agent_pid(
+            state
+                .lock()
+                .unwrap()
+                .session_registry
+                .test_tab(&key)
+                .unwrap()
+        ),
         Some(pid_before),
         "a post talks to the agent, it never replaces it"
     );
@@ -241,7 +249,10 @@ fn thread_post_in_review_posts_unread_and_moves_no_state() {
 
     let active = state.runs.get(&run_id).unwrap();
     assert_eq!(active.run.state, RunState::Review, "no state transition");
-    assert!(state.tabs.is_empty(), "a post starts no agent");
+    assert!(
+        state.session_registry.test_counts().tabs == 0,
+        "a post starts no agent"
+    );
 
     let unread = state
         .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
@@ -276,7 +287,9 @@ async fn thread_post_addressed_to_issue_nudges_its_live_implementation_agent() {
         .clone();
     tab.session_instance =
         state.record_agent_session_start(&run_id, &agent_id, &root, &choice, "build");
-    state.tabs.insert(derived_agent_key(&root, &run_id), tab);
+    state
+        .session_registry
+        .test_insert_tab(derived_agent_key(&root, &run_id), tab);
     // `planned_run_in_review` stages lifecycle turns for the real spawn.
     // This test installs that live session by hand, so those cold turns
     // have already happened and only the post's nudge remains deliverable.
@@ -865,8 +878,9 @@ fn thread_post_in_building_nudges_the_live_session_without_ending_it() {
         RunState::Building,
         warm_tui_spec(),
     );
-    let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
-    let mut output = agent_terminal(&state.tabs[&key]).subscribe();
+    let pid_before =
+        agent_pid(state.session_registry.test_tab(&key).unwrap()).expect("a live agent");
+    let mut output = agent_terminal(state.session_registry.test_tab(&key).unwrap()).subscribe();
     let state = state.shared();
     let handler = AppState::handler(Arc::clone(&state));
 
@@ -881,12 +895,15 @@ fn thread_post_in_building_nudges_the_live_session_without_ending_it() {
     let active = held.runs.get(&run_id).unwrap();
     assert_eq!(active.run.state, RunState::Building, "no state transition");
     assert_eq!(
-        agent_pid(&held.tabs[&key]),
+        agent_pid(held.session_registry.test_tab(&key).unwrap()),
         Some(pid_before),
         "the worktree's agent must not be respawned"
     );
     assert!(
-        held.tabs[&key].session_is_live(),
+        held.session_registry
+            .test_tab(&key)
+            .unwrap()
+            .session_is_live(),
         "the worktree's agent must not be ended"
     );
     drop(held);
@@ -1111,10 +1128,14 @@ fn thread_post_at_a_review_gate_reaches_the_agent_without_moving_the_run() {
         warm_tui_spec(),
     );
     assert!(
-        state.tabs[&key].session_is_live(),
+        state
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .session_is_live(),
         "precondition: the agent is still live at the gate"
     );
-    let mut output = agent_terminal(&state.tabs[&key]).subscribe();
+    let mut output = agent_terminal(state.session_registry.test_tab(&key).unwrap()).subscribe();
     let state = state.shared();
     let handler = AppState::handler(Arc::clone(&state));
 
@@ -1146,7 +1167,13 @@ fn thread_post_at_a_review_gate_reaches_the_agent_without_moving_the_run() {
         "hearing a message is not a state transition"
     );
     assert!(
-        state.lock().unwrap().tabs[&key].session_is_live(),
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .session_is_live(),
         "the agent is talked to, never replaced"
     );
     // Durable regardless: the next session's catch-up carries it.
@@ -1183,7 +1210,9 @@ fn abandon_closes_the_agent_even_when_the_worktree_survives() {
     )
     .expect("the agent tab spawns");
     let agent_pid = agent_pid(&tab).expect("the agent has a pid");
-    state.tabs.insert(derived_agent_key(&root, &run_id), tab);
+    state
+        .session_registry
+        .test_insert_tab(derived_agent_key(&root, &run_id), tab);
     primary_thread_mut(&mut state.runs.get_mut(&run_id).unwrap().agents).start_session(
         "claude",
         None,
@@ -1210,7 +1239,9 @@ fn abandon_closes_the_agent_even_when_the_worktree_survives() {
         "this test is only meaningful while the failed cleanup leaves the worktree behind"
     );
     assert!(
-        !state.tabs.contains_key(&derived_agent_key(&root, &run_id)),
+        !state
+            .session_registry
+            .contains(&derived_agent_key(&root, &run_id)),
         "an abandoned run's agent is gone from the registry"
     );
     assert!(

@@ -794,7 +794,7 @@ fn cancelling_a_capture_wipes_its_scratch_once_the_router_is_reaped() {
     let scratch = app.router_sessions[&capture_id].scratch_dir().to_path_buf();
     let root = AppState::canonical_root(&scratch);
     let (death, death_handle) = OffLockGate::new();
-    app.tabs.insert(
+    app.session_registry.test_insert_tab(
         TabKey::agent(&root, &agent_id),
         gated_tab(
             &root,
@@ -860,8 +860,9 @@ fn a_capture_cancelled_before_its_router_spawns_gets_no_router() {
 
     let s = state.lock().unwrap();
     assert!(
-        !s.tabs
-            .values()
+        !s.session_registry
+            .test_tabs()
+            .map(|(_, tab)| tab)
             .any(|tab| tab.role.agent().is_some_and(|(_, id)| id == agent_id)),
         "a router was spawned for a capture nobody wants routed"
     );
@@ -1023,8 +1024,8 @@ fn rerouting_off_an_issue_only_its_own_agent_touched_stops_the_agent_and_archive
     );
     assert!(
         !state
-            .tabs
-            .contains_key(&TabKey::agent(&AppState::canonical_root(&repo), &agent_id)),
+            .session_registry
+            .contains(&TabKey::agent(&AppState::canonical_root(&repo), &agent_id)),
         "and its session in the primary checkout is closed"
     );
 }

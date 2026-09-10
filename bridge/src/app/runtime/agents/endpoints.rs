@@ -1,11 +1,15 @@
 use crate::app::{
     agent_tab_id, attach_to_tab, attach_view, optional_nonempty_string, require_str,
     working_time_json, AddressedSession, AppState, DeliveryRunner, LifecycleDiagnostic,
-    PendingAgentTurn, SelfReport, Tab, TabFacts, TabKey, TabRole, TermScope, TurnText,
+    PendingAgentTurn, SelfReport, TabFacts, TabKey, TermScope, TurnText,
     NEW_THREAD_MESSAGES_PROMPT,
 };
+#[cfg(test)]
+use crate::app::{Tab, TabRole};
 use crate::carrier::SessionSender;
-use crate::harness::{harness_for, AgentStatus};
+use crate::harness::harness_for;
+#[cfg(test)]
+use crate::harness::AgentStatus;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::reaper::Retirement;
 use crate::screen::ScreenHandle;
@@ -110,10 +114,8 @@ pub(in crate::app) fn agent_attach(
         // primary one — has no agent to name, so the screen a client mounts
         // there is addressed by the worktree itself until one is born.
         (None, None) => s
-            .tabs
-            .keys()
-            .find(|key| key.is_agent() && key.root == root)
-            .and_then(|key| key.tab_id.strip_prefix("agent:").map(str::to_string))
+            .session_registry
+            .first_agent_id_at(&root)
             .unwrap_or_else(|| crate::worktree::external_worktree_id(&root)),
     };
     if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
@@ -130,7 +132,7 @@ pub(in crate::app) fn agent_attach(
         }
     }
     let key = TabKey::agent(&root, &agent_id);
-    if !s.tabs.contains_key(&key) {
+    if !s.session_registry.contains(&key) {
         // No agent has run here yet: a blank, dead screen, and the tab opens on
         // the first delivery. The client still registers — on the screen this
         // worktree's agent will be born onto — because it must go live where it
@@ -142,11 +144,9 @@ pub(in crate::app) fn agent_attach(
         // the register follows them, because a carried screen points at the one
         // its clients went to.
         let term_id = agent_tab_id(&agent_id);
-        let screen = s
-            .agent_screens_awaiting_spawn
-            .entry(key.clone())
-            .or_insert_with(|| ScreenHandle::new(&term_id, cols, rows))
-            .clone();
+        let screen =
+            s.session_registry
+                .waiting_screen_for_attach(key.clone(), &term_id, cols, rows);
         drop(guard);
         let reading = screen.attach(sender, Some((cols, rows)));
         // A screen with no session behind it is dead by definition, and names
@@ -227,15 +227,6 @@ pub(in crate::app) fn agent_start(
     }))
 }
 
-pub(in crate::app) fn digest_surfaces(tab: Option<&Tab>, scope: DigestScope) -> Option<Value> {
-    let tab = match scope {
-        DigestScope::List => return None,
-        DigestScope::Detail => tab?,
-    };
-    let snapshot = tab.session.surfaces()?;
-    Some(snapshot.wire_value(&|call_id| tab.call_sequences.get(call_id).map(|row| row.sequence)))
-}
-
 /// The conversation event one reported activity becomes. The five kinds are the
 /// same five, named once here so the mapping cannot drift.
 pub(in crate::app) fn activity_event_kind(
@@ -265,6 +256,7 @@ pub(in crate::app) fn activity_event_kind(
 /// and ended has a better one, and must be able to give it. For a PTY the guess
 /// is unchanged: [`crate::pty::PtySession`] synthesizes `Working` from exactly
 /// the two conjuncts that moved, so this reports what it always has.
+#[cfg(test)]
 pub(in crate::app) fn agent_is_working(tab: &Tab) -> bool {
     matches!(tab.role, TabRole::Agent { .. })
         && tab.live
@@ -550,9 +542,8 @@ impl AppState {
 
     /// Whether one agent's harness process is running right now.
     pub(in crate::app) fn agent_is_live(&self, root: &std::path::Path, agent_id: &str) -> bool {
-        self.tabs
-            .get(&TabKey::agent(root, agent_id))
-            .is_some_and(Tab::session_is_live)
+        self.session_registry
+            .agent_is_live(&TabKey::agent(root, agent_id))
     }
 
     /// Point an entity's agents at a different provider/model. The persisted
@@ -622,10 +613,11 @@ impl AppState {
     pub(in crate::app) fn retire_agents_of_pruned_worktree(&mut self, root: &std::path::Path) {
         let root = Self::canonical_root(root);
         let ended: Vec<SessionInstance> = self
-            .tabs
-            .iter()
-            .filter(|(key, _)| key.is_agent() && key.root == root)
-            .filter_map(|(_, tab)| tab.session_instance.clone())
+            .session_registry
+            .tab_keys()
+            .into_iter()
+            .filter(|key| key.is_agent() && key.root == root)
+            .filter_map(|key| self.session_registry.session_instance(&key))
             .collect();
         let _retiring = self.retire_agent_tabs(&root);
         for instance in ended {
@@ -638,10 +630,10 @@ impl AppState {
         let caller = std::panic::Location::caller();
         let root = Self::canonical_root(root);
         let keys: Vec<TabKey> = self
-            .tabs
-            .keys()
+            .session_registry
+            .tab_keys()
+            .into_iter()
             .filter(|key| key.is_agent() && key.root == root)
-            .cloned()
             .collect();
         keys.iter()
             .filter_map(|key| self.retire_tab_at(key, "closed", caller))
@@ -665,23 +657,28 @@ impl AppState {
         reason: &str,
         caller: &std::panic::Location<'_>,
     ) -> Option<Retirement> {
-        let provider_thread_id = self.tabs.get(key).and_then(|tab| {
-            let (owner_id, agent_id) = tab.role.agent()?;
-            self.recorded_resume_id(owner_id, agent_id)
+        let identity = self.session_registry.agent_snapshot(key).and_then(|tab| {
+            tab.role
+                .agent()
+                .map(|(owner, agent)| (owner.to_string(), agent.to_string()))
         });
-        let tab = self.tabs.remove(key)?;
-        tab.log_lifecycle(LifecycleDiagnostic {
-            event: "shutdown_requested",
-            origin: "tab_retirement",
-            reason: Some(reason),
-            operation_id: None,
-            provider_thread_id: provider_thread_id.as_deref(),
-            caller: Some(caller),
-        });
-        if let Some(screen) = &tab.screen {
-            screen.close(reason);
-        }
-        Some(Retirement::begin(tab.session))
+        let provider_thread_id = identity
+            .as_ref()
+            .and_then(|(owner, agent)| self.recorded_resume_id(owner, agent));
+        self.session_registry
+            .retire_tab(
+                key,
+                reason,
+                LifecycleDiagnostic {
+                    event: "shutdown_requested",
+                    origin: "tab_retirement",
+                    reason: Some(reason),
+                    operation_id: None,
+                    provider_thread_id: provider_thread_id.as_deref(),
+                    caller: Some(caller),
+                },
+            )
+            .map(|retired| retired.retirement)
     }
 
     /// Remove one tab and retire its process, keeping its screen for the
@@ -695,20 +692,27 @@ impl AppState {
         &mut self,
         key: &TabKey,
     ) -> Option<(Retirement, Option<ScreenHandle>)> {
-        let provider_thread_id = self.tabs.get(key).and_then(|tab| {
-            let (owner_id, agent_id) = tab.role.agent()?;
-            self.recorded_resume_id(owner_id, agent_id)
+        let identity = self.session_registry.agent_snapshot(key).and_then(|tab| {
+            tab.role
+                .agent()
+                .map(|(owner, agent)| (owner.to_string(), agent.to_string()))
         });
-        let tab = self.tabs.remove(key)?;
-        tab.log_lifecycle(LifecycleDiagnostic {
-            event: "shutdown_requested",
-            origin: "dead_tab_replacement",
-            reason: Some("replaced"),
-            operation_id: None,
-            provider_thread_id: provider_thread_id.as_deref(),
-            caller: Some(std::panic::Location::caller()),
-        });
-        Some((Retirement::begin(tab.session), tab.screen))
+        let provider_thread_id = identity
+            .as_ref()
+            .and_then(|(owner, agent)| self.recorded_resume_id(owner, agent));
+        self.session_registry
+            .retain_screen_for_replacement(
+                key,
+                LifecycleDiagnostic {
+                    event: "shutdown_requested",
+                    origin: "dead_tab_replacement",
+                    reason: Some("replaced"),
+                    operation_id: None,
+                    provider_thread_id: provider_thread_id.as_deref(),
+                    caller: Some(std::panic::Location::caller()),
+                },
+            )
+            .map(|retired| (retired.retirement, retired.screen))
     }
 
     /// `agent.add` — give a branch another agent, with its own conversation.
@@ -961,8 +965,8 @@ impl AppState {
         // land in does not exist yet, so the reservation is the only handle on
         // it, and the human can ask again a moment later.
         if self
-            .agent_spawns_in_flight
-            .contains(&TabKey::agent(&root, &agent_id))
+            .session_registry
+            .claim_is_held(&TabKey::agent(&root, &agent_id))
         {
             return Err(format!(
                 "agent.remove: {agent_id} is starting a session right now — remove it once the \
@@ -1030,10 +1034,8 @@ impl AppState {
     pub(in crate::app) fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
         self.retire_tab(&key, "closed");
-        if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
-            screen.close("closed");
-        }
-        self.mcp_session_tokens.remove(agent_id);
+        self.session_registry.remove_waiting_screen(&key, "closed");
+        self.session_registry.revoke_mcp_token(agent_id);
         self.pending_agent_turns
             .retain(|turn| turn.agent_id != agent_id);
     }
@@ -1092,8 +1094,11 @@ impl AppState {
             .unwrap_or(&agent.thread);
         let unread = self.agent_unread(entity_id, agent, thread);
         let tab = root.map(|root| TabKey::agent(root, &agent.id));
-        let tab = tab.as_ref().and_then(|key| self.tabs.get(key));
-        let live = tab.is_some_and(|tab| tab.session_is_live());
+        let tab = tab.as_ref().and_then(|key| {
+            self.session_registry
+                .agent_digest_facts(key, matches!(scope, DigestScope::Detail))
+        });
+        let live = tab.as_ref().is_some_and(|tab| tab.live);
         let next_start = agent.choice.clone();
         let mut digest = json!({
             "id": agent.id,
@@ -1117,7 +1122,7 @@ impl AppState {
             // Where the reader got to, so the panel can rule its unread divider
             // and open on the first message they have not seen.
             "read_through_sequence": self.read_cursor(entity_id, &agent.id),
-            "working": tab.is_some_and(agent_is_working),
+            "working": tab.as_ref().is_some_and(|tab| tab.working),
             "working_time": working_time_json(agent.working_since.as_deref()),
             "choice_revision": agent.choice_revision,
             // Whether the rail offers this agent a basement. The live session
@@ -1126,8 +1131,8 @@ impl AppState {
             // knows whether its spawn will open a terminal. Same authority either
             // side of the spawn, so the rail never offers a TUI button that the
             // spawn then refuses.
-            "has_terminal": match tab {
-                Some(tab) => tab.session.terminal().is_some(),
+            "has_terminal": match &tab {
+                Some(tab) => tab.has_terminal,
                 None => harness_for(agent.choice.provider).has_terminal(),
             },
             // Whether the composer offers "Interrupt & send". Unlike
@@ -1135,7 +1140,7 @@ impl AppState {
             // is announced by the child in its own `init` line rather than
             // decided by the argv, so the same provider answers differently on
             // two versions of the same CLI. No session, no turn to stop.
-            "can_interrupt": tab.is_some_and(|tab| tab.session.can_interrupt()),
+            "can_interrupt": tab.as_ref().is_some_and(|tab| tab.can_interrupt),
             // Why the last turn queued for this agent never reached a harness.
             // The client's "starting" state is laid on before there is any
             // session to report, and this is what takes it off when none ever
@@ -1143,7 +1148,7 @@ impl AppState {
             "start_error": agent.start_error,
             "created_at": agent.created_at,
         });
-        if let Some(surfaces) = digest_surfaces(tab, scope) {
+        if let Some(surfaces) = tab.and_then(|tab| tab.surfaces) {
             digest["surfaces"] = surfaces;
         }
         digest

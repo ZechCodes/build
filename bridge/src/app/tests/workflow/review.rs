@@ -782,7 +782,7 @@ fn run_request_changes_delivers_to_the_agent_instead_of_respawning() {
     ));
     assert_eq!(rc["result"]["state"], "review", "{rc:?}");
     assert!(
-        state.tabs.is_empty(),
+        state.session_registry.test_counts().tabs == 0,
         "a verb queues a turn; only delivery — off the state lock — spawns"
     );
     let queued = state
@@ -863,7 +863,7 @@ fn run_message_delivers_to_the_agent_instead_of_respawning() {
     ));
     assert_eq!(sent["ok"], true, "{sent:?}");
     assert!(
-        state.tabs.is_empty(),
+        state.session_registry.test_counts().tabs == 0,
         "messaging the agent must not spawn a harness under the state lock"
     );
 
@@ -925,7 +925,7 @@ fn dispatching_a_stage_queues_its_prompt_for_the_worktrees_one_agent() {
     ));
     assert_eq!(dispatched["ok"], true, "{dispatched:?}");
     assert!(
-        state.tabs.is_empty(),
+        state.session_registry.test_counts().tabs == 0,
         "dispatching a stage must not spawn a harness under the state lock"
     );
 
@@ -1032,7 +1032,7 @@ fn fixing_a_failed_stage_queues_its_fix_prompt_for_the_worktrees_one_agent() {
         "the stage went back to work"
     );
     assert!(
-        state.tabs.is_empty(),
+        state.session_registry.test_counts().tabs == 0,
         "a verb queues a turn; only delivery — off the state lock — spawns"
     );
 
@@ -1105,7 +1105,7 @@ fn sending_stage_notes_mid_run_queues_a_revision_turn_for_the_worktrees_one_agen
     ));
     assert_eq!(sent["ok"], true, "{sent:?}");
     assert!(
-        state.tabs.is_empty(),
+        state.session_registry.test_counts().tabs == 0,
         "a verb queues a turn; only delivery — off the state lock — spawns"
     );
 
@@ -1180,7 +1180,7 @@ fn auto_advance_queues_the_next_stages_turn_for_the_worktrees_one_agent() {
         "run-all dispatched the next stage"
     );
     assert!(
-        state.tabs.is_empty(),
+        state.session_registry.test_counts().tabs == 0,
         "auto-advance queues a turn; only delivery — off the state lock — spawns"
     );
 
@@ -1234,8 +1234,8 @@ async fn run_all_delivers_the_next_stages_prompt_to_the_same_agent_process() {
     let first_stage_pid = {
         let s = state.lock().unwrap();
         agent_pid(
-            s.tabs
-                .get(&key)
+            s.session_registry
+                .test_tab(&key)
                 .expect("the first stage's turns opened the worktree's agent"),
         )
         .expect("a live harness has a pid")
@@ -1260,11 +1260,15 @@ async fn run_all_delivers_the_next_stages_prompt_to_the_same_agent_process() {
         "the run is building the stage run-all dispatched"
     );
     assert_eq!(
-        s.tabs.get(&key).and_then(agent_pid),
+        s.session_registry.test_tab(&key).and_then(agent_pid),
         Some(first_stage_pid),
         "the agent that built stage one is the one asked to build stage two"
     );
-    assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+    assert_eq!(
+        s.session_registry.test_counts().tabs,
+        1,
+        "one worktree, one agent"
+    );
 }
 
 /// Every phase of a multi-stage run — the first stage's build, the
@@ -1300,8 +1304,8 @@ async fn a_multi_stage_run_drives_one_agent_process_through_every_phase() {
     let first_pid = {
         let s = state.lock().unwrap();
         let tab = s
-            .tabs
-            .get(&key)
+            .session_registry
+            .test_tab(&key)
             .expect("dispatching a run opens the worktree's agent");
         assert!(tab.session_is_live(), "the agent is running");
         agent_pid(tab).expect("a live harness has a pid")
@@ -1316,13 +1320,14 @@ async fn a_multi_stage_run_drives_one_agent_process_through_every_phase() {
     wait_for_deliveries(&state).await;
     let s = state.lock().unwrap();
     assert_eq!(
-        s.tabs.get(&key).and_then(agent_pid),
+        s.session_registry.test_tab(&key).and_then(agent_pid),
         Some(first_pid),
         "every phase must reach the process the dispatch woke"
     );
     assert_eq!(
-        s.tabs
-            .keys()
+        s.session_registry
+            .test_tabs()
+            .map(|(key, _)| key)
             .filter(|k| k.is_agent() && k.root == key.root)
             .count(),
         1,
@@ -1330,11 +1335,11 @@ async fn a_multi_stage_run_drives_one_agent_process_through_every_phase() {
          branch is the human's to add, never a phase's"
     );
     assert_eq!(
-        s.tabs.len(),
+        s.session_registry.test_counts().tabs,
         1,
         "no harness may be spawned beside the tab's agent {:?}",
-        s.tabs
-            .iter()
+        s.session_registry
+            .test_tabs()
             .map(|(k, t)| (k.clone(), t.role.clone()))
             .collect::<Vec<_>>()
     );
@@ -1370,8 +1375,8 @@ async fn a_second_request_changes_reaches_the_same_agent_process() {
     let first_pid = {
         let s = state.lock().unwrap();
         let tab = s
-            .tabs
-            .get(&key)
+            .session_registry
+            .test_tab(&key)
             .expect("a change request opens the worktree's agent");
         assert!(tab.session_is_live(), "the agent is running");
         agent_pid(tab).expect("a live harness has a pid")
@@ -1387,9 +1392,13 @@ async fn a_second_request_changes_reaches_the_same_agent_process() {
     assert_eq!(second["ok"], true, "{second:?}");
     wait_for_deliveries(&state).await;
     let s = state.lock().unwrap();
-    assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
     assert_eq!(
-        s.tabs.get(&key).and_then(agent_pid),
+        s.session_registry.test_counts().tabs,
+        1,
+        "one worktree, one agent"
+    );
+    assert_eq!(
+        s.session_registry.test_tab(&key).and_then(agent_pid),
         Some(first_pid),
         "the second request must reach the process the first one woke"
     );

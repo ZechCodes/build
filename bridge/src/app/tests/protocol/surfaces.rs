@@ -458,7 +458,14 @@ async fn the_pump_ends_with_the_activity_stream_though_the_revision_stays_open()
     drop(activity);
 
     wait_for(Duration::from_secs(5), || {
-        (!state.lock().unwrap().tabs[&key].live).then_some(())
+        (!state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live)
+            .then_some(())
     })
     .await
     .expect("the stream closing ends the session with the revision channel still open");
@@ -513,7 +520,12 @@ async fn an_io_with_no_revision_channel_pumps_exactly_as_it_did() {
         DictatedSession::reporting(AgentStatus::Working),
     );
     assert!(
-        state.lock().unwrap().tabs[&key]
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
             .session
             .surfaces_changed()
             .is_none(),
@@ -539,7 +551,14 @@ async fn an_io_with_no_revision_channel_pumps_exactly_as_it_did() {
 
     drop(activity);
     wait_for(Duration::from_secs(5), || {
-        (!state.lock().unwrap().tabs[&key].live).then_some(())
+        (!state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live)
+            .then_some(())
     })
     .await
     .expect("and the stream closing still ends the session");

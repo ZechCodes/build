@@ -47,8 +47,9 @@ pub(in crate::app::tests) fn agent_screen_text(
     let root = AppState::canonical_root(root);
     let s = state.lock().unwrap();
     let Some(tab) = s
-        .tabs
-        .values()
+        .session_registry
+        .test_tabs()
+        .map(|(_, tab)| tab)
         .find(|tab| tab.root == root && matches!(tab.role, TabRole::Agent { .. }))
     else {
         return String::new();
@@ -111,9 +112,13 @@ async fn ensure_agent_tab_is_idempotent_for_one_root() {
     );
 
     let s = state.lock().unwrap();
-    assert_eq!(s.tabs.len(), 1, "exactly one tab in the registry");
+    assert_eq!(
+        s.session_registry.test_counts().tabs,
+        1,
+        "exactly one tab in the registry"
+    );
     assert!(
-        s.agent_spawns_in_flight.is_empty(),
+        s.session_registry.test_counts().claims == 0,
         "the spawn reservation is released"
     );
     // Under --strict-mcp-config a missing config kills the harness before it
@@ -166,12 +171,15 @@ async fn concurrent_ensure_agent_tab_spawns_one_agent() {
     );
     let s = state.lock().unwrap();
     assert_eq!(
-        s.tabs.len(),
+        s.session_registry.test_counts().tabs,
         1,
         "one worktree, one agent {:?}",
-        s.tabs.keys().collect::<Vec<_>>()
+        s.session_registry
+            .test_tabs()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>()
     );
-    assert!(s.agent_spawns_in_flight.is_empty());
+    assert!(s.session_registry.test_counts().claims == 0);
 }
 
 #[test]
@@ -273,7 +281,7 @@ async fn deliver_sends_the_cold_prompt_on_a_fresh_tab_and_the_nudge_on_a_warm_on
         warm_screen.contains("WARM-NUDGE-PROMPT"),
         "a warm tab hears the nudge: {warm_screen:?}"
     );
-    assert_eq!(state.lock().unwrap().tabs.len(), 1);
+    assert_eq!(state.lock().unwrap().session_registry.test_counts().tabs, 1);
 }
 
 /// A session that answers what the app-wide state lock was doing at the
@@ -340,7 +348,8 @@ fn a_turn_travels_with_the_state_lock_released() {
             &ModelChoice::default(),
             "build",
         );
-        s.tabs.insert(TabKey::agent(&canonical, &agent_id), tab);
+        s.session_registry
+            .test_insert_tab(TabKey::agent(&canonical, &agent_id), tab);
     }
 
     let (_, spawned) = deliver(
@@ -361,7 +370,9 @@ fn a_turn_travels_with_the_state_lock_released() {
     );
     let s = state.lock().unwrap();
     assert!(
-        s.tabs[&TabKey::agent(&canonical, &agent_id)]
+        s.session_registry
+            .test_tab(&TabKey::agent(&canonical, &agent_id))
+            .unwrap()
             .last_delivered_at
             .is_some(),
         "the quiescence clock still restarts on the delivered turn"
@@ -468,7 +479,14 @@ async fn the_session_closes_when_the_agent_process_exits() {
     let (tab_key, _wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-eof");
     assert_eq!(open_session_count(&state, "run-eof"), 1);
 
-    state.lock().unwrap().tabs[&tab_key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&tab_key)
+        .unwrap()
+        .session
+        .end();
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while open_session_count(&state, "run-eof") > 0 {
@@ -566,7 +584,13 @@ fn default_after_a_native_override_restarts_fresh_before_delivery() {
             .recording_into(&log)
             .natively_accepting(choice_b.clone()),
     );
-    let instance = app.tabs[&key].session_instance.clone().unwrap();
+    let instance = app
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session_instance
+        .clone()
+        .unwrap();
     app.note_self_report(
         &run_id,
         &agent_id,
@@ -646,6 +670,88 @@ fn default_after_a_native_override_restarts_fresh_before_delivery() {
         .unwrap();
     assert_eq!(row.model, None, "the fresh session uses configured default");
     assert_eq!(row.effort, None, "sticky effort is cleared at the boundary");
+}
+
+#[test]
+fn ended_native_session_with_a_changed_choice_restarts_fresh() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let run_id = adopted_run(&mut app, &repo, dir.path(), "ended-native-choice");
+    let root = app.entity_agent_root(&run_id).unwrap();
+    let agent_id = primary_agent_id(&app, &run_id);
+    let old_choice = ModelChoice {
+        model: Some("model-a".to_string()),
+        ..ModelChoice::default()
+    };
+    let new_choice = ModelChoice {
+        model: Some("model-b".to_string()),
+        ..ModelChoice::default()
+    };
+    app.set_agent_model_choice(&run_id, &agent_id, old_choice.clone())
+        .unwrap();
+    let key = insert_agent_tab(
+        &mut app,
+        &root,
+        &run_id,
+        &agent_id,
+        DictatedSession::reporting(AgentStatus::Ended { code: Some(0) })
+            .natively_accepting(new_choice.clone()),
+    );
+    let instance = app
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session_instance
+        .clone()
+        .unwrap();
+    app.note_self_report(
+        &run_id,
+        &agent_id,
+        &instance,
+        SelfReport {
+            named: Some("ended-session".to_string()),
+            model: old_choice.model.clone(),
+        },
+    );
+    app.set_agent_model_choice(&run_id, &agent_id, new_choice.clone())
+        .unwrap();
+    let conversation_id = app
+        .resolve_conversation_address(&run_id, Some(&agent_id))
+        .unwrap()
+        .conversation_id;
+    let choice_revision = app
+        .entity_agents(&run_id)
+        .unwrap()
+        .by_id(&agent_id)
+        .unwrap()
+        .choice_revision;
+    let state = app.shared();
+    let turn = PendingAgentTurn {
+        operation_id: None,
+        root: AppState::canonical_root(&root),
+        owner: run_id,
+        agent_id,
+        conversation_id,
+        model_choice: new_choice,
+        choice_revision,
+        interrupt: false,
+        phase: "build",
+        say: Some(TurnText {
+            cold: "cold".to_string(),
+            warm: "warm".to_string(),
+        }),
+        wants_catch_up: false,
+        survives_refusal: false,
+    };
+
+    assert!(matches!(
+        crate::app::runtime::delivery::preflight::preflight_delivery(
+            &state,
+            &turn,
+            &a_frame(&state),
+        ),
+        DeliveryPreflight::Proceed { force_fresh: true }
+    ));
 }
 
 #[test]
@@ -771,9 +877,12 @@ fn starting_one_issue_agent_preserves_another_valid_issue_session_in_the_same_ch
 
     let app = state.lock().unwrap();
     assert!(
-        app.tabs.contains_key(&TabKey::agent(&root, &first_agent)),
+        app.session_registry
+            .contains(&TabKey::agent(&root, &first_agent)),
         "starting Issue B retired Issue A's valid session"
     );
-    assert!(app.tabs.contains_key(&TabKey::agent(&root, &second_agent)));
+    assert!(app
+        .session_registry
+        .contains(&TabKey::agent(&root, &second_agent)));
     assert!(!first_log.ended());
 }

@@ -184,7 +184,9 @@ fn abandoning_a_primary_run_never_touches_the_checkout() {
     )
     .unwrap();
     let agent_pid = agent_pid(&tab).expect("a live agent");
-    state.tabs.insert(derived_agent_key(&root, &run_id), tab);
+    state
+        .session_registry
+        .test_insert_tab(derived_agent_key(&root, &run_id), tab);
 
     let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
     assert_eq!(abandoned["ok"], true, "{abandoned:?}");
@@ -194,7 +196,9 @@ fn abandoning_a_primary_run_never_touches_the_checkout() {
         "abandoning a primary run must never delete the repository"
     );
     assert!(
-        !state.tabs.contains_key(&derived_agent_key(&root, &run_id)),
+        !state
+            .session_registry
+            .contains(&derived_agent_key(&root, &run_id)),
         "the agent goes with the owner that hosted it"
     );
     assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
@@ -300,7 +304,7 @@ fn run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout() {
     let root = AppState::canonical_root(&checkout);
     let (death, death_handle) = OffLockGate::new();
     let agent_id = crate::agent::derived_agent_id(&run_id);
-    app.tabs.insert(
+    app.session_registry.test_insert_tab(
         derived_agent_key(&root, &run_id),
         gated_tab(
             &root,
@@ -345,7 +349,7 @@ fn run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die() {
     let root = AppState::canonical_root(&checkout);
     let (death, death_handle) = OffLockGate::new();
     let agent_id = crate::agent::derived_agent_id(&run_id);
-    app.tabs.insert(
+    app.session_registry.test_insert_tab(
         derived_agent_key(&root, &run_id),
         gated_tab(
             &root,
@@ -781,7 +785,8 @@ async fn agent_start_opens_the_primary_checkouts_agent() {
             "on the account's default harness"
         );
         assert!(
-            s.tabs.contains_key(&primary_agent_key(&s, &root, &run_id)),
+            s.session_registry
+                .contains(&primary_agent_key(&s, &root, &run_id)),
             "the primary checkout's agent is keyed on the repo root"
         );
     }

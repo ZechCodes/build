@@ -39,14 +39,14 @@ async fn a_done_over_the_socket_delivers_the_validation_turn_to_the_same_agent()
     let (build_pid, session_token) = {
         let s = state.lock().unwrap();
         let tab = s
-            .tabs
-            .get(&key)
+            .session_registry
+            .test_tab(&key)
             .expect("dispatching a stage opens the worktree's agent");
         let agent_id = &s.runs[&run_id].agents.primary().unwrap().id;
         (
             agent_pid(tab).expect("a live harness has a pid"),
             // The capability is minted per AGENT: that is who reports.
-            s.mcp_session_tokens[agent_id].clone(),
+            s.session_registry.test_token(agent_id).unwrap().to_string(),
         )
     };
 
@@ -89,11 +89,15 @@ async fn a_done_over_the_socket_delivers_the_validation_turn_to_the_same_agent()
         StageProgressState::Validating
     );
     assert_eq!(
-        s.tabs.get(&key).and_then(agent_pid),
+        s.session_registry.test_tab(&key).and_then(agent_pid),
         Some(build_pid),
         "the agent that built the stage is the one asked to validate it"
     );
-    assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+    assert_eq!(
+        s.session_registry.test_counts().tabs,
+        1,
+        "one worktree, one agent"
+    );
 }
 
 /// A `done` off the control socket is a frame like any other: it takes the
@@ -115,8 +119,8 @@ async fn a_done_over_the_socket_is_timed_under_its_own_method() {
         // delivery is the one that opens a harness.
         let agent_id = s.runs[&run_id].agents.primary().unwrap().id.clone();
         let session_token = uuid::Uuid::new_v4().to_string();
-        s.mcp_session_tokens
-            .insert(agent_id.clone(), session_token.clone());
+        s.session_registry
+            .test_install_token(agent_id.clone(), session_token.clone());
         (agent_id, session_token)
     };
     // A spawn builds its session locator with the app mutex released, so a
@@ -211,8 +215,8 @@ async fn a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_f
         let (capture_id, agent_id) = captured(&mut app, "finish the toast on the login branch");
         app.pending_agent_turns.clear();
         let session_token = uuid::Uuid::new_v4().to_string();
-        app.mcp_session_tokens
-            .insert(agent_id.clone(), session_token.clone());
+        app.session_registry
+            .test_install_token(agent_id.clone(), session_token.clone());
         app.off_lock_gate = Some(gate);
         (capture_id, project_id, agent_id, session_token)
     };
@@ -347,7 +351,7 @@ fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
     ));
     assert_eq!(sent["ok"], true, "{sent:?}");
     assert!(
-        state.tabs.is_empty(),
+        state.session_registry.test_counts().tabs == 0,
         "a verb queues a turn; only delivery — off the state lock — spawns"
     );
     let queued = state
@@ -471,8 +475,8 @@ async fn every_plan_verb_reaches_the_issues_one_agent() {
     let drafting_pid = {
         let s = state.lock().unwrap();
         let tab = s
-            .tabs
-            .get(&key)
+            .session_registry
+            .test_tab(&key)
             .expect("authoring a plan opens the primary checkout's agent");
         assert!(tab.session_is_live(), "the plan's agent is running");
         agent_pid(tab).expect("a live harness has a pid")
@@ -496,11 +500,15 @@ async fn every_plan_verb_reaches_the_issues_one_agent() {
         wait_for_deliveries(&state).await;
         let s = state.lock().unwrap();
         assert_eq!(
-            s.tabs.get(&key).and_then(agent_pid),
+            s.session_registry.test_tab(&key).and_then(agent_pid),
             Some(drafting_pid),
             "{method} must reach the process that authored the plan"
         );
-        assert_eq!(s.tabs.len(), 1, "{method}: one worktree, one agent");
+        assert_eq!(
+            s.session_registry.test_counts().tabs,
+            1,
+            "{method}: one worktree, one agent"
+        );
     }
 }
 

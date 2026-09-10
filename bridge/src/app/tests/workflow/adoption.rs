@@ -320,7 +320,9 @@ fn run_adopt_release_and_delete() {
     )
     .unwrap();
     let agent_pid = agent_pid(&tab).expect("a live agent");
-    state.tabs.insert(derived_agent_key(&root, &run_id), tab);
+    state
+        .session_registry
+        .test_insert_tab(derived_agent_key(&root, &run_id), tab);
 
     // Release drops the record, keeps the files.
     let released = state.handle(req("run.release", json!({ "run_id": run_id })));
@@ -333,7 +335,9 @@ fn run_adopt_release_and_delete() {
     // …and takes Build's agent with it: an agent whose owner is gone would
     // report `done` into the unknown-entity log forever.
     assert!(
-        !state.tabs.contains_key(&derived_agent_key(&root, &run_id)),
+        !state
+            .session_registry
+            .contains(&derived_agent_key(&root, &run_id)),
         "releasing a run closes the agent it owned"
     );
     assert!(process_reaped(agent_pid), "the agent is killed AND reaped");

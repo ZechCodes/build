@@ -214,7 +214,14 @@ pub(in crate::app::tests) fn spawned_provider(
     root: &std::path::Path,
     agent_id: &str,
 ) -> AgentProvider {
-    match state.lock().unwrap().tabs[&TabKey::agent(root, agent_id)].role {
+    match state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&TabKey::agent(root, agent_id))
+        .unwrap()
+        .role
+    {
         TabRole::Agent { provider, .. } => provider,
         TabRole::Shell => panic!("{agent_id} opened a shell, not an agent session"),
     }

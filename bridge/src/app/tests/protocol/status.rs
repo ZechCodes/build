@@ -27,8 +27,8 @@ async fn the_terminal_verbs_refuse_the_headless_agent_the_daemon_spawned() {
     assert_eq!(posted["ok"], true, "{posted:?}");
     wait_for(Duration::from_secs(10), || {
         let s = state.lock().unwrap();
-        s.tabs
-            .get(&key)
+        s.session_registry
+            .test_tab(&key)
             .filter(|tab| tab.session_is_live())
             .map(|_| ())
     })
@@ -59,7 +59,14 @@ async fn the_terminal_verbs_refuse_the_headless_agent_the_daemon_spawned() {
         assert_eq!(refused["error"], json!(refusal), "{method}: {refused:?}");
     }
 
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
 }
 
 /// The terminal verbs refuse an agent whose session has no terminal, and
@@ -75,7 +82,7 @@ fn the_terminal_verbs_refuse_an_agent_with_no_terminal() {
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
     let root = AppState::canonical_root(&repo);
     let agent_id = "agent-protocol";
-    state.lock().unwrap().tabs.insert(
+    state.lock().unwrap().session_registry.test_insert_tab(
         TabKey::agent(&root, agent_id),
         terminal_free_agent_tab(&root, "run-protocol", agent_id),
     );
@@ -116,7 +123,7 @@ async fn agent_attach_refuses_an_agent_with_no_terminal() {
     let agent_id = "agent-protocol";
     let project_id = {
         let mut s = state.lock().unwrap();
-        s.tabs.insert(
+        s.session_registry.test_insert_tab(
             TabKey::agent(&root, agent_id),
             terminal_free_agent_tab(&root, "run-protocol", agent_id),
         );
@@ -218,8 +225,8 @@ pub(in crate::app::tests) fn insert_agent_tab(
 ) -> TabKey {
     let key = TabKey::agent(root, agent_id);
     if let Some(previous) = state
-        .tabs
-        .get(&key)
+        .session_registry
+        .test_tab(&key)
         .and_then(|tab| tab.session_instance.clone())
     {
         state.record_agent_session_end(owner, agent_id, &previous);
@@ -234,7 +241,7 @@ pub(in crate::app::tests) fn insert_agent_tab(
     let instance = state.record_agent_session_start(owner, agent_id, root, &choice, "build");
     let mut tab = dictated_agent_tab(root, owner, agent_id, session);
     tab.session_instance = instance;
-    state.tabs.insert(key.clone(), tab);
+    state.session_registry.test_insert_tab(key.clone(), tab);
     state.record_agent_working_since(owner, agent_id, working.then(now_rfc3339));
     key
 }
@@ -298,8 +305,13 @@ async fn protocol_status_completion_records_activity_without_a_board_poll() {
         &crate::agent::derived_agent_id("run-status-watch"),
         DictatedSession::reporting(AgentStatus::Working).watching_status(status_rx),
     );
-    let session = Arc::clone(&app.tabs[&key].session);
-    let instance = app.tabs[&key].session_instance.clone();
+    let session = Arc::clone(&app.session_registry.test_tab(&key).unwrap().session);
+    let instance = app
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session_instance
+        .clone();
     let state = app.shared();
     spawn_status_pump(&state, key, session, instance, Some(status_tx.subscribe()));
 
@@ -672,7 +684,10 @@ fn closing_a_worktrees_agents_ends_their_sessions() {
         log.ended(),
         "an agent whose owner is gone must be ended, not merely forgotten"
     );
-    assert!(state.tabs.is_empty(), "and forgotten too");
+    assert!(
+        state.session_registry.test_counts().tabs == 0,
+        "and forgotten too"
+    );
 }
 
 /// The board reports it per worktree, so a bare worktree — which has no run
@@ -744,7 +759,12 @@ async fn the_board_reports_whether_an_agent_is_working_in_a_worktree() {
     );
     assert_eq!(entry_of(&state)["can_finish"], false);
 
-    state.lock().unwrap().tabs[&key]
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
         .session
         .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
     assert_eq!(entry_of(&state)["agent_working"], false);
@@ -753,7 +773,14 @@ async fn the_board_reports_whether_an_agent_is_working_in_a_worktree() {
         true,
         "a managed agent that has stopped working makes finish advisable"
     );
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
 }
 
 /// A worktree Build never touched — no run, no adoption — is not the
@@ -809,7 +836,14 @@ async fn a_bare_external_worktree_stays_off_the_board_no_matter_what_happens_in_
         !has_branch_row(&state),
         "an agent happening to be live in it is not the same as Build having adopted it"
     );
-    state.lock().unwrap().tabs[&key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
+        .session
+        .end();
 
     let adopted = state.lock().unwrap().handle(req(
         "run.adopt",

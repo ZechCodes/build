@@ -875,7 +875,7 @@ async fn only_a_recently_painting_agent_counts_as_working() {
 
     let key = derived_agent_key(&AppState::canonical_root(&root), "run-pulse");
     let mut s = state.lock().unwrap();
-    let agent = s.tabs.get(&key).expect("the agent tab");
+    let agent = s.session_registry.test_tab(&key).expect("the agent tab");
     assert!(
         agent_is_working(agent),
         "a freshly spawned agent has just painted"
@@ -884,7 +884,7 @@ async fn only_a_recently_painting_agent_counts_as_working() {
     // A dead agent's retained screen is not a heartbeat: the tab still holds
     // the last thing it painted, and that is a corpse, not progress.
     let dead = {
-        let agent = s.tabs.get_mut(&key).unwrap();
+        let agent = s.session_registry.test_tab_mut(&key).unwrap();
         agent.live = false;
         let dead = agent_is_working(agent);
         agent.live = true; // restore: the next case is about a LIVE agent
@@ -896,7 +896,7 @@ async fn only_a_recently_painting_agent_counts_as_working() {
     // and it has painted nothing since the window closed. That agent is
     // waiting for YOU — a pulse here teaches the human to ignore the pulse.
     let parked = {
-        let agent = s.tabs.get_mut(&key).unwrap();
+        let agent = s.session_registry.test_tab_mut(&key).unwrap();
         assert!(
             agent_is_working(agent),
             "still working right up until it falls silent"

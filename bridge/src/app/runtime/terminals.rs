@@ -1,14 +1,13 @@
 use crate::app::{
     capture_conversation_names, err, record_idle_in_thread, require_str, spawn_tab_pumps, AppState,
-    HarnessExit, Tab, TabKey, TabRole,
+    HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
 };
 use crate::carrier::SessionSender;
 use crate::changes::ANNOUNCED_EVENTS;
 use crate::encoding::b64decode;
-use crate::harness::AgentStatus;
 use crate::models::AgentProvider;
 use crate::pty::HarnessSpec;
-use crate::screen::{AttachSnapshot, ScreenHandle, TerminalHandle};
+use crate::screen::{AttachSnapshot, TerminalHandle};
 use crate::thread::SessionInstance;
 use crate::timing::FrameTimer;
 use portable_pty::PtySize;
@@ -258,8 +257,7 @@ pub(in crate::app) fn term_create(
                 "terminal limit reached ({MAX_USER_TERMINALS} open terminals) — close one first"
             ));
         }
-        let tab_id = format!("term-{}", s.next_term);
-        s.next_term += 1;
+        let tab_id = s.session_registry.next_terminal_id();
         let shell = s.term_shell.clone();
         let key = TabKey {
             root: root.clone(),
@@ -271,8 +269,7 @@ pub(in crate::app) fn term_create(
             root,
             terminal_size(cols, rows),
         )?;
-        let pumps = tab.pumps(rx);
-        s.tabs.insert(key.clone(), tab);
+        let pumps = s.session_registry.insert_shell(key.clone(), tab, rx);
         (key, pumps)
     };
     spawn_tab_pumps(state, key.clone(), pumps);
@@ -332,9 +329,8 @@ pub(in crate::app) fn term_input(
     let terminal = {
         let s = timer.lock(state);
         let key = s.tab_key_of_wire_id(&term_id)?;
-        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
-        let terminal = tab.terminal_handle()?;
-        if !tab.session_is_live() {
+        let (live, terminal) = s.session_registry.terminal_access(&key)?;
+        if !live {
             return Err("no active agent session".to_string());
         }
         terminal
@@ -364,8 +360,7 @@ pub(in crate::app) fn term_resize(
     let (live, terminal) = {
         let s = timer.lock(state);
         let key = s.tab_key_of_wire_id(&term_id)?;
-        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
-        (tab.session_is_live(), tab.terminal_handle()?)
+        s.session_registry.terminal_resize_access(&key)?
     };
     if live {
         terminal.resize(cols, rows)?;
@@ -394,11 +389,10 @@ pub(in crate::app) fn term_ack(
     let screen = {
         let s = timer.lock(state);
         let key = s.tab_key_of_wire_id(&term_id)?;
-        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
         // A client that was never allowed to attach has nothing to acknowledge,
         // so it hears the same refusal rather than acking into a screen that is
         // not there.
-        tab.terminal_handle()?.screen().clone()
+        s.session_registry.terminal_screen(&key)?
     };
     // The ack may push one resync snapshot to the caller, so it happens with the
     // app mutex released like every other write to a screen.
@@ -446,10 +440,7 @@ impl AppState {
     /// daemon-wide terminal cap counts these and never an agent tab: an agent
     /// is Build's, always reachable, and must not be crowded out by shells.
     pub(in crate::app) fn shell_tab_count(&self) -> usize {
-        self.tabs
-            .values()
-            .filter(|tab| tab.role == TabRole::Shell)
-            .count()
+        self.session_registry.shell_count()
     }
 
     /// The registry key a wire id addresses — `term-<n>` for a shell,
@@ -464,11 +455,7 @@ impl AppState {
     /// A scan, not a map hit: the registry is keyed by worktree and there are
     /// only ever a handful of live tabs.
     pub(in crate::app) fn tab_key_of_wire_id(&self, wire_id: &str) -> Result<TabKey, String> {
-        self.tabs
-            .iter()
-            .find(|(_, tab)| tab.wire_id() == wire_id)
-            .map(|(key, _)| key.clone())
-            .ok_or_else(|| "unknown term_id".to_string())
+        self.session_registry.key_for_wire_id(wire_id)
     }
 
     /// The user's shells in the requested scope's worktree, ordered by numeric
@@ -484,15 +471,13 @@ impl AppState {
     pub(in crate::app) fn term_list(&mut self, params: &Value) -> Result<Value, String> {
         let root = TermScope::parse(params)?.resolve_root(self)?;
         let mut terminals: Vec<(u64, Value)> = self
-            .tabs
-            .iter()
-            .filter(|(key, tab)| key.root == root && tab.role == TabRole::Shell)
-            .filter_map(|(key, tab)| {
-                // A shell IS its terminal, so the filter above already excluded
-                // the only role that can be without one.
-                let (cols, rows) = tab.screen.as_ref()?.size();
+            .session_registry
+            .shell_tabs_at(&root)
+            .into_iter()
+            .filter_map(|tab| {
+                let (cols, rows) = tab.size?;
                 Some((
-                    term_id_suffix(&key.tab_id),
+                    term_id_suffix(&tab.key.tab_id),
                     json!({
                         "term_id": tab.tab_id,
                         "kind": SHELL_TAB_KIND,
@@ -525,21 +510,7 @@ impl AppState {
     /// What one tab hands a client that attaches to it, taken out of the
     /// registry so the attach itself runs with the app mutex released.
     pub(in crate::app) fn attachment(&self, key: &TabKey) -> Result<TabAttachment, String> {
-        let tab = self.tabs.get(key).ok_or("unknown term_id")?;
-        Ok(TabAttachment {
-            facts: TabFacts {
-                term_id: tab.wire_id(),
-                live: tab.live,
-                // Which harness is behind this screen. Null for a shell, and
-                // null for a worktree nothing has ever run in — the client
-                // leads its start offer with its own default there instead.
-                provider: match tab.role {
-                    TabRole::Agent { provider, .. } => Some(provider),
-                    TabRole::Shell => None,
-                },
-            },
-            terminal: tab.terminal_handle()?,
-        })
+        self.session_registry.attachment(key)
     }
 
     /// A session ended: detach it from every tab so the pumps stop encrypting
@@ -562,12 +533,7 @@ impl AppState {
     /// retirement, or the reaper.
     pub(in crate::app) fn drop_session(&mut self, session_id: &str) {
         self.peers.end_session(session_id);
-        for screen in self
-            .tabs
-            .values()
-            .filter_map(|tab| tab.screen.as_ref())
-            .chain(self.agent_screens_awaiting_spawn.values())
-        {
+        for screen in self.session_registry.screen_handles() {
             screen.detach(session_id);
         }
     }
@@ -589,23 +555,40 @@ impl AppState {
     /// forever.
     pub(in crate::app) fn reap_orphaned_terminals(&mut self) -> Vec<String> {
         let vanished: Vec<TabKey> = self
-            .tabs
-            .keys()
+            .session_registry
+            .tab_keys()
+            .into_iter()
             .filter(|key| !key.root.exists())
-            .cloned()
             .collect();
         let mut reaped = Vec::new();
         let mut killed_agents: Vec<SessionInstance> = Vec::new();
         for key in vanished {
-            let Some(tab) = self.tabs.get(&key) else {
+            let provider = self.session_registry.agent_snapshot(&key).and_then(|tab| {
+                tab.role
+                    .agent()
+                    .map(|(owner, agent)| (owner.to_string(), agent.to_string()))
+            });
+            let provider_thread_id = provider
+                .as_ref()
+                .and_then(|(owner, agent)| self.recorded_resume_id(owner, agent));
+            let Some(retired) = self.session_registry.retire_tab(
+                &key,
+                "reaped",
+                LifecycleDiagnostic {
+                    event: "shutdown_requested",
+                    origin: "tab_retirement",
+                    reason: Some("reaped"),
+                    operation_id: None,
+                    provider_thread_id: provider_thread_id.as_deref(),
+                    caller: Some(std::panic::Location::caller()),
+                },
+            ) else {
                 continue;
             };
-            let wire_id = tab.wire_id();
-            if let Some(instance) = &tab.session_instance {
-                killed_agents.push(instance.clone());
+            if let Some(instance) = retired.instance {
+                killed_agents.push(instance);
             }
-            self.retire_tab(&key, "reaped");
-            reaped.push(wire_id);
+            reaped.push(retired.wire_id);
         }
         // The kill above is one the pump can never report: the tab left the
         // registry before the process died, so the pump's EOF finds no tab and
@@ -624,17 +607,15 @@ impl AppState {
         // that is gone will never host the agent their clients are watching
         // for, and a screen nothing can ever paint is not one to keep.
         let orphaned: Vec<TabKey> = self
-            .agent_screens_awaiting_spawn
-            .keys()
+            .session_registry
+            .waiting_screen_keys()
+            .into_iter()
             .filter(|key| !key.root.exists())
-            .cloned()
             .collect();
         for key in orphaned {
-            let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) else {
-                continue;
-            };
-            screen.close("reaped");
-            reaped.push(key.tab_id);
+            if let Some(wire_id) = self.session_registry.remove_waiting_screen(&key, "reaped") {
+                reaped.push(wire_id);
+            }
         }
         reaped
     }
@@ -677,47 +658,19 @@ impl AppState {
         // still on its way (`turn_undelivered`) explains a missing tab
         // innocently, and it explains it for seconds, not for the daemon's
         // life. A tabless demotion claims no exit code — nothing exited.
-        let idle_check = |tab: Option<&Tab>, turn_undelivered: bool| {
-            let Some(tab) = tab else {
-                return if turn_undelivered { None } else { Some(None) };
+        let idle_check =
+            |observation: Option<IdleObservation>, turn_undelivered: bool| match observation {
+                None if turn_undelivered => None,
+                None => Some(None),
+                Some(IdleObservation::Active) => None,
+                Some(IdleObservation::Idle {
+                    exit_code: Some(code),
+                    epitaph,
+                }) => Some(Some(HarnessExit { code, epitaph })),
+                Some(IdleObservation::Idle {
+                    exit_code: None, ..
+                }) => Some(None),
             };
-            // Asked once, so the two questions below cannot be answered by two
-            // different moments of the same session.
-            let status = tab.session.status();
-            if let AgentStatus::Ended { code } = status {
-                return Some(Some(HarnessExit {
-                    code: code.unwrap_or(-1),
-                    // The screen first, the session second. A retained screen is
-                    // the last words of a harness Build could only see the
-                    // outside of; a session that reports its own errors was told
-                    // them, and hands back what it was told.
-                    epitaph: tab
-                        .screen
-                        .as_ref()
-                        .and_then(ScreenHandle::epitaph)
-                        .or_else(|| tab.session.epitaph()),
-                }));
-            }
-            // A session that reports its own turn boundaries cannot be
-            // demoted mid-turn: a model reasoning for forty minutes is working
-            // and silent, and silence is the only instrument the two clocks
-            // below own. For a PTY this changes nothing — paint inside 30s is
-            // what makes one `Working`, so a tab quiet past a threshold minutes
-            // long can never claim it.
-            if matches!(status, AgentStatus::Working) {
-                return None;
-            }
-            let quiet_for = quiet_threshold;
-            let heard_from_recently = tab.session.quiet_for() < quiet_for;
-            let spoken_to_recently = tab
-                .last_delivered_at
-                .is_some_and(|at| at.elapsed() < quiet_for);
-            if heard_from_recently || spoken_to_recently {
-                None
-            } else {
-                Some(None)
-            }
-        };
         let idle_plans: Vec<(String, Option<HarnessExit>)> = self
             .plans
             .iter()
@@ -728,8 +681,10 @@ impl AppState {
                     .as_ref()
                     .map(|workspace| Self::canonical_root(&workspace.checkout))?;
                 idle_check(
-                    self.tabs
-                        .get(&TabKey::agent(&root, &a.agents.primary()?.id)),
+                    self.session_registry.idle_observation(
+                        &TabKey::agent(&root, &a.agents.primary()?.id),
+                        quiet_threshold,
+                    ),
                     self.agent_turn_is_undelivered(id),
                 )
                 .map(|exit| (id.clone(), exit))
@@ -742,8 +697,10 @@ impl AppState {
             .filter_map(|(id, a)| {
                 let root = Self::canonical_root(&a.worktree.path);
                 idle_check(
-                    self.tabs
-                        .get(&TabKey::agent(&root, &a.agents.primary()?.id)),
+                    self.session_registry.idle_observation(
+                        &TabKey::agent(&root, &a.agents.primary()?.id),
+                        quiet_threshold,
+                    ),
                     self.agent_turn_is_undelivered(id),
                 )
                 .map(|exit| (id.clone(), exit))

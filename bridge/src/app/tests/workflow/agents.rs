@@ -81,7 +81,9 @@ fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
     .expect("the agent tab spawns");
     let terminal_key = TabKey::agent(&root, &agent_id);
     let terminal_capability = tab.session.terminal().is_some();
-    state.tabs.insert(terminal_key.clone(), tab);
+    state
+        .session_registry
+        .test_insert_tab(terminal_key.clone(), tab);
     let running = bubble(&mut state);
     assert_eq!(running["has_terminal"], terminal_capability, "{running:?}");
 
@@ -90,8 +92,8 @@ fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
     let reporting_tab = terminal_free_agent_tab(&root, &run_id, &agent_id);
     let reporting_capability = reporting_tab.session.terminal().is_some();
     state
-        .tabs
-        .insert(terminal_key, reporting_tab)
+        .session_registry
+        .test_insert_tab(terminal_key, reporting_tab)
         .expect("the PTY tab it replaces")
         .session
         .end();
@@ -467,13 +469,14 @@ fn a_drained_turn_cannot_spawn_an_agent_removed_before_delivery() {
     let s = state.lock().unwrap();
     assert!(s.runs[&run_id].agents.by_id(&removed_agent).is_none());
     assert!(
-        s.tabs
-            .keys()
+        s.session_registry
+            .test_tabs()
+            .map(|(key, _)| key)
             .all(|key| key.tab_id != agent_tab_id(&removed_agent)),
         "the drained turn recreated the deleted agent's tab"
     );
     assert!(
-        !s.mcp_session_tokens.contains_key(&removed_agent),
+        s.session_registry.test_token(&removed_agent).is_none(),
         "the drained turn minted a provider capability for the deleted agent"
     );
 }
@@ -653,7 +656,15 @@ async fn agent_remove_kills_and_reaps_the_agents_live_session() {
         assert_eq!(started["ok"], true, "{started:?}");
     }
     wait_for_deliveries(&state).await;
-    let pid = agent_pid(&state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]).unwrap();
+    let pid = agent_pid(
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&TabKey::agent(&root, &second_agent))
+            .unwrap(),
+    )
+    .unwrap();
 
     let removed = call(
         &handler,
@@ -664,20 +675,23 @@ async fn agent_remove_kills_and_reaps_the_agents_live_session() {
 
     {
         let s = state.lock().unwrap();
+        let tokens: HashMap<_, _> = s.session_registry.test_tokens().collect();
         assert!(
-            !s.tabs.contains_key(&TabKey::agent(&root, &second_agent)),
+            !s.session_registry
+                .contains(&TabKey::agent(&root, &second_agent)),
             "the removed agent's PTY is gone"
         );
         assert!(
-            s.tabs.contains_key(&TabKey::agent(&root, &primary_agent)),
+            s.session_registry
+                .contains(&TabKey::agent(&root, &primary_agent)),
             "the agent beside it kept running"
         );
         assert!(
-            !s.mcp_session_tokens.contains_key(&second_agent),
+            s.session_registry.test_token(&second_agent).is_none(),
             "and its capability with it: {:?}",
-            s.mcp_session_tokens
+            tokens
         );
-        assert!(s.mcp_session_tokens.contains_key(&primary_agent));
+        assert!(s.session_registry.test_token(&primary_agent).is_some());
         assert_eq!(s.runs["run-retire"].agents.len(), 1);
     }
     assert!(process_reaped(pid), "the harness must be killed AND reaped");
@@ -844,17 +858,28 @@ async fn two_agents_on_one_worktree_get_their_own_ptys_and_tokens() {
     wait_for_deliveries(&state).await;
 
     let s = state.lock().unwrap();
-    assert!(s.tabs.contains_key(&TabKey::agent(&root, &primary_agent)));
-    assert!(s.tabs.contains_key(&TabKey::agent(&root, &second_agent)));
+    let tokens: HashMap<_, _> = s.session_registry.test_tokens().collect();
+    assert!(s
+        .session_registry
+        .contains(&TabKey::agent(&root, &primary_agent)));
+    assert!(s
+        .session_registry
+        .contains(&TabKey::agent(&root, &second_agent)));
     assert_eq!(
-        s.tabs.keys().filter(|key| key.is_agent()).count(),
+        s.session_registry
+            .test_tabs()
+            .map(|(key, _)| key)
+            .filter(|key| key.is_agent())
+            .count(),
         2,
         "the one-agent-per-worktree rule is gone for branches"
     );
-    let tokens = &s.mcp_session_tokens;
-    assert!(tokens.contains_key(&primary_agent), "{tokens:?}");
-    assert!(tokens.contains_key(&second_agent), "{tokens:?}");
-    assert_ne!(tokens[&primary_agent], tokens[&second_agent]);
+    assert!(tokens.contains_key(primary_agent.as_str()), "{tokens:?}");
+    assert!(tokens.contains_key(second_agent.as_str()), "{tokens:?}");
+    assert_ne!(
+        tokens[primary_agent.as_str()],
+        tokens[second_agent.as_str()]
+    );
     // Each agent's harness reports through its own config file.
     assert!(root
         .join(crate::orchestrator::mcp_config_path(&second_agent))

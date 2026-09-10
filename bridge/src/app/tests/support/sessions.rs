@@ -313,7 +313,12 @@ pub(in crate::app::tests) async fn wait_for_deliveries(state: &Arc<Mutex<AppStat
 /// moment the agent tab arrives.
 pub(in crate::app::tests) async fn wait_for_agent_tab(state: &Arc<Mutex<AppState>>, key: &TabKey) {
     wait_for(Duration::from_secs(10), || {
-        state.lock().unwrap().tabs.contains_key(key).then_some(())
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .contains(key)
+            .then_some(())
     })
     .await
     .unwrap_or_else(|| panic!("the delivery never opened {key:?}"));

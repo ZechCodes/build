@@ -91,7 +91,14 @@ async fn a_killed_agent_process_leaves_its_row_inactive() {
         "a turn in flight is the row working"
     );
 
-    state.lock().unwrap().tabs[&tab_key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&tab_key)
+        .unwrap()
+        .session
+        .end();
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let row = loop {
@@ -159,7 +166,7 @@ fn add_second_agent(state: &Arc<Mutex<AppState>>, run_id: &str) -> (String, TabK
             &ModelChoice::default(),
             "build",
         );
-        app.tabs.insert(key.clone(), tab);
+        app.session_registry.test_insert_tab(key.clone(), tab);
     }
     spawn_tab_pumps(state, key.clone(), rx);
     (agent_id, key)
@@ -193,7 +200,14 @@ async fn a_dead_agents_interruption_lands_on_its_own_conversation() {
         );
     }
 
-    state.lock().unwrap().tabs[&second_key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&second_key)
+        .unwrap()
+        .session
+        .end();
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -268,10 +282,24 @@ async fn a_process_that_exits_after_handing_back_records_no_interruption() {
         );
     }
 
-    state.lock().unwrap().tabs[&tab_key].session.end();
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&tab_key)
+        .unwrap()
+        .session
+        .end();
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while state.lock().unwrap().tabs[&tab_key].live {
+    while state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_tab(&tab_key)
+        .unwrap()
+        .live
+    {
         assert!(
             std::time::Instant::now() < deadline,
             "the pump never noticed the process end"
@@ -459,7 +487,14 @@ async fn an_immediately_exiting_harness_leaves_one_closed_session() {
 
     let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
     wait_for(Duration::from_secs(5), || {
-        (!state.lock().unwrap().tabs[&key].live).then_some(())
+        (!state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .live)
+            .then_some(())
     })
     .await
     .expect("the pump observes the child exit");
@@ -518,7 +553,10 @@ async fn an_immediately_exiting_harness_leaves_one_closed_session() {
         session_events[0].1 < session_events[1].1,
         "the recorded start precedes the recorded end: {session_events:?}"
     );
-    assert!(!s.tabs[&key].live, "the retained tab is non-live");
+    assert!(
+        !s.session_registry.test_tab(&key).unwrap().live,
+        "the retained tab is non-live"
+    );
 }
 
 /// An agent that is gone before it reads a byte.
@@ -567,7 +605,11 @@ async fn the_terminal_cap_counts_shell_tabs_and_never_the_agent() {
         terminal_size(80, 24),
     )
     .expect("a shell tab spawns");
-    state.lock().unwrap().tabs.insert(shell_key, shell_tab);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(shell_key, shell_tab);
 
     // The agent takes none of the sixteen, so fifteen more shells fit
     // beside the one shell tab...
@@ -595,7 +637,8 @@ async fn the_terminal_cap_counts_shell_tabs_and_never_the_agent() {
 
 #[test]
 fn mcp_control_frames_require_the_current_session_token() {
-    let sessions = HashMap::from([("run-1".to_string(), "secret-current".to_string())]);
+    let mut sessions = SessionRegistry::new();
+    sessions.test_install_token("run-1".to_string(), "secret-current".to_string());
     let valid = json!({
         "task_id": "run-1",
         "session_token": "secret-current",
@@ -660,7 +703,7 @@ async fn authenticated_listener_rejects_rotated_and_wrong_tokens_and_keeps_canon
         )
         .unwrap()
         .holding;
-        let stale_token = stale.session_token.clone();
+        let stale_token = stale.test_session_token().to_string();
         let current = reserve_agent_spawn(
             &mut app,
             &key,
@@ -675,7 +718,7 @@ async fn authenticated_listener_rejects_rotated_and_wrong_tokens_and_keeps_canon
         )
         .unwrap()
         .holding;
-        let current_token = current.session_token.clone();
+        let current_token = current.test_session_token().to_string();
         (stale, current, stale_token, current_token)
     };
     let socket = directory.path().join("authenticated-mcp.sock");
@@ -1011,8 +1054,11 @@ async fn pi_mcp_child_death_runs_the_normal_tab_exit_path() {
     assert_eq!(tab.session.session_id().as_deref(), Some(agent_id.as_str()));
     let (sender, mut pushes, session_key) = SessionSender::observable("pi-death-observer");
     screen_of(&tab).attach(&sender, None);
-    app.tabs.insert(key.clone(), tab);
-    app.tabs.get_mut(&key).unwrap().session_instance = instance;
+    app.session_registry.test_insert_tab(key.clone(), tab);
+    app.session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .session_instance = instance;
     let state = app.shared();
     spawn_tab_pumps(&state, key.clone(), output);
 
@@ -1029,7 +1075,7 @@ async fn pi_mcp_child_death_runs_the_normal_tab_exit_path() {
     .expect("normal exit handling closes the conversation session");
 
     let app = state.lock().unwrap();
-    let retained = &app.tabs[&key];
+    let retained = &app.session_registry.test_tab(&key).unwrap();
     assert!(!retained.live, "the retained Pi tab must be non-live");
     assert!(
         matches!(retained.session.status(), AgentStatus::Ended { .. }),
@@ -1145,9 +1191,9 @@ fn a_harness_spec_error_releases_the_reservation_and_never_spawns() {
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
     let app = state.lock().unwrap();
     let key = derived_agent_key(&root, "run-spec-fail");
-    assert!(!app.agent_spawns_in_flight.contains(&key));
-    assert!(!app.mcp_session_tokens.contains_key(&agent_id));
-    assert!(!app.tabs.contains_key(&key));
+    assert!(!app.session_registry.claim_is_held(&key));
+    assert!(app.session_registry.test_token(&agent_id).is_none());
+    assert!(!app.session_registry.contains(&key));
 }
 
 /// The registry key is the CANONICAL worktree path, so the same worktree
@@ -1184,7 +1230,7 @@ async fn the_agent_tab_key_survives_the_same_root_by_another_path() {
     assert_eq!(direct, Spawned::Fresh);
     assert_eq!(aliased, Spawned::Warm, "the alias finds the same tab");
     assert_eq!(direct_id, aliased_id);
-    assert_eq!(state.lock().unwrap().tabs.len(), 1);
+    assert_eq!(state.lock().unwrap().session_registry.test_counts().tabs, 1);
 }
 
 /// One registry, one detach loop: a closed relay session must come off
@@ -1238,8 +1284,9 @@ async fn a_close_frame_detaches_the_sessions_terminal_sender() {
 
     let s = state.lock().unwrap();
     let attached_to = |wire_id: &str| -> Vec<String> {
-        s.tabs
-            .values()
+        s.session_registry
+            .test_tabs()
+            .map(|(_, tab)| tab)
             .find(|tab| tab.wire_id() == wire_id)
             .map(screen_of)
             .expect("the tab is still registered")

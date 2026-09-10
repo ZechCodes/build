@@ -27,7 +27,7 @@ use crate::timing::{recording_clock, SLOW_FRAME};
 mod untimed {
     use super::*;
 
-    fn a_frame(state: &Arc<Mutex<AppState>>) -> FrameTimer {
+    pub(super) fn a_frame(state: &Arc<Mutex<AppState>>) -> FrameTimer {
         Arc::clone(&state.lock().unwrap().frame_clock).frame("test")
     }
 
@@ -39,7 +39,13 @@ mod untimed {
         key: TabKey,
         output: SessionOutput,
     ) {
-        let pumps = state.lock().unwrap().tabs[&key].pumps(output);
+        let pumps = state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .pumps(output);
         super::super::spawn_tab_pumps(state, key, pumps)
     }
 
@@ -48,8 +54,12 @@ mod untimed {
         key: TabKey,
         rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
     ) {
-        let Some((session, instance, surfaces_changed)) =
-            state.lock().unwrap().tabs.get(&key).map(|tab| {
+        let Some((session, instance, surfaces_changed)) = state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .map(|tab| {
                 (
                     Arc::clone(&tab.session),
                     tab.session_instance.clone(),
@@ -147,7 +157,8 @@ mod untimed {
     }
 }
 use untimed::{
-    deliver, deliver_pending_agent_turns, ensure_agent_tab, spawn_activity_pump, spawn_tab_pumps,
+    a_frame, deliver, deliver_pending_agent_turns, ensure_agent_tab, spawn_activity_pump,
+    spawn_tab_pumps,
 };
 
 fn test_build_agent(mcp_socket: impl Into<std::path::PathBuf>) -> Agent {

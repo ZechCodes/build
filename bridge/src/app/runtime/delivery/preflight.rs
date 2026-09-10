@@ -3,7 +3,7 @@ use crate::app::{
     DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey,
     TAB_CLOSED_UNDER_A_TURN,
 };
-use crate::harness::{Turn, TurnChoiceSupport};
+use crate::harness::{AgentStatus, Turn, TurnChoiceSupport};
 use crate::store::now_rfc3339;
 use crate::timing::FrameTimer;
 use serde_json::Value;
@@ -31,7 +31,7 @@ pub(in crate::app) fn preflight_delivery(
         if !s.queued_agent_target_exists(turn) {
             return DeliveryPreflight::Declined;
         }
-        let Some(tab) = s.tabs.get(&key) else {
+        let Some(tab) = s.session_registry.agent_snapshot(&key) else {
             let force_fresh = s
                 .resumable_session_id(
                     &turn.owner,
@@ -61,7 +61,7 @@ pub(in crate::app) fn preflight_delivery(
             .role
             .agent()
             .is_some_and(|(owner, agent_id)| owner == turn.owner && agent_id == turn.agent_id)
-            && tab.session_instance.as_ref().is_some_and(|instance| {
+            && tab.instance.as_ref().is_some_and(|instance| {
                 instance.conversation_id == turn.conversation_id
                     && instance.checkout == turn.root.display().to_string()
             });
@@ -69,10 +69,10 @@ pub(in crate::app) fn preflight_delivery(
             return DeliveryPreflight::Proceed { force_fresh: false };
         }
         let instance = tab
-            .session_instance
+            .instance
             .as_ref()
             .expect("an exact agent tab has its session instance");
-        if !tab.session_is_live() {
+        if !tab.live || matches!(tab.session.status(), AgentStatus::Ended { .. }) {
             return DeliveryPreflight::Proceed {
                 force_fresh: !s.session_instance_uses_choice(instance, &turn.model_choice),
             };
@@ -92,14 +92,19 @@ pub(in crate::app) fn preflight_delivery(
         }
         if turn.interrupt {
             let provider_thread_id = s.recorded_resume_id(&turn.owner, &turn.agent_id);
-            tab.log_lifecycle(LifecycleDiagnostic {
-                event: "interrupt_requested",
-                origin: "delivery_preflight_model_change",
-                reason: Some("replace_session_for_turn_choice"),
-                operation_id: turn.operation_id.as_deref(),
-                provider_thread_id: provider_thread_id.as_deref(),
-                caller: None,
-            });
+            s.session_registry.log_if_agent_current(
+                &key,
+                &tab.session,
+                instance,
+                LifecycleDiagnostic {
+                    event: "interrupt_requested",
+                    origin: "delivery_preflight_model_change",
+                    reason: Some("replace_session_for_turn_choice"),
+                    operation_id: turn.operation_id.as_deref(),
+                    provider_thread_id: provider_thread_id.as_deref(),
+                    caller: None,
+                },
+            );
         }
         (
             DeliveryPreflight::Proceed { force_fresh: true },
@@ -179,8 +184,11 @@ pub(in crate::app) fn deliver(
         if !s.queued_agent_target_exists(turn) {
             return Ok(DeliveryOutcome::Delivered(None));
         }
-        let tab = s.tabs.get(&key).ok_or(TAB_CLOSED_UNDER_A_TURN)?;
-        let exact_instance = tab.session_instance.as_ref().is_some_and(|instance| {
+        let tab = s
+            .session_registry
+            .agent_snapshot(&key)
+            .ok_or(TAB_CLOSED_UNDER_A_TURN)?;
+        let exact_instance = tab.instance.as_ref().is_some_and(|instance| {
             instance.entity_id == turn.owner
                 && instance.agent_id == turn.agent_id
                 && instance.conversation_id == turn.conversation_id
@@ -190,18 +198,25 @@ pub(in crate::app) fn deliver(
         }
         if *interrupt && spawned == Spawned::Warm {
             let provider_thread_id = s.recorded_resume_id(owner, agent_id);
-            tab.log_lifecycle(LifecycleDiagnostic {
-                event: "interrupt_requested",
-                origin: "deliver_warm_turn",
-                reason: Some("thread_post_interrupt"),
-                operation_id: turn.operation_id.as_deref(),
-                provider_thread_id: provider_thread_id.as_deref(),
-                caller: None,
-            });
+            s.session_registry.log_if_agent_current(
+                &key,
+                &tab.session,
+                tab.instance
+                    .as_ref()
+                    .expect("an exact delivery tab has its session instance"),
+                LifecycleDiagnostic {
+                    event: "interrupt_requested",
+                    origin: "deliver_warm_turn",
+                    reason: Some("thread_post_interrupt"),
+                    operation_id: turn.operation_id.as_deref(),
+                    provider_thread_id: provider_thread_id.as_deref(),
+                    caller: None,
+                },
+            );
         }
         (
             Arc::clone(&tab.session),
-            tab.session_instance
+            tab.instance
                 .clone()
                 .expect("an exact delivery tab has its session instance"),
         )
@@ -238,11 +253,12 @@ pub(in crate::app) fn deliver(
             .ok()
             .and_then(|agents| agents.by_id(agent_id))
             .is_some_and(|agent| agent.working_since.is_some());
-        let tab = app
-            .tabs
-            .get_mut(&key)
-            .expect("the exact delivered session is still registered");
-        tab.last_delivered_at = Some(std::time::Instant::now());
+        app.session_registry.mark_delivered_if_current(
+            &key,
+            &session,
+            &instance,
+            std::time::Instant::now(),
+        );
         if !reports_turn_boundaries && !was_working {
             app.record_agent_working_since(owner, &turn.agent_id, Some(now.clone()));
             app.observe_working_state(owner, true, &now);

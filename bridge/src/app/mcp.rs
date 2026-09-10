@@ -1,9 +1,8 @@
-use crate::app::{apply_thread_action, AppState, DeferredWork, DeliveryRunner};
+use crate::app::{apply_thread_action, AppState, DeferredWork, DeliveryRunner, SessionRegistry};
 use crate::mcp::{BridgeAction, DoneReport};
 use crate::store::now_rfc3339;
 use crate::timing::{FrameClock, FrameTimer};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -28,19 +27,6 @@ pub(in crate::app) enum AddressedSession {
 /// gets a name of its own rather than borrowing one from the wire.
 pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 
-pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
-    let actual = actual.as_bytes();
-    let expected = expected.as_bytes();
-    let mut difference = actual.len() ^ expected.len();
-    let width = actual.len().max(expected.len());
-    for index in 0..width {
-        difference |= usize::from(
-            actual.get(index).copied().unwrap_or(0) ^ expected.get(index).copied().unwrap_or(0),
-        );
-    }
-    difference == 0
-}
-
 /// Resolve a control frame only when it carries the current per-session
 /// capability, returning the AGENT that sent it. The token is never included in
 /// errors or logs.
@@ -50,12 +36,11 @@ pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bo
 /// away.
 pub(in crate::app) fn authenticated_mcp_owner<'a>(
     frame: &'a Value,
-    sessions: &HashMap<String, String>,
+    sessions: &SessionRegistry,
 ) -> Option<&'a str> {
     let owner = frame.get("task_id")?.as_str()?;
     let supplied = frame.get("session_token")?.as_str()?;
-    let expected = sessions.get(owner)?;
-    constant_time_token_eq(supplied, expected).then_some(owner)
+    sessions.token_matches(owner, supplied).then_some(owner)
 }
 
 #[cfg(unix)]
@@ -144,7 +129,7 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
 ) -> Option<Value> {
     let addressed = {
         let app = timer.lock(state);
-        authenticated_mcp_owner(frame, &app.mcp_session_tokens)
+        authenticated_mcp_owner(frame, &app.session_registry)
             .map(str::to_string)
             .and_then(|agent_id| app.addressed_session(agent_id))
     };

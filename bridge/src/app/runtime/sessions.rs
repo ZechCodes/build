@@ -1,3 +1,13 @@
+mod registry;
+#[cfg(test)]
+mod registry_tests;
+
+#[cfg(test)]
+pub(in crate::app) use registry::constant_time_token_eq;
+pub(in crate::app) use registry::{
+    IdleObservation, McpTokenLease, SessionRegistry, SpawnAvailability, SpawnClaimToken,
+};
+
 use crate::app::{no_terminal_here, AppState, NO_TERMINAL_LEFT};
 use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,

@@ -13,7 +13,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 5 | Extract project, configuration, and capture application methods | Complete |
 | 5b | Give project registration, entity binding, and retained paths their own registry | Complete |
 | 6 | Extract issue, run, worktree, board, and protocol adapters | Complete |
-| 7 | Give session registration and spawn reservations their own component | Prepared outside repository |
+| 7 | Give session registration and spawn reservations their own component | Complete |
 | 8 | Give delivery queues, receipts, and in-flight accounting their own component | Prepared outside repository |
 | 9 | Give board attention and caches their own component | Prepared outside repository |
 | 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Prepared outside repository |
@@ -170,3 +170,32 @@ to the reviewed report; Semgrep reports no findings across all 43 changed Rust
 files. The full suite reports 2,192 passed, one failed, and seven ignored; all
 2,117 exercised library tests pass. The sole failure is the previously reproduced
 `concurrency_load` output floor, at 77,820 bytes. Staged Gitleaks passes.
+
+## Stage 7
+
+Session registration, spawn claims, waiting screens, MCP capabilities, and
+terminal ids now belong to `SessionRegistry` behind private storage. The existing
+application mutex remains the only registry lock. Runtime retains weak-handle
+claim settlement, conversation updates, exact target validation, and off-lock
+provider work. Adapters use owned facts and handles; fixture accessors exist
+only in test builds.
+
+Independent production review corrected four intermediate differences: terminal
+input and resize probe order, key-selected teardown versus role-selected stale
+owners, raw tab state versus provider-ended preflight status, and the original
+board projection predicates. The final ownership contract preserves publication,
+retirement, token revocation, pump fences, and orphan-reap ordering. Test review
+retains all 765 baseline app tests and adds nine registry invariant tests plus
+one real preflight regression for an ended native-choice session with a changed
+frozen choice. Existing test diagnostics, literals, timing, and assertions remain
+preserved through registry fixture operations. `app.rs` is 715 lines; the registry core is 808 lines with 212 lines of
+component tests. Formatting, all-target compilation, and all-target Clippy pass.
+Focused runs pass nine registry tests, 122 runtime tests, and two MCP tests.
+The staged structural audit retains all baseline test names and 132 RPC names;
+its ten additions are the new tests. The ownership audit records 5,470 functions
+becoming 5,550 and 1,031 data declarations becoming 1,044, with no public function
+signature/body differences. This ownership stage intentionally changes internal
+bodies and test fixture access, so byte-equivalent bodies are not claimed.
+Semgrep reports no findings across all 38 changed Rust files. The full suite reports 2,202 passed, one failed, and seven ignored; all 2,127
+exercised library tests pass. The only failure is the previously reproduced
+`concurrency_load` output floor, at 80,414 bytes. Staged Gitleaks passes.

@@ -156,7 +156,7 @@ fn spawn_run_with_agent_tab(
         &ModelChoice::default(),
         "build",
     );
-    state.tabs.insert(key.clone(), tab);
+    state.session_registry.test_insert_tab(key.clone(), tab);
     (key, rx.bytes.expect("a PTY session paints"))
 }
 
@@ -187,7 +187,11 @@ fn drain_pty_into_screen(
     while std::time::Instant::now() < deadline {
         match rx.try_recv() {
             Ok(chunk) => {
-                if let Some(screen) = state.tabs.get(key).and_then(|tab| tab.screen.as_ref()) {
+                if let Some(screen) = state
+                    .session_registry
+                    .test_tab(key)
+                    .and_then(|tab| tab.screen.as_ref())
+                {
                     screen.feed(&chunk);
                 }
             }
@@ -269,19 +273,29 @@ fn an_agent_is_only_quiet_if_it_has_been_silent_since_the_last_turn() {
     // clock, and — since that is minutes past the 30s window — not claiming
     // to be working either. Aged rather than waited out, so the test reads
     // the behaviour instead of a wall clock.
-    state.tabs[&key]
+    state
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
         .session
         .backdate_last_output(Duration::from_secs(600));
 
-    state.tabs.get_mut(&key).unwrap().last_delivered_at = Some(std::time::Instant::now());
+    state
+        .session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .last_delivered_at = Some(std::time::Instant::now());
     assert!(
         state.mark_idle_tasks(QUIET_THRESHOLD).is_empty(),
         "an agent that was just given a turn is working, not quiet"
     );
     assert_eq!(state.runs["run-quiet"].run.state, RunState::Building);
 
-    state.tabs.get_mut(&key).unwrap().last_delivered_at =
-        Some(std::time::Instant::now() - QUIET_THRESHOLD);
+    state
+        .session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .last_delivered_at = Some(std::time::Instant::now() - QUIET_THRESHOLD);
     assert_eq!(
         state.mark_idle_tasks(QUIET_THRESHOLD),
         vec!["run-quiet".to_string()],
@@ -310,7 +324,7 @@ fn a_session_that_reports_a_turn_in_flight_is_never_demoted_for_silence() {
     let agent_id = crate::agent::derived_agent_id("run-mid-turn");
     let key = derived_agent_key(&root, "run-mid-turn");
     let quiet = Duration::from_secs(2400);
-    state.tabs.insert(
+    state.session_registry.test_insert_tab(
         key.clone(),
         dictated_agent_tab(
             &root,
@@ -321,7 +335,11 @@ fn a_session_that_reports_a_turn_in_flight_is_never_demoted_for_silence() {
     );
     // Build spoke long ago and has heard nothing since: every other
     // instrument the sweep owns reads this as an anomaly.
-    state.tabs.get_mut(&key).unwrap().last_delivered_at = Some(std::time::Instant::now() - quiet);
+    state
+        .session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .last_delivered_at = Some(std::time::Instant::now() - quiet);
 
     assert!(
         state.mark_idle_tasks(Duration::from_secs(300)).is_empty(),
@@ -331,7 +349,7 @@ fn a_session_that_reports_a_turn_in_flight_is_never_demoted_for_silence() {
 
     // Control: the same silence, one status later. The turn ended without a
     // `done`, and THAT is the anomaly the sweep exists for.
-    state.tabs.insert(
+    state.session_registry.test_insert_tab(
         key,
         dictated_agent_tab(
             &root,
@@ -363,7 +381,7 @@ fn a_pty_quiet_past_the_threshold_is_never_working() {
         RunState::Building,
         warm_tui_spec(),
     );
-    let tab = &state.tabs[&key];
+    let tab = &state.session_registry.test_tab(&key).unwrap();
     assert_eq!(
         tab.session.status(),
         AgentStatus::Working,
@@ -375,15 +393,28 @@ fn a_pty_quiet_past_the_threshold_is_never_working() {
         Duration::from_secs(300),
         Duration::from_secs(2400),
     ] {
-        state.tabs[&key].session.backdate_last_output(quiet);
+        state
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .session
+            .backdate_last_output(quiet);
         assert_ne!(
-            state.tabs[&key].session.status(),
+            state
+                .session_registry
+                .test_tab(&key)
+                .unwrap()
+                .session
+                .status(),
             AgentStatus::Working,
             "a PTY silent for {quiet:?} cannot claim to be working"
         );
     }
-    state.tabs.get_mut(&key).unwrap().last_delivered_at =
-        Some(std::time::Instant::now() - Duration::from_secs(600));
+    state
+        .session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .last_delivered_at = Some(std::time::Instant::now() - Duration::from_secs(600));
     assert_eq!(
         state.mark_idle_tasks(Duration::from_secs(300)),
         vec!["run-painting".to_string()],
@@ -478,7 +509,14 @@ fn a_crashed_agent_reports_what_it_printed_before_it_died() {
 async fn wait_for_pty_quiet(state: &Arc<Mutex<AppState>>, key: &TabKey, quiet: Duration) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let idle = state.lock().unwrap().tabs[key].session.quiet_for();
+        let idle = state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(key)
+            .unwrap()
+            .session
+            .quiet_for();
         if idle >= quiet {
             return;
         }
@@ -531,8 +569,8 @@ async fn delivering_a_turn_starts_the_quiescence_clock() {
 
     let mut s = state.lock().unwrap();
     // It has painted nothing since — it is chewing on what it was asked.
-    s.tabs
-        .get_mut(&key)
+    s.session_registry
+        .test_tab_mut(&key)
         .unwrap()
         .session
         .backdate_last_output(Duration::from_secs(600));
@@ -544,8 +582,10 @@ async fn delivering_a_turn_starts_the_quiescence_clock() {
 
     // Control: the run was demotable all along — it is the turn's stamp,
     // and only that, holding it up.
-    s.tabs.get_mut(&key).unwrap().last_delivered_at =
-        Some(std::time::Instant::now() - Duration::from_secs(600));
+    s.session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .last_delivered_at = Some(std::time::Instant::now() - Duration::from_secs(600));
     assert_eq!(
         s.mark_idle_tasks(Duration::from_secs(60)),
         vec!["run-spoken-to".to_string()],
@@ -577,11 +617,17 @@ fn an_idle_demotion_leaves_the_live_agents_session_open() {
         &now_rfc3339(),
     );
     // Silent past the threshold, aged rather than waited out.
-    state.tabs[&key]
+    state
+        .session_registry
+        .test_tab(&key)
+        .unwrap()
         .session
         .backdate_last_output(Duration::from_secs(600));
-    state.tabs.get_mut(&key).unwrap().last_delivered_at =
-        Some(std::time::Instant::now() - QUIET_THRESHOLD);
+    state
+        .session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .last_delivered_at = Some(std::time::Instant::now() - QUIET_THRESHOLD);
 
     assert_eq!(
         state.mark_idle_tasks(QUIET_THRESHOLD),
@@ -589,7 +635,11 @@ fn an_idle_demotion_leaves_the_live_agents_session_open() {
         "the quiet agent's entity is demoted"
     );
     assert!(
-        state.tabs[&key].session_is_live(),
+        state
+            .session_registry
+            .test_tab(&key)
+            .unwrap()
+            .session_is_live(),
         "this test is only meaningful while the agent is still alive"
     );
     let thread = primary_thread(&state.runs["run-still-there"].agents);
@@ -1036,7 +1086,7 @@ fn a_second_message_queues_nothing_while_the_first_is_mid_delivery() {
     {
         let s = state.lock().unwrap();
         assert!(s.pending_agent_turns.is_empty());
-        assert!(s.agent_spawns_in_flight.is_empty());
+        assert!(s.session_registry.test_counts().claims == 0);
     }
 
     let second = post("and this");

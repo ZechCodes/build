@@ -1,8 +1,8 @@
 #[cfg(test)]
 use crate::app::NEW_THREAD_MESSAGES_PROMPT;
 use crate::app::{
-    constant_time_token_eq, spawn_tab_pumps, AgentSpawnRequest, AppState, Tab, TabKey, TabRole,
-    NO_TERMINAL_LEFT, SPAWN_NEVER_OPENED,
+    spawn_tab_pumps, AgentSpawnRequest, AppState, McpTokenLease, SpawnAvailability,
+    SpawnClaimToken, Tab, TabKey, TabRole, NO_TERMINAL_LEFT, SPAWN_NEVER_OPENED,
 };
 use crate::delivery::{AgentSpawnPlan, ReadyToSpawn};
 #[cfg(test)]
@@ -63,9 +63,15 @@ pub(in crate::app) struct SpawnHolding {
     /// The grid of the dead session this spawn replaces, kept for the session
     /// about to paint it.
     pub(in crate::app) carried: Option<ScreenHandle>,
-    /// The agent whose MCP token was registered before its child existed.
-    pub(in crate::app) agent_id: String,
-    pub(in crate::app) session_token: String,
+    /// The exact MCP capability installed for this pending child.
+    token_lease: McpTokenLease,
+}
+
+#[cfg(test)]
+impl SpawnHolding {
+    pub(in crate::app) fn test_session_token(&self) -> &str {
+        self.token_lease.test_token()
+    }
 }
 
 impl SpawnHolding {
@@ -87,12 +93,8 @@ impl SpawnHolding {
             screen.close(SPAWN_NEVER_OPENED);
         }
         let mut s = timer.lock(state);
-        if s.mcp_session_tokens
-            .get(&self.agent_id)
-            .is_some_and(|current| constant_time_token_eq(current, &self.session_token))
-        {
-            s.mcp_session_tokens.remove(&self.agent_id);
-        }
+        s.session_registry
+            .revoke_mcp_token_if_current(&self.token_lease);
         self.claim.settle(&mut s);
         error
     }
@@ -142,42 +144,35 @@ impl SettlingHandle {
 /// a lock the caller already holds, and [`Drop`] on any path that never got
 /// there, a panic included.
 pub(in crate::app) struct SpawnClaim {
-    pub(in crate::app) key: TabKey,
-    pub(in crate::app) state: SettlingHandle,
-    pub(in crate::app) finished: Arc<std::sync::Condvar>,
-    pub(in crate::app) settled: bool,
+    token: Option<SpawnClaimToken>,
+    state: SettlingHandle,
 }
 
 impl SpawnClaim {
     pub(in crate::app) fn take(s: &mut AppState, key: &TabKey) -> SpawnClaim {
-        s.agent_spawns_in_flight.insert(key.clone());
         SpawnClaim {
-            key: key.clone(),
+            token: Some(s.session_registry.take_spawn_claim(key.clone())),
             state: s.settling_handle(),
-            finished: Arc::clone(&s.agent_spawn_finished),
-            settled: false,
         }
     }
 
-    /// Release the claim under a lock the caller is already holding, and wake
-    /// everyone waiting behind it.
     pub(in crate::app) fn settle(mut self, s: &mut AppState) {
-        s.agent_spawns_in_flight.remove(&self.key);
-        self.settled = true;
-        self.finished.notify_all();
+        let token = self
+            .token
+            .take()
+            .expect("an unsettled spawn owns its claim");
+        s.session_registry.settle_spawn_claim(token);
     }
 }
 
 impl Drop for SpawnClaim {
     fn drop(&mut self) {
-        if self.settled {
+        let Some(token) = self.token.take() else {
             return;
-        }
-        let key = &self.key;
-        self.state.settle(|s| {
-            s.agent_spawns_in_flight.remove(key);
+        };
+        self.state.settle(move |s| {
+            s.session_registry.settle_spawn_claim(token);
         });
-        self.finished.notify_all();
     }
 }
 
@@ -254,17 +249,18 @@ pub(in crate::app) fn claim_agent_spawn(
         ) {
             return Ok(SpawnDecision::NoSession);
         }
-        if let Some(tab) = s.tabs.get(key) {
-            let same_target = tab.role.agent().is_some_and(|(owner, agent_id)| {
-                owner == request.owner && agent_id == request.agent_id
-            });
-            if same_target && tab.session_is_live() && !request.force_fresh {
-                return Ok(SpawnDecision::Live(tab.wire_id()));
+        match s.session_registry.spawn_availability(
+            key,
+            request.owner,
+            request.agent_id,
+            request.force_fresh,
+        ) {
+            SpawnAvailability::Live(wire_id) => return Ok(SpawnDecision::Live(wire_id)),
+            SpawnAvailability::Available => {
+                return reserve_agent_spawn(&mut s, key, request)
+                    .map(|reserved| SpawnDecision::Reserved(Box::new(reserved)));
             }
-        }
-        if !s.agent_spawns_in_flight.contains(key) {
-            return reserve_agent_spawn(&mut s, key, request)
-                .map(|reserved| SpawnDecision::Reserved(Box::new(reserved)));
+            SpawnAvailability::Claimed => {}
         }
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
@@ -273,9 +269,9 @@ pub(in crate::app) fn claim_agent_spawn(
                 key.root.display()
             ));
         }
-        let finished = Arc::clone(&s.agent_spawn_finished);
+        let finished = s.session_registry.spawn_finished();
         s = s.wait_until(&finished, left, |state| {
-            !state.agent_spawns_in_flight.contains(key)
+            !state.session_registry.claim_is_held(key)
         });
     }
 }
@@ -318,7 +314,10 @@ pub(in crate::app) fn reserve_agent_spawn(
         Err(unknown) => return Err(unknown),
     };
     let project = s.orch_for(&project_id)?.clone();
-    let replaced = s.tabs.get(key).and_then(|tab| tab.session_instance.clone());
+    let replaced = s
+        .session_registry
+        .agent_snapshot(key)
+        .and_then(|tab| tab.instance);
     let carried = s
         .retire_tab_keeping_screen(key)
         .and_then(|(_reaping, screen)| screen);
@@ -334,29 +333,27 @@ pub(in crate::app) fn reserve_agent_spawn(
     // exactly what a branch is allowed to have, so only the others
     // go.
     let stale: Vec<TabKey> = s
-        .tabs
-        .iter()
-        .filter(|(other, tab)| {
-            other.root == key.root
-                && tab.role.agent().is_some_and(|(had, other_agent)| {
-                    had != owner
-                        && tab.session_instance.as_ref().is_none_or(|instance| {
-                            !s.agent_target_exists(
-                                had,
-                                other_agent,
-                                &instance.conversation_id,
-                                &other.root,
-                            )
-                        })
+        .session_registry
+        .agent_tabs_at(&key.root)
+        .into_iter()
+        .filter(|tab| {
+            tab.owner != owner
+                && tab.instance.as_ref().is_none_or(|instance| {
+                    !s.agent_target_exists(
+                        &tab.owner,
+                        &tab.agent_id,
+                        &instance.conversation_id,
+                        &tab.key.root,
+                    )
                 })
         })
-        .map(|(other, _)| other.clone())
+        .map(|tab| tab.key)
         .collect();
     for other in stale {
         let instance = s
-            .tabs
-            .get(&other)
-            .and_then(|tab| tab.session_instance.clone());
+            .session_registry
+            .agent_snapshot(&other)
+            .and_then(|tab| tab.instance);
         s.retire_tab(&other, "closed");
         if let Some(instance) = instance {
             s.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
@@ -365,8 +362,9 @@ pub(in crate::app) fn reserve_agent_spawn(
     let session_token = uuid::Uuid::new_v4().to_string();
     // Before the child exists, because the child dials the done socket as soon
     // as it is up and an unregistered token is an unauthorized report.
-    s.mcp_session_tokens
-        .insert(agent_id.to_string(), session_token.clone());
+    let session_token_lease = s
+        .session_registry
+        .install_mcp_token(agent_id.to_string(), session_token.clone());
     let recorded_resume_id = (!force_fresh)
         .then(|| s.resumable_session_id(owner, agent_id, &key.root, model_choice.provider))
         .flatten();
@@ -393,8 +391,7 @@ pub(in crate::app) fn reserve_agent_spawn(
         holding: SpawnHolding {
             claim: SpawnClaim::take(s, key),
             carried,
-            agent_id: agent_id.to_string(),
-            session_token,
+            token_lease: session_token_lease,
         },
     })
 }
@@ -555,7 +552,7 @@ pub(in crate::app) fn publish_agent_tab(
             .session
             .active_model()
             .or_else(|| model_choice.model.clone());
-        s.tabs.insert(key.clone(), tab);
+        s.session_registry.insert_opened(key.clone(), tab);
         claim.settle(&mut s);
         s.record_agent_active_model(&owner, &agent_id, running);
         stranded = !s.agent_target_exists(&owner, &agent_id, conversation_id, &key.root);
@@ -564,12 +561,10 @@ pub(in crate::app) fn publish_agent_tab(
         } else {
             let instance =
                 s.record_agent_session_start(&owner, &agent_id, &key.root, model_choice, phase);
-            let tab = s
-                .tabs
-                .get_mut(key)
-                .expect("the published agent tab was just inserted");
-            tab.session_instance = instance;
-            pumps = Some(tab.pumps(output));
+            pumps = Some(
+                s.session_registry
+                    .set_instance_and_take_pumps(key, instance, output),
+            );
         }
     }
     if stranded {
@@ -607,33 +602,9 @@ pub(in crate::app) fn inherit_waiting_clients(
     key: &TabKey,
     tab: &Tab,
 ) -> Option<TerminalHandle> {
-    let first_here = !s
-        .tabs
-        .keys()
-        .any(|other| other.is_agent() && other.root == key.root);
-    let waiting = s.agent_screens_awaiting_spawn.remove(key).or_else(|| {
-        // Clients that mounted the tab before this worktree had an agent
-        // addressed it by the WORKTREE; the first agent born here is the one
-        // they were waiting for.
-        first_here.then(|| {
-            s.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-                &key.root,
-                &crate::worktree::external_worktree_id(&key.root),
-            ))
-        })?
-    })?;
-    match tab.terminal_handle() {
-        Ok(terminal) => terminal
-            .screen()
-            .carry_clients_from(&waiting)
-            .then_some(terminal),
-        // There is no real screen to carry them onto — see
-        // [`NO_TERMINAL_LEFT`].
-        Err(_) => {
-            waiting.close(NO_TERMINAL_LEFT);
-            None
-        }
-    }
+    let fallback = TabKey::agent(&key.root, &crate::worktree::external_worktree_id(&key.root));
+    s.session_registry
+        .inherit_waiting_clients(key, tab, &fallback, NO_TERMINAL_LEFT)
 }
 
 /// Tell the worktree's agent, in place, that unread thread messages await.

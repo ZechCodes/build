@@ -1,6 +1,6 @@
 use crate::app::{
     activity_event_kind, open_session_id, open_session_lineage, record_session_death_in_thread,
-    AppState, MintedCallRow, PendingAgentTurn, Tab, TabKey, AGENT_START_DECLINED_SESSION_OVER,
+    AppState, PendingAgentTurn, TabKey, AGENT_START_DECLINED_SESSION_OVER,
 };
 use crate::delivery::SessionProbes;
 use crate::harness::{AgentSession, AgentStatus};
@@ -61,14 +61,10 @@ pub(in crate::app) fn record_activity(
         AgentActivity::ToolUse { call_id, .. } => {
             let minted =
                 state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
-            if let (Some(sequence), Some(tab)) = (minted, state.tabs.get_mut(key)) {
-                tab.call_sequences.insert(
-                    call_id.clone(),
-                    MintedCallRow {
-                        sequence,
-                        answered: false,
-                    },
-                );
+            if let Some(sequence) = minted {
+                state
+                    .session_registry
+                    .insert_call_sequence(key, call_id.clone(), sequence);
             }
         }
         AgentActivity::ToolResult {
@@ -113,7 +109,7 @@ pub(in crate::app) fn parent_row_sequence(
     parent_call_id: Option<&str>,
 ) -> Option<u64> {
     let call_id = parent_call_id?;
-    Some(state.tabs.get(key)?.call_sequences.get(call_id)?.sequence)
+    state.session_registry.parent_call_sequence(key, call_id)
 }
 
 pub(in crate::app) fn mark_call_answered(
@@ -121,19 +117,7 @@ pub(in crate::app) fn mark_call_answered(
     key: &TabKey,
     call_id: &str,
 ) -> Option<u64> {
-    let row = state.tabs.get_mut(key)?.call_sequences.get_mut(call_id)?;
-    row.answered = true;
-    Some(row.sequence)
-}
-
-pub(in crate::app) fn take_unanswered_call_sequences(tab: &mut Tab) -> Vec<u64> {
-    let mut unanswered: Vec<u64> = std::mem::take(&mut tab.call_sequences)
-        .into_values()
-        .filter(|row| !row.answered)
-        .map(|row| row.sequence)
-        .collect();
-    unanswered.sort_unstable();
-    unanswered
+    state.session_registry.mark_call_answered(key, call_id)
 }
 
 /// The conversation's word for what the harness saw.

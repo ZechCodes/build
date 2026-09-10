@@ -1,6 +1,6 @@
 use crate::app::{
-    record_activity, take_unanswered_call_sequences, AppState, DeliveryRunner, LifecycleDiagnostic,
-    PumpWake, SelfReport, TabKey, TabPumps, AGENT_DELIVERY_METHOD, NO_ANSWER_SESSION_ENDED,
+    record_activity, AppState, DeliveryRunner, LifecycleDiagnostic, PumpWake, SelfReport, TabKey,
+    TabPumps, TabRole, AGENT_DELIVERY_METHOD, NO_ANSWER_SESSION_ENDED,
 };
 use crate::harness::{AgentSession, AgentStatus};
 use crate::screen::{ScreenHandle, TERM_FLUSH_MS};
@@ -180,9 +180,7 @@ pub(in crate::app) fn still_pumping(
     key: &TabKey,
     session: &Arc<dyn AgentSession>,
 ) -> bool {
-    s.tabs
-        .get(key)
-        .is_some_and(|tab| Arc::ptr_eq(&tab.session, session))
+    s.session_registry.shell_pump_matches(key, session)
 }
 
 /// Stronger guard for an agent callback: the tab still holds both the process
@@ -193,11 +191,8 @@ pub(in crate::app) fn still_pumping_instance(
     session: &Arc<dyn AgentSession>,
     instance: &SessionInstance,
 ) -> bool {
-    s.tabs.get(key).is_some_and(|tab| {
-        Arc::ptr_eq(&tab.session, session)
-            && tab.session_instance.as_ref() == Some(instance)
-            && tab.role.agent() == Some((instance.entity_id.as_str(), instance.agent_id.as_str()))
-    })
+    s.session_registry
+        .agent_pump_matches(key, session, instance)
 }
 
 /// The death rites of the session a byte pump was watching.
@@ -220,11 +215,10 @@ pub(in crate::app) fn end_of_session(
             return;
         }
         let role = s
-            .tabs
-            .get(key)
-            .expect("the tab this pump holds was just found")
-            .role
-            .clone();
+            .session_registry
+            .agent_snapshot(key)
+            .map(|tab| tab.role)
+            .unwrap_or(TabRole::Shell);
         let provider_thread_id = role
             .agent()
             .and_then(|(owner_id, agent_id)| s.recorded_resume_id(owner_id, agent_id));
@@ -237,19 +231,21 @@ pub(in crate::app) fn end_of_session(
                     return;
                 }
                 let ended = instance.clone();
-                let tab = s
-                    .tabs
-                    .get_mut(key)
-                    .expect("the guarded agent tab still exists");
-                tab.log_lifecycle(LifecycleDiagnostic {
-                    event: "session_ended_observed",
-                    origin: "session_output_closed",
-                    reason: Some("agent_session_ended"),
-                    operation_id: None,
-                    provider_thread_id: provider_thread_id.as_deref(),
-                    caller: None,
-                });
-                tab.live = false;
+                if !s.session_registry.mark_agent_ended_if_current(
+                    key,
+                    session,
+                    instance,
+                    LifecycleDiagnostic {
+                        event: "session_ended_observed",
+                        origin: "session_output_closed",
+                        reason: Some("agent_session_ended"),
+                        operation_id: None,
+                        provider_thread_id: provider_thread_id.as_deref(),
+                        caller: None,
+                    },
+                ) {
+                    return;
+                }
                 // Told in the same acquisition that marks the tab, because a
                 // marked tab is a REPLACEABLE one: the next spawn takes this
                 // screen, clients and all, onto its own session without a
@@ -406,12 +402,12 @@ pub(in crate::app) fn spawn_activity_pump(
                     if !still_pumping_instance(&s, &key, &session, instance) {
                         return;
                     }
-                    let tab = s
-                        .tabs
-                        .get_mut(&key)
-                        .expect("the tab this pump holds was just found");
-                    tab.live = false;
-                    let unanswered_call_sequences = take_unanswered_call_sequences(tab);
+                    let Some(unanswered_call_sequences) = s
+                        .session_registry
+                        .end_agent_stream_if_current(&key, &session, instance)
+                    else {
+                        return;
+                    };
                     match said.named {
                         Some(_) => s.note_self_report(
                             &instance.entity_id,
@@ -491,15 +487,15 @@ pub(in crate::app) fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
 
     let live: Vec<LiveAgent> = {
         let s = state.lock().unwrap();
-        s.tabs
-            .iter()
-            .filter(|(_, tab)| tab.live)
-            .filter_map(|(key, tab)| {
-                let instance = tab.session_instance.clone()?;
+        s.session_registry
+            .live_agent_snapshots()
+            .into_iter()
+            .filter_map(|tab| {
+                let instance = tab.instance?;
                 Some(LiveAgent {
-                    key: key.clone(),
+                    key: tab.key,
                     instance: instance.clone(),
-                    session: Arc::clone(&tab.session),
+                    session: tab.session,
                     recorded: s.recorded_resume_id(&instance.entity_id, &instance.agent_id),
                     recorded_model: s
                         .recorded_active_model(&instance.entity_id, &instance.agent_id),

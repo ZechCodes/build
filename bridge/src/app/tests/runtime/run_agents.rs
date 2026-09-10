@@ -42,7 +42,7 @@ pub(in crate::app::tests) fn insert_live_run(
         let project_id = s.project_at(0).id.clone();
         s.projects.bind_entity(run_id.to_string(), project_id);
         s.runs.insert(run_id.to_string(), active);
-        s.tabs.insert(key.clone(), tab);
+        s.session_registry.test_insert_tab(key.clone(), tab);
         let instance = s.record_agent_session_start(
             run_id,
             &crate::agent::derived_agent_id(run_id),
@@ -50,7 +50,10 @@ pub(in crate::app::tests) fn insert_live_run(
             &ModelChoice::default(),
             "build",
         );
-        s.tabs.get_mut(&key).unwrap().session_instance = instance.clone();
+        s.session_registry
+            .test_tab_mut(&key)
+            .unwrap()
+            .session_instance = instance.clone();
     }
     spawn_tab_pumps(state, key.clone(), rx);
     (key, wire_id)
@@ -77,7 +80,11 @@ pub(in crate::app::tests) fn insert_unmanaged_agent_tab(
             terminal_size(120, 40),
         ),
     )?;
-    state.lock().unwrap().tabs.insert(key.clone(), tab);
+    state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_insert_tab(key.clone(), tab);
     spawn_tab_pumps(state, key.clone(), output);
     Ok(key)
 }
@@ -121,7 +128,7 @@ async fn agent_start_opens_the_worktrees_agent_and_is_idempotent() {
     let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-start");
     let key = derived_agent_key(&root, "run-start");
     assert!(
-        !state.lock().unwrap().tabs.contains_key(&key),
+        !state.lock().unwrap().session_registry.contains(&key),
         "the worktree has no agent until someone asks for one"
     );
 
@@ -135,7 +142,11 @@ async fn agent_start_opens_the_worktrees_agent_and_is_idempotent() {
     wait_for_agent_tab(&state, &key).await;
     let pid = {
         let s = state.lock().unwrap();
-        agent_pid(s.tabs.get(&key).expect("the agent tab exists"))
+        agent_pid(
+            s.session_registry
+                .test_tab(&key)
+                .expect("the agent tab exists"),
+        )
     };
 
     let again = call(&handler, "agent.start", json!({ "id": "run-start" }));
@@ -146,7 +157,14 @@ async fn agent_start_opens_the_worktrees_agent_and_is_idempotent() {
     );
     wait_for_deliveries(&state).await;
     assert_eq!(
-        agent_pid(state.lock().unwrap().tabs.get(&key).unwrap()),
+        agent_pid(
+            state
+                .lock()
+                .unwrap()
+                .session_registry
+                .test_tab(&key)
+                .unwrap()
+        ),
         pid,
         "starting an agent that is already running must not spawn a second one"
     );
@@ -167,14 +185,14 @@ async fn agent_start_restarts_an_agent_that_exited() {
     wait_for_agent_tab(&state, &key).await;
     let first_pid = {
         let s = state.lock().unwrap();
-        agent_pid(s.tabs.get(&key).unwrap())
+        agent_pid(s.session_registry.test_tab(&key).unwrap())
     };
 
     // The harness dies the way a real one does, and the tab is RETAINED so
     // the human can still read the last screen.
     {
         let mut s = state.lock().unwrap();
-        let tab = s.tabs.get_mut(&key).unwrap();
+        let tab = s.session_registry.test_tab_mut(&key).unwrap();
         tab.session.end();
         tab.live = false;
     }
@@ -187,7 +205,10 @@ async fn agent_start_restarts_an_agent_that_exited() {
     );
     wait_for_deliveries(&state).await;
     let s = state.lock().unwrap();
-    let tab = s.tabs.get(&key).expect("the tab came back");
+    let tab = s
+        .session_registry
+        .test_tab(&key)
+        .expect("the tab came back");
     assert!(tab.live, "the restarted agent is live");
     assert_ne!(
         agent_pid(tab),
@@ -211,13 +232,20 @@ async fn a_message_to_an_agent_whose_harness_exited_revives_it() {
     let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
     assert_eq!(started["ok"], true, "{started:?}");
     wait_for_agent_tab(&state, &key).await;
-    let dead_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
+    let dead_pid = agent_pid(
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap(),
+    );
 
     // The harness dies the way a real one does, and the tab is RETAINED so
     // the human can still read the last screen.
     {
         let mut s = state.lock().unwrap();
-        let tab = s.tabs.get_mut(&key).unwrap();
+        let tab = s.session_registry.test_tab_mut(&key).unwrap();
         tab.session.end();
         tab.live = false;
     }
@@ -235,7 +263,10 @@ async fn a_message_to_an_agent_whose_harness_exited_revives_it() {
     wait_for_deliveries(&state).await;
     {
         let s = state.lock().unwrap();
-        let tab = s.tabs.get(&key).expect("the agent came back");
+        let tab = s
+            .session_registry
+            .test_tab(&key)
+            .expect("the agent came back");
         assert!(
             tab.session_is_live(),
             "a message to a dead agent brings it back running"
@@ -621,8 +652,8 @@ async fn agent_start_refuses_an_unknown_provider() {
         !state
             .lock()
             .unwrap()
-            .tabs
-            .contains_key(&derived_agent_key(&root, "run-bogus")),
+            .session_registry
+            .contains(&derived_agent_key(&root, "run-bogus")),
         "a refused start opens no agent"
     );
 }
@@ -673,7 +704,7 @@ async fn agent_choose_persists_the_model_without_touching_a_live_session() {
         assert_eq!(choice.effort.as_deref(), Some("high"));
         assert_eq!(choice.provider, AgentProvider::Claude);
         assert!(
-            s.tabs[&key].live,
+            s.session_registry.test_tab(&key).unwrap().live,
             "the session that is running keeps running: it spends the new \
              model at its next start"
         );
@@ -966,7 +997,7 @@ async fn agent_start_refuses_a_provider_switch_while_the_agent_is_live() {
         "a refused switch leaves the record alone"
     );
     assert!(
-        s.tabs[&key].live,
+        s.session_registry.test_tab(&key).unwrap().live,
         "and leaves the running harness where it was"
     );
 }
@@ -979,7 +1010,14 @@ async fn agent_start_naming_the_live_agents_own_provider_is_idempotent() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
     let (key, wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
-    let live_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
+    let live_pid = agent_pid(
+        state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&key)
+            .unwrap(),
+    );
     // The live run is on the TUI carrier, which is what "claude" names.
     let again = call(
         &handler,
@@ -990,7 +1028,14 @@ async fn agent_start_naming_the_live_agents_own_provider_is_idempotent() {
     assert_eq!(again["result"]["term_id"], wire_id, "{again:?}");
     wait_for_deliveries(&state).await;
     assert_eq!(
-        agent_pid(&state.lock().unwrap().tabs[&key]),
+        agent_pid(
+            state
+                .lock()
+                .unwrap()
+                .session_registry
+                .test_tab(&key)
+                .unwrap()
+        ),
         live_pid,
         "the live session is the one the start hands back, not a replacement"
     );

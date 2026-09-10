@@ -46,13 +46,13 @@ pub(in crate::app) use self::issues::views::{
     dispatchable_next_run_stage, next_unsettled_stage, plan_stage_json, plan_state_str,
     stage_doc_state_str,
 };
+pub(in crate::app) use self::mcp::AddressedSession;
 #[cfg(test)]
 pub(in crate::app) use self::mcp::MCP_CONTROL_METHOD;
 #[cfg(test)]
 pub(in crate::app) use self::mcp::{
     authenticated_mcp_owner, bind_done_listener, serve_done_listener,
 };
-pub(in crate::app) use self::mcp::{constant_time_token_eq, AddressedSession};
 #[cfg(test)]
 pub(in crate::app) use self::rpc::dispatch_frame;
 pub(in crate::app) use self::rpc::{
@@ -76,13 +76,14 @@ pub(in crate::app) use self::runs::review::{merge_cleanup_from, MergeCleanup};
 pub(in crate::app) use self::runs::views::{
     diff_file_edited_at, diff_json, run_state_str, worktree_diff_json,
 };
+#[cfg(test)]
+pub(in crate::app) use self::runtime::agents::endpoints::agent_is_working;
 pub(in crate::app) use self::runtime::agents::endpoints::{
-    activity_event_kind, agent_attach, agent_is_working, agent_start, has_agent_choice,
-    model_choice_from, named_agent_id, AgentSpawnRequest, DigestScope,
+    activity_event_kind, agent_attach, agent_start, has_agent_choice, model_choice_from,
+    named_agent_id, AgentSpawnRequest, DigestScope,
 };
 pub(in crate::app) use self::runtime::agents::records::{
-    record_activity, take_unanswered_call_sequences, PumpWake, SelfReport, NO_ANSWER_SESSION_ENDED,
-    SESSION_DIED_SUMMARY,
+    record_activity, PumpWake, SelfReport, NO_ANSWER_SESSION_ENDED, SESSION_DIED_SUMMARY,
 };
 #[cfg(test)]
 pub use self::runtime::deferred::OffLockGate;
@@ -120,7 +121,8 @@ pub(in crate::app) use self::runtime::recovery::{
 };
 pub(in crate::app) use self::runtime::sessions::{
     agent_tab_id, build_agent, default_resume_id_probe, default_session_locator_factory,
-    LifecycleDiagnostic, MintedCallRow, Tab, TabKey, TabPumps, TabRole,
+    IdleObservation, LifecycleDiagnostic, McpTokenLease, SessionRegistry, SpawnAvailability,
+    SpawnClaimToken, Tab, TabKey, TabPumps, TabRole,
 };
 #[cfg(test)]
 pub(in crate::app) use self::runtime::spawning::nudge_live_agent_tab;
@@ -221,6 +223,7 @@ use crate::run::ValidationReport;
 use crate::run::{
     PublicationAttempt, RunId, RunState, StageProgress, StageProgressState, StagePublication,
 };
+#[cfg(test)]
 use crate::screen::ScreenHandle;
 #[cfg(test)]
 use crate::screen::TERM_FLUSH_MS;
@@ -402,29 +405,11 @@ pub struct AppState {
     /// one agent alike — keyed by (canonical worktree root, tab id). One
     /// registry over one id space: there is no second place a terminal can be,
     /// so no verb has to ask which kind of thing an id names before serving it.
-    tabs: HashMap<TabKey, Tab>,
+    session_registry: SessionRegistry,
     /// Roots with an agent spawn in flight. The state lock is dropped across
     /// the spawn (it blocks for seconds), so the reservation — taken under the
     /// same lock acquisition that observed the tab's absence — is what keeps a
     /// second delivery from starting a second harness in one worktree.
-    agent_spawns_in_flight: std::collections::HashSet<TabKey>,
-    /// Signalled whenever a spawn releases its claim above. A caller that lost
-    /// the race waits here with the app mutex given back, which is what makes
-    /// losing the race free: the winner needs this mutex to publish its tab,
-    /// and a loser polling for it every 25 ms was taking the mutex away from
-    /// the spawn it was waiting for.
-    agent_spawn_finished: Arc<std::sync::Condvar>,
-    /// Canonical worktree root → the screen its Agent tab shows before any
-    /// agent has ever run there.
-    ///
-    /// The Agent tab is a fixture on every worktree surface, so clients attach
-    /// to worktrees whose agent does not exist yet — the state every worktree
-    /// is in after a daemon restart. They register HERE, and
-    /// [`ensure_agent_tab`] carries the screen onto the tab it spawns, so the
-    /// session's first frames reach a client that mounted the tab long before
-    /// it: the alternative is a screen that stays blank until the human
-    /// unmounts and remounts. An entry lives only until that first spawn.
-    agent_screens_awaiting_spawn: HashMap<TabKey, ScreenHandle>,
     /// Turns queued by the verbs running under the state lock, drained by
     /// [`dispatch_frame`] once that lock is free. The synchronous test entry
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
@@ -455,12 +440,6 @@ pub struct AppState {
     /// and this are what tell the daemon the difference between an agent on its
     /// way and an agent that never arrived.
     turns_in_flight: TurnsInFlight,
-    /// Current unlogged MCP capability per lifecycle owner. Knowing an Issue or
-    /// implementation id is intentionally insufficient to forge local control
-    /// frames; replacing an agent tab rotates this token.
-    mcp_session_tokens: HashMap<String, String>,
-    /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
-    next_term: u64,
     /// Weak self-handle set once at [`AppState::shared`] time, so `&mut self`
     /// hooks can spawn pump tasks that need the `Arc`. Dispatch paths that run
     /// in tests without an Arc simply skip pump spawning (they assert on
@@ -608,16 +587,11 @@ impl AppState {
             dispatch_fault: None,
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
-            tabs: HashMap::new(),
-            agent_spawns_in_flight: std::collections::HashSet::new(),
-            agent_spawn_finished: Arc::new(std::sync::Condvar::new()),
-            agent_screens_awaiting_spawn: HashMap::new(),
+            session_registry: SessionRegistry::new(),
             pending_agent_turns: Vec::new(),
             operations: HashMap::new(),
             pending_operation_acceptance: None,
             turns_in_flight: TurnsInFlight::default(),
-            mcp_session_tokens: HashMap::new(),
-            next_term: 1,
             self_handle: None,
             next_stream: 1,
             qa_agent,

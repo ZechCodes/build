@@ -235,9 +235,6 @@ fn fs_read_round_trips_content_and_infers_mime() {
     assert_eq!(decoded, b"# hi\n");
     assert_eq!(md["result"]["truncated"], false);
     assert_eq!(md["result"]["size"], 5);
-    assert_eq!(md["result"]["editable"], true);
-    assert_eq!(md["result"]["encoding"], "utf-8");
-    assert_eq!(md["result"]["revision"], sha256_hex(b"# hi\n"));
 
     assert_eq!(read("page.html")["result"]["mime"], "text/html");
     assert_eq!(read("icon.svg")["result"]["mime"], "image/svg+xml");
@@ -249,13 +246,42 @@ fn fs_read_round_trips_content_and_infers_mime() {
         read("blob.bin")["result"]["mime"],
         "application/octet-stream"
     );
-    assert_eq!(read("blob.bin")["result"]["editable"], false);
 
     let missing = read("nope.txt");
     assert_eq!(missing["ok"], false, "{missing:?}");
 
     let dir_read = read("");
     assert_eq!(dir_read["ok"], false, "{dir_read:?}");
+}
+
+#[test]
+fn fs_read_marks_complete_utf8_text_editable_with_its_revision() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    std::fs::write(repo.join("notes.md"), "# hi\n").unwrap();
+    std::fs::write(repo.join("blob.bin"), [0_u8, 1, 2]).unwrap();
+
+    let text = state.handle(req(
+        "fs.read",
+        json!({ "project_id": project_id, "path": "notes.md" }),
+    ));
+    assert_eq!(text["result"]["editable"], true);
+    assert_eq!(text["result"]["encoding"], "utf-8");
+    assert_eq!(text["result"]["revision"], sha256_hex(b"# hi\n"));
+
+    let binary = state.handle(req(
+        "fs.read",
+        json!({ "project_id": project_id, "path": "blob.bin" }),
+    ));
+    assert_eq!(binary["result"]["editable"], false);
+    assert!(binary["result"]["encoding"].is_null());
 }
 
 #[test]
@@ -390,7 +416,10 @@ fn fs_write_uses_the_same_worktree_for_external_and_run_scopes() {
     run_write["content_b64"] = json!(b64encode(b"three\n"));
     run_write["expected_revision"] = run_read["result"]["revision"].clone();
     assert_eq!(state.handle(req("fs.write", run_write))["ok"], true);
-    assert_eq!(std::fs::read_to_string(worktree.join("notes.txt")).unwrap(), "three\n");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("notes.txt")).unwrap(),
+        "three\n"
+    );
 }
 
 #[test]

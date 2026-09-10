@@ -54,6 +54,8 @@ pub mod changes;
 pub mod config;
 pub mod delivery;
 pub mod diff;
+pub(crate) mod encoding;
+pub(crate) mod fs_scope;
 #[cfg(test)]
 pub mod git_fixture;
 pub mod git_process;
@@ -81,6 +83,7 @@ pub mod screen;
 pub mod service;
 pub mod store;
 pub mod templates;
+pub(crate) mod terminal_environment;
 pub mod thread;
 pub mod timing;
 pub mod transport;

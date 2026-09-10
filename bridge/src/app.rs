@@ -16,7 +16,6 @@ use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::Engine;
 use portable_pty::PtySize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -28,6 +27,7 @@ use crate::agent_modes::AgentModes;
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::delivery::{AgentSpawnPlan, ReadyToSpawn, SessionProbes};
+use crate::encoding::b64decode;
 use crate::harness::{
     harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
     SessionIdentitySource, SessionOpenRequest, SessionOutput, TerminalOpenOptions, Turn,
@@ -75,6 +75,7 @@ use crate::store::{
     WorktreeFinishAction, WorktreeFinishStatus,
 };
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
+pub use crate::terminal_environment::{capture_login_path, resolve_term_shell};
 use crate::thread::{SessionInstance, SessionStart, ThreadDetail};
 use crate::timing::{FrameClock, FrameTimer};
 use crate::transport::{self, Frame};
@@ -82,6 +83,10 @@ use crate::worktree::{
     bounded_git_fetch, configured_remote_for_branch, git_remote_origin, git_stdout,
     ExternalWorktree, Worktree, WorktreeManager,
 };
+pub(crate) use crate::{encoding::b64encode, fs_scope::fenced_scope_path};
+
+mod qa;
+use qa::write_in_dir;
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
 #[derive(Debug, Clone)]
@@ -277,73 +282,6 @@ const ATTACHMENTS_PER_MESSAGE_MAX: usize = 10;
 
 const FS_READ_MAX_BYTES: u64 = 1_048_576;
 const FS_MEDIA_READ_MAX_BYTES: u64 = 32 * 1_048_576;
-
-/// The shell user terminals run: `BRIDGE_TERM_SHELL` override → the daemon
-/// env's `SHELL` → the account's passwd shell → bash. Terminals are windows
-/// onto the user's machine — they get the user's own shell and rc files, not
-/// a sanitized bash.
-pub fn resolve_term_shell() -> String {
-    for var in ["BRIDGE_TERM_SHELL", "SHELL"] {
-        if let Ok(shell) = std::env::var(var) {
-            if !shell.trim().is_empty() {
-                return shell;
-            }
-        }
-    }
-    passwd_shell().unwrap_or_else(|| "/bin/bash".to_string())
-}
-
-/// The account's login shell from the passwd database.
-fn passwd_shell() -> Option<String> {
-    // SAFETY: getpwuid returns a pointer to static storage owned by libc; we
-    // only read pw_shell out of it, on this thread, immediately.
-    unsafe {
-        let pw = libc::getpwuid(libc::getuid());
-        if pw.is_null() {
-            return None;
-        }
-        let shell = (*pw).pw_shell;
-        if shell.is_null() {
-            return None;
-        }
-        let shell = std::ffi::CStr::from_ptr(shell)
-            .to_string_lossy()
-            .into_owned();
-        (!shell.trim().is_empty()).then_some(shell)
-    }
-}
-
-/// Ask a login shell what PATH looks like — the terminal-emulator trick.
-/// launchd starts agents with a bare PATH, so user-installed coding-agent
-/// harnesses don't resolve until we adopt the login PATH.
-/// Bounded by `timeout`; a hung rc file just means we keep the inherited PATH.
-pub fn capture_login_path(shell: &str, timeout: std::time::Duration) -> Option<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let shell = shell.to_string();
-    std::thread::spawn(move || {
-        let out = std::process::Command::new(&shell)
-            .args(["-ilc", "printf %s \"$PATH\""])
-            .stdin(std::process::Stdio::null())
-            .output();
-        let _ = tx.send(out);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(out)) if out.status.success() => {
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            path_widens_launchd_default(&path).then_some(path)
-        }
-        _ => None,
-    }
-}
-
-/// launchd's own PATH. A captured PATH that adds nothing to it is not worth
-/// adopting — it would mask the real problem behind a "PATH adopted" log line.
-const LAUNCHD_BARE_PATH: [&str; 4] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
-
-fn path_widens_launchd_default(path: &str) -> bool {
-    path.split(':')
-        .any(|dir| !dir.is_empty() && !LAUNCHD_BARE_PATH.contains(&dir))
-}
 
 /// The tab id of one Build-owned agent. Every other tab in a worktree is a
 /// `term-<n>` shell the human drives.
@@ -17825,15 +17763,6 @@ fn canonical_stage_execution(progress: &StageProgress) -> &'static str {
     }
 }
 
-/// Write a file under `dir`, creating parent dirs — the QA agent's file writer.
-fn write_in_dir(dir: &std::path::Path, rel: &str, contents: &str) -> Result<(), String> {
-    let path = dir.join(rel);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(path, contents).map_err(|e| e.to_string())
-}
-
 /// A project name that can be a directory: not empty, one path segment, and
 /// nothing that climbs out of the folder it is going into.
 fn usable_project_name(name: impl AsRef<str>) -> Result<String, String> {
@@ -18416,28 +18345,6 @@ fn ensure_attachments_ignored(build_dir: &std::path::Path) -> std::io::Result<()
     }
     updated.push_str("attachments/\n");
     std::fs::write(&ignore, updated)
-}
-
-pub(crate) fn fenced_scope_path(
-    root: &std::path::Path,
-    path: &str,
-) -> Result<std::path::PathBuf, String> {
-    if !path.is_empty() && !crate::plan::is_worktree_contained_path(path) {
-        return Err("path escapes the worktree".to_string());
-    }
-    let joined = if path.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(path)
-    };
-    let canonical_root =
-        std::fs::canonicalize(root).map_err(|e| format!("cannot resolve scope root: {e}"))?;
-    let canonical_target =
-        std::fs::canonicalize(&joined).map_err(|e| format!("cannot read {path}: {e}"))?;
-    if !canonical_target.starts_with(&canonical_root) {
-        return Err("path escapes the worktree".to_string());
-    }
-    Ok(joined)
 }
 
 /// Extension-based mime hint for `fs.read` previews (spec §4.3's pinned
@@ -24122,16 +24029,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
-}
-
-pub(crate) fn b64encode(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn b64decode(s: &str) -> Result<Vec<u8>, String> {
-    base64::engine::general_purpose::STANDARD
-        .decode(s)
-        .map_err(|e| format!("invalid base64: {e}"))
 }
 
 #[cfg(test)]

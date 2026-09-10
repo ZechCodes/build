@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine as _;
 
 /// Add a git worktree Build did not create, at `dir/name` on `branch`, cut
 /// from `repo`'s current HEAD — the raw material of adoption tests.

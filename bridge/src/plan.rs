@@ -29,9 +29,9 @@
 //! plan's runs (any run merged). Once approved, a plan's coarse state stays
 //! `Approved`; mid-run doc churn is carried by the per-stage doc states only.
 
-use std::path::{Component, Path};
-
 use serde::{Deserialize, Serialize};
+
+pub use crate::fs_scope::is_worktree_contained_path;
 
 /// Opaque plan identifier (`plan-<uuid>`). The caller supplies it (the bridge
 /// mints the UUID).
@@ -253,19 +253,6 @@ pub fn stage_doc_transition(
             event,
         }),
     }
-}
-
-/// True iff `path` stays inside whatever directory it is joined under: it is
-/// non-empty, relative, and made only of normal components — no `..`, no `.`
-/// segments, no root. This is the fence that keeps agent-supplied paths (the
-/// manifest echo, `plan_path`) from escaping the worktree or the store's docs
-/// dir; a naive prefix check alone would accept
-/// `.build/plan/../../../etc/passwd`.
-pub fn is_worktree_contained_path(path: &str) -> bool {
-    !path.is_empty()
-        && Path::new(path)
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 /// One entry of the plan manifest as the agent reports it

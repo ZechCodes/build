@@ -1387,7 +1387,7 @@ pub fn merge_abort(repo_path: &Path) -> Result<(), String> {
 /// `git.discard` (**destructive**): revert each path to HEAD. Tracked paths go
 /// through `git restore --staged --worktree --source=HEAD` (reverting both the
 /// index and the working copy); untracked paths are unlinked directly — but
-/// only after the two-layer [`crate::app::fenced_scope_path`] guard
+/// only after the two-layer [`crate::fs_scope::fenced_scope_path`] guard
 /// (lexical + canonical containment), since a symlinked path whose components
 /// all look Normal could otherwise resolve outside the worktree. The scaffolded
 /// `.build/mcp.json` is silently skipped.
@@ -1413,7 +1413,7 @@ pub fn discard_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     // Untracked deletions first: each is fenced (lexical + canonical) before
     // the unlink, so a traversal or symlink escape can never reach outside.
     for path in untracked {
-        let target = crate::app::fenced_scope_path(repo_path, path)?;
+        let target = crate::fs_scope::fenced_scope_path(repo_path, path)?;
         std::fs::remove_file(&target).map_err(|e| format!("cannot delete {path}: {e}"))?;
     }
     if !tracked.is_empty() {

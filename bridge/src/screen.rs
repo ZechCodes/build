@@ -17,8 +17,8 @@ use std::time::Duration;
 use portable_pty::PtySize;
 use serde_json::{json, Value};
 
-use crate::app::b64encode;
 use crate::carrier::SessionSender;
+use crate::encoding::b64encode;
 use crate::harness::{AgentSession, TerminalView};
 
 /// Authoritative server-side screen: vt100 model + attach list + coalescing

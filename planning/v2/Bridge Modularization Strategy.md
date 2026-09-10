@@ -1,6 +1,6 @@
 # Bridge Modularization Strategy
 
-**Status:** Stages 1–2 implemented; production extraction remains planned
+**Status:** Stages 1–3 implemented; application-service extraction is next
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
 ## Why this work is needed
@@ -353,11 +353,21 @@ unexercised with `BUILD_SECURE_TRANSPORT_PY` unset.
 
 ### PR 3: Remove leaf-to-app utility dependencies
 
-Move base64 wire helpers beside transport/encoding and move canonical scoped
-path validation into a small filesystem-scope module. Repoint `screen.rs` and
-`gitgui.rs`. These leaf moves establish the intended dependency direction and
-are independently testable. Also move shell-resolution and QA simulation helpers to
-their clear owners where they do not require `AppState`.
+**Implemented.** Base64 wire helpers now live in `encoding.rs`, while lexical
+and canonical path validation share `fs_scope.rs`. `screen.rs` and `gitgui.rs`
+use these owners directly. Shell resolution and login PATH capture live in
+`terminal_environment.rs`; their existing public app paths remain available,
+as does the public plan path validator. The independent QA file writer lives
+in `app/qa.rs`; stateful QA lifecycle adapters remain for the later extraction.
+
+All 84 focused tests, formatting, all-target check, and all-target Clippy pass.
+The full suite reports 2,184 passed, one failed, and seven ignored: the sole
+failure is the previously reproduced `concurrency_load` output floor at
+75,226 bytes. All 2,109 exercised library tests pass. Source auditing preserves
+all 5,434 functions and every test body, with only the expected path-validation
+relocations requiring review. Semgrep and staged Gitleaks pass. The app facade
+is now 24,035 lines. See [the progress record](Bridge%20Modularization%20Progress.md)
+for the remaining integration sequence and validation evidence.
 
 ### Phases 4-6: Split the application services mechanically
 

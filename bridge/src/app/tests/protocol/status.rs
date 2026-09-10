@@ -120,7 +120,7 @@ async fn agent_attach_refuses_an_agent_with_no_terminal() {
             TabKey::agent(&root, agent_id),
             terminal_free_agent_tab(&root, "run-protocol", agent_id),
         );
-        s.projects[0].id.clone()
+        s.project_at(0).id.clone()
     };
 
     let attached = call(
@@ -681,7 +681,7 @@ fn closing_a_worktrees_agents_ends_their_sessions() {
 async fn the_board_reports_whether_an_agent_is_working_in_a_worktree() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "hand-made", "hand-made");
     let worktree_id = state
         .lock()
@@ -766,7 +766,7 @@ async fn the_board_reports_whether_an_agent_is_working_in_a_worktree() {
 async fn a_bare_external_worktree_stays_off_the_board_no_matter_what_happens_in_it() {
     let (dir, repo) = init_repo();
     let (state, _handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let checkout = add_external_worktree(&repo, dir.path(), "hand-made", "hand-made");
     let worktree_id = state
         .lock()
@@ -826,7 +826,7 @@ async fn a_bare_external_worktree_stays_off_the_board_no_matter_what_happens_in_
 async fn stamping_happens_on_the_path_the_relay_uses() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     let created = handler.call(
         SessionSender::detached("s1"),

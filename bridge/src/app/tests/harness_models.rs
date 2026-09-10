@@ -169,7 +169,8 @@ fn every_harness_path_uses_the_contexts_canonical_bridge_executable() {
         codex.args
     );
 
-    state.projects[0]
+    state
+        .project_at(0)
         .orch
         .agent_launch()
         .prepare(

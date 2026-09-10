@@ -19,8 +19,8 @@ pub(in crate::app::tests) fn run_with_long_conversation(
         );
     }
     let held = primary_thread(&active.agents).items.len();
-    let project_id = state.projects[0].id.clone();
-    state.entity_project.insert(run_id.into(), project_id);
+    let project_id = state.project_at(0).id.clone();
+    state.projects.bind_entity(run_id.into(), project_id);
     state.runs.insert(run_id.into(), active);
     held
 }

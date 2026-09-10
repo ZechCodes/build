@@ -105,7 +105,7 @@ fn a_capture_being_routed_is_never_given_a_second_router() {
 fn routing_a_capture_to_an_issue_starts_its_planning_agent_on_the_primary_checkout() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "fix the login redirect");
 
     let filed = state
@@ -182,7 +182,7 @@ fn routing_a_capture_to_an_issue_starts_its_planning_agent_on_the_primary_checko
 fn a_routed_issue_whose_agent_is_already_coming_is_not_started_twice() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "fix the login redirect");
 
     let filed = state
@@ -248,7 +248,7 @@ fn a_routed_issue_whose_agent_is_already_coming_is_not_started_twice() {
 fn routing_to_an_issue_whose_workspace_cannot_be_written_keeps_the_route() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "fix the login redirect");
     // Every Issue's scratch docs dir is cut under this root; a plain file
     // standing there fails `create_dir_all` for any Issue.
@@ -341,7 +341,7 @@ fn routed_planning_start(
 fn dispatch_branch_puts_an_agent_on_a_branch_and_writes_the_route_through() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "finish the toast on the login branch");
     state.pending_agent_turns.clear();
 
@@ -672,7 +672,7 @@ fn a_capture_that_became_work_is_not_cancelled_from_here() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (capture_id, _) = captured(&mut state, "ship it");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     state
         .router_action(
             &capture_id,
@@ -905,7 +905,7 @@ fn a_router_that_reports_without_routing_marks_the_capture_failed() {
 fn a_router_that_routed_keeps_its_route_when_it_reports() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "fix the login redirect");
     let scratch = state.router_sessions[&capture_id]
         .scratch_dir()
@@ -977,7 +977,7 @@ fn the_sweep_fails_a_capture_whose_router_died_and_spares_one_still_starting() {
 fn rerouting_off_an_issue_only_its_own_agent_touched_stops_the_agent_and_archives_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "fix the login redirect");
     let filed = state
         .router_action(
@@ -1036,7 +1036,7 @@ fn rerouting_off_an_issue_only_its_own_agent_touched_stops_the_agent_and_archive
 fn rerouting_keeps_a_destination_that_has_been_worked() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let (touched_capture, _) = captured(&mut state, "fix the login redirect");
     let filed = state
@@ -1121,7 +1121,7 @@ fn rerouting_keeps_a_destination_that_has_been_worked() {
 fn rerouting_to_a_branch_dispatches_onto_the_branch_it_names() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (named, _) = captured(&mut state, "add the CSV export");
     let (unnamed, _) = captured(&mut state, "add the CSV export");
 
@@ -1160,7 +1160,7 @@ fn rerouting_to_a_branch_dispatches_onto_the_branch_it_names() {
 fn rerouting_a_capture_to_a_branch_cuts_it_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut app, "add the CSV export");
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
@@ -1202,7 +1202,7 @@ fn rerouting_a_capture_to_a_branch_cuts_it_with_the_state_lock_free() {
 fn a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run_is_durable() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     app.scan_external_worktrees_now(&project_id).unwrap();
     let (capture_id, _) = captured(&mut app, "add the CSV export");
     let (gate, gate_handle) = OffLockGate::new();
@@ -1262,7 +1262,8 @@ fn a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run
         "the refused dispatch left its row on the board"
     );
     assert!(
-        state.projects[0]
+        state
+            .project_at(0)
             .external_scan
             .as_ref()
             .is_some_and(|cache| {
@@ -1272,7 +1273,8 @@ fn a_capture_cancelled_while_its_dispatch_cuts_the_branch_refuses_before_the_run
                     .any(|worktree| worktree.branch.as_deref() == Some("build/add-the-csv-export"))
             }),
         "the checkout the git cut is not on the board: {:?}",
-        state.projects[0]
+        state
+            .project_at(0)
             .external_scan
             .as_ref()
             .map(|cache| &cache.worktrees)
@@ -1314,7 +1316,7 @@ fn a_reroute_with_no_destination_re_fires_the_router() {
 fn a_routed_capture_refuses_a_second_route_from_the_router() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "ship it");
     let file = |state: &mut AppState| {
         state.router_action(

@@ -48,7 +48,7 @@ fn merged_branch_holder_creation_and_refusal_leave_the_mutex_free() {
         )
         .unwrap();
         let mut app = qa_state(&repo, dir.path());
-        let project_id = app.projects[0].id.clone();
+        let project_id = app.project_at(0).id.clone();
         let (gate, held) = OffLockGate::new();
         app.off_lock_gate = Some(gate);
         let state = app.shared();
@@ -71,7 +71,7 @@ fn merged_branch_holder_creation_and_refusal_leave_the_mutex_free() {
 fn merged_branch_dispatch_revalidates_the_holder_snapshot_before_apply() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, held) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -83,7 +83,7 @@ fn merged_branch_dispatch_revalidates_the_holder_snapshot_before_apply() {
     );
     held.wait_for_arrival();
     assert_unrelated_frame_completes(&state);
-    state.lock().unwrap().projects[0].base_branch = "changed-while-reading".into();
+    state.lock().unwrap().project_at_mut(0).base_branch = "changed-while-reading".into();
     held.release();
     let reply = dispatching.recv_timeout(Duration::from_secs(30)).unwrap();
     assert_eq!(reply["ok"], false, "{reply}");
@@ -104,7 +104,7 @@ fn merged_branch_holder_dispatch_joins_the_run_before_the_primary_or_refuses_off
     for fails in [false, true] {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
-        let project_id = app.projects[0].id.clone();
+        let project_id = app.project_at(0).id.clone();
         let adopted = app.handle(req(
             "run.adopt",
             json!({ "project_id": project_id, "primary": true }),
@@ -143,7 +143,7 @@ fn merged_branch_holder_listing_and_git_failure_leave_the_mutex_free() {
     for fails in [false, true] {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
-        let project_id = app.projects[0].id.clone();
+        let project_id = app.project_at(0).id.clone();
         let (gate, held) = OffLockGate::new();
         app.off_lock_gate = Some(gate);
         let state = app.shared();

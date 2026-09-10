@@ -14,7 +14,7 @@ fn daemon_with_a_checkout_to_finish(
     OffLockGateHandle,
 ) {
     let mut app = qa_state(repo, dir);
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let path = add_external_worktree(repo, dir, name, name);
     let worktree_id = external_id(&mut app, &project_id, Some(name));
     let (gate, handle) = OffLockGate::new();
@@ -95,7 +95,7 @@ pub(in crate::app::tests) fn pending_on_the_board(board: &Value) -> Vec<Value> {
 fn worktree_create_runs_git_worktree_add_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
@@ -144,7 +144,7 @@ fn worktree_create_runs_git_worktree_add_with_the_state_lock_free() {
 fn a_creating_worktree_is_on_the_board_before_its_git_returns() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -167,7 +167,7 @@ fn a_creating_worktree_is_on_the_board_before_its_git_returns() {
     assert_eq!(pending[0]["project_id"], json!(project_id), "{pending:?}");
     assert_eq!(
         pending[0]["project"],
-        json!(state.lock().unwrap().projects[0].name),
+        json!(state.lock().unwrap().project_at(0).name),
         "a row the board renders says which project it belongs to: {pending:?}"
     );
     let placeholder = pending[0]["entity_id"].as_str().unwrap().to_string();
@@ -197,10 +197,10 @@ fn a_creating_worktree_is_on_the_board_before_its_git_returns() {
 fn a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     // A base branch this repository does not have: `git worktree add` has
     // nothing to cut from.
-    state.projects[0].base_branch = "no-such-base".to_string();
+    state.project_at_mut(0).base_branch = "no-such-base".to_string();
 
     let failed = state.handle(req(
         "worktree.create",
@@ -216,7 +216,7 @@ fn a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row() {
     assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
     // And the name is free: the retry is not refused by the row of the
     // attempt that failed.
-    state.projects[0].base_branch = "main".to_string();
+    state.project_at_mut(0).base_branch = "main".to_string();
     let retried = state.handle(req(
         "worktree.create",
         json!({ "project_id": project_id, "name": "doomed" }),
@@ -232,7 +232,7 @@ fn a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row() {
 fn a_suffixed_slug_settles_the_placeholder_under_its_real_id() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let first = state.handle(req(
         "worktree.create",
@@ -270,7 +270,7 @@ fn a_suffixed_slug_settles_the_placeholder_under_its_real_id() {
 fn a_second_create_of_a_name_being_cut_is_refused() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -308,7 +308,7 @@ fn a_second_create_of_a_name_being_cut_is_refused() {
 fn two_dispatches_of_one_instruction_cut_one_branch() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -363,7 +363,7 @@ fn two_dispatches_of_one_instruction_cut_one_branch() {
 fn a_dispatch_onto_a_branch_being_created_is_refused() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -404,7 +404,7 @@ fn a_dispatch_onto_a_branch_being_created_is_refused() {
 fn branch_dispatch_cuts_its_branch_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
@@ -480,7 +480,7 @@ pub(in crate::app::tests) fn approved_issue(app: &mut AppState, goal: &str) -> S
 fn run_create_opens_its_implementation_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let issue_id = approved_issue(&mut app, "implement off the lock");
     let run_id = adopted_run(&mut app, &repo, dir.path(), "already-here");
     // A board that has been looked at once, so the assertion below is
@@ -541,7 +541,7 @@ fn run_create_opens_its_implementation_with_the_state_lock_free() {
             .path,
     );
     assert!(
-        !app.projects[0]
+        !app.project_at(0)
             .external_scan
             .as_ref()
             .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
@@ -690,7 +690,7 @@ fn a_second_implementation_of_an_issue_is_refused_while_the_first_is_being_cut()
 fn an_implementation_whose_apply_fails_leaves_its_checkout_on_the_board() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let issue_id = approved_issue(&mut app, "leave nothing hidden");
     // A board that has been looked at once, so the amendment has a list to
     // put the checkout back into.
@@ -729,12 +729,12 @@ fn an_implementation_whose_apply_fails_leaves_its_checkout_on_the_board() {
     );
     assert!(checkout.is_dir(), "the git that succeeded was undone");
     assert!(
-        app.projects[0]
+        app.project_at(0)
             .external_scan
             .as_ref()
             .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
         "the checkout it cut is invisible until the next full rescan: {:?}",
-        app.projects[0]
+        app.project_at(0)
             .external_scan
             .as_ref()
             .map(|cache| &cache.worktrees)
@@ -1330,7 +1330,7 @@ fn an_inert_issues_first_message_starts_its_session_off_the_lock() {
 fn a_git_read_runs_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -1361,7 +1361,7 @@ fn a_git_read_runs_with_the_state_lock_free() {
 fn a_diff_render_runs_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     std::fs::write(repo.join("changed.txt"), "work\n").unwrap();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);

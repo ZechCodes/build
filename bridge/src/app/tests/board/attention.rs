@@ -808,7 +808,7 @@ fn a_refused_action_does_not_stamp() {
 fn a_build_made_worktree_arrives_touched_and_a_hand_made_one_does_not() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let created = state.handle(req(
         "worktree.create",

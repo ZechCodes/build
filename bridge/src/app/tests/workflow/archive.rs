@@ -5,7 +5,7 @@ fn completed_plan_archives_idempotently_and_moves_off_the_board() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (plan_id, run_id) = planned_run_in_review(&mut state, "archive completed plan");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let before = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
     assert_eq!(

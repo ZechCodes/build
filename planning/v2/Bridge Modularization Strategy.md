@@ -1,6 +1,6 @@
 # Bridge Modularization Strategy
 
-**Status:** Stages 1–5 implemented; project registry ownership is next
+**Status:** Stages 1–5b implemented; endpoint and runtime adapter extraction is next
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
 ## Why this work is needed

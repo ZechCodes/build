@@ -816,7 +816,7 @@ fn implementing_into_a_branch_already_implementing_another_issue_is_refused() {
 fn implementing_into_the_primary_checkout_is_refused() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let adopted = state.handle(req(
         "run.adopt",
         json!({ "project_id": project_id, "primary": true }),
@@ -848,7 +848,7 @@ fn implementing_into_an_unadopted_worktree_adopts_it_first() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     add_external_worktree(&repo, dir.path(), "feature-unadopted", "feature-unadopted");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
         .unwrap()

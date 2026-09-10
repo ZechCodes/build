@@ -154,7 +154,7 @@ async fn agent_attach_streams_a_live_run_and_retains_the_last_screen() {
 async fn agent_attach_addresses_a_worktree_by_scope_before_any_run_owns_it() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
     let external = state
         .lock()
@@ -238,7 +238,7 @@ async fn agent_attach_addresses_a_worktree_by_scope_before_any_run_owns_it() {
 async fn agent_attach_names_the_provider_that_painted_the_screen() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let root = AppState::canonical_root(&repo);
 
     // Nothing has run here yet: no harness to name.
@@ -309,7 +309,7 @@ async fn a_client_attached_before_the_first_spawn_streams_the_session_it_waited_
     let (dir, repo) = init_repo();
     let (state, handler, _) =
         agent_tab_fixture_at(&repo, dir.path(), "run-waited-for", repo.clone());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let wire_id = format!(
         "agent:{}",
         crate::worktree::external_worktree_id(&AppState::canonical_root(&repo))
@@ -482,7 +482,7 @@ pub(in crate::app::tests) fn a_provider_running(
     let agent = Agent::WarmBuilder(Arc::new(
         move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| Ok(spec.clone()),
     ));
-    s.projects[0].orch = Orchestrator::new(
+    s.project_at_mut(0).orch = Orchestrator::new(
         repo.to_path_buf(),
         worktrees,
         agent,
@@ -763,8 +763,8 @@ async fn a_reservation_that_cannot_resolve_its_project_takes_nothing_from_the_re
     state
         .lock()
         .unwrap()
-        .entity_project
-        .remove("run-unresolvable");
+        .projects
+        .unbind_live_entity("run-unresolvable");
     let refused = deliver(
         &state,
         &root,
@@ -862,7 +862,7 @@ async fn a_session_that_ended_while_waiting_is_not_carried_onto_the_agent() {
     let (dir, repo) = init_repo();
     let (state, handler, _) =
         agent_tab_fixture_at(&repo, dir.path(), "run-closed-client", repo.clone());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     let (sender, _pushes, _key) = SessionSender::observable("closing");
     let waiting = handler.call(
@@ -921,7 +921,7 @@ async fn a_client_attaching_as_the_last_waiting_client_leaves_is_carried_onto_th
     let (dir, repo) = init_repo();
     let (state, handler, _) =
         agent_tab_fixture_at(&repo, dir.path(), "run-attach-race", repo.clone());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     let (leaving, _pushes, _key) = SessionSender::observable("leaving");
     let waiting = handler.call(

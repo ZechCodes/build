@@ -160,7 +160,7 @@ fn a_capture_says_whether_the_router_has_it_or_gave_up() {
 fn a_routed_and_quiet_capture_leaves_the_feed() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let created = state.handle(req("capture.create", json!({ "text": "ship it" })));
     let capture_id = created["result"]["id"].as_str().unwrap().to_string();
 

@@ -26,8 +26,8 @@ pub(in crate::app::tests) fn agent_tab_fixture_at(
     let (state, handler) = shared_state_and_handler(repo, dir);
     {
         let mut s = state.lock().unwrap();
-        let project_id = s.projects[0].id.clone();
-        s.entity_project.insert(owner.to_string(), project_id);
+        let project_id = s.project_at(0).id.clone();
+        s.projects.bind_entity(owner.to_string(), project_id);
         let mut record = fake_run_record(owner);
         record.worktree_path = root.display().to_string();
         record.project_path = repo.display().to_string();
@@ -192,7 +192,7 @@ fn harness_spec_construction_does_not_hold_the_app_state_lock() {
         }));
         let mut app = state.lock().unwrap();
         let worktrees = app.worktrees_root.clone();
-        app.projects[0].orch = Orchestrator::new(
+        app.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -580,7 +580,7 @@ fn default_after_a_native_override_restarts_fresh_before_delivery() {
     let launches: Arc<Mutex<Vec<(ModelChoice, SpawnOptions)>>> = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&launches);
     let worktrees = app.worktrees_root.clone();
-    app.projects[0].orch = Orchestrator::new(
+    app.project_at_mut(0).orch = Orchestrator::new(
         repo.clone(),
         worktrees,
         Agent::WarmBuilder(Arc::new(move |_prompt, choice, options| {

@@ -10,7 +10,7 @@ use super::*;
 fn run_adopt_mints_no_agent_and_every_surface_still_answers() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "feature-agentless", "feature-agentless");
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
@@ -102,7 +102,7 @@ fn a_post_to_an_agentless_branch_creates_the_agent_that_hears_it() {
 async fn adding_the_first_agent_on_a_named_harness_moves_the_branch_onto_it() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let adopted = call(
         &handler,
         "run.adopt",
@@ -148,7 +148,7 @@ async fn adding_the_first_agent_on_a_named_harness_moves_the_branch_onto_it() {
 async fn a_start_respawns_the_named_agents_harness_on_a_mixed_branch() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let adopted = call(
         &handler,
         "run.adopt",
@@ -255,7 +255,7 @@ fn a_queued_turn_spends_the_agents_own_harness() {
 fn a_dispatched_branch_mints_its_agent_on_the_dispatchs_own_choice() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let dispatched = state.handle(req(
         "branch.dispatch",
         json!({
@@ -288,7 +288,7 @@ fn a_dispatched_branch_mints_its_agent_on_the_dispatchs_own_choice() {
 fn run_adopt_release_and_delete() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let _ext_path = add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
     // Resolve the scanner-minted worktree id (match by branch; the scanner
     // canonicalizes paths, which differ from the raw join on macOS).
@@ -346,7 +346,7 @@ fn run_adopt_release_and_delete() {
 fn run_adopt_external_worktree_is_idempotent() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let _ext_path = add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
@@ -386,7 +386,7 @@ fn run_adopt_external_worktree_is_idempotent() {
 fn run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -425,7 +425,7 @@ fn run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free() {
 fn a_primary_adoption_names_the_primary_card_it_is_running_on() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -459,7 +459,7 @@ fn a_primary_adoption_names_the_primary_card_it_is_running_on() {
 fn run_adopt_answers_from_its_epilogue_with_the_runs_own_view() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "feature-y", "feature-y");
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
@@ -493,7 +493,7 @@ fn run_adopt_answers_from_its_epilogue_with_the_runs_own_view() {
 fn two_adopts_of_one_checkout_converge_on_one_run() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -565,7 +565,7 @@ fn two_adopts_of_one_checkout_converge_on_one_run() {
 fn run_adopt_refuses_a_detached_head_before_it_writes_a_checkpoint() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "loose", "loose");
     assert!(Command::new("git")
         .args(["-C", path.to_str().unwrap(), "checkout", "--detach"])

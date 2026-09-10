@@ -207,7 +207,7 @@ async fn a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_f
     let (gate, gate_handle) = OffLockGate::new();
     let (capture_id, project_id, agent_id, session_token) = {
         let mut app = state.lock().unwrap();
-        let project_id = app.projects[0].id.clone();
+        let project_id = app.project_at(0).id.clone();
         let (capture_id, agent_id) = captured(&mut app, "finish the toast on the login branch");
         app.pending_agent_turns.clear();
         let session_token = uuid::Uuid::new_v4().to_string();
@@ -554,8 +554,8 @@ fn on_agent_done_routes_by_owner_lookup() {
         &fake_run_record("run-route"),
         ".build/plan.md".into(),
     );
-    let project_id = state.projects[0].id.clone();
-    state.entity_project.insert("run-route".into(), project_id);
+    let project_id = state.project_at(0).id.clone();
+    state.projects.bind_entity("run-route".into(), project_id);
     state.runs.insert("run-route".into(), active);
     // A completed build report routes to the runs map and opens review.
     state.on_agent_done(
@@ -1081,8 +1081,8 @@ fn mcp_thread_actions_are_owner_scoped_and_revision_snapshots_are_on_demand() {
         "diff --git a/a b/a\n+new",
         &now_rfc3339(),
     );
-    let project_id = state.projects[0].id.clone();
-    state.entity_project.insert("run-thread".into(), project_id);
+    let project_id = state.project_at(0).id.clone();
+    state.projects.bind_entity("run-thread".into(), project_id);
     state.runs.insert("run-thread".into(), active);
 
     let unread = state
@@ -1352,8 +1352,8 @@ fn a_cursored_poll_reships_a_message_after_the_agent_marks_it_seen() {
         ".build/plan.md".into(),
     );
     primary_thread_mut(&mut active.agents).post_user("rename it", None, now_rfc3339());
-    let project_id = state.projects[0].id.clone();
-    state.entity_project.insert("run-seen".into(), project_id);
+    let project_id = state.project_at(0).id.clone();
+    state.projects.bind_entity("run-seen".into(), project_id);
     state.runs.insert("run-seen".into(), active);
 
     // The client holds the full thread: its cursor is the last sequence.

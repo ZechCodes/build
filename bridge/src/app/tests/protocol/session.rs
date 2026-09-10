@@ -508,7 +508,7 @@ fn run_on_a_headless_provider_recording_spawns(
                 Ok(spec.clone())
             },
         ));
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.to_path_buf(),
             worktrees,
             agent,
@@ -756,7 +756,7 @@ async fn a_spawn_resumes_exact_lineage_and_never_guesses_from_history() {
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         s.resume_id_probe = Arc::new(|_, _, id| id == "sess-named");
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -888,7 +888,7 @@ async fn a_terminal_locator_never_authorizes_a_fresh_sessions_resume_identity() 
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         s.resume_id_probe = Arc::new(|_, _, id| id == "sess-pty");
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -984,7 +984,7 @@ async fn a_fresh_terminal_close_does_not_persist_a_locator_guess() {
         ));
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -1035,7 +1035,7 @@ async fn a_spawn_writes_down_the_model_it_spent() {
         ));
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -1202,7 +1202,7 @@ async fn a_terminal_that_named_nothing_keeps_the_name_its_record_already_had() {
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         s.resume_id_probe = Arc::new(|_, _, _| true);
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -1261,7 +1261,7 @@ fn spawns_over_an_old_transcript(
     ));
     let mut s = state.lock().unwrap();
     let worktrees = s.worktrees_root.clone();
-    s.projects[0].orch = Orchestrator::new(
+    s.project_at_mut(0).orch = Orchestrator::new(
         repo.to_path_buf(),
         worktrees,
         agent,
@@ -1412,7 +1412,7 @@ async fn a_recorded_name_the_provider_no_longer_holds_is_cleared_before_it_is_sp
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         s.resume_id_probe = Arc::new(|_, _, _| false);
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,

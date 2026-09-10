@@ -462,7 +462,7 @@ async fn a_landed_first_diffstat_invalidates_the_browser() {
 async fn an_out_of_band_worktree_id_is_refused_and_claims_one_scan() {
     let (dir, repo) = init_repo();
     let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     state
         .lock()
         .unwrap()
@@ -517,7 +517,7 @@ async fn an_out_of_band_worktree_id_is_refused_and_claims_one_scan() {
 fn attention_survives_a_stamp_taken_before_the_first_scan() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
     state.scan_external_worktrees_now(&project_id).unwrap();
     let worktree_id = crate::worktree::external_worktree_id(&std::fs::canonicalize(&path).unwrap());
@@ -527,7 +527,7 @@ fn attention_survives_a_stamp_taken_before_the_first_scan() {
     assert!(state.attention.contains_key(&worktree_id));
 
     // A restart: the map comes back from the store, the scan has not run.
-    state.projects[0].external_scan = None;
+    state.project_at_mut(0).external_scan = None;
     state.persist_attention();
 
     let reloaded = Store::new(dir.path().join("store"))
@@ -703,7 +703,7 @@ async fn an_off_lock_job_under_a_runtime_applies_what_it_decided() {
 async fn a_missed_checkout_says_whether_a_scan_has_ever_landed() {
     let (dir, repo) = init_repo();
     let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
     // A second project, whose own checkouts have been scanned. Whether the
     // scan can still show a checkout is a fact about one project, never
@@ -780,7 +780,7 @@ async fn a_missed_checkout_says_whether_a_scan_has_ever_landed() {
 async fn dismissing_the_primary_row_before_its_walk_lands_is_refused() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let gate = gate_diff_computes(&state, |key| matches!(key, DiffCacheKey::PrimarySummary(_)));
 
     let refused = call(
@@ -831,7 +831,7 @@ async fn landed_primary_summary(state: &Arc<Mutex<AppState>>, project_id: &str) 
 fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "fresh", "feature-fresh");
     let described = crate::worktree::describe_checkout(&path, "main", crate::worktree::unix_now())
         .expect("it is a checkout");
@@ -861,7 +861,7 @@ fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
 fn a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
     state.scan_external_worktrees_now(&project_id).unwrap();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
@@ -891,7 +891,7 @@ fn a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone() {
 fn re_noting_an_unchanged_checkout_leaves_the_running_scan_alone() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
     let known = state.scan_external_worktrees_now(&project_id).unwrap()[0].clone();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
@@ -917,7 +917,7 @@ fn re_noting_an_unchanged_checkout_leaves_the_running_scan_alone() {
 fn attention_for_a_dead_run_is_pruned_before_the_first_scan() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
     state.scan_external_worktrees_now(&project_id).unwrap();
     let worktree_id = crate::worktree::external_worktree_id(&std::fs::canonicalize(&path).unwrap());
@@ -927,7 +927,7 @@ fn attention_for_a_dead_run_is_pruned_before_the_first_scan() {
         assert_eq!(seen["ok"], true, "{seen:?}");
     }
 
-    state.projects[0].external_scan = None;
+    state.project_at_mut(0).external_scan = None;
     state.persist_attention();
 
     let reloaded = Store::new(dir.path().join("store"))
@@ -952,7 +952,7 @@ fn attention_for_a_dead_run_is_pruned_before_the_first_scan() {
 fn a_scan_that_cannot_read_its_repository_settles_the_board() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let computes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&computes);
     state.diff_compute_observer = Some(Arc::new(move |key| {
@@ -986,10 +986,11 @@ fn a_scan_that_cannot_read_its_repository_settles_the_board() {
 fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
     state.scan_external_worktrees_now(&project_id).unwrap();
-    let scanned_at = state.projects[0]
+    let scanned_at = state
+        .project_at(0)
         .external_scan
         .as_ref()
         .expect("seeded above")
@@ -1005,7 +1006,8 @@ fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
         .unwrap()
         .to_string();
 
-    let cache = state.projects[0]
+    let cache = state
+        .project_at(0)
         .external_scan
         .as_ref()
         .expect("the create emptied the whole project's scan");
@@ -1072,7 +1074,7 @@ fn age_out_scan(state: &Arc<Mutex<AppState>>, project_id: &str) {
 async fn a_create_during_a_scan_outlives_that_scans_landing() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
     settled_board(&handler).await;
     age_out_scan(&state, &project_id);

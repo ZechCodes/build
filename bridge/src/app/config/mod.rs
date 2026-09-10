@@ -299,7 +299,7 @@ impl AppState {
     /// account. Whether any project is registered is no fact of a volume, so
     /// the probe never words it and this does.
     pub(in crate::app) fn account_availability(&self) -> IsolationAvailability {
-        match self.projects.first() {
+        match self.projects.iter().next() {
             Some(project) => project.orch.worktrees().availability(),
             None => IsolationAvailability::unavailable("no project registered yet"),
         }
@@ -310,7 +310,7 @@ impl AppState {
     /// make. The one place a setting becomes a decision — nothing else reads
     /// either.
     pub(in crate::app) fn resolved_isolation(&self, project_id: &str) -> ResolvedIsolation {
-        let Some(project) = self.projects.iter().find(|p| p.id == project_id) else {
+        let Some(project) = self.projects.get(project_id) else {
             return ResolvedIsolation::honoured(Isolation::default());
         };
         self.decide_isolation(project, &project.orch.worktrees().availability())

@@ -150,21 +150,27 @@ impl AppState {
         params: &Value,
     ) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let index = self
+        let project = self
             .projects
-            .iter()
-            .position(|p| p.id == project_id)
+            .get(&project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
         let isolation = match params.get("isolation") {
             Some(Value::Null) => None,
             _ => Some(accept_isolation(
                 &require_str(params, "isolation")?,
-                &self.projects[index].orch.worktrees().availability(),
+                &project.orch.worktrees().availability(),
             )?),
         };
-        self.projects[index].isolation = isolation;
+        self.projects
+            .get_mut(&project_id)
+            .expect("the project was just resolved")
+            .isolation = isolation;
         self.persist();
-        let remote = git_remote_origin(&self.projects[index].repo_path);
-        Ok(self.project_json(&self.projects[index], remote))
+        let project = self
+            .projects
+            .get(&project_id)
+            .expect("the project was just resolved");
+        let remote = git_remote_origin(&project.repo_path);
+        Ok(self.project_json(project, remote))
     }
 }

@@ -28,7 +28,7 @@ pub(crate) use config::{announce_isolation_downgrade, expand_tilde};
 use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
-use projects::{default_projects_dir, Project};
+use projects::{default_projects_dir, Project, ProjectRegistry};
 pub use projects::{ProjectAdded, ProjectRemoteSet};
 
 use std::collections::HashMap;
@@ -1692,16 +1692,8 @@ struct ConversationNews {
 
 /// Shared application state behind the relay handler.
 pub struct AppState {
-    /// Registered projects (repos) plans and runs can be dispatched to.
-    projects: Vec<Project>,
-    /// entity id (plan or run) → the project it belongs to (routes every
-    /// plan/run RPC and `done`). Plan and run ids are disjoint (`plan-…` /
-    /// `run-…`), so one map serves both.
-    entity_project: HashMap<String, String>,
-    /// entity id → its project's repo path, retained even when the project is
-    /// not registered (a parked repo-missing run has no `entity_project` entry,
-    /// yet its record must keep the real path so a restored repo can un-park it).
-    entity_project_path: HashMap<String, String>,
+    /// Registered projects and the entity bindings that route work to them.
+    projects: ProjectRegistry,
     worktrees_root: std::path::PathBuf,
     /// Where cloned repos land and the directory browser starts; user-configurable.
     projects_dir: std::path::PathBuf,
@@ -1915,7 +1907,6 @@ pub struct AppState {
     /// state, not pushes).
     self_handle: Option<std::sync::Weak<Mutex<AppState>>>,
     next_stream: u64,
-    next_project: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
     qa_agent: bool,
     /// Builds the watcher that names the conversation a spawning session is
@@ -2248,9 +2239,7 @@ impl AppState {
         let bridge_exe = context.bridge_exe.clone();
         let agent = build_agent(qa_agent, context);
         let mut state = AppState {
-            projects: Vec::new(),
-            entity_project: HashMap::new(),
-            entity_project_path: HashMap::new(),
+            projects: ProjectRegistry::new(),
             worktrees_root,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
@@ -2308,7 +2297,6 @@ impl AppState {
             next_term: 1,
             self_handle: None,
             next_stream: 1,
-            next_project: 1,
             qa_agent,
             session_locator_factory,
             resume_id_probe: default_resume_id_probe(),
@@ -2492,12 +2480,12 @@ impl AppState {
         // Project ids are re-minted each boot, so resolve by repo path. Retain
         // the record's path unconditionally so a parked repo-missing plan keeps
         // a real path to un-park to.
-        self.entity_project_path
-            .insert(plan_id.clone(), record.project_path.clone());
+        self.projects
+            .retain_entity_path(plan_id.clone(), record.project_path.clone());
         let repo_path = std::path::PathBuf::from(&record.project_path);
         if repo_path.exists() {
             let project_id = self.add_project(repo_path, record.base_branch);
-            self.entity_project.insert(plan_id.clone(), project_id);
+            self.projects.bind_entity(plan_id.clone(), project_id);
         } else {
             // The repo is gone; the plan can't be re-dispatched, but its docs
             // remain readable from the store. Keep it legible with a reason.
@@ -2559,13 +2547,13 @@ impl AppState {
             .unwrap_or_else(|| crate::templates::DEFAULT_PLAN_PATH.to_string());
         let mut active = ActiveRun::reattach(&record, plan_path);
 
-        self.entity_project_path
-            .insert(run_id.clone(), record.project_path.clone());
+        self.projects
+            .retain_entity_path(run_id.clone(), record.project_path.clone());
         let repo_path = std::path::PathBuf::from(&record.project_path);
         let project_id = if repo_path.exists() {
             let project_id = self.add_project(repo_path.clone(), record.base_branch.clone());
-            self.entity_project
-                .insert(run_id.clone(), project_id.clone());
+            self.projects
+                .bind_entity(run_id.clone(), project_id.clone());
             Some(project_id)
         } else {
             None
@@ -4620,7 +4608,7 @@ impl AppState {
     ) -> impl Iterator<Item = (&'a String, &'a ActiveRun)> {
         self.runs.iter().filter(move |(run_id, active)| {
             !active.run.state.is_terminal()
-                && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+                && self.projects.project_id_of(run_id) == Some(project_id)
         })
     }
 
@@ -6852,7 +6840,7 @@ impl AppState {
             .iter()
             .find(|(run_id, active)| {
                 !active.run.state.is_terminal()
-                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+                    && self.projects.project_id_of(run_id) == Some(project_id)
                     && crate::worktree::external_worktree_id(&Self::canonical_root(
                         &active.worktree.path,
                     )) == worktree_id
@@ -6968,7 +6956,7 @@ impl AppState {
             entry
         };
 
-        let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
+        let project_ids: Vec<String> = self.projects.ids().map(str::to_string).collect();
         project_ids
             .into_iter()
             .filter_map(|project_id| {
@@ -8145,7 +8133,7 @@ impl AppState {
     /// id is a run's or an issue's. A checkout on a branch IS that branch's
     /// row; one with no branch is only ever itself.
     fn checkout_row(&mut self, worktree_id: &str) -> Option<EntitylessRow> {
-        let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
+        let project_ids: Vec<String> = self.projects.ids().map(str::to_string).collect();
         for project_id in project_ids {
             let Some(checkout) = self
                 .external_worktrees(&project_id)
@@ -8182,7 +8170,7 @@ impl AppState {
             .find(|(run_id, active)| {
                 active.run.state != RunState::Archived
                     && active.worktree.branch() == branch
-                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+                    && self.projects.project_id_of(run_id) == Some(project_id)
             })
             .map(|(run_id, _)| run_id.clone())
     }
@@ -9209,8 +9197,8 @@ impl AppState {
                 &base,
                 model_choice,
             );
-            self.entity_project
-                .insert(plan_id.clone(), project_id.clone());
+            self.projects
+                .bind_entity(plan_id.clone(), project_id.clone());
             let (view, persisted) =
                 self.answer_plan_mutation(plan_id, active, thread_detail(params));
             persisted?;
@@ -9260,8 +9248,8 @@ impl AppState {
         let turn = project
             .open_plan_drafting(&mut active, workspace)
             .map_err(err)?;
-        self.entity_project
-            .insert(plan_id.clone(), project_id.clone());
+        self.projects
+            .bind_entity(plan_id.clone(), project_id.clone());
         self.queue_plan_turn(&plan_id, &active, turn);
         if self.qa_agent {
             self.qa_simulate_plan(&project_id, &mut active)?;
@@ -10551,8 +10539,7 @@ impl AppState {
                 .map_err(|e| format!("plan store: {e}"))?;
         }
         self.plans.remove(&plan_id);
-        self.entity_project.remove(&plan_id);
-        self.entity_project_path.remove(&plan_id);
+        self.projects.unbind_entity(&plan_id);
         self.entity_created_at.remove(&plan_id);
         self.entity_updated_at.remove(&plan_id);
         self.entity_state_changed_at.remove(&plan_id);
@@ -10974,8 +10961,8 @@ impl AppState {
         } = opened;
         let plan_docs = self.owning_plan_stage_docs(&active);
 
-        self.entity_project
-            .insert(run_id.clone(), project_id.clone());
+        self.projects
+            .bind_entity(run_id.clone(), project_id.clone());
         self.pending_agent_turns
             .push(PendingAgentTurn::for_run_agent(
                 &run_id, &agent_id, &active, turn,
@@ -11562,8 +11549,7 @@ impl AppState {
                     }
                 }
                 self.runs.remove(run_id);
-                self.entity_project.remove(run_id);
-                self.entity_project_path.remove(run_id);
+                self.projects.unbind_entity(run_id);
                 self.entity_created_at.remove(run_id);
                 self.entity_updated_at.remove(run_id);
                 self.entity_state_changed_at.remove(run_id);
@@ -11837,7 +11823,7 @@ impl AppState {
         // project mapping at all, and that stale card is exactly what a delete
         // is for. There is then no orchestrator to prune with, so the delete
         // clears the card and leaves whatever is on disk alone.
-        let project_id = self.entity_project.get(&run_id).cloned();
+        let project_id = self.projects.project_id_of(&run_id).map(str::to_string);
         let project = project_id
             .as_deref()
             .and_then(|id| self.orch_for(id).ok())
@@ -11866,8 +11852,7 @@ impl AppState {
     /// Forget every trace of a run whose record has been deleted. The map entry
     /// itself went in the decide phase; this is the bookkeeping beside it.
     fn forget_run(&mut self, run_id: &str) {
-        self.entity_project.remove(run_id);
-        self.entity_project_path.remove(run_id);
+        self.projects.unbind_entity(run_id);
         self.entity_created_at.remove(run_id);
         self.entity_updated_at.remove(run_id);
         self.entity_state_changed_at.remove(run_id);
@@ -12119,8 +12104,7 @@ impl AppState {
                 eprintln!("run.finish {run_id}: stale run record: {error}");
             }
         }
-        self.entity_project.remove(&run_id);
-        self.entity_project_path.remove(&run_id);
+        self.projects.unbind_entity(&run_id);
         self.entity_created_at.remove(&run_id);
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
@@ -12149,7 +12133,7 @@ impl AppState {
                 .delete_run(&run_id)
                 .map_err(|e| format!("run store: {e}"))?;
         }
-        let project_id = self.entity_project.get(&run_id).cloned();
+        let project_id = self.projects.project_id_of(&run_id).map(str::to_string);
         let active = self.runs.remove(&run_id).expect("checked above");
         // Un-adopting hands the worktree back to the human; Build's agent in it
         // reported `done` to a run that no longer exists, so it goes with the
@@ -12400,7 +12384,7 @@ impl AppState {
         };
         let row = json!({
             "kind": crate::branch::WorkItemKind::Branch.as_str(),
-            "project_id": self.entity_project.get(run_id).cloned().unwrap_or_default(),
+            "project_id": self.projects.project_id_of(run_id).unwrap_or_default(),
             "project": self.project_name_of(run_id),
             "branch": branch,
             "title": title,
@@ -12441,7 +12425,11 @@ impl AppState {
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Branch,
             key: crate::branch::WorkItemKey::Branch {
-                project_id: self.entity_project.get(run_id).cloned().unwrap_or_default(),
+                project_id: self
+                    .projects
+                    .project_id_of(run_id)
+                    .unwrap_or_default()
+                    .to_string(),
                 branch: active.worktree.branch(),
             },
             source: Some(crate::branch::BranchSource::Run),
@@ -12610,7 +12598,7 @@ impl AppState {
         let execution_context = self.issue_execution_context(issue_id);
         let row = json!({
             "kind": crate::branch::WorkItemKind::Issue.as_str(),
-            "project_id": self.entity_project.get(issue_id).cloned().unwrap_or_default(),
+            "project_id": self.projects.project_id_of(issue_id).unwrap_or_default(),
             "project": self.project_name_of(issue_id),
             "branch": Value::Null,
             "title": active.plan.goal,
@@ -13301,7 +13289,7 @@ impl AppState {
     fn archived_row(&self, kind: &str, entity_id: &str) -> Value {
         json!({
             "kind": kind,
-            "project_id": self.entity_project.get(entity_id),
+            "project_id": self.projects.project_id_of(entity_id),
             "project": self.project_name_of(entity_id),
             "title": Value::Null,
             "branch": Value::Null,
@@ -13326,13 +13314,9 @@ impl AppState {
         StagePublicationQuery {
             run_id: run_id.to_string(),
             worktrees: self
-                .entity_project
-                .get(run_id)
-                .and_then(|project_id| {
-                    self.projects
-                        .iter()
-                        .find(|project| &project.id == project_id)
-                })
+                .projects
+                .project_id_of(run_id)
+                .and_then(|project_id| self.projects.get(project_id))
                 .map(|project| project.orch.worktrees().clone()),
             checkout: active.worktree.path.clone(),
             branch: active.worktree.branch(),
@@ -13495,9 +13479,9 @@ impl AppState {
     /// façade's own policy for it: nothing the caller asked for depends on it.
     fn prune_worktree_records(&self, run_id: &str) {
         let Some(project) = self
-            .entity_project
-            .get(run_id)
-            .and_then(|pid| self.projects.iter().find(|p| &p.id == pid))
+            .projects
+            .project_id_of(run_id)
+            .and_then(|project_id| self.projects.get(project_id))
         else {
             return;
         };
@@ -13705,10 +13689,10 @@ impl AppState {
         scope: DigestScope,
     ) -> Value {
         let project_id = self
-            .entity_project
-            .get(plan_id)
-            .cloned()
-            .unwrap_or_default();
+            .projects
+            .project_id_of(plan_id)
+            .unwrap_or_default()
+            .to_string();
         let project = self
             .projects
             .iter()
@@ -13870,7 +13854,11 @@ impl AppState {
         thread_detail: ThreadDetail,
         scope: DigestScope,
     ) -> Value {
-        let project_id = self.entity_project.get(run_id).cloned().unwrap_or_default();
+        let project_id = self
+            .projects
+            .project_id_of(run_id)
+            .unwrap_or_default()
+            .to_string();
         let project = self
             .projects
             .iter()
@@ -15746,8 +15734,8 @@ impl RunAdopted {
             )
             .map_err(err)?;
         state
-            .entity_project
-            .insert(self.run_id.clone(), self.project_id.clone());
+            .projects
+            .bind_entity(self.run_id.clone(), self.project_id.clone());
         // The row this checkout showed as belongs to a run from here on, and a
         // run is cleared through its conversation: whatever was dismissed
         // against the entity-less row is spent, and must not come back with the

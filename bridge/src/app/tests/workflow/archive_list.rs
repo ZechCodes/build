@@ -5,7 +5,7 @@ use super::*;
 fn archived_list_gathers_finished_work_across_every_project() {
     let (dir, repo, _origin) = init_repo_with_origin();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let (issue_id, run_id) = planned_run_in_review(&mut state, "finished work");
     let branch = state.runs[&run_id].worktree.branch();
@@ -76,7 +76,7 @@ fn archived_list_gathers_finished_work_across_every_project() {
 fn archived_list_leaves_live_work_alone_and_puts_the_newest_first() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (live_issue, _live_run) = planned_run_in_review(&mut state, "still going");
 
     for (name, when) in [
@@ -107,7 +107,7 @@ fn archive_list_is_scoped_by_project_canonical_path() {
     let (dir, repo) = init_repo();
     let (_other_dir, other_repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let first_project = state.projects[0].id.clone();
+    let first_project = state.project_at(0).id.clone();
     let second_project = state.add_project(other_repo.clone(), "main".into());
     let first_path = add_external_worktree(&repo, dir.path(), "first", "first");
     let second_path = add_external_worktree(&other_repo, dir.path(), "second", "second");
@@ -145,7 +145,7 @@ fn archived_worktrees_load_into_archive_list_after_restart() {
     let worktree_id;
     {
         let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
+        let project_id = state.project_at(0).id.clone();
         add_external_worktree(&repo, dir.path(), "durable-finish", "durable-finish");
         worktree_id = external_id(&mut state, &project_id, Some("durable-finish"));
         let finished = state.handle(req(
@@ -156,7 +156,7 @@ fn archived_worktrees_load_into_archive_list_after_restart() {
     }
 
     let mut reloaded = qa_state(&repo, dir.path());
-    let reminted_project_id = reloaded.projects[0].id.clone();
+    let reminted_project_id = reloaded.project_at(0).id.clone();
     let archive = reloaded.handle(req(
         "archive.list",
         json!({ "project_id": reminted_project_id }),
@@ -174,7 +174,7 @@ fn restart_completes_a_durable_finish_intent_after_worktree_removal() {
     let worktree_id;
     {
         let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
+        let project_id = state.project_at(0).id.clone();
         add_external_worktree(
             &repo,
             dir.path(),
@@ -203,7 +203,7 @@ fn restart_completes_a_durable_finish_intent_after_worktree_removal() {
     }
 
     let mut reloaded = qa_state(&repo, dir.path());
-    let project_id = reloaded.projects[0].id.clone();
+    let project_id = reloaded.project_at(0).id.clone();
     let archive = reloaded.handle(req("archive.list", json!({ "project_id": project_id })));
     assert!(archive["result"]["worktrees"]
         .as_array()
@@ -229,7 +229,7 @@ fn pushed_worktrees_load_into_archive_list_after_restart() {
     let worktree_id;
     {
         let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
+        let project_id = state.project_at(0).id.clone();
         let path = add_external_worktree(&repo, dir.path(), "durable-push", "durable-push");
         git_in(&path, &["push", "-u", "origin", "durable-push"]);
         std::fs::write(path.join("pushed.txt"), "published\n").unwrap();
@@ -242,7 +242,7 @@ fn pushed_worktrees_load_into_archive_list_after_restart() {
     }
 
     let mut reloaded = qa_state(&repo, dir.path());
-    let project_id = reloaded.projects[0].id.clone();
+    let project_id = reloaded.project_at(0).id.clone();
     let archive = reloaded.handle(req("archive.list", json!({ "project_id": project_id })));
     let record = archive["result"]["worktrees"]
         .as_array()
@@ -259,7 +259,7 @@ fn deleted_worktrees_load_into_archive_list_after_restart() {
     let worktree_id;
     {
         let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
+        let project_id = state.project_at(0).id.clone();
         let path = add_external_worktree(&repo, dir.path(), "durable-delete", "durable-delete");
         std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
         worktree_id = external_id(&mut state, &project_id, Some("durable-delete"));
@@ -271,7 +271,7 @@ fn deleted_worktrees_load_into_archive_list_after_restart() {
     }
 
     let mut reloaded = qa_state(&repo, dir.path());
-    let project_id = reloaded.projects[0].id.clone();
+    let project_id = reloaded.project_at(0).id.clone();
     let archive = reloaded.handle(req("archive.list", json!({ "project_id": project_id })));
     let record = archive["result"]["worktrees"]
         .as_array()
@@ -286,7 +286,7 @@ fn deleted_worktrees_load_into_archive_list_after_restart() {
 fn external_worktree_json_sets_can_finish_for_an_idle_agent_tab() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "idle-agent", "idle-agent");
     let worktree_id = external_id(&mut state, &project_id, Some("idle-agent"));
     let root = AppState::canonical_root(&path);
@@ -323,7 +323,7 @@ async fn worktree_finish_closes_and_reaps_scoped_terminals() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     app.term_shell = "/bin/bash".into();
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "terminal-finish", "terminal-finish");
     let worktree_id = external_id(&mut app, &project_id, Some("terminal-finish"));
     let state = app.shared();

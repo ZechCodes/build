@@ -357,7 +357,7 @@ async fn the_reaper_closes_the_turn_of_an_agent_whose_worktree_vanished() {
 /// Point a QA state's only project at a different agent — the seam every
 /// test that cares about what actually gets spawned goes through.
 fn use_agent(state: &Arc<Mutex<AppState>>, repo: &std::path::Path, wt: PathBuf, agent: Agent) {
-    state.lock().unwrap().projects[0].orch = Orchestrator::new(
+    state.lock().unwrap().project_at_mut(0).orch = Orchestrator::new(
         repo.to_path_buf(),
         wt,
         agent,
@@ -543,7 +543,7 @@ fn instant_exit_agent() -> Agent {
 async fn the_terminal_cap_counts_shell_tabs_and_never_the_agent() {
     let (dir, repo) = init_repo();
     let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-cap");
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     ensure_agent_tab(
         &state,
@@ -1068,7 +1068,7 @@ async fn an_agent_tab_spawns_the_harness_the_orchestrator_built() {
         ));
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -1123,7 +1123,7 @@ fn a_harness_spec_error_releases_the_reservation_and_never_spawns() {
         }));
         let mut app = state.lock().unwrap();
         let worktrees = app.worktrees_root.clone();
-        app.projects[0].orch = Orchestrator::new(
+        app.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -1195,7 +1195,7 @@ async fn the_agent_tab_key_survives_the_same_root_by_another_path() {
 async fn a_close_frame_detaches_the_sessions_terminal_sender() {
     let (dir, repo) = init_repo();
     let (state, handler, root) = agent_tab_fixture(&repo, dir.path(), "run-detach");
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let (agent_wire_id, _) = ensure_agent_tab(
         &state,
         &root,

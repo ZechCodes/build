@@ -72,7 +72,7 @@ fn fs_tree_lists_one_level_dirs_first_case_insensitive_and_skips_git() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     std::fs::create_dir(repo.join("Zdir")).unwrap();
     std::fs::create_dir(repo.join("adir")).unwrap();
@@ -141,7 +141,7 @@ fn fs_tree_rejects_escapes_and_non_directories() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let escape = state.handle(req(
         "fs.tree",
@@ -171,7 +171,7 @@ fn fs_tree_rejects_a_symlinked_directory_escape() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // A directory symlink inside the worktree pointing outside it: every
     // lexical component is Normal, so only canonical containment (the same
@@ -209,7 +209,7 @@ fn fs_read_round_trips_content_and_infers_mime() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     std::fs::write(repo.join("notes.md"), "# hi\n").unwrap();
     std::fs::write(repo.join("page.html"), "<h1>hi</h1>\n").unwrap();
@@ -264,7 +264,7 @@ fn fs_read_truncates_oversized_files() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let real_size = FS_READ_MAX_BYTES as usize + 4096;
     std::fs::write(repo.join("big.bin"), vec![b'a'; real_size]).unwrap();
@@ -304,7 +304,7 @@ fn fs_read_rejects_lexical_and_symlink_escapes() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // Lexical escape: caught before any filesystem access.
     let lexical = state.handle(req(
@@ -356,7 +356,7 @@ fn project_diff_shape_and_unknown_project() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("uncommitted.txt"), "dirty\n").unwrap();
 
     let res = state.handle(req("project.diff", json!({ "project_id": project_id })));

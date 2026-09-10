@@ -190,8 +190,8 @@ impl AppState {
                 ..crate::templates::Vars::default()
             },
         );
-        self.entity_project
-            .insert(capture_id.to_string(), project_id);
+        self.projects
+            .bind_entity(capture_id.to_string(), project_id);
         self.pending_agent_turns.push(PendingAgentTurn {
             operation_id: None,
             root: Self::canonical_root(session.scratch_dir()),
@@ -650,7 +650,7 @@ impl AppState {
             .into_iter()
             .collect();
         self.mcp_session_tokens.remove(session.agent_id());
-        self.entity_project.remove(capture_id);
+        self.projects.unbind_live_entity(capture_id);
         // Bridge-owned, per capture, and holding nothing but what the harness
         // wrote for itself — so it goes with the session that made it.
         crate::reaper::remove_dir_once_reaped(

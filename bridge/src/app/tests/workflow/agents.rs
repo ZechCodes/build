@@ -967,7 +967,7 @@ fn branch_get_carries_the_named_agents_conversation() {
     let mut state = qa_state(&repo, dir.path());
     let (_, _, second_agent) =
         branch_with_two_conversations(&mut state, &repo, dir.path(), "feature-branch-threads");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let default_row = state.handle(req(
         "branch.get",
@@ -1033,7 +1033,7 @@ fn branch_get_ships_the_page_the_branch_surface_asked_for() {
         }
         primary_thread(&active.agents).items.len()
     };
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     for scope in [json!({}), json!({ "agent_id": primary_agent })] {
         let mut params = json!({

@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn direct_add_canonicalizes_dedupes_and_never_persists_config() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_initial_directory, initial_repo) = init_repo();
+    let (_added_directory, added_repo) = init_repo();
+    let config = directory.path().join("config.json");
+    std::fs::write(&config, b"{}").unwrap();
+    let mut state = AppState::new(
+        initial_repo,
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    let config_before = std::fs::read(&config).unwrap();
+    let alias = added_repo.join("..").join(added_repo.file_name().unwrap());
+    let added = state.add_project(alias, "main".to_string());
+    let next_after_add = state.projects.next_id();
+    let duplicate = state.add_project(added_repo, "other-base".to_string());
+
+    assert_eq!(added, duplicate);
+    assert_eq!(state.projects.next_id(), next_after_add);
+    assert_eq!(std::fs::read(&config).unwrap(), config_before);
+}
+
+#[test]
+fn direct_add_uses_the_original_path_when_canonicalization_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_initial_directory, initial_repo) = init_repo();
+    let mut state = AppState::new(
+        initial_repo,
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let missing = directory.path().join("missing-repository");
+
+    let added = state.add_project(missing.clone(), "main".to_string());
+    let next_after_add = state.projects.next_id();
+    let duplicate = state.add_project(missing, "other-base".to_string());
+
+    assert_eq!(added, duplicate);
+    assert_eq!(state.projects.next_id(), next_after_add);
+}
+
+#[test]
 fn project_add_validates_and_dedupes() {
     let (dir_a, repo_a) = init_repo();
     let mut state = AppState::new(
@@ -57,7 +105,7 @@ fn project_list_reads_metadata_off_lock_from_one_snapshot() {
         "/tmp/test-mcp.sock",
     );
     let expected = app.project_list();
-    let expected_id = app.projects[0].id.clone();
+    let expected_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_project_list_gate = Some(gate);
     let state = app.shared();
@@ -191,7 +239,7 @@ fn project_set_remote_writes_its_config_with_the_state_lock_free() {
         true,
         "/tmp/test-mcp.sock",
     );
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -415,7 +463,7 @@ fn project_add_persistence_failures_leave_state_and_user_repo_unchanged() {
         .with_config(&config)
         .unwrap();
         let projects_before = state.project_list();
-        let next_project_before = state.next_project;
+        let next_project_before = state.projects.next_id();
         state.config_persist_failure = Some(failure);
 
         let response = state.handle(req(
@@ -426,7 +474,7 @@ fn project_add_persistence_failures_leave_state_and_user_repo_unchanged() {
         assert_eq!(response["ok"], false, "{response:?}");
         assert!(response["error"].as_str().unwrap().contains("injected"));
         assert_eq!(state.project_list(), projects_before);
-        assert_eq!(state.next_project, next_project_before);
+        assert_eq!(state.projects.next_id(), next_project_before);
         assert!(added_repo.join(".git").exists(), "user repo must remain");
     }
 }
@@ -454,7 +502,7 @@ fn project_clone_persistence_failures_leave_state_and_remove_new_clone() {
         .unwrap();
         state.projects_dir = projects_dir;
         let projects_before = state.project_list();
-        let next_project_before = state.next_project;
+        let next_project_before = state.projects.next_id();
         state.config_persist_failure = Some(failure);
 
         let existing_response = state.handle(req(
@@ -471,7 +519,7 @@ fn project_clone_persistence_failures_leave_state_and_remove_new_clone() {
             .unwrap()
             .contains("injected"));
         assert_eq!(state.project_list(), projects_before);
-        assert_eq!(state.next_project, next_project_before);
+        assert_eq!(state.projects.next_id(), next_project_before);
         assert!(
             existing_clone_path.join(".git").exists(),
             "an existing checkout is user-owned"
@@ -488,7 +536,7 @@ fn project_clone_persistence_failures_leave_state_and_remove_new_clone() {
         assert_eq!(response["ok"], false, "{response:?}");
         assert!(response["error"].as_str().unwrap().contains("injected"));
         assert_eq!(state.project_list(), projects_before);
-        assert_eq!(state.next_project, next_project_before);
+        assert_eq!(state.projects.next_id(), next_project_before);
         assert!(
             !clone_path.exists(),
             "failed clone registration is cleaned up"
@@ -515,7 +563,7 @@ fn project_create_persistence_failures_leave_state_and_remove_new_repo() {
         .with_config(&config)
         .unwrap();
         let projects_before = state.project_list();
-        let next_project_before = state.next_project;
+        let next_project_before = state.projects.next_id();
         state.config_persist_failure = Some(failure);
 
         let response = state.handle(req(
@@ -529,7 +577,7 @@ fn project_create_persistence_failures_leave_state_and_remove_new_repo() {
         assert_eq!(response["ok"], false, "{response:?}");
         assert!(response["error"].as_str().unwrap().contains("injected"));
         assert_eq!(state.project_list(), projects_before);
-        assert_eq!(state.next_project, next_project_before);
+        assert_eq!(state.projects.next_id(), next_project_before);
         assert!(
             !created_path.exists(),
             "failed project creation is cleaned up"
@@ -551,7 +599,7 @@ fn project_remote_change_does_not_write_unchanged_config() {
     )
     .with_config(config)
     .unwrap();
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     state.config_persist_failure = Some(ConfigPersistStep::Write);
 
     let response = state.handle(req(

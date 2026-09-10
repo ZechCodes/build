@@ -5,7 +5,7 @@ use super::*;
 /// Adopt the project's primary checkout — the same verb, the same run, the
 /// repo root instead of a worktree beside it.
 fn adopted_primary_run(state: &mut AppState) -> String {
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let adopted = state.handle(req(
         "run.adopt",
         json!({ "project_id": project_id, "primary": true }),
@@ -21,7 +21,7 @@ fn adopted_primary_run(state: &mut AppState) -> String {
 fn run_adopt_primary_owns_the_repo_root_and_is_idempotent() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let adopted = state.handle(req(
         "run.adopt",
@@ -64,7 +64,7 @@ fn run_adopt_primary_owns_the_repo_root_and_is_idempotent() {
 fn adopting_a_cleared_primary_keeps_it_cleared_until_a_message() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let _ = branch_row(&mut state, "main");
     state.handle(req(
         "entity.dismiss",
@@ -379,7 +379,7 @@ fn run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die() {
 fn a_delete_refused_by_a_running_adopt_keeps_the_runs_record() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let run_id = adopted_run(&mut app, &repo, dir.path(), "contested");
     let checkout = app.runs[&run_id].worktree.path.clone();
     // Only a terminal run can be deleted, and a terminal run is the one
@@ -552,7 +552,7 @@ fn a_run_whose_project_is_gone_is_still_deletable() {
     // this delete and a `git worktree remove`.
     run.run.state = RunState::Failed;
     run.adopted = false;
-    app.entity_project.remove(&run_id);
+    app.projects.unbind_live_entity(&run_id);
     let state = app.shared();
 
     let deleted = frame_on_a_thread(
@@ -625,7 +625,7 @@ fn a_recovered_primary_run_still_owns_the_checkout() {
     let recovered = restarted.handle(req("run.get", json!({ "run_id": run_id })));
     assert_eq!(recovered["ok"], true, "{recovered:?}");
     assert_eq!(recovered["result"]["primary"], true, "{recovered:?}");
-    let project_id = restarted.projects[0].id.clone();
+    let project_id = restarted.project_at(0).id.clone();
     let readopted = restarted.handle(req(
         "run.adopt",
         json!({ "project_id": project_id, "primary": true }),
@@ -701,7 +701,7 @@ fn thread_post_reaches_the_primary_runs_thread() {
 fn the_primary_run_is_flagged_and_never_a_worktree_row() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let external_run_id = adopted_run(&mut state, &repo, dir.path(), "feature-y");
     let run_id = adopted_primary_run(&mut state);
 
@@ -751,7 +751,7 @@ fn the_primary_run_is_flagged_and_never_a_worktree_row() {
 async fn agent_start_opens_the_primary_checkouts_agent() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let adopted = call(
         &handler,
         "run.adopt",
@@ -816,7 +816,7 @@ fn run_finish_cleans_up_and_archives_the_bound_worktree() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let run_id = adopted_run(&mut state, &repo, dir.path(), "archive-finished-run");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let worktree = state.runs[&run_id].worktree.path.clone();
     git_in(&worktree, &["add", "-A"]);
     git_in(&worktree, &["commit", "-m", "Finish adopted work"]);

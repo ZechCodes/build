@@ -39,8 +39,8 @@ pub(in crate::app::tests) fn insert_live_run(
     let wire_id = tab.wire_id();
     {
         let mut s = state.lock().unwrap();
-        let project_id = s.projects[0].id.clone();
-        s.entity_project.insert(run_id.to_string(), project_id);
+        let project_id = s.project_at(0).id.clone();
+        s.projects.bind_entity(run_id.to_string(), project_id);
         s.runs.insert(run_id.to_string(), active);
         s.tabs.insert(key.clone(), tab);
         let instance = s.record_agent_session_start(
@@ -103,8 +103,8 @@ pub(in crate::app::tests) fn insert_run_without_agent(
     let (active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
     let root = AppState::canonical_root(&active.worktree.path);
     let mut s = state.lock().unwrap();
-    let project_id = s.projects[0].id.clone();
-    s.entity_project.insert(run_id.to_string(), project_id);
+    let project_id = s.project_at(0).id.clone();
+    s.projects.bind_entity(run_id.to_string(), project_id);
     s.runs.insert(run_id.to_string(), active);
     root
 }
@@ -349,7 +349,7 @@ async fn revived_agents_without_exact_lineage_never_guess_by_checkout() {
         ));
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
-        s.projects[0].orch = Orchestrator::new(
+        s.project_at_mut(0).orch = Orchestrator::new(
             repo.clone(),
             worktrees,
             agent,
@@ -493,8 +493,8 @@ pub(in crate::app::tests) fn insert_plan_without_agent(
     let workspace = side.prepare_plan_workspace(plan_id, &store).unwrap();
     side.open_plan_drafting(&mut active, workspace).unwrap();
     let mut s = state.lock().unwrap();
-    let project_id = s.projects[0].id.clone();
-    s.entity_project.insert(plan_id.to_string(), project_id);
+    let project_id = s.project_at(0).id.clone();
+    s.projects.bind_entity(plan_id.to_string(), project_id);
     s.plans.insert(plan_id.to_string(), active);
 }
 
@@ -506,7 +506,7 @@ pub(in crate::app::tests) fn insert_plan_without_agent(
 async fn agent_start_with_a_provider_switches_and_persists_the_choice() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let adopted = call(
         &handler,
         "run.adopt",

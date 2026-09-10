@@ -85,7 +85,7 @@ pub(in crate::app::tests) fn settles(settled: impl Fn() -> bool) -> bool {
 async fn keyed_terminal_create_attach_io_close_roundtrip() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     // Create in the primary scope: bash starts in the repo root and the
     // pump runs before any attach.
@@ -171,7 +171,7 @@ async fn keyed_terminal_create_attach_io_close_roundtrip() {
 async fn term_ack_reports_a_cursor_and_rejects_an_unknown_term_id() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     handler.call(
         SessionSender::detached("s1"),
@@ -201,7 +201,7 @@ async fn term_ack_reports_a_cursor_and_rejects_an_unknown_term_id() {
 async fn keyed_terminal_snapshot_reflects_input_across_reattach() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     let created = handler.call(
         SessionSender::detached("s1"),
@@ -257,7 +257,7 @@ async fn keyed_terminal_snapshot_reflects_input_across_reattach() {
 async fn term_list_follows_a_worktree_across_adoption() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
     let worktree_id = state
         .lock()
@@ -530,7 +530,7 @@ fn a_terminal_kind_naming_an_agent_is_refused_and_points_at_agent_add() {
 async fn term_create_carries_its_kind_onto_the_tab_list() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     let created = handler.call(
         SessionSender::detached("s1"),
@@ -573,7 +573,7 @@ async fn term_create_carries_its_kind_onto_the_tab_list() {
 async fn term_create_enforces_the_daemon_wide_cap() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     for _ in 0..MAX_USER_TERMINALS {
         let created = handler.call(
@@ -597,7 +597,7 @@ async fn term_create_enforces_the_daemon_wide_cap() {
 async fn pump_eof_reaps_the_terminal_and_pushes_exited() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     handler.call(
         SessionSender::detached("s1"),

@@ -128,7 +128,7 @@ async fn a_state_change_reaches_the_browser_unasked() {
 async fn a_deferred_verb_announces_from_its_apply_half() {
     let (dir, repo) = init_repo();
     let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     settled_pushes(&mut rx, &key).await;
 
     std::fs::write(repo.join("pushed.txt"), "committed off-lock\n").unwrap();
@@ -159,7 +159,7 @@ async fn a_deferred_verb_announces_from_its_apply_half() {
 async fn a_deferred_read_announces_nothing() {
     let (dir, repo) = init_repo();
     let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     settled_pushes(&mut rx, &key).await;
 
     for _ in 0..5 {
@@ -182,7 +182,7 @@ async fn a_deferred_read_announces_nothing() {
 async fn a_terminal_byte_storm_is_not_a_change_event() {
     let (dir, repo) = init_repo();
     let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
 
     let created = call(&handler, "term.create", json!({ "project_id": project_id }));
     assert_eq!(created["ok"], true, "{created:?}");

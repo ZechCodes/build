@@ -46,7 +46,7 @@ pub(in crate::app::tests) fn has_file_entry(status: &Value, path: &str) -> bool 
 fn git_log_on_an_unborn_head_reports_the_branch_and_no_commits() {
     let (dir, repo) = init_unborn_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.log", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -63,7 +63,7 @@ fn git_show_shapes_a_commit_and_its_root_parent() {
     git_in(&repo, &["add", "a.txt"]);
     git_in(&repo, &["commit", "-m", "subject line", "-m", "body text"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let log = state.handle(req("git.log", json!({ "project_id": project_id })));
     let commits = log["result"]["commits"].as_array().unwrap().clone();
@@ -114,7 +114,7 @@ fn git_show_shapes_a_commit_and_its_root_parent() {
 fn git_show_rejects_malformed_and_unknown_hashes() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     for bad in ["HEAD", "abc", "ABCDEF12", "main", "deadbeef^", ""] {
         let res = state.handle(req(
@@ -140,7 +140,7 @@ fn git_show_truncates_an_oversized_patch() {
     git_in(&repo, &["add", "big.txt"]);
     git_in(&repo, &["commit", "-m", "big"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let log = state.handle(req(
         "git.log",
@@ -176,7 +176,7 @@ fn git_log_and_show_cap_oversized_commit_messages() {
     git_in(&repo, &["add", "x.txt"]);
     git_in(&repo, &["commit", "-q", "-F", msg_file.to_str().unwrap()]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let log = state.handle(req(
         "git.log",
@@ -201,7 +201,7 @@ fn git_log_and_show_cap_oversized_commit_messages() {
 fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // full: a new file, staged, with no further worktree edits.
     std::fs::write(repo.join("full.txt"), "staged\n").unwrap();
@@ -252,7 +252,7 @@ fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
 fn a_held_status_key_answers_unchanged_over_the_wire() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
 
     let first = state.handle(req("git.status", json!({ "project_id": project_id })));
@@ -286,7 +286,7 @@ fn git_status_carries_a_content_key_and_counts_per_file() {
     git_in(&repo, &["add", "gone.txt"]);
     git_in(&repo, &["commit", "-q", "-m", "fixture"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     std::fs::remove_file(repo.join("gone.txt")).unwrap();
     std::fs::write(repo.join("README.md"), "# project\nsecond\n").unwrap();
@@ -329,7 +329,7 @@ fn git_status_surfaces_merge_conflicts_as_u_entries() {
     std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
 
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let res = state.handle(req("git.status", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
 
@@ -348,7 +348,7 @@ fn git_status_surfaces_merge_conflicts_as_u_entries() {
 fn git_status_decomposes_a_staged_rename_into_delete_plus_add() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     git_in(&repo, &["mv", "README.md", "RENAMED.md"]);
 
     // Both sides of the rename appear, matching the patch (which has no
@@ -385,7 +385,7 @@ fn git_status_decomposes_a_staged_rename_into_delete_plus_add() {
 fn git_diff_answers_the_asked_paths_body_under_its_status_key() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
 
     let status = state.handle(req("git.status", json!({ "project_id": project_id })));
@@ -417,7 +417,7 @@ fn git_diff_answers_the_asked_paths_body_under_its_status_key() {
 fn git_status_on_an_unborn_head_has_a_null_head() {
     let (dir, repo) = init_unborn_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("first.txt"), "hello\n").unwrap();
 
     let res = state.handle(req("git.status", json!({ "project_id": project_id })));
@@ -434,7 +434,7 @@ fn git_status_on_an_unborn_head_has_a_null_head() {
 fn git_stage_and_unstage_round_trip_through_status() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("work.txt"), "work\n").unwrap();
 
     let staged = state.handle(req(
@@ -461,7 +461,7 @@ fn git_stage_and_unstage_round_trip_through_status() {
 fn git_stage_rejects_paths_that_escape_the_worktree() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("ok.txt"), "ok\n").unwrap();
 
     for bad in ["../../../etc/passwd", "/etc/passwd", "./ok.txt", ""] {
@@ -491,7 +491,7 @@ fn git_stage_treats_paths_as_literals_never_globs() {
     // "*" must stage only that file, never glob-expand.
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("*"), "star\n").unwrap();
     std::fs::write(repo.join("bystander.txt"), "hi\n").unwrap();
 
@@ -518,7 +518,7 @@ fn git_stage_treats_paths_as_literals_never_globs() {
     // matching everything.
     let (dir2, repo2) = init_repo();
     let mut state2 = git_gui_state(&dir2, &repo2);
-    let project_id2 = state2.projects[0].id.clone();
+    let project_id2 = state2.project_at(0).id.clone();
     std::fs::write(repo2.join("bystander.txt"), "hi\n").unwrap();
 
     let res = state2.handle(req(
@@ -537,7 +537,7 @@ fn git_stage_treats_paths_as_literals_never_globs() {
 fn git_stage_silently_drops_the_mcp_config() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::create_dir_all(repo.join(".build")).unwrap();
     std::fs::write(repo.join(".build/mcp.json"), "{}\n").unwrap();
 
@@ -554,7 +554,7 @@ fn git_stage_silently_drops_the_mcp_config() {
 fn git_unstage_works_on_an_unborn_head() {
     let (dir, repo) = init_unborn_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("first.txt"), "hello\n").unwrap();
     let staged = state.handle(req(
         "git.stage",
@@ -577,7 +577,7 @@ fn git_unstage_works_on_an_unborn_head() {
 fn git_unstage_on_an_unborn_head_survives_a_post_stage_edit() {
     let (dir, repo) = init_unborn_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("first.txt"), "v1\n").unwrap();
     state.handle(req(
         "git.stage",
@@ -606,7 +606,7 @@ fn git_unstage_on_an_unborn_head_survives_a_post_stage_edit() {
 fn git_commit_commits_only_what_is_staged() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
     std::fs::write(repo.join("README.md"), "# project\nunstaged edit\n").unwrap();
     state.handle(req(
@@ -643,7 +643,7 @@ fn git_commit_commits_only_what_is_staged() {
 fn git_commit_rejects_empty_messages_and_an_empty_stage() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
     state.handle(req(
         "git.stage",

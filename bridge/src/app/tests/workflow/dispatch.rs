@@ -31,7 +31,7 @@ fn dispatched_instruction(state: &AppState, run_id: &str, agent_id: &str) -> Str
 fn branch_dispatch_cuts_a_branch_and_puts_an_agent_to_work_on_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let dispatched = state.handle(req(
         "branch.dispatch",
@@ -101,7 +101,7 @@ fn branch_dispatch_cuts_a_branch_and_puts_an_agent_to_work_on_it() {
 fn branch_dispatch_cuts_a_named_branch_exactly_as_it_was_given() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let dispatch = |state: &mut AppState, branch: &str| {
         state.handle(req(
@@ -158,7 +158,7 @@ fn branch_dispatch_cuts_a_named_branch_exactly_as_it_was_given() {
 fn branch_dispatch_onto_an_existing_branch_reuses_it_and_adds_an_agent() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-in-flight");
     let primary_agent = primary_agent_id(&state, &run_id);
     let worktree = state.runs[&run_id].worktree.path.clone();
@@ -223,7 +223,7 @@ fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
     let (dir, repo) = init_repo();
     for step in [BranchDispatchStep::Adopt, BranchDispatchStep::Own] {
         let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
+        let project_id = state.project_at(0).id.clone();
         // A board that has been looked at once: the checkout the dispatch
         // cuts joins that list, and the rollback has to take it back out.
         state.scan_external_worktrees_now(&project_id).unwrap();
@@ -249,12 +249,14 @@ fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
             "{step:?} left the worktree it minted on disk"
         );
         assert!(
-            state.projects[0]
+            state
+                .project_at(0)
                 .external_scan
                 .as_ref()
                 .is_some_and(|cache| cache.worktrees.is_empty()),
             "{step:?} left a checkout on the board that is not on disk: {:?}",
-            state.projects[0]
+            state
+                .project_at(0)
                 .external_scan
                 .as_ref()
                 .map(|c| &c.worktrees)
@@ -282,7 +284,7 @@ fn branch_dispatch_releases_the_branch_it_minted_when_a_step_fails() {
 fn a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     // A board that has been looked at once, so the amendment has a list to
     // put the checkout back into.
     state.scan_external_worktrees_now(&project_id).unwrap();
@@ -311,12 +313,14 @@ fn a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board() {
     );
     assert!(checkout.is_dir(), "the git that succeeded was undone");
     assert!(
-        state.projects[0]
+        state
+            .project_at(0)
             .external_scan
             .as_ref()
             .is_some_and(|cache| cache.worktrees.iter().any(|w| w.path == checkout)),
         "the checkout it cut is invisible until the next full rescan: {:?}",
-        state.projects[0]
+        state
+            .project_at(0)
             .external_scan
             .as_ref()
             .map(|c| &c.worktrees)
@@ -346,7 +350,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
     }
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "finish the toast");
     state.pending_agent_turns.clear();
     state.dispatch_fault = Some(BranchDispatchStep::Settle);
@@ -431,7 +435,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
 fn branch_dispatch_cleanup_keeps_a_branch_it_only_checked_out() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     {
         let opened = git2::Repository::open(&repo).unwrap();
         let head = opened.head().unwrap().peel_to_commit().unwrap();
@@ -469,7 +473,7 @@ fn branch_dispatch_cleanup_keeps_a_branch_it_only_checked_out() {
 fn branch_dispatch_cleanup_never_destroys_a_checkout_it_only_found() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // A bare checkout Build does not own yet: the dispatch adopts it, so
     // cleanup un-adopts and leaves every file alone.
@@ -523,7 +527,7 @@ fn branch_dispatch_cleanup_never_destroys_a_checkout_it_only_found() {
 fn branch_dispatch_names_the_primary_checkout_holding_its_branch() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let refused = state.handle(req(
         "branch.dispatch",
@@ -547,7 +551,7 @@ fn branch_dispatch_names_the_primary_checkout_holding_its_branch() {
 fn branch_dispatch_refuses_an_unknown_project_and_an_empty_instruction() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let unknown = state.handle(req(
         "branch.dispatch",

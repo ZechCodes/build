@@ -23,7 +23,7 @@ fn git_status_and_commit_scope_to_a_run() {
 
 /// Mint an unbound worktree and hand back (project_id, worktree_id, path).
 fn bare_worktree(state: &mut AppState, name: &str) -> (String, String, PathBuf) {
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let created = state.handle(req(
         "worktree.create",
         json!({ "project_id": project_id, "name": name }),
@@ -118,7 +118,7 @@ fn branch_operations_switch_the_worktree_they_are_scoped_to() {
 fn worktree_create_mints_an_unbound_worktree_the_scan_can_see() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let created = state.handle(req(
         "worktree.create",
@@ -162,7 +162,7 @@ fn worktree_create_mints_an_unbound_worktree_the_scan_can_see() {
 fn worktree_create_names_the_branch_after_the_name() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let created = state.handle(req(
         "worktree.create",
@@ -190,7 +190,7 @@ fn worktree_create_names_the_branch_after_the_name() {
 fn worktree_create_requires_a_usable_name() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     for name in ["", "   ", "***", "!!!"] {
         let res = state.handle(req(
@@ -224,7 +224,7 @@ fn worktree_create_checks_out_an_existing_local_branch_without_cutting() {
         .target()
         .unwrap();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let created = state.handle(req(
         "worktree.create",
@@ -266,7 +266,7 @@ fn worktree_create_fetches_a_branch_only_a_remote_carries() {
     let (dir, _repo, origin) = init_repo_with_origin();
     let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
     let mut state = qa_state(&clone, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let created = state.handle(req(
         "worktree.create",
@@ -300,11 +300,12 @@ fn worktree_create_fetches_a_branch_only_a_remote_carries() {
 fn worktree_create_names_the_checkout_already_holding_a_branch() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let run_id = adopted_run(&mut state, &repo, dir.path(), "run-owned");
     add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
     let external_worktree_id = external_id(&mut state, &project_id, Some("by-hand"));
-    let primary_id = state.projects[0]
+    let primary_id = state
+        .project_at(0)
         .orch
         .worktrees()
         .describe_primary("main")
@@ -337,7 +338,7 @@ fn worktree_create_names_the_checkout_already_holding_a_branch() {
 fn worktree_create_refuses_a_branch_no_ref_holds() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let refused = state.handle(req(
         "worktree.create",
@@ -365,7 +366,7 @@ fn worktree_create_takes_exactly_one_of_branch_and_name() {
     let (dir, repo) = init_repo();
     git_in(&repo, &["branch", "theirs"]);
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let refused = state.handle(req(
         "worktree.create",
@@ -390,7 +391,7 @@ fn finishing_a_borrowed_checkout_keeps_its_branch_and_a_cut_one_does_not() {
     let (dir, repo) = init_repo();
     git_in(&repo, &["branch", "theirs"]);
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let borrowed = state.handle(req(
         "worktree.create",
@@ -446,7 +447,7 @@ fn finishing_a_borrowed_checkout_with_merge_merges_and_keeps_the_branch() {
         .target()
         .unwrap();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let borrowed = state.handle(req(
         "worktree.create",
         json!({ "project_id": project_id, "branch": "theirs" }),
@@ -486,7 +487,7 @@ fn finishing_a_borrowed_checkout_with_merge_merges_and_keeps_the_branch() {
 fn finishing_a_checkout_that_cannot_say_whose_branch_it_is_aborts() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let created = state.handle(req(
         "worktree.create",
         json!({ "project_id": project_id, "name": "unreadable" }),
@@ -549,7 +550,7 @@ fn recovering_an_adopted_checkout_whose_registration_is_gone_refuses() {
     // canonical one a real install has.
     let root = std::fs::canonicalize(dir.path()).unwrap();
     let mut state = qa_state(&repo, &root);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let created = state.handle(req(
         "worktree.create",
         json!({ "project_id": project_id, "branch": "theirs" }),

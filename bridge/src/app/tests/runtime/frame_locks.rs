@@ -545,7 +545,7 @@ fn painted_bytes_within(screen: &ScreenHandle, budget: Duration) -> u64 {
 async fn a_frame_answers_while_a_screen_lock_is_held() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().projects[0].id.clone();
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
     let created = handler.call(
         SessionSender::detached("s1"),
         req("term.create", json!({ "project_id": project_id })),

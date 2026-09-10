@@ -52,7 +52,7 @@ fn branch_get_carries_the_open_agents_surfaces() {
             .showing_surfaces(recorded_workflow_surfaces()),
     );
     let agent_id = primary_agent_id(&state, &run_id);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let answered = state.handle(req(
         "branch.get",
@@ -75,7 +75,7 @@ fn branch_get_carries_the_open_agents_surfaces() {
         "the rail reads a branch's agents off the row: {row:?}"
     );
 
-    let repo_path = state.projects[0].repo_path.clone();
+    let repo_path = state.project_at(0).repo_path.clone();
     add_external_worktree(&repo_path, dir.path(), "bare-checkout", "feature-bare");
     state
         .scan_external_worktrees_now(&project_id)
@@ -200,7 +200,7 @@ fn no_list_shaped_answer_carries_surfaces() {
         .expect("the issue is on the board")
         .plan
         .archived_at = Some(now_rfc3339());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     for (verb, params) in [
         ("board.list", json!({})),
@@ -262,7 +262,7 @@ fn an_agent_whose_session_reports_no_surfaces_carries_no_key() {
     let got = state.handle(req(
         "branch.get",
         json!({
-            "project_id": state.projects[0].id.clone(),
+            "project_id": state.project_at(0).id.clone(),
             "branch": "feature-silent"
         }),
     ));

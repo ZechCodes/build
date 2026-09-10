@@ -63,7 +63,7 @@ pub(in crate::app::tests) fn origin_with_pushed_branch(
 fn git_status_carries_the_repo_management_fields() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.status", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -82,7 +82,7 @@ fn git_fetch_pull_push_round_trip_through_a_bare_origin() {
     let other = dir.path().join("other");
     clone_working(&origin, &other);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // Another dev pushes a commit to origin.
     std::fs::write(other.join("remote.txt"), "remote\n").unwrap();
@@ -138,7 +138,7 @@ fn git_push_sets_the_upstream_on_the_first_push() {
         &["remote", "add", "origin", origin.to_str().unwrap()],
     );
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // No upstream yet.
     let before = state.handle(req("git.status", json!({ "project_id": project_id })));
@@ -154,7 +154,7 @@ fn git_push_sets_the_upstream_on_the_first_push() {
 fn git_push_force_uses_force_with_lease_after_a_rewrite() {
     let (dir, repo, _origin) = init_repo_with_origin();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // Publish a commit, then rewrite it so local diverges from origin.
     std::fs::write(repo.join("x.txt"), "one\n").unwrap();
@@ -182,7 +182,7 @@ fn git_push_refuses_a_detached_head() {
     let (dir, repo, _origin) = init_repo_with_origin();
     git_in(&repo, &["checkout", "--detach", "HEAD"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.push", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], false, "{res:?}");
@@ -195,7 +195,7 @@ fn git_pull_ff_only_refuses_divergent_history() {
     let other = dir.path().join("other");
     clone_working(&origin, &other);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     std::fs::write(other.join("theirs.txt"), "theirs\n").unwrap();
     git_in(&other, &["add", "theirs.txt"]);
@@ -225,7 +225,7 @@ fn git_pull_conflict_leaves_a_visible_merging_state() {
     let other = dir.path().join("other");
     clone_working(&origin, &other);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // Both sides edit README differently; the other side lands first.
     std::fs::write(other.join("README.md"), "# theirs\n").unwrap();
@@ -258,7 +258,7 @@ fn git_branches_lists_locals_current_first() {
     git_in(&repo, &["branch", "feature-a"]);
     git_in(&repo, &["branch", "feature-b"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -289,7 +289,7 @@ fn git_branches_carries_each_branchs_own_diffstat_against_base() {
     git_in(&repo, &["commit", "-m", "feature work"]);
     git_in(&repo, &["checkout", "main"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -317,7 +317,7 @@ fn git_branches_weighs_a_clones_branch_after_publishing_it() {
         return;
     }
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let clone = state
         .orch_for(&project_id)
         .unwrap()
@@ -351,7 +351,7 @@ fn git_branches_flags_a_branch_checked_out_in_an_unadopted_worktree() {
     let (dir, repo) = init_repo();
     add_external_worktree(&repo, dir.path(), "elsewhere", "feature-elsewhere");
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
         .unwrap()
@@ -386,7 +386,7 @@ fn git_branches_flags_a_branch_checked_out_in_an_unadopted_worktree() {
 fn git_branches_does_not_flag_a_branch_a_run_already_owns() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
     assert!(state.runs.contains_key(&run_id));
 
@@ -407,7 +407,7 @@ fn worktree_diff_reports_existing_file_mtimes_and_omits_deletions() {
     std::fs::write(checkout.join("new.txt"), "new\n").unwrap();
     std::fs::remove_file(checkout.join("README.md")).unwrap();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
         .unwrap()
@@ -463,7 +463,7 @@ fn git_branches_lists_a_remote_only_branch_with_its_remote() {
     let (dir, _repo, origin) = init_repo_with_origin();
     let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
     let mut state = git_gui_state(&dir, &clone);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -500,7 +500,7 @@ fn git_branches_lists_a_remote_only_branch_whose_name_has_a_slash() {
     let (dir, _repo, origin) = init_repo_with_origin();
     let clone = origin_with_pushed_branch(&dir, &origin, "feature/nested");
     let mut state = git_gui_state(&dir, &clone);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -529,7 +529,7 @@ fn git_branches_lists_a_branch_two_remotes_carry_once_preferring_origin() {
     git_in(&clone, &["remote", "add", "fork", origin.to_str().unwrap()]);
     git_in(&clone, &["fetch", "fork"]);
     let mut state = git_gui_state(&dir, &clone);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -550,7 +550,7 @@ fn git_branches_lists_a_branch_two_remotes_carry_once_preferring_origin() {
 fn git_branches_names_the_run_that_owns_a_branch() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
@@ -578,8 +578,9 @@ fn git_branches_names_the_primary_checkout_holding_a_branch() {
     let (dir, repo) = init_repo();
     git_in(&repo, &["branch", "feature-idle"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
-    let primary_id = state.projects[0]
+    let project_id = state.project_at(0).id.clone();
+    let primary_id = state
+        .project_at(0)
         .orch
         .worktrees()
         .describe_primary("main")
@@ -610,7 +611,7 @@ fn git_branches_names_the_primary_checkout_holding_a_branch() {
 fn git_branches_lets_the_run_win_the_primary_checkout_it_adopted() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let adopted = state.handle(req(
         "run.adopt",
         json!({ "project_id": project_id, "primary": true }),
@@ -639,7 +640,7 @@ fn git_branches_lists_every_branch_when_the_primary_holds_none() {
     git_in(&repo, &["branch", "feature-idle"]);
     git_in(&repo, &["checkout", "--detach"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
     assert_eq!(res["ok"], true, "{res:?}");
@@ -666,7 +667,7 @@ fn git_branches_refuses_a_project_whose_repository_cannot_be_read() {
     let not_a_repo = dir.path().join("plain");
     std::fs::create_dir(&not_a_repo).unwrap();
     let mut state = git_gui_state(&dir, &not_a_repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
 
@@ -688,7 +689,7 @@ fn git_branches_refuses_a_project_whose_repository_cannot_be_read() {
 fn git_branches_refuses_a_project_whose_checkouts_cannot_be_read() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     std::fs::remove_dir_all(&repo).unwrap();
 
     let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
@@ -704,7 +705,7 @@ fn git_branches_refuses_a_project_whose_checkouts_cannot_be_read() {
 fn git_checkout_switches_creates_and_validates() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // Create a new branch and land on it.
     let created = state.handle(req(
@@ -750,7 +751,7 @@ fn git_checkout_refuses_while_a_merge_is_in_progress() {
     git_in(&repo, &["commit", "-am", "mainline"]);
     git_try(&repo, &["merge", "topic"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let res = state.handle(req(
         "git.checkout",
@@ -771,7 +772,7 @@ fn git_branch_delete_removes_and_force_deletes() {
     git_in(&repo, &["commit", "-m", "unmerged work"]);
     git_in(&repo, &["checkout", "main"]);
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // Deleting the current branch is git's error, passed through.
     let current = state.handle(req(
@@ -809,7 +810,7 @@ fn git_branch_delete_removes_and_force_deletes() {
 fn git_stash_and_pop_round_trip() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     std::fs::write(repo.join("README.md"), "# edited\n").unwrap();
     std::fs::write(repo.join("fresh.txt"), "fresh\n").unwrap();
@@ -836,7 +837,7 @@ fn git_stash_and_pop_round_trip() {
 fn git_discard_reverts_tracked_and_deletes_untracked() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // A tracked edit (staged) and a fresh untracked file.
     std::fs::write(repo.join("README.md"), "# tampered\n").unwrap();
@@ -868,7 +869,7 @@ fn git_discard_rejects_traversal_and_symlink_escapes() {
     std::fs::write(&secret, "top secret\n").unwrap();
     std::os::unix::fs::symlink(&secret, repo.join("leak")).unwrap();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     // Lexical traversal is refused before any git call.
     let traversal = state.handle(req(
@@ -895,7 +896,7 @@ fn git_merge_abort_handles_each_repo_state() {
     // Clean: nothing to abort.
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let clean = state.handle(req("git.merge_abort", json!({ "project_id": project_id })));
     assert_eq!(clean["ok"], false, "{clean:?}");
     assert_eq!(clean["error"], "no abortable operation in progress");

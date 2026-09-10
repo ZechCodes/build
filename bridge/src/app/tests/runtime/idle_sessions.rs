@@ -83,8 +83,8 @@ pub(in crate::app::tests) fn insert_run(
     let (mut active, _turn) = dispatch_side_run(&side, &store, &plan, run_id);
     active.run.state = run_state;
     let root = AppState::canonical_root(&active.worktree.path);
-    let project_id = state.projects[0].id.clone();
-    state.entity_project.insert(run_id.to_string(), project_id);
+    let project_id = state.project_at(0).id.clone();
+    state.projects.bind_entity(run_id.to_string(), project_id);
     state.runs.insert(run_id.to_string(), active);
     root
 }
@@ -808,8 +808,8 @@ fn a_start_for_an_entity_whose_session_is_over_says_so_on_its_agent() {
             Default::default(),
         );
         let mut s = state.lock().unwrap();
-        let project_id = s.projects[0].id.clone();
-        s.entity_project.insert(plan_id.to_string(), project_id);
+        let project_id = s.project_at(0).id.clone();
+        s.projects.bind_entity(plan_id.to_string(), project_id);
         s.plans.insert(plan_id.to_string(), active);
         let turn = unreachable_turn(&mut s, plan_id);
         s.pending_agent_turns.push(turn);

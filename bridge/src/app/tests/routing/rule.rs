@@ -264,7 +264,7 @@ impl ScriptedRouter {
 /// A branch already in flight, with an agent working the instruction that
 /// opened it — the work a later capture is checked against.
 fn branch_in_flight(state: &mut AppState, instruction: &str) -> (String, String) {
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let dispatched = state.handle(req(
         "branch.dispatch",
         json!({ "project_id": project_id, "instruction": instruction }),
@@ -282,7 +282,7 @@ fn two_project_state(dir: &tempfile::TempDir) -> (AppState, String, String) {
     let storefront = init_repo_named(dir.path(), "storefront");
     let billing = init_repo_named(dir.path(), "billing");
     let mut state = qa_state(&storefront, dir.path());
-    let storefront_id = state.projects[0].id.clone();
+    let storefront_id = state.project_at(0).id.clone();
     let billing_id = state.add_project(billing, "main".to_string());
     (state, storefront_id, billing_id)
 }
@@ -311,7 +311,7 @@ fn assert_router_session_settled(state: &AppState, capture_id: &str) {
 fn a_capture_naming_a_branch_in_flight_is_dispatched_to_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (branch, run_id) = branch_in_flight(&mut state, "stop the toast firing twice on login");
     let agents_before = state.runs[&run_id].agents.len();
     let runs_before = state.runs.len();
@@ -369,7 +369,7 @@ fn a_capture_continuing_work_in_flight_is_dispatched_to_the_branch_carrying_it()
     assert_eq!(
         decision,
         RoutingDecision::Dispatch {
-            project_id: state.projects[0].id.clone(),
+            project_id: state.project_at(0).id.clone(),
             branch: toast_branch.clone()
         }
     );
@@ -399,7 +399,7 @@ fn a_capture_continuing_work_in_flight_is_dispatched_to_the_branch_carrying_it()
 fn a_vague_idea_becomes_a_planned_issue_on_the_best_guess_project() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (_, invoice_run) = branch_in_flight(&mut state, "widen the invoice pdf footer");
     let invoice_agents = state.runs[&invoice_run].agents.len();
     let runs_before = state.runs.len();

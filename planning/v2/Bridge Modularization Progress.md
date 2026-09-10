@@ -11,7 +11,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 3 | Move encoding, filesystem-scope, shell, and independent QA utilities to their owners | Complete |
 | 4 | Extract conversation application methods and request parsing | Complete |
 | 5 | Extract project, configuration, and capture application methods | Complete |
-| 5b | Give project registration, entity binding, and retained paths their own registry | Planned |
+| 5b | Give project registration, entity binding, and retained paths their own registry | Complete |
 | 6 | Extract issue, run, worktree, board, and protocol adapters | Prepared outside repository |
 | 7 | Give session registration and spawn reservations their own component | Planned |
 | 8 | Give delivery queues, receipts, and in-flight accounting their own component | Planned |
@@ -115,3 +115,37 @@ finds no issues across the ten changed Rust files, and staged Gitleaks passes.
 The full suite reports 2,184 passed, one failed, and seven ignored; all 2,109
 exercised library tests pass. The sole failure remains the previously reproduced
 `concurrency_load` output floor, at 80,414 bytes.
+
+## Stage 5b
+
+`ProjectRegistry` now owns the registered-project vector, live entity bindings,
+retained recovery paths, and next project id behind private fields. Registration
+still resolves paths and rejects duplicates before building an orchestrator.
+RPC registration holds an unpublished candidate through the configuration write,
+creates its reply, then publishes and advances the id. Direct registration does
+not write configuration. Recovery retains the exact stored path text; paired
+binding removal and live-only capture cleanup remain distinct operations.
+
+The registry is 173 lines; `app.rs` is 19,791 lines. Production callers receive
+immutable project views and narrow binding/publication operations. Temporary
+mutable project access remains for isolation settings and board caches; stage 9
+removes cache ownership from Project. Legacy test setup uses test-only indexing,
+clear, and id observations without exposing production collections.
+
+Root and independent review found the final production conversion preserves
+ordering and JSON shapes. Review corrected an intermediate eager isolation
+availability probe to its original non-null branch after parameter parsing.
+Existing tests retain their assertions while changing project access paths.
+Six registry invariants and all 66 configuration tests pass, including two new
+real-adapter tests for direct registration without persistence and missing-path
+fallback. Formatting, all-target compilation, all-target Clippy, and diff checks pass.
+The structural inventory retains all 757 baseline app tests and adds eight;
+all 119 route arms and 13 frame-dispatch arms remain unchanged. The source
+inventory reports the expected registry ownership and test-access changes:
+5,434 functions become 5,470 and 1,028 data declarations become 1,031. The only
+public function-body difference is `add_project` using the equivalent registry
+lookup. This stage is an ownership change, so byte-equivalent bodies are not
+claimed. Semgrep reports no findings across all 48 changed Rust files.
+The full suite reports 2,192 passed, one failed, and seven ignored; all 2,117
+exercised library tests pass. The only failure remains the previously reproduced
+`concurrency_load` output floor, at 75,226 bytes. Staged Gitleaks passes.

@@ -16,11 +16,7 @@ impl LifecycleEpilogue for ProjectAdded {
     fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
         // Idempotent, as it has always been: a repository already registered
         // under this canonical path answers with the project it already is.
-        if let Some(existing) = state
-            .projects
-            .iter()
-            .find(|project| project.repo_path == self.path)
-        {
+        if let Some(existing) = state.projects.find_by_canonical_path(&self.path) {
             return Ok(state.project_json(existing, self.remote));
         }
         let project = state.project_candidate(self.path, self.base);
@@ -28,7 +24,7 @@ impl LifecycleEpilogue for ProjectAdded {
             &state.projects_dir,
             state.default_harness,
             state.isolation,
-            Some(&project),
+            Some(project.project()),
         );
         if let Err(error) = state.persist_config(&config) {
             if let Some(path) = self.created_checkout {
@@ -36,7 +32,7 @@ impl LifecycleEpilogue for ProjectAdded {
             }
             return Err(error);
         }
-        let reply = state.project_json(&project, self.remote);
+        let reply = state.project_json(project.project(), self.remote);
         state.insert_project(project);
         Ok(reply)
     }

@@ -174,7 +174,7 @@ fn a_cursored_detail_poll_serializes_the_delta_and_not_the_conversation() {
 
     // The branch surface polls by project and branch rather than by id.
     let branch = state.runs[&run_id].worktree.branch();
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let polls = [
         ("run.get", json!({ "run_id": run_id })),
         ("plan.get", json!({ "plan_id": issue_id })),

@@ -8,8 +8,8 @@ use super::*;
 pub(in crate::app::tests) fn work_item_rows(state: &mut AppState) -> Vec<Value> {
     state.run_stat_cache.clear();
     for index in 0..state.projects.len() {
-        state.projects[index].primary_summary = None;
-        state.projects[index].external_scan = None;
+        state.project_at_mut(index).primary_summary = None;
+        state.project_at_mut(index).external_scan = None;
     }
     state.handle(req("board.list", json!({})))["result"]["items"]
         .as_array()
@@ -52,7 +52,7 @@ fn the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows() {
     let mut state = qa_state(&repo, dir.path());
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
     add_external_worktree(&repo, dir.path(), "stray", "feature-stray");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let board = state.handle(req("board.list", json!({})));
     // The transition keeps the old keys shipping alongside the new one.
@@ -342,7 +342,7 @@ fn an_agent_working_all_night_leaves_the_anchor_alone() {
 fn routing_a_capture_hands_its_anchor_to_the_work() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (capture_id, _) = captured(&mut state, "fix the login redirect");
     let said_at = hours_ago(20);
     state
@@ -811,7 +811,7 @@ fn branch_get_resolves_a_branch_to_what_is_underneath_it() {
     let mut state = qa_state(&repo, dir.path());
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-routed");
     add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     // Made behind Build's back, so it reaches the board the way anything
     // made outside Build does: on the next scan, not on the next read.
     state.scan_external_worktrees_now(&project_id).unwrap();
@@ -853,7 +853,7 @@ fn branch_get_resolves_a_branch_to_what_is_underneath_it() {
 fn branch_finish_ends_the_issue_only_when_the_work_was_merged() {
     let (dir, repo, _origin) = init_repo_with_origin();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let (merged_issue, merged_run) = planned_run_in_review(&mut state, "merged done");
     let merged_branch = state.runs[&merged_run].worktree.branch();
@@ -928,7 +928,7 @@ fn branch_finish_ends_the_issue_only_when_the_work_was_merged() {
 fn branch_finish_deletes_unpushed_work_it_warned_about() {
     let (dir, repo, _origin) = init_repo_with_origin();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let (issue_id, run_id) = planned_run_in_review(&mut state, "never pushed");
     let branch = state.runs[&run_id].worktree.branch();
     let worktree = state.runs[&run_id].worktree.path.clone();

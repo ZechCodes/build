@@ -162,7 +162,7 @@ pub(in crate::app::tests) fn adopted_run(
     branch: &str,
 ) -> String {
     add_external_worktree(repo, dir, branch, branch);
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
         .unwrap()

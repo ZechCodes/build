@@ -7,9 +7,14 @@ use serde_json::Value;
 
 mod lifecycle;
 mod list;
+mod project_registry;
+#[cfg(test)]
+mod project_registry_tests;
 mod requests;
 
 pub use lifecycle::{ProjectAdded, ProjectRemoteSet};
+use project_registry::ProjectCandidate;
+pub(in crate::app) use project_registry::ProjectRegistry;
 
 /// One registered project: a git repo, its base branch, and the orchestrator that
 /// drives tasks on it. Each project gets its own worktrees subdir and orchestrator
@@ -75,6 +80,16 @@ pub(in crate::app) fn repo_name_from_url(url: &str) -> String {
 }
 
 impl AppState {
+    #[cfg(test)]
+    pub(in crate::app) fn project_at(&self, index: usize) -> &Project {
+        self.projects.at(index)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn project_at_mut(&mut self, index: usize) -> &mut Project {
+        self.projects.at_mut(index)
+    }
+
     pub(in crate::app) fn restore_configured_projects(&mut self, config: &Value) {
         let projects = config
             .get("projects")
@@ -96,7 +111,7 @@ impl AppState {
             }
             let id = self.add_project(repo, base);
             let isolation = configured_isolation(project, "project isolation");
-            if let Some(registered) = self.projects.iter_mut().find(|p| p.id == id) {
+            if let Some(registered) = self.projects.get_mut(&id) {
                 registered.isolation = isolation;
             }
         }
@@ -111,12 +126,7 @@ impl AppState {
     /// canonical path if it is registered, else the retained record path (a
     /// parked repo-missing entity), else empty.
     pub(in crate::app) fn project_path_for(&self, entity_id: &str) -> String {
-        self.entity_project
-            .get(entity_id)
-            .and_then(|pid| self.projects.iter().find(|p| &p.id == pid))
-            .map(|p| p.repo_path.display().to_string())
-            .or_else(|| self.entity_project_path.get(entity_id).cloned())
-            .unwrap_or_default()
+        self.projects.project_path_for(entity_id)
     }
 
     /// Register a project (repo + base branch) and return its id. Idempotent: a
@@ -124,48 +134,52 @@ impl AppState {
     /// project gets an isolated worktrees subdir keyed by id.
     pub fn add_project(&mut self, repo_path: std::path::PathBuf, base_branch: String) -> String {
         let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
-        if let Some(existing) = self.projects.iter().find(|p| p.repo_path == repo_path) {
+        if let Some(existing) = self.projects.find_by_canonical_path(&repo_path) {
             return existing.id.clone();
         }
         let project = self.project_candidate(repo_path, base_branch);
         self.insert_project(project)
     }
 
-    pub(in crate::app) fn project_candidate(
+    fn project_candidate(
         &self,
         repo_path: std::path::PathBuf,
         base_branch: String,
-    ) -> Project {
-        let id = format!("proj-{}", self.next_project);
-        let name = repo_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("project")
-            .to_string();
-        let orch = Orchestrator::new(
-            repo_path.clone(),
-            self.project_worktrees_root(&id),
-            self.agent.clone(),
-            Templates::default(),
-            self.bridge_exe.clone(),
-        );
-        Project {
-            id,
-            name,
-            repo_path,
-            base_branch,
-            orch,
-            isolation: None,
-            external_scan: None,
-            external_scan_failed_at: None,
-            primary_summary: None,
-        }
+    ) -> ProjectCandidate {
+        let worktrees_root = self.worktrees_root.clone();
+        let agent = self.agent.clone();
+        let bridge_exe = self.bridge_exe.clone();
+        self.projects
+            .candidate(repo_path, base_branch, move |id, repo_path, base_branch| {
+                let id = id.into_string();
+                let name = repo_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("project")
+                    .to_string();
+                let orch = Orchestrator::new(
+                    repo_path.to_path_buf(),
+                    worktrees_root.join(&id),
+                    agent,
+                    Templates::default(),
+                    bridge_exe,
+                );
+                Project {
+                    id,
+                    name,
+                    repo_path: repo_path.to_path_buf(),
+                    base_branch: base_branch.to_string(),
+                    orch,
+                    isolation: None,
+                    external_scan: None,
+                    external_scan_failed_at: None,
+                    primary_summary: None,
+                }
+            })
     }
 
-    pub(in crate::app) fn insert_project(&mut self, project: Project) -> String {
-        let id = project.id.clone();
-        self.projects.push(project);
-        self.next_project += 1;
+    fn insert_project(&mut self, project: ProjectCandidate) -> String {
+        let id = self.projects.publish(project).into_string();
         // A project is a section of the feed; registering one adds every row
         // its checkouts stand behind.
         self.note_board_changed();
@@ -198,22 +212,21 @@ impl AppState {
     /// [`Self::project_mut`]: every read of a project's caches or repository
     /// resolves it through here.
     pub(in crate::app) fn project(&self, project_id: &str) -> Option<&Project> {
-        self.projects.iter().find(|p| p.id == project_id)
+        self.projects.get(project_id)
     }
 
     /// One registered project, to be written to. Every edit of a project's
     /// caches resolves it through here; a project that has since been removed
     /// is `None`, and the write that found it so is dropped.
     pub(in crate::app) fn project_mut(&mut self, project_id: &str) -> Option<&mut Project> {
-        self.projects.iter_mut().find(|p| p.id == project_id)
+        self.projects.get_mut(project_id)
     }
 
     /// The registered project a client names by id, or the one refusal every
     /// verb that takes a `project_id` gives when nothing is registered under it.
     pub(in crate::app) fn project_for(&self, project_id: &str) -> Result<&Project, String> {
         self.projects
-            .iter()
-            .find(|p| p.id == project_id)
+            .get(project_id)
             .ok_or_else(|| format!("unknown project_id: {project_id}"))
     }
 
@@ -259,7 +272,7 @@ impl AppState {
             .iter()
             .find(|(run_id, active)| {
                 !active.run.state.is_terminal()
-                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+                    && self.projects.project_id_of(run_id) == Some(project_id)
                     && self.owns_primary_checkout(run_id, active)
             })
             .map(|(run_id, _)| run_id.clone())
@@ -267,9 +280,9 @@ impl AppState {
 
     /// The project an entity (plan or run) belongs to.
     pub(in crate::app) fn project_of(&self, entity_id: &str) -> Result<String, String> {
-        self.entity_project
-            .get(entity_id)
-            .cloned()
+        self.projects
+            .project_id_of(entity_id)
+            .map(str::to_string)
             .ok_or_else(|| "unknown entity id".to_string())
     }
 
@@ -277,13 +290,14 @@ impl AppState {
     /// registered project).
     pub(in crate::app) fn default_project(&self) -> Result<String, String> {
         self.projects
-            .first()
+            .iter()
+            .next()
             .map(|p| p.id.clone())
             .ok_or_else(|| "no projects configured".to_string())
     }
 
     pub(in crate::app) fn project_name_of(&self, entity_id: &str) -> String {
-        let Some(project_id) = self.entity_project.get(entity_id) else {
+        let Some(project_id) = self.projects.project_id_of(entity_id) else {
             return String::new();
         };
         self.project_name_by_id(project_id)
@@ -293,8 +307,7 @@ impl AppState {
     /// a row names a project it cannot resolve rather than failing to exist.
     pub(in crate::app) fn project_name_by_id(&self, project_id: &str) -> String {
         self.projects
-            .iter()
-            .find(|project| project.id == project_id)
+            .get(project_id)
             .map(|project| project.name.clone())
             .unwrap_or_default()
     }

@@ -469,7 +469,7 @@ fn entity_dismiss_refuses_what_it_cannot_clear() {
 
     // A real id that names no entry in the inbox: a project is where the
     // work lives, not a row that can be cleared out of the way.
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let not_an_entry = state.handle(req("entity.dismiss", json!({ "entity_id": project_id })));
     assert_eq!(not_an_entry["ok"], false, "{not_an_entry:?}");
 
@@ -500,7 +500,7 @@ fn a_primary_row_dismissal_survives_a_restart() {
     let (dir, repo) = init_repo();
     {
         let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
+        let project_id = state.project_at(0).id.clone();
         let cleared = state.handle(req(
             "entity.dismiss",
             json!({ "project_id": project_id, "primary": true }),
@@ -520,7 +520,7 @@ fn a_primary_row_dismissal_survives_a_restart() {
 fn adopting_a_bare_worktree_brings_its_row_and_releasing_it_takes_it_away() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     add_external_worktree(&repo, dir.path(), "loose", "loose");
     let worktree_id = state
         .scan_external_worktrees_now(&project_id)
@@ -562,7 +562,7 @@ fn adopting_a_bare_worktree_brings_its_row_and_releasing_it_takes_it_away() {
 fn clearing_the_primary_row_holds_across_project_commits() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let row = branch_row(&mut state, "main");
     assert_eq!(row["primary"], true, "{row:?}");
@@ -595,7 +595,7 @@ fn a_row_dismissal_names_exactly_one_row() {
         json!({ "path": other.to_str().unwrap() }),
     ));
     assert_eq!(added["ok"], true, "{added:?}");
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     state.handle(req(
         "entity.dismiss",
@@ -614,7 +614,7 @@ fn a_row_dismissal_names_exactly_one_row() {
 fn a_row_dismissal_refuses_what_it_cannot_clear() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let unknown = state.handle(req(
         "entity.dismiss",

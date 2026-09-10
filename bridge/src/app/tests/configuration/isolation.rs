@@ -25,7 +25,7 @@ fn the_account_isolation_and_a_project_override_survive_a_reload() {
         let mut state = load(&cfg);
         state.add_project(inheriting.clone(), "main".to_string());
         state.isolation = Isolation::Cow;
-        state.projects[0].isolation = Some(Isolation::Worktree);
+        state.project_at_mut(0).isolation = Some(Isolation::Worktree);
         state.persist();
     }
 
@@ -42,9 +42,10 @@ fn the_account_isolation_and_a_project_override_survive_a_reload() {
 
     let reloaded = load(&cfg);
     assert_eq!(reloaded.isolation, Isolation::Cow);
-    assert_eq!(reloaded.projects[0].isolation, Some(Isolation::Worktree));
+    assert_eq!(reloaded.project_at(0).isolation, Some(Isolation::Worktree));
     assert_eq!(
-        reloaded.projects[1].isolation, None,
+        reloaded.project_at(1).isolation,
+        None,
         "an absent key loads as inheriting, not as a choice"
     );
 }
@@ -81,7 +82,7 @@ fn an_unknown_persisted_isolation_loads_as_the_default() {
     .with_config(&cfg)
     .unwrap();
     assert_eq!(state.isolation, Isolation::Worktree);
-    assert_eq!(state.projects[0].isolation, None);
+    assert_eq!(state.project_at(0).isolation, None);
 }
 
 /// The project's own answer is the one asked first: an override of the
@@ -92,9 +93,9 @@ fn a_project_override_beats_the_account_isolation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     state.isolation = Isolation::Cow;
-    state.projects[0].isolation = Some(Isolation::Worktree);
+    state.project_at_mut(0).isolation = Some(Isolation::Worktree);
 
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let resolved = state.resolved_isolation(&project_id);
     assert_eq!(resolved.isolation, Isolation::Worktree);
     assert_eq!(resolved.downgrade, None);
@@ -110,9 +111,9 @@ fn a_project_asking_to_be_cloned_is_cloned_where_the_volume_can() {
         return;
     }
     let mut state = qa_state(&repo, dir.path());
-    state.projects[0].isolation = Some(Isolation::Cow);
+    state.project_at_mut(0).isolation = Some(Isolation::Cow);
 
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let resolved = state.resolved_isolation(&project_id);
     assert_eq!(resolved.isolation, Isolation::Cow);
     assert_eq!(resolved.downgrade, None);
@@ -302,7 +303,7 @@ fn a_project_override_is_stored_and_a_null_clears_it() {
     let (dir, repo) = init_repo();
     let cfg = tmp.path().join("config.json");
     let mut state = qa_state(&repo, dir.path()).with_config(&cfg).unwrap();
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let persisted_override = |cfg: &std::path::Path| -> Value {
         let written: Value = serde_json::from_str(&std::fs::read_to_string(cfg).unwrap()).unwrap();
         written["projects"][0]["isolation"].clone()
@@ -314,7 +315,7 @@ fn a_project_override_is_stored_and_a_null_clears_it() {
     ));
     assert_eq!(saved["ok"], true, "{saved:?}");
     assert_eq!(saved["result"]["isolation"], "worktree", "{saved:?}");
-    assert_eq!(state.projects[0].isolation, Some(Isolation::Worktree));
+    assert_eq!(state.project_at(0).isolation, Some(Isolation::Worktree));
     assert_eq!(persisted_override(&cfg), json!("worktree"));
 
     let cleared = state.handle(req(
@@ -326,7 +327,7 @@ fn a_project_override_is_stored_and_a_null_clears_it() {
         cleared["result"]["isolation"].is_null(),
         "a cleared override inherits again: {cleared:?}"
     );
-    assert_eq!(state.projects[0].isolation, None);
+    assert_eq!(state.project_at(0).isolation, None);
     assert_eq!(persisted_override(&cfg), Value::Null);
 }
 
@@ -339,7 +340,7 @@ fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
     state.isolation = Isolation::Cow;
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let refused = state.handle(req(
         "project.set_isolation",
@@ -354,7 +355,8 @@ fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
         "{sentence}"
     );
     assert_eq!(
-        state.projects[0].isolation, None,
+        state.project_at(0).isolation,
+        None,
         "a refused choice stores nothing"
     );
 
@@ -386,7 +388,7 @@ fn a_project_may_choose_cloning_where_its_volume_clones() {
         return;
     }
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let saved = state.handle(req(
         "project.set_isolation",
@@ -397,7 +399,7 @@ fn a_project_may_choose_cloning_where_its_volume_clones() {
     assert_eq!(row["isolation"], "cow", "{row:?}");
     assert_eq!(row["isolation_default"], "worktree", "{row:?}");
     assert_eq!(row["isolation_effective"], "cow", "{row:?}");
-    assert_eq!(state.projects[0].isolation, Some(Isolation::Cow));
+    assert_eq!(state.project_at(0).isolation, Some(Isolation::Cow));
 }
 
 /// The setter fails fast on both ways of naming nothing: a project this
@@ -418,7 +420,7 @@ fn project_set_isolation_refuses_an_unknown_project_and_an_unnamed_choice() {
         "unknown project: proj-nowhere"
     );
 
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let unnamed = state.handle(req(
         "project.set_isolation",
         json!({ "project_id": project_id }),
@@ -468,7 +470,7 @@ fn a_create_that_cannot_clone_falls_back_and_says_so_on_the_conversation() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
     state.isolation = Isolation::Cow;
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let dispatched = state.handle(req(
         "branch.dispatch",
@@ -605,7 +607,7 @@ fn a_bare_worktree_that_cannot_be_cloned_says_so_in_its_answer() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
     state.isolation = Isolation::Cow;
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
 
     let created = state.handle(req(
         "worktree.create",
@@ -638,7 +640,7 @@ fn a_creating_row_carries_the_isolation_the_checkout_is_being_made_as() {
     let (dir, repo) = init_repo();
     let mut app = state_on_an_unclonable_project(dir.path(), &repo);
     app.isolation = Isolation::Cow;
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();
@@ -679,7 +681,7 @@ fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
     }
     let mut app = qa_state(&repo, dir.path());
     app.isolation = Isolation::Cow;
-    let project_id = app.projects[0].id.clone();
+    let project_id = app.project_at(0).id.clone();
     let (gate, gate_handle) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
     let state = app.shared();

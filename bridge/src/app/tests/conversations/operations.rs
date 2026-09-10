@@ -1195,7 +1195,7 @@ fn abandon_closes_the_agent_even_when_the_worktree_survives() {
     // Cleanup will fail before it touches the worktree: the orchestrator's
     // repo is not a repo, so `remove` errors on the very first step and the
     // worktree survives the abandon.
-    state.projects[0].orch = Orchestrator::new(
+    state.project_at_mut(0).orch = Orchestrator::new(
         dir.path().join("not-a-repo"),
         dir.path().join("wt"),
         Agent::Warm(HarnessSpec::new("true")),

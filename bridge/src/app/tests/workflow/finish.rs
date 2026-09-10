@@ -175,7 +175,7 @@ fn a_finish_merge_of_a_clone_lands_its_work_and_takes_its_branch() {
 fn worktree_finish_cleanup_requires_clean_and_preserves_branch() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "cleanup", "cleanup");
     let worktree_id = external_id(&mut state, &project_id, Some("cleanup"));
 
@@ -211,7 +211,7 @@ fn worktree_finish_cleanup_requires_clean_and_preserves_branch() {
 fn worktree_finish_store_failure_happens_before_worktree_removal() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "store-failure", "store-failure");
     let worktree_id = external_id(&mut state, &project_id, Some("store-failure"));
     state
@@ -237,7 +237,7 @@ fn worktree_finish_store_failure_happens_before_worktree_removal() {
 fn worktree_finish_merge_checkpoints_dirty_work_deletes_branch_and_archives() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "merge-me", "merge-me");
     std::fs::write(path.join("feature.txt"), "finished\n").unwrap();
     let worktree_id = external_id(&mut state, &project_id, Some("merge-me"));
@@ -271,7 +271,7 @@ fn worktree_finish_merge_checkpoints_dirty_work_deletes_branch_and_archives() {
 fn worktree_finish_push_requires_tracking_then_checkpoints_pushes_and_keeps_branch() {
     let (dir, repo, _origin) = init_repo_with_origin();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "push-me", "push-me");
     let worktree_id = external_id(&mut state, &project_id, Some("push-me"));
 
@@ -308,7 +308,7 @@ fn worktree_finish_push_requires_tracking_then_checkpoints_pushes_and_keeps_bran
 fn worktree_finish_delete_accepts_dirty_detached_head_without_deleting_a_branch() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "detached", "detached-source");
     git_in(&path, &["checkout", "--detach"]);
     std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
@@ -345,7 +345,7 @@ fn worktree_finish_delete_accepts_dirty_detached_head_without_deleting_a_branch(
 fn worktree_finish_branch_delete_failure_is_retryable_and_not_archived() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "delete-retry", "delete-retry");
     std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
     let worktree_id = external_id(&mut state, &project_id, Some("delete-retry"));
@@ -389,7 +389,7 @@ fn worktree_finish_branch_delete_failure_is_retryable_and_not_archived() {
 fn worktree_finish_never_accepts_paths_and_git_failure_does_not_archive() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let project_id = state.projects[0].id.clone();
+    let project_id = state.project_at(0).id.clone();
     let path = add_external_worktree(&repo, dir.path(), "conflict", "conflict");
     std::fs::write(path.join("README.md"), "feature\n").unwrap();
     git_in(&path, &["commit", "-am", "feature"]);

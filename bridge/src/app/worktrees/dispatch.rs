@@ -1,11 +1,11 @@
 use crate::app::{
     has_agent_choice, model_choice_from, require_str, AppState, PendingAgentTurn, RouteRecorded,
-    RoutedCapture, RunAdopted, TurnText, NEW_THREAD_MESSAGES_PROMPT,
+    RoutedCapture, TurnText, NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::lifecycle::holders::ProjectCheckouts;
 #[cfg(test)]
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
-use crate::lifecycle::{DispatchCheckout, DispatchTarget, LifecycleEpilogue, PendingRow};
+use crate::lifecycle::{DispatchCheckout, DispatchTarget, PendingRow};
 use crate::models::ModelChoice;
 use crate::orchestrator::ActiveRun;
 use crate::store::now_rfc3339;
@@ -26,52 +26,6 @@ impl DispatchedAgent {
             "run_id": run_id,
             "agent_id": self.agent_id,
         })
-    }
-}
-
-/// `branch.dispatch`'s apply half: the checkout is checkpointed and scaffolded,
-/// and the run that owns it — with the agent that will hear the instruction —
-/// is opened here, under the mutex, where the records live.
-pub struct BranchDispatched {
-    pub adopted: RunAdopted,
-    pub instruction: String,
-    pub routed: Option<RoutedCapture>,
-    pub checkouts: ProjectCheckouts,
-    /// [`ResolvedIsolation::downgrade`], said on the dispatched run's own
-    /// conversation.
-    pub downgrade: Option<String>,
-}
-
-impl LifecycleEpilogue for BranchDispatched {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        state.open_dispatched_run(*self)
-    }
-}
-
-/// The holder read found an existing run; validate that snapshot before joining.
-pub struct BranchJoined {
-    pub project_id: String,
-    pub run_id: String,
-    pub branch: String,
-    pub root: std::path::PathBuf,
-    pub instruction: String,
-    pub model_choice: ModelChoice,
-    pub explicit_choice: bool,
-    pub routed: Option<RoutedCapture>,
-    pub checkouts: ProjectCheckouts,
-}
-
-impl LifecycleEpilogue for BranchJoined {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        state.validate_checkout_snapshot(&self.project_id, &self.checkouts)?;
-        #[cfg(test)]
-        fail_dispatch_at(state.dispatch_fault, BranchDispatchStep::Post)?;
-        let choice = if self.explicit_choice {
-            self.model_choice.clone()
-        } else {
-            state.entity_model_choice(&self.run_id)?
-        };
-        state.join_dispatched_run(*self, choice)
     }
 }
 
@@ -133,22 +87,31 @@ impl AppState {
             project_id: project_id.clone(),
             run_id: format!("run-{}", uuid::Uuid::new_v4()),
             target,
-            instruction: instruction.clone(),
-            model_choice: requested_choice,
-            explicit_choice: has_agent_choice(params),
-            routed,
+            model_choice: requested_choice.clone(),
             resolved: self.resolved_isolation(&project_id),
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
         let row = PendingRow::creating(
             mutation.run_id.clone(),
-            Some(project_id),
-            branch.unwrap_or(instruction),
+            Some(project_id.clone()),
+            branch.unwrap_or_else(|| instruction.clone()),
         )
         .on_branch(mutation.target.branch().to_string())
         .isolated_as(mutation.resolved.isolation);
-        self.defer_lifecycle(row, Box::new(mutation))
+        let checkouts = mutation.checkouts.clone();
+        self.defer_lifecycle(
+            row,
+            mutation,
+            crate::app::runtime::lifecycle::DispatchSettlement {
+                project_id,
+                instruction,
+                model_choice: requested_choice,
+                explicit_choice: has_agent_choice(params),
+                routed,
+                checkouts,
+            },
+        )
     }
 
     /// Open the run `branch.dispatch` just checkpointed a checkout for, and put
@@ -163,13 +126,13 @@ impl AppState {
     /// on the far side of the write.
     pub(in crate::app) fn open_dispatched_run(
         &mut self,
-        dispatched: BranchDispatched,
+        dispatched: crate::lifecycle::DispatchedCheckout,
+        instruction: String,
+        routed: Option<RoutedCapture>,
+        checkouts: ProjectCheckouts,
     ) -> Result<Value, String> {
-        let BranchDispatched {
-            adopted,
-            instruction,
-            routed,
-            checkouts,
+        let crate::lifecycle::DispatchedCheckout {
+            adoption: adopted,
             downgrade,
         } = dispatched;
         self.validate_checkout_snapshot(&adopted.project_id, &checkouts)?;
@@ -180,7 +143,7 @@ impl AppState {
         let choice = adopted.model_choice.clone();
         let route =
             self.record_dispatch_route(routed, &project_id, &run_id, &adopted.checkout.branch)?;
-        let mut active = adopted.open_run(self)?;
+        let mut active = self.open_adoption(&adopted)?;
         let agent = self.dispatch_to_run(
             &run_id,
             &mut active,
@@ -208,17 +171,16 @@ impl AppState {
     /// before the run is taken, so a refused route leaves the run in its map.
     pub(in crate::app) fn join_dispatched_run(
         &mut self,
-        joined: BranchJoined,
+        project_id: String,
+        joined: crate::lifecycle::JoinedCheckout,
+        instruction: String,
         choice: ModelChoice,
+        routed: Option<RoutedCapture>,
     ) -> Result<Value, String> {
-        let BranchJoined {
-            project_id,
+        let crate::lifecycle::JoinedCheckout {
             run_id,
             branch,
-            instruction,
             root,
-            routed,
-            ..
         } = joined;
         let route = self.record_dispatch_route(routed, &project_id, &run_id, &branch)?;
         let mut active = self.take_run(&run_id)?;

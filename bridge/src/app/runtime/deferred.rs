@@ -1,17 +1,14 @@
+use crate::app::runtime::lifecycle::{LifecycleOutcome, WorktreeLifecycleJob};
 use crate::app::{
     diff_file_edited_at, diff_file_rows, diff_json, entity_ids_of, sha256_hex, worktree_diff_json,
     AppState, DeferredGit, DiffCacheEntry, FinishEpilogue, FinishKind, WorktreeFinishJob,
     WorktreeFinishOutcome,
 };
 use crate::isolation::{Isolation, IsolationAvailability};
-use crate::lifecycle::{
-    LifecycleOutcome, PendingRow, Performed, WorktreeChange, WorktreeLifecycleJob, WorktreeMutation,
-};
+use crate::lifecycle::{PendingRow, WorktreeChange};
 use crate::worktree::{git_remote_origin, ExternalWorktree};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-#[cfg(test)]
-use std::time::Duration;
 
 /// One unit of work split the way the rule splits everything: `decide` runs
 /// with the state lock released, `apply` under it. The caller has already
@@ -28,60 +25,8 @@ pub(in crate::app) trait OffLockJob: Send + 'static {
     fn abandon(state: &mut AppState, claim: Self::Claim);
 }
 
-/// Tests only: a gate the deferred git work trips as its lock-free phase
-/// starts, and waits on until the test lets it go. It is how a test holds a
-/// finish inside its `git worktree remove` and proves the app mutex is free
-/// while it sits there. `None` in production — nothing outside tests sets it.
 #[cfg(test)]
-#[derive(Clone)]
-pub struct OffLockGate {
-    pub(in crate::app) arrived: std::sync::mpsc::Sender<()>,
-    /// One permit per arrival. Shared because the job clones the gate.
-    pub(in crate::app) permits: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
-}
-
-#[cfg(test)]
-impl OffLockGate {
-    pub(in crate::app) fn new() -> (OffLockGate, OffLockGateHandle) {
-        let (arrived, arrivals) = std::sync::mpsc::channel();
-        let (permits, waiting) = std::sync::mpsc::channel();
-        (
-            OffLockGate {
-                arrived,
-                permits: Arc::new(Mutex::new(waiting)),
-            },
-            OffLockGateHandle { arrivals, permits },
-        )
-    }
-
-    /// Announce that the lock-free phase has begun, then wait to be let go.
-    pub fn arrive(&self) {
-        let _ = self.arrived.send(());
-        let _ = self.permits.lock().unwrap().recv();
-    }
-}
-
-/// The test's end of an [`OffLockGate`].
-#[cfg(test)]
-pub(in crate::app) struct OffLockGateHandle {
-    pub(in crate::app) arrivals: std::sync::mpsc::Receiver<()>,
-    pub(in crate::app) permits: std::sync::mpsc::Sender<()>,
-}
-
-#[cfg(test)]
-impl OffLockGateHandle {
-    /// Block until the work has reached its lock-free phase.
-    pub(in crate::app) fn wait_for_arrival(&self) {
-        self.arrivals
-            .recv_timeout(Duration::from_secs(30))
-            .expect("the deferred work reached its lock-free phase");
-    }
-
-    /// Let one waiting (or one future) arrival through.
-    pub(in crate::app) fn release(&self) {
-        self.permits.send(()).expect("the gate is still open");
-    }
-}
+pub use crate::test_support::off_lock::{OffLockGate, OffLockGateHandle};
 
 /// Work a verb handed to the drain, to run with the app mutex released.
 pub(in crate::app) enum DeferredWork {
@@ -660,71 +605,6 @@ impl AppState {
             .collect()
     }
 
-    /// Reserve one lifecycle verb's row and hand its git to the drain, in one
-    /// call. Reserving and deferring are the same step so that nothing fallible
-    /// can run between them: a row put on the board with no job behind it would
-    /// stand there forever, refusing every later verb that claims its name.
-    ///
-    /// The `Ok` returned here is the placeholder [`AppState::deferred_work`]
-    /// documents: whichever drain runs the job replaces it with what
-    /// [`AppState::apply_lifecycle`] answers.
-    pub(in crate::app) fn defer_lifecycle(
-        &mut self,
-        row: PendingRow,
-        mutation: Box<dyn WorktreeMutation>,
-    ) -> Result<Value, String> {
-        let job = self.reserve_lifecycle(row, mutation)?;
-        Ok(self.defer_job(job))
-    }
-
-    /// The same reservation, handed back rather than deferred — for a caller
-    /// that has to decide where the git runs. Consume it with
-    /// [`AppState::defer_job`] or [`AppState::run_lifecycle_here`]: a job
-    /// dropped instead leaves its row on the board forever.
-    pub(in crate::app) fn reserve_lifecycle(
-        &mut self,
-        row: PendingRow,
-        mutation: Box<dyn WorktreeMutation>,
-    ) -> Result<WorktreeLifecycleJob, String> {
-        let row = self.reserve_row(row)?;
-        Ok(self.lifecycle_job(row, mutation))
-    }
-
-    /// Reserve a verb's row, take out of the registry whatever it has to hold
-    /// while its git runs, and hand that git to the drain — one call, so the
-    /// row is claimed before anything is torn down and nothing fallible runs
-    /// between the row and the job that releases it.
-    ///
-    /// `take` runs with the row already on the board and cannot refuse: every
-    /// refusal a verb has belongs before this call.
-    pub(in crate::app) fn defer_lifecycle_holding(
-        &mut self,
-        row: PendingRow,
-        take: impl FnOnce(&mut AppState) -> Box<dyn WorktreeMutation>,
-    ) -> Result<Value, String> {
-        let row = self.reserve_row(row)?;
-        let mutation = take(self);
-        let job = self.lifecycle_job(row, mutation);
-        Ok(self.defer_job(job))
-    }
-
-    /// One reserved row's job, held open for the tests in one place so no verb
-    /// has to remember to offer them a seam.
-    pub(in crate::app) fn lifecycle_job(
-        &self,
-        row: Arc<PendingRow>,
-        mutation: Box<dyn WorktreeMutation>,
-    ) -> WorktreeLifecycleJob {
-        let job = WorktreeLifecycleJob::reserving(row, mutation);
-        #[cfg(test)]
-        let job = {
-            let mut job = job;
-            job.hold_at(self.off_lock_gate.clone());
-            job
-        };
-        job
-    }
-
     /// Hand one reserved job to the drain, which runs it with the app mutex
     /// released. The `Value` is the placeholder [`AppState::deferred_work`]
     /// documents: whichever drain runs the job replaces it with what
@@ -732,51 +612,6 @@ impl AppState {
     pub(in crate::app) fn defer_job(&mut self, job: WorktreeLifecycleJob) -> Value {
         self.deferred_work = Some(DeferredWork::Lifecycle(Box::new(job)));
         Value::Null
-    }
-
-    /// Run one reserved job right here instead, with no mutex to release —
-    /// boot and an agent's own report have no frame to hand git to, and ran it
-    /// under the app mutex before this split too.
-    pub(in crate::app) fn run_lifecycle_here(
-        &mut self,
-        job: WorktreeLifecycleJob,
-    ) -> Result<Value, String> {
-        let outcome = job.run();
-        self.apply_lifecycle(outcome)
-    }
-
-    /// Write back what one lifecycle verb's git did: retire the placeholder,
-    /// amend the project's checkout list with what moved, and then let the
-    /// verb's own epilogue settle the record. A failure rolls the reservation
-    /// back instead, and answers with the error the git gave.
-    ///
-    /// An epilogue that fails is the harder half: the git already ran, so what
-    /// it made is on disk whatever the records say. The amendment is re-applied
-    /// over whatever the epilogue got through before it failed, which puts the
-    /// checkout back on the board as the unowned card it is — invisible until
-    /// the next full rescan is how a minted checkout gets lost.
-    pub(in crate::app) fn apply_lifecycle(
-        &mut self,
-        outcome: LifecycleOutcome,
-    ) -> Result<Value, String> {
-        let LifecycleOutcome {
-            reservation,
-            result,
-        } = outcome;
-        let project_id = reservation.row().project_id.clone();
-        self.release_row(&reservation.row().entity_id);
-        let Performed { change, epilogue } = match result {
-            Ok(performed) => performed,
-            Err(error) => {
-                reservation.roll_back(self);
-                return Err(error);
-            }
-        };
-        self.amend_checkouts(project_id.as_deref(), &change);
-        epilogue.apply(self).inspect_err(|_| {
-            self.amend_checkouts(project_id.as_deref(), &change);
-            reservation.roll_back(self);
-        })
     }
 
     /// Move what one mutation did to the checkouts on disk into the list the

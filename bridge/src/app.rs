@@ -45,7 +45,6 @@ pub(in crate::app) use self::git::diff_file_rows;
 pub(in crate::app) use self::issues::documents::{attach_plan_operation_turn, comment_json};
 pub(in crate::app) use self::issues::scheduler::scheduler_request;
 pub(in crate::app) use self::issues::sessions::PlanDraftingStarted;
-pub use self::issues::sessions::{PlanWorkspaceOpened, PlanWorkspaceRefused};
 pub(in crate::app) use self::issues::views::{
     dispatchable_next_run_stage, next_unsettled_stage, plan_stage_json, plan_state_str,
     stage_doc_state_str,
@@ -64,10 +63,6 @@ pub(in crate::app) use self::rpc::{
 };
 pub(in crate::app) use self::rtc::{rtc_close, rtc_ice, rtc_offer};
 pub(in crate::app) use self::runs::lifecycle::PlannedRunFinish;
-pub use self::runs::lifecycle::{
-    ImplementationAdopted, ImplementationOpened, ImplementationRefused, RunAdopted,
-    RunAdoptionSettled,
-};
 pub(in crate::app) use self::runs::reporting::{
     abandoned_branch_summary, append_plan_stage_announcements, close_abandoned_run_conversations,
     open_session_id, record_current_stage_started, record_idle_in_thread, record_report_in_thread,
@@ -105,7 +100,13 @@ pub(in crate::app) use self::runtime::delivery::types::{
     TurnText, AGENT_START_DECLINED_SESSION_OVER, NO_TERMINAL_LEFT, SPAWN_NEVER_OPENED,
     TAB_CLOSED_UNDER_A_TURN,
 };
-pub use self::runtime::lifecycle::{DiscardSettlement, ImplementationCaller, PlanSessionOpening};
+pub(in crate::app) use self::runtime::lifecycle::WorktreeLifecycleJob;
+pub use self::runtime::lifecycle::{
+    BranchDispatched, BranchJoined, DiscardSettlement, ImplementationAdopted, ImplementationCaller,
+    ImplementationOpened, ImplementationRefused, PlanSessionOpening, PlanWorkspaceOpened,
+    PlanWorkspaceRefused, ProjectAdded, ProjectRemoteSet, RestoredCheckout, RunAdopted,
+    RunAdoptionSettled, WorktreeCreated,
+};
 pub(in crate::app) use self::runtime::pumps::{
     capture_conversation_names, spawn_tab_pumps, still_pumping_instance,
 };
@@ -113,11 +114,9 @@ pub(in crate::app) use self::runtime::pumps::{
 pub(in crate::app) use self::runtime::pumps::{
     end_of_session, spawn_activity_pump, spawn_status_pump,
 };
-pub use self::runtime::recovery::RestoredCheckout;
 pub(in crate::app) use self::runtime::recovery::{
     archived_worktree_json, load_stored_tasks, merge_archived_worktree_facts,
-    reconcile_missing_run_worktree, record_session_death_in_thread, StagePublicationQuery,
-    StagePublications,
+    reconcile_missing_run_worktree, record_session_death_in_thread,
 };
 #[cfg(test)]
 pub(in crate::app) use self::runtime::recovery::{
@@ -146,7 +145,7 @@ pub(in crate::app) use self::runtime::terminals::{
     require_shell_kind, shell_harness_spec, terminal_size, MAX_USER_TERMINALS,
 };
 pub(in crate::app) use self::streams::{sha256_hex, stream_start, StreamState};
-pub use self::worktrees::dispatch::{BranchDispatched, BranchJoined};
+
 #[cfg(test)]
 pub(in crate::app) use self::worktrees::finish::run_finish_git_steps;
 pub(in crate::app) use self::worktrees::finish::{
@@ -154,7 +153,6 @@ pub(in crate::app) use self::worktrees::finish::{
     FinishEpilogue, FinishKind, FinishRequirement, PlannedFinish, RunFinishEpilogue,
     WorktreeFinishJob, WorktreeFinishOutcome,
 };
-pub use self::worktrees::WorktreeCreated;
 
 #[cfg(test)]
 use crate::orchestrator::Orchestrator;
@@ -170,7 +168,6 @@ use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
 use projects::{default_projects_dir, Project, ProjectRegistry};
-pub use projects::{ProjectAdded, ProjectRemoteSet};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -202,8 +199,6 @@ use crate::harness::{
 use crate::isolation::Isolation;
 #[cfg(test)]
 use crate::lifecycle::BranchDispatchStep;
-#[cfg(test)]
-use crate::lifecycle::WorktreeLifecycleJob;
 #[cfg(test)]
 use crate::mcp::{BridgeAction, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};

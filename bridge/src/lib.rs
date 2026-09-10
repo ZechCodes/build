@@ -84,6 +84,8 @@ pub mod service;
 pub mod store;
 pub mod templates;
 pub(crate) mod terminal_environment;
+#[cfg(test)]
+mod test_support;
 pub mod thread;
 pub mod timing;
 pub mod transport;

@@ -1,9 +1,10 @@
+use crate::app::WorktreeLifecycleJob;
 use crate::app::{
     append_plan_stage_announcements, attach_plan_operation_turn, err, model_choice_from,
     record_report_in_thread, require_str, thread_detail, with_post_receipt, AppState,
     PendingAgentTurn, PlanSessionOpening,
 };
-use crate::lifecycle::{LifecycleEpilogue, OpenPlanWorkspace, PendingRow, WorktreeLifecycleJob};
+use crate::lifecycle::{OpenPlanWorkspace, PendingRow};
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::ModelChoice;
 use crate::operation::OperationReceipt;
@@ -75,32 +76,6 @@ impl PlanSessionOpening for PlanDraftingStarted {
             Some(receipt) => Ok(state.settle_accepted_operation_error(receipt, error)),
             None => Err(error),
         }
-    }
-}
-
-/// The planning workspace is written; what is left is the door that asked for
-/// it.
-pub struct PlanWorkspaceOpened {
-    pub workspace: crate::orchestrator::PlanWorkspace,
-    pub opening: Box<dyn PlanSessionOpening>,
-}
-
-impl LifecycleEpilogue for PlanWorkspaceOpened {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        self.opening.open(state, self.workspace)
-    }
-}
-
-/// The planning workspace could not be written. What that leaves behind is the
-/// door's own business, so it comes back as an epilogue rather than an error.
-pub struct PlanWorkspaceRefused {
-    pub error: String,
-    pub opening: Box<dyn PlanSessionOpening>,
-}
-
-impl LifecycleEpilogue for PlanWorkspaceRefused {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        self.opening.refused(state, self.error)
     }
 }
 
@@ -256,12 +231,12 @@ impl AppState {
         let row = PendingRow::creating(issue_id.to_string(), Some(project_id), title);
         self.reserve_lifecycle(
             row,
-            Box::new(OpenPlanWorkspace {
+            OpenPlanWorkspace {
                 project,
                 plan_id: issue_id.to_string(),
                 store,
-                opening,
-            }),
+            },
+            crate::app::runtime::lifecycle::PlanWorkspaceSettlement { opening },
         )
     }
 

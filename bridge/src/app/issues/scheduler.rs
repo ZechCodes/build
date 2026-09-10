@@ -1,8 +1,9 @@
+use crate::app::WorktreeLifecycleJob;
 use crate::app::{
     next_unsettled_stage, record_current_stage_started, require_str, run_state_str, thread_detail,
     AppState, ImplementationCaller,
 };
-use crate::lifecycle::{PendingRow, RestoreImplementationCheckout, WorktreeLifecycleJob};
+use crate::lifecycle::{PendingRow, RestoreImplementationCheckout};
 use crate::plan::{
     ImplementationActivity, ImplementationIntent, PlanState, StageDoc, StageDocState,
 };
@@ -409,15 +410,17 @@ impl AppState {
         }
         self.reserve_lifecycle(
             row,
-            Box::new(RestoreImplementationCheckout {
+            RestoreImplementationCheckout {
                 project,
-                issue_id: issue_id.to_string(),
-                run_id: run_id.to_string(),
                 worktree,
                 checkout_stood,
-                caller,
                 resolved,
-            }),
+            },
+            crate::app::runtime::lifecycle::RestoreImplementationSettlement {
+                issue_id: issue_id.to_string(),
+                run_id: run_id.to_string(),
+                caller,
+            },
         )
         .map(Some)
     }

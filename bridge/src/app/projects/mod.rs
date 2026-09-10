@@ -12,7 +12,6 @@ mod project_registry;
 mod project_registry_tests;
 mod requests;
 
-pub use lifecycle::{ProjectAdded, ProjectRemoteSet};
 use project_registry::ProjectCandidate;
 pub(in crate::app) use project_registry::ProjectRegistry;
 

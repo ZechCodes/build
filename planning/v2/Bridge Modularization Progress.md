@@ -16,7 +16,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 7 | Give session registration and spawn reservations their own component | Complete |
 | 8 | Give delivery queues, receipts, and in-flight accounting their own component | Complete |
 | 9 | Give board attention and caches their own component | Complete |
-| 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Prepared outside repository |
+| 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Complete |
 | Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Prepared outside repository |
 
 Each stage is committed after its source review and validation. Mechanical
@@ -252,3 +252,29 @@ literal values and public paths remain preserved. Semgrep reports no findings
 across all 38 changed Rust files. The full suite reports 2,225 passed, one failed, and seven ignored; all 2,150
 exercised library tests pass. The sole failure remains the previously reproduced
 `concurrency_load` output floor at 75,226 bytes. Staged Gitleaks passes.
+
+## Stage 10
+
+Lifecycle disk work returns owned typed facts. The application runtime owns
+settlement, callbacks, active entities, publication, and rollback; the lifecycle
+leaf no longer depends on application types. Thin compatibility carriers retain
+existing public app paths and field shapes while delegating to the same typed
+settlement implementation. Ordinary and holding jobs share a neutral test gate.
+The fresh replay preserves delivery and board ownership from the preceding
+stages. `app.rs` is 640 lines. Independent production review confirms the
+12 task/settlement pairings, exact callback and publication ordering, nested
+restore failures, and judgment before checkout removal. All 798 baseline app
+tests remain; two new tests count real public refusal callbacks exactly once.
+The test gate retains its arrival, release, observation, and timeout behavior.
+
+Formatting, all-target compilation, and Clippy with warnings denied pass. Six
+method-scoped boxed-receiver lint exceptions preserve the existing public
+compatibility signatures; no blanket or cognitive-complexity allowance is added.
+The structural audit retains all 132 RPC names. The source audit records
+5,684 functions becoming 5,710 and 1,060 data declarations becoming 1,083,
+reflecting typed results and app-owned settlements. Semgrep reports no findings
+across all 35 changed Rust files. Focused validation passes 58 tests: two
+compatibility, 26 off-lock lifecycle, 11 branch-dispatch, and 19 restore cases.
+The full suite reports 2,227 passed, one failed, and seven ignored; all 2,152
+exercised library tests pass. The sole failure remains the previously reproduced
+`concurrency_load` output floor, at 77,820 bytes. Staged Gitleaks passes.

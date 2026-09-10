@@ -1,21 +1,17 @@
+use crate::app::WorktreeLifecycleJob;
 use crate::app::{
     abandoned_branch_summary, close_abandoned_run_conversations, err, has_agent_choice,
     model_choice_from, parse_worktree_finish_action, reconcile_missing_run_worktree,
     record_current_stage_started, require_str, run_state_str, thread_detail, AppState, DigestScope,
-    DiscardSettlement, FinishKind, FinishRequirement, ImplementationCaller, PendingAgentTurn,
-    PlannedFinish, RunFinishEpilogue, StagePublicationQuery, StagePublications, WorktreeFinishJob,
-    NEW_THREAD_MESSAGES_PROMPT,
+    FinishKind, FinishRequirement, ImplementationCaller, PendingAgentTurn, PlannedFinish,
+    RunFinishEpilogue, WorktreeFinishJob, NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::lifecycle::{
     AdoptCheckout, AdoptImplementation, AdoptionTarget, DiscardCheckout, DiscardedCheckout,
-    ImplementationCheckout, LifecycleEpilogue, OpenImplementation, PendingRow,
-    WorktreeLifecycleJob,
+    ImplementationCheckout, OpenImplementation, PendingRow,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{
-    ActiveRun, AdoptableCheckout, AdoptionScope, AgentTurn, ImplementableIssue,
-    PreparedImplementation, RunSource,
-};
+use crate::orchestrator::{ActiveRun, AdoptionScope, AgentTurn, ImplementableIssue, RunSource};
 use crate::run::{run_transition, RunEvent, RunId, RunState};
 use crate::store::now_rfc3339;
 use crate::thread::ThreadDetail;
@@ -52,204 +48,6 @@ impl ImplementationCaller for RunOpenedView {
     }
 }
 
-/// `run.create`'s apply half on a checkout cut for it: the git left a prepared
-/// checkout, and the run that stands for it is opened here, where the maps are.
-pub struct ImplementationOpened {
-    pub project_id: String,
-    pub issue_id: String,
-    pub run_id: String,
-    pub prepared: PreparedImplementation,
-    pub model_choice: ModelChoice,
-    pub caller: Box<dyn ImplementationCaller>,
-    /// [`ResolvedIsolation::downgrade`], said on the Issue's conversation
-    /// before the run is written down.
-    pub downgrade: Option<String>,
-}
-
-impl LifecycleEpilogue for ImplementationOpened {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        state.open_prepared_implementation(*self)
-    }
-}
-
-/// The same, on a checkout an existing run already owns: the git left a
-/// checkpoint and a baseline commit, and the run is reset onto them.
-pub struct ImplementationAdopted {
-    pub project_id: String,
-    pub issue_id: String,
-    pub run_id: String,
-    pub base_sha: String,
-    /// The adoption this job's git phase ran on the way in, when the checkout
-    /// had no owner. The run it minted is opened here rather than taken off the
-    /// board, and nothing else about the implementation differs.
-    pub adopted: Option<RunAdopted>,
-    pub model_choice: ModelChoice,
-    pub caller: Box<dyn ImplementationCaller>,
-}
-
-impl LifecycleEpilogue for ImplementationAdopted {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        state.open_adopted_implementation(*self)
-    }
-}
-
-/// The git that would have opened an implementation failed. It comes back as an
-/// epilogue rather than as an error because what a refusal leaves behind is
-/// state — an Issue that says it is preparing something nobody is preparing any
-/// more — and state is written under the app mutex.
-pub struct ImplementationRefused {
-    pub error: String,
-    pub caller: Box<dyn ImplementationCaller>,
-}
-
-impl LifecycleEpilogue for ImplementationRefused {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        self.caller.settle(state, Err(self.error))
-    }
-}
-
-/// A checkout Build has taken ownership of on disk, and the run that is about
-/// to stand for it. The apply half of every adoption, and the one place the
-/// order of those writes is spelled.
-///
-/// What is deliberately NOT here is the write that settles the run: it comes
-/// back out of [`RunAdopted::open_run`] un-persisted so its caller can add what
-/// it still owes — a dispatch's agent and first turn — and write once, leaving
-/// no window where a run exists that a later failure would strand.
-pub struct RunAdopted {
-    pub project_id: String,
-    pub run_id: String,
-    pub base_branch: String,
-    pub checkout: AdoptableCheckout,
-    pub scope: AdoptionScope,
-    pub model_choice: ModelChoice,
-}
-
-impl RunAdopted {
-    /// Open the run around the checkout, and move the board's bookkeeping onto
-    /// it. Nothing here can fail once the run record is minted.
-    pub(in crate::app) fn open_run(&self, state: &mut AppState) -> Result<ActiveRun, String> {
-        let active = state
-            .orch_for(&self.project_id)?
-            .adopt_run(
-                RunId::new(&self.run_id),
-                &self.checkout,
-                &self.base_branch,
-                self.model_choice.clone(),
-            )
-            .map_err(err)?;
-        state
-            .projects
-            .bind_entity(self.run_id.clone(), self.project_id.clone());
-        // The row this checkout showed as belongs to a run from here on, and a
-        // run is cleared through its conversation: whatever was dismissed
-        // against the entity-less row is spent, and must not come back with the
-        // bare row if the run is ever released.
-        let (was_dismissed, first_observed_at) = state.take_row_dismissal(
-            &self.project_id,
-            Some(&self.checkout.branch),
-            self.scope == AdoptionScope::PrimaryCheckout,
-        );
-        if was_dismissed || first_observed_at.is_some() {
-            state.board.attention_mut().transfer_adopted_row(
-                &self.run_id,
-                first_observed_at,
-                was_dismissed,
-            );
-            state.persist_attention();
-        }
-        state.note_worktree_gone(&self.project_id, &self.checkout.path);
-        Ok(active)
-    }
-}
-
-/// `run.adopt`'s apply half: the checkout is Build's on disk, and the run that
-/// stands for it is opened, persisted and answered with here. Nothing is owed
-/// on top of the adoption, so this is [`RunAdopted`] and the reply alone.
-pub struct RunAdoptionSettled {
-    pub adopted: RunAdopted,
-    pub detail: crate::thread::ThreadDetail,
-}
-
-impl LifecycleEpilogue for RunAdoptionSettled {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        let active = self.adopted.open_run(state)?;
-        let (view, persisted) =
-            state.answer_run_mutation(self.adopted.run_id.clone(), active, self.detail);
-        persisted?;
-        Ok(view)
-    }
-}
-
-/// `run.abandon`'s apply half: the agents are dead, the checkout is gone, and
-/// what is left is the verdict — on the run, on the stages the removal made
-/// unverifiable, and on the Issue the run was implementing.
-pub(in crate::app) struct RunAbandoned {
-    pub(in crate::app) run_id: String,
-    pub(in crate::app) project_id: String,
-    /// The Issue this run was implementing, told what it lost.
-    pub(in crate::app) issue_id: Option<String>,
-    pub(in crate::app) detail: crate::thread::ThreadDetail,
-    /// What the run's stages are judged against, and git's answer once
-    /// [`DiscardSettlement::judge_before_removal`] has asked. An abandon is the
-    /// only verb that asks, so it is the only one that carries the query.
-    pub(in crate::app) stages: StagePublicationQuery,
-    pub(in crate::app) published: StagePublications,
-}
-
-impl DiscardSettlement for RunAbandoned {
-    fn judge_before_removal(&mut self) {
-        self.published = self.stages.classify();
-    }
-
-    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String> {
-        state.settle_abandoned_run(*self, active)
-    }
-}
-
-/// `run.delete`'s apply half: the durable record goes, and every trace of the
-/// run in memory goes with it.
-///
-/// The record is deleted here and not in the decide phase because the decide
-/// phase can still be refused — the checkout's row may already be claimed by
-/// another verb — and a refusal must leave the card whole. Getting here is what
-/// says the delete is happening: the removal cannot fail. A crash in between
-/// leaves the record for boot to reload and the vanished-run sweep to archive,
-/// the same story every other reservation has.
-///
-/// A store that refuses the delete puts the run back where the decide phase
-/// took it from: the record still stands, so the card must too, and the delete
-/// is retried like any other failed write.
-pub(in crate::app) struct RunDeleted {
-    pub(in crate::app) run_id: String,
-    /// The project whose board loses the card, when the run still has one: a
-    /// run recovered after its repository moved has no project mapping, and
-    /// clearing that stale card is exactly what a delete is for.
-    pub(in crate::app) project_id: Option<String>,
-    /// The directory the run worked in, consulted to tell a checkout that
-    /// survived the delete — the user's own files — from one that was pruned.
-    pub(in crate::app) checkout: std::path::PathBuf,
-}
-
-impl DiscardSettlement for RunDeleted {
-    fn settle(self: Box<Self>, state: &mut AppState, active: ActiveRun) -> Result<Value, String> {
-        if let Some(store) = &state.store {
-            if let Err(error) = store.delete_run(&self.run_id) {
-                state.runs.insert(self.run_id.clone(), active);
-                return Err(format!("run store: {error}"));
-            }
-        }
-        state.forget_run(&self.run_id);
-        if let Some(project_id) = self.project_id.filter(|_| self.checkout.exists()) {
-            // The checkout outlived its card — it was the user's — so it goes
-            // back to the board as the bare one it is.
-            state.rescan_external_worktrees(&project_id);
-        }
-        state.reap_orphaned_terminals();
-        Ok(json!({ "ok": true }))
-    }
-}
-
 /// What the lock-held half of a run's Done decided. The run is already off the
 /// board in every variant but a refusal.
 pub(in crate::app) enum PlannedRunFinish {
@@ -265,6 +63,40 @@ pub(in crate::app) enum PlannedRunFinish {
         job: Box<WorktreeFinishJob>,
         run: RunFinishEpilogue,
     },
+}
+
+impl AppState {
+    pub(in crate::app) fn open_adoption(
+        &mut self,
+        adopted: &crate::lifecycle::AdoptionPrepared,
+    ) -> Result<ActiveRun, String> {
+        let active = self
+            .orch_for(&adopted.project_id)?
+            .adopt_run(
+                RunId::new(&adopted.run_id),
+                &adopted.checkout,
+                &adopted.base_branch,
+                adopted.model_choice.clone(),
+            )
+            .map_err(err)?;
+        self.projects
+            .bind_entity(adopted.run_id.clone(), adopted.project_id.clone());
+        let (was_dismissed, first_observed_at) = self.take_row_dismissal(
+            &adopted.project_id,
+            Some(&adopted.checkout.branch),
+            adopted.scope == AdoptionScope::PrimaryCheckout,
+        );
+        if was_dismissed || first_observed_at.is_some() {
+            self.board.attention_mut().transfer_adopted_row(
+                &adopted.run_id,
+                first_observed_at,
+                was_dismissed,
+            );
+            self.persist_attention();
+        }
+        self.note_worktree_gone(&adopted.project_id, &adopted.checkout.path);
+        Ok(active)
+    }
 }
 
 impl AppState {
@@ -352,18 +184,22 @@ impl AppState {
             .isolated_as(resolved.isolation);
         self.reserve_lifecycle(
             row,
-            Box::new(OpenImplementation {
+            OpenImplementation {
                 project,
-                project_id,
-                issue_id: issue_id.to_string(),
                 issue,
                 base_branch: base,
-                run_id,
+                run_id: run_id.clone(),
                 store,
+                model_choice: model_choice.clone(),
+                resolved,
+            },
+            crate::app::runtime::lifecycle::OpenImplementationSettlement {
+                project_id,
+                issue_id: issue_id.to_string(),
+                run_id,
                 model_choice,
                 caller,
-                resolved,
-            }),
+            },
         )
     }
 
@@ -459,17 +295,22 @@ impl AppState {
             .implementing(issue_id.to_string());
         self.reserve_lifecycle(
             row,
-            Box::new(AdoptImplementation {
+            AdoptImplementation {
                 project,
-                project_id,
-                issue_id: issue_id.to_string(),
+                project_id: project_id.clone(),
                 issue,
-                run_id,
+                run_id: run_id.clone(),
                 checkout,
                 store,
+                model_choice: model_choice.clone(),
+            },
+            crate::app::runtime::lifecycle::AdoptImplementationSettlement {
+                project_id,
+                issue_id: issue_id.to_string(),
+                run_id,
                 model_choice,
                 caller,
-            }),
+            },
         )
     }
 
@@ -477,15 +318,14 @@ impl AppState {
     /// run around what the git prepared, and answer whoever asked.
     pub(in crate::app) fn open_prepared_implementation(
         &mut self,
-        opened: ImplementationOpened,
-    ) -> Result<Value, String> {
-        let ImplementationOpened {
-            project_id,
-            issue_id,
-            run_id,
+        project_id: String,
+        issue_id: String,
+        run_id: String,
+        opened: crate::lifecycle::ImplementationPrepared,
+        model_choice: ModelChoice,
+    ) -> Result<(), String> {
+        let crate::lifecycle::ImplementationPrepared {
             prepared,
-            model_choice,
-            caller,
             downgrade,
         } = opened;
         let opened = (|| -> Result<OpenedImplementation, String> {
@@ -523,29 +363,25 @@ impl AppState {
             }
             self.open_implementation_run(opened)
         });
-        caller.settle(self, opened.map(|()| run_id.as_str()))
+        opened
     }
 
     /// The same, on a checkout an existing run already owns: the run is taken
     /// out, handed the implementation the git prepared it for, and put back.
     pub(in crate::app) fn open_adopted_implementation(
         &mut self,
-        opened: ImplementationAdopted,
-    ) -> Result<Value, String> {
-        let ImplementationAdopted {
-            project_id,
-            issue_id,
-            run_id,
-            base_sha,
-            adopted,
-            model_choice,
-            caller,
-        } = opened;
+        project_id: String,
+        issue_id: String,
+        run_id: String,
+        opened: crate::lifecycle::AdoptedImplementation,
+        model_choice: ModelChoice,
+    ) -> Result<(), String> {
+        let crate::lifecycle::AdoptedImplementation { base_sha, adopted } = opened;
         let opened = (|| -> Result<(), String> {
             // The run this is written onto: the one the branch already had, or
             // the one the adoption in this job's git phase just earned.
             let mut active = match &adopted {
-                Some(adopted) => adopted.open_run(self)?,
+                Some(adopted) => self.open_adoption(adopted)?,
                 None => self.take_run(&run_id)?,
             };
             let handed_over = (|| -> Result<(AgentTurn, String), String> {
@@ -579,7 +415,7 @@ impl AppState {
                 checkout_event: crate::thread::ThreadEventKind::WorktreeReused,
             })
         })();
-        caller.settle(self, opened.map(|()| run_id.as_str()))
+        opened
     }
 
     /// The tail every implementation dispatch shares: address the first turn to
@@ -712,14 +548,9 @@ impl AppState {
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let stages = self.stage_publication_query(&run_id, active);
         let project = self.orch_for(&project_id)?.clone();
-        let settlement = Box::new(RunAbandoned {
-            run_id: run_id.clone(),
-            project_id: project_id.clone(),
-            issue_id,
-            detail: thread_detail(params),
-            stages,
-            published: StagePublications::default(),
-        });
+        let detail = thread_detail(params);
+        let settlement_run_id = run_id.clone();
+        let settlement_project_id = project_id.clone();
         self.discard_run(
             run_id,
             Some(project_id),
@@ -731,7 +562,14 @@ impl AppState {
                     worktree: worktree.clone(),
                 },
             },
-            settlement,
+            stages,
+            move |active| crate::app::runtime::lifecycle::AbandonSettlement {
+                active,
+                run_id: settlement_run_id,
+                project_id: settlement_project_id,
+                issue_id,
+                detail,
+            },
         )
     }
 
@@ -746,14 +584,19 @@ impl AppState {
     ///
     /// The caller's refusals are all spent before it gets here: `take` runs
     /// with the row already on the board and cannot fail.
-    pub(in crate::app) fn discard_run(
+    pub(in crate::app) fn discard_run<J, S>(
         &mut self,
         run_id: String,
         project_id: Option<String>,
         title: String,
         checkout: impl FnOnce(&crate::worktree::Worktree) -> DiscardedCheckout,
-        settlement: Box<dyn DiscardSettlement>,
-    ) -> Result<Value, String> {
+        before_removal: J,
+        settlement: impl FnOnce(Box<ActiveRun>) -> S,
+    ) -> Result<Value, String>
+    where
+        J: crate::lifecycle::BeforeRemoval,
+        S: crate::app::runtime::lifecycle::LifecycleSettlement<J::Output>,
+    {
         let worktree_path = self
             .runs
             .get(&run_id)
@@ -775,13 +618,14 @@ impl AppState {
             // removal waits it out rather than walking a directory a live child
             // is still writing into.
             let retirements = state.retire_agent_tabs(&active.worktree.path);
-            Box::new(DiscardCheckout {
+            let task = DiscardCheckout {
                 checkout: checkout(&active.worktree),
                 retirements,
-                settlement,
-                active: Box::new(active),
+                before_removal,
                 run_id,
-            })
+            };
+            let settlement = settlement(Box::new(active));
+            (task, settlement)
         })
     }
 
@@ -793,17 +637,13 @@ impl AppState {
     /// it.
     pub(in crate::app) fn settle_abandoned_run(
         &mut self,
-        abandoned: RunAbandoned,
+        run_id: String,
+        project_id: String,
+        issue_id: Option<String>,
+        detail: crate::thread::ThreadDetail,
+        published: crate::lifecycle::StagePublications,
         mut active: ActiveRun,
     ) -> Result<Value, String> {
-        let RunAbandoned {
-            run_id,
-            project_id,
-            issue_id,
-            detail,
-            published,
-            ..
-        } = abandoned;
         let branch = active.worktree.branch();
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
         let verdict = self
@@ -921,11 +761,8 @@ impl AppState {
             .and_then(|id| self.orch_for(id).ok())
             .cloned();
 
-        let settlement = Box::new(RunDeleted {
-            run_id: run_id.clone(),
-            project_id: project_id.clone(),
-            checkout: checkout_path,
-        });
+        let settlement_run_id = run_id.clone();
+        let settlement_project_id = project_id.clone();
         self.discard_run(
             run_id,
             project_id,
@@ -937,7 +774,13 @@ impl AppState {
                 },
                 _ => DiscardedCheckout::Kept,
             },
-            settlement,
+            (),
+            move |active| crate::app::runtime::lifecycle::DeleteSettlement {
+                active,
+                run_id: settlement_run_id,
+                project_id: settlement_project_id,
+                checkout: checkout_path,
+            },
         )
     }
 
@@ -1005,15 +848,17 @@ impl AppState {
         let project = self.orch_for(&project_id)?.clone();
         self.defer_lifecycle(
             row,
-            Box::new(AdoptCheckout {
+            AdoptCheckout {
                 project,
                 project_id,
                 base_branch: base,
                 run_id,
                 target,
                 model_choice,
+            },
+            crate::app::runtime::lifecycle::AdoptionSettlement {
                 detail: thread_detail(params),
-            }),
+            },
         )
     }
 

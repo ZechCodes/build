@@ -1,61 +1,16 @@
 use crate::app::{
-    announce_isolation_downgrade, archived_worktree_json, named_agent_id,
-    parse_worktree_finish_action, require_str, scan_may_yet_show_it, view_thread_detail, AppState,
-    BranchFinishEpilogue, DigestScope, FinishKind, FinishRequirement, PlannedFinish,
-    PlannedRunFinish, WorktreeFinishJob,
+    archived_worktree_json, named_agent_id, parse_worktree_finish_action, require_str,
+    scan_may_yet_show_it, view_thread_detail, AppState, BranchFinishEpilogue, DigestScope,
+    FinishKind, FinishRequirement, PlannedFinish, PlannedRunFinish, WorktreeFinishJob,
 };
-use crate::isolation::Isolation;
 use crate::lifecycle::holders::ProjectCheckouts;
-use crate::lifecycle::{CreateWorktree, LifecycleEpilogue, PendingRow};
+use crate::lifecycle::{CreateWorktree, PendingRow};
 use crate::run::RunState;
 use crate::store::{WorktreeFinishAction, WorktreeFinishStatus};
 use serde_json::{json, Value};
 
 pub(in crate::app) mod dispatch;
 pub(in crate::app) mod finish;
-
-/// `worktree.create`'s apply half. The checkout is on disk and already in the
-/// project's scan list — every write this verb owes is the shared half of
-/// [`AppState::apply_lifecycle`] — so all that is left is the answer.
-pub struct WorktreeCreated {
-    pub project_id: String,
-    /// The id the board carried while the git ran.
-    pub placeholder_id: String,
-    pub worktree_id: String,
-    pub branch: String,
-    pub name: String,
-    pub path: std::path::PathBuf,
-    pub branch_was_cut: bool,
-    pub checkouts: ProjectCheckouts,
-    /// What the checkout turned out to be, read off it once the git had made
-    /// it.
-    pub isolation: Option<Isolation>,
-    /// [`ResolvedIsolation::downgrade`], said in the answer to the ask: a bare
-    /// worktree has no run, no agent and no conversation to say it on.
-    pub downgrade: Option<String>,
-}
-
-impl LifecycleEpilogue for WorktreeCreated {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        let note = self.downgrade.as_deref().map(announce_isolation_downgrade);
-        state.validate_checkout_snapshot(&self.project_id, &self.checkouts)?;
-        Ok(json!({
-            "project_id": self.project_id,
-            "worktree_id": self.worktree_id,
-            // Both ids, because `WorktreeManager::create` suffixes a slug
-            // something was already using and the placeholder cannot know: a
-            // client showing the pending row replaces that row rather than
-            // adding a second one beside it.
-            "pending_worktree_id": self.placeholder_id,
-            "branch_was_cut": self.branch_was_cut,
-            "branch": self.branch,
-            "name": self.name,
-            "path": self.path.display().to_string(),
-            "isolation": self.isolation,
-            "isolation_note": note,
-        }))
-    }
-}
 
 impl AppState {
     /// Mint a bare worktree — no run, no agent, no session. It is the
@@ -97,17 +52,23 @@ impl AppState {
         let mutation = CreateWorktree {
             project: self.orch_for(&project_id)?.clone(),
             base_branch: self.base_for(&project_id)?,
-            project_id: project_id.clone(),
             slug,
             existing_branch,
-            checkouts,
-            placeholder_id: placeholder_id.clone(),
+            checkouts: checkouts.clone(),
             resolved: self.resolved_isolation(&project_id),
         };
-        let row = PendingRow::creating(placeholder_id, Some(project_id), title)
+        let row = PendingRow::creating(placeholder_id.clone(), Some(project_id.clone()), title)
             .on_branch(branch)
             .isolated_as(mutation.resolved.isolation);
-        self.defer_lifecycle(row, Box::new(mutation))
+        self.defer_lifecycle(
+            row,
+            mutation,
+            crate::app::runtime::lifecycle::CreateWorktreeSettlement {
+                project_id,
+                placeholder_id,
+                checkouts,
+            },
+        )
     }
 
     /// Finish an external worktree selected only by server-resolved ids.

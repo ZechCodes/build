@@ -5,7 +5,6 @@ use crate::app::{
     recovery_agent_prompt, run_state_str, AppState, ImplementationCaller, OffLockJob,
     PendingAgentTurn, SESSION_DIED_SUMMARY,
 };
-use crate::lifecycle::LifecycleEpilogue;
 use crate::mcp::{DoneReport, DoneStatus};
 use crate::operation::{OperationReceipt, OperationStatus};
 use crate::orchestrator::{ActivePlan, ActiveRun};
@@ -15,31 +14,8 @@ use crate::store::{
     now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store,
     WorktreeFinishStatus,
 };
-use crate::worktree::{bounded_git_fetch, configured_remote_for_branch, WorktreeManager};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-
-/// A run's checkout, as the restore left it, on its way back under the app
-/// mutex. `Err` is not a failure of the job — it is the finding that the branch
-/// is gone, which the recovery agent is started for.
-pub struct RestoredCheckout {
-    pub issue_id: String,
-    pub run_id: String,
-    /// Whether the directory was still standing when the decide phase looked:
-    /// what the Issue's conversation says happened, reused or recreated.
-    pub checkout_stood: bool,
-    pub restored: Result<crate::worktree::Worktree, String>,
-    pub caller: Box<dyn ImplementationCaller>,
-    /// [`ResolvedIsolation::downgrade`], said on the Issue's conversation
-    /// beside what the restore found.
-    pub downgrade: Option<String>,
-}
-
-impl LifecycleEpilogue for RestoredCheckout {
-    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
-        state.settle_restored_checkout(*self)
-    }
-}
 
 pub(in crate::app) struct StoredTasks {
     pub(in crate::app) store: Store,
@@ -51,63 +27,9 @@ pub(in crate::app) struct StoredTasks {
     pub(in crate::app) operations: Vec<OperationReceipt>,
 }
 
-/// Everything one run's stage publications have to be decided against, taken
-/// under the state lock so the deciding needs none.
-pub(in crate::app) struct StagePublicationQuery {
-    pub(in crate::app) run_id: String,
-    /// The project's checkout seam, when the project is still registered. A
-    /// classification reads the project repo's refs, which the checkout's
-    /// branch has to reach through `publish` first.
-    pub(in crate::app) worktrees: Option<WorktreeManager>,
-    pub(in crate::app) checkout: std::path::PathBuf,
-    pub(in crate::app) branch: String,
-    pub(in crate::app) base_branch: String,
-    /// One entry per stage that reached a completion commit. A stage without
-    /// one published nothing by definition and costs no git at all.
-    pub(in crate::app) completions: Vec<(String, String)>,
-}
-
-impl StagePublicationQuery {
-    /// The git half: a bounded fetch and two graph walks per completed stage.
-    /// MUST run with the state lock released.
-    pub(in crate::app) fn classify(&self) -> StagePublications {
-        let Some(worktrees) = self.worktrees.as_ref() else {
-            return StagePublications::default();
-        };
-        StagePublications(
-            self.completions
-                .iter()
-                .map(|(stage_id, completion_sha)| {
-                    (
-                        stage_id.clone(),
-                        classify_stage_publication(
-                            worktrees,
-                            &self.checkout,
-                            &self.branch,
-                            &self.base_branch,
-                            completion_sha,
-                        ),
-                    )
-                })
-                .collect(),
-        )
-    }
-}
-
-/// What git says about each of a run's completed stages.
-#[derive(Default)]
-pub(in crate::app) struct StagePublications(HashMap<String, StagePublication>);
-
-impl StagePublications {
-    /// A stage nobody asked git about published nothing: no completion commit,
-    /// or no repository left to open.
-    pub(in crate::app) fn of(&self, stage_id: &str) -> StagePublication {
-        self.0
-            .get(stage_id)
-            .copied()
-            .unwrap_or(StagePublication::Local)
-    }
-}
+pub(in crate::app) use crate::lifecycle::{
+    classify_stage_publication, StagePublicationQuery, StagePublications,
+};
 
 /// One vanished run, with git's verdict on its stages already in hand.
 pub(in crate::app) struct DecidedVanishedRun {
@@ -184,67 +106,6 @@ pub(in crate::app) fn reconcile_missing_run_worktree(
         }
     }
     affected
-}
-
-/// How far a stage's completion commit has travelled, read from the project
-/// repo's own refs — which the checkout's branch reaches first, because a
-/// clone's tip is invisible there until it is published. A publish that fails
-/// is no verdict: classification still has to answer, so it is said and passed
-/// over.
-pub(in crate::app) fn classify_stage_publication(
-    worktrees: &WorktreeManager,
-    checkout: &std::path::Path,
-    branch: &str,
-    base_branch: &str,
-    completion_sha: &str,
-) -> StagePublication {
-    if checkout.exists() {
-        if let Err(error) = worktrees.publish(checkout, branch) {
-            eprintln!(
-                "classify_stage_publication {branch}: publishing {} failed: {error}",
-                checkout.display()
-            );
-        }
-    }
-    let repo_path = worktrees.repo_path();
-    let Ok(repo) = git2::Repository::open(repo_path) else {
-        return StagePublication::Local;
-    };
-    let Ok(completion) = git2::Oid::from_str(completion_sha) else {
-        return StagePublication::Local;
-    };
-    // Push success is remote evidence, not merely a local command result. Make
-    // the configured remote-tracking ref current before classifying; the fetch
-    // is noninteractive and timeout-bounded by the shared recovery helper.
-    if let Some(remote) = configured_remote_for_branch(&repo, branch) {
-        let refspec = format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}");
-        let _ = bounded_git_fetch(repo_path, &remote, &refspec);
-    }
-    let reachable = |reference: &str| {
-        repo.find_reference(reference)
-            .ok()
-            .and_then(|reference| reference.peel_to_commit().ok())
-            .is_some_and(|tip| {
-                tip.id() == completion
-                    || repo
-                        .graph_descendant_of(tip.id(), completion)
-                        .unwrap_or(false)
-            })
-    };
-    let merge_ref = format!("refs/heads/{base_branch}");
-    if reachable(&merge_ref) {
-        return StagePublication::Merged;
-    }
-    let upstream_ref = repo
-        .find_branch(branch, git2::BranchType::Local)
-        .ok()
-        .and_then(|local| local.upstream().ok())
-        .and_then(|upstream| upstream.get().name().map(str::to_string));
-    if upstream_ref.as_deref().is_some_and(reachable) {
-        StagePublication::Pushed
-    } else {
-        StagePublication::Local
-    }
 }
 
 /// What the checkout's archive record adds to an archived row: how it was
@@ -1034,14 +895,14 @@ impl AppState {
     /// exact lineage is what is at stake, and only an agent can confirm it.
     pub(in crate::app) fn settle_restored_checkout(
         &mut self,
-        restored: RestoredCheckout,
+        issue_id: String,
+        run_id: String,
+        restored: crate::lifecycle::RestoredCheckout,
+        caller: Box<dyn ImplementationCaller>,
     ) -> Result<Value, String> {
-        let RestoredCheckout {
-            issue_id,
-            run_id,
+        let crate::lifecycle::RestoredCheckout {
             checkout_stood,
             restored,
-            caller,
             downgrade,
         } = restored;
         let worktree = match restored {

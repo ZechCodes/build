@@ -1101,7 +1101,7 @@ async fn a_create_during_a_scan_outlives_that_scans_landing() {
     poll_board(&handler).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        gate.arrivals.try_recv().is_err(),
+        !gate.has_pending_arrival(),
         "a second walk of the same repository started behind the first"
     );
 

@@ -18,10 +18,11 @@ impl AppState {
             path.clone(),
             path.display().to_string(),
             PendingState::Creating,
-            Box::new(OpenRepo {
+            OpenRepo {
                 requested_base: requested_base_branch(params),
                 path,
-            }),
+            },
+            crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
         )
     }
 
@@ -29,19 +30,24 @@ impl AppState {
     /// its git to the drain. The directory is the row's identity: there is no
     /// project id until the git lands, and what two project verbs collide over
     /// is the folder, not a name.
-    fn defer_project(
+    fn defer_project<T, S>(
         &mut self,
         dest: std::path::PathBuf,
         title: String,
         state: PendingState,
-        mutation: Box<dyn WorktreeMutation>,
-    ) -> Result<Value, String> {
+        mutation: T,
+        settlement: S,
+    ) -> Result<Value, String>
+    where
+        T: WorktreeMutation,
+        S: crate::app::runtime::lifecycle::LifecycleSettlement<T::Output>,
+    {
         let row = PendingRow::on_directory(
             crate::worktree::external_worktree_id(&crate::worktree::canonical_planned_path(&dest)),
             title,
             state,
         );
-        self.defer_lifecycle(row, mutation)
+        self.defer_lifecycle(row, mutation, settlement)
     }
 
     /// Clone a remote into the projects folder and register it as a project. The
@@ -63,13 +69,14 @@ impl AppState {
             dest.clone(),
             name.clone(),
             PendingState::Creating,
-            Box::new(CloneRepo {
+            CloneRepo {
                 url,
                 name,
                 dest,
                 projects_dir: self.projects_dir.clone(),
                 requested_base: requested_base_branch(params),
-            }),
+            },
+            crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
         )
     }
 
@@ -100,7 +107,7 @@ impl AppState {
             dest.clone(),
             name.clone(),
             PendingState::Creating,
-            Box::new(CreateRepo {
+            CreateRepo {
                 name,
                 dest,
                 base_branch,
@@ -110,7 +117,8 @@ impl AppState {
                     .map(str::trim)
                     .filter(|remote| !remote.is_empty())
                     .map(str::to_string),
-            }),
+            },
+            crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
         )
     }
 
@@ -133,11 +141,11 @@ impl AppState {
             repo_path.clone(),
             title,
             PendingState::Updating,
-            Box::new(SetRemote {
-                project_id,
+            SetRemote {
                 repo_path,
                 url: url.trim().to_string(),
-            }),
+            },
+            crate::app::runtime::lifecycle::SetRemoteSettlement { project_id },
         )
     }
 

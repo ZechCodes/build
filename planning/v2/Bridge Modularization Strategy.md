@@ -1,6 +1,6 @@
 # Bridge Modularization Strategy
 
-**Status:** Stages 1–9 implemented; lifecycle reversal and follow-on leaf splits remain
+**Status:** Stages 1–10 implemented; follow-on leaf splits remain
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
 ## Why this work is needed

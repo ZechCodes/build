@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 pub type RequestId = u64;
@@ -35,6 +35,9 @@ pub enum PendingOperation {
         thread_id: String,
         turn_id: String,
     },
+    ReadThread {
+        thread_id: String,
+    },
 }
 
 impl PendingOperation {
@@ -46,6 +49,7 @@ impl PendingOperation {
             PendingOperation::StartTurn { .. } => "turn/start",
             PendingOperation::SteerTurn { .. } => "turn/steer",
             PendingOperation::InterruptTurn { .. } => "turn/interrupt",
+            PendingOperation::ReadThread { .. } => "thread/read",
         }
     }
 
@@ -138,6 +142,15 @@ impl PendingOperation {
                 self.method(),
                 &TurnInterruptParams { thread_id, turn_id },
             ),
+            PendingOperation::ReadThread { thread_id } => serialize_request(
+                writer,
+                id,
+                self.method(),
+                &ThreadReadParams {
+                    thread_id,
+                    include_turns: false,
+                },
+            ),
         }
     }
 
@@ -156,6 +169,7 @@ impl PendingOperation {
                     Err("turn/interrupt response has the wrong body".to_string())
                 }
             }
+            PendingOperation::ReadThread { .. } => decode(value).map(OperationResult::ThreadRead),
         }
         .map_err(|error| format!("{} response has the wrong body: {error}", self.method()))
     }
@@ -168,6 +182,35 @@ pub enum OperationResult {
     TurnStarted(TurnStartResult),
     TurnSteered(TurnSteerResult),
     TurnInterrupted,
+    ThreadRead(ThreadReadResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadReadResult {
+    pub thread: ThreadSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSummary {
+    pub id: String,
+    pub parent_thread_id: Option<String>,
+    pub preview: Option<String>,
+    pub agent_role: Option<String>,
+    pub agent_nickname: Option<String>,
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
+    pub model: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_nullable")]
+    pub reasoning_effort: Option<Option<String>>,
+}
+
+fn deserialize_present_nullable<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -981,6 +1024,13 @@ struct TurnInterruptParams<'a> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadReadParams<'a> {
+    thread_id: &'a str,
+    include_turns: bool,
+}
+
+#[derive(Serialize)]
 struct TextInput<'a> {
     #[serde(rename = "type")]
     kind: &'a str,
@@ -1109,5 +1159,32 @@ mod thread_metadata_tests {
             &json!({"threadSettings":{"model":"gpt-5.6-sol"}})
         )
         .is_err());
+    }
+
+    #[test]
+    fn thread_read_is_bounded_and_preserves_nullable_configuration() {
+        let operation = PendingOperation::ReadThread {
+            thread_id: "child".to_string(),
+        };
+        let mut bytes = Vec::new();
+        operation.serialize_request(7, &mut bytes).unwrap();
+        let request: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(request["method"], "thread/read");
+        assert_eq!(
+            request["params"],
+            json!({"threadId":"child", "includeTurns":false})
+        );
+
+        let OperationResult::ThreadRead(result) = operation
+            .decode_result(&json!({"thread": {
+                "id":"child", "parentThreadId":"parent", "model":"gpt-5.6-sol",
+                "reasoningEffort":null
+            }}))
+            .unwrap()
+        else {
+            panic!("wrong operation result");
+        };
+        assert_eq!(result.thread.model, Some(Some("gpt-5.6-sol".to_string())));
+        assert_eq!(result.thread.reasoning_effort, Some(None));
     }
 }

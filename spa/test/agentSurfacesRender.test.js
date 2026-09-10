@@ -128,12 +128,36 @@ describe("agentRowHtml", () => {
     expect(factValue(row, "Tool calls")).toBe("4");
   });
 
-  it("names missing model, effort and task metadata without guessing inherited defaults", () => {
+  it("omits optional facts that were not reported without guessing inherited defaults", () => {
     const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0])).firstElementChild;
-    expect(factValue(row, "Description")).toBe("Not reported");
-    expect(factValue(row, "Reasoning effort")).toBe("Not reported");
-    expect(factValue(row, "Result")).toBe("Not reported");
-    expect(factValue(row, "Spawned by")).toBe("Not reported");
+    expect([...row.querySelectorAll("dt")].map((term) => term.textContent)).toEqual([
+      "State",
+      "Model",
+      "Current activity",
+      "Tokens",
+      "Tool calls",
+    ]);
+    expect(factValue(row, "State")).toBe("Running");
+  });
+
+  it("leaves the details list empty when every optional fact is unavailable or blank", () => {
+    const row = parseHtml(
+      agentRowHtml(
+        agentRows([{ id: "a1", description: "  ", model: "", reasoning_effort: "\t", state: "" }])[0],
+      ),
+    ).firstElementChild;
+
+    expect(row.querySelectorAll(".surface-agent-fact")).toHaveLength(0);
+    expect(row.textContent).not.toContain("Not reported");
+  });
+
+  it("keeps reported zero counters visible", () => {
+    const row = parseHtml(
+      agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "running", tokens: 0, tool_calls: 0 }])[0]),
+    ).firstElementChild;
+
+    expect(factValue(row, "Tokens")).toBe("0");
+    expect(factValue(row, "Tool calls")).toBe("0");
   });
 
   it("prints the model name the row arrived with, having named it nowhere itself", () => {
@@ -501,7 +525,7 @@ describe("the text a viewer clips", () => {
   });
 
   it("clips the summary label but leaves expanded agent details readable in full", () => {
-    const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0], { compact: true }));
+    const row = parseHtml(agentRowHtml(agentRows([{ ...readerEntry, result: "Read every file" }])[0], { compact: true }));
     expect(row.querySelector(".surface-row-label").matches(CLIP_SELECTOR)).toBe(true);
     expect(row.querySelector(".surface-row-label").matches(PRESSABLE_CLIP_SELECTOR)).toBe(false);
     expect(row.querySelector(".surface-row-detail").matches(CLIP_SELECTOR)).toBe(false);

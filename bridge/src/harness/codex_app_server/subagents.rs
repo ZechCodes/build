@@ -3,7 +3,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use super::protocol::{ItemLifecycle, ServerNotification, ThreadMetadataNotification};
+use super::protocol::{
+    ItemLifecycle, ServerNotification, ThreadMetadataNotification, ThreadReadResult,
+};
 use crate::harness::surfaces::{AgentSurfaces, SurfaceAgent};
 
 const MAX_SUBAGENTS: usize = 128;
@@ -19,6 +21,7 @@ const SEEN_EVENT_LIMIT: usize = 256;
 pub struct CodexSubagents {
     agents: Vec<TrackedAgent>,
     seen_events: VecDeque<(ItemLifecycle, String, String, &'static str)>,
+    hydration_in_flight: Option<(String, u64, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -26,9 +29,105 @@ struct TrackedAgent {
     surface: SurfaceAgent,
     configured_model: bool,
     configured_effort: bool,
+    model_revision: u64,
+    effort_revision: u64,
+    needs_hydration: bool,
 }
 
 impl CodexSubagents {
+    /// Returns newly discovered child ids whose authoritative thread summary
+    /// has not yet been requested from app-server.
+    pub fn hydration_candidate(&mut self) -> Option<String> {
+        if self.hydration_in_flight.is_some() {
+            return None;
+        }
+        let tracked = self
+            .agents
+            .iter_mut()
+            .find(|tracked| tracked.needs_hydration)?;
+        tracked.needs_hydration = false;
+        let id = tracked.surface.id.clone();
+        self.hydration_in_flight =
+            Some((id.clone(), tracked.model_revision, tracked.effort_revision));
+        Some(id)
+    }
+
+    pub fn hydration_finished(&mut self, thread_id: &str, retry: bool) {
+        if self
+            .hydration_in_flight
+            .as_ref()
+            .map(|flight| flight.0.as_str())
+            != Some(thread_id)
+        {
+            return;
+        }
+        self.hydration_in_flight = None;
+        if let Some(tracked) = self
+            .agents
+            .iter_mut()
+            .find(|tracked| tracked.surface.id == thread_id)
+        {
+            tracked.needs_hydration |= retry;
+        }
+    }
+
+    pub fn apply_thread_read(&mut self, result: &ThreadReadResult, expected_parent: &str) -> bool {
+        let thread = &result.thread;
+        if thread.parent_thread_id.as_deref() != Some(expected_parent) {
+            return false;
+        }
+        let preview = bounded_text(thread.preview.as_deref(), MESSAGE_LIMIT);
+        let label = bounded_text(
+            thread
+                .agent_role
+                .as_deref()
+                .or(thread.agent_nickname.as_deref())
+                .or(thread.name.as_deref()),
+            LABEL_LIMIT,
+        );
+        let model = thread
+            .model
+            .as_ref()
+            .and_then(|value| bounded_text(value.as_deref(), LABEL_LIMIT));
+        let effort = thread
+            .reasoning_effort
+            .as_ref()
+            .and_then(|value| bounded_text(value.as_deref(), LABEL_LIMIT));
+        let Some((in_flight_id, model_revision, effort_revision)) =
+            self.hydration_in_flight.as_ref()
+        else {
+            return false;
+        };
+        if in_flight_id != &thread.id {
+            return false;
+        }
+        let (model_revision, effort_revision) = (*model_revision, *effort_revision);
+        self.update_existing(&thread.id, |tracked| {
+            let before = tracked.surface.clone();
+            let model_fresh = tracked.model_revision == model_revision;
+            let effort_fresh = tracked.effort_revision == effort_revision;
+            let model = model_fresh.then_some(model.as_deref()).flatten();
+            let effort = effort_fresh.then_some(effort.as_deref()).flatten();
+            apply_configured_metadata(
+                tracked,
+                false,
+                preview.as_deref(),
+                label.as_deref(),
+                model,
+                effort,
+            );
+            if model_fresh && thread.model == Some(None) {
+                tracked.surface.model = None;
+                tracked.configured_model = true;
+            }
+            if effort_fresh && thread.reasoning_effort == Some(None) {
+                tracked.surface.reasoning_effort = None;
+                tracked.configured_effort = true;
+            }
+            tracked.surface != before
+        })
+    }
+
     pub fn apply(&mut self, notification: &ServerNotification) -> bool {
         let ServerNotification::Item(item) = notification else {
             return false;
@@ -84,14 +183,17 @@ impl CodexSubagents {
                 let model = bounded_text(model.as_deref(), LABEL_LIMIT);
                 let effort = bounded_text(reasoning_effort.as_deref(), LABEL_LIMIT);
                 self.upsert(thread_id, |tracked, created| {
-                    apply_configured_metadata(
+                    let changed = apply_configured_metadata(
                         tracked,
                         created,
                         preview.as_deref(),
                         label.as_deref(),
                         model.as_deref(),
                         effort.as_deref(),
-                    )
+                    );
+                    tracked.model_revision += u64::from(model.is_some());
+                    tracked.effort_revision += u64::from(effort.is_some());
+                    changed
                 })
             }
             ThreadMetadataNotification::SettingsUpdated {
@@ -104,7 +206,12 @@ impl CodexSubagents {
                     .as_ref()
                     .map(|effort| bounded_text(effort.as_deref(), LABEL_LIMIT));
                 self.update_existing(thread_id, |tracked| {
-                    apply_settings_metadata(tracked, model.as_deref(), effort)
+                    let has_model = model.is_some();
+                    let has_effort = effort.is_some();
+                    let changed = apply_settings_metadata(tracked, model.as_deref(), effort);
+                    tracked.model_revision += u64::from(has_model);
+                    tracked.effort_revision += u64::from(has_effort);
+                    changed
                 })
             }
             ThreadMetadataNotification::Started { .. } => false,
@@ -150,6 +257,7 @@ impl CodexSubagents {
                 .or(call_state);
             let message = observed.and_then(|state| optional_text(state, "message", MESSAGE_LIMIT));
             changed |= self.upsert(receiver, |tracked, created| {
+                tracked.needs_hydration = true;
                 let accepts_requested_model = !tracked.configured_model;
                 let accepts_requested_effort = !tracked.configured_effort;
                 let agent = &mut tracked.surface;
@@ -202,6 +310,7 @@ impl CodexSubagents {
             _ => None,
         };
         self.upsert(thread_id, |tracked, created| {
+            tracked.needs_hydration = true;
             let agent = &mut tracked.surface;
             let before = agent.clone();
             if created {
@@ -491,6 +600,85 @@ mod tests {
         assert_eq!(agent.description.as_deref(), Some("Inspect the parser"));
         assert_eq!(agent.model.as_deref(), Some("gpt-6-astra"));
         assert_eq!(agent.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn activity_requests_one_authoritative_read_and_applies_only_direct_child() {
+        let mut held = CodexSubagents::default();
+        let activity = item(json!({
+            "id":"activity", "type":"subAgentActivity", "agentPath":"/root/reviewer",
+            "agentThreadId":"child", "kind":"started"
+        }));
+        held.apply(&activity);
+        assert_eq!(held.hydration_candidate().as_deref(), Some("child"));
+        assert!(held.hydration_candidate().is_none());
+
+        let result = ThreadReadResult {
+            thread: super::super::protocol::ThreadSummary {
+                id: "child".to_string(),
+                parent_thread_id: Some("other".to_string()),
+                preview: Some("".to_string()),
+                agent_role: None,
+                agent_nickname: Some("Schrodinger".to_string()),
+                name: None,
+                model: Some(Some("gpt-5.6-sol".to_string())),
+                reasoning_effort: Some(Some("low".to_string())),
+            },
+        };
+        assert!(!held.apply_thread_read(&result, "parent"));
+        let mut direct = result;
+        direct.thread.parent_thread_id = Some("parent".to_string());
+        assert!(held.apply_thread_read(&direct, "parent"));
+        held.hydration_finished("child", false);
+
+        let agent = &held.snapshot().unwrap().subagents[0];
+        assert_eq!(agent.label, "/root/reviewer");
+        assert_eq!(agent.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn newer_settings_outrank_an_old_read_and_a_fresh_read_can_clear_effort() {
+        let mut held = CodexSubagents::default();
+        held.apply(&item(json!({
+            "id":"activity-1", "type":"subAgentActivity", "agentPath":"worker",
+            "agentThreadId":"child", "kind":"started"
+        })));
+        assert_eq!(held.hydration_candidate().as_deref(), Some("child"));
+        held.apply_thread_metadata(
+            &ThreadMetadataNotification::SettingsUpdated {
+                thread_id: "child".to_string(),
+                model: Some("new-model".to_string()),
+                reasoning_effort: Some(Some("high".to_string())),
+            },
+            "parent",
+        );
+        let mut read = ThreadReadResult {
+            thread: super::super::protocol::ThreadSummary {
+                id: "child".to_string(),
+                parent_thread_id: Some("parent".to_string()),
+                preview: None,
+                agent_role: None,
+                agent_nickname: None,
+                name: None,
+                model: Some(Some("old-model".to_string())),
+                reasoning_effort: Some(Some("low".to_string())),
+            },
+        };
+        assert!(!held.apply_thread_read(&read, "parent"));
+        held.hydration_finished("child", false);
+
+        held.apply(&item(json!({
+            "id":"activity-2", "type":"subAgentActivity", "agentPath":"worker",
+            "agentThreadId":"child", "kind":"interacted"
+        })));
+        assert_eq!(held.hydration_candidate().as_deref(), Some("child"));
+        read.thread.model = Some(Some("newer-model".to_string()));
+        read.thread.reasoning_effort = Some(None);
+        assert!(held.apply_thread_read(&read, "parent"));
+        let agent = &held.snapshot().unwrap().subagents[0];
+        assert_eq!(agent.model.as_deref(), Some("newer-model"));
+        assert!(agent.reasoning_effort.is_none());
     }
 
     #[test]

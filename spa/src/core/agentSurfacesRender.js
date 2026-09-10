@@ -97,14 +97,17 @@ function surfaceRowHtml(rowClass, row, { trailing = "", body = "" } = {}) {
   </div>`;
 }
 
-const notReported = (value) => value || "Not reported";
-
 function agentFactHtml(label, value, { className = "" } = {}) {
   const classes = className ? ` class="${className}"` : "";
   return `<div class="surface-agent-fact">
       <dt>${esc(label)}</dt>
-      <dd${classes}>${esc(notReported(value))}</dd>
+      <dd${classes}>${esc(value)}</dd>
     </div>`;
+}
+
+function optionalAgentFactHtml(label, value, options) {
+  const unavailable = value === null || value === undefined || (typeof value === "string" && !value.trim());
+  return unavailable ? "" : agentFactHtml(label, value, options);
 }
 
 function agentState(row) {
@@ -114,12 +117,12 @@ function agentState(row) {
 const SPAWNING_CALL_TITLE = "Open the call that spawned this";
 
 function spawningCallHtml(row) {
-  if (!Number.isFinite(row.callSequence)) return `<span class="surface-agent-unavailable">Not reported</span>`;
   return `<button type="button" class="${ROW_JUMP_CLASS}" data-call-sequence="${esc(row.callSequence)}"
     title="${SPAWNING_CALL_TITLE}" aria-label="${SPAWNING_CALL_TITLE}">Open spawning call&nbsp;↗</button>`;
 }
 
 function spawningCallFactHtml(row) {
+  if (!Number.isFinite(row.callSequence)) return "";
   return `<div class="surface-agent-fact">
       <dt>Spawned by</dt>
       <dd>${spawningCallHtml(row)}</dd>
@@ -131,14 +134,14 @@ function agentDetailsHtml(row) {
   const result = row.error || row.result;
   return `<div class="${AGENT_DETAILS_CLASS}">
     <dl class="${AGENT_FACTS_CLASS}">
-      ${agentFactHtml("Description", row.description)}
-      ${agentFactHtml("State", agentState(row))}
-      ${agentFactHtml("Model", row.model, { className: "surface-row-model" })}
-      ${agentFactHtml("Reasoning effort", row.reasoningEffort, { className: "surface-row-effort" })}
-      ${agentFactHtml("Current activity", row.lastTool)}
-      ${agentFactHtml(row.error ? "Error" : "Result", result, { className: resultClass })}
-      ${agentFactHtml("Tokens", Number.isFinite(row.tokens) ? String(row.tokens) : "")}
-      ${agentFactHtml("Tool calls", Number.isFinite(row.toolCalls) ? String(row.toolCalls) : "")}
+      ${optionalAgentFactHtml("Description", row.description)}
+      ${optionalAgentFactHtml("State", agentState(row))}
+      ${optionalAgentFactHtml("Model", row.model, { className: "surface-row-model" })}
+      ${optionalAgentFactHtml("Reasoning effort", row.reasoningEffort, { className: "surface-row-effort" })}
+      ${optionalAgentFactHtml("Current activity", row.lastTool)}
+      ${optionalAgentFactHtml(row.error ? "Error" : "Result", result, { className: resultClass })}
+      ${Number.isFinite(row.tokens) ? agentFactHtml("Tokens", String(row.tokens)) : ""}
+      ${Number.isFinite(row.toolCalls) ? agentFactHtml("Tool calls", String(row.toolCalls)) : ""}
       ${Number.isFinite(row.attempt) ? agentFactHtml("Attempt", String(row.attempt)) : ""}
       ${spawningCallFactHtml(row)}
     </dl>

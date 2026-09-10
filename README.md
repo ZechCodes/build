@@ -59,6 +59,18 @@ short-lived — their lifetime is `TTL_SECONDS` in `skriftapp/buildapp/ice_serve
 per authenticated user by the api, and reach the bridge inside the sealed session; the TURN key
 itself never leaves the api Secret.
 
+## Device project folders
+
+Open the device dropdown and select the settings cog beside a device to open
+its settings page. Use **Choose folder…** to browse that device's filesystem
+and select the folder where new projects should be kept. The device must be
+online to browse or save its folder.
+
+The choice is saved on that device and survives bridge restarts. It applies to
+new repositories and clones; existing repositories and task worktrees stay
+where they are. `BRIDGE_PROJECTS_DIR` supplies the initial default when no
+projects folder has been saved in the bridge configuration.
+
 ## Develop
 
 ```bash

@@ -44,7 +44,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
 }));
 const changed = [];
 const { App, disposeApplicationScope } = await import("../src/app.js");
-const { adoptSession, greetLiveBridge, openAppSession } = await import("../src/connection.js");
+const { adoptSession, greetLiveBridge, openAppSession, openDeviceSettingsSession } = await import("../src/connection.js");
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -254,5 +254,32 @@ describe("the upgrade policy", () => {
     sessions[0].push({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
     sessions[1].push({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
     expect(delivered).toEqual([[1, { candidate: "candidate:9 1 udp" }]]);
+  });
+});
+
+describe("device settings connections", () => {
+  it("opens the named device without adopting it or inheriting the active device's offline state", async () => {
+    const current = fakeSession();
+    const settings = { ...fakeSession(), deviceId: "dev-b" };
+    App.session = current;
+    App.offline = true;
+    relay.openRelaySession.mockResolvedValueOnce(settings);
+    const onLost = vi.fn();
+    await expect(openDeviceSettingsSession("dev-b", { onLost })).resolves.toBe(settings);
+    const options = relay.openRelaySession.mock.calls[0][0];
+    expect(options.preferDeviceId).toBe("dev-b");
+    expect(options.waitForDevice).toBe(false);
+    expect(options.getPinnedDeviceKey).toBeTypeOf("function");
+    expect(options.isPaused).toBeUndefined();
+    expect(options.onLost).toBe(onLost);
+    expect(App.session).toBe(current);
+    expect(App.offline).toBe(true);
+  });
+  it("closes a mismatched session before exposing any RPC", async () => {
+    const wrong = fakeSession();
+    relay.openRelaySession.mockResolvedValueOnce(wrong);
+    await expect(openDeviceSettingsSession("dev-b")).rejects.toThrow("requested device");
+    expect(wrong.close).toHaveBeenCalledOnce();
+    expect(wrong.call).not.toHaveBeenCalled();
   });
 });

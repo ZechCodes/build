@@ -287,3 +287,11 @@ describe("hashFromRoute", () => {
     expect(hashFromRoute({ name: "issue", id: "i" })).toBe("#/inbox");
   });
 });
+
+describe("device settings routes", () => {
+  it("round-trips a device id separately from the active workspace", () => {
+    const route = { name: "device", id: "device / 2" };
+    expect(hashFromRoute(route)).toBe("#/device/device%20%2F%202/settings");
+    expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+  });
+});

@@ -61,6 +61,26 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
   });
 }
 
+/** A settings page owns its connection: it never changes the active workspace,
+ * and the active device's offline state must not pause another device's RPCs. */
+export async function openDeviceSettingsSession(deviceId, { onLost } = {}) {
+  const session = await openRelaySession({
+    relayUrl: RELAY_URL,
+    transport,
+    WebSocketImpl: WebSocket,
+    fetchToken: fetchGatewayToken,
+    getPinnedDeviceKey: pinnedDeviceTransportKey,
+    preferDeviceId: deviceId,
+    waitForDevice: false,
+    onLost,
+  });
+  if (session.deviceId !== deviceId) {
+    session.close();
+    throw new Error("Could not connect to the requested device.");
+  }
+  return session;
+}
+
 // ---- the peer path (spec §SPA carrier and migration policy) ------------------
 
 let peerLink = null;

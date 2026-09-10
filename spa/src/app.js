@@ -5,6 +5,7 @@ import { routeFromHash, hashFromRoute } from "./core/router.js";
 import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderIssue } from "./views/issueView.js";
+import { renderDeviceSettings } from "./views/deviceSettings.js";
 import { renderAccount } from "./views/account.js";
 import { renderCaptureDecision } from "./views/captureDecision.js";
 import { renderResolving } from "./views/resolving.js";
@@ -220,6 +221,7 @@ const VIEWS = {
   issue: renderIssue,
   capture: renderCaptureDecision,
   account: renderAccount,
+  device: renderDeviceSettings,
   resolve: renderResolving,
 };
 

@@ -118,9 +118,25 @@ a { color:inherit; }
 /* shared chrome bits (used by the inbox rail and gate/settings views) */
 .badge { background:var(--accent); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
 .dot { width:7px; height:7px; border-radius:999px; background:var(--green); display:inline-block; margin-right:5px; }
-/* device picker (multi-device) */
-#devpick { font:inherit; font-size:12px; color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px 6px; max-width:180px; }
-#devpick:focus { outline:none; border-color:var(--accent); }
+/* Device picker: separate native controls keep selection and settings accessible. */
+#devpick { font:inherit; font-size:12px; color:var(--ink2); position:relative; max-width:100%; padding:0; border:0; background:none; }
+.device-picker-toggle { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; font:inherit; color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px; cursor:pointer; }
+.device-picker-toggle > span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.device-picker-menu { position:absolute; bottom:calc(100% + 6px); left:0; right:0; z-index:60; padding:4px; border:1px solid var(--line); border-radius:10px; background:var(--panel); box-shadow:0 8px 24px var(--shadow); max-height:60vh; overflow-y:auto; }
+.device-picker-row { display:flex; align-items:stretch; }
+.device-picker-row button { color:var(--ink2); background:none; border:0; border-radius:6px; font:inherit; cursor:pointer; min-height:36px; }
+.device-picker-choice { flex:1; min-width:0; display:flex; justify-content:space-between; gap:6px; text-align:left; padding:7px; }
+.device-picker-choice > span:first-child { overflow-wrap:anywhere; }
+.device-picker-choice[aria-pressed="true"] { color:var(--accent); }
+.device-picker-settings { flex:0 0 36px; display:grid; place-items:center; }
+#devpick svg { display:block; width:16px; height:16px; }
+.device-picker-row button:hover { background:var(--accent-soft); }
+#devpick button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.device-picker-error { color:var(--amber); font-size:12px; }
+.device-picker-error:empty { display:none; }
+#device-projects-path { overflow-wrap:anywhere; }
+body.inbox-collapsed #root.device-settings { padding-top:calc(48px + env(safe-area-inset-top, 0px)); }
+
 /* offline banner */
 #offbar { background:var(--amber-bg); color:var(--amber); border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent); padding:7px 18px; font-size:12.5px; }
 /* new-version banner: an offer, not a warning — accent, one Reload, never auto.
@@ -797,8 +813,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .browse-list { max-height:44vh; overflow:auto; border:1px solid var(--line); border-radius:10px; }
 .browse-row { display:flex; align-items:center; gap:10px; padding:8px 11px; border-top:1px solid var(--line2); font-size:13px; }
 .browse-row:first-child { border-top:0; }
-.browse-row.nav { cursor:pointer; }
-.browse-row.nav:hover { background:var(--accent-soft); }
+.browse-nav { cursor:pointer; border:0; background:none; color:inherit; font:inherit; text-align:left; padding:6px; border-radius:4px; overflow-wrap:anywhere; min-width:0; }
+.browse-nav:hover { background:var(--accent-soft); }
+.browse-nav:focus-visible { outline:2px solid var(--accent); }
 .browse-row .bname { flex:1; }
 .browse-row .bgit { font-size:9px; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
 /* text inputs in modals/sheets */
@@ -838,7 +855,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   /* iOS Safari auto-zooms focused fields under 16px — every text entry and
      select must be at least 16px on small screens. */
   input:not([type=checkbox]), select, textarea { font-size:16px !important; }
-  #devpick { max-width:130px; }
   main { padding:16px 12px 96px; }
   .board-head { flex-wrap:wrap; gap:10px; }
   .board-head h1 { font-size:20px; }

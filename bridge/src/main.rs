@@ -372,13 +372,13 @@ fn construct_app(runtime: &RuntimePaths, identity: &DeviceIdentity) -> Result<Ap
         &identity.device_id,
         &identity.identity_private_key_b64,
     ));
-    let mut app = register_environment_projects(app, &config.base_branch);
-    app = app
-        .with_config(&runtime.config_path)
-        .map_err(|error| format!("cannot load config: {error}"))?;
-    if let Ok(dir) = std::env::var("BRIDGE_PROJECTS_DIR") {
-        app.set_projects_dir(std::path::PathBuf::from(dir));
+    let app = register_environment_projects(app, &config.base_branch);
+    let app = match std::env::var_os("BRIDGE_PROJECTS_DIR") {
+        Some(dir) => app.with_projects_dir_default(std::path::PathBuf::from(dir)),
+        None => app,
     }
+    .with_config(&runtime.config_path)
+    .map_err(|error| format!("cannot load config: {error}"))?;
     app.with_task_store(&runtime.tasks_dir)
         .map_err(|error| task_store_startup_error(&runtime.tasks_dir, &error))
 }

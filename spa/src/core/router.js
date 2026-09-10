@@ -146,6 +146,8 @@ function surfaceFromHashPath(hash) {
     .filter(Boolean)
     .map(decodeURIComponent);
   switch (parts[0]) {
+    case "device":
+      return parts[1] ? { name: "device", id: parts[1] } : inbox();
     case "inbox":
       return inbox();
     case "account":
@@ -215,6 +217,7 @@ export function hashFromRoute(route) {
     const base = `#/project/${encode(route.projectId)}/issue/${encode(route.id)}`;
     return route.stage ? `${base}/stage/${encode(route.stage)}` : base;
   }
+  if (route.name === "device" && route.id) return `#/device/${encode(route.id)}/settings`;
   if (route.name === "capture" && route.id) return `#/capture/${encode(route.id)}`;
   if (route.name === "account") return `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`;
   return "#/inbox";

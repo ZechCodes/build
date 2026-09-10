@@ -8,6 +8,42 @@ fn missing_config_is_the_only_absent_config_case() {
 }
 
 #[test]
+fn a_saved_projects_directory_wins_over_the_device_default_after_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.json");
+    let environment_default = directory.path().join("environment-projects");
+    let chosen = directory.path().join("chosen-projects");
+    let new_app = || {
+        AppState::new_unrooted(
+            directory.path().join("worktrees"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+    };
+
+    let mut first_start = new_app()
+        .with_projects_dir_default(environment_default.clone())
+        .with_config(&config_path)
+        .unwrap();
+    assert_eq!(
+        first_start.handle(req("settings.get", json!({})))["result"]["projects_dir"],
+        environment_default.to_string_lossy().as_ref()
+    );
+    let saved = first_start.handle(req("settings.set", json!({ "projects_dir": chosen })));
+    assert_eq!(saved["ok"], true, "{saved:?}");
+
+    let mut restarted = new_app()
+        .with_projects_dir_default(environment_default)
+        .with_config(&config_path)
+        .unwrap();
+    assert_eq!(
+        restarted.handle(req("settings.get", json!({})))["result"]["projects_dir"],
+        chosen.to_string_lossy().as_ref()
+    );
+}
+
+#[test]
 fn malformed_config_fails_with_its_path() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("malformed-config.json");

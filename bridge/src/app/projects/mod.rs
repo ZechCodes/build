@@ -105,6 +105,13 @@ impl AppState {
         self.projects_dir = dir;
     }
 
+    /// Seed where cloned repos land when the persisted device settings do not
+    /// contain a user choice. Call before [`AppState::with_config`].
+    pub fn with_projects_dir_default(mut self, dir: std::path::PathBuf) -> Self {
+        self.set_projects_dir(dir);
+        self
+    }
+
     /// The project repo path to stamp on a persisted record: the live project's
     /// canonical path if it is registered, else the retained record path (a
     /// parked repo-missing entity), else empty.

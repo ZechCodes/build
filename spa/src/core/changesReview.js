@@ -91,6 +91,7 @@ export function createReviewPlug({
   // surface that names none keeps the safety poll and nothing else.
   entity = null,
   navigate = null,
+  viewingContext = null,
 }) {
   const openFile = (navigate && navigate.openFile) || null;
   const cacheScope = currentCacheScope();
@@ -112,6 +113,7 @@ export function createReviewPlug({
   let triageEnabled = false;
   let triageProject = null;
   let trustDial = false;
+  let contextFrame = 0;
   const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
   const folds = createFileFolds();
   // Disagreeing with the pass: applied to the stack on the tap, sent after, and
@@ -173,6 +175,49 @@ export function createReviewPlug({
 
   let paintChangeset = null;
   const viewport = createDiffViewport({ repaint: render });
+  const contextScroller = () => host?.closest(".cdetail-host") || host;
+  let contextForce = false;
+  const composerFocused = () => Boolean(host?.ownerDocument.activeElement?.closest?.(".composer"));
+  const syncViewingContext = () => {
+    contextFrame = 0;
+    const forced = contextForce;
+    contextForce = false;
+    if (!forced && composerFocused()) return;
+    const scroller = contextScroller();
+    if (viewingContext && scroller) viewingContext.setVisibleDiffs(scroller, "all");
+  };
+  const scheduleViewingContext = (force = false) => {
+    contextForce = contextForce || force;
+    if (!viewingContext || contextFrame || !host) return;
+    const view = host.ownerDocument.defaultView || globalThis;
+    const schedule = view.requestAnimationFrame || ((callback) => view.setTimeout(callback, 0));
+    contextFrame = schedule(syncViewingContext);
+  };
+  const onContextScroll = () => scheduleViewingContext(true);
+  const selectionTouches = (selection, root) =>
+    root && (root.contains(selection.anchorNode) || root.contains(selection.focusNode));
+  const collapsedInside = (selection, root) => selection && selection.isCollapsed && root && root.contains(selection.anchorNode);
+  const captureViewingSelection = () => {
+    if (!viewingContext || !host) return;
+    const selection = host.ownerDocument.getSelection?.();
+    const root = contextScroller();
+    if (selection && !selection.isCollapsed && selectionTouches(selection, root)) viewingContext.captureDomSelection(root);
+    else if (collapsedInside(selection, root)) viewingContext.clearSelection();
+  };
+  const attachViewingContext = () => {
+    viewingContext?.clearSelection();
+    contextScroller()?.addEventListener("scroll", onContextScroll, true);
+    host?.ownerDocument.addEventListener("selectionchange", captureViewingSelection);
+  };
+  const detachViewingContext = () => {
+    const mountedHost = host;
+    contextScroller()?.removeEventListener("scroll", onContextScroll, true);
+    mountedHost?.ownerDocument.removeEventListener("selectionchange", captureViewingSelection);
+    if (!contextFrame || !mountedHost) return;
+    const view = mountedHost.ownerDocument.defaultView || globalThis;
+    (view.cancelAnimationFrame || view.clearTimeout).call(view, contextFrame);
+    contextFrame = 0;
+  };
   // Where this surface hosts the plug's git verbs — the git toolbar above the
   // diff. A plug mounted without one (a standalone stack, a test) draws none.
   let gitActionsHost = () => null;
@@ -238,6 +283,7 @@ export function createReviewPlug({
     // the stack, and the box under the diff is the surface's — it cannot know
     // the plug became commentable unless it is told.
     onCommentsChanged();
+    syncViewingContext();
   }
 
   const claimSecret = (event) => toggleSecretSpoiler(event.target);
@@ -468,9 +514,11 @@ export function createReviewPlug({
       element,
       { gitActions = () => null, readNote = () => "", onComments = () => {}, onMarks = () => {}, reviewMarks = null } = {},
     ) {
+      detachViewingContext();
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       if (editedTimeWatcher) editedTimeWatcher.dispose();
       host = element;
+      attachViewingContext();
       gitActionsHost = gitActions;
       noteReader = readNote;
       onCommentsChanged = onComments;
@@ -507,6 +555,7 @@ export function createReviewPlug({
     sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),
 
     unmount() {
+      detachViewingContext();
       if (watcher) watcher.dispose();
       watcher = null;
       if (editedTimeWatcher) editedTimeWatcher.dispose();
@@ -520,6 +569,7 @@ export function createReviewPlug({
         host.onchange = null;
       }
       host = null;
+      viewingContext?.clear();
       trayMounted = false;
     },
   };

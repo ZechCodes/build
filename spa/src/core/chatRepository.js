@@ -14,6 +14,11 @@ const REQUIRED_OPERATION_RECEIPT_FIELDS = [
 ];
 
 const cloneAttachments = (attachments = []) => attachments.map((attachment) => ({ ...attachment }));
+const deepFreeze = (value) => {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  Object.values(value).forEach(deepFreeze);
+  return Object.freeze(value);
+};
 
 const scopeKeyOf = (scope) => {
   if (scope && typeof scope.key === "string") return scope.key;
@@ -45,10 +50,11 @@ const draftSnapshot = (draft) => ({
   revision: draft.revision,
 });
 
-const messageSnapshot = ({ body = "", attachments = [], ...rest } = {}) => Object.freeze({
+const messageSnapshot = ({ body = "", attachments = [], viewing_context, ...rest } = {}) => Object.freeze({
   ...rest,
   body,
   attachments: Object.freeze(cloneAttachments(attachments)),
+  ...(viewing_context ? { viewing_context: deepFreeze(structuredClone(viewing_context)) } : {}),
 });
 
 const deliveryMayHaveStarted = (error) =>
@@ -184,7 +190,7 @@ class ChatController {
     this.#repository.assertActive();
     assertAddress(this.#identity);
     const operationId = this.#repository.createOperationId();
-    const captured = messageSnapshot(message);
+    const captured = messageSnapshot(this.#repository.contextualize(message));
     const originalDraft = { ...draftSnapshot(this.#draft), body: captured.body, attachments: captured.attachments };
     const call = this.#repository.currentCall();
     this.#draft = {
@@ -216,7 +222,7 @@ class ChatController {
     this.#repository.assertActive();
     if (this.#bound) throw new Error("Only an unresolved chat controller can capture a creation send");
     const operationId = this.#repository.createOperationId();
-    const captured = messageSnapshot(message);
+    const captured = messageSnapshot(this.#repository.contextualize(message));
     const originalDraft = { ...draftSnapshot(this.#draft), body: captured.body, attachments: captured.attachments };
     const call = this.#repository.currentCall();
     this.#draft = {
@@ -288,6 +294,7 @@ class ChatController {
     this.#repository.assertSubmissionActive(submission);
     try {
       const validated = validatePostReceipt(receipt, submission);
+      this.#repository.clearSentSelection(submission.message.viewing_context);
       if (receipt.operation_error) {
         this.#operations.set(submission.operationId, {
           submission,
@@ -483,7 +490,7 @@ class ChatController {
   }
 }
 
-export function createChatRepository({ scope, call, createOperationId = randomOperationId }) {
+export function createChatRepository({ scope, call, createOperationId = randomOperationId, viewingContext = null }) {
   if (typeof call !== "function") throw new Error("Chat repository requires an RPC call function");
   let active = true;
   let currentCall = call;
@@ -494,6 +501,7 @@ export function createChatRepository({ scope, call, createOperationId = randomOp
   let provisionalSequence = 0;
   let epoch = 1;
   let threadPostOperations = null;
+  let messageContext = false;
   const optimisticStore = createOptimisticStore();
 
   const repository = {
@@ -529,12 +537,25 @@ export function createChatRepository({ scope, call, createOperationId = randomOp
       return threadPostOperations;
     },
 
+    contextualize(message = {}) {
+      const context = viewingContext?.snapshot?.();
+      if (!context?.items?.length) return message;
+      if (!messageContext) return message;
+      return { ...message, viewing_context: context };
+    },
+
+    clearSentSelection(context) {
+      viewingContext?.clearSelectionIfMatches?.(context);
+    },
+
     configureCapabilities(greeting = {}) {
       repository.assertActive();
       const offered = greeting.thread_post_operations;
       threadPostOperations = offered && offered.version === 1 && typeof offered.status_method === "string"
         ? Object.freeze({ version: 1, statusMethod: offered.status_method })
         : null;
+      messageContext = greeting.message_context?.version === 1;
+      viewingContext?.setEnabled?.(messageContext);
     },
 
     controller(identity) {

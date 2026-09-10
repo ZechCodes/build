@@ -54,6 +54,7 @@ export async function renderIssue() {
     issueId: id,
     projectId,
     agentSelection,
+    viewingContext: App.viewingContext,
     initialStageId: selectedStageId,
     callRpc,
     navigate: go,

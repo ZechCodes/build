@@ -570,6 +570,16 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    Specific enough to beat the shared box's own ceiling whichever order the two
    stylesheets land in. */
 .rail-composer .composer textarea { max-height:40vh; }
+.composer-context,.message-viewing-context{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.composer-context{padding:7px 8px 0}
+.message-viewing-context{margin:0 0 7px}
+.viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.viewing-context-chip.selection{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line))}
+.viewing-context-chip button{border:0;background:none;color:inherit;padding:0;cursor:pointer;font:inherit}
+.viewing-context-detail{position:relative;max-width:100%}
+.viewing-context-detail summary{cursor:pointer;list-style:none}
+.viewing-context-detail pre{max-width:320px;max-height:160px;overflow:auto;margin:5px 0 0;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);white-space:pre-wrap;font-size:11px}
+.viewing-context-detail>button{margin-top:4px;border:0;background:none;color:var(--muted);cursor:pointer;font:inherit;font-size:11px}
 /* A row that scrolls sideways rather than wrapping or squeezing what is in it,
    with no scrollbar to show for it. */
 .scrollstrip { overflow-x:auto; scrollbar-width:none; }

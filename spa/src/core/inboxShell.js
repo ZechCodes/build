@@ -87,8 +87,12 @@ function wireHoverPeek(open, rail) {
  *  destination isn't hidden behind it. On a wide one the rail is docked and
  *  stays put. */
 export function goFromInbox(route) {
-  go(route);
-  if (window.innerWidth < 900) setInboxCollapsed(true);
+  const navigation = go(route);
+  const closeAfterNavigation = (accepted) => {
+    if (accepted && window.innerWidth < 900) setInboxCollapsed(true);
+    return accepted;
+  };
+  return navigation instanceof Promise ? navigation.then(closeAfterNavigation) : closeAfterNavigation(navigation);
 }
 
 /* The two faces — the one list, or the projects — behind the switch at the

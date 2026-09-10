@@ -67,6 +67,7 @@ export function createWorktreeReview({
   onFinished = () => {},
   onGone = () => {},
   navigate = null,
+  viewingContext = null,
 }) {
   // A mutating action (request changes / merge / abandon) is running: it is
   // about to adopt or remove this worktree, so the poll must not race it to a
@@ -141,6 +142,7 @@ export function createWorktreeReview({
 
   const plug = createReviewPlug({
     isOffline,
+    viewingContext,
     navigate,
     // Until this worktree is adopted it is its own entity; once it is, the run
     // it became is the one the bridge names.
@@ -167,7 +169,10 @@ export function createWorktreeReview({
     },
     submit: async (messages) => {
       try {
-        await act(() => adopt("run.request_changes", { messages }));
+        const context = viewingContext?.snapshot?.();
+        const contextualMessages = context ? messages.map((message) => ({ ...message, viewing_context: context })) : messages;
+        await act(() => adopt("run.request_changes", { messages: contextualMessages }));
+        viewingContext?.clearSelectionIfMatches?.(context);
       } catch (e) {
         // Adoption succeeded but the follow-up failed: the task now owns this
         // worktree and its error — hand off rather than stranding the user on a

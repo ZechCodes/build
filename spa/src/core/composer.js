@@ -119,6 +119,7 @@ export const composerPartIds = (inputId) => ({
   file: `${inputId}file`,
   sendControl: `${inputId}sendcontrol`,
   modelMenu: `${inputId}model`,
+  context: `${inputId}context`,
 });
 
 /// The two ways one message can reach an agent that is already working.
@@ -173,6 +174,7 @@ export function composerHtml({
     : "";
   return `<div class="thread-composer">
     <div class="composer${attachable ? " attachable" : ""}">
+      <div class="composer-context" id="${esc(parts.context)}" hidden></div>
       ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
       <textarea id="${esc(inputId)}" rows="1" placeholder="${esc(placeholder)}"></textarea>
       <div class="composer-bar">

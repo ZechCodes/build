@@ -129,6 +129,7 @@ export function mountIssueView(
     // carries exactly one agent session, so this all but always names it — but
     // it is the rail's bubble that says so, and the poll asks with it.
     agentSelection = createAgentSelection(),
+    viewingContext = null,
   } = {},
 ) {
   let disposed = false;
@@ -183,12 +184,14 @@ export function mountIssueView(
       // agent rail may retarget its later posts while an earlier comment is
       // still crossing the bridge.
       const destination = { stageId: stage.id, agentScope: agentSelection.scope() };
+      const context = viewingContext?.snapshot?.();
       for (const comment of comments) {
         await callRpc("issue.comment_add", {
           issue_id: issueId,
           stage_id: destination.stageId,
           body: comment.comment,
           anchor: docCommentAnchor(comment),
+          ...(context ? { viewing_context: context } : {}),
         });
       }
       // The general note is a turn like any other: durable on the daemon's side
@@ -201,9 +204,11 @@ export function mountIssueView(
             entity_id: issueId,
             ...destination.agentScope,
             body: general,
+            ...(context ? { viewing_context: context } : {}),
             ...MUTATION_THREAD_PAGE,
           }),
         );
+      viewingContext?.clearSelectionIfMatches?.(context);
       renderedKey = null;
       await refresh();
     },

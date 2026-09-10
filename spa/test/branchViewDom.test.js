@@ -37,13 +37,14 @@ const finishableRow = (over = {}) => ({
 
 let App;
 let renderBranch;
+let shouldRetainDirtyFilesPane;
 
 beforeEach(async () => {
   vi.resetModules();
   document.body.innerHTML = bodyHtml;
   location.hash = "#/p/p1/branch/build%2Flogin/changes";
   ({ App } = await import("../src/app.js"));
-  ({ renderBranch } = await import("../src/views/branchView.js"));
+  ({ renderBranch, shouldRetainDirtyFilesPane } = await import("../src/views/branchView.js"));
   App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
   // core/toolbar.js isn't mounted in this file — Done paints into its verb
   // slot (setToolbarVerb), so stand in for the one thing branchView.js needs
@@ -59,6 +60,12 @@ afterEach(() => {
 });
 
 describe("the branch surface", () => {
+  it("defers a background Files remount while its editor is dirty", () => {
+    expect(shouldRetainDirtyFilesPane("files", { hasUnsavedChanges: () => true })).toBe(true);
+    expect(shouldRetainDirtyFilesPane("files", { hasUnsavedChanges: () => false })).toBe(false);
+    expect(shouldRetainDirtyFilesPane("changes", { hasUnsavedChanges: () => true })).toBe(false);
+  });
+
   // The reviewer's complaint: switching branches showed a bare loading frame
   // for the length of a round trip. The feed row stands the surface up first.
   it("stands the surface up from the feed row before the first read answers", async () => {
@@ -113,6 +120,7 @@ describe("the branch surface", () => {
     await renderBranch();
     await flush();
     expect(document.querySelector("#tabbody").classList.contains("flush")).toBe(true);
+    if (tab === "files") expect(App.routeLeaveGuard).toEqual(expect.any(Function));
   });
 
   // The toolbar's create form arms this right before navigating here — the

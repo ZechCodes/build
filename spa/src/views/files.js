@@ -182,6 +182,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
   let editor = null;
   let selectedPath = null;
   let savingState = null;
+  let fileRequest = 0;
 
   const onBeforeUnload = (event) => {
     if (!viewerState?.snapshot().dirty) return;
@@ -248,9 +249,9 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
 
   // The local cache's address for one directory's listing. A primary checkout
   // names no entity and takes no part.
-  const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
+  const cacheEntityId = () => (scope && (scope.run_id || scope.worktree_id)) || null;
   const treeAddress = (path) =>
-    cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind: "tree", sub: path }) || null : null;
+    cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;
 
   let treeRequest = 0; // which navigation the paints below still speak for
   let liveRenderedRequest = 0; // a live answer outranks the cache for its request
@@ -258,7 +259,6 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
   const loadTree = async (nextDir) => {
-    if (!await discardDirty()) return;
     const request = ++treeRequest;
     const address = treeAddress(nextDir);
     if (address) {
@@ -326,11 +326,6 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     previewEl.querySelector(".file-save").disabled = false;
   };
 
-  const maySelectFile = async (path) => {
-    if (disposed) return false;
-    return path === selectedPath || discardDirty();
-  };
-
   const beginFileSelection = (path, row) => {
     if (requestedLine?.path !== path) requestedLine = null;
     onFileOpen?.(path);
@@ -346,12 +341,21 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     showPlaceholder("loading");
   };
 
+  const selectedFileIsCurrent = (request, path) =>
+    !disposed && request === fileRequest && selectedPath === path;
+
+  const editorIsCurrent = (path, state) =>
+    !disposed && selectedPath === path && viewerState === state;
+
   const selectFile = async (path, row) => {
-    if (!await maySelectFile(path)) return;
+    if (disposed || path === selectedPath) return;
+    if (!await discardDirty()) return;
+    if (disposed || path === selectedPath) return;
+    const request = ++fileRequest;
     // The tab names the file it is standing in, so the URL can say so too.
     beginFileSelection(path, row);
     const result = await readFile(path);
-    if (disposed) return;
+    if (!selectedFileIsCurrent(request, path)) return;
     if (result.error) {
       showPlaceholder("error", `cannot read: ${result.error.message || "error"}`);
       return;
@@ -401,8 +405,15 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
   };
 
   const reloadEditor = async (path) => {
+    const expectedState = viewerState;
     if (!await discardDirty()) return;
+    if (!editorIsCurrent(path, expectedState)) return;
+    const reloadingState = viewerState;
+    const reloadingValue = reloadingState.snapshot().value;
+    const request = ++fileRequest;
     const result = await readFile(path);
+    if (!selectedFileIsCurrent(request, path) || viewerState !== reloadingState) return;
+    if (reloadingState.snapshot().value !== reloadingValue) return;
     if (result.error) {
       previewEl.querySelector(".file-save-status").textContent = result.error.message || "Reload failed";
       return;
@@ -523,6 +534,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
     dispose() {
       disposed = true;
       treeRequest += 1;
+      fileRequest += 1;
       editor?.dispose();
       viewingContext?.clear?.();
       document.removeEventListener("selectionchange", onDocumentSelectionChange);
@@ -530,6 +542,10 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
       drawer.dispose();
     },
     canLeave: discardDirty,
+    hasUnsavedChanges: () => Boolean(viewerState?.snapshot().dirty),
+    retargetScope: (nextScope) => {
+      scope = nextScope;
+    },
   };
 }
 

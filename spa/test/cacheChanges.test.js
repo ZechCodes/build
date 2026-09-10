@@ -47,10 +47,10 @@ beforeEach(async () => {
   ({ mountGitPane } = await import("../src/core/gitPane.js"));
 });
 
-const mountPane = async (callRpc) => {
+const mountPane = async (callRpc, options = {}) => {
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
+  const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, ...options });
   await settle();
   return { container, pane };
 };
@@ -122,6 +122,15 @@ describe("the live write-through", () => {
 });
 
 describe("a commit's detail", () => {
+  it("addresses a selected commit by its full SHA", async () => {
+    const viewingContext = { set: vi.fn(), setVisibleDiffs: vi.fn(), captureDomSelection: vi.fn(), clearSelection: vi.fn(), clear: vi.fn() };
+    const { container, pane } = await mountPane(liveRpc(), { viewingContext });
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(viewingContext.set).toHaveBeenLastCalledWith({ kind: "commit", sha: "a".repeat(40) });
+    pane.dispose();
+  });
+
   it("serves the cached payload without asking the bridge for what cannot change", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "show", sub: "a".repeat(40) }, show());
     const callRpc = liveRpc();
@@ -142,6 +151,20 @@ describe("a commit's detail", () => {
     await settle();
     const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "show", sub: "a".repeat(40) });
     expect(record.value.body).toBe("why it happened");
+    pane.dispose();
+  });
+});
+
+describe("uncommitted viewing context", () => {
+  it("remeasures visible diff paths after paint and scroll", async () => {
+    const viewingContext = { set: vi.fn(), setVisibleDiffs: vi.fn(), captureDomSelection: vi.fn(), clearSelection: vi.fn(), clear: vi.fn() };
+    const { container, pane } = await mountPane(liveRpc(), { viewingContext });
+    const scroller = container.querySelector(".cdetail-host");
+    expect(viewingContext.setVisibleDiffs).toHaveBeenCalledWith(scroller, "uncommitted");
+    viewingContext.setVisibleDiffs.mockClear();
+    scroller.dispatchEvent(new Event("scroll"));
+    await settle();
+    expect(viewingContext.setVisibleDiffs).toHaveBeenCalledWith(scroller, "uncommitted");
     pane.dispose();
   });
 });

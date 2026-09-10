@@ -40,6 +40,23 @@ beforeEach(async () => {
 });
 
 describe("the saved aggregate diff", () => {
+  it("tracks the files actually visible in the all-changes scroller", async () => {
+    const viewingContext = { setVisibleDiffs: vi.fn(), captureDomSelection: vi.fn(), clearSelection: vi.fn(), clear: vi.fn() };
+    plug = createReviewPlug({
+      fetchDiff: vi.fn(async () => ({ patch: PATCH })),
+      entity: "run-1",
+      viewingContext,
+    });
+    plug.mount(host);
+    await settle();
+    expect(viewingContext.setVisibleDiffs).toHaveBeenCalledWith(host, "all");
+    viewingContext.setVisibleDiffs.mockClear();
+    host.dispatchEvent(new Event("scroll"));
+    await settle();
+    expect(viewingContext.setVisibleDiffs).toHaveBeenCalledWith(host, "all");
+    plug.unmount();
+  });
+
   it("paints whole — tray included — while the live one is being fetched", async () => {
     await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH, commentable: true });
     plug = createReviewPlug({ fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1", submit: vi.fn() });

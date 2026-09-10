@@ -77,6 +77,7 @@ export function createTaskReview({
   agentSelection = createAgentSelection(),
   onMerged,
   navigate = null,
+  viewingContext = null,
 }) {
   // ONE single-flight latch for the git split button, owned by the plug — not
   // by each repaint. Without a shared latch, mid-merge the poll would replace
@@ -88,6 +89,7 @@ export function createTaskReview({
 
   const plug = createReviewPlug({
     isOffline,
+    viewingContext,
     navigate,
     // The diff is this run's, so the run's own change events are what stale it.
     entity: taskId,
@@ -125,13 +127,15 @@ export function createTaskReview({
         projectId: task.project_id || null,
       };
     },
-    submit: (messages) =>
-      callRpc("run.request_changes", {
+    submit: (messages) => {
+      const context = viewingContext?.snapshot?.();
+      return callRpc("run.request_changes", {
         run_id: taskId,
         ...agentSelection.scope(),
-        messages,
+        messages: context ? messages.map((message) => ({ ...message, viewing_context: context })) : messages,
         ...MUTATION_THREAD_PAGE,
-      }),
+      }).then((result) => { viewingContext?.clearSelectionIfMatches?.(context); return result; });
+    },
     // The reviewer's disagreement with the pass. It lands on the run's own
     // triage, and in the conversation of the agent that wrote the rationale.
     submitOverride: ({ hunk_id, direction, note }) => {

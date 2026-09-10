@@ -14,6 +14,7 @@ import { toolbarRouteChanged } from "./core/toolbar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
 import { adoptCacheScope, clearCacheScope } from "./core/cacheScope.js";
 import { createChatRepository } from "./core/chatRepository.js";
+import { createViewingContext } from "./core/viewingContext.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
@@ -22,9 +23,11 @@ export const App = {
   session: null, // { call, deviceId, close }
   cacheScope: null, // captured ownership of browser cache reads/writes
   chatRepository: null, // drafts/controllers owned by the current device scope
+  viewingContext: createViewingContext({ enabled: false }),
   route: { name: "inbox" },
   poll: null, // the current view's change watcher (core/changeEvents.js)
   viewDispose: null, // the current view's teardown (terminal panes, observers)
+  routeLeaveGuard: null, // async veto owned by the mounted view (for unsaved work)
   offline: false,
   offlineSince: null, // ms timestamp stamped by goOffline(), cleared on restore
 
@@ -53,10 +56,12 @@ export function adoptApplicationScope({ deviceId, call }) {
     return App.chatRepository;
   }
   disposeApplicationScope();
+  App.viewingContext = createViewingContext({ enabled: false });
   App.cacheScope = adoptCacheScope(deviceId);
-  App.chatRepository = createChatRepository({ scope: App.cacheScope, call });
+  App.chatRepository = createChatRepository({ scope: App.cacheScope, call, viewingContext: App.viewingContext });
   App.call = call;
   App.modelCatalog = null;
+  App.viewingContext.clear();
   return App.chatRepository;
 }
 
@@ -64,6 +69,10 @@ export function adoptApplicationScope({ deviceId, call }) {
  * leaving this document, but embedders and future in-place auth can call this
  * before replacing the account. */
 export function disposeApplicationScope() {
+  routeAttempt += 1;
+  pendingLeaveDecision = null;
+  App.routeLeaveGuard = null;
+  App.viewingContext?.setEnabled?.(false);
   App.chatRepository?.dispose();
   App.chatRepository = null;
   App.cacheScope = null;
@@ -103,11 +112,51 @@ export function rememberSelectedDevice(deviceId) {
   else localStorage.removeItem(SELECTED_DEVICE_KEY);
 }
 
-export function go(route) {
+let acceptedHash = null;
+let routeAttempt = 0;
+let pendingLeaveDecision = null;
+
+function mayLeaveRoute() {
+  const guard = App.routeLeaveGuard;
+  if (!guard) return Promise.resolve(true);
+  if (!pendingLeaveDecision || pendingLeaveDecision.guard !== guard) {
+    const pending = { guard, decision: null };
+    pending.decision = Promise.resolve(guard())
+      .catch(() => false)
+      .finally(() => {
+        if (pendingLeaveDecision === pending) pendingLeaveDecision = null;
+      });
+    pendingLeaveDecision = pending;
+  }
+  return pendingLeaveDecision.decision;
+}
+
+function applyRoute(route) {
+  App.viewingContext.clear();
+  App.routeLeaveGuard = null;
   App.route = route;
   const hash = hashFromRoute(route);
-  if (location.hash !== hash) location.hash = hash; // hashchange re-enters render()
-  else render();
+  if (location.hash !== hash) {
+    acceptedHash = hash;
+    location.hash = hash; // hashchange re-enters render()
+  } else {
+    acceptedHash = null;
+    render();
+  }
+}
+
+export function go(route) {
+  const attempt = ++routeAttempt;
+  const guard = App.routeLeaveGuard;
+  if (!guard) {
+    applyRoute(route);
+    return true;
+  }
+  return mayLeaveRoute().then((allowed) => {
+    const current = allowed && attempt === routeAttempt;
+    if (current) applyRoute(route);
+    return current;
+  });
 }
 
 /**
@@ -120,6 +169,7 @@ export function go(route) {
  * losing the reader's place in it.
  */
 export function markRoute(route) {
+  App.viewingContext.clear();
   App.route = route;
   const hash = hashFromRoute(route);
   if (location.hash === hash) return;
@@ -140,7 +190,22 @@ function readRoute() {
 
 export function initRouter() {
   App.route = readRoute();
-  window.addEventListener("hashchange", () => {
+  window.addEventListener("hashchange", async () => {
+    const requestedHash = location.hash;
+    if (acceptedHash === requestedHash) {
+      acceptedHash = null;
+      App.route = readRoute();
+      if (!App.gated) render();
+      return;
+    }
+    const attempt = ++routeAttempt;
+    const allowed = await mayLeaveRoute();
+    if (attempt !== routeAttempt || location.hash !== requestedHash) return;
+    if (!allowed) {
+      history.replaceState(null, "", hashFromRoute(App.route));
+      return;
+    }
+    App.viewingContext.clear();
     App.route = readRoute();
     if (!App.gated) render();
   });

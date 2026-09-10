@@ -380,6 +380,7 @@ export function mountGitPane(
     // first agent, which is what this surface always meant.
     agentSelection = createAgentSelection(),
     navigate = null,
+    viewingContext = null,
   } = {},
 ) {
   const parsedDiffs = createParsedDiffCache();
@@ -455,8 +456,72 @@ export function mountGitPane(
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
   let paintChangesetInto = null;
+  let contextFrame = 0;
+  let contextCommit = null;
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
+
+  const contextScroller = () => container.querySelector(".cdetail-host");
+  const selectionInsideContext = () => {
+    const selection = document.getSelection?.();
+    const root = contextScroller();
+    return Boolean(
+      root && selection && !selection.isCollapsed &&
+      (root.contains(selection.anchorNode) || root.contains(selection.focusNode)),
+    );
+  };
+  let contextForce = false;
+  const composerFocused = () => {
+    const active = document.activeElement;
+    return Boolean(active && active.closest(".composer"));
+  };
+  const paintSelectedContext = () => {
+    if (selected === "review") {
+      contextCommit = null;
+      return;
+    }
+    if (selected === "uncommitted") {
+      contextCommit = null;
+      const scroller = contextScroller();
+      if (scroller) viewingContext.setVisibleDiffs(scroller, "uncommitted");
+      return;
+    }
+    if (typeof selected === "string" && selected) {
+      if (contextCommit !== selected) viewingContext.set({ kind: "commit", sha: selected });
+      contextCommit = selected;
+      return;
+    }
+    contextCommit = null;
+    viewingContext.clear();
+  };
+  const syncViewingContext = () => {
+    contextFrame = 0;
+    if (!viewingContext || disposed) return;
+    const forced = contextForce;
+    contextForce = false;
+    if (!forced && composerFocused()) return;
+    paintSelectedContext();
+  };
+  const scheduleViewingContext = (force = false) => {
+    contextForce = contextForce || force;
+    if (!viewingContext || contextFrame) return;
+    const view = container.ownerDocument.defaultView || globalThis;
+    const schedule = view.requestAnimationFrame || ((callback) => view.setTimeout(callback, 0));
+    contextFrame = schedule(syncViewingContext);
+  };
+  const captureViewingSelection = () => {
+    if (!viewingContext || selected === "review") return;
+    if (selectionInsideContext()) viewingContext.captureDomSelection(contextScroller());
+    else {
+      const selection = document.getSelection?.();
+      if (selection?.isCollapsed && contextScroller()?.contains(selection.anchorNode)) viewingContext.clearSelection();
+    }
+  };
+  const onContextScroll = (event) => {
+    if (selected === "uncommitted" && contextScroller()?.contains(event.target)) scheduleViewingContext(true);
+  };
+  container.addEventListener("scroll", onContextScroll, true);
+  document.addEventListener("selectionchange", captureViewingSelection);
 
   const messageBox = () => container.querySelector(".csinput");
   const draftBusy = () => {
@@ -572,12 +637,14 @@ export function mountGitPane(
           const reviewedChangeset = selected;
           const reviewedViews = renderedViews;
           const destination = agentSelection.scope();
+          const context = viewingContext?.snapshot?.();
           await callRpc("run.request_changes", {
             run_id: scope.run_id,
             ...destination,
-            messages,
+            messages: context ? messages.map((message) => ({ ...message, viewing_context: context })) : messages,
             ...MUTATION_THREAD_PAGE,
           });
+          viewingContext?.clearSelectionIfMatches?.(context);
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
           reviewStamps = stampChangeset(reviewStamps, reviewedChangeset, reviewedViews);
@@ -878,6 +945,7 @@ export function mountGitPane(
     // mid-action must not resurrect a live button to double-fire); the action
     // wrapper re-enables them once the RPC settles.
     if (toolbarControlsDisabled(inFlightActions)) disableToolbarControls();
+    syncViewingContext();
   };
 
   /// The rail, reconciled row by row rather than rewritten.
@@ -1020,12 +1088,15 @@ export function mountGitPane(
       return;
     }
     if (optionId === "agent_commit") {
+      const context = viewingContext?.snapshot?.();
       try {
         await callRpc("run.message", {
           run_id: scope.run_id,
           message: AGENT_COMMIT_MESSAGE,
+          ...(context ? { viewing_context: context } : {}),
           ...MUTATION_THREAD_PAGE,
         });
+        viewingContext?.clearSelectionIfMatches?.(context);
       } catch (e) {
         actionError(e);
         throw e;
@@ -1056,6 +1127,7 @@ export function mountGitPane(
   const selectRail = (sel) => {
     if (selected === sel) return;
     selected = sel;
+    viewingContext?.clearSelection();
     clearConfirm();
     fileMenuPath = null; // a menu belongs to the changeset it was opened on
     renderAndFetch();
@@ -1507,6 +1579,14 @@ export function mountGitPane(
       fileDiffs.dispose();
       parsedDiffs.clear();
       viewport.dispose();
+      container.removeEventListener("scroll", onContextScroll, true);
+      document.removeEventListener("selectionchange", captureViewingSelection);
+      if (contextFrame) {
+        const view = container.ownerDocument.defaultView || globalThis;
+        (view.cancelAnimationFrame || view.clearTimeout).call(view, contextFrame);
+        contextFrame = 0;
+      }
+      if (viewingContext && selected !== "review") viewingContext.clear();
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();
       container.onclick = null;

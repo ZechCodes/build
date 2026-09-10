@@ -184,6 +184,7 @@ function railChatDependencies(context) {
     ownsRepository: !injectedRepository,
     repository: injectedRepository || createChatRepository({
       scope: cacheScope || {},
+      viewingContext: context.viewingContext || App.viewingContext,
       // Standalone compatibility only. Application mounts inject a scoped
       // repository which connection lifecycle retargets explicitly.
       call: (method, params) => App.call(method, params),
@@ -893,6 +894,7 @@ export function mountAgentRail(host, context) {
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
+      composerControl?.dispose?.();
       unsubscribeComposerController?.();
       unsubscribeComposerController = null;
       composerController = null;
@@ -1401,6 +1403,7 @@ export function mountAgentRail(host, context) {
       readAttachments: binding.readAttachments,
       writeAttachments: binding.writeAttachments,
       submissionOwnsDraft: true,
+      viewingContext: context.viewingContext || App.viewingContext,
       // Attaching lands the bytes before the message names them — which needs a
       // conversation to store them against, so it adopts exactly as sending
       // does: choosing a file for a message is the same intent, one keystroke
@@ -2050,6 +2053,7 @@ export function mountAgentRail(host, context) {
       disposeTui();
       disposeSurfaces();
       closeSurfaceMenu?.();
+      composerControl?.dispose?.();
       unsubscribeComposerController?.();
       unsubscribeComposerController = null;
       releaseFaces();

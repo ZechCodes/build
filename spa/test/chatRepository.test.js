@@ -22,6 +22,32 @@ const createRepository = (call = vi.fn(async () => ({}))) => {
 const operationContract = JSON.parse(readFileSync(resolve("../fixtures/chat_operation_contract.json"), "utf8"));
 
 describe("chat controller ownership", () => {
+  it("deep-freezes viewing context at submission and reuses it on retry", async () => {
+    const calls = [];
+    const context = { version: 1, items: [{ kind: "file", path: "src/a.js" }] };
+    const repository = createChatRepository({
+      scope: { accountId: "account-1", deviceId: "device-1" },
+      call: async (method, params) => { calls.push({ method, params }); return {}; },
+      createOperationId: () => "operation-context",
+      viewingContext: { snapshot: () => context },
+    });
+    repository.configureCapabilities({ message_context: { version: 1 } });
+    const controller = repository.controller(address());
+    const submission = controller.captureSubmission({ body: "look", attachments: [] });
+    context.items[0].path = "src/later.js";
+    await controller.post(submission);
+    expect(calls[0].params.viewing_context.items[0].path).toBe("src/a.js");
+  });
+
+  it("keeps ordinary messaging compatible when the bridge did not offer message context", async () => {
+    const call = vi.fn(async () => ({}));
+    const repository = createChatRepository({
+      scope: {}, call, viewingContext: { snapshot: () => ({ version: 1, items: [{ kind: "file", path: "a" }] }) },
+    });
+    const controller = repository.controller(address());
+    await controller.post(controller.captureSubmission({ body: "look" }));
+    expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }));
+  });
   it("returns one private controller per agent while sharing canonical history identity", () => {
     const repository = createRepository();
     const first = repository.controller(address());

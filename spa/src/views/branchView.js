@@ -82,6 +82,14 @@ export function reviewKeyOf(scope) {
   return null; // the primary checkout has no aggregate review entry
 }
 
+/** Background adoption may change a Files pane's backing while it owns a
+ * live draft. The next poll can remount after that draft is saved. */
+export function shouldRetainDirtyFilesPane(tab, pane) {
+  return tab === "files" && Boolean(pane?.hasUnsavedChanges?.());
+}
+
+const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
+
 export async function renderBranch() {
   const root = $("#root");
   const { projectId, branch } = App.route;
@@ -275,6 +283,7 @@ export async function renderBranch() {
           getTask: () => (row ? row.run : null),
           isOffline: () => App.offline,
           agentSelection,
+          viewingContext: App.viewingContext,
           // A merge is the work landing: the issue it implements ends with it.
           onMerged: () => finished({ issueEnded: true }),
         });
@@ -286,6 +295,7 @@ export async function renderBranch() {
           navigate,
           adopting: adopterFor(scope),
           isOffline: () => App.offline,
+          viewingContext: App.viewingContext,
           // Adoption keeps the URL — the same branch now stands on a run, so
           // the surface re-resolves and the Changes rail re-mounts run-backed.
           onAdopted: () => refresh(true),
@@ -314,8 +324,16 @@ export async function renderBranch() {
     const host = $("#tabbody");
     if (!host) return;
     const scope = branchScope(row, projectId);
-    const key = `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
+    const key = paneKey(tab, scope);
     if (key === mountedKey) return;
+    // Adoption can change the backing key under this same Files surface. Keep
+    // its live editor mounted until the draft is saved or explicitly left;
+    // polling must never turn a background ownership update into data loss.
+    if (shouldRetainDirtyFilesPane(tab, pane)) {
+      pane.retargetScope(scope);
+      mountedKey = key;
+      return;
+    }
     if (pane) {
       pane.dispose();
       pane = null;
@@ -330,13 +348,16 @@ export async function renderBranch() {
         scope,
         callRpc,
         openAt,
+        viewingContext: App.viewingContext,
         // Moving within the tab: the URL keeps up without the surface being
         // rebuilt around the file it is already showing.
         onFileOpen: (path) => markRoute({ name: "branch", projectId, branch, tab: "files", file: path }),
       });
+      App.routeLeaveGuard = pane.canLeave;
       ensureTabsPainted();
       return;
     }
+    App.routeLeaveGuard = null;
     pane = mountGitPane(host, {
       scope,
       callRpc,
@@ -344,6 +365,7 @@ export async function renderBranch() {
       review: reviewFor(scope),
       agentSelection,
       navigate,
+      viewingContext: App.viewingContext,
       // Review prioritization: the run's freshest triage pass orders whichever
       // changeset is open, and the reviewer's trust dial is remembered for the
       // project they are reading.
@@ -394,6 +416,7 @@ export async function renderBranch() {
   let watcher = null;
   App.viewDispose = () => {
     disposed = true;
+    App.routeLeaveGuard = null;
     // The view ends its own read rather than trusting the shell to clear the
     // slot it put it in.
     if (watcher) watcher.dispose();

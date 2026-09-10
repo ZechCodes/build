@@ -19,6 +19,7 @@ import {
 import { mountSplitMenu } from "./splitButton.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
+import { viewingContextChipsHtml } from "./viewingContext.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -730,6 +731,9 @@ function outcomeMarkerHtml(outcome, agentLabel) {
   </div>`;
 }
 
+const messageContextHtml = (message) => message.viewing_context?.items?.length
+  ? `<div class="message-viewing-context">${viewingContextChipsHtml(message.viewing_context)}</div>` : "";
+
 function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   const user = message.role === "user";
   const status = user
@@ -750,6 +754,7 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
       <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
       ${outcomeMarkerHtml(message.outcome, agentLabel)}
       ${anchorLabel(message.anchor)}
+      ${messageContextHtml(message)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
       ${completionReportHtml(message.completion_report)}
       ${attachmentsHtml(message.attachments, threadState)}
@@ -1732,6 +1737,21 @@ export function wireThreadLinks(root, openLink) {
 /// to protect, is driven directly.
 const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
 
+function mountViewingContext(root, inputId, viewingContext) {
+  const tray = root.querySelector(`#${composerPartIds(inputId).context}`);
+  const paint = (context = viewingContext?.snapshot?.()) => {
+    if (!tray) return;
+    tray.innerHTML = viewingContextChipsHtml(context, { removable: true });
+    tray.hidden = !context?.items?.length;
+    tray.querySelectorAll("button").forEach((button) => {
+      button.onclick = () => viewingContext?.remove?.(Number(button.closest("[data-context-index]").dataset.contextIndex));
+    });
+  };
+  const unsubscribe = viewingContext?.subscribe?.(paint);
+  paint();
+  return unsubscribe;
+}
+
 export function wireThreadComposer(root, {
   ids,
   onSubmit,
@@ -1743,6 +1763,7 @@ export function wireThreadComposer(root, {
   readAttachments,
   writeAttachments,
   submissionOwnsDraft = false,
+  viewingContext = null,
 }) {
   if (!root) return null;
   const input = root.querySelector(`#${ids.input}`);
@@ -1750,6 +1771,7 @@ export function wireThreadComposer(root, {
   const control = root.querySelector(`#${composerPartIds(ids.input).sendControl}`);
   const hint = ids.hint ? root.querySelector(`#${ids.hint}`) : null;
   if (!input || !send) return null;
+  const unsubscribeContext = mountViewingContext(root, ids.input, viewingContext);
 
   const say = (message) => {
     if (hint) hint.textContent = message;
@@ -1864,5 +1886,5 @@ export function wireThreadComposer(root, {
     }
   };
 
-  return { setCanInterrupt, setBlocked };
+  return { setCanInterrupt, setBlocked, dispose: () => unsubscribeContext?.() };
 }

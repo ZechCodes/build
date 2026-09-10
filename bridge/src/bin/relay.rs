@@ -29,7 +29,8 @@
 //! down, and each socket is closed with a proper WS Close frame within a bounded
 //! grace period.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
@@ -42,8 +43,8 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use build_bridge::relay_server::{
-    self, AuthOutcome, DeviceAuth, DeviceRecord, Outbound, RelayConfig, RelayState, ReplayGuard,
-    AUTH_SKEW, HEARTBEAT_INTERVAL_S, MAX_WS_MESSAGE_BYTES, REPLAY_TTL,
+    self, AuthOutcome, DeviceAuth, DeviceFrameRoute, DeviceRecord, Outbound, RelayConfig,
+    RelayState, ReplayGuard, AUTH_SKEW, HEARTBEAT_INTERVAL_S, MAX_WS_MESSAGE_BYTES, REPLAY_TTL,
 };
 
 /// How long shutdown waits for connection tasks to say goodbye before exiting anyway.
@@ -57,15 +58,36 @@ const CLIENT_AUTH_DEADLINE: Duration = Duration::from_secs(10);
 /// How often a connected device's approval is re-checked at the api, so revoking
 /// a device actually severs its live relay connection (not just future ones).
 const DEVICE_REVALIDATION_INTERVAL: Duration = Duration::from_secs(60);
+/// Bound lifecycle status writes so a stuck api cannot prevent a replacement
+/// connection from taking ownership of the device indefinitely.
+const STATUS_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bound periodic authorization checks so supersession and shutdown cannot be
+/// hidden behind a hung internal api request indefinitely.
+const AUTHORIZATION_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Shared {
     state: Mutex<RelayState>,
+    device_lifecycles: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
     replay: Mutex<ReplayGuard>,
     http: reqwest::Client,
     config: RelayConfig,
 }
 
 impl Shared {
+    fn device_lifecycle(&self, device_id: &str) -> Arc<Mutex<()>> {
+        let mut lifecycles = self
+            .device_lifecycles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        lifecycles.retain(|_, lifecycle| lifecycle.strong_count() > 0);
+        if let Some(lifecycle) = lifecycles.get(device_id).and_then(Weak::upgrade) {
+            return lifecycle;
+        }
+        let lifecycle = Arc::new(Mutex::new(()));
+        lifecycles.insert(device_id.to_string(), Arc::downgrade(&lifecycle));
+        lifecycle
+    }
+
     /// A GET to an internal api endpoint, carrying `X-Internal-Secret` when configured.
     fn internal_get(&self, url: &str) -> reqwest::RequestBuilder {
         self.attach_internal_secret(self.http.get(url))
@@ -108,6 +130,7 @@ async fn main() {
     let bound_port = listener.local_addr().expect("bound address").port();
     let shared = Arc::new(Shared {
         state: Mutex::new(RelayState::new()),
+        device_lifecycles: StdMutex::new(HashMap::new()),
         replay: Mutex::new(ReplayGuard::new(REPLAY_TTL)),
         http: reqwest::Client::new(),
         config,
@@ -244,7 +267,7 @@ async fn serve(
     let ping_interval = shared.config.device_liveness_timeout / 3;
     let (out_tx, mut out_rx) = relay_server::outbound_channel();
     let (writer_gone_tx, mut writer_gone) = tokio::sync::oneshot::channel::<()>();
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         // Dropped (without send) on any exit path: severance and panic alike
         // resolve `writer_gone`, while the graceful path below sends first.
         let graceful = writer_gone_tx;
@@ -304,7 +327,13 @@ async fn serve(
 
     // All out_tx clones die with the state cleanup above, which lets the writer
     // drain, send Close, and finish.
-    let _ = tokio::time::timeout(SHUTDOWN_GRACE, writer).await;
+    if tokio::time::timeout(SHUTDOWN_GRACE, &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+        let _ = writer.await;
+    }
     Ok(())
 }
 
@@ -363,27 +392,40 @@ async fn serve_device(
             return;
         }
     };
+    let lifecycle = shared.device_lifecycle(&device_id);
 
-    let registration = {
-        let mut state = shared.state.lock().await;
-        state.add_device(&device_id, &owner, out_tx.clone())
+    let mut registration = {
+        let _transition = lifecycle.lock().await;
+        let registration = {
+            let mut state = shared.state.lock().await;
+            state.add_device(&device_id, &owner, out_tx.clone())
+        };
+        if let Some(old_conn_id) = registration.superseded_conn_id {
+            eprintln!(
+                "device {device_id}: connection {} supersedes connection {old_conn_id}; closing old socket",
+                registration.conn_id
+            );
+        }
+        // A reconnect severed any sessions from this device's previous connection
+        // (their keys died with the old process) — nudge those clients first.
+        let stale_notice = json!({"type":"device_offline","device_id":device_id}).to_string();
+        for client in &registration.displaced_clients {
+            let _ = client.send(stale_notice.clone());
+        }
+        let online_notice = json!({"type":"device_online","device_id":device_id}).to_string();
+        for client in &registration.owner_clients {
+            let _ = client.send(online_notice.clone());
+        }
+        let _ = out_tx.send(
+            json!({"type":"authenticated","device_id":device_id,"heartbeat_interval_s":HEARTBEAT_INTERVAL_S}).to_string(),
+        );
+        report_status(shared, &device_id, true).await;
+        eprintln!(
+            "device {device_id}: authenticated (owner {owner}, connection {})",
+            registration.conn_id
+        );
+        registration
     };
-    // A reconnect severed any sessions from this device's previous connection (their
-    // keys died with the old process) — nudge those clients to re-handshake first…
-    let stale_notice = json!({"type":"device_offline","device_id":device_id}).to_string();
-    for client in &registration.displaced_clients {
-        let _ = client.send(stale_notice.clone());
-    }
-    // …then tell every one of the owner's browsers the device is online.
-    let online_notice = json!({"type":"device_online","device_id":device_id}).to_string();
-    for client in &registration.owner_clients {
-        let _ = client.send(online_notice.clone());
-    }
-    let _ = out_tx.send(
-        json!({"type":"authenticated","device_id":device_id,"heartbeat_interval_s":HEARTBEAT_INTERVAL_S}).to_string(),
-    );
-    report_status(shared, &device_id, true).await;
-    eprintln!("device {device_id}: authenticated (owner {owner})");
 
     // Auth happens once at connect, so revocation must be re-checked while the
     // connection lives — otherwise "Revoke" in the app never cuts off a
@@ -406,16 +448,35 @@ async fn serve_device(
     let mut frame_deadline = tokio::time::Instant::now() + liveness_timeout;
     let mut pong_deadline = tokio::time::Instant::now() + liveness_timeout;
 
-    loop {
+    'device: loop {
         let message = tokio::select! {
-            next = source.next() => match next {
-                Some(Ok(message)) => message,
-                _ => break,
-            },
+            biased;
+            _ = &mut registration.superseded => {
+                eprintln!(
+                    "device {device_id}: connection {} superseded; ending old socket",
+                    registration.conn_id
+                );
+                return;
+            }
             _ = revalidate.tick() => {
                 // Fail open only on an unreachable api (a blip must not drop every
                 // device); an affirmative "not approved / unknown" severs now.
-                if device_authorization(shared, &device_id, &owner).await == Some(false) {
+                let authorization = tokio::select! {
+                    biased;
+                    _ = &mut registration.superseded => {
+                        eprintln!(
+                            "device {device_id}: connection {} superseded during authorization check",
+                            registration.conn_id
+                        );
+                        return;
+                    }
+                    _ = shutdown.recv() => break 'device,
+                    result = tokio::time::timeout(
+                        AUTHORIZATION_CHECK_TIMEOUT,
+                        device_authorization(shared, &device_id, &owner),
+                    ) => result,
+                };
+                if matches!(authorization, Ok(Some(false))) {
                     eprintln!("device {device_id}: no longer authorized; severing");
                     break;
                 }
@@ -434,12 +495,33 @@ async fn serve_device(
                 break;
             }
             _ = shutdown.recv() => break,
+            next = source.next() => match next {
+                Some(Ok(message)) => message,
+                Some(Err(_)) => {
+                    eprintln!(
+                        "device {device_id}: connection {} read failed",
+                        registration.conn_id
+                    );
+                    break;
+                }
+                None => {
+                    eprintln!(
+                        "device {device_id}: connection {} reached transport EOF",
+                        registration.conn_id
+                    );
+                    break;
+                }
+            },
         };
         let Message::Text(text) = message else {
             if matches!(message, Message::Pong(_)) {
                 pong_deadline = tokio::time::Instant::now() + liveness_timeout;
             }
             if matches!(message, Message::Close(_)) {
+                eprintln!(
+                    "device {device_id}: connection {} received peer close",
+                    registration.conn_id
+                );
                 break;
             }
             continue;
@@ -455,30 +537,34 @@ async fn serve_device(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                let clients = {
+                let client_count = {
                     let mut state = shared.state.lock().await;
-                    state.set_device_transport_key(&device_id, &key)
+                    state.publish_device_transport_key(&device_id, registration.conn_id, &key)
+                };
+                let Some(client_count) = client_count else {
+                    eprintln!(
+                        "device {device_id}: ignored transport key from stale connection {}",
+                        registration.conn_id
+                    );
+                    continue;
                 };
                 eprintln!(
                     "device {device_id}: transport key → fan-out to {} client(s)",
-                    clients.len()
+                    client_count
                 );
-                let notice =
-                    json!({"type":"device_key","device_id":device_id,"transport_public_key":key})
-                        .to_string();
-                for client in clients {
-                    let _ = client.send(notice.clone());
-                }
             }
             "heartbeat" => {}
             "session_accept" | "e2ee_envelope" => {
                 if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
-                    let target = {
-                        let state = shared.state.lock().await;
-                        state.client_out_for_device_frame(session_id, &device_id)
+                    let route = {
+                        let mut state = shared.state.lock().await;
+                        state.route_device_frame(session_id, &device_id, registration.conn_id, text)
                     };
-                    if let Some(client) = target {
-                        let _ = client.send(text);
+                    if route == DeviceFrameRoute::StaleConnection {
+                        eprintln!(
+                            "device {device_id}: ignored session frame from stale connection {}",
+                            registration.conn_id
+                        );
                     }
                 }
             }
@@ -491,12 +577,17 @@ async fn serve_device(
     // of hanging on a dead session. Guarded by conn_id: if the device already
     // reconnected, this stale cleanup is a no-op — nobody is notified and the api
     // is NOT told the (live, routable) device went offline.
+    let _transition = lifecycle.lock().await;
     let removal = {
         let mut state = shared.state.lock().await;
         state.remove_device(&device_id, registration.conn_id)
     };
     let Some(clients) = removal else {
-        return; // stale disconnect: a newer connection owns this device now
+        eprintln!(
+            "device {device_id}: stale cleanup for connection {} ignored",
+            registration.conn_id
+        );
+        return;
     };
     let notice = json!({"type":"device_offline","device_id":device_id}).to_string();
     for client in clients {
@@ -711,11 +802,23 @@ async fn report_status(shared: &Arc<Shared>, device_id: &str, online: bool) {
         "{}/internal/devices/{device_id}/status",
         shared.config.api_url
     );
-    let _ = shared
-        .internal_post(&url)
-        .json(&json!({ "online": online }))
-        .send()
-        .await;
+    match tokio::time::timeout(
+        STATUS_REPORT_TIMEOUT,
+        shared
+            .internal_post(&url)
+            .json(&json!({ "online": online }))
+            .send(),
+    )
+    .await
+    {
+        Err(_) => eprintln!("device {device_id}: status report timed out (online={online})"),
+        Ok(Err(_)) => eprintln!("device {device_id}: status report failed (online={online})"),
+        Ok(Ok(response)) if !response.status().is_success() => eprintln!(
+            "device {device_id}: status report returned HTTP {} (online={online})",
+            response.status().as_u16()
+        ),
+        Ok(Ok(_)) => {}
+    }
 }
 
 fn unix_now() -> u64 {

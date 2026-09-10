@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::transport;
@@ -334,6 +334,9 @@ struct ConnectedDevice {
     /// Which physical connection registered this entry — so a stale socket's late
     /// cleanup can't deregister a newer reconnection of the same device.
     conn_id: u64,
+    /// Ends this connection's serve loop when a newer socket authenticates with
+    /// the same device identity.
+    supersede: tokio::sync::oneshot::Sender<()>,
 }
 
 struct ConnectedClient {
@@ -351,8 +354,17 @@ struct Session {
 /// the owner's connected clients to push `device_online` to.
 pub struct DeviceRegistration {
     pub conn_id: u64,
+    pub superseded_conn_id: Option<u64>,
+    pub superseded: tokio::sync::oneshot::Receiver<()>,
     pub displaced_clients: Vec<Outbound>,
     pub owner_clients: Vec<Outbound>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceFrameRoute {
+    Forwarded,
+    NoRoute,
+    StaleConnection,
 }
 
 /// The relay's live routing table. Not thread-safe by itself; the bin wraps it in a
@@ -386,6 +398,7 @@ impl RelayState {
     ) -> DeviceRegistration {
         let conn_id = self.next_device_conn_id;
         self.next_device_conn_id += 1;
+        let (supersede, superseded) = tokio::sync::oneshot::channel();
 
         let displaced_ids: Vec<u64> = self
             .sessions
@@ -401,33 +414,57 @@ impl RelayState {
             .filter_map(|id| self.clients.get(&id).map(|c| c.out.clone()))
             .collect();
 
-        self.devices.insert(
+        let previous = self.devices.insert(
             device_id.to_string(),
             ConnectedDevice {
                 owner_user_id: owner_user_id.to_string(),
                 transport_key: None,
                 out,
                 conn_id,
+                supersede,
             },
         );
+        let superseded_conn_id = previous.map(|previous| {
+            let previous_conn_id = previous.conn_id;
+            let _ = previous.supersede.send(());
+            previous_conn_id
+        });
         DeviceRegistration {
             conn_id,
+            superseded_conn_id,
+            superseded,
             displaced_clients,
             owner_clients: self.client_outbounds_for_user(owner_user_id),
         }
     }
 
-    /// Record a device's transport key and return the outbounds of every connected
-    /// client owned by the same user, so the bin can push `device_key` to them.
-    pub fn set_device_transport_key(&mut self, device_id: &str, key: &str) -> Vec<Outbound> {
+    /// Record a device's transport key and enqueue its notice to every owner client.
+    /// Generation validation and enqueue happen in this one state operation, so a
+    /// replacement cannot interleave and let a stale key escape after handoff.
+    pub fn publish_device_transport_key(
+        &mut self,
+        device_id: &str,
+        conn_id: u64,
+        key: &str,
+    ) -> Option<usize> {
         let owner = match self.devices.get_mut(device_id) {
-            Some(device) => {
+            Some(device) if device.conn_id == conn_id => {
                 device.transport_key = Some(key.to_string());
                 device.owner_user_id.clone()
             }
-            None => return Vec::new(),
+            _ => return None,
         };
-        self.client_outbounds_for_user(&owner)
+        let clients = self.client_outbounds_for_user(&owner);
+        let notice = json!({
+            "type": "device_key",
+            "device_id": device_id,
+            "transport_public_key": key,
+        })
+        .to_string();
+        for client in &clients {
+            let _ = client.send(notice.clone());
+        }
+        Some(clients.len())
     }
 
     /// Remove a device and drop any sessions routed to it — but only if the entry
@@ -542,18 +579,41 @@ impl RelayState {
         self.devices.get(&session.device_id).map(|d| d.out.clone())
     }
 
-    /// The client outbound for a device's in-session frame — only if the session belongs
-    /// to that device.
-    pub fn client_out_for_device_frame(
-        &self,
+    /// Route one device frame to its session client. Generation validation and
+    /// enqueue are atomic with respect to registration, preventing buffered frames
+    /// from a superseded socket crossing the handoff boundary.
+    pub fn route_device_frame(
+        &mut self,
         session_id: &str,
         device_id: &str,
-    ) -> Option<Outbound> {
-        let session = self.sessions.get(session_id)?;
-        if session.device_id != device_id {
-            return None;
+        conn_id: u64,
+        text: String,
+    ) -> DeviceFrameRoute {
+        match self.devices.get(device_id) {
+            Some(device) if device.conn_id == conn_id => {}
+            Some(_) => return DeviceFrameRoute::StaleConnection,
+            None => return DeviceFrameRoute::NoRoute,
         }
-        self.clients.get(&session.client_id).map(|c| c.out.clone())
+        let Some(session) = self.sessions.get(session_id) else {
+            return DeviceFrameRoute::NoRoute;
+        };
+        if session.device_id != device_id {
+            return DeviceFrameRoute::NoRoute;
+        }
+        let Some(client) = self.clients.get(&session.client_id) else {
+            return DeviceFrameRoute::NoRoute;
+        };
+        if client.out.send(text).is_ok() {
+            DeviceFrameRoute::Forwarded
+        } else {
+            DeviceFrameRoute::NoRoute
+        }
+    }
+
+    pub fn device_connection_is_current(&self, device_id: &str, conn_id: u64) -> bool {
+        self.devices
+            .get(device_id)
+            .is_some_and(|device| device.conn_id == conn_id)
     }
 
     fn client_outbounds_for_user(&self, user_id: &str) -> Vec<Outbound> {
@@ -795,7 +855,7 @@ mod tests {
     fn session_frames_route_between_the_two_peers() {
         let mut state = RelayState::new();
         let (d_out, mut d_rx) = chan();
-        state.add_device("dev", "u1", d_out);
+        let conn = state.add_device("dev", "u1", d_out).conn_id;
         let (c_out, mut c_rx) = chan();
         let client = state.add_client("u1", c_out);
         state.open_session("s1", client, "dev").unwrap();
@@ -809,11 +869,10 @@ mod tests {
         assert_eq!(d_rx.try_recv().unwrap(), "to-device");
 
         // device → client
-        state
-            .client_out_for_device_frame("s1", "dev")
-            .unwrap()
-            .send("to-client".into())
-            .unwrap();
+        assert_eq!(
+            state.route_device_frame("s1", "dev", conn, "to-client".into()),
+            DeviceFrameRoute::Forwarded
+        );
         assert_eq!(c_rx.try_recv().unwrap(), "to-client");
     }
 
@@ -835,13 +894,15 @@ mod tests {
     fn transport_key_fanout_targets_only_owner_clients() {
         let mut state = RelayState::new();
         let (d_out, _d_rx) = chan();
-        state.add_device("dev", "u1", d_out);
+        let conn = state.add_device("dev", "u1", d_out).conn_id;
         let (c1_out, _c1) = chan();
         let (c2_out, _c2) = chan();
         state.add_client("u1", c1_out);
         state.add_client("u2", c2_out);
-        let targets = state.set_device_transport_key("dev", "KEY");
-        assert_eq!(targets.len(), 1, "only u1's client is notified");
+        let target_count = state
+            .publish_device_transport_key("dev", conn, "KEY")
+            .expect("current connection");
+        assert_eq!(target_count, 1, "only u1's client is notified");
         assert_eq!(
             state.device_keys_for_user("u1"),
             vec![("dev".to_string(), "KEY".to_string())]
@@ -1118,8 +1179,8 @@ mod tests {
         let mut state = RelayState::new();
         let (d1_out, mut d1_rx) = chan();
         let (d2_out, mut d2_rx) = chan();
-        state.add_device("dev-1", "u1", d1_out);
-        state.add_device("dev-2", "u1", d2_out);
+        let conn_1 = state.add_device("dev-1", "u1", d1_out).conn_id;
+        let conn_2 = state.add_device("dev-2", "u1", d2_out).conn_id;
         let (c_out, mut c_rx) = chan();
         let client = state.add_client("u1", c_out);
 
@@ -1142,14 +1203,16 @@ mod tests {
         assert_eq!(d2_rx.try_recv().unwrap(), "to-dev-2");
 
         // Replies come back on the right sessions too.
-        state
-            .client_out_for_device_frame("s1", "dev-1")
-            .unwrap()
-            .send("from-dev-1".into())
-            .unwrap();
+        assert_eq!(
+            state.route_device_frame("s1", "dev-1", conn_1, "from-dev-1".into()),
+            DeviceFrameRoute::Forwarded
+        );
         assert_eq!(c_rx.try_recv().unwrap(), "from-dev-1");
         // A device cannot answer on the other device's session.
-        assert!(state.client_out_for_device_frame("s1", "dev-2").is_none());
+        assert_eq!(
+            state.route_device_frame("s1", "dev-2", conn_2, "wrong-device".into()),
+            DeviceFrameRoute::NoRoute
+        );
     }
 
     #[test]
@@ -1196,6 +1259,56 @@ mod tests {
         assert!(
             state.device_out_for_client_frame("s1", client).is_none(),
             "the dead session no longer routes"
+        );
+    }
+
+    #[test]
+    fn reconnect_signals_the_superseded_connection() {
+        let mut state = RelayState::new();
+        let (old_out, _old_rx) = chan();
+        let mut old = state.add_device("dev", "u1", old_out);
+        let (new_out, _new_rx) = chan();
+        let new = state.add_device("dev", "u1", new_out);
+
+        assert_eq!(new.superseded_conn_id, Some(old.conn_id));
+        assert_eq!(old.superseded.try_recv(), Ok(()));
+        assert!(state.remove_device("dev", old.conn_id).is_none());
+        assert!(state.device_connection_is_current("dev", new.conn_id));
+    }
+
+    #[test]
+    fn stale_connection_cannot_mutate_keys_or_route_frames() {
+        let mut state = RelayState::new();
+        let (old_out, _old_rx) = chan();
+        let old_conn = state.add_device("dev", "u1", old_out).conn_id;
+        let (client_out, mut client_rx) = chan();
+        let client = state.add_client("u1", client_out);
+        state.open_session("reused", client, "dev").unwrap();
+
+        let (new_out, _new_rx) = chan();
+        let new_conn = state.add_device("dev", "u1", new_out).conn_id;
+        state.open_session("reused", client, "dev").unwrap();
+
+        assert!(state
+            .publish_device_transport_key("dev", old_conn, "STALE")
+            .is_none());
+        assert!(state.device_keys_for_user("u1").is_empty());
+        assert_eq!(
+            state.route_device_frame("reused", "dev", old_conn, "stale".into()),
+            DeviceFrameRoute::StaleConnection
+        );
+        assert!(client_rx.try_recv().is_err());
+
+        state
+            .publish_device_transport_key("dev", new_conn, "CURRENT")
+            .expect("new connection owns the key");
+        assert_eq!(
+            state.route_device_frame("reused", "dev", new_conn, "current".into()),
+            DeviceFrameRoute::Forwarded
+        );
+        assert_eq!(
+            state.device_keys_for_user("u1"),
+            vec![("dev".to_string(), "CURRENT".to_string())]
         );
     }
 }

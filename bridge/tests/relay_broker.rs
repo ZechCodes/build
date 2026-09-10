@@ -7,6 +7,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream as StdTcpStream;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use build_bridge::identity::{self, StoredIdentity};
@@ -17,8 +19,8 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
-use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{body_json, header, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -156,6 +158,10 @@ async fn authed_device(relay: &RelayProcess, device: &StoredIdentity) -> Ws {
         .expect("clock after epoch")
         .as_secs()
         .to_string();
+    authed_device_at(relay, device, timestamp).await
+}
+
+async fn authed_device_at(relay: &RelayProcess, device: &StoredIdentity, timestamp: String) -> Ws {
     let challenge = format!("{timestamp}.GET.{AUTH_PATH}");
     let signature =
         transport::sign_message_b64(&device.identity_private_key_b64, challenge.as_bytes())
@@ -216,6 +222,26 @@ async fn expect_silence(ws: &mut Ws) {
             Ok(unexpected) => panic!("expected silence, got {unexpected:?}"),
         }
     }
+}
+
+async fn wait_for_status_report(api: &MockServer, device_id: &str, online: bool) {
+    let expected_path = format!("/internal/devices/{device_id}/status");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let received = api.received_requests().await.expect("requests available");
+            let found = received.iter().any(|request| {
+                request.url.path() == expected_path
+                    && serde_json::from_slice::<Value>(&request.body).ok()
+                        == Some(json!({"online": online}))
+            });
+            if found {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("status report reaches api");
 }
 
 #[tokio::test]
@@ -310,6 +336,136 @@ async fn device_online_and_offline_are_pushed_to_the_owners_clients() {
     let offline = recv_json(&mut client).await;
     assert_eq!(offline["type"], "device_offline");
     assert_eq!(offline["device_id"], device.device_id.as_str());
+}
+
+#[tokio::test]
+async fn reconnect_closes_the_superseded_socket_and_keeps_the_new_one_routable() {
+    let api = mock_api().await;
+    let device = identity::generate("laptop");
+    mount_device_record(&api, &device, "u1").await;
+    let online_calls = Arc::new(AtomicUsize::new(0));
+    let responder_calls = Arc::clone(&online_calls);
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/internal/devices/{}/status",
+            device.device_id
+        )))
+        .and(body_json(json!({"online": true})))
+        .respond_with(move |_: &Request| {
+            let response = ResponseTemplate::new(200);
+            if responder_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                response
+            } else {
+                response.set_delay(Duration::from_secs(2))
+            }
+        })
+        .with_priority(1)
+        .mount(&api)
+        .await;
+    let relay = RelayProcess::start(&api.uri());
+
+    let mut client = authed_client(&relay).await;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs();
+    let mut old_device = authed_device_at(&relay, &device, timestamp.to_string()).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    // A second valid connection for the same identity owns the routing table now.
+    // The relay must actively end the first socket so that bridge instance observes
+    // the loss and enters its reconnect loop instead of heartbeating forever while
+    // no traffic can reach it.
+    let mut new_device = authed_device_at(&relay, &device, (timestamp + 1).to_string()).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        expect_disconnect(&mut old_device),
+    )
+    .await
+    .expect("superseded socket closes without waiting for the new online report");
+
+    // Late cleanup from the old serve task must not take the new generation offline.
+    expect_silence(&mut client).await;
+    client
+        .send(Message::Text(
+            json!({
+                "type": "session_init",
+                "session_id": "s-after-reconnect",
+                "route_to": format!("device:{}", device.device_id),
+                "session_init": {"device_id": device.device_id},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_json(&mut new_device).await["session_id"],
+        "s-after-reconnect"
+    );
+
+    new_device.close(None).await.unwrap();
+    let offline = recv_json(&mut client).await;
+    assert_eq!(offline["type"], "device_offline");
+    assert_eq!(offline["device_id"], device.device_id.as_str());
+}
+
+#[tokio::test]
+async fn offline_status_finishes_before_same_device_reconnect_reports_online() {
+    let api = mock_api().await;
+    let device = identity::generate("laptop");
+    let other_device = identity::generate("desktop");
+    mount_device_record(&api, &device, "u1").await;
+    mount_device_record(&api, &other_device, "u1").await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/internal/devices/{}/status",
+            device.device_id
+        )))
+        .and(body_json(json!({"online": false})))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(750)))
+        .with_priority(1)
+        .mount(&api)
+        .await;
+    let relay = RelayProcess::start(&api.uri());
+
+    let mut client = authed_client(&relay).await;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs();
+    let mut first = authed_device_at(&relay, &device, timestamp.to_string()).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+    first.close(None).await.unwrap();
+    assert_eq!(recv_json(&mut client).await["type"], "device_offline");
+    wait_for_status_report(&api, &device.device_id, false).await;
+
+    let reconnect = authed_device_at(&relay, &device, (timestamp + 1).to_string());
+    tokio::pin!(reconnect);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), &mut reconnect)
+            .await
+            .is_err(),
+        "same-device online transition waits for its in-flight offline report"
+    );
+
+    // Per-device lifecycle ordering must not stall independent devices.
+    let _other = tokio::time::timeout(
+        Duration::from_millis(500),
+        authed_device(&relay, &other_device),
+    )
+    .await
+    .expect("another device authenticates while the first status call is delayed");
+    let other_online = recv_json(&mut client).await;
+    assert_eq!(other_online["type"], "device_online");
+    assert_eq!(other_online["device_id"], other_device.device_id.as_str());
+
+    let _second = tokio::time::timeout(Duration::from_secs(2), reconnect)
+        .await
+        .expect("same device reconnects after offline status finishes");
+    let online = recv_json(&mut client).await;
+    assert_eq!(online["type"], "device_online");
+    assert_eq!(online["device_id"], device.device_id.as_str());
 }
 
 #[tokio::test]

@@ -9,10 +9,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// 19 in `src/app.rs`, 2 each in `src/bin/relay.rs` and
-/// `src/harness/codex_app_server/tests.rs`, and one each in `src/mcp.rs`,
-/// `src/rtc/testing.rs`, `src/thread.rs`, `tests/pi_extension.rs` and
-/// `tests/real_store_migration.rs`. One below what the gate landed with:
+/// The baseline includes 19 application functions, 2 each in the relay binary
+/// and Codex app-server tests, and one each in MCP, RTC testing, thread paging,
+/// Pi extension tests, and real-store migration tests. Module extraction does
+/// not change this budget. One below what the gate landed with:
 /// `worktree.rs`'s `parse_worktree_block` is a path-only porcelain parser now
 /// that the isolation seam owns what it used to describe, and needs no allow.
 const RATCHETED_FUNCTIONS: usize = 28;

@@ -9,15 +9,15 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | Stage | Responsibility | State |
 | --- | --- | --- |
 | 3 | Move encoding, filesystem-scope, shell, and independent QA utilities to their owners | Complete |
-| 4 | Extract conversation application methods and request parsing | Prepared outside repository |
+| 4 | Extract conversation application methods and request parsing | Complete |
 | 5 | Extract project, configuration, and capture application methods | Prepared outside repository |
 | 5b | Give project registration, entity binding, and retained paths their own registry | Planned |
-| 6 | Extract issue, run, worktree, board, and protocol adapters | Preparing outside repository |
+| 6 | Extract issue, run, worktree, board, and protocol adapters | Prepared outside repository |
 | 7 | Give session registration and spawn reservations their own component | Planned |
 | 8 | Give delivery queues, receipts, and in-flight accounting their own component | Planned |
 | 9 | Give board attention and caches their own component | Planned |
 | 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Planned |
-| Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Preparing outside repository |
+| Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Prepared outside repository |
 
 Each stage is committed after its source review and validation. Mechanical
 extraction preserves executable bodies; ownership changes receive separate
@@ -72,3 +72,23 @@ Gitleaks passes. The full suite reports 2,184 passed, one failed, and seven
 ignored; all 2,109 exercised library tests pass. The sole failure is the known
 `concurrency_load` output floor, again at 75,226 bytes. `app.rs` is now 24,035
 lines. No benchmark threshold or runtime behavior changed.
+
+## Stage 4
+
+Conversation address resolution, reading and pagination, posting and receipts,
+attachments, and input parsing now live in five cohesive modules under
+`app/conversations/`. The largest is 662 lines; `app.rs` is 21,873 lines.
+The public `app::ATTACHMENT_MAX_BYTES` path remains available. Cross-record
+persistence stays in the application coordinator for the later ownership stage.
+Production imports are explicit, and moved internal items remain app-scoped.
+
+The staged crate-wide audit retains all 5,434 functions and the exact test,
+literal, branch, and public-function inventories. Its eight reviewed function
+pairs differ only by trailing commas in signatures wrapped by rustfmt after
+the required visibility change; their bodies are unchanged. Focused conversation
+tests pass 51 cases with one configured ignore. Formatting, compilation, and
+all-target Clippy pass. The full suite reports 2,184 passed, one failed, and
+seven ignored; all 2,109 exercised library tests pass. The only failure is the
+known `concurrency_load` output floor, at 80,414 bytes. Semgrep finds no issues
+across all eight changed Rust files, and staged Gitleaks passes. The complexity
+ratchet remains 28; its explanatory comment now survives module relocation.

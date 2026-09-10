@@ -1,6 +1,6 @@
 # Bridge Modularization Strategy
 
-**Status:** Stages 1–3 implemented; application-service extraction is next
+**Status:** Stages 1–4 implemented; project, configuration, and capture extraction is next
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
 ## Why this work is needed
@@ -370,6 +370,18 @@ is now 24,035 lines. See [the progress record](Bridge%20Modularization%20Progres
 for the remaining integration sequence and validation evidence.
 
 ### Phases 4-6: Split the application services mechanically
+
+**Stage 4 implemented.** Conversation addressing, reads, posting, attachments,
+and input parsing live in five modules under `app/conversations/`, each under
+700 lines. `app.rs` is 21,873 lines. Public attachment limits remain available
+through the app facade; cross-record persistence remains with the coordinator.
+All 5,434 functions and every test body are preserved; the audit's eight
+reviewed signature pairs differ only by rustfmt trailing commas. Focused
+conversation tests pass 51 cases with one configured ignore. Formatting,
+compilation, all-target Clippy, Semgrep, and Gitleaks pass. The full suite
+reports 2,184 passed, one failed, and seven ignored, with all 2,109 exercised
+library tests passing. The only failure is the known `concurrency_load`
+output floor at 80,414 bytes; no threshold or timing behavior changed.
 
 Move one cohesive route family per PR into `app/conversations.rs`, then
 projects/config/captures, then issues/runs/worktrees/board. The central

@@ -15,6 +15,14 @@ pub fn is_worktree_contained_path(path: &str) -> bool {
             .all(|component| matches!(component, Component::Normal(_)))
 }
 
+/// Resolve a client-supplied relative `path` under a worktree-backed `root`,
+/// fenced on both ends (spec §4.1): the lexical fence
+/// (`is_worktree_contained_path` — no `..`, no root, no non-Normal component)
+/// PLUS canonical containment, which is what actually defeats a symlink
+/// pointing outside the root (a symlink's own path components are all
+/// Normal, so the lexical fence alone cannot catch it). `path` empty means
+/// the scope root itself. Returns the joined (not canonicalized) path — safe
+/// to use for further fs calls once containment is established.
 pub(crate) fn fenced_scope_path(root: &Path, path: &str) -> Result<PathBuf, String> {
     if !path.is_empty() && !is_worktree_contained_path(path) {
         return Err("path escapes the worktree".to_string());

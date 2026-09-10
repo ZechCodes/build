@@ -1,0 +1,93 @@
+# Production config (SKRIFT_ENV=production, the default). Dev uses app.dev.yaml.
+#
+# Required environment (set via the container/deployment, or .env):
+#   SECRET_KEY           — Skrift session signing key
+#   DATABASE_URL         — postgresql+asyncpg://user:pass@host:5432/dbname
+#   INTERNAL_API_SECRET  — shared secret the relay presents as X-Internal-Secret
+#   VAPID_PRIVATE_KEY    — web-push VAPID private key (base64url raw P-256 scalar)
+#   VAPID_PUBLIC_KEY     — web-push VAPID public key (base64url uncompressed point)
+#   VAPID_SUBJECT        — optional contact claim, default mailto:ops@getbuild.ing
+#   CF_TURN_KEY_ID       — Cloudflare TURN key id (optional: absent means the
+#   CF_TURN_KEY_API_TOKEN  ICE-servers route answers a STUN-only list)
+#   SMTP_USERNAME        — FastMail login address
+#   SMTP_PASSWORD        — FastMail app password (not the account password)
+#   SMTP_FROM_ADDRESS    — an address or alias on that account, e.g. Build <hello@getbuild.ing>
+#   WAITLIST_NOTIFY_ADDRESS — read from the environment by the app (not interpolated here);
+#                          empty disables the owner notification on a new signup
+controllers:
+  - buildapp.root_controller:RootController
+  - buildapp.controllers:BuildController
+  - buildapp.health_controller:HealthController
+  - buildapp.devices_controller:DevicesController
+  - buildapp.push_controller:PushController
+  - buildapp.rtc_controller:RtcController
+  - buildapp.transport_controller:TransportController
+  - buildapp.transport_admin:TransportAdminController
+  - buildapp.waitlist_controller:WaitlistController
+  - buildapp.invites_controller:InvitesController
+  - buildapp.invites_admin:InvitesAdminController
+  - skrift.controllers.auth:AuthController
+  - skrift.admin.controller:AdminController
+models:
+  - buildapp.models
+db:
+  # Env-driven (Skrift interpolates $VARS at config load, failing fast if unset).
+  url: $DATABASE_URL
+auth:
+  # Also the pinned WebAuthn origin/RP ID for passkeys — must match the app host.
+  redirect_base_url: https://getbuild.ing
+  methods:
+    passkey:
+      type: passkey
+      label: Passkey
+oauth2_enabled: true
+rate_limit:
+  enabled: true
+  rules:
+    - name: waitlist_join
+      match:
+        path: /api/waitlist
+        method: POST
+      key: ip
+      limits:
+        - limit: 3
+          per: minute
+        - limit: 100
+          per: day
+    # An invite link is a secret; a caller walking the token space gets 30 tries a
+    # minute and nothing else.
+    - name: invite_open
+      match:
+        path: /invite/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 30
+          per: minute
+email:
+  backend: skrift.lib.email_backends:SMTPEmailBackend
+  from_address: $SMTP_FROM_ADDRESS
+  reply_to: $SMTP_FROM_ADDRESS
+  public_base_url: https://getbuild.ing
+  smtp_host: smtp.fastmail.com
+  smtp_port: 587
+  smtp_starttls: true
+  smtp_username: $SMTP_USERNAME
+  smtp_password: $SMTP_PASSWORD
+# The relay must present X-Internal-Secret on /internal/* — no localhost fallback.
+internal_api:
+  allow_localhost: false
+# Same-origin CSP: the SPA bundle, fonts, and crypto are all served from this app
+# (no esm.sh, no Google fonts). The only external target is the relay websocket.
+# Deviations from bare 'self', each load-bearing for the SPA:
+#   script-src 'wasm-unsafe-eval' — libsodium compiles WASM (does NOT allow JS eval)
+#   style-src  'unsafe-inline'    — xterm/Monaco inject runtime styles; Skrift's CSP
+#                                   nonce covers script-src only
+#   worker-src blob:              — Monaco editor workers
+#   img-src    data:              — inline-encoded icons
+#   connect-src data:             — ghostty-web instantiates its wasm from a data: URL
+security_headers:
+  # OAuth consent may hand navigation back to the registered desktop client.
+  csp_nonce: true
+  content_security_policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' data: wss://relay.getbuild.ing; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self' getbuilding:; base-uri 'self'; object-src 'none'"

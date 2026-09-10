@@ -1,0 +1,467 @@
+// The branch work item's surface: two tabs, Changes and Files, and nothing
+// else — the conversation is the agent rail and the terminals are the console.
+//
+// The surface has no bar of its own: which branch this is, and how it ends,
+// are both the toolbar's now (core/toolbar.js) — the branch name because the
+// nav bar already says it, Done (the same `branch.finish` the inbox row's
+// Done sends) through the toolbar's verb slot (`setToolbarVerb`), so a reader
+// standing IN the branch finds it beside the name it ends. Changes/Files
+// themselves pin to the bottom of whichever rail is open (`paintTabs`) —
+// #tabbody is flush against the toolbar, nothing above it spends the height.
+// core/branchFinish.js decides when Done is offered and what it promises.
+//
+// The surface resolves what stands under the branch with `branch.get`: a run,
+// a bare worktree, or the primary checkout. That resolution names the git
+// scope the tab bodies read, and which review plug the Changes rail carries —
+// a run's aggregate review diff (taskReview) or a bare worktree's
+// adopt-on-comment diff (worktreeReview). The primary checkout browses its
+// own commits with no aggregate entry.
+//
+// A branch name comes from the repo: untrusted, and escaped everywhere it is
+// painted.
+
+import { $ } from "../dom.js";
+import { esc } from "../core/text.js";
+import { App, go, markRoute } from "../app.js";
+import { watchChanges } from "../core/changeEvents.js";
+import { tabShellHtml } from "../core/tabshell.js";
+import { mountConsole } from "../core/console.js";
+import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
+import { mountAgentRail } from "../core/agentRail.js";
+import { createAgentSelection } from "../core/agentSelection.js";
+import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
+import { renderFilesTab } from "./files.js";
+import { createTaskReview } from "./taskReview.js";
+import { createWorktreeReview } from "./worktreeReview.js";
+import { createAdopters } from "../core/adoption.js";
+import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
+import { entityIdOf } from "../core/entityId.js";
+import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
+import { confirmAction } from "../core/confirm.js";
+import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
+import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
+import {
+  branchCloseout,
+  branchFinishConfirm,
+  branchFinishFacts,
+  branchFinishFailureSummary,
+  branchInboxKey,
+} from "../core/branchFinish.js";
+import { isPending, removeRecord, runOptimistic } from "../core/optimistic.js";
+import "../styles/shell.css";
+import "../styles/surfaces.css";
+
+const BRANCH_TABS = [
+  { id: "changes", label: "Changes" },
+  { id: "files", label: "Files" },
+];
+
+// The cadence every work surface has always read its entity at: fast enough
+// that a state flip (building → review) moves the actionbar while you watch.
+const ROW_POLL_MS = 1600;
+
+/** The git scope of what stands under the branch row: exactly one of
+ *  { run_id } / { project_id, worktree_id } / { project_id } (primary), or
+ *  null when the row names no checkout this device holds. Pure. */
+export function branchScope(row, projectId) {
+  if (!row) return null;
+  if (row.run_id) return { run_id: row.run_id };
+  const project = row.project_id || projectId;
+  if (!project) return null;
+  if (row.worktree_id) return { project_id: project, worktree_id: row.worktree_id };
+  return row.primary ? { project_id: project } : null;
+}
+
+/** What the Changes rail's review plug is made for — a plug survives repaints
+ *  only while this key holds, so pending comments outlive tab switches but
+ *  never leak across an adoption (worktree → run). Pure. */
+export function reviewKeyOf(scope) {
+  if (!scope) return null;
+  if (scope.run_id) return `run:${scope.run_id}`;
+  if (scope.worktree_id) return `worktree:${scope.worktree_id}`;
+  return null; // the primary checkout has no aggregate review entry
+}
+
+/** Background adoption may change a Files pane's backing while it owns a
+ * live draft. The next poll can remount after that draft is saved. */
+export function shouldRetainDirtyFilesPane(tab, pane) {
+  return tab === "files" && Boolean(pane?.hasUnsavedChanges?.());
+}
+
+const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
+
+export async function renderBranch() {
+  const root = $("#root");
+  const { projectId, branch } = App.route;
+  const tab = App.route.tab || "changes";
+  // Consumed once: only the navigation the toolbar's create form just fired
+  // means it, and a later revisit to this same branch must not keep stealing
+  // focus back to the composer.
+  const autofocusComposer = App.focusComposerOnMount;
+  App.focusComposerOnMount = false;
+  // Where the Files tab is standing: the URL says, so a sent link opens the
+  // same file and a reload keeps the reader's place.
+  const openAt = App.route.file ? { path: App.route.file, line: App.route.line || null } : null;
+  root.className = "surface";
+  root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
+  /** Changes/Files, painted into whichever rail the mounted pane just built
+   *  (.crail-host or .ftree — both flex columns ending in a slot for exactly
+   *  this) and pinned there by CSS (.railtabs). Returns whether a rail was
+   *  there to paint into. */
+  const paintTabs = () => {
+    const railHost = $("#tabbody .crail-host, #tabbody .ftree");
+    if (!railHost) return false;
+    let bar = railHost.querySelector(".railtabs");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "railtabs";
+      railHost.appendChild(bar);
+    }
+    bar.innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
+    bar.querySelectorAll("[data-tab]").forEach((cell) => {
+      cell.onclick = () => go({ name: "branch", projectId, branch, tab: cell.dataset.tab });
+    });
+    return true;
+  };
+  // The pane just mounted builds its own rail asynchronously (gitPane's
+  // skeleton waits on its first git.status/git.log; the files tree is
+  // synchronous but this stays uniform either way) — there is nothing to
+  // paint tabs into yet at the moment mountBody() calls this. Watch #tabbody
+  // until the rail actually lands, then paint once and stop watching.
+  let tabsWatcher = null;
+  const ensureTabsPainted = () => {
+    if (tabsWatcher) {
+      tabsWatcher.disconnect();
+      tabsWatcher = null;
+    }
+    if (paintTabs()) return;
+    const host = $("#tabbody");
+    if (!host) return;
+    tabsWatcher = new MutationObserver(() => {
+      if (!paintTabs()) return;
+      tabsWatcher.disconnect();
+      tabsWatcher = null;
+    });
+    tabsWatcher.observe(host, { childList: true, subtree: true });
+  };
+  // The basement, at the bottom of the view column: this branch's checkout, as
+  // terminals. Shut unless the last visit left it open.
+  const consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
+  // The agents beside the work, not instead of it: the rail belongs to this
+  // branch, so it is mounted with the surface and torn down with it. Which
+  // bubble is open is the whole surface's business — the row this view reads
+  // carries that agent's conversation, and the review comments Changes sends go
+  // into it — so the choice lives in a handle they share.
+  const agentSelection = createAgentSelection();
+
+  let disposed = false;
+  let row = null; // the branch.get payload: the feed row plus `run`
+  let pane = null; // the mounted tab body ({ dispose })
+  let mountedKey = null; // what the body was mounted over: tab + review key
+  let reviewPlug = null; // ONE instance per backing, so pending comments survive
+  let reviewKey = null;
+
+  // This mounted route belongs to the session that created it. A device switch
+  // disposes the view, but any operation already awaiting a reply must finish
+  // on that original session instead of recovering the newly-current App.call.
+  const callRpc = App.call;
+  // Two surfaces here can mutate an unclaimed checkout first — the rail's first
+  // message and the review's first comment or action — and near-simultaneous
+  // adoptions would ask for two owners of one checkout. Both take their adopter
+  // from here, so the checkout is claimed once.
+  const adopterFor = createAdopters(callRpc);
+  const adoptingHere = () => adopterFor(branchScope(row, projectId));
+
+  const rail = mountAgentRail($("#agent-rail"), {
+    kind: "branch",
+    projectId,
+    branch,
+    selection: agentSelection,
+    adopting: adoptingHere,
+    autofocusComposer,
+  });
+  const home = () => go({ name: "inbox" });
+  /** An ending the user triggered here must not badge its own inbox entry:
+   *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
+   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). An issue
+   *  handed BACK to the inbox keeps its own cursor — it is asking for somebody
+   *  again, and the event naming the branch it lost is the point of it. Only an
+   *  issue that ends with the branch is cleared with it. */
+  const finished = ({ issueEnded = false } = {}) => {
+    noteSelfAction(entityIdOf(row), issueEnded ? row && row.issue_id : null);
+    home();
+  };
+
+  // ---- the way the branch ends ------------------------------------------------
+  //
+  // ONE latch for the surface's Done: the row poll repaints this control, and a
+  // repaint mid-flight would arm a second branch.finish over the first.
+  const finishFlight = createSingleFlight();
+
+  /** One close-out: read what the deletion costs off the freshest row, confirm
+   *  the exact outline, send it, and leave for the inbox. */
+  const runFinish = async (optionId) => {
+    const facts = branchFinishFacts(row, branch);
+    const name = facts.branch;
+    // A cancel throws BEFORE any RPC: the button restores and no notice appears.
+    if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
+    const inboxKey = branchInboxKey(row, { projectId, branch: name });
+    if (isPending(INBOX_SCOPE, inboxKey)) return;
+    const finishing = runOptimistic({
+      scope: INBOX_SCOPE,
+      records: [removeRecord(inboxKey)],
+      call: () =>
+        finishWorkItem(
+          {
+            kind: "branch",
+            entityId: entityIdOf(row),
+            issueId: row && row.issue_id,
+            projectId,
+            branch: name,
+            // The issue ends with the branch only when the work landed;
+            // otherwise the bridge hands it back to the inbox.
+            issueEnded: facts.merged,
+          },
+          optionId,
+        ),
+      failureSummary: branchFinishFailureSummary(name),
+    });
+    home();
+    await finishing;
+    await refreshFeed();
+  };
+
+  // What the Done control was last painted from. The row poll runs every 1.6
+  // seconds and almost every tick resolves the same close-out; rewriting the
+  // host on each one destroyed whatever was open inside it, so the menu
+  // vanished before the user could reach an item.
+  let paintedFinish = null;
+
+  /** Paint the branch's Done into the toolbar's verb slot, off the freshest
+   *  branch.get row. Frozen while a close-out is in flight, so no poll — this
+   *  view's own row poll, or the toolbar's independent one, which also calls
+   *  this via setToolbarVerb below — can remount an enabled button over a
+   *  pending branch.finish, and while its menu is open — a click in progress
+   *  outranks a repaint, which lands on a later tick once the menu is shut. */
+  const paintFinish = (host) => {
+    host = host || $("#tb-verb");
+    if (!host || finishFlight.active()) return;
+    if (host.querySelector(".splitmenu:not([hidden])")) return;
+    const closeout = branchCloseout(row);
+    const signature = JSON.stringify(closeout);
+    if (signature === paintedFinish) return;
+    paintedFinish = signature;
+    if (!closeout.shown) {
+      host.innerHTML = "";
+      return;
+    }
+    // Sized down to the toolbar's own vocabulary — this is a fact in a bar of
+    // facts, not the loudest thing on the page — but always pressable: Done is
+    // never refused for the state of the work, what the deletion would cost is
+    // in the confirmation, not in a disabled button.
+    mountSplitButton(host, { options: closeout.options, run: runFinish, flight: finishFlight, variant: "mini" });
+  };
+  setToolbarVerb(paintFinish);
+
+  const navigate = {
+    openFile: ({ path, line }) => go({ name: "branch", projectId, branch, tab: "files", file: path, line }),
+  };
+
+  /** The plug for the Changes rail's aggregate entry, made once per backing.
+   *  A run reviews through its own diff and verbs; a bare worktree adopts on
+   *  the first comment or action; the primary checkout carries none. */
+  const reviewFor = (scope) => {
+    const key = reviewKeyOf(scope);
+    if (!key) return null;
+    if (key !== reviewKey) {
+      reviewKey = key;
+      if (scope.run_id) {
+        reviewPlug = createTaskReview({
+          taskId: scope.run_id,
+          callRpc,
+          navigate,
+          getTask: () => (row ? row.run : null),
+          isOffline: () => App.offline,
+          agentSelection,
+          viewingContext: App.viewingContext,
+          // A merge is the work landing: the issue it implements ends with it.
+          onMerged: () => finished({ issueEnded: true }),
+        });
+      } else {
+        reviewPlug = createWorktreeReview({
+          projectId: scope.project_id,
+          worktreeId: scope.worktree_id,
+          callRpc,
+          navigate,
+          adopting: adopterFor(scope),
+          isOffline: () => App.offline,
+          viewingContext: App.viewingContext,
+          // Adoption keeps the URL — the same branch now stands on a run, so
+          // the surface re-resolves and the Changes rail re-mounts run-backed.
+          onAdopted: () => refresh(true),
+          onFinished: () => finished(),
+          onGone: () => refresh(true),
+        });
+      }
+    }
+    const plug = reviewPlug;
+    // Spread, never a hand-written subset. This wrapper exists to answer ONE
+    // question the plug cannot — which branch a run's diff is against — and an
+    // adapter that re-declares the rest silently drops whatever the plug learns
+    // to do next. It did: `mount(host)` swallowed the options the pane passes,
+    // so the merge verb had no host and `commentOffer` did not exist, which
+    // took the whole toolbar down with it.
+    return {
+      ...plug,
+      getBase: () => (scope.run_id ? (row && row.run && row.run.base_branch) || "main" : plug.getBase()),
+    };
+  };
+
+  /** Mount the open tab's body over the resolved row. Idempotent per
+   *  (tab, backing): polls repaint nothing — the panes own their own polls —
+   *  so only a change of backing (adoption, worktree pruned) remounts. */
+  const mountBody = () => {
+    const host = $("#tabbody");
+    if (!host) return;
+    const scope = branchScope(row, projectId);
+    const key = paneKey(tab, scope);
+    if (key === mountedKey) return;
+    // Adoption can change the backing key under this same Files surface. Keep
+    // its live editor mounted until the draft is saved or explicitly left;
+    // polling must never turn a background ownership update into data loss.
+    if (shouldRetainDirtyFilesPane(tab, pane)) {
+      pane.retargetScope(scope);
+      mountedKey = key;
+      return;
+    }
+    if (pane) {
+      pane.dispose();
+      pane = null;
+    }
+    mountedKey = key;
+    if (!scope) {
+      host.innerHTML = `<div class="empty">No checkout on this device carries <span class="mono">${esc(branch)}</span>.</div>`;
+      return;
+    }
+    if (tab === "files") {
+      pane = renderFilesTab(host, {
+        scope,
+        callRpc,
+        openAt,
+        viewingContext: App.viewingContext,
+        // Moving within the tab: the URL keeps up without the surface being
+        // rebuilt around the file it is already showing.
+        onFileOpen: (path) => markRoute({ name: "branch", projectId, branch, tab: "files", file: path }),
+      });
+      App.routeLeaveGuard = pane.canLeave;
+      ensureTabsPainted();
+      return;
+    }
+    App.routeLeaveGuard = null;
+    pane = mountGitPane(host, {
+      scope,
+      callRpc,
+      agentCommitOptions: row && row.run ? taskAgentCommitOptions(row.run.state, row.run.goal) : [],
+      review: reviewFor(scope),
+      agentSelection,
+      navigate,
+      viewingContext: App.viewingContext,
+      // Review prioritization: the run's freshest triage pass orders whichever
+      // changeset is open, and the reviewer's trust dial is remembered for the
+      // project they are reading.
+      projectId,
+      triageEnabled: () => Boolean(row && row.run && row.run.triage_enabled === true),
+      triage: () => (row && row.run && row.run.triage) || null,
+    });
+    ensureTabsPainted();
+  };
+
+  /** One read of the branch row. `force` remounts even when the backing is
+   *  unchanged (an adoption just happened underneath the plug). */
+  // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
+  const refresh = async (force = false) => {
+    let payload;
+    try {
+      payload = await callRpc("branch.get", {
+        project_id: projectId,
+        branch,
+        ...agentSelection.scope(),
+        ...SMALLEST_THREAD_PAGE,
+      });
+    } catch {
+      // The branch stopped resolving: merged away, renamed, or the worktree is
+      // gone. A row we already painted stays; a first read that fails says so —
+      // once. Every tick after says the same thing, and repainting would rebuild
+      // the one way out the empty state offers.
+      if (!disposed && !row && mountedKey !== "gone") {
+        const host = $("#tabbody");
+        if (host)
+          host.innerHTML = `<div class="empty gone">No checkout in this project carries <span class="mono">${esc(branch)}</span>.<div><button class="btn" id="branchback">Back to inbox</button></div></div>`;
+        const back = $("#branchback");
+        if (back) back.onclick = () => home();
+        mountedKey = "gone";
+      }
+      return;
+    }
+    if (disposed) return;
+    const runAppeared = Boolean(payload.run) !== Boolean(row && row.run);
+    row = payload;
+    // A remount when the run's knowledge appears (the feed-seeded row carries
+    // ids but not the run body), so the commit box gets its agent options.
+    if (force || runAppeared) mountedKey = null;
+    mountBody();
+    paintFinish();
+  };
+
+  let watcher = null;
+  App.viewDispose = () => {
+    disposed = true;
+    App.routeLeaveGuard = null;
+    // The view ends its own read rather than trusting the shell to clear the
+    // slot it put it in.
+    if (watcher) watcher.dispose();
+    watcher = null;
+    if (tabsWatcher) tabsWatcher.disconnect();
+    tabsWatcher = null;
+    clearToolbarVerb(paintFinish);
+    if (pane) pane.dispose();
+    pane = null;
+    rail.dispose();
+    consolePanel.dispose();
+  };
+  // The feed already carries this branch's row — ids, scope, agents — and the
+  // cached snapshot replays synchronously at subscribe. Standing the tabs and
+  // panes up from it means switching branches shows the full surface (which
+  // then fills from its own caches) instead of a bare loading frame for the
+  // length of a round trip; the first live read reconciles.
+  if (!row) {
+    let seeded = null;
+    const unsubscribe = subscribeFeed((feed) => {
+      seeded =
+        (feed.items || []).find(
+          (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
+        ) || null;
+    });
+    unsubscribe();
+    if (seeded) {
+      row = seeded;
+      mountBody();
+      paintFinish();
+    }
+  }
+  await refresh();
+  // The first read can outlive the view: a navigation mid-flight has already
+  // torn this view down (render() ran viewDispose), and the poll slot belongs
+  // to whatever is mounted now. Claiming it here would orphan an interval that
+  // reads a dead branch forever — the leaked-poller slowdown.
+  if (disposed) return;
+  // The run behind the branch is the entity whose events say this row moved;
+  // until the first read names one (an unadopted checkout has none), the safety
+  // poll is what carries the surface.
+  watcher = watchChanges({
+    refresh,
+    intervalMs: ROW_POLL_MS,
+    entity: () => [row && row.run_id, row && row.worktree_id],
+  });
+  App.poll = watcher;
+}

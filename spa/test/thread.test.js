@@ -1,0 +1,1424 @@
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from "vitest";
+import { FIRST_PAGE_ITEMS, createThreadCache, createThreadState, currentRevisionId, formatRelativeDate, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { composerHtml } from "../src/core/composer.js";
+import { diffThreadMessages } from "../src/core/notes.js";
+
+describe("conversation thread rendering", () => {
+  it("renders messages, zero-token events, seen state, and revision resolution", async () => {
+    const thread = {
+      revisions: [{ id: "diff-revision-2-abcd", artifact: "diff" }],
+      items: [
+        { type: "message", data: { role: "user", body: "rename this", created_at: "2026-07-24T12:00:00Z", seen_at: "now", resolved_by_revision: "diff-revision-2-abcd", anchor: { path: "src/a.js", line_start: 4, line_end: 4 } } },
+        { type: "message", data: { role: "agent", body: "Which name?", created_at: "2026-07-24T12:01:00Z" } },
+        { type: "event", data: { event: "revision_created", created_at: "2026-07-24T12:02:00Z", revision_id: "diff-revision-2-abcd" } },
+      ],
+    };
+    const html = threadHtml(thread);
+    expect(html).toContain("rename this");
+    expect(html).toContain("Seen");
+    expect(html).toContain("Resolved in diff-revision-2-abcd");
+    expect(html).toContain("Which name?");
+    expect(html).toContain("Revision created");
+    expect(currentRevisionId(thread, "diff")).toBe("diff-revision-2-abcd");
+
+    document.body.innerHTML = html;
+    expect(document.querySelector(".thread-items").classList.contains("thread-timeline")).toBe(true);
+    expect(document.querySelectorAll(".thread-comment")).toHaveLength(2);
+    expect(document.querySelectorAll(".thread-avatar")).toHaveLength(2);
+    expect(document.querySelector("time").dateTime).toBe("2026-07-24T12:00:00Z");
+    wireThreadRevisionLinks(document.body, async (revisionId) => ({ revision_id: revisionId, contents: "+renamed" }));
+    document.querySelector(".thread-revision-link").click();
+    await Promise.resolve();
+    expect(document.querySelector(".thread-revision-view").textContent).toContain("+renamed");
+  });
+
+  it("renders blockers and programmatic activity as issue timeline actions", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        { type: "event", data: { event: "blocked", summary: "Needs production credentials", created_at: "2026-07-24T12:00:00Z" } },
+        { type: "event", data: { event: "review_blocked", summary: "The migration is not reversible", created_at: "2026-07-24T12:01:00Z" } },
+        { type: "event", data: { event: "approved", summary: "Plan approved", created_at: "2026-07-24T12:02:00Z" } },
+      ],
+    });
+
+    const actions = [...document.querySelectorAll(".thread-event")];
+    expect(actions).toHaveLength(3);
+    expect(actions[0].classList.contains("blocked")).toBe(true);
+    expect(actions[0].textContent).toContain("Agent reported a blocker");
+    expect(actions[1].classList.contains("blocked")).toBe(true);
+    expect(actions[1].textContent).toContain("Review blocked");
+    expect(actions[2].textContent).toContain("Plan approved");
+    expect(document.querySelectorAll(".thread-event-icon")).toHaveLength(3);
+  });
+
+  it("renders typed file and stage references and wires them without hrefs", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        { type: "message", data: { role: "agent", body: "Changed the parser.", links: [{ kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 }] } },
+        { type: "event", data: { event: "stage_started", summary: "Started parser stage", links: [{ kind: "plan_stage", plan_id: "plan-1", stage_id: "parser", path: ".build/plan/01-parser.md" }] } },
+      ],
+    });
+    const links = [...document.querySelectorAll(".thread-reference")];
+    expect(links).toHaveLength(2);
+    expect(links[0].tagName).toBe("BUTTON");
+    expect(links[0].textContent).toContain("src/parser.js:8-12");
+    expect(links[1].textContent).toContain(".build/plan/01-parser.md");
+    expect(document.querySelector("a")).toBeNull();
+
+    const opened = [];
+    wireThreadLinks(document.body, (link) => opened.push(link));
+    links[0].click();
+    links[1].click();
+    expect(opened).toEqual([
+      { kind: "file", path: "src/parser.js", line_start: 8, line_end: 12 },
+      { kind: "plan_stage", plan_id: "plan-1", stage_id: "parser", path: ".build/plan/01-parser.md" },
+    ]);
+  });
+
+  // The bridge sends a `triaged` event when a review-prioritization pass
+  // finishes. It is status, not a hand-back, so it reads as a fact about the
+  // diff and carries none of the tone a blocked or done entry does.
+  it("names a triage pass rather than falling back to its wire token", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        {
+          type: "event",
+          data: { event: "triaged", summary: "the crypto change carries the risk" },
+        },
+      ],
+    });
+    const entry = document.querySelector(".thread-event");
+    expect(entry.textContent).toContain("Diff ordered for review");
+    expect(entry.textContent).toContain("the crypto change carries the risk");
+    expect(entry.classList.contains("blocked")).toBe(false);
+    expect(entry.classList.contains("success")).toBe(false);
+  });
+
+  // And a `triage_overridden` event when the reviewer disagrees with where the
+  // pass put a hunk. It is the same shape of fact: the agent is told, and
+  // nothing is asked of anyone.
+  it("names a reviewer's disagreement with a triage pass", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        {
+          type: "event",
+          data: {
+            event: "triage_overridden",
+            summary: "The reviewer opened src/crypto.rs: triage collapsed a change that needed reading.",
+          },
+        },
+      ],
+    });
+    const entry = document.querySelector(".thread-event");
+    expect(entry.textContent).toContain("Review order corrected");
+    expect(entry.textContent).toContain("src/crypto.rs");
+    expect(entry.classList.contains("blocked")).toBe(false);
+    expect(entry.classList.contains("success")).toBe(false);
+  });
+
+  // The whole disagreement, in the conversation: which file, the claim the pass
+  // made about it, and what the reviewer said back — each its own line, so the
+  // agent reading this can see which of its own claims was not believed.
+  it("shows the hunk's context on an override: the file, the rejected rationale, the reviewer's note", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        {
+          type: "event",
+          data: {
+            event: "triage_overridden",
+            summary:
+              "The reviewer opened src/crypto.rs: triage collapsed a change that needed reading.\n\n" +
+              "Triage said: a mechanical rename\n\nkey derivation is never boilerplate",
+          },
+        },
+      ],
+    });
+    const detail = document.querySelector(".thread-event .thread-event-detail");
+    expect(detail.textContent).toContain("src/crypto.rs");
+    expect(detail.textContent).toContain("Triage said: a mechanical rename");
+    expect(detail.textContent).toContain("key derivation is never boilerplate");
+    // Three claims, three paragraphs — not one run-on line.
+    expect(detail.querySelectorAll("p").length).toBe(3);
+  });
+
+  it("renders a done-flagged send like any other message after the done entry", () => {
+    const html = threadHtml(
+      {
+        items: [
+          { type: "event", data: { event: "done", summary: "Implemented persistent review conversations." } },
+          { type: "message", data: { role: "agent", done: true, body: "Implemented persistent review conversations." } },
+        ],
+        last_completion: {
+          critical_files: ["src/plan.js"],
+          risk_notes: ["Keep the durable thread intact."],
+          decisions: [],
+          skips: [],
+        },
+      },
+      { initialMessage: "Make review conversations persistent", composer: true },
+    );
+
+    document.body.innerHTML = html;
+    const timeline = [...document.querySelector(".thread-items").children];
+    const messages = [...document.querySelectorAll(".thread-message")];
+    expect(messages[0].classList.contains("user")).toBe(true);
+    expect(messages[0].textContent).toContain("Make review conversations persistent");
+    expect(timeline.at(-2).classList.contains("thread-event")).toBe(true);
+    expect(timeline.at(-2).textContent).toContain("Agent reported done");
+    expect(timeline.at(-1).classList.contains("thread-message")).toBe(true);
+    expect(timeline.at(-1).classList.contains("thread-completion")).toBe(false);
+    expect(timeline.at(-1).querySelector(".thread-message-head").textContent).toContain("Agent commented");
+    expect(timeline.at(-1).textContent).toContain("Implemented persistent review conversations.");
+    expect(timeline.at(-1).textContent).not.toContain("Critical files");
+    expect(timeline.at(-1).textContent).not.toContain("src/plan.js");
+    expect(document.querySelector(".thread-event-detail")).toBeNull();
+    expect(document.querySelector("details")).toBeNull();
+    expect(document.querySelector("#planthreadinput")).not.toBeNull();
+    expect(document.querySelector("#planthreadsend .composer-send-label").textContent).toBe("Send");
+  });
+
+  // The timeline's avatar spine is drawn by the timeline itself, so a
+  // conversation with nothing in it drew a 2px rule down the side of its own
+  // empty state — a thread stem holding no messages. The empty case marks
+  // itself so the CSS can drop the spine and the gutter it aligns to.
+  it("marks an empty conversation, so its avatar spine is not drawn against nothing", () => {
+    document.body.innerHTML = threadHtml({ items: [] }, { composer: true });
+    expect(document.querySelector(".thread-timeline").classList.contains("is-empty")).toBe(true);
+    expect(document.querySelector(".review-thread").classList.contains("is-empty")).toBe(true);
+    expect(document.querySelector(".thread-empty").textContent).toBe("No conversation yet.");
+  });
+
+  it("drops the empty mark as soon as there is anything on the record", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "message", data: { role: "user", body: "rename this", created_at: "2026-07-24T12:00:00Z" } }],
+    });
+    expect(document.querySelector(".thread-timeline").classList.contains("is-empty")).toBe(false);
+    expect(document.querySelector(".review-thread").classList.contains("is-empty")).toBe(false);
+    expect(document.querySelector(".thread-empty")).toBeNull();
+  });
+
+  // An initial message is a rendered item like any other: a plan opened from an
+  // issue has a conversation from its first frame.
+  it("is not empty when the only item is the initial message folded in", () => {
+    document.body.innerHTML = threadHtml({ items: [] }, { initialMessage: "add a dark theme" });
+    expect(document.querySelector(".thread-timeline").classList.contains("is-empty")).toBe(false);
+  });
+
+  it("renders a caller-scoped composer so two composers can coexist without id collisions", () => {
+    document.body.innerHTML =
+      threadHtml({ items: [] }, { composer: true }) +
+      threadHtml(
+        { items: [] },
+        {
+          composer: {
+            inputId: "diffthreadinput",
+            sendId: "diffthreadsend",
+            hintId: "diffthreadhint",
+            placeholder: "Ask the coding agent…",
+          },
+        },
+      );
+    expect(document.querySelectorAll("#planthreadinput")).toHaveLength(1);
+    expect(document.querySelectorAll("#diffthreadinput")).toHaveLength(1);
+    expect(document.querySelector("#diffthreadinput").placeholder).toBe("Ask the coding agent…");
+    // One row to start: the box grows to what is typed into it rather than
+    // sitting open at a height nothing has filled yet.
+    expect(document.querySelector("#diffthreadinput").rows).toBe(1);
+    expect(document.querySelector("#diffthreadhint")).not.toBeNull();
+    expect(document.querySelector("#diffthreadsend .composer-send-label").textContent).toBe("Send");
+    expect(document.querySelector("#diffthreadsend").classList.contains("composer-send")).toBe(true);
+  });
+
+  it("does not duplicate a sequenced completion message with the legacy fallback", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        { type: "event", data: { event: "done", summary: "Implemented the requested change." } },
+        { type: "message", data: { role: "agent", source: "completion", body: "Completion report\n\nCritical files\n- src/app.rs" } },
+      ],
+      last_completion: { critical_files: ["src/app.rs"], risk_notes: [], decisions: [], skips: [] },
+    }, { initialMessage: "Fix the bug" });
+    expect(document.querySelectorAll(".thread-completion")).toHaveLength(0);
+  });
+
+  it("identifies the harness that reported completion", () => {
+    document.body.innerHTML = threadHtml({
+      sessions: [{ provider: "Codex CLI" }],
+      items: [
+        { type: "event", data: { event: "session_ended" } },
+        { type: "event", data: { event: "done", summary: "Finished the task." } },
+        { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
+      ],
+    }, { initialMessage: "Do the task" });
+    const completionHead = [...document.querySelectorAll(".thread-message-head")].at(-1).textContent;
+    expect(completionHead).toContain("Codex TUI commented");
+    expect(completionHead).not.toContain("Agent commented");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI session ended");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI reported done");
+  });
+
+  it("calls either claude carrier Claude Code, never the word the wire uses", () => {
+    // Claude is Claude: which program carried the session is the bridge's
+    // record, not a second agent for a reader to tell apart.
+    document.body.innerHTML = threadHtml({
+      sessions: [{ provider: "claude_adk" }],
+      items: [
+        { type: "event", data: { event: "session_ended" } },
+        { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
+      ],
+    }, { initialMessage: "Do the task" });
+    const shown = document.querySelector(".thread-items").textContent;
+    expect(shown).toContain("Claude Code session ended");
+    expect(shown).not.toMatch(/claude_adk/);
+    expect(shown).not.toMatch(/headless/i);
+  });
+});
+
+describe("the startup events the status line has taken over", () => {
+  it("keeps them out of the timeline and paints every other kind", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        { type: "event", data: { event: "session_started", created_at: "2026-07-24T12:00:00Z" } },
+        { type: "event", data: { event: "run_started", created_at: "2026-07-24T12:01:00Z" } },
+        { type: "event", data: { event: "session_ended", created_at: "2026-07-24T12:02:00Z" } },
+        { type: "message", data: { role: "agent", body: "on it", created_at: "2026-07-24T12:03:00Z" } },
+      ],
+    });
+    const shown = document.querySelector(".thread-items").textContent;
+    expect(shown).not.toContain("session started");
+    expect(shown).not.toContain("Run started");
+    expect(shown).toContain("Agent session ended");
+    expect(shown).toContain("on it");
+    expect(document.querySelectorAll(".thread-event")).toHaveLength(1);
+  });
+
+  it("leaves a conversation of nothing but startup events empty", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "run_started", created_at: "2026-07-24T12:00:00Z" } }],
+    });
+    expect(document.querySelector(".thread-empty")).toBeTruthy();
+  });
+});
+
+describe("relative conversation dates", () => {
+  const localDate = (year, month, day, hour = 12, minute = 0) =>
+    new Date(year, month - 1, day, hour, minute);
+  const now = localDate(2026, 7, 29, 21);
+
+  it.each([
+    [new Date(now.getTime() - 30_000), "Just now"],
+    [new Date(now.getTime() - 5 * 60_000), "5 minutes ago"],
+    [new Date(now.getTime() - 4 * 60 * 60_000), "4 hours ago"],
+    [localDate(2026, 7, 28, 20), "Yesterday at 8pm"],
+    [localDate(2026, 7, 27), "Monday"],
+    [localDate(2026, 5, 5), "May 5th"],
+    [localDate(2025, 6, 7), "June 7th, 2025"],
+  ])("formats %s as %s", (date, expected) => {
+    expect(formatRelativeDate(date, now)).toBe(expected);
+  });
+
+  it("uses the relative date in rendered thread timestamps", () => {
+    const createdAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "approved", created_at: createdAt } }],
+    });
+
+    expect(document.querySelector("time").textContent).toBe("5 minutes ago");
+  });
+});
+
+describe("thread cache (cursor merge for the detail polls)", () => {
+  const item = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+
+  it("starts with a full fetch, then sends the last-known sequence as the cursor", () => {
+    const cache = createThreadCache();
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+    const absorbed = cache.absorb({ id: "thread:plan-1", items: [item(1, "hello"), item(3, "world")], revisions: [] });
+    expect(absorbed.items.map((i) => i.data.sequence)).toEqual([1, 3]);
+    expect(absorbed.revisions).toEqual([]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 3 });
+  });
+
+  it("appends a cursored delta in sequence order without mutating the payload", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a"), item(2, "b")] });
+    const delta = { items: [item(4, "d"), item(3, "c")], thread_total: 4, thread_last_sequence: 4 };
+    const merged = cache.absorb(delta);
+    expect(merged.items.map((i) => i.data.sequence)).toEqual([1, 2, 3, 4]);
+    expect(delta.items.map((i) => i.data.sequence)).toEqual([4, 3]); // payload untouched
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 4 });
+  });
+
+  it("never grows on a replayed sequence, and the arrived copy of the item wins", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a"), item(2, "stale")] });
+    const merged = cache.absorb({ items: [item(2, "reshipped"), item(3, "c")], thread_total: 3, thread_last_sequence: 3 });
+    expect(merged.items.map((i) => i.data.sequence)).toEqual([1, 2, 3]);
+    expect(merged.items[1].data.body).toBe("reshipped");
+  });
+
+  it("replaces a held item when a mutation delta re-ships it, and advances the cursor past the bump", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [{ type: "message", data: { sequence: 1, role: "user", body: "rename it", seen_at: null } }],
+    });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 1 });
+    // The bridge stamped seen_at on the held message and bumped its
+    // updated_sequence; the cursored delta re-ships the newer copy.
+    const merged = cache.absorb({
+      items: [{ type: "message", data: { sequence: 1, updated_sequence: 2, role: "user", body: "rename it", seen_at: "2026-07-24T12:05:00Z" } }],
+      thread_total: 1,
+      thread_last_sequence: 2,
+    });
+    expect(merged.items).toHaveLength(1);
+    expect(merged.items[0].data.seen_at).toBe("2026-07-24T12:05:00Z");
+    // The next cursor moves past the mutation bump so the bridge stops
+    // re-shipping the same item on every poll.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
+    // End-to-end regression guard: the re-rendered thread shows Seen.
+    const html = threadHtml(merged);
+    expect(html).toContain("Seen");
+    expect(html).not.toContain("Unread");
+  });
+
+  // An EVENT mutates too, since a tool call's answer lands on the call's own
+  // row rather than as a row of its own. The merge is keyed by creation
+  // sequence over every item, message and event alike, so the answered copy
+  // replaces the pending one in place — and the cursor moves past the bump, or
+  // the daemon re-ships the same answered call on every poll for as long as the
+  // conversation is open.
+  it("replaces a held EVENT when its answer lands on it, and advances the cursor past the bump", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [
+        { type: "message", data: { sequence: 1, role: "agent", body: "Reading the reader." } },
+        { type: "event", data: { sequence: 2, event: "tool_use", summary: "Read bridge/src/app.rs" } },
+      ],
+    });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
+
+    const merged = cache.absorb({
+      items: [
+        {
+          type: "event",
+          data: {
+            sequence: 2,
+            updated_sequence: 3,
+            event: "tool_use",
+            summary: "Read bridge/src/app.rs\n→ fn main() {}",
+            outcome: "ok",
+          },
+        },
+      ],
+      thread_total: 2,
+      thread_last_sequence: 3,
+    });
+
+    // One row, not two: the answer completed the call rather than joining it.
+    expect(merged.items).toHaveLength(2);
+    expect(merged.items[1].data.outcome).toBe("ok");
+    expect(merged.items[1].data.summary).toContain("→ fn main() {}");
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 3 });
+    // End-to-end guard: the repaint off the merged thread shows the answered
+    // state, so a mutation the cache took delivery of actually reaches the page.
+    const html = threadHtml(merged);
+    expect(html).toContain('data-outcome="ok"');
+  });
+
+  it("a zero-item delta leaves the accumulated items intact", () => {
+    const cache = createThreadCache();
+    const first = cache.absorb({ items: [item(1, "a"), item(2, "b")] });
+    const second = cache.absorb({ items: [], thread_total: 2, thread_last_sequence: 2 });
+    expect(second.items).toEqual(first.items);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
+  });
+
+  it("resets to a full refetch when thread_total disagrees with what it holds", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a"), item(2, "b"), item(3, "c")] });
+    // The bridge restarted (or the entity swapped): it now reports fewer items
+    // than we hold. The cache drops its state so the next poll refetches whole.
+    cache.absorb({ items: [], thread_total: 1, thread_last_sequence: 1 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+    const refetched = cache.absorb({ items: [item(1, "only")] });
+    expect(refetched.items.map((i) => i.data.sequence)).toEqual([1]);
+  });
+
+  it("passes a missing thread through and clears its state", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1, "a")] });
+    expect(cache.absorb(null)).toBeNull();
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+});
+
+describe("thread cache paging (the window over a long conversation)", () => {
+  const item = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+
+  it("names the page it can hold on a first load, so the daemon knows to bound one", () => {
+    const cache = createThreadCache();
+    // A daemon that hears no bound answers with the conversation whole, which
+    // is the only answer a client that cannot page can reconcile. Asking is
+    // what makes the answer a window.
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+  // What the daemon's `thread.page` ships: the newest items it was asked for,
+  // plus the whole conversation's size and the seek for the page above.
+  const page = (items, { thread_total, has_more }) => ({
+    id: "thread:run-1",
+    items,
+    revisions: [],
+    thread_total,
+    thread_last_sequence: items.at(-1)?.data.sequence || 0,
+    oldest_sequence: items[0]?.data.sequence ?? null,
+    has_more,
+  });
+
+  it("holds a bounded first page without calling it a loss", () => {
+    const cache = createThreadCache();
+    const opened = cache.absorb(page([item(98, "y"), item(99, "z")], { thread_total: 99, has_more: true }));
+    expect(opened.items.map((i) => i.data.sequence)).toEqual([98, 99]);
+    // The window is 2 of 99 on purpose. A cursor here is the whole point of
+    // paging: dropping to a full refetch would ship the other 97 every tick.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 99 });
+    const polled = cache.absorb({ items: [item(100, "new")], thread_total: 100, thread_last_sequence: 100 });
+    expect(polled.items.map((i) => i.data.sequence)).toEqual([98, 99, 100]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 100 });
+  });
+
+  it("resets when the window no longer reaches the newest item the daemon names", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(98, "y"), item(99, "z")], { thread_total: 99, has_more: true }));
+    // A delta went missing: the daemon says 101 is the newest and shipped
+    // nothing that gets us there, so what we hold has a hole in it.
+    const gapped = cache.absorb({ items: [], thread_total: 101, thread_last_sequence: 101 });
+    expect(gapped.items.map((i) => i.data.sequence)).toEqual([98, 99]);
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
+  it("opens a window on a page whose newest counter value sits below it", () => {
+    const cache = createThreadCache();
+    // `thread_last_sequence` names the whole conversation's newest counter
+    // value, and an in-place bump puts that on whatever item was mutated —
+    // a long-queued message marked seen, an old plan comment resolved — which
+    // is routinely an item the page deliberately left out. That is the state a
+    // reviewer opens an idle conversation in. The page still delivered
+    // everything it claims to, so the window is sound; calling the un-shipped
+    // bump a lost delta would reset the cache on every first load, and the
+    // cursor would never engage.
+    const opened = cache.absorb({
+      ...page([item(98, "y"), item(99, "z"), item(100, "newest")], { thread_total: 100, has_more: true }),
+      thread_last_sequence: 101,
+    });
+    expect(opened.items.map((i) => i.data.sequence)).toEqual([98, 99, 100]);
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 100 });
+
+    // The bump itself arrives on the next poll, from under the floor, and the
+    // cursor walks past it — rather than the daemon re-shipping the newest
+    // page every tick for the life of the view.
+    const markedSeen = { type: "message", data: { sequence: 5, updated_sequence: 101, role: "user", body: "old" } };
+    cache.absorb({ items: [markedSeen], thread_total: 100, thread_last_sequence: 101 });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 101 });
+    expect(cache.hasOlderItems()).toBe(true);
+  });
+
+  it("resets when the conversation holds fewer items than the window does", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(1, "a"), item(2, "b"), item(3, "c")], { thread_total: 3, has_more: false }));
+    // A bridge restart, or another entity's conversation under the same id:
+    // the sequences still line up at the top but the whole is smaller than
+    // the part we hold.
+    cache.absorb({ items: [], thread_total: 2, thread_last_sequence: 3 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
+  it("resets when an item is deleted from inside a window smaller than the whole", () => {
+    const cache = createThreadCache();
+    const newest = Array.from({ length: FIRST_PAGE_ITEMS }, (_, index) => item(81 + index, `m${81 + index}`));
+    cache.absorb(page(newest, { thread_total: 100, has_more: true }));
+
+    // The reviewer deleted their own open plan comment. A removal spends no
+    // sequence, so the delta is empty and the newest sequence is where it was:
+    // the conversation getting shorter is the only word the wire carries for
+    // it. A window is shorter than the whole by design, so the size check
+    // cannot hear that word — and without it the deleted comment stays on the
+    // rail for the life of the view, since nothing ever arrives to unsay it.
+    cache.absorb({ items: [], thread_total: 99, thread_last_sequence: 100 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+
+    // The refetch the reset asks for is what drops it.
+    const healed = cache.absorb(
+      page(newest.filter((entry) => entry.data.sequence !== 95), { thread_total: 99, has_more: true }),
+    );
+    expect(healed.items.some((entry) => entry.data.sequence === 95)).toBe(false);
+  });
+
+  it("resets when a tick both deletes an item and posts one, leaving the whole the same length", () => {
+    const cache = createThreadCache();
+    const newest = Array.from({ length: FIRST_PAGE_ITEMS }, (_, index) => item(81 + index, `m${81 + index}`));
+    cache.absorb(page(newest, { thread_total: 100, has_more: true }));
+
+    // One poll interval is long enough for both, and the count that comes back
+    // says nothing on its own. What the window knows is how much conversation
+    // it was told about: one item arrived, so a hundred items should have
+    // become a hundred and one.
+    cache.absorb({ items: [item(101, "posted")], thread_total: 100, thread_last_sequence: 101 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
+  it("cannot open a window on a delta, so a repaint after a reset still refetches", () => {
+    const cache = createThreadCache();
+    // The reader has paged all the way back: the window IS the conversation.
+    cache.absorb(page([item(1, "a"), item(2, "b"), item(3, "c")], { thread_total: 3, has_more: false }));
+
+    // One poll interval later: a doc comment was deleted (an item removed, no
+    // sequence spent) and the agent posted. The delta names a newest of 4 and
+    // a whole of 3, which is smaller than the four items the window would then
+    // hold — so the cache renders what it has and drops itself for a refetch.
+    const delta = { items: [item(4, "d")], thread_total: 3, thread_last_sequence: 4 };
+    expect(cache.absorb(delta).items.map((i) => i.data.sequence)).toEqual([1, 2, 3, 4]);
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+
+    // A repaint before the next poll folds the SAME payload back through the
+    // emptied cache — pressing a bubble, or leaving the chat and coming back,
+    // is enough. It is a delta, and a delta says nothing about how far back the
+    // conversation goes: taking it as the window would leave the reader with a
+    // one-message thread, a cursor past the end of it, and no page above — a
+    // view no later poll ever brings the rest back to.
+    const repainted = cache.absorb(delta);
+    expect(repainted.items.map((i) => i.data.sequence)).toEqual([4]);
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+    expect(cache.olderPageParam()).toBeNull();
+
+    // The refetch that cursor asks for is what paints, and it heals.
+    const healed = cache.absorb(page([item(2, "b"), item(3, "c"), item(4, "d")], { thread_total: 3, has_more: false }));
+    expect(healed.items.map((i) => i.data.sequence)).toEqual([2, 3, 4]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 4 });
+  });
+
+  it("asks for the page above the window while the daemon says there is one", () => {
+    const cache = createThreadCache();
+    expect(cache.olderPageParam()).toBeNull();
+    cache.absorb(page([item(98, "y"), item(99, "z")], { thread_total: 99, has_more: true }));
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 98 });
+    cache.absorbOlderPage(page([item(96, "w"), item(97, "x")], { thread_total: 99, has_more: false }), { before_sequence: 98 });
+    expect(cache.hasOlderItems()).toBe(false);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 96 });
+  });
+
+  it("never asks for older items when the first page already holds the start", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(1, "a"), item(2, "b")], { thread_total: 2, has_more: false }));
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+
+  it("folds an older page in at the front, in order, without disturbing the cursor", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true }));
+    const older = page([item(5, "e"), item(6, "f"), item(7, "g")], { thread_total: 9, has_more: true });
+    const widened = cache.absorbOlderPage(older, cache.olderPageParam());
+    expect(widened.items.map((i) => i.data.sequence)).toEqual([5, 6, 7, 8, 9]);
+    expect(older.items.map((i) => i.data.sequence)).toEqual([5, 6, 7]); // payload untouched
+    // Older items arriving must not walk the forward cursor backwards: the
+    // next poll still wants only what is newer than the newest we hold.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 9 });
+  });
+
+  it("keeps the widened window through the next poll rather than resetting on it", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true }));
+    cache.absorbOlderPage(page([item(6, "f"), item(7, "g")], { thread_total: 9, has_more: true }), cache.olderPageParam());
+    const polled = cache.absorb({ items: [item(10, "j")], thread_total: 10, thread_last_sequence: 10 });
+    expect(polled.items.map((i) => i.data.sequence)).toEqual([6, 7, 8, 9, 10]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 10 });
+  });
+
+  it("ignores an older page when there is no window left to extend", () => {
+    const cache = createThreadCache();
+    // The reader switched agents while the page was in flight, so the cache it
+    // would extend is gone. Folding it in would make a window whose top is not
+    // the conversation's newest — a hole, dressed as history.
+    expect(cache.absorbOlderPage(page([item(1, "a")], { thread_total: 9, has_more: false }), { before_sequence: 2 })).toBeNull();
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+    expect(cache.olderPageParam()).toBeNull();
+  });
+
+  it("ignores an older page whose window was replaced while it was in flight", () => {
+    const cache = createThreadCache();
+    const newest = [];
+    for (let sequence = 191; sequence <= 250; sequence += 1) newest.push(item(sequence, `m${sequence}`));
+    cache.absorb(page(newest, { thread_total: 250, has_more: true }));
+    const widened = [];
+    for (let sequence = 131; sequence <= 190; sequence += 1) widened.push(item(sequence, `m${sequence}`));
+    const seek = cache.olderPageParam();
+    cache.absorbOlderPage(page(widened, { thread_total: 250, has_more: true }), seek);
+
+    // The reader scrolls back past 131 and the page for it goes out. While it
+    // is in flight the poll trips the gap check and drops the cache, and the
+    // poll after that opens a fresh window on the newest items.
+    const staleSeek = cache.olderPageParam();
+    expect(staleSeek).toEqual({ before_sequence: 131 });
+    cache.absorb({ items: [], thread_total: 250, thread_last_sequence: 999 });
+    cache.absorb(page(newest, { thread_total: 250, has_more: true }));
+
+    // The page now lands under a window it was never above. Taking it would
+    // seat 71..130 directly under 191..250 with sixty items missing between
+    // them — and leave the floor at 71, so every further scroll back walks
+    // downward and 131..190 could never be asked for again.
+    const stale = [];
+    for (let sequence = 71; sequence <= 130; sequence += 1) stale.push(item(sequence, `m${sequence}`));
+    expect(cache.absorbOlderPage(page(stale, { thread_total: 250, has_more: true }), staleSeek)).toBeNull();
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 191 });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 250 });
+  });
+
+  it("keeps the top the reader reached when the page it opened on is absorbed again", () => {
+    const cache = createThreadCache();
+    // Every repaint folds the payload in hand back through the cache, and the
+    // payload in hand stays the page the window was opened on until the next
+    // poll replaces it with a delta. That page says there is more above ITS
+    // floor, which stopped being the window's floor the moment the reader
+    // scrolled back to the start.
+    const openedOn = page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true });
+    cache.absorb(openedOn);
+    cache.absorbOlderPage(page([item(1, "a"), item(2, "b"), item(3, "c"), item(4, "d"), item(5, "e"), item(6, "f"), item(7, "g")], { thread_total: 9, has_more: false }), cache.olderPageParam());
+    expect(cache.hasOlderItems()).toBe(false);
+
+    cache.absorb(openedOn);
+
+    // Believing it again would put the reader back at a top they have already
+    // reached, and every further scroll gesture would ask the daemon for a
+    // page it has already said does not exist.
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+
+  it("forgets that older items remain when it resets", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(9, "i")], { thread_total: 9, has_more: true }));
+    cache.reset();
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+
+  it("reopens on a window as tall as the one the gap took away", () => {
+    const cache = createThreadCache();
+    const conversation = Array.from({ length: 300 }, (_, index) => item(index + 1, `m${index + 1}`));
+    const newestPage = (limit) =>
+      page(conversation.slice(-limit), { thread_total: 300, has_more: limit < 300 });
+    const pageAbove = (seek) =>
+      page(conversation.slice(seek.before_sequence - 1 - FIRST_PAGE_ITEMS, seek.before_sequence - 1), {
+        thread_total: 300,
+        has_more: true,
+      });
+
+    // The reader is reading the start of a long task: three scrolls back past
+    // the first page, so the window is 240 items of 300.
+    cache.absorb(newestPage(FIRST_PAGE_ITEMS));
+    for (let widening = 0; widening < 3; widening += 1) {
+      cache.absorbOlderPage(pageAbove(cache.olderPageParam()), cache.olderPageParam());
+    }
+    const windowHeight = FIRST_PAGE_ITEMS * 4;
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 300 - windowHeight + 1 });
+
+    // Then a delta goes missing and the window is dropped. Reopening on the
+    // newest page alone would take 240 items of history off the reader's
+    // screen mid-sentence — the surfaces keep the scroll offset they had, and
+    // a timeline a quarter the height clamps it to somewhere they never were.
+    cache.absorb({ items: [], thread_total: 300, thread_last_sequence: 305 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: windowHeight });
+
+    const reopened = cache.absorb(newestPage(windowHeight));
+    expect(reopened.items.map((i) => i.data.sequence)).toEqual(
+      conversation.slice(-windowHeight).map((i) => i.data.sequence),
+    );
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 300 });
+  });
+
+  it("asks for a first page again when the reader opens another conversation", () => {
+    const cache = createThreadCache();
+    const conversation = Array.from({ length: 300 }, (_, index) => item(index + 1, `m${index + 1}`));
+    cache.absorb(page(conversation.slice(-200), { thread_total: 300, has_more: true }));
+
+    // The height a broken window is reopened at belongs to the conversation it
+    // was a window on. Another agent's is opened at the top like any other.
+    cache.reset();
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
+  it("keeps an item mutated below the window out of it, and still moves past the bump", () => {
+    const cache = createThreadCache();
+    const opened = [];
+    for (let sequence = 191; sequence <= 250; sequence += 1) opened.push(item(sequence, `m${sequence}`));
+    cache.absorb(page(opened, { thread_total: 250, has_more: true }));
+
+    // The agent resolved a doc comment made near the start of the
+    // conversation: item 5 is stamped and its updated_sequence bumped to the
+    // newest the daemon has, without a single item being appended. The forward
+    // cursor selects on that bump, so the delta ships item 5 alone — from 186
+    // items below the window's floor.
+    const delta = cache.absorb({
+      items: [{ type: "message", data: { sequence: 5, updated_sequence: 251, role: "user", body: "rename it", resolved_by_revision: "rev-2" } }],
+      thread_total: 250,
+      thread_last_sequence: 251,
+    });
+
+    // Taking it would seat message 5 directly above message 191 with 185
+    // messages missing between them, and leave the window's floor at 5 — so
+    // one scroll back would answer with items 1..4, say there is no more, and
+    // bury the rest of the conversation for the life of the view.
+    expect(delta.items.map((i) => i.data.sequence)).toEqual(opened.map((i) => i.data.sequence));
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 191 });
+    expect(cache.hasOlderItems()).toBe(true);
+    // The bump is still accounted for: a cursor left at 250 would have the
+    // daemon re-ship item 5 on every poll for as long as the view is open.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 251 });
+
+    const older = [];
+    for (let sequence = 131; sequence <= 190; sequence += 1) older.push(item(sequence, `m${sequence}`));
+    const widened = cache.absorbOlderPage(page(older, { thread_total: 250, has_more: true }), cache.olderPageParam());
+    expect(widened.items[0].data.sequence).toBe(131);
+    expect(widened.items.map((i) => i.data.sequence)).toEqual(
+      [...older, ...opened].map((i) => i.data.sequence),
+    );
+  });
+
+  it("takes the new half of a delta that also carries an item mutated below the window", () => {
+    const cache = createThreadCache();
+    const opened = [];
+    for (let sequence = 62; sequence <= 121; sequence += 1) opened.push(item(sequence, `m${sequence}`));
+    cache.absorb(page(opened, { thread_total: 121, has_more: true }));
+
+    // What resolving a doc comment actually looks like on the wire: the
+    // revision the agent wrote is appended AND the comment it answers — item 1,
+    // 61 items below the floor — is stamped in the same breath, so one delta
+    // carries both. The floor rule has to read the arrival item by item: taking
+    // it whole buries the conversation between item 1 and the window, and
+    // dropping it whole loses the revision the reader is waiting on.
+    const delta = cache.absorb({
+      items: [
+        { type: "message", data: { sequence: 1, updated_sequence: 122, role: "user", body: "rename it", resolved_by_revision: "plan-revision-2" } },
+        item(123, "revised the plan"),
+      ],
+      thread_total: 122,
+      thread_last_sequence: 123,
+    });
+
+    expect(delta.items.map((i) => i.data.sequence)).toEqual([
+      ...opened.map((i) => i.data.sequence),
+      123,
+    ]);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 62 });
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 123 });
+  });
+});
+
+// The daemon's page is measured in MESSAGES, and it is not contiguous.
+//
+// A page's `thread_limit` buys messages: the walk always reaches the limit-th
+// of them, and the activity a headless session emits between them rides along
+// uncounted. What bounds a page is a cap per RUN of activity — only the newest
+// hundred items of any one run ship, and the run's digest accounts for the
+// rest. So a page routinely carries far more items than it asked for, with
+// holes inside its runs, and says what each run really came to beside them.
+describe("thread cache paging over an activity-heavy conversation", () => {
+  // bridge/src/thread.rs: PAGE_ACTIVITY_RUN_CAP.
+  const RUN_CAP = 100;
+  // `readOlderItems` names no bound, so the daemon's default page is what
+  // answers a scroll back — the same page the first load asks for.
+  const DAEMON_PAGE = FIRST_PAGE_ITEMS;
+
+  const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+  const toolCall = (sequence) => ({
+    type: "event",
+    data: { sequence, event: "tool_use", summary: `Read src/a${sequence}.js` },
+  });
+
+  // What a headless agent's turn leaves in the conversation: what it said,
+  // then the tools it called saying it.
+  const sessionTranscript = (turns, toolCallsPerTurn) => {
+    const items = [];
+    for (let turn = 1; turn <= turns; turn += 1) {
+      items.push(message(items.length + 1, `turn ${turn}`));
+      for (let call = 0; call < toolCallsPerTurn; call += 1) items.push(toolCall(items.length + 1));
+    }
+    return items;
+  };
+
+  const isActivity = (entry) => entry.type !== "message";
+
+  // The daemon's page rule, mirrored: walk newest→older from the seek until
+  // the limit-th message, then cut each run of activity down to its newest
+  // `RUN_CAP` items and describe the whole of it in a digest.
+  const conversationPage = (conversation, { before = Infinity, limit }) => {
+    const older = conversation.filter((entry) => entry.data.sequence < before);
+    const span = [];
+    let messages = 0;
+    for (const entry of [...older].reverse()) {
+      if (messages === limit) break;
+      span.push(entry);
+      if (!isActivity(entry)) messages += 1;
+    }
+    const shipped = [];
+    const digests = [];
+    for (let at = 0; at < span.length; at += 1) {
+      if (!isActivity(span[at])) {
+        shipped.push(span[at]);
+        continue;
+      }
+      const run = [];
+      while (at < span.length && isActivity(span[at])) run.push(span[at++]);
+      at -= 1;
+      shipped.push(...run.slice(0, RUN_CAP));
+      digests.push({
+        from_sequence: run.at(-1).data.sequence,
+        through_sequence: run[0].data.sequence,
+        tool_calls: run.filter((entry) => entry.data.event === "tool_use").length,
+        rows: run.length,
+        last_tool_call: { sequence: run[0].data.sequence, created_at: null, summary: run[0].data.summary, outcome: null },
+      });
+    }
+    const items = shipped.reverse();
+    return {
+      id: "thread:run-1",
+      items,
+      activity_digests: digests.reverse(),
+      revisions: [],
+      thread_total: conversation.length,
+      thread_last_sequence: conversation.at(-1).data.sequence,
+      oldest_sequence: items[0]?.data.sequence ?? null,
+      has_more: older.length > span.length,
+    };
+  };
+
+  const sequencesOf = (items) => items.map((entry) => entry.data.sequence);
+  const messagesOf = (items) => items.filter((entry) => !isActivity(entry));
+
+  it("holds a page carrying far more items than the limit it asked for", () => {
+    const cache = createThreadCache();
+    // Twenty turns of five tool calls each: the page buys twenty messages and
+    // a hundred tool calls travel with them, against a limit of twenty.
+    const conversation = sessionTranscript(80, 5);
+    const opened = cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
+
+    expect(opened.items).toHaveLength(FIRST_PAGE_ITEMS * 6);
+    expect(messagesOf(opened.items)).toHaveLength(FIRST_PAGE_ITEMS);
+    // The window is sound: an oversized page is not a loss, and the forward
+    // cursor engages off the newest item it shipped.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.at(-1).data.sequence });
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: opened.items[0].data.sequence });
+  });
+
+  it("holds a page with holes inside its runs, and the digests that account for them", () => {
+    const cache = createThreadCache();
+    // A hundred and fifty calls to a turn: fifty of each run stay behind, and
+    // the digest is the only word for them.
+    const conversation = sessionTranscript(6, 150);
+    const opened = cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
+
+    expect(messagesOf(opened.items)).toHaveLength(6);
+    expect(opened.items.filter(isActivity)).toHaveLength(6 * RUN_CAP);
+    expect(opened.activityDigests).toHaveLength(6);
+    expect(opened.activityDigests.map((held) => held.tool_calls)).toEqual([150, 150, 150, 150, 150, 150]);
+    // The window is still sound: a page shorter than the conversation is what
+    // paging IS, and the holes are inside it rather than at either end.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.at(-1).data.sequence });
+  });
+
+  it("walks an oversized window back to the start, seeing every message exactly once", () => {
+    const cache = createThreadCache();
+    // Fifteen tool calls a turn over forty turns: no run reaches the cap, so
+    // every page is contiguous and the walk covers the conversation whole.
+    const conversation = sessionTranscript(40, 15);
+    const first = conversationPage(conversation, { limit: FIRST_PAGE_ITEMS });
+    expect(messagesOf(first.items)).toHaveLength(FIRST_PAGE_ITEMS);
+
+    cache.absorb(first);
+    let widened = first;
+    let pagesRead = 1;
+    while (cache.hasOlderItems()) {
+      const seek = cache.olderPageParam();
+      widened = cache.absorbOlderPage(
+        conversationPage(conversation, { before: seek.before_sequence, limit: DAEMON_PAGE }),
+        seek,
+      );
+      expect(widened).not.toBeNull();
+      pagesRead += 1;
+    }
+
+    expect(pagesRead).toBeGreaterThan(1);
+    // Pages abut at their seeks, so the walk covers the conversation with no
+    // item shipped twice and none skipped.
+    expect(sequencesOf(widened.items)).toEqual(sequencesOf(conversation));
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 1 });
+    // Scrolling back never moves the forward cursor: history arriving late is
+    // not news.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.length });
+  });
+
+  it("keeps every run's own digest as the reader walks back through them", () => {
+    const cache = createThreadCache();
+    const conversation = sessionTranscript(6, 150);
+    cache.absorb(conversationPage(conversation, { limit: 2 }));
+    let widened = null;
+    while (cache.hasOlderItems()) {
+      const seek = cache.olderPageParam();
+      widened = cache.absorbOlderPage(conversationPage(conversation, { before: seek.before_sequence, limit: 2 }), seek);
+    }
+
+    expect(messagesOf(widened.items)).toHaveLength(6);
+    expect(widened.activityDigests).toHaveLength(6);
+    expect(widened.activityDigests.map((held) => held.tool_calls)).toEqual([150, 150, 150, 150, 150, 150]);
+  });
+
+  it("keeps the window through a poll that delivers a turn's worth of activity", () => {
+    const cache = createThreadCache();
+    const conversation = sessionTranscript(20, 5);
+    cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
+
+    // The gap check reads `thread_total`, which still counts every item on the
+    // thread — activity included. A turn that says one thing and calls five
+    // tools makes the conversation six items longer, and the delta carries all
+    // six: the prediction has to hold, or the window resets every time the
+    // agent picks up a tool.
+    const turn = [message(conversation.length + 1, "turn 21")];
+    for (let call = 0; call < 5; call += 1) turn.push(toolCall(conversation.length + 1 + turn.length));
+    const polled = cache.absorb({
+      items: turn,
+      thread_total: conversation.length + turn.length,
+      thread_last_sequence: turn.at(-1).data.sequence,
+    });
+
+    expect(sequencesOf(polled.items)).toEqual(sequencesOf([...conversation, ...turn]));
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: turn.at(-1).data.sequence });
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+});
+
+describe("structured review messages", () => {
+  it("preserves diff anchors instead of flattening them into a prompt", () => {
+    expect(diffThreadMessages([{ file: "src/a.js", lnA: 2, lnB: 4, snippet: "old()", comment: "rename" }], "ship safely", "diff-r1"))
+      .toEqual([
+        { body: "rename", anchor: { artifact: "diff", revision_id: "diff-r1", path: "src/a.js", side: "new", line_start: 2, line_end: 4, heading_path: [], snippet: "old()" } },
+        { body: "ship safely", anchor: null },
+      ]);
+  });
+});
+
+describe("attachments on the record", () => {
+  const withAttachments = (attachments) => ({
+    items: [{ type: "message", data: { role: "user", body: "look at this", created_at: "2026-08-09T12:00:00Z", attachments } }],
+  });
+
+  it("shows an image inline and everything else as a chip you can open", () => {
+    const html = threadHtml(withAttachments([
+      { name: "screenshot.png", path: ".build/attachments/ab12-screenshot.png", mime: "image/png", size: 40960 },
+      { name: "trace.txt", path: ".build/attachments/cd34-trace.txt", mime: "text/plain", size: 2048 },
+    ]));
+    expect(html).toContain('data-attachment-path=".build/attachments/ab12-screenshot.png"');
+    expect(html).toContain("thread-attachment-image");
+    expect(html).toContain("trace.txt");
+    expect(html).toContain("2 KB");
+  });
+
+  it("escapes an attachment name rather than rendering it", () => {
+    const html = threadHtml(withAttachments([
+      { name: '<img src=x onerror="boom">.png', path: ".build/attachments/x.png", mime: "image/png", size: 1 },
+    ]));
+    expect(html).not.toContain("onerror=\"boom\"");
+    expect(html).toContain("&lt;img");
+  });
+
+  it("fills an inline image from the bytes the bridge hands back, once", async () => {
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = `<div id="host">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]))}</div>`;
+    const host = document.querySelector("#host");
+    const asked = [];
+    const load = (path) => {
+      asked.push(path);
+      return Promise.resolve({ mime: "image/png", content_b64: "AAAA" });
+    };
+
+    wireThreadAttachments(host, load, threadState);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(host.querySelector("img.thread-attachment-image").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+
+    // A polling surface re-renders the timeline constantly; the bytes are
+    // content-addressed and immutable, so asking twice is pure waste.
+    document.body.innerHTML = `<div id="host">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]))}</div>`;
+    wireThreadAttachments(document.querySelector("#host"), load, threadState);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(asked).toEqual([".build/attachments/ab12-shot.png"]);
+  });
+
+  it("shares an in-flight attachment load within its conversation", async () => {
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = `<div id="first">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]), { threadState })}</div><div id="second">${threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]), { threadState })}</div>`;
+    let release;
+    const load = vi.fn(() => new Promise((resolve) => (release = resolve)));
+
+    wireThreadAttachments(document.querySelector("#first"), load, threadState);
+    wireThreadAttachments(document.querySelector("#second"), load, threadState);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(load).toHaveBeenCalledTimes(1);
+
+    release({ mime: "image/png", content_b64: "AAAA" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector("#first img").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(document.querySelector("#second img").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+  });
+});
+
+describe("thread composer wiring", () => {
+  const mount = (ids = { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" }) => {
+    document.body.innerHTML = `<div id="host">
+      <textarea id="${ids.input}"></textarea>
+      <span id="${ids.hint}"></span>
+      <button id="${ids.send}">Send</button>
+    </div>`;
+    return document.querySelector("#host");
+  };
+  const cmdEnter = (input) => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true }));
+
+  it("posts once when Cmd+Enter is pressed repeatedly during an in-flight send", async () => {
+    // Cmd+Enter bypasses the button's native disabled gate, so without an
+    // explicit re-entry guard the obvious retry double-posts.
+    const host = mount();
+    let resolveSend;
+    const sent = [];
+    wireThreadComposer(host, {
+      ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: (body) => {
+        sent.push(body);
+        return new Promise((resolve) => (resolveSend = resolve));
+      },
+    });
+    const input = host.querySelector("#planthreadinput");
+    input.value = "ship it";
+    cmdEnter(input);
+    cmdEnter(input);
+    cmdEnter(input);
+    expect(sent).toEqual(["ship it"]);
+
+    resolveSend();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(input.value).toBe("");
+    expect(host.querySelector("#planthreadsend").disabled).toBe(false);
+    expect(host.querySelector("#planthreadsend").textContent).toBe("Send");
+  });
+
+  it("restores the composer and keeps the text when the send fails", async () => {
+    const host = mount();
+    wireThreadComposer(host, {
+      ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: () => Promise.reject(new Error("relay down")),
+      onError: () => {},
+    });
+    const input = host.querySelector("#planthreadinput");
+    input.value = "keep me";
+    cmdEnter(input);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(input.value).toBe("keep me");
+    expect(host.querySelector("#planthreadsend").disabled).toBe(false);
+  });
+
+  it("refuses an empty body without calling the transport", () => {
+    const host = mount();
+    let calls = 0;
+    wireThreadComposer(host, {
+      ids: { input: "planthreadinput", send: "planthreadsend", hint: "planthreadhint" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: () => { calls += 1; return Promise.resolve(); },
+    });
+    const input = host.querySelector("#planthreadinput");
+    input.value = "   ";
+    cmdEnter(input);
+    expect(calls).toBe(0);
+    expect(host.querySelector("#planthreadhint").textContent).toContain("Type a message");
+  });
+});
+
+describe("sending a message that carries files", () => {
+  const mountWithTray = (overrides = {}) => {
+    document.body.innerHTML = `<div id="host">${composerHtml({
+      inputId: "ti",
+      sendId: "ts",
+      hintId: "th",
+      placeholder: "Say something…",
+      attachable: true,
+    })}</div>`;
+    const host = document.querySelector("#host");
+    const sent = [];
+    let draft = "";
+    let attachments = [];
+    wireThreadComposer(host, {
+      ids: { input: "ti", send: "ts", hint: "th" },
+      readDraft: () => draft,
+      writeDraft: (value) => { draft = value; },
+      readAttachments: () => attachments,
+      writeAttachments: (next) => { attachments = next; },
+      upload: (file) => Promise.resolve({ name: file.name, path: `.build/attachments/x-${file.name}`, mime: file.type || "text/plain", size: file.size }),
+      onSubmit: (body, files) => { sent.push({ body, files }); return Promise.resolve(); },
+      ...overrides,
+    });
+    return { host, sent };
+  };
+  const drop = (host, files) => {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    event.dataTransfer = { files, items: [], types: ["Files"] };
+    host.dispatchEvent(event);
+  };
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  it("names the uploaded files on the send and empties the tray after", async () => {
+    const { host, sent } = mountWithTray();
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ti").value = "see this";
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toEqual([{ body: "see this", files: [{ name: "shot.png", path: ".build/attachments/x-shot.png", mime: "image/png", size: 1 }] }]);
+    expect(host.querySelectorAll(".composer-chip")).toHaveLength(0);
+  });
+
+  it("sends a file with no words, because the file IS the message", async () => {
+    const { host, sent } = mountWithTray();
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toBe("");
+  });
+
+  it("waits for a file still going up rather than sending a message that points at nothing", async () => {
+    const { host, sent } = mountWithTray({ upload: () => new Promise(() => {}) });
+    drop(host, [new File(["a"], "slow.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ti").value = "here";
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toEqual([]);
+    expect(host.querySelector("#th").textContent).toContain("still attaching");
+  });
+
+  it("keeps the files when the send fails, exactly as it keeps the words", async () => {
+    const { host, sent } = mountWithTray({
+      onSubmit: () => Promise.reject(new Error("relay down")),
+      onError: () => {},
+    });
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    host.querySelector("#ti").value = "see this";
+    host.querySelector("#ts").click();
+    await settle();
+
+    expect(sent).toEqual([]);
+    expect(host.querySelector("#ti").value).toBe("see this");
+    expect(host.querySelectorAll(".composer-chip")).toHaveLength(1);
+  });
+});
+
+// ---- the persisted window ------------------------------------------------------
+// The local cache keeps a conversation's window across sessions: an empty
+// cache seeds from what was saved, the next detail read is a forward delta
+// rather than a first page, and the standing soundness checks self-heal
+// anything the time away made stale.
+describe("the persisted window", () => {
+  const item = (sequence) => ({ id: `m-${sequence}`, data: { sequence } });
+
+  it("exports what it holds and seeds an empty cache back to it", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1), item(2)], has_more: true, thread_total: 5, thread_last_sequence: 2 });
+    const saved = cache.readWindow();
+    expect(saved.items).toHaveLength(2);
+    const revived = createThreadCache();
+    expect(revived.seedWindow(saved)).toBe(true);
+    expect(revived.cursorParam()).toEqual({ thread_after_sequence: 2 });
+    expect(revived.hasOlderItems()).toBe(true);
+  });
+
+  it("folds a live delta into the seeded window", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1), item(2)], has_more: false, thread_total: 2, thread_last_sequence: 2 });
+    const revived = createThreadCache();
+    revived.seedWindow(cache.readWindow());
+    const folded = revived.absorb({ items: [item(3)], thread_total: 3 });
+    expect(folded.items.map((held) => held.data.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it("exports nothing while no window is open, and refuses a seed over one", () => {
+    const cache = createThreadCache();
+    expect(cache.readWindow()).toBeNull();
+    cache.absorb({ items: [item(1)], has_more: false, thread_total: 1, thread_last_sequence: 1 });
+    expect(cache.seedWindow({ items: [item(9)], deliveredSequence: 9 })).toBe(false);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 1 });
+  });
+
+  it("refuses an empty or malformed seed", () => {
+    const cache = createThreadCache();
+    expect(cache.seedWindow(null)).toBe(false);
+    expect(cache.seedWindow({ items: [] })).toBe(false);
+    expect(cache.cursorParam()).toEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
+  it("shapes a bare thread payload as a saved window", () => {
+    const shaped = windowFromThreadPayload({ items: [item(4), item(5)], has_more: true, thread_total: 9 });
+    expect(shaped).toEqual({
+      items: [item(4), item(5)],
+      olderItemsRemain: true,
+      deliveredSequence: 5,
+      knownTotalItems: 9,
+      activityDigests: [],
+    });
+    expect(windowFromThreadPayload({ items: [] })).toBeNull();
+    expect(windowFromThreadPayload(null)).toBeNull();
+  });
+});
+
+describe("naming a thread item", () => {
+  it("names a thread item by its sequence", () => {
+    expect(threadItemKey({ type: "message", data: { sequence: 12 } })).toBe("12");
+    expect(threadItemKey({ type: "event", data: { sequence: 0 } })).toBe("0");
+    expect(threadItemKey({ type: "message", data: {} })).toBe("");
+    expect(threadItemKey({})).toBe("");
+  });
+});
+
+// ---- the digests a window holds --------------------------------------------
+// A page ships a bounded slice of every activity run and a digest for the rest
+// of it. The window holds the digests the same way it holds the items: a page
+// says what a run totals, a forward delta says nothing about one, and an older
+// page reaches back to runs the window had never heard of.
+describe("the activity digests a window holds", () => {
+  const item = (sequence) => ({ id: `m-${sequence}`, data: { sequence } });
+  const digest = (from, through, toolCalls) => ({
+    from_sequence: from,
+    through_sequence: through,
+    tool_calls: toolCalls,
+    rows: toolCalls,
+    last_tool_call: null,
+  });
+
+  it("carries a first page's digests onto the thread it returns", () => {
+    const cache = createThreadCache();
+    const opened = cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    expect(opened.activityDigests).toEqual([digest(4, 9, 1000)]);
+  });
+
+  it("keeps them through a delta that says nothing about a run, and re-cuts one that does", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    const delta = cache.absorb({ items: [item(10)], thread_total: 10, thread_last_sequence: 10 });
+    expect(delta.activityDigests).toEqual([digest(4, 9, 1000)]);
+
+    const recut = cache.absorb({
+      items: [item(9), item(10)],
+      activity_digests: [digest(4, 10, 1001)],
+      has_more: true,
+      thread_total: 10,
+      thread_last_sequence: 10,
+    });
+    expect(recut.activityDigests).toEqual([digest(4, 10, 1001)]);
+  });
+
+  it("takes in the runs an older page reaches back to", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    const widened = cache.absorbOlderPage(
+      { items: [item(6), item(7)], activity_digests: [digest(1, 3, 12)], has_more: false, thread_total: 9 },
+      cache.olderPageParam(),
+    );
+
+    expect(widened.activityDigests.map((held) => held.from_sequence)).toEqual([1, 4]);
+  });
+
+  it("drops them with the window they belong to", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+    cache.reset();
+
+    expect(cache.readWindow()).toBeNull();
+    expect(cache.absorb({ items: [item(9)] }).activityDigests).toEqual([]);
+  });
+
+  it("round-trips them through the saved window", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [item(8), item(9)],
+      activity_digests: [digest(4, 9, 1000)],
+      has_more: true,
+      thread_total: 9,
+      thread_last_sequence: 9,
+    });
+
+    const saved = cache.readWindow();
+    expect(saved.activityDigests).toEqual([digest(4, 9, 1000)]);
+
+    const revived = createThreadCache();
+    revived.seedWindow(saved);
+    const folded = revived.absorb({ items: [item(10)], thread_total: 10, thread_last_sequence: 10 });
+    expect(folded.activityDigests).toEqual([digest(4, 9, 1000)]);
+  });
+
+  it("shapes a bare page's digests into the saved window the syncer writes", () => {
+    const shaped = windowFromThreadPayload({
+      items: [item(4), item(5)],
+      activity_digests: [digest(1, 5, 40)],
+      has_more: true,
+      thread_total: 9,
+    });
+
+    expect(shaped.activityDigests).toEqual([digest(1, 5, 40)]);
+  });
+});

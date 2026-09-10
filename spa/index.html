@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- interactive-widget: the on-screen keyboard shrinks the LAYOUT viewport, not
+         just the visual one, so a full-height surface (the terminal and its key bar)
+         resizes above the keyboard instead of being covered by it. Browsers that
+         ignore it are handled by the key bar's own visualViewport lift. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <title>Build — review is the product</title>
+    <link rel="manifest" href="/app/static/manifest.webmanifest" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#15171c" media="(prefers-color-scheme: dark)" />
+    <!-- Parser-blocking and above the bundle: the module below is deferred, so
+         without this the first paint is the light theme for every dark-theme
+         reader. A file rather than an inline block because the production CSP
+         is script-src 'self' with no unsafe-inline. -->
+    <script src="/app/static/theme-boot.js"></script>
+    <link rel="icon" href="/app/static/icon-192.png" />
+    <link rel="apple-touch-icon" href="/app/static/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Build" />
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div id="offbar" hidden>
+      ⚠ <span id="offbar-text">Your device went offline — reconnecting automatically.</span>
+      You can keep reading; actions that need your device are paused.
+    </div>
+    <div id="verbar" hidden>
+      <span>A new version of Build is available.</span>
+      <button class="btn" id="verbar-reload">Reload</button>
+    </div>
+    <!-- The universal three-panel shell: the inbox rail (global, persistent),
+         the view column (toolbar / view body / console), and the agent rail at
+         the right edge of the view body — the rail belongs to the selected
+         branch or issue, so it sits below the toolbar, beside the tab content. -->
+    <div id="shell">
+      <aside id="inbox-rail" aria-label="Inbox">
+        <div class="inbox-head">
+          <button class="iconbtn" id="inbox-collapse" title="Collapse the inbox">◫</button>
+          <span class="logo">Build</span>
+          <!-- The rail's two faces: the one list, or the projects. Painted by
+               core/inboxShell.js, which remembers the choice. -->
+          <div class="inbox-views" id="inbox-views" role="group" aria-label="Rail view"></div>
+        </div>
+        <!-- Global compose: capture first, route after. Pinned above the
+             entries, on every route — the gate keeps it too, and holds what is
+             said there until a device answers. -->
+        <div id="compose"></div>
+        <div id="inbox-list"></div>
+        <div class="inbox-foot">
+          <div class="srow snav" id="nav-account"><span class="sicon">◉</span><span class="stitle">Account</span></div>
+          <select id="devpick" title="Which device runs your tasks" hidden></select>
+        </div>
+      </aside>
+      <!-- Narrow viewports overlay the rail; the scrim beneath it dismisses. -->
+      <div id="inbox-scrim"></div>
+      <div id="view">
+        <div id="toolbar"></div>
+        <div id="view-body">
+          <main id="root"></main>
+          <aside id="agent-rail" aria-label="Agents"></aside>
+        </div>
+        <div id="console-region"></div>
+      </div>
+    </div>
+    <button class="iconbtn" id="inbox-open" title="Open the inbox" aria-label="Open the inbox">
+      <span class="inbox-open-icon" aria-hidden="true">◫</span>
+      <span class="inbox-open-count" aria-hidden="true"></span>
+    </button>
+
+    <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
+  </body>
+</html>

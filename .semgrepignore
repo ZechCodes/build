@@ -1,0 +1,16 @@
+# Providing this file replaces semgrep's built-in defaults, so restore the
+# relevant ones first (gitignored paths + test suites, which use plaintext
+# WebSocket URLs against loopback servers by design).
+:include .gitignore
+test/
+tests/
+
+# Historical v1 planning docs: contain fabricated example tokens as fixtures
+# for the v1 secret-filtering feature they specify. Not shipped code.
+planning/v1/
+
+# The unsubscribe form's authorisation IS the signed token in its action URL —
+# it carries no session and takes no CSRF field, because the one-click POST a
+# mail client sends could not supply one. It is a landing fragment, not a Django
+# template; semgrep matches only on the {{slot}} syntax.
+skriftapp/buildapp/landing/unsubscribe-form.html

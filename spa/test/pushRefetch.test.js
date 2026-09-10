@@ -1,0 +1,180 @@
+// @vitest-environment jsdom
+// A surface refetching on a push, end to end: real surfaces mounted over a
+// scripted RPC channel, with the bridge's change events arriving on them.
+//
+// The point of the file is that nothing about the surfaces changed. An event
+// runs the poll callback the interval used to run, so what lands is the read
+// the poll made — at the moment the state actually moved rather than 1.6
+// seconds later.
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+const settle = async () => {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
+const status = {
+  branch: "build/login",
+  path: "/repo",
+  head: "f".repeat(40),
+  repo_state: "clean",
+  upstream: "origin/build/login",
+  ahead: 0,
+  behind: 0,
+  stash_count: 0,
+  files: [],
+  files_truncated: false,
+  stat: { files_changed: 0, insertions: 0, deletions: 0 },
+  patch: "",
+  truncated: false,
+};
+
+const log = { branch: "build/login", commits: [], more: false };
+
+let mountGitPane, GIT_PANE_POLL_MS;
+let armChangeEvents, dispatchChangeEvent, refetchEverything, resetChangeEvents, SAFETY_POLL_MS;
+
+beforeEach(async () => {
+  vi.resetModules();
+  document.body.innerHTML = "";
+  ({ mountGitPane, GIT_PANE_POLL_MS } = await import("../src/core/gitPane.js"));
+  ({
+    armChangeEvents,
+    dispatchChangeEvent,
+    refetchEverything,
+    resetChangeEvents,
+    SAFETY_POLL_MS,
+  } = await import("../src/core/changeEvents.js"));
+});
+
+afterEach(() => {
+  resetChangeEvents();
+  vi.useRealTimers();
+  document.body.innerHTML = "";
+});
+
+/** The Changes pane over a scripted channel, with its reads counted. One poll
+ *  of this surface is exactly one git.status. */
+async function mountPane(scope = { run_id: "run-7" }) {
+  const callRpc = vi.fn(async (method) => {
+    if (method === "git.status") return status;
+    if (method === "git.log") return log;
+    return {};
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const pane = mountGitPane(container, { scope, callRpc });
+  await settle();
+  const reads = () => callRpc.mock.calls.filter(([method]) => method === "git.status").length;
+  return { pane, reads };
+}
+
+describe("a surface against a bridge that pushes", () => {
+  it("reads again when the entity it is showing changes", async () => {
+    armChangeEvents({ push_events: true });
+    const { pane, reads } = await mountPane();
+    const before = reads();
+
+    dispatchChangeEvent({ type: "entity.changed", id: "run-7" });
+    await settle();
+    expect(reads()).toBe(before + 1);
+    pane.dispose();
+  });
+
+  it("ignores an entity it is not showing", async () => {
+    armChangeEvents({ push_events: true });
+    const { pane, reads } = await mountPane();
+    const before = reads();
+
+    dispatchChangeEvent({ type: "entity.changed", id: "run-99" });
+    await settle();
+    expect(reads()).toBe(before);
+    pane.dispose();
+  });
+
+  it("ignores board.changed — the feed moved, not this entity's detail", async () => {
+    armChangeEvents({ push_events: true });
+    const { pane, reads } = await mountPane();
+    const before = reads();
+
+    dispatchChangeEvent({ type: "board.changed" });
+    await settle();
+    expect(reads()).toBe(before);
+    pane.dispose();
+  });
+
+  it("watches the board when its scope is a project checkout, which names no entity", async () => {
+    armChangeEvents({ push_events: true });
+    const { pane, reads } = await mountPane({ project_id: "p1" });
+    const before = reads();
+
+    dispatchChangeEvent({ type: "board.changed" });
+    await settle();
+    expect(reads()).toBe(before + 1);
+    pane.dispose();
+  });
+
+  it("stands its 1.6s poll down to the safety poll", async () => {
+    // Before the mount: the interval has to be the fake one from the start.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    armChangeEvents({ push_events: true });
+    const { pane, reads } = await mountPane();
+    const before = reads();
+
+    await vi.advanceTimersByTimeAsync(SAFETY_POLL_MS - 1000);
+    expect(reads()).toBe(before);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reads()).toBe(before + 1);
+    pane.dispose();
+  });
+
+  it("reads once for a reconnect, whatever it is showing", async () => {
+    armChangeEvents({ push_events: true });
+    const entity = await mountPane();
+    const board = await mountPane({ project_id: "p1" });
+    const before = [entity.reads(), board.reads()];
+
+    refetchEverything();
+    await settle();
+    expect([entity.reads(), board.reads()]).toEqual([before[0] + 1, before[1] + 1]);
+    entity.pane.dispose();
+    board.pane.dispose();
+  });
+
+  it("stops hearing events once the surface is disposed", async () => {
+    armChangeEvents({ push_events: true });
+    const { pane, reads } = await mountPane();
+    pane.dispose();
+    const before = reads();
+
+    dispatchChangeEvent({ type: "entity.changed", id: "run-7" });
+    await settle();
+    expect(reads()).toBe(before);
+  });
+});
+
+describe("a surface against a bridge that does not", () => {
+  it("keeps its own poll", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { pane, reads } = await mountPane();
+    const before = reads();
+
+    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS);
+    expect(reads()).toBe(before + 1);
+    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS);
+    expect(reads()).toBe(before + 2);
+    pane.dispose();
+  });
+
+  it("does not read on an event it was never told to expect", async () => {
+    const { pane, reads } = await mountPane();
+    const before = reads();
+
+    dispatchChangeEvent({ type: "entity.changed", id: "run-7" });
+    dispatchChangeEvent({ type: "board.changed" });
+    await settle();
+    expect(reads()).toBe(before);
+    pane.dispose();
+  });
+});

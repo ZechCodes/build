@@ -1,0 +1,246 @@
+/* ---- work surfaces: Changes ------------------------------------------------
+   The rebuilt Changes surface's own rules. Every colour here is a theme token
+   from styles.css (:root / :root[data-theme="dark"]) — nothing in this file
+   hard-codes a colour, so both themes are carried by the same rules. Layout
+   tokens (--pane-gutter and friends) come from the same place: this surface
+   sits in the shell's two-column primitive and states no width of its own. */
+
+/* The changeset header: what this set of changes is, and its counts. */
+.csheader { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin:0 0 14px; }
+.csheader .cstitle { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; }
+.csheader.commitheader { display:block; margin-bottom:16px; }
+/* A commit's identity line and body reuse the commit-detail type scale. */
+.csheader.commitheader .csub { font-weight:650; font-size:15px; }
+.csheader.commitheader .cbody { font-family:var(--mono); font-size:12px; color:var(--ink2);
+  white-space:pre-wrap; margin:8px 0 0; }
+.csheader.commitheader .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 0; }
+.csplaceholder { color:var(--dim); font-size:13px; padding:6px 0 0; }
+.ftrunc { color:var(--amber); font-size:11.5px; margin:0 0 12px; }
+
+/* The rail's Uncommitted entry carries +/− counts, not a file count, so its
+   subline is a number pair rather than a word. */
+.crail .rrow .rsub .pm { margin-left:0; display:inline-flex; gap:6px; font-family:var(--mono); }
+
+/* The per-file ⋯: the file's own verbs, disclosed in the header rather than in
+   a floating layer — the file block clips its own overflow, and a menu that
+   gets clipped is a menu nobody can click. */
+.fmenu-host { display:inline-flex; align-items:center; gap:6px; flex:none; }
+.fmenu { font:inherit; font-size:13px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:5px; padding:3px 6px; cursor:pointer; }
+.fmenu:hover { background:var(--accent-soft); color:var(--accent); }
+.fmenu[aria-expanded="true"] { background:var(--accent-soft); color:var(--accent); }
+.fmenu-pop { display:inline-flex; gap:6px; }
+
+/* Generated files are collapsed, never filtered away: one count line at the
+   bottom of the stack, and the whole group opens from it. */
+.noisegroup { border:1px dashed var(--line3); border-radius:11px; margin:4px 0 12px; }
+.noisegroup.open { border-style:solid; border-color:var(--line); }
+.noisehead { font:inherit; font-size:12px; font-family:var(--mono); color:var(--dim); background:none;
+  border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px; }
+.noisehead:hover { color:var(--accent); background:var(--line2); }
+.noisegroup.open .noisehead { border-bottom:1px solid var(--line2); border-radius:11px 11px 0 0; }
+.noisefiles { padding:12px 12px 2px; }
+
+/* ---- the triage overlay -----------------------------------------------------
+   Review prioritization: an ordering over the same stack, never a filter over
+   it. The banner says what reading is being applied (and offers the dial that
+   turns it off), critical work sits under a heading of its own, and low-risk
+   work folds into named groups whose diffs are still in the page, one click
+   from being read. */
+.triagebar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:8px 2px 12px; font-size:12px; color:var(--dim); }
+.triagebar .tsummary { font-family:var(--mono); }
+.triagebar .tuntriaged { font-family:var(--mono); color:var(--dim); }
+.triagebar .tstale { font-family:var(--mono); color:var(--amber); }
+.tdial { margin-left:auto; font:inherit; font-size:12px; color:var(--dim); background:none;
+  border:1px solid var(--line); border-radius:7px; padding:3px 9px; cursor:pointer; }
+.tdial:hover { color:var(--accent); border-color:var(--accent); }
+.tdial[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
+
+.tsectionhead { font-size:12px; font-family:var(--mono); color:var(--dim);
+  padding:2px 2px 8px; letter-spacing:.02em; }
+.file.tcritical { border-left:2px solid var(--red); }
+
+.tgroup { border:1px dashed var(--line3); border-radius:11px; margin:4px 0 12px; }
+.tgrouphead { font:inherit; font-size:12px; font-family:var(--mono); color:var(--dim); background:none;
+  border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px;
+  display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+.tgrouphead:hover { color:var(--accent); background:var(--line2); }
+.tgrouphead.open { border:1px solid var(--line); border-radius:11px 11px 0 0; margin-top:4px; }
+.tgrouphead .tgname { color:var(--ink); }
+.tgrouphead .tgrationale { flex:1 1 100%; color:var(--dim); font-family:inherit; }
+.file.tgrouped { margin-left:12px; }
+.tgroup .tgfiles { display:none; padding:12px 12px 2px; }
+
+.hchip { display:inline-flex; align-items:baseline; gap:6px; margin-left:10px; padding:1px 7px;
+  border-radius:999px; font-size:11px; font-family:var(--mono); cursor:default; }
+.hchip.critical { color:var(--red); background:var(--accent-soft); }
+.hchip.untriaged { color:var(--dim); border:1px dashed var(--line3); }
+.hchip .hchip-note { color:var(--dim); }
+/* The rationale is the chip's whole point: on the pointer it is a hover, and on
+   a touch screen a tap focuses the chip and reveals the same line. */
+.hchip .hrationale { display:none; color:var(--dim); }
+.hchip:hover .hrationale, .hchip:focus .hrationale, .hchip:focus-within .hrationale { display:inline; }
+/* The reviewer's own reading of a hunk, told apart from the pass's: it reads as
+   a fact about who decided, not as a level. */
+.hchip.overridden { color:var(--ink); border:1px solid var(--line); }
+
+/* The offer to disagree, on the hunk the decision was about. Quiet but never
+   hidden: a control that appears only under the pointer is one a reviewer has
+   to already know about, and this one has to be found. It comes forward as the
+   row it belongs to does. */
+.toverride { font:inherit; font-size:11px; font-family:var(--mono); margin-left:8px; padding:1px 8px;
+  color:var(--dim); background:none; border:1px dashed var(--line3); border-radius:999px;
+  cursor:pointer; opacity:.6; transition:opacity .12s ease, color .12s ease; }
+tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
+.toverride:hover { color:var(--accent); border-color:var(--accent); border-style:solid; opacity:1; }
+
+/* The pending-comment tray under a changeset: what has been written but not yet
+   sent, plus the general note and the send controls.
+   It pays the seam's gutter its column no longer does (see .pane-split): a diff
+   card runs to the agent rail's border, but a box you type into stops short of
+   it the way every other control does. */
+.csfeedback { margin-top:18px; }
+.csgeneral { min-height:62px; }
+.csfeedback .cslist:empty { display:none; }
+
+/* ---- the tail of a reading column ------------------------------------------
+   Both work surfaces end their scrolling column with the shared sticky
+   actionbar, so while there is more to read the bar floats over the tail of
+   what is written above it. The primitive's gradient fades to nothing across
+   the bar's own box, which puts the hint and whatever is passing under it in
+   the same pixels — a file header reads through the words that describe what to
+   do with it. Here the bar is opaque over itself and does its fading ABOVE, in
+   a band of the page's own colour, so nothing is ever half-legible under it.
+   (Both columns, one rule: the two surfaces measure the same everywhere else.)
+
+   `scroll-padding-bottom` is the other half: a jump to an anchor — a comment,
+   a stage's heading — stops with the target clear of the bar rather than
+   underneath it. It is the bar's height plus the room the column already pays
+   at its foot. */
+/* The reading column pays the seam gutter itself now, so the bar states no
+   right inset of its own — it would stand a double gutter short of the seam. */
+.gitpane .cstray > .actionbar, .issueview .ivviewer > .actionbar {
+  background:var(--bg); box-shadow:0 -14px 16px -6px var(--bg);
+}
+/* A sticky box cannot travel past its parent's content box, so a column that
+   pays its scroll-end room as bottom padding pins the bar that many pixels
+   above the floor and leaves a strip of the diff scrolling past underneath it.
+   The room moves to the tail itself: the column ends where it is read, and a
+   changeset that ends WITHOUT a bar still gets its last line off the frame. */
+.gitpane .cdetail-host, .issueview .ivviewer { padding-bottom:0;
+  scroll-padding-bottom:calc(var(--pane-bottom) + 58px); }
+.issueview .ivviewer > :last-child:not(.actionbar) { margin-bottom:var(--pane-bottom); }
+.gitpane .cstray { display:contents; }
+.gitpane .dstack { padding-bottom:var(--pane-bottom); }
+
+/* ---- work surfaces: the issue view -----------------------------------------
+   Stages | stage viewer, persistent: the list is a rail the way the commit list
+   is a rail, and the viewer is the reading column beside it. Same primitive as
+   Changes (.pane-split + .pane-list), so the two surfaces measure the same and
+   the narrow-viewport drawer is the one the shell already owns. Every colour is
+   a theme token. */
+.issueview { height:100%; }
+.issueview > .empty { padding:var(--pane-top) var(--pane-gutter); }
+.ivstages { flex:0 0 320px; overflow-y:auto; border-right:1px solid var(--line);
+  padding:0 0 var(--pane-bottom); }
+.ivviewer { flex:1; min-width:0; overflow-y:auto;
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter);
+  --diff-sticky-top:calc(0px - var(--pane-top)); }
+@media (max-width: 900px) { .ivviewer { padding-left:0; } }
+
+/* The issue's own head: where it stands and its gate. What the issue asks for
+   is the conversation's first message, so the head never repeats it. */
+.ivhead { padding:12px 13px 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.ivmeta { display:flex; align-items:center; gap:8px; }
+.ivmeta .chip { margin-left:0; }
+.ivproject { font-size:11.5px; color:var(--dim); min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.ivgate { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+.ivgate:empty { display:none; }
+/* A section label inside the rail — the same quiet header the commit rail uses. */
+.ivsec { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
+  text-transform:uppercase; }
+
+/* The stage list is rows in a rail, not cards on a page: the card chrome the
+   run-side board wears would put a border inside a bordered column. */
+.ivstages .stagelist { gap:0; }
+.ivstages .stagerow { background:none; border:0; border-top:1px solid var(--line2);
+  border-radius:0; padding:10px 13px 10px var(--pane-gutter); gap:10px; }
+.ivstages .stagerow:hover { background:var(--line2); border-color:var(--line2); }
+.ivstages .stagerow.sel { background:var(--accent-soft); }
+.ivstages .stagerow.sel .stagetitle { color:var(--accent); }
+.ivstages .stagerow .stagetitle { font-size:13px; }
+.ivstages .empty { padding:12px 13px 12px var(--pane-gutter); }
+
+/* The assignment control: one line saying what the handoff would be, which opens
+   the overlay holding the targets and the overrides the dispatch carries. The
+   line is the whole of it in the rail — open or shut, the row is one row. */
+.ivassign { border-top:1px solid var(--line); }
+.ivassign-head { display:flex; align-items:center; gap:10px;
+  width:100%; text-align:left; font:inherit; background:none; border:none; cursor:pointer;
+  padding:11px 13px 11px var(--pane-gutter); }
+.ivassign-head:hover { background:var(--line2); }
+.ivassign-text { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; }
+.ivassign-sum { font-size:12px; color:var(--ink2); max-width:100%;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ivassign-caret { margin-left:auto; font-size:12px; line-height:1; color:var(--ink2); }
+.ivassign.open .ivassign-sum, .ivassign.open .ivassign-caret { color:var(--accent); }
+
+/* The overlay itself: anchored under the control on a desktop (placed in JS,
+   which is what knows where the control ended up), standing on the bottom edge
+   of a phone, where there is no room to anchor into. */
+.assign-scrim { position:fixed; inset:0; z-index:150; }
+.assign-scrim.at-bottom { background:var(--scrim); }
+.assign-pop { position:fixed; box-sizing:border-box; background:var(--panel);
+  border:1px solid var(--line); border-radius:12px; box-shadow:0 24px 60px var(--shadow);
+  padding:11px 13px 13px; max-height:min(70vh, 520px); overflow-y:auto; }
+.assign-pop:focus { outline:none; }
+.assign-pop.at-bottom { left:0; right:0; bottom:0; top:auto; width:auto;
+  border-width:1px 0 0; border-radius:14px 14px 0 0; max-height:78vh;
+  padding-bottom:calc(13px + env(safe-area-inset-bottom, 0px)); }
+.assign-pop-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.assign-pop-head .btn { margin-left:auto; }
+.assign-fields { display:flex; flex-direction:column; gap:9px; }
+.ivfield { display:flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--dim); }
+.ivfield select, .ivfield input { font:inherit; font-size:13px; color:var(--ink);
+  background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px; }
+.ivfield select:disabled, .ivfield option:disabled { color:var(--dim); }
+.ivassign-gap { font-size:11.5px; color:var(--amber); display:flex; flex-direction:column; gap:4px; }
+
+/* The implementations an issue has had: its children, each one a branch. */
+.ivlineage { border-top:1px solid var(--line); padding:11px 13px 4px var(--pane-gutter); }
+.ivlin-row { display:flex; align-items:center; gap:8px; padding:7px 0; cursor:pointer;
+  font-size:12.5px; }
+.ivlin-row:hover .ivlin-branch { color:var(--accent); text-decoration:underline; }
+.ivlin-branch { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-family:var(--mono); font-size:11.5px; color:var(--ink2); }
+.ivlineage .chip { margin-left:auto; }
+
+/* The viewer's head, and what it says when no stage is open. */
+.ivstagehead { display:flex; align-items:center; gap:10px; margin:0 0 12px; }
+.ivstagetitle { font-weight:650; font-size:15px; color:var(--ink); }
+.ivstagehead .chip { margin-left:0; }
+.ivplaceholder { color:var(--dim); font-size:13px; padding:var(--pane-top) 0 0; }
+
+/* Walking the issue from the doc itself. The stages are a rail on a desktop and
+   a drawer on a phone, so stepping to the next one cost a menu trip for the
+   commonest move in a review. The steps ride the viewer's own sticky bar, which
+   is in reach at the foot of a long doc at every width — and the bar already
+   wraps under 720px, so on a phone the steps take the line and the stage's verb
+   keeps its own. */
+.ivviewer .actionbar .stagenav { flex:none; display:flex; align-items:center; gap:8px; }
+.stagenav-pos { font-size:11.5px; color:var(--dim); font-variant-numeric:tabular-nums;
+  white-space:nowrap; }
+
+/* A doc comment hangs in the margin of the passage it names: the marker rides
+   the heading it anchors to, so what has been said about a section is visible
+   from the section rather than only from a list under the doc. */
+.docmarker { float:right; margin:0 0 0 10px; font:inherit; font-size:11px; line-height:1;
+  color:var(--accent); background:var(--accent-soft); border:none; border-radius:999px;
+  padding:4px 9px; cursor:pointer; }
+.docmarker:hover { background:var(--accent); color:var(--accent-ink); }
+.docmarker.addressed { color:var(--green); background:var(--green-bg); }
+.docmarker.addressed:hover { background:var(--green); color:var(--bg); }
+/* A heading with an unsent comment on it, marked while the comment is pending. */
+.plan .dochl { background:var(--hl-bg); color:var(--hl-ink); border-radius:4px; }

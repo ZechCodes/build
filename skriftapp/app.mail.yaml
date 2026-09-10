@@ -1,0 +1,48 @@
+# Dev config plus real FastMail SMTP credentials from skriftapp/.env, for sending
+# actual mail from a local server. Selected with SKRIFT_ENV=mail.
+controllers:
+  - buildapp.root_controller:RootController
+  - buildapp.controllers:BuildController
+  - buildapp.health_controller:HealthController
+  - buildapp.devices_controller:DevicesController
+  - buildapp.push_controller:PushController
+  - buildapp.rtc_controller:RtcController
+  - buildapp.transport_controller:TransportController
+  - buildapp.transport_admin:TransportAdminController
+  - buildapp.waitlist_controller:WaitlistController
+  - buildapp.invites_controller:InvitesController
+  - buildapp.invites_admin:InvitesAdminController
+  - skrift.controllers.auth:AuthController
+  - skrift.admin.controller:AdminController
+models:
+  - buildapp.models
+db:
+  url: sqlite+aiosqlite:///./app.db
+auth:
+  redirect_base_url: http://localhost:8080
+  methods:
+    dummy:
+      type: dummy
+      label: Demo Login
+oauth2_enabled: true
+rate_limit:
+  enabled: false
+email:
+  backend: skrift.lib.email_backends:SMTPEmailBackend
+  from_address: $SMTP_FROM_ADDRESS
+  reply_to: $SMTP_FROM_ADDRESS
+  public_base_url: http://localhost:8090
+  smtp_host: smtp.fastmail.com
+  smtp_port: 587
+  smtp_starttls: true
+  smtp_username: $SMTP_USERNAME
+  smtp_password: $SMTP_PASSWORD
+# Dev-only: the local relay may call /internal/* without X-Internal-Secret as long
+# as it connects from localhost. Production requires INTERNAL_API_SECRET.
+internal_api:
+  allow_localhost: true
+# Dev-only: relax CSP so the SPA can use inline scripts, esm.sh modules/WASM,
+# and the gateway WebSocket. Production serves the bundle same-origin instead.
+security_headers:
+  csp_nonce: false
+  content_security_policy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://esm.sh; style-src 'self' 'unsafe-inline' https://esm.sh https://fonts.googleapis.com; img-src 'self' data:; font-src 'self' data: https://esm.sh https://fonts.gstatic.com; connect-src 'self' data: ws://localhost:18090 https://esm.sh; worker-src 'self' blob:"

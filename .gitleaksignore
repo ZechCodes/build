@@ -1,0 +1,35 @@
+# Verified false positives only. Every entry below is a fabricated example
+# token (secret-DETECTION test fixtures and API-doc placeholders) in v1-era
+# files — most of them deleted from the tree by the v2 wipe (4bc5355). None is
+# or ever was a live credential. Real findings must be rotated, never ignored.
+
+# v1 history (files no longer in the tree)
+d857668a2b15200f112d26b21da572609bdfd065:snapshot-manager/docs/API_REFERENCE.md:generic-api-key:34
+99e845d92edcc64cfdb5fcbfbe5075f1d8c50556:frontend/src/components/Terminal/__tests__/Terminal.advanced.test.tsx:generic-api-key:297
+9fa3ed3fb18e382a5aa9a885817e6493effc01ed:frontend/src/utils/security.test.ts:generic-api-key:208
+9fa3ed3fb18e382a5aa9a885817e6493effc01ed:frontend/src/utils/security.test.ts:stripe-access-token:173
+9fa3ed3fb18e382a5aa9a885817e6493effc01ed:frontend/src/utils/security.test.ts:stripe-access-token:226
+9fa3ed3fb18e382a5aa9a885817e6493effc01ed:frontend/src/utils/security.test.ts:stripe-access-token:229
+93955be8ba6983b68995f98bb26ad20575ccc1e6:docs/session-1/api.md:generic-api-key:204
+93955be8ba6983b68995f98bb26ad20575ccc1e6:docs/session-1/api.md:generic-api-key:205
+93955be8ba6983b68995f98bb26ad20575ccc1e6:docs/session-1/api.md:generic-api-key:226
+93955be8ba6983b68995f98bb26ad20575ccc1e6:docs/session-1/api.md:generic-api-key:233
+6d19b2bce2a2ff5a5068cf2b049a65ed0581f64b:docs/api/README.md:generic-api-key:44
+6d19b2bce2a2ff5a5068cf2b049a65ed0581f64b:docs/api/README.md:generic-api-key:45
+6d19b2bce2a2ff5a5068cf2b049a65ed0581f64b:docs/api/README.md:generic-api-key:68
+
+# v1 planning docs still in the tree (example tokens inside the docs that
+# SPECIFY the v1 secret-filtering feature) — commit-scoped and tree-scoped
+# fingerprints for `gitleaks detect` and `gitleaks dir` respectively.
+9e83cc72471595524917e15af5edcf043a5d3704:planning/v1/session-future/02-data-protection.md:generic-api-key:715
+42f2e9647c3fc98ebdb4ad7d3a2b7b19fb2063c1:planning/v1/session-10/02-privacy-filtering.md:jwt:319
+42f2e9647c3fc98ebdb4ad7d3a2b7b19fb2063c1:planning/v1/session-10/02-privacy-filtering.md:generic-api-key:141
+42f2e9647c3fc98ebdb4ad7d3a2b7b19fb2063c1:planning/v1/session-8/04-security-testing.md:generic-api-key:273
+42f2e9647c3fc98ebdb4ad7d3a2b7b19fb2063c1:planning/v1/session-8/04-security-testing.md:generic-api-key:502
+42f2e9647c3fc98ebdb4ad7d3a2b7b19fb2063c1:planning/v1/session-8/04-security-testing.md:generic-api-key:508
+planning/v1/session-future/02-data-protection.md:generic-api-key:715
+planning/v1/session-10/02-privacy-filtering.md:jwt:319
+planning/v1/session-10/02-privacy-filtering.md:generic-api-key:141
+planning/v1/session-8/04-security-testing.md:generic-api-key:273
+planning/v1/session-8/04-security-testing.md:generic-api-key:502
+planning/v1/session-8/04-security-testing.md:generic-api-key:508

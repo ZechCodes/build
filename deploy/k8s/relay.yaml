@@ -1,0 +1,116 @@
+# The Rust relay: single ciphertext-only broker for /ws/device + /ws/client.
+# WebSockets pass through traefik by default; TLS terminates at the ingress.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-relay
+spec:
+  replicas: 1
+  # The relay is a single in-memory broker: device + browser WS connections are
+  # per-pod state. A RollingUpdate would briefly run two brokers behind one
+  # Service — browsers landing on the new pod can't reach devices still attached
+  # to the old one, and presence fanout splits. Recreate preserves the locked
+  # "single broker" topology (a short blip; clients auto-reconnect).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: build-relay
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: build-relay
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: ghcr.io/zechcodes/build-relay:latest
+          imagePullPolicy: Always
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: ws
+              containerPort: 8799
+          env:
+            # Internal api base for device/token lookups and status reports.
+            - name: API_INTERNAL_URL
+              value: http://build-app:8080
+            # Compatibility alias: the current relay binary reads RELAY_API_URL.
+            - name: RELAY_API_URL
+              value: http://build-app:8080
+            - name: RELAY_PORT
+              value: "8799"
+            # Sent as X-Internal-Secret on /internal/* calls to the app.
+            - name: RELAY_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: build-relay
+                  key: RELAY_INTERNAL_SECRET
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: ws
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ws
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: build-relay
+spec:
+  selector:
+    app.kubernetes.io/name: build-relay
+  ports:
+    - name: ws
+      port: 8799
+      targetPort: ws
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: build-relay
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    # TLS-only router: without this the route also binds traefik's plain-HTTP
+    # `web` entrypoint, and whether http:// is redirected depends on unverified
+    # cluster-wide config. Gateway tokens must never ride cleartext. (The
+    # cert-manager HTTP-01 solver creates its own ingress, so ACME still works.)
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - relay.getbuild.ing
+      secretName: relay-getbuild-ing-tls
+  rules:
+    - host: relay.getbuild.ing
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: build-relay
+                port:
+                  name: ws

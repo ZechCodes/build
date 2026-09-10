@@ -1,0 +1,203 @@
+# The Skrift app: auth, device registry, gateway tokens, web push, SPA host.
+# Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL, VAPID_*,
+# CF_TURN_KEY_ID, CF_TURN_KEY_API_TOKEN, GITHUB_RELEASES_TOKEN,
+# SMTP_USERNAME, SMTP_PASSWORD,
+# SMTP_FROM_ADDRESS, WAITLIST_NOTIFY_ADDRESS) come from
+# deploy/k8s/bootstrap-secrets.sh — never from git.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-app
+spec:
+  replicas: 1
+  # Migrations run in the entrypoint; don't race two schema writers.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: build-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: build-app
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: ghcr.io/zechcodes/build-app:latest
+          imagePullPolicy: Always
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SECRET_KEY
+            - name: INTERNAL_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: INTERNAL_API_SECRET
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: DATABASE_URL
+            # Web push (content-free attention notifications): the VAPID pair
+            # the SPA subscribes with and /api/push/notify signs with.
+            # `optional: true`: a build-app Secret from a pre-web-push bootstrap
+            # run lacks these keys, and the app degrades gracefully without them
+            # (push endpoints answer 503) — a missing key must not
+            # CreateContainerConfigError the whole app. Re-run
+            # bootstrap-secrets.sh to add them.
+            - name: VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: VAPID_PRIVATE_KEY
+                  optional: true
+            - name: VAPID_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: VAPID_PUBLIC_KEY
+                  optional: true
+            - name: VAPID_SUBJECT
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: VAPID_SUBJECT
+                  optional: true
+            # Cloudflare TURN key (optional: absent = STUN-only). See bootstrap-secrets.sh.
+            - name: CF_TURN_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: CF_TURN_KEY_ID
+                  optional: true
+            - name: CF_TURN_KEY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: CF_TURN_KEY_API_TOKEN
+                  optional: true
+            # Read-only GitHub PAT for the bridge's release assets (optional:
+            # absent = the download routes 302 to the public assets, which is
+            # what they do once build-web is public). See bootstrap-secrets.sh.
+            - name: GITHUB_RELEASES_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: GITHUB_RELEASES_TOKEN
+                  optional: true
+            # Outbound email (waitlist confirmation + owner notification) over
+            # FastMail SMTP. The three SMTP keys are NOT optional: app.yaml
+            # interpolates $SMTP_USERNAME, $SMTP_PASSWORD and $SMTP_FROM_ADDRESS
+            # at config load and the app refuses to boot when one is unset, so a
+            # partially-populated Secret must fail loudly here instead. The notify
+            # address is optional — no yaml interpolates it and an absent value
+            # just disables the owner notification, so it must never be able to
+            # take the site down. bootstrap-secrets.sh adds all four together
+            # from the operator's environment.
+            - name: SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SMTP_USERNAME
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SMTP_PASSWORD
+            - name: SMTP_FROM_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SMTP_FROM_ADDRESS
+            - name: WAITLIST_NOTIFY_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: WAITLIST_NOTIFY_ADDRESS
+                  optional: true
+          # NOT `/`: that's Skrift's CMS home page, which 404s on a fresh site
+          # (post-setup, pre-content) — failing readiness drops every traefik
+          # route and liveness crash-loops the pod. /healthz always exists.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30 # up to 150s for migrations on first boot
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: build-app
+spec:
+  selector:
+    app.kubernetes.io/name: build-app
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: build-app
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    # TLS-only router: without this the route also binds traefik's plain-HTTP
+    # `web` entrypoint, and whether http:// is redirected depends on unverified
+    # cluster-wide config. Skrift session cookies must never ride cleartext.
+    # (The cert-manager HTTP-01 solver creates its own ingress, so ACME still
+    # works over port 80.)
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - getbuild.ing
+      secretName: getbuild-ing-tls
+  rules:
+    - host: getbuild.ing
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: build-app
+                port:
+                  name: http

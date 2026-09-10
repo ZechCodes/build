@@ -1,0 +1,1425 @@
+/* One CSS entry: this file pulls in the shell (three-panel layout, inbox rail,
+   toolbar, agent rail, console) and the work surfaces (Changes, issue view).
+   Modules that own those regions also import their sheet directly, which keeps
+   the cascade order (shell/surfaces after the base) whichever path loads first. */
+@import "./styles/shell.css";
+@import "./styles/surfaces.css";
+
+/* ---- theme tokens -----------------------------------------------------------
+   Every colour in this file comes from here, and the two blocks below are the
+   whole theme: `:root` is light, `:root[data-theme="dark"]` is dark, and
+   core/theme.js is the only thing that writes that attribute (it resolves the
+   user's light/dark/system choice on the Account page). A rule that hard-codes
+   a hex is a rule that only works in one theme — reach for a token, and add one
+   here if none of these says what you mean. */
+:root {
+  color-scheme: light;
+  /* Flat by design: --panel is the SAME color as --bg. Every surface (sidebar,
+     tab bar, card, sheet) sits on one background and is separated by borders
+     and spacing, never by a fill. The token stays so a surface can still say
+     which color it wants; it just resolves to the page's. --panel2 is the one
+     exception: the faintly recessed fill under a gutter or a quiet card. */
+  --bg:#fafafa; --panel:#fafafa; --panel2:#fcfcfd;
+  --ink:#18181b; --ink2:#52525b; --dim:#a1a1aa;
+  --line:#e4e4e7; --line2:#f1f1f4; --line3:#c7c7ce;
+  --accent:#5b62e8; --accent-soft:#eef0fe; --accent-ink:#fff;
+  --green:#16a34a; --green-bg:#f0fdf4;
+  --red:#dc2626; --red-bg:#fef2f2;
+  /* The waiting tone. Something pending review is not something broken: it is
+     yellow, and --red is kept for what actually went wrong (blocked, failed,
+     a merge left half-done). */
+  --amber:#b45309; --amber-bg:#fffbeb;
+  --violet:#7c3aed;
+  --code-bg:#f4f4f5; --sel:#c7d2fe;
+  --scrim:rgba(24,24,27,.32); --shadow:rgba(0,0,0,.16); --shadow-soft:rgba(0,0,0,.08);
+  /* The comment popover is an inverted chip in BOTH themes, so anything drawn
+     on it needs colours picked against a dark ground, not against --bg. */
+  --pop-bg:#18181b; --pop-ink:#fafafa; --pop-warn:#fbbf24;
+  /* diff: the ink inside an added/removed row, the hunk header, and the
+     scroll-to-line flash */
+  --add-ink:#14532d; --del-ink:#7f1d1d; --hunk-bg:#f6f6fb;
+  --hl-bg:#fef3c7; --hl-ln:#fde68a; --hl-ink:#92400e; --mark:#fde68a;
+  /* A terminal is dark in both themes — that is what a terminal looks like. */
+  --term-bg:#15161e; --term-fg:#a9b1d6;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+/* Dark: easy on the eyes rather than maximum contrast — the page is a soft
+   near-black and the text a warm off-white, so a long review does not glare.
+   The accents are the loud part: neon against that quiet ground, with dark ink
+   on top of a filled accent because near-black on neon is what reads. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#15171c; --panel:#15171c; --panel2:#1b1e25;
+  --ink:#e3e6ee; --ink2:#a6adbb; --dim:#6e7684;
+  --line:#282c35; --line2:#1e222a; --line3:#3b414d;
+  /* Neon green, kept to the cool side of green on purpose: the lime side runs
+     into --amber (pending review), and it has to stay louder than --green
+     (merged, passed) so an affordance never reads as a state. */
+  --accent:#2bff88; --accent-soft:#102a1c; --accent-ink:#06170e;
+  --green:#3ddc84; --green-bg:#122318;
+  --red:#ff5c72; --red-bg:#2a1620;
+  --amber:#ffd447; --amber-bg:#2b2210;
+  --violet:#c4a2ff;
+  /* Selection is an accent surface — it follows the accent's hue, as the light
+     theme's indigo-tinted --sel follows its own. */
+  --code-bg:#1b1e26; --sel:#1c4a35;
+  --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.62); --shadow-soft:rgba(0,0,0,.45);
+  --pop-bg:#242833; --pop-ink:#e3e6ee; --pop-warn:#ffd447;
+  --add-ink:#b9f4cf; --del-ink:#ffc3cd; --hunk-bg:#1c2028;
+  --hl-bg:#3a2f10; --hl-ln:#4a3c12; --hl-ink:#ffd447; --mark:#4a3c12;
+  --term-bg:#15171c; --term-fg:#c3cae0;
+}
+/* ---- layout tokens ----------------------------------------------------------
+   The tab shell's geometry, in one place. Every tab body resolves to this width
+   and these gutters — the one-column layout (.pane-col) and the two-column one
+   (.pane-split) alike — so moving between tabs never moves the content's edges.
+   A pane that states a width of its own is a pane that will drift out of step.
+   The narrow-viewport values live in the one media query below, so both layouts
+   narrow together.
+
+   --pane-gutter is more than a gutter: it is the column every piece of text in
+   the view stands on. The toolbar's project name is the leftmost of them and
+   the one the eye reads the surface against, so the gutter is where that name
+   already sat, and each row below it lands there too. A row whose own control
+   carries an inset — the toolbar's menu button, a tab's pill — cannot simply
+   pay the gutter as well: its bar pays the DIFFERENCE, and the inset finishes
+   the distance. Those two are the derived tokens here, stated against the
+   gutter so there is still one number to move. */
+:root { --pane-gutter:18px; --pane-top:18px; --pane-bottom:40px;
+  /* The list column of every two-column pane — the commit rail, the file tree.
+     One number so Changes and Files are structurally the same view: the rail is
+     the same width in both, and switching tabs moves the divider nowhere. */
+  --pane-rail:300px;
+  --pane-drawer:min(86vw, var(--pane-rail));
+  --tbsel-inset:6px;  /* the toolbar's menu button, inside its own bar */
+  --tab-inset:13px; /* a tab pill, inside the tab bar */
+  --toolbar-gutter:calc(var(--pane-gutter) - var(--tbsel-inset));
+  /* Never negative: a phone's gutter is narrower than the pill's inset, and
+     there the pill alone is the whole distance. */
+  --tabbar-gutter:max(0px, calc(var(--pane-gutter) - var(--tab-inset))); }
+* { box-sizing:border-box; }
+html, body { overscroll-behavior:none; }
+/* The native controls this client does not restyle — checkboxes, the select
+   popup, scrollbars — take their cue from color-scheme on :root; the tick
+   itself takes the accent. */
+input[type=checkbox] { accent-color:var(--accent); }
+/* The frame is viewport-locked: the PAGE never scrolls — standalone (PWA) has
+   no browser chrome to hide, and body scroll there meant a third scrollbar on
+   top of the rail's and the content's. dvh with a vh fallback, so the frame
+   tracks the layout viewport the keyboard resizes (interactive-widget). The
+   offline banner and the shell are the only in-flow children; everything else
+   on body is position:fixed. */
+body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:column;
+  background:var(--bg); color:var(--ink); font:14px/1.55 "Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+#offbar { flex:none; }
+a { color:inherit; }
+.mono { font-family:var(--mono); }
+.dim { color:var(--dim); }
+/* shared chrome bits (used by the inbox rail and gate/settings views) */
+.badge { background:var(--accent); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
+.dot { width:7px; height:7px; border-radius:999px; background:var(--green); display:inline-block; margin-right:5px; }
+/* device picker (multi-device) */
+#devpick { font:inherit; font-size:12px; color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px 6px; max-width:180px; }
+#devpick:focus { outline:none; border-color:var(--accent); }
+/* offline banner */
+#offbar { background:var(--amber-bg); color:var(--amber); border-bottom:1px solid color-mix(in srgb, var(--amber) 40%, transparent); padding:7px 18px; font-size:12.5px; }
+/* new-version banner: an offer, not a warning — accent, one Reload, never auto.
+   In-flow like #offbar, so the locked shell shrinks under it. */
+#verbar { flex:none; display:flex; align-items:center; gap:12px;
+  background:var(--accent-soft); color:var(--accent);
+  border-bottom:1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  padding:7px 18px; font-size:12.5px; }
+#verbar[hidden] { display:none; }
+#verbar .btn { padding:3px 12px; font-size:12px; color:var(--accent); border-color:currentColor; background:transparent; }
+/* The reading page: a capped column, centred in whatever the shell gives it.
+   The cap carries the frame as well as the 1180px, because `margin:0 auto`
+   stops the grid item stretching and sizes it to its own content instead — a
+   page whose widest row wants 640px then rendered 640px wide inside a 390px
+   phone, and everything past the frame was clipped away by the view column
+   with no scrollbar to get it back. min() keeps the centring where there is
+   room and takes the frame where there is not. */
+main { max-width:min(1180px, 100%); margin:0 auto;
+  padding:26px calc(22px + env(safe-area-inset-right, 0px))
+    calc(80px + env(safe-area-inset-bottom, 0px)) 22px; }
+/* board */
+.board-head { display:flex; align-items:flex-start; margin-bottom:22px; }
+.board-head h1 { font-size:24px; margin:0 0 2px; letter-spacing:-.02em; }
+.board-head p { margin:0; color:var(--ink2); font-size:14px; }
+.btn { font:inherit; font-weight:600; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:8px 14px; cursor:pointer; }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.btn.primary:hover { filter:brightness(1.06); }
+.btn:disabled { opacity:.5; cursor:default; }
+.bucket { margin:26px 0 8px; }
+.bucket h2 { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:8px; align-items:center; }
+.bucket h2 .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 7px; font-size:10px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:10px; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
+.card:hover { border-color:var(--line3); box-shadow:0 1px 3px var(--shadow-soft); }
+.card.quiet { background:var(--panel2); }
+.card.external { opacity:.68; }
+.card.external:hover { opacity:1; }
+.card.external .chip { background:transparent; border:1px dashed var(--line); color:var(--dim); }
+.card .top { display:flex; align-items:center; gap:10px; }
+.card .title { font-weight:650; font-size:15px; letter-spacing:-.01em; }
+.card .meta { margin-top:3px; font-family:var(--mono); font-size:11.5px; color:var(--dim); display:flex; gap:7px; flex-wrap:wrap; }
+.card .payload { margin-top:9px; color:var(--ink2); font-size:13px; }
+.card .facts { font-size:11px; color:var(--dim); margin-top:4px; }
+.chip { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; border-radius:999px; padding:3px 9px; white-space:nowrap; }
+/* Waiting on the human (READY TO REVIEW, an approved stage) is yellow: it is a
+   queue, not a fault. Red stays for .warn — blocked, failed, interrupted. */
+.chip.attn { background:var(--amber-bg); color:var(--amber); }
+.chip.work { background:var(--line2); color:var(--ink2); }
+.chip.done { background:var(--green-bg); color:var(--green); }
+.chip.warn { background:var(--red-bg); color:var(--red); }
+.empty { color:var(--dim); font-size:13px; padding:6px 0; }
+.empty.gone { text-align:center; padding:56px 12px; font-size:14px; }
+.empty.gone .btn { margin-top:14px; }
+/* settings stub */
+.settings-intro { color:var(--ink2); font-size:14px; max-width:620px; margin-bottom:18px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:620px; }
+.panel + .panel { margin-top:18px; }
+.panel h3 { margin:0 0 12px; font-size:14px; display:flex; align-items:center; gap:8px; }
+.panel .row { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; }
+.panel .row:first-of-type { border-top:0; }
+.panel .row .k { font-family:var(--mono); color:var(--ink); min-width:140px; }
+.panel .row .v { color:var(--ink2); }
+.panel .row.last .k { color:var(--green); }
+/* ---- the account archive ----
+   A record opens under the row it belongs to, so it reads as that row's inside
+   rather than as the next thing on the page. */
+.account-nav { margin-bottom:16px; }
+.archive-row { cursor:pointer; }
+.archive-record { max-width:none; margin:-4px 0 12px; }
+/* ---- full-height worktree surfaces (task / external worktree / main) ----
+   The tab bar is the top of the view; #tabbody is the one scroll container
+   (so the sticky actionbar pins to its bottom). `bare` tabs (terminals)
+   drop the padding and let the pane own the whole box. */
+main#root.surface { max-width:none;
+  /* The reading page centres with auto margins; a grid item beside the agent
+     rail must not — auto side margins stop the stretch, size the surface to
+     its content, and slide a wide diff under the rail. */
+  margin:0;
+  padding:0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0;
+  /* The locked shell provides the height; the surface just fills its column
+     and hands scrolling to #tabbody. */
+  height:100%;
+  display:flex; flex-direction:column; overflow:hidden; }
+/* The branch surface has no bar of its own any more: Changes/Files pin to the
+   bottom of whichever rail is open (.railtabs, near .crail-host below), and
+   Done lives in the toolbar's verb slot (core/toolbar.js's #tb-verb) — #tabbody
+   is the surface's only child, flush against the toolbar above it. */
+.cluster-pane .board-head { margin-bottom:14px; }
+/* A single 1fr row hands the mounted pane the leftover height as a definite one,
+   which is what an empty state's `height:100%` needs; taller content grows the
+   row instead, and #tabbody scrolls as always. */
+.cluster-pane .cluster-body { flex:1 1 auto; min-height:0; display:grid; grid-template-rows:1fr; }
+/* Worktrees ride a right-hand column when this pane can spare the width, and
+   fall back under the main column when it cannot. Containment is scoped to the
+   inbox subtree — putting it on #tabbody would apply layout containment to the
+   terminal and files panes too, which size themselves against it. */
+.inbox-cols { display:flex; flex-direction:column; }
+.inbox-side .bucket { margin-top:0; }
+/* A 320px column is too narrow for a long branch to wrap gracefully — it pushed
+   the card's chip onto a second line. Truncate instead; the full name is still
+   in the card's title attribute. */
+.inbox-side .card .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@container (min-width: 860px) {
+  .inbox-cols { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:26px; align-items:start; }
+}
+/* Plan rows in the rail carry a distinct approved glyph tint. */
+.srow.splan.ready .sicon { color:var(--green); }
+.surface .task-error { margin:10px 18px 0; }
+.surface #tabbody { flex:1; min-height:0; overflow-y:auto;
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom); }
+/* WebKit pins sticky descendants to a scroller's padding edge. Compensate for
+   that inset after a diff starts scrolling, while unpadded review embeds keep
+   the fallback zero declared on .fhead. */
+.surface #tabbody:not(.bare):not(.flush) { --diff-sticky-top:calc(0px - var(--pane-top)); }
+.surface #tabbody.bare { padding:0; overflow:hidden; }
+/* Flush two-pane surfaces (Changes / Files): the tab body owns no padding and
+   never scrolls itself — the left rail and the right detail pane each scroll
+   internally at full height, and .pane-split carries the gutters the padded
+   body gives the one-column layout. */
+.surface #tabbody.flush { padding:0; overflow:hidden; }
+/* What a surface paints into the flush body before either column exists —
+   "loading…", a branch no checkout carries. The body pays no gutter, so the
+   message states the token itself rather than standing against the frame. */
+.surface #tabbody.flush > .empty { padding:var(--pane-top) var(--pane-gutter); }
+/* ---- the two tab layouts ----
+   There are exactly two, and dimensionally they are one: the same width, the
+   same gutters, so a tab switch moves nothing but what is inside. .pane-col
+   is a single column in the padded body; .pane-split is two columns in the
+   flush one, each owning its own scroll.
+   Neither is capped or centred: a work surface fills the column the shell
+   gives it and sits flush against the agent rail — a centring cap left a dead
+   strip between the diff and the conversation on any window wider than the
+   cap (the reviewer's gap), and a diff is a tool, not prose. Reading pages
+   (main:not(.surface)) keep their own centred cap.
+   (.bare is not one of them — a terminal is deliberately full-bleed.) */
+/* The flush body has no padding of its own, so the split states what it pays
+   itself — and on three of its four sides it pays nothing.
+   LEFT is the only gutter: it is the text column every surface's first words
+   stand on (--pane-gutter, see the toolbar), and the rail bleeds back through it
+   to meet the frame. content-box keeps that one number measuring the same as
+   the padded body's.
+   RIGHT is the seam with the conversation, and the split itself pays nothing
+   there: the rail's divider, the toolbar's rule, a banner's fill still run to
+   the agent rail's border. The READING columns inside (.cdetail-host, the
+   issue viewer) pay the gutter on that side themselves — a diff pressed
+   against the chat's border had no room to breathe — and the control rows
+   (the git bar, the commit box) state the same inset they always did.
+   TOP is the seam with the nav bar, and it goes for the same reason: the rail's
+   selected row and the toolbar's rule now meet the bar that names where you are,
+   and the reading column below still pays its own top gutter (.cdetail-host).
+   BOTTOM: its columns scroll to the frame's edge, and a gap under a live
+   scroller is dead space rather than rhythm — the one-column layout's bottom
+   padding is scroll-end room inside its own scroller. */
+.pane-split { box-sizing:content-box; height:100%;
+  min-height:0; display:flex; align-items:stretch; position:relative;
+  padding:0 0 0 var(--pane-gutter); }
+/* The list column is a rail, not a card: the commit list, the file tree and the
+   issue's stages meet the frame the way the inbox rail on the other side of the
+   divider does, so their fills, their hover and their divider run edge to edge
+   instead of floating in a gutter. The column bleeds back through the split's
+   left gutter to get there, and its rows pay that gutter as their own inset —
+   which is what keeps their TEXT on the column the toolbar's project name and
+   the tab labels stand on. The split's own box is untouched: the two layouts
+   still measure the same. */
+.pane-split .pane-list { margin-left:calc(var(--pane-gutter) * -1); }
+/* ---- the two-column layout on a narrow viewport ----
+   Below the stacking width the pane keeps both columns, but only one of them
+   at a time: the list column (the commit rail, the file tree) leaves the flow
+   and becomes a drawer floating over the left of the pane, and the detail
+   column — the thing being read — gets the whole frame behind it. Stacking
+   spent half a phone on the list nobody was reading, and gave the pane two
+   short scrollers where there was room for one.
+   The drawer belongs to the primitive: one rule moves both panes' list
+   columns, and both hand it the same .pane-list. Its chrome (the handle that
+   pulls it out, the scrim it sits on) is in the markup at every width and
+   paints at none of them but this. */
+.pane-scrim, .pane-handle { display:none; }
+@media (max-width: 900px) {
+  /* An overlay is placed against the split's border box, so the drawer already
+     starts at the frame — it gives the bleed back rather than sliding a whole
+     gutter past the edge. */
+  .pane-split .pane-list { position:absolute; top:0; bottom:0; left:0; z-index:12;
+    margin-left:0; width:var(--pane-drawer); flex:none; background:var(--panel);
+    transform:translateX(-100%); transition:transform .18s ease; }
+  /* The shadow is the open drawer's, not the closed one's: a panel parked off
+     the left edge still spills its shadow back over the pane, which reads as a
+     dark gutter down a column that is supposed to have the frame to itself. */
+  .pane-split.drawer-open .pane-list { transform:none; box-shadow:8px 0 24px var(--shadow-soft); }
+  .pane-split.drawer-open .pane-scrim { display:block; position:absolute; inset:0; z-index:11;
+    background:var(--scrim); }
+  /* A tab on the pane's edge, vertically centred: an edge tab is where a
+     pull-out is grabbed anyway. It travels with the panel it opened, so the
+     way out is where the way in was. */
+  .pane-handle { display:flex; align-items:center; justify-content:center;
+    position:absolute; left:0; top:50%; transform:translateY(-50%); z-index:13;
+    width:23px; height:64px; padding:0; cursor:pointer;
+    font:inherit; font-size:14px; line-height:1; color:var(--ink2);
+    background:var(--panel); border:1px solid var(--line); border-left:none;
+    border-radius:0 9px 9px 0; box-shadow:2px 0 10px var(--shadow-soft);
+    transition:left .18s ease; -webkit-tap-highlight-color:transparent; }
+  .pane-handle::after { content:"›"; }
+  .pane-split.drawer-open .pane-handle { left:var(--pane-drawer); }
+  .pane-split.drawer-open .pane-handle::after { content:"‹"; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pane-split .pane-list, .pane-handle { transition:none; }
+}
+/* task view */
+.back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }
+/* Destructive comes in two forms and they never mix. A secondary button says it
+   in red on the panel; a PRIMARY one — the confirmation's own Delete — is a
+   filled red button, and its text stays --accent-ink like every other filled
+   button. Red text over an accent fill is the collision that made the branch
+   surface's Done read green-with-red-words. */
+.btn.danger { border-color:var(--red); color:var(--red); }
+.btn.danger:hover { background:var(--red-bg); }
+.btn.primary.danger { background:var(--red); border-color:var(--red); color:var(--accent-ink); }
+.btn.primary.danger:hover { background:var(--red); filter:brightness(1.06); }
+.card .cerr { margin-top:8px; color:var(--red); font-size:12px; word-break:break-word; }
+/* Pills: no rule under the row, no underline on the active tab — the selected
+   pill carries its own soft fill, everything else is bare. */
+.tabs { display:flex; gap:4px; margin-bottom:18px; }
+.tabs .t { padding:6px var(--tab-inset); font-size:13px; color:var(--ink2); cursor:pointer; border-radius:999px;
+  display:flex; gap:7px; align-items:center; }
+.tabs .t:hover { background:var(--line2); }
+.tabs .t.active { color:var(--accent); font-weight:600; }
+.tabs .t .n { background:var(--line); color:var(--ink2); border-radius:999px; padding:0 6px; font-size:10px; }
+.tabs .t .tx { color:var(--dim); font-size:14px; line-height:1; padding:0 1px; border-radius:4px; }
+.tabs .t .tx:hover { color:var(--red); background:var(--line2); }
+.tabs .t.tplus { color:var(--dim); font-weight:600; padding:9px 12px; }
+.tabs .t.tplus:hover { color:var(--accent); }
+.tabs .t.tback { color:var(--dim); font-weight:600; font-size:16px; line-height:1; padding:8px 12px 10px;
+  position:sticky; left:0; background:var(--panel); z-index:1; }
+.tabs .t.tback:hover { color:var(--accent); }
+/* The right cluster: the project-wide entries every surface carries (Inbox as an
+   icon tab, the ⋯ actions menu), pushed to the row's end. */
+/* Sticky like the back chevron on the other end: the row scrolls on a narrow
+   screen, and these entries must stay reachable wherever it has been scrolled. */
+.tabs .tabs-right { display:flex; gap:4px; margin-left:auto; padding-left:12px;
+  position:sticky; right:0; background:var(--bg); z-index:1; }
+/* Lucide SVGs, stroked in currentColor and sized from here: 16px inside 7px of
+   padding matches the 30px box a text tab gets from its own padding + line, so
+   the icons sit on the row's baseline rather than beside it. */
+.tabs .t.ticon { padding:7px 11px; }
+.tabs .t.tmenu { color:var(--dim); padding:7px 11px; }
+.tabs .t.ticon svg, .tabs .t.tmenu svg { width:16px; height:16px; display:block; }
+.tabs .t.tmenu:hover, .tabs .t.tmenu.active { color:var(--accent); }
+/* ---- markdown tables ----
+   Wherever renderMarkdown renders — a chat message, a plan or issue doc, a
+   markdown file preview — a pipe table lands as .mdtable, so one rule set
+   dresses all three and the type scale is inherited from whichever of them is
+   hosting it.
+   The scroller is the WRAPPER, not the table: a table wider than the column it
+   sits in has to scroll in place, or a six-column run report takes the whole
+   conversation panel's width with it. Row separators only, no vertical rules —
+   the same flat, line-based surface every other list in the app is. */
+/* The one sign that a table runs wider than its column is a pair of edge
+   shadows. A macOS scrollbar only shows itself mid-scroll, so a clipped last
+   column reads as a rendering bug until the reader happens to drag it. Two
+   pairs of gradients say it instead: a shadow pinned to each edge (`scroll`),
+   and over it a cover in the host's own background that travels with the
+   content (`local`). At rest each cover hides its shadow; scroll, and the cover
+   slides away to leave the shadow on the side there is still table to reach.
+   Every surface renderMarkdown paints into — a conversation card, .plan — is
+   --panel, and --mdtable-cover names that colour for the one that is not. */
+.mdtable { margin:8px 0 12px; max-width:100%; overflow-x:auto; --mdtable-cover:var(--panel);
+  background:
+    linear-gradient(to right, var(--mdtable-cover), transparent) 0 0 / 22px 100% no-repeat local,
+    linear-gradient(to left, var(--mdtable-cover), transparent) 100% 0 / 22px 100% no-repeat local,
+    linear-gradient(to right, color-mix(in srgb, var(--line) 85%, transparent), transparent)
+      0 0 / 14px 100% no-repeat scroll,
+    linear-gradient(to left, color-mix(in srgb, var(--line) 85%, transparent), transparent)
+      100% 0 / 14px 100% no-repeat scroll; }
+.mdtable table { border-collapse:collapse; min-width:100%; font-variant-numeric:tabular-nums; }
+/* A cell breaks on spaces. Its host — a conversation card above all — wraps
+   anywhere so a pasted path can never widen the column, but a cell inheriting
+   that has no minimum width at all: the column shrinks until its text runs one
+   character per line. break-word keeps the column as wide as its longest word
+   and still breaks a word that could not fit a line of its own. */
+.mdtable th, .mdtable td { padding:5px 14px 5px 0; text-align:left; vertical-align:top;
+  border-bottom:1px solid var(--line2); white-space:normal; overflow-wrap:break-word;
+  word-break:normal; }
+/* The header is the one row that names things, so it reads as ink and holds its
+   line: a wrapped header over a scrolling table is unreadable. */
+.mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; border-bottom-color:var(--line); }
+.mdtable tr:last-child td { border-bottom:0; }
+.mdtable th:last-child, .mdtable td:last-child { padding-right:0; }
+/* plan */
+.plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; }
+.plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
+.plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan p { margin:8px 0; color:var(--ink); }
+.plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
+.plan code { font-family:var(--mono); font-size:12.5px; background:var(--line2); padding:1px 5px; border-radius:5px; }
+.plan pre { background:var(--code-bg); padding:12px 14px; border-radius:8px; overflow:auto; } .plan pre code { background:none; padding:0; }
+.plan-loading { color:var(--dim); min-height:240px; padding:30px; display:flex; align-items:center;
+  justify-content:center; gap:9px; text-align:center; font-family:var(--mono); font-size:12.5px; }
+.plan-loading::before { content:"⠋"; color:var(--accent); font-size:18px; line-height:1;
+  animation:braille-throb .8s steps(1,end) infinite; }
+@keyframes braille-throb {
+  0% { content:"⠋"; } 12.5% { content:"⠙"; } 25% { content:"⠹"; } 37.5% { content:"⠸"; }
+  50% { content:"⠼"; } 62.5% { content:"⠴"; } 75% { content:"⠦"; } 87.5% { content:"⠧"; }
+}
+.plan ::selection, .plan::selection { background:var(--sel); }
+.plan mark.phl { background:var(--mark); color:var(--ink); border-radius:2px; padding:0 1px; }
+.plan-summary .ps-body.clamped { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+/* Honest doc-pane empty/error states (docs predating canonical storage, or a
+   read that errored and latched off) inside the .plan container. */
+.plan-empty { color:var(--dim); font-size:13px; }
+.plan-empty.warn { color:var(--red); }
+/* plan review comments */
+.plan-feedback { margin-top:14px; }
+/* Compact composers: a single-line box that grows on focus (the diff-comment
+   idiom), shared by the plan / stage / worktree feedback textareas. */
+.plan-general { width:100%; min-height:36px; margin-top:8px; }
+.plan-general:focus { min-height:64px; }
+.pcomment { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:8px 30px 8px 12px; margin-bottom:8px; font-size:13px; position:relative; }
+.pcomment .psnip { color:var(--ink2); font-style:italic; font-size:12px; border-left:2px solid var(--line); padding-left:8px; margin-bottom:5px; display:block; }
+.pcomment .pctext { color:var(--ink); }
+.pcomment .pcx { position:absolute; top:6px; right:10px; cursor:pointer; color:var(--dim); font-size:15px; line-height:1; }
+.pcomment .pcx:hover { color:var(--red); }
+.stagehead .hint { color:var(--dim); font-size:12px; }
+.stagelist { display:flex; flex-direction:column; gap:8px; }
+.stagerow { display:flex; gap:12px; align-items:flex-start; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 14px; cursor:pointer; }
+.stagerow:hover { border-color:var(--accent); }
+.stagerow .stagenum { font-family:var(--mono); font-size:12px; color:var(--dim); padding-top:2px; }
+.stagerow .stagemain { flex:1; min-width:0; }
+.stagerow .stagetop { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+.stagerow .stagetitle { font-weight:600; font-size:14px; color:var(--ink); }
+.stagechip { margin-left:0; }
+.cbadge { font-size:11px; color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:2px 8px; white-space:nowrap; }
+.stagesummary { color:var(--ink2); font-size:12.5px; margin-top:4px; }
+.stage-validation { border:1px solid var(--line); border-radius:11px; padding:12px 15px; margin-bottom:14px; }
+.stage-validation .sv-head { font-weight:650; font-size:13.5px; margin-bottom:4px; }
+.stage-validation .sv-body { font-size:13px; }
+.stage-validation .sv-body p { margin:6px 0; }
+.stage-validation.pass { background:var(--green-bg); border-color:var(--green); }
+.stage-validation.pass .sv-head { color:var(--green); }
+.stage-validation.fail { background:var(--red-bg); border-color:var(--red); }
+.stage-validation.fail .sv-head { color:var(--red); }
+.stagecomments { margin-top:14px; display:flex; flex-direction:column; gap:8px; }
+.commentcard { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px; padding:9px 30px 9px 12px; font-size:13px; position:relative; }
+.commentcard.addressed { border-left-color:var(--green); opacity:.72; }
+.commentcard .cc-x { position:absolute; top:6px; right:10px; cursor:pointer; color:var(--dim); font-size:15px; line-height:1; }
+.commentcard .cc-x:hover { color:var(--red); }
+.commentcard .cc-crumb { display:block; font-size:11px; color:var(--accent); cursor:pointer; margin-bottom:3px; }
+.commentcard .cc-snip { display:block; color:var(--ink2); font-style:italic; font-size:12px; border-left:2px solid var(--line); padding-left:8px; margin-bottom:4px; }
+.commentcard .cc-body { color:var(--ink); display:block; }
+.commentcard .cc-reply { margin-top:6px; font-size:12.5px; color:var(--ink2); border-top:1px dashed var(--line); padding-top:5px; }
+.commentcard .cc-reply .cc-reply-k { font-weight:600; color:var(--green); font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin-right:5px; }
+.comment-pop { position:fixed; z-index:60; background:var(--pop-bg); border-radius:9px; padding:6px; box-shadow:0 8px 24px var(--shadow); display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start; }
+.comment-pop button { font:inherit; background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
+/* The popover is a dark chip in both themes, so the field states its own page
+   colours rather than inheriting the UA's white against dark ink. */
+.cp-input { font:inherit; border:none; border-radius:6px; padding:6px 9px; min-width:240px; max-width:min(90vw, 360px); resize:none; background:var(--bg); color:var(--ink); }
+.cp-keep { flex-basis:100%; font-size:10.5px; color:var(--pop-warn); display:block; margin-top:4px; }
+.comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
+/* diff */
+.diffbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
+/* The code table scrolls horizontally inside .dscroll while the .file border
+   clips the corners. overflow:clip preserves the outer vertical scroller as
+   the sticky header's scroll container. */
+.file .dscroll { overflow-x:auto; overflow-y:hidden; }
+.file table { min-width:100%; }
+.file td.code { white-space:pre; }
+.file { background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:clip; }
+.file .fhead { position:sticky; top:var(--diff-sticky-top, 0); z-index:3; display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line2); background:var(--panel); font-family:var(--mono); font-size:12.5px; }
+.file .fhead .fpath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file .fhead .fb { font-size:9px; font-weight:700; letter-spacing:.04em; padding:1px 5px; border-radius:4px; }
+.fb.EDIT { background:var(--accent-soft); color:var(--accent); } .fb.ADD { background:var(--green-bg); color:var(--green); } .fb.DEL { background:var(--red-bg); color:var(--red); }
+.file .fhead .pm { margin-left:auto; font-size:11px; display:inline-flex; gap:6px; white-space:nowrap; flex:none; } .pm .a { color:var(--green); } .pm .d { color:var(--red); }
+.file table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; line-height:20px; }
+.file tr:not(.drow-spacer) { height:20px; }
+.file td { padding:0 8px; white-space:pre; vertical-align:top; }
+.file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:var(--panel2); border-right:1px solid var(--line2); cursor:pointer; }
+.file td.ln:hover { color:var(--accent); }
+.file ::selection { background:var(--sel); }
+tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(--hl-ln) !important; color:var(--hl-ink); }
+/* ---- git pane (Changes tab: commit rail on the left, diffs on the right) ---- */
+.gitstat { font-family:var(--mono); font-size:11px; letter-spacing:0; text-transform:none; }
+.gitstat .a, .cinfo .a { color:var(--green); } .gitstat .d, .cinfo .d { color:var(--red); }
+/* The one box under the diff. It sits below the scroller rather than at the end
+   of the stack, so reading to the bottom of a long change never takes it off
+   screen, and it opens as one line because most of what goes in it is one line.
+
+   The ceiling it grows to is a device's, not a layout's: a computer can give a
+   long commit message half a pane, a phone has already given half its screen to
+   the keyboard. */
+.csbox { max-width:780px; margin:0 auto; }
+.csbox-row { display:flex; align-items:flex-end; gap:8px; }
+/* `min-height` is overridden deliberately: the page's textareas stand 96px tall
+   by default, and this one opens as ONE line and earns every row after it. */
+.csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto;
+  font:inherit; font-size:13px; line-height:1.45; padding:9px 11px;
+  border:1px solid var(--line); border-radius:10px; background:var(--panel2); color:var(--ink);
+  min-height:0; max-height:240px; }
+.csbox .csinput:focus { outline:none; border-color:var(--accent); }
+.csbox-actions { flex:none; }
+.csbox .githint:empty { display:none; }
+.csbox .githint { display:block; padding-bottom:6px; }
+@media (max-width: 720px) { .csbox .csinput { max-height:30vh; } }
+/* The Changes surface fills the flush tab body: .changes2 is a .pane-split, so
+   the row's width, centring and gutters are the shell's, and only what is
+   inside the two columns is this pane's own. */
+.gitpane { height:100%; }
+/* Before the skeleton exists (loading, or a scope that no longer resolves) the
+   pane is one message. It stands where the split's first column would, not
+   against the frame the split no longer touches. */
+.gitpane > .empty { padding:var(--pane-top) var(--pane-gutter); }
+/* The commit rail: a flush narrow left sidebar (no card chrome), a single right
+   border dividing it from the detail pane, scrolling internally at full height.
+   All padding lives inside the section headers / rows. Its width is the shared
+   rail token — the same column the file tree gets, so the two tabs are one view
+   with two contents.
+   min-width:0 is what holds it there. A flex item's automatic minimum size is
+   its content's min-content width, and a commit subject is one unbreakable
+   nowrap line: without this the longest subject in the page sets the rail's
+   width and the diffs get whatever is left. The subjects ellipsize instead
+   (.crow .csubject below), which is what they are marked up for. */
+/* A flex column now, not the scroller itself: .crail (below) scrolls in the
+   room this leaves it, and .railtabs (shared with .ftree, near the bottom of
+   this file) pins under it, unscrolled. */
+.crail-host { flex:0 1 var(--pane-rail); min-width:0; border-right:1px solid var(--line);
+  display:flex; flex-direction:column; min-height:0; }
+.crail { flex:1 1 auto; min-height:0; overflow-y:auto; }
+/* The right pane: a flex column — pinned toolbar/banner over the scrolling
+   detail host. Its regions pay the gutter on the divider side only: the split
+   pays nothing on the seam with the conversation, so a diff card, a rule and a
+   banner's fill all reach it, and only what is INSIDE a region — the toolbar's
+   buttons, an actionbar's controls, the tray's boxes — keeps its distance. */
+.cdetail { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }
+.cdetail-host { flex:1; min-height:0; overflow-y:auto;
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter);
+  --diff-sticky-top:calc(0px - var(--pane-top)); }
+.gp-toolbar:empty { display:none; }
+/* Rows of controls, not surfaces: their box still spans to the seam (the
+   toolbar's rule is the pane's own line) while the buttons and boxes on them
+   stop a gutter short of it. */
+.gp-toolbar { padding:12px var(--pane-gutter) 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
+/* Below the stacking width there is no divider to clear — the rail floats over
+   this column instead of sitting beside it — so the column's own left gutter
+   goes, and the split's left inset with the column's right gutter leave the
+   diffs an even margin in the frame they now have to themselves. (Below the
+   base rules, not up with the drawer: same specificity, so the later block is
+   the one that wins.) */
+@media (max-width: 900px) {
+  .cdetail-host, .gp-toolbar { padding-left:0; }
+}
+/* The commit bar is a filled surface, so it keeps its own inset on both sides,
+   the way every card in the one-column layout does. */
+.gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
+  background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
+/* The gutter's comment button: one element that follows the pointer down the
+   line numbers, so a long diff carries no per-row weight. It sits in the
+   line-number cell, which is why it moves with the code scrolling sideways. */
+.file td.ln { position:relative; }
+.dcmt { position:absolute; right:-9px; top:50%; transform:translateY(-50%); z-index:2;
+  display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; padding:0;
+  border:none; border-radius:5px; cursor:pointer; background:var(--accent); color:var(--accent-ink);
+  box-shadow:0 1px 4px var(--shadow-soft); }
+.dcmt svg { width:12px; height:12px; }
+.dcmt:hover { filter:brightness(1.08); }
+
+/* The bar the selection raises: what is in hand, and the verbs that take all of
+   it at once. Drawn only while something is selected, so it never sits over a
+   diff as a row of verbs aimed at nothing. */
+.selbar { display:inline-flex; align-items:center; gap:8px; }
+.selcount { font-size:11.5px; font-weight:650; color:var(--accent); margin-right:2px; white-space:nowrap; }
+/* The tray's foot: what is waiting, and the one control that discards it. */
+.cstrayfoot { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
+/* Every row in the rail carries the gutter on its LEFT: the column itself meets
+   the frame (.pane-split .pane-list), so the row is where the surface's text
+   column is paid — the same line the toolbar's project name and the tab labels
+   stand on. The right side keeps the rail's own tighter inset; nothing is
+   aligned against it. */
+.crail .rhead { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
+  text-transform:uppercase; padding:10px 13px 4px var(--pane-gutter); border-top:1px solid var(--line2); }
+.crail .empty { padding:6px 13px 10px var(--pane-gutter); }
+.crail .rrow { display:flex; align-items:baseline; gap:8px; padding:9px 13px 9px var(--pane-gutter); font-size:13px;
+  cursor:pointer; border-top:1px solid var(--line2); }
+.crail .rrow:first-child { border-top:0; }
+.crail .rrow .rtitle { font-weight:600; }
+.crail .rrow .rsub { margin-left:auto; font-size:11px; color:var(--dim); }
+.crail .rrow:hover { background:var(--line2); }
+.crail .rrow.sel, .crail .crow.sel { background:var(--accent-soft); }
+.crail .rrow.sel .rtitle { color:var(--accent); }
+.crow { display:flex; flex-direction:column; gap:1px; padding:7px 13px 7px var(--pane-gutter); border-top:1px solid var(--line2);
+  font-size:12.5px; cursor:pointer; }
+.crow:hover { background:var(--line2); }
+.crow .chash { font-family:var(--mono); font-size:11px; color:var(--dim); }
+.crow.ahead .chash { color:var(--accent); font-weight:600; }
+.crow.sel .csubject { color:var(--accent); }
+.crow .csubject { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.crow .cmeta { color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cdetail { cursor:default; }
+.cdetail.cdetail-loading { color:var(--dim); font-size:12.5px; }
+.cdetail .csub { font-weight:650; font-size:15px; }
+.cdetail .cbody { font-family:var(--mono); font-size:12px; color:var(--ink2); white-space:pre-wrap; margin:8px 0 0; }
+.cdetail .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 14px; }
+.gitmore { padding:9px 13px 12px var(--pane-gutter); color:var(--accent); font-size:12px; cursor:pointer; }
+.gitmore:hover { text-decoration:underline; }
+.gitmore:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+/* diff folding: capped (default) shows a peek with a fade; collapsed hides the
+   body; expanded (neither class) shows everything */
+.file.capped { position:relative; }
+.file.capped .dscroll { max-height:300px; overflow-y:hidden; cursor:pointer; }
+.file.capped::after { content:""; position:absolute; left:0; right:0; bottom:0; height:44px;
+  background:linear-gradient(transparent, var(--panel)); pointer-events:none; }
+.diff-expand { display:none; }
+.file.capped .diff-expand { display:flex; position:absolute; left:0; right:0; bottom:7px; z-index:2;
+  justify-content:center; color:var(--accent); font-family:var(--mono); font-size:11px;
+  font-weight:600; pointer-events:none; }
+.file .fhead { cursor:pointer; }
+.file.collapsed .dscroll { display:none; }
+/* the peek a collapsed file keeps: the first rows of its diff, or the line that
+   offers to fetch them — the one part of a folded body that stays on screen */
+.file .dpeek { overflow-x:auto; overflow-y:hidden; }
+.file.collapsed .dpeek { display:block; }
+.file .dwindow { max-height:min(70vh, 720px); overflow:auto; }
+.file:not(.capped):not(.collapsed) .dvirtual { max-height:min(70vh, 720px); }
+.file.capped .dvirtual { max-height:300px; }
+.file.collapsed .dvirtual { max-height:160px; }
+.drow-spacer td { padding:0; border:0; }
+/* a file whose body has not been fetched yet: one dim line where the diff goes */
+.file .dload { padding:10px var(--pane-gutter); color:var(--dim); font-family:var(--mono); font-size:11.5px; }
+/* The header's controls. All three are the same button — icon, optional label,
+   the same hover — so the row reads as one set of affordances rather than three
+   glyphs at three sizes. The icons come from the app's pack (core/icons.js) and
+   are sized here, once. */
+.fcmt, .fopen, .fapprove { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
+  border-radius:5px; padding:4px 7px; cursor:pointer; margin-left:6px; flex:none;
+  display:inline-flex; align-items:center; gap:5px; }
+.fcmt svg, .fopen svg, .fapprove svg { width:16px; height:16px; flex:none; }
+.fcmt:hover, .fopen:hover, .fapprove:hover { background:var(--accent-soft); color:var(--accent); }
+.fedited { margin-left:7px; color:var(--dim); font-size:11px; white-space:nowrap; }
+/* An approved file wears its verdict: the toggle fills, and the header dims to
+   say the reviewer is done with this one. */
+.fapprove[aria-pressed="true"] { color:var(--green); background:color-mix(in srgb, var(--green) 12%, transparent); }
+.fselect-box { flex:none; margin:0; cursor:pointer; }
+/* re-review memory: changed-since chip, changes-only filter */
+.fchanged { font-size:10.5px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:1px 6px; margin-left:6px; }
+.changedonly { margin-left:12px; font-size:11.5px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
+/* github-style split action button */
+.splitbtn { position:relative; display:inline-flex; }
+.splitbtn .btn:not(.caret) { border-top-right-radius:0; border-bottom-right-radius:0; }
+/* The seam between the two halves: drawn in the filled button's own ink on a
+   primary, in the shared line color on a mini (where the fill is the panel). */
+.splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid var(--line); padding:8px 9px; }
+.splitbtn .btn.primary.caret { border-left-color:color-mix(in srgb, var(--accent-ink) 30%, transparent); }
+.splitbtn .btn.mini.caret { padding:4px 8px; }
+.splitbtn-icon .iconbtn.caret { border:0; border-radius:6px; }
+/* The tab row's `+` menu (terminal / claude / codex). Positioned in JS from the
+   `+`'s box and mounted on <body>: the tab row scrolls horizontally, so a child
+   popup would be clipped by its own container. Item styling matches .splitmenu. */
+.tabmenu { min-width:240px; background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  box-shadow:0 10px 30px var(--shadow); overflow:hidden; z-index:30; }
+/* Items are buttons (they act, and the keyboard must reach them); the reset
+   keeps them looking like the split-button menu's rows. */
+.tabmenu .mi { font:inherit; font-size:13px; width:100%; text-align:left; background:none; border:0;
+  padding:9px 13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
+.tabmenu .mi:hover { background:var(--accent-soft); }
+.tabmenu .mi .mt { color:var(--ink); font-weight:550; }
+.tabmenu .mi .md { color:var(--dim); font-size:11px; }
+.splitmenu { position:absolute; bottom:calc(100% + 6px); right:0; min-width:180px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px var(--shadow); overflow:hidden; z-index:25; }
+.splitmenu[hidden] { display:none; }
+.splitmenu .mi { padding:9px 13px; font-size:13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
+.splitmenu .mi:hover { background:var(--accent-soft); }
+.splitmenu .mi .mt { color:var(--ink); font-weight:550; }
+.splitmenu .mi .md { color:var(--dim); font-size:11px; }
+/* A destructive option (force push) is named in red where it is READ — in the
+   list, next to the ones it is being chosen over — never on the button chrome. */
+.splitmenu .mi.danger .mt { color:var(--red); }
+/* A menu that is a SELECTION rather than a verb (the composer's model menu)
+   marks the answer standing now, in the same place the answer is read. */
+.splitmenu .mi.on .mt { color:var(--accent); }
+/* The git bar sits at the top of its pane: a menu opening upward from it runs
+   under the navigation bar and is cut off, so its menus open downward. */
+.gp-toolbar .splitmenu { top:calc(100% + 6px); bottom:auto; }
+tr.add td { background:var(--green-bg); } tr.add td.code { color:var(--add-ink); }
+tr.del td { background:var(--red-bg); } tr.del td.code { color:var(--del-ink); }
+tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
+/* Prism token palette — foreground-only (no backgrounds), so the add/del row
+   tints above stay intact. Scoped to the diff code cells and the file-source
+   <pre> to out-specify the tr.add/tr.del td.code colors. No Prism theme CSS. */
+.file td.code .token.comment, .fsrc .token.comment,
+.file td.code .token.prolog, .fsrc .token.prolog,
+.file td.code .token.doctype, .fsrc .token.doctype,
+.file td.code .token.cdata, .fsrc .token.cdata { color:var(--dim); font-style:italic; }
+.file td.code .token.keyword, .fsrc .token.keyword,
+.file td.code .token.atrule, .fsrc .token.atrule,
+.file td.code .token.selector, .fsrc .token.selector,
+.file td.code .token.tag, .fsrc .token.tag { color:var(--accent); }
+.file td.code .token.string, .fsrc .token.string,
+.file td.code .token.char, .fsrc .token.char,
+.file td.code .token.attr-value, .fsrc .token.attr-value,
+.file td.code .token.regex, .fsrc .token.regex { color:var(--green); }
+.file td.code .token.number, .fsrc .token.number,
+.file td.code .token.boolean, .fsrc .token.boolean,
+.file td.code .token.constant, .fsrc .token.constant { color:var(--amber); }
+.file td.code .token.function, .fsrc .token.function,
+.file td.code .token.class-name, .fsrc .token.class-name { color:var(--violet); }
+.file td.code .token.punctuation, .fsrc .token.punctuation,
+.file td.code .token.operator, .fsrc .token.operator { color:var(--ink2); }
+.actionbar { position:sticky; bottom:0; background:linear-gradient(to top,var(--bg) 70%,transparent);
+  padding:14px 0 calc(4px + env(safe-area-inset-bottom, 0px));
+  display:flex; align-items:center; gap:12px; margin-top:6px; }
+.actionbar .hint { color:var(--dim); font-size:12.5px; }
+.actionbar .right { margin-left:auto; display:flex; gap:10px; }
+/* git repo-management toolbar (v2) */
+.gittoolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* Icons in the bar are sized to the text beside them, once, for the whole bar.
+   The pack's SVGs carry an intrinsic 24px — twice the mini button's own font —
+   so an unsized one does not just look wrong, it makes its button taller than
+   every other button in the row. */
+.gittoolbar .btn { display:inline-flex; align-items:center; gap:6px; }
+.gittoolbar svg { width:14px; height:14px; flex:none; }
+/* The surface's own verb — merging — sits with the repo-management ones rather
+   than floated away from them: the bar reads left to right, and what follows it
+   is the selection's, behind the divider that says so. */
+.gtmerge { display:flex; align-items:center; gap:6px; }
+.gtmerge:empty { display:none; }
+.gtsync { display:flex; align-items:center; gap:7px; }
+/* Where the branch stands, on the left and never covered: the two numbers about
+   its upstream and the two about its working tree, in the mono the rest of the
+   surface counts in. */
+.gtstatus { display:inline-flex; align-items:center; gap:10px; flex:none;
+  font-family:var(--mono); font-size:12px; }
+.gtchips { font-family:var(--mono); font-size:12px; display:inline-flex; gap:8px; }
+.gtstatus .gtweight { font-size:12px; }
+/* Everything the banner takes over when the repository is mid-operation. */
+.gtrest { display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1; min-width:0; }
+/* The line that says the verbs after it belong to something else. */
+.gtdivider { width:1px; align-self:stretch; min-height:20px; background:var(--line); margin:0 2px; }
+.gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }
+.gtpull, .gtpush, .gtstash { display:inline-flex; }
+/* The bar's verbs are the app's mini button, mounted as such (gitPane's
+   TOOLBAR_BUTTON_VARIANT) — the bar states no metrics, palette or shadow of its
+   own. All it adds is the direction each verb moves the work. */
+.gtpull .btn:not(.caret)::before { content:"↓"; margin-right:6px; }
+.gtpush .btn:not(.caret)::before { content:"↑"; margin-right:6px; }
+.gtstash .btn:not(.caret)::before { content:"↧"; margin-right:6px; }
+/* git repo-state banner (merge/rebase in progress) */
+/* The repository mid-merge, in the bar rather than under it: the same banner it
+   always was, sized to the row it now stands in and taking the width the verbs
+   it replaced were using. */
+.gitstate { display:flex; align-items:center; gap:12px; flex:1; min-width:0;
+  background:var(--red-bg); border:1px solid var(--red); color:var(--red);
+  border-radius:9px; padding:5px 10px; font-size:12.5px; }
+.gitstate-msg { flex:1; }
+/* per-file discard + armed danger confirms */
+.gitfile .fhead .gitdiscard { margin-left:auto; }
+.gitfile .fhead .pm + .gitdiscard { margin-left:8px; }
+.btn.danger.armed { background:var(--red); border-color:var(--red); color:var(--accent-ink); }
+/* new task sheet */
+.scrim { position:fixed; inset:0; background:var(--scrim); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; z-index:30; }
+.scrim.show { display:flex; }
+.sheet { background:var(--panel); width:min(620px,92vw); border-radius:14px; box-shadow:0 24px 60px var(--shadow);
+  padding:22px 24px calc(22px + env(safe-area-inset-bottom, 0px)); }
+.sheet h3 { margin:0 0 3px; font-size:17px; } .sheet .sub { color:var(--ink2); font-size:13px; margin-bottom:14px; }
+textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
+.field { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
+.field label { font-size:12px; color:var(--ink2); font-weight:600; }
+.sheet select { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
+.addproj { display:flex; gap:8px; margin-top:14px; }
+.addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
+.addproj input.path { flex:1; }
+.adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
+.btn.mini { padding:4px 9px; font-size:12px; }
+.taskactions .btn { padding:4px 9px; font-size:12px; }
+select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink2); max-width:150px; }
+.projfolder { margin-top:14px; font-size:12.5px; color:var(--ink2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.projfolder code { font-family:var(--mono); font-size:11.5px; background:var(--line2); padding:2px 6px; border-radius:5px; }
+.manualadd { margin-top:12px; } .manualadd summary { font-size:12px; color:var(--dim); cursor:pointer; }
+.browse-path { font-family:var(--mono); font-size:11.5px; color:var(--ink2); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin:10px 0 6px; overflow:auto; white-space:nowrap; }
+.browse-toggle { margin:0 0 10px; font-size:12px; color:var(--ink2); }
+.browse-list { max-height:44vh; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+.browse-row { display:flex; align-items:center; gap:10px; padding:8px 11px; border-top:1px solid var(--line2); font-size:13px; }
+.browse-row:first-child { border-top:0; }
+.browse-row.nav { cursor:pointer; }
+.browse-row.nav:hover { background:var(--accent-soft); }
+.browse-row .bname { flex:1; }
+.browse-row .bgit { font-size:9px; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
+/* text inputs in modals/sheets */
+.sheet input:not([type=checkbox]) { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
+.field input { width:100%; }
+.locrow { display:flex; gap:8px; align-items:center; }
+.locrow input { cursor:default; color:var(--ink2); }
+.sheet input:not([type=checkbox]):focus, .sheet select:focus, .sheet textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.projrow { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; align-items:baseline; }
+.projrow:first-child { border-top:0; }
+.projrow .pname { font-weight:600; min-width:120px; }
+.projrow .ppath { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
+.projrow .premote { font-family:var(--mono); font-size:11px; color:var(--ink2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:230px; }
+.projrow .setremote { margin-left:auto; flex:none; }
+.sheet .row { display:flex; align-items:center; gap:10px; margin-top:13px; }
+.sheet .yolo { color:var(--dim); font-size:11.5px; margin-top:12px; line-height:1.4; }
+.toggle { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink2); cursor:pointer; }
+/* The new-work sheet's path switch: two segments, the active one highlighted
+   with .primary (the button base handles the rest). */
+.segmented { display:flex; gap:8px; margin-bottom:12px; }
+.segmented .seg { flex:1; }
+/* The Account page's light/dark/system switch: the same three segments, sized
+   to the words rather than stretched across the panel. */
+#themepick { max-width:340px; margin-bottom:0; }
+/* Mid-session offline: pause bridge-backed actions in the main view. Api-only
+   surfaces stay live — the sheet (add-device dialog) and the devices panel. */
+body.offline #root .btn.primary { opacity: .45; pointer-events: none; }
+body.offline #root #adddev { opacity: 1; pointer-events: auto; }
+/* Copy that claims a live agent ("…working", "diff updating live…") would lie
+   while frozen offline: the polls early-return so the view can't repaint, so the
+   swap is pure CSS — hide the live claim, show "last known state" in its place. */
+body.offline .live-claim { font-size:0 !important; }
+body.offline .live-claim::after { content:"last known state"; font-size:12px; color:var(--dim); }
+
+/* ---- mobile (design brief: every surface usable from a phone) ---- */
+@media (max-width: 720px) {
+  /* iOS Safari auto-zooms focused fields under 16px — every text entry and
+     select must be at least 16px on small screens. */
+  input:not([type=checkbox]), select, textarea { font-size:16px !important; }
+  #devpick { max-width:130px; }
+  main { padding:16px 12px 96px; }
+  .board-head { flex-wrap:wrap; gap:10px; }
+  .board-head h1 { font-size:20px; }
+  .tabs { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .project-surface .tabrow { flex:1 1 100%; order:1; }
+  .project-surface .projectactions { order:2; margin-left:0; width:100%; justify-content:flex-end; }
+  /* Both layouts narrow from here — the token is the only place the phone's
+     gutter is written. The tab pill narrows with it: a pill that keeps a wider
+     inset than the column it stands on puts its label past that column, and the
+     bar has nothing left to give back. */
+  :root { --pane-gutter:12px; --pane-top:12px; --tab-inset:12px; }
+  .plan { padding:16px 14px; }
+  .panel { padding:14px 12px; }
+  .actionbar { flex-wrap:wrap; gap:8px; }
+  .actionbar .right { flex-wrap:wrap; gap:8px; }
+  select.mini { max-width:44vw; }
+  /* A project row and a device row are one line of facts about one thing, and
+     that line is longer than a phone. Nowrap made it the widest thing on the
+     Settings page, and the page took its width from it: the right of every
+     panel ended up off the frame. The row wraps here — the name takes a line
+     of its own, the path breaks rather than holding the row open, and the
+     verb stays at the end of whichever line it lands on. */
+  .projrow { flex-wrap:wrap; gap:4px 10px; }
+  .projrow .pname { flex-basis:100%; min-width:0; }
+  .projrow .ppath { min-width:0; overflow-wrap:anywhere; }
+  /* Three buttons that do not fit side by side: better two lines of whole
+     words than three columns of broken ones. */
+  .addproj { flex-wrap:wrap; }
+  .sheet { width:94vw; padding:16px 14px calc(16px + env(safe-area-inset-bottom, 0px)); max-height:88vh; overflow-y:auto; }
+  .sheet .field-row { flex-direction:column; gap:0 !important; }
+  .comment-pop { max-width:calc(100vw - 16px); }
+  .splitmenu { right:auto; left:0; }
+  .crow .cauthor { display:none; }
+}
+.emptystate .btn { margin-top:6px; }
+.issue-section h2 .n { color:var(--dim); font-weight:600; }
+/* No box: it is another field group in the sheet, titled like Project. The
+   border was drawing a container around three selects that were already grouped
+   by their own label. */
+.advanced { display:flex; flex-direction:column; gap:10px; }
+.advanced[hidden] { display:none; }
+
+/* ---- the harness picker (the chat tab of a work item with no agent) ---- */
+.chooser { display:flex; flex-direction:column; gap:10px; }
+/* The picker stands on its own in an open pane, so it asks its question out
+   loud — there is no field label above it to ask on its behalf. */
+.chooser-head { color:var(--dim); font-size:12.5px; text-align:center; }
+.chooser-cards { display:flex; gap:10px; flex-wrap:wrap; }
+.chooser-card { font:inherit; text-align:left; cursor:pointer; flex:1 1 150px; min-width:150px;
+  display:flex; flex-direction:column; gap:3px; padding:12px 14px;
+  background:var(--bg); border:1px solid var(--line); border-radius:12px; }
+.chooser-card:hover { border-color:var(--accent); }
+.chooser-card .chooser-card-label { font-weight:650; color:var(--ink); }
+/* The picked one is the answer, not a hover — it holds the accent on its own. */
+.chooser-card.chosen { border-color:var(--accent); background:var(--accent-soft); }
+.chooser-card.chosen .chooser-card-label { color:var(--accent); }
+
+.srow.snav { font-weight:550; color:var(--ink2); padding:5px 6px; }
+.srow.snav.active { background:var(--accent-soft); color:var(--accent); }
+.srow.snav .badge { margin-left:auto; }
+.iconbtn { font:inherit; font-size:14px; line-height:1; color:var(--dim); background:none;
+  border:none; border-radius:6px; padding:4px 7px; cursor:pointer;
+  -webkit-tap-highlight-color:transparent; }
+.iconbtn:hover { background:var(--line2); color:var(--ink2); }
+/* The dot carries an entry's whole state, so it has to read at a glance and be
+   honest at rest: a pulse ONLY while an agent works (the inbox rail's state
+   classes live in styles/shell.css beside the rail). */
+.sdot { flex:0 0 8px; width:8px; height:8px; border-radius:50%; background:var(--dim); }
+@keyframes sdot-pulse {
+  0%, 100% { opacity:1; box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  50% { opacity:.55; box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+.srow { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:7px;
+  font-size:13px; color:var(--ink2); cursor:pointer; }
+.srow.snav { -webkit-tap-highlight-color:transparent; user-select:none; }
+.srow:hover { background:var(--line2); }
+.srow.active { background:var(--accent-soft); color:var(--accent); }
+.srow .sicon { flex:0 0 14px; text-align:center; font-size:11px; color:var(--dim); }
+.srow.attn .sicon { color:var(--amber); }
+.srow.done .sicon { color:var(--green); }
+.srow .stitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.srow .warn { color:var(--amber); font-size:11px; }
+/* project page header */
+.crumb { font-size:12.5px; margin-bottom:2px; }
+.crumb a { color:var(--ink2); text-decoration:none; }
+.crumb a:hover { color:var(--accent); }
+/* ---- Files tab (worktree browser) ---- */
+/* Same idiom as the Changes pane: .files is a .pane-split, so the shell states
+   the row's width, centring and gutters, and a narrow tree sidebar (no card
+   chrome, a single right divider, its own scroll) sits beside a preview pane
+   that fills the rest. All padding lives inside the crumb/rows and the preview
+   head/body — never the gutter again, which the split already paid.
+   The width is the shared rail token, the same one the commit rail takes, and
+   min-width:0 for the same reason: a long file name must ellipsize inside the
+   column rather than set it. It does shrink, though — a pane squeezed narrower
+   than both columns (a docked inbox and an open agent panel on a small laptop)
+   has to take the room from somewhere, and taking it from the tree leaves the
+   preview readable, where taking it from the preview leaves the tree listing
+   files there is nowhere to read. */
+/* A flex column: .ftree-list (what loadTree replaces) scrolls in the room
+   .railtabs (below) leaves it, unscrolled at the bottom of the column. */
+.ftree { flex:0 1 var(--pane-rail); min-width:0; border-right:1px solid var(--line);
+  display:flex; flex-direction:column; min-height:0; }
+.ftree-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:6px 0; }
+/* Changes/Files, pinned under whichever rail is open (.crail-host above,
+   .ftree here) — a plain flex-column child of a flex-column parent needs no
+   position:sticky to sit fixed at the bottom: the scroller above it already
+   takes only the room this leaves. */
+.railtabs { flex:none; border-top:1px solid var(--line); padding:8px var(--pane-gutter) 8px var(--tabbar-gutter); }
+.railtabs .tabs { margin-bottom:0; }
+/* Two tabs, half the rail each, label centred in its half: this bar is the
+   rail's floor rather than a row of pills at the top of a surface, and a
+   two-way switch that fills the column it belongs to reads as the column's own
+   control. The pill inset is still paid — it is what keeps the label off the
+   fill's edge when the rail is squeezed. */
+.railtabs .tabs .t { flex:1 1 0; min-width:0; justify-content:center; }
+/* The floor is the preview's share of that squeeze, and it is deliberately
+   below what any real two-column pane hands it — it changes nothing until the
+   pane is too narrow for both columns. */
+.fpreview { flex:1; min-width:min(200px, 100%); overflow:hidden; display:flex; flex-direction:column; }
+/* placeholder states (nothing selected / loading / error): no panel box,
+   message or throbber centered in the preview area */
+.fpreview.idle { border:none; background:none; align-items:center; justify-content:center; }
+.fpidle { color:var(--dim); font-size:13px; text-align:center; max-width:34ch;
+  padding:0 18px; }
+.fpidle p { margin:0; }
+.fpidle .fpidle-hint { margin-top:5px; font-size:12px; color:var(--dim); opacity:.8; }
+.fpidle.fpidle-error .fpidle-msg { color:var(--red); }
+.throbber { width:22px; height:22px; border-radius:50%; border:2px solid var(--line);
+  border-top-color:var(--accent); animation:throb .8s linear infinite; }
+@keyframes throb { to { transform:rotate(360deg); } }
+.fcrumb { font-size:11.5px; color:var(--dim); padding:4px 13px 8px var(--pane-gutter); border-bottom:1px solid var(--line);
+  margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.frow { display:flex; align-items:center; gap:7px; padding:5px 13px 5px var(--pane-gutter); font-size:13px;
+  color:var(--ink2); cursor:pointer; }
+.frow:hover { background:var(--line2); }
+.frow.sel { background:var(--accent-soft); color:var(--accent); }
+.frow.fsym { cursor:default; color:var(--dim); }
+.frow .fk { flex:0 0 12px; text-align:center; color:var(--dim); font-size:11px; }
+/* The name gives ground before the row does: a path with no break opportunity
+   would otherwise run past the tree's divider and under the preview. */
+.frow .fname { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.frow .fsize { margin-left:auto; font-size:11px; color:var(--dim); }
+.fphead { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line);
+  font-size:12px; }
+.fppath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
+.fpsize { color:var(--dim); flex:none; }
+.fpbody { padding:14px; overflow:auto; flex:1; min-height:0; }
+.fpbody .plan { border:none; padding:0; background:none; }
+.fsrc { margin:0; overflow:auto; }
+.fsrc table { min-width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; }
+.fsrc td { vertical-align:top; white-space:pre; }
+.fsrc-ln { width:1%; padding:0 10px 0 4px; text-align:right; color:var(--dim); user-select:none;
+  border-right:1px solid var(--line2); background:var(--panel2); }
+.fsrc-code { padding:0 8px; }
+.fsrc code { font:inherit; white-space:pre; }
+/* Deliberately theme-blind: the frame renders someone else's HTML, which
+   assumes a white page, and the letterbox behind a video is always black. */
+.fhtml { width:100%; height:64vh; border:1px solid var(--line); border-radius:8px; background:#fff; }
+.fimg { max-width:100%; display:block; }
+.fmedia { display:block; max-width:100%; }
+.faudio { width:min(680px, 100%); margin:24px auto; }
+.fvideo { width:min(960px, 100%); max-height:calc(100vh - 190px); margin:0 auto; background:#111; }
+.fbinary { color:var(--dim); font-size:13px; padding:8px 0; }
+.ftrunc { margin-top:10px; color:var(--amber); font-size:12px; }
+/* ---- Secret-value spoilers (dotenv screen-privacy) ----
+   A masked dotenv value shows a fixed dot block; a click reveals/re-hides it.
+   Masked: unselectable dots on a chip. Revealed (.on): real mono text with a
+   faint amber tint so the once-hidden span is still spottable. */
+.spoiler { display:inline-block; font-family:var(--mono); letter-spacing:-1px; background:var(--line2);
+  color:var(--dim); border-radius:5px; padding:0 6px; cursor:pointer; user-select:none; }
+.spoiler.on { letter-spacing:normal; user-select:text; color:var(--amber); background:var(--red-bg); }
+/* ---- Agent + terminal panes ----
+   Terminals fill their (bare) tab body edge to edge — the pane's own
+   background is the section; no box, no padding, no leftover space below. */
+.termpane { position:relative; height:100%; overflow:hidden; background:var(--term-bg);
+  display:flex; flex-direction:column; }
+/* The screen is a box of its own inside the pane so the touch key bar can sit
+   BELOW it rather than over it — an overlaid bar would cover the bottom rows,
+   which is where the prompt lives. */
+.term-screen { flex:1 1 auto; min-height:0; position:relative; }
+/* ---- touch key bar (terminal/keyBar.js) ----
+   The keys a phone's soft keyboard does not have. Everything here is mixed out
+   of --term-bg/--term-fg rather than tokenized separately: the bar belongs to
+   the terminal, not to the page, so it should follow the terminal's colours in
+   whichever theme without a second set of tokens to keep in step. The armed and
+   locked states are the exception — they are affordances, and they take the
+   page's --accent so they read as the app's own.
+
+   One row that SHRINKS to fit rather than wrapping or scrolling: wrapping costs
+   a second row of the vertical space the terminal needs most, and scrolling
+   hides exactly the keys at the end of the row (→, ^C) that the row exists to
+   provide. The overflow rule is only the safety valve below ~330px, where
+   shrinking bottoms out at the keys' minimum width. */
+.termkeys { flex:0 0 auto; z-index:6; display:flex; align-items:center; gap:4px; flex-wrap:nowrap;
+  padding:6px calc(6px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px))
+          calc(6px + env(safe-area-inset-left, 0px));
+  background:color-mix(in srgb, var(--term-fg) 7%, var(--term-bg));
+  border-top:1px solid color-mix(in srgb, var(--term-fg) 18%, var(--term-bg));
+  overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+  scrollbar-width:none; touch-action:pan-x; }
+.termkeys::-webkit-scrollbar { display:none; }
+/* touch-action:pan-x, not the default: the press handler calls preventDefault on
+   pointerdown (to keep focus, and the keyboard, on the terminal), which would
+   otherwise also cancel a sideways drag started on a key. */
+.termkey { flex:0 1 auto; min-width:30px; height:40px; padding:0 6px;
+  background:color-mix(in srgb, var(--term-fg) 14%, var(--term-bg));
+  border:1px solid color-mix(in srgb, var(--term-fg) 26%, var(--term-bg));
+  border-radius:8px; color:var(--term-fg);
+  font-family:var(--mono); font-size:13px; line-height:1; white-space:nowrap; cursor:pointer;
+  touch-action:pan-x; user-select:none; -webkit-tap-highlight-color:transparent; }
+.termkey:active { background:color-mix(in srgb, var(--term-fg) 28%, var(--term-bg)); }
+/* Armed applies to the next key; locked applies until pressed off — one tap
+   apart, so they have to read differently at a glance, not just brighter: armed
+   is an accent-tinted key, locked is a filled one. */
+.termkey-mod.armed { background:color-mix(in srgb, var(--accent) 30%, var(--term-bg));
+  border-color:var(--accent); color:var(--term-fg); }
+.termkey-mod.locked { background:var(--accent); border-color:var(--accent);
+  color:var(--accent-ink); font-weight:700; }
+/* Per-pane connectivity chip (same visual family as .agent-idle) — shown while
+   the shared terminal socket is not connected, over a dimmed frozen screen. */
+.term-conn { position:absolute; top:8px; left:50%; transform:translateX(-50%); z-index:5;
+  background:var(--panel); border:1px solid var(--amber); color:var(--amber);
+  border-radius:14px; padding:3px 12px; font-size:12px; }
+.termpane.term-offline canvas,
+.termpane.term-offline .xterm,
+.termpane.term-offline > :not(.term-conn) { opacity:.45; }
+.agentwrap { position:relative; height:100%; }
+.agent-idle { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:2;
+  background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 12px;
+  font-size:12px; color:var(--dim); box-shadow:0 2px 8px var(--shadow-soft); }
+/* The Agent tab's empty state: centered in the pane, because it IS the pane's
+   content when no agent is running — not an annotation on a terminal. */
+.agent-overlay { position:absolute; inset:0; z-index:3; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:14px; text-align:center; padding:24px; }
+.agent-overlay[hidden] { display:none; }
+.agent-overlay-msg { margin:0; font-size:14px; color:var(--dim); max-width:44ch; }
+/* An agent that EXITED leaves a screen worth reading — usually the reason it
+   exited. Veil it enough to read the offer, never enough to hide the evidence. */
+.agent-overlay.over-screen { background:color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter:blur(1.5px); }
+.agent-overlay.over-screen .agent-overlay-msg { color:var(--fg); font-weight:500; }
+/* The pane's whole offer is one button — the agent it belongs to is locked to
+   its harness, so there is nothing to choose. It carries room, standing alone
+   in an open pane rather than in a row of controls. */
+#agentStartOffer[hidden] { display:none; }
+.agent-resume { padding:12px 28px; font-size:14px; }
+/* Modal confirmation (core/confirm.js) — decisive/destructive verbs list the
+   exact steps that will run, then ask Confirm/Cancel. */
+.modal-scrim { position:fixed; inset:0; background:var(--scrim); z-index:150; display:flex; align-items:center; justify-content:center; padding:16px; }
+.modal-scrim.modal-scrim-local { position:absolute; z-index:40; padding:12px; }
+.modal-scrim-local .modal-surface { max-height:100%; max-width:100%; }
+.modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:440px; width:100%; }
+.modal h3 { margin:0 0 3px; font-size:17px; }
+.modal .sub { color:var(--ink2); font-size:13px; }
+.modal .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
+/* The create modal: two tabs, one field, and the harness question on the
+   Issue tab. The field takes the dialog's width; the preview of the branch
+   the daemon will cut sits at the row's left, the verbs at its right. */
+.modal-create .create-tabs { margin:12px 0 10px; }
+.modal-create .create-hint { margin-bottom:8px; }
+.modal-create .create-label { display:block; font-size:11px; color:var(--dim); margin-bottom:4px; }
+.modal-create input, .modal-create textarea { width:100%; font:inherit; font-size:13px; }
+.modal-create textarea { resize:vertical; }
+.modal-create .agent-choice { margin-top:8px; }
+.modal-create .create-error { display:block; margin-top:8px; font-size:12px; }
+.modal-create .create-error[hidden] { display:none; }
+.modal-create .create-row { align-items:center; }
+.modal-create .create-preview { flex:1; min-width:0; font-size:11px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+/* The Branch tab's picker: the field filters, the list underneath says what
+   pressing each branch would do. The verb leads because it is the promise —
+   check out, fetch, adopt, open — and the marks trail on the right, dim, so a
+   long branch name never has to fight them for the row. */
+.modal-create .branch-picker { margin-top:8px; max-height:200px; overflow-y:auto;
+  border:1px solid var(--line); border-radius:8px; }
+.modal-create .branch-picker:empty { display:none; }
+.modal-create .branch-row { display:flex; align-items:baseline; gap:8px; width:100%;
+  padding:6px 10px; background:none; border:0; border-bottom:1px solid var(--line2);
+  text-align:left; font:inherit; font-size:12px; color:var(--ink); cursor:pointer; }
+.modal-create .branch-row:last-child { border-bottom:0; }
+.modal-create .branch-row:hover { background:var(--panel2); }
+.modal-create .branch-row.on { background:var(--accent-soft); }
+.modal-create .branch-row-verb { flex:none; font-size:11px; color:var(--ink2); }
+.modal-create .branch-row-name { flex:1; min-width:0; font-family:var(--mono); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.modal-create .branch-row-mark, .modal-create .branch-row-detail { flex:none; font-size:11px; color:var(--dim); }
+.modal-create .branch-picker-note { padding:6px 10px; font-size:12px; }
+.modal.modal-surface { max-width:640px; max-height:78vh; display:flex; flex-direction:column; padding:14px 16px; }
+.modal-surface h3 { margin:0 0 8px; font-size:15px; }
+.modal-surface .surface-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; }
+.modal-surface .surface-viewer { padding:0; }
+/* The scrim and the dialog each set a display of their own, which would beat
+   the browser's own rule for [hidden] — the state the motion primitive leaves
+   them in before they reveal and after they hide. */
+.modal-scrim[hidden], .modal[hidden] { display:none; }
+.confirm-steps { margin:12px 0; padding-left:20px; font-size:13px; color:var(--ink2); display:flex; flex-direction:column; gap:6px; }
+/* What the verb is about to cost, read before the outline of what it will do:
+   the bridge's own preflight, in amber, never a refusal. */
+.confirm-warnings { margin:12px 0 0; padding:9px 12px 9px 26px; font-size:13px; color:var(--amber);
+  background:var(--amber-bg); border:1px solid color-mix(in srgb, var(--amber) 40%, transparent); border-radius:8px;
+  display:flex; flex-direction:column; gap:6px; }
+
+/* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
+.review-thread { background:transparent; }
+.thread-title { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; font-weight:650; }
+/* Where the entity stands, on the record that explains how it got there.
+   (Distinct from .thread-status, which is a message's own Seen/Unread mark.) */
+.thread-state { flex:none; }
+/* The lifecycle verbs close the timeline, directly above the reply box — the
+   same place the decision would be made in a conversation. */
+.thread-actions:empty { display:none; }
+.thread-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px;
+  margin:10px 0 8px 44px; padding-top:10px; border-top:1px solid var(--line); }
+.thread-title span { color:var(--dim); font-size:11px; font-weight:500; }
+.thread-timeline { position:relative; display:flex; flex-direction:column; gap:18px; padding:18px 0; }
+.thread-timeline::before { content:""; position:absolute; top:0; bottom:0; left:18px; width:2px; background:var(--line); }
+/* Nothing on the record: no avatars for the spine to thread, so it is not drawn
+   — and with it gone the 44px gutter it ran down is holding nothing open, so
+   the hint and the box you would start the conversation in sit square under the
+   heading instead of indented past a line that is not there. */
+.thread-timeline.is-empty { padding:0; }
+.thread-timeline.is-empty::before { display:none; }
+.review-thread.is-empty .thread-composer,
+.review-thread.is-empty .thread-actions { margin-left:0; }
+.thread-message { position:relative; margin-left:44px; min-width:0; }
+.thread-avatar { position:absolute; left:-44px; top:0; z-index:1; display:grid; place-items:center; width:38px; height:38px; border:3px solid var(--bg); border-radius:50%; background:var(--panel); color:var(--ink2); font-weight:700; font-size:12px; }
+.thread-message.user .thread-avatar { background:var(--accent); color:var(--accent-ink); }
+.thread-comment-card { overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+.thread-message-head { display:flex; justify-content:space-between; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); background:color-mix(in srgb, var(--bg) 55%, var(--panel)); color:var(--dim); font-size:12px; }
+.thread-message-head strong { color:var(--ink); }
+.thread-message-head time, .thread-event time { color:var(--dim); }
+/* A reported outcome is a status on the agent's own message, so its marker
+   rides the card under the head — same tick, same tone and the same two colors
+   the done and blocked event rows carry, at the size of a line inside a card
+   rather than a node on the timeline's spine. */
+.thread-outcome { display:flex; align-items:center; gap:8px; padding:7px 12px;
+  border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; }
+.thread-outcome strong { color:var(--ink2); }
+.thread-outcome-icon { flex:none; display:grid; place-items:center; width:20px; height:20px;
+  border-radius:50%; background:var(--panel2); color:var(--dim); font-size:10px; font-weight:800; }
+.thread-outcome.success .thread-outcome-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
+.thread-outcome.blocked .thread-outcome-icon { background:color-mix(in srgb, var(--red) 15%, var(--panel)); color:var(--red); }
+.thread-outcome.blocked strong { color:var(--red); }
+/* The handoff on an outcome message sits inside the card the agent posted, so
+   it keeps the body's gutter instead of the margin it takes under an event. */
+.thread-comment-card .completion-report { margin:0 12px 12px; }
+.thread-status, .thread-anchor { color:var(--dim); font-size:11px; }
+.thread-anchor { padding:7px 12px 0; font-family:var(--mono); overflow-wrap:anywhere; }
+.thread-body { padding:12px; color:var(--ink2); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.thread-body > :first-child { margin-top:0; }
+.thread-body > :last-child { margin-bottom:0; }
+.thread-body p { margin:0 0 10px; }
+.thread-body ul { margin:6px 0 10px; padding-left:20px; }
+/* The 12px gutter is the message's, not its table's: a table takes the card
+   edge to edge — 24px more column in the narrowest place a table is read —
+   and carries the gutter inside as padding so the text still clears the edge
+   at either end of the scroll. */
+.thread-body .mdtable { margin-inline:-12px; padding-inline:12px; max-width:none; }
+.thread-references { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 12px; }
+.thread-event-content .thread-references { padding:6px 0 0; }
+.thread-reference { max-width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px;
+  background:var(--bg); color:var(--accent); cursor:pointer; font:11px/1.3 var(--mono);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.thread-reference:hover { border-color:var(--accent); }
+.thread-event { position:relative; display:block; min-height:30px; margin:0; padding:3px 0 3px 44px; color:var(--dim); font-size:12px; }
+.thread-event-icon { position:absolute; left:5px; top:0; z-index:1; display:grid; place-items:center; width:28px; height:28px; border:3px solid var(--bg); border-radius:50%; background:var(--panel); color:var(--dim); font-size:11px; font-weight:800; }
+.thread-event-content { min-width:0; padding-top:3px; }
+.thread-event-content strong { color:var(--ink2); }
+.thread-event-detail { margin-top:4px; color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; }
+/* An event's detail is printed on the rail itself, not on a card, so a table in
+   one covers its edge shadows in the rail's colour. */
+.thread-event-detail .mdtable { --mdtable-cover:var(--bg); }
+.thread-event-detail p { margin:0 0 6px; }
+.thread-event-detail p:last-child, .thread-event-detail ul:last-child { margin-bottom:0; }
+.thread-event-detail ul { margin:4px 0 8px; padding-left:19px; }
+.thread-event.blocked .thread-event-icon { border-color:var(--bg); background:color-mix(in srgb, var(--red) 15%, var(--panel)); color:var(--red); }
+.thread-event.blocked .thread-event-content strong { color:var(--red); }
+.thread-event.success .thread-event-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
+/* Agent activity — reasoning, tool calls, tool results, narration, background
+   tasks. The agent
+   working rather than the agent speaking, and it arrives hundreds of items to a
+   session, so the row is shut, smaller and dimmer than the lifecycle events
+   beside it: one line the reader scans past, opening onto the whole of what was
+   said only when they ask for it. The line is the summary's first line — no
+   label in front of it, since the icon carries the kind — and it is dropped
+   once the fold is open, where the detail says it in full. */
+.thread-activity { min-height:24px; padding-top:1px; padding-bottom:1px; font-size:11.5px; }
+.thread-activity-head { display:flex; align-items:baseline; gap:7px; min-width:0; cursor:pointer;
+  list-style:none; }
+.thread-activity-head::-webkit-details-marker { display:none; }
+.thread-activity .thread-event-icon { left:8px; width:22px; height:22px; border-width:2px;
+  background:var(--bg); color:var(--dim); font-size:10px; font-weight:600; }
+.thread-activity-preview { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+  color:var(--dim); opacity:.8; }
+.thread-activity-head time { flex:none; }
+/* How a tool call ended, on the call's own row. Dim like everything else on the
+   row — the mark is a state, not a summons — and coloured only when the tool
+   reported an error, and only on the mark: the row itself stays toneless,
+   because a failed tool call is the agent's problem and not the reader's. */
+.thread-activity-outcome { flex:none; font-size:10.5px; opacity:.75; }
+.thread-activity-outcome.blocked { color:var(--red); opacity:1; }
+.thread-activity[open] .thread-activity-preview { display:none; }
+.thread-activity .thread-event-detail { margin-top:2px; }
+.thread-activity-children { --activity-row:26px; margin-top:4px; padding-left:10px;
+  border-left:1px solid var(--line); max-height:calc(var(--activity-row) * 8); overflow-y:auto; }
+/* A whole run of activity — everything between two things somebody said — as
+   one line: how many, and the newest one's own words, with no label in front of
+   them. The quietest row on the timeline, because a run of work asks the reader
+   for nothing; opening it lists the rows themselves, eight deep and scrolling
+   past that, so a run of two hundred tool calls can never push a message off
+   the screen. The padding is on the head rather than the box: the rows inside
+   keep their own gutter, and doubling it would step them off the spine. */
+.thread-activity-group { position:relative; display:block; margin:0; color:var(--dim); font-size:11.5px; }
+.thread-activity-group-head { min-height:24px; padding:1px 0 1px 44px; }
+.thread-activity-group-head .thread-event-icon { left:8px; width:22px; height:22px; border-width:2px;
+  background:var(--bg); color:var(--dim); font-size:10px; font-weight:600; }
+.thread-activity-count { flex:none; min-width:17px; padding:0 5px; border-radius:9px;
+  background:var(--panel2); color:var(--dim); font-size:10.5px; font-weight:650; text-align:center; }
+.thread-activity-group-list { --activity-row:26px; max-height:calc(var(--activity-row) * 8); overflow-y:auto; }
+.thread-empty { padding:13px 0; color:var(--dim); font-size:12px; }
+/* The one line in the timeline nobody said: everything under it is what the
+   reader has not read. Ruled across the whole width, label on the gutter side,
+   so it reads as a place in the conversation rather than as another row. */
+.thread-unread-line { display:flex; align-items:center; gap:8px; margin:8px 0 4px; color:var(--accent); }
+.thread-unread-line::after { content:""; flex:1; height:1px; background:currentColor; opacity:.45; }
+.thread-unread-line span { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+@keyframes working-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+@media (prefers-reduced-motion: reduce) { }
+.thread-revision-link { border:0; padding:0; background:none; color:var(--accent); font:inherit; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
+.thread-revision-view { margin-left:44px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+.thread-revision-head { display:flex; justify-content:space-between; gap:12px; padding:8px 12px; color:var(--dim); font-size:11px; }
+.thread-revision-head button { border:0; background:none; color:var(--dim); cursor:pointer; font-size:16px; }
+.thread-revision-view pre { margin:0; padding:12px; max-height:52vh; overflow:auto; border-top:1px solid var(--line2); font:11px/1.5 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; }
+/* ---- the composer -------------------------------------------------------
+   One bordered box holding the tray, the text, and the toolbar, so a message
+   and the files it carries read as the same object rather than three stacked
+   controls. The border lives on the box and the textarea has none: focus
+   lights the whole thing, which is what makes it feel like a field. */
+.thread-composer { margin-left:44px; }
+.composer { position:relative; border:1px solid var(--line); border-radius:12px;
+  background:var(--bg); transition:border-color .12s ease, box-shadow .12s ease; }
+.composer:focus-within { border-color:var(--accent);
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.composer textarea { display:block; width:100%; min-height:40px; max-height:320px;
+  resize:none; border:0; border-radius:12px 12px 0 0; padding:11px 12px 4px;
+  background:transparent; color:var(--ink); font:13px/1.5 var(--sans); }
+.composer textarea:focus { outline:none; }
+.composer-bar { display:flex; align-items:center; gap:10px; padding:6px 8px 7px 8px; }
+.composer-bar .hint { flex:1 1 auto; min-width:0; color:var(--dim); font-size:11.5px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* Not a control: the reminder that the keyboard can send, sized down and out
+   of the way on the touch screens where it means nothing. */
+.composer-shortcut { color:var(--dim); font:11px var(--mono); opacity:.7; }
+/* Attach and Send are one cluster at the row's right: two controls that act on
+   the message you are writing, kept together so neither reads as stray. */
+.composer-actions { margin-left:auto; display:flex; align-items:center; gap:6px; }
+/* Compact and square-ish on purpose — the create FAB below is a large accent
+   pill, and a second one here made the corner read as two competing verbs. */
+.composer-send { display:inline-flex; align-items:center; gap:6px; border-radius:9px;
+  padding:6px 12px; font-size:12.5px; }
+.composer-send svg { width:15px; height:15px; }
+/* Send has a second shape: the split that offers the interrupting send to an
+   agent mid-turn. It is the same compact button — a control that changes size
+   under the poll would move the whole row — with the caret taking the arrow's
+   place at its right edge. */
+.composer-send-control { display:inline-flex; }
+.composer-actions .splitbtn .btn { border-radius:9px; padding:6px 12px; font-size:12.5px; }
+.composer-actions .splitbtn .btn:not(.caret) { border-top-right-radius:0; border-bottom-right-radius:0; }
+.composer-actions .splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; padding:6px 9px; }
+/* The model menu sits at the row's other end, opposite the send: what the next
+   turn will run on. It states a standing answer rather than asking for a press,
+   so it is the quietest control on the row — the mini vocabulary in dim ink,
+   with its chrome arriving on hover. */
+.composer-model { flex:0 0 auto; }
+.composer-model .btn.mini { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--dim); background:none; border-color:transparent; }
+.composer-model .btn.mini:hover { color:var(--ink2); border-color:var(--line); }
+/* One button, so it keeps its own left edge and its own corners. */
+.composer-model .splitbtn .caret { border-left:0; border-radius:8px; }
+/* Anchored to the left edge it hangs from, unlike the send's menu at the right. */
+.composer-model .splitmenu { left:0; right:auto; max-height:280px; overflow-y:auto; }
+.composer-attach { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
+  border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer; }
+.composer-attach:hover { background:var(--panel); color:var(--ink2); }
+.composer-attach svg { width:16px; height:16px; }
+
+/* The tray sits ABOVE the text: what you are sending should be visible while
+   you write the sentence about it, not below the fold of the box. */
+.composer-tray { display:flex; flex-wrap:wrap; gap:6px; padding:8px 8px 2px; }
+.composer-chip { display:flex; align-items:center; gap:8px; max-width:230px;
+  border:1px solid var(--line); border-radius:9px; padding:5px 6px; background:var(--panel); }
+.composer-chip.uploading { opacity:.65; }
+.composer-chip.failed { border-color:var(--red); }
+.composer-chip-thumb { flex:0 0 auto; width:30px; height:30px; border-radius:6px; object-fit:cover; background:var(--bg); }
+.composer-chip-glyph { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
+  border-radius:6px; background:var(--bg); color:var(--dim); font:9px/1 var(--mono); font-weight:700; }
+.composer-chip-meta { display:flex; flex-direction:column; gap:1px; min-width:0; }
+.composer-chip-name { color:var(--ink2); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.composer-chip-note { color:var(--dim); font-size:10.5px; }
+.composer-chip.failed .composer-chip-note { color:var(--red); }
+.composer-chip-remove { flex:0 0 auto; display:grid; place-items:center; width:20px; height:20px;
+  border:0; border-radius:5px; background:none; color:var(--dim); cursor:pointer; }
+.composer-chip-remove:hover { background:var(--bg); color:var(--ink); }
+.composer-chip-remove svg { width:12px; height:12px; }
+
+/* Drop state: the box says what will happen, covering its own contents so the
+   target is unmistakable and nothing else on the page has to move. */
+.composer-dropmask { position:absolute; inset:0; display:none; place-items:center;
+  border-radius:12px; background:color-mix(in srgb, var(--accent) 12%, var(--bg));
+  border:2px dashed var(--accent); color:var(--accent); font-size:12.5px; font-weight:600; }
+.composer.is-dropping .composer-dropmask { display:grid; }
+@media (max-width: 900px) {
+  /* The fixed create button overlaps the composer's bottom-right corner when
+     the thread is scrolled to its end. Clear it DOWNWARD: reserving the width
+     instead stranded Send in the middle of the row, which is the only place a
+     send button should never be. */
+  .thread-composer { margin-bottom:calc(26px + var(--fab-clear-v)); }
+  .composer-shortcut { display:none; }
+}
+
+/* ---- the actions a message suggests -------------------------------------
+   Chips under what the agent said, and one send. A shut offer is the same
+   chips at lower contrast — what was pressed stays marked, so the conversation
+   still says what was chosen when it is read back weeks later. */
+.thread-options { display:flex; flex-direction:column; gap:8px; padding:0 12px 12px; }
+.thread-option-list { display:flex; flex-wrap:wrap; gap:6px; }
+.thread-option { max-width:100%; border:1px solid var(--line); border-radius:8px; padding:6px 10px;
+  background:var(--bg); color:var(--ink2); cursor:pointer; font:12.5px var(--sans); text-align:left; }
+.thread-option:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+.thread-option.chosen { border-color:var(--accent); color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.thread-option-label { overflow-wrap:anywhere; }
+.thread-options-send { align-self:flex-start; border:1px solid var(--accent); border-radius:8px;
+  padding:5px 12px; background:color-mix(in srgb, var(--accent) 14%, var(--bg)); color:var(--accent);
+  cursor:pointer; font:12.5px/1.2 var(--sans); font-weight:650; }
+/* Dim, not hidden and not restyled: a disabled chip is the same chip, so the
+   offer reads as an offer that has closed rather than as new furniture. */
+.thread-option:disabled, .thread-options-send:disabled { opacity:.55; cursor:default; }
+
+/* ---- files on a message -------------------------------------------------
+   An image is shown, because looking at it is the message. Everything else is
+   a chip that downloads what it names. */
+/* flex-start, or a chip beside a screenshot stretches to the screenshot's
+   height and reads as an empty panel. */
+.thread-attachments { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; padding:0 12px 12px; }
+.thread-attachment-figure { margin:0; max-width:min(360px, 100%); }
+/* Never upscaled: a 90px icon blown up to the column width is worse than the
+   90px icon. Big shots are clamped, small ones sit at their own size. */
+.thread-attachment-image { display:block; max-width:100%; max-height:320px;
+  border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+.thread-attachment-figure figcaption { padding-top:4px; color:var(--dim); font-size:11px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.thread-attachment-figure.unavailable figcaption::after { content:" · unavailable"; color:var(--red); }
+.thread-attachment { display:flex; align-items:baseline; gap:8px; max-width:100%;
+  border:1px solid var(--line); border-radius:8px; padding:7px 10px; background:var(--bg);
+  color:var(--ink2); cursor:pointer; font:12px var(--sans); }
+.thread-attachment:hover { border-color:var(--accent); color:var(--accent); }
+.thread-attachment-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.thread-attachment-size { flex:0 0 auto; color:var(--dim); font-size:11px; }
+@media (max-width: 640px) {
+  .thread-timeline::before { left:15px; }
+  .thread-message, .thread-composer, .thread-revision-view { margin-left:38px; }
+  .thread-avatar { left:-38px; width:32px; height:32px; border-width:2px; }
+  .thread-event { padding-left:38px; }
+  .thread-event-icon { left:2px; }
+  .thread-activity .thread-event-icon { left:5px; }
+  .thread-activity-group-head { padding-left:38px; }
+  .thread-activity-group-head .thread-event-icon { left:5px; }
+  .thread-message-head { flex-direction:column; gap:4px; }
+}
+
+/* Global notifications (core/notify.js) — errors persist until dismissed,
+   successes are transient; detail expands to the full error text. */
+#notices { position:fixed; right:calc(14px + env(safe-area-inset-right, 0px));
+  bottom:calc(14px + env(safe-area-inset-bottom, 0px)); z-index:200;
+  display:flex; flex-direction:column; gap:8px; max-width:380px; width:calc(100vw - 28px); }
+.notice { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--dim); border-radius:10px; padding:9px 11px; font-size:12.5px; box-shadow:0 6px 24px var(--shadow); }
+.notice.error { border-left-color:var(--red); }
+.notice.success { border-left-color:var(--green); }
+.notice-head { display:flex; align-items:center; gap:8px; }
+.notice-summary { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.notice-detail { margin:8px 0 0; font-family:var(--mono); font-size:11px; white-space:pre-wrap; word-break:break-word; max-height:40vh; overflow:auto; color:var(--ink2); }
+.notice-x, .notice-expand { background:none; border:none; color:var(--dim); cursor:pointer; font-size:13px; }

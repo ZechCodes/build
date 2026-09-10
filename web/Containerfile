@@ -1,0 +1,22 @@
+# The web client image: serves the static browser client (serve.mjs) and can run
+# the QA harness (qa.mjs). The audited build-secure-transport JS binding is cloned
+# at build time and wired in as the @build/secure-transport dependency.
+
+FROM docker.io/library/node:22-bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+# The audited E2EE binding (its own deps installed in place).
+RUN git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git /build-secure-transport \
+ && ( cd /build-secure-transport/js && npm install --no-audit --no-fund )
+
+COPY package.json ./
+# --omit=dev skips playwright (browser-demo only); the container just serves + QAs.
+RUN npm pkg set "dependencies.@build/secure-transport=file:/build-secure-transport/js" \
+ && npm install --omit=dev --no-audit --no-fund
+
+COPY . ./
+EXPOSE 8080
+CMD ["node", "serve.mjs"]

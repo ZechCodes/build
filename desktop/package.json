@@ -1,0 +1,81 @@
+{
+  "name": "build-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Build desktop client",
+  "author": "Build",
+  "license": "MIT",
+  "homepage": "https://getbuild.ing",
+  "main": "src/main.mjs",
+  "scripts": {
+    "test": "node --test",
+    "start": "electron .",
+    "pack": "node scripts/package-app.mjs --dir",
+    "dist": "node scripts/package-app.mjs",
+    "dist:linux": "node scripts/package-app.mjs --linux",
+    "dist:mac": "node scripts/package-app.mjs --mac",
+    "dist:win": "node scripts/package-app.mjs --win"
+  },
+  "devDependencies": {
+    "electron": "44.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ing.getbuild.desktop",
+    "productName": "Build",
+    "protocols": [
+      {
+        "name": "Build desktop sign-in",
+        "schemes": [
+          "getbuilding"
+        ]
+      }
+    ],
+    "artifactName": "Build-${version}-${os}-${arch}.${ext}",
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../spa/public/icon-512.png",
+        "to": "icon.png"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "icon": "../spa/public/icon-512.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "../spa/public/icon-512.png",
+      "target": "nsis"
+    },
+    "linux": {
+      "category": "Development",
+      "icon": "../spa/public/icon-512.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
+  }
+}

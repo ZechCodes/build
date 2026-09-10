@@ -1,0 +1,78 @@
+# Build app image (ghcr.io/8ly-dev/build-app). Build context: the REPO ROOT
+# (the SPA lives at spa/, beside skriftapp/):
+#
+#   podman build -t build-app -f skriftapp/Containerfile .
+#
+# Self-contained by design: Skrift comes from the PyPI pin in pyproject.toml
+# (matches the framework checkout HEAD), and the SPA is built in-image by the
+# node stage below — no CDN, no private checkouts. The SPA's
+# `@build/secure-transport` dependency is `file:../../build-secure-transport/js`
+# (a sibling-of-repo checkout, same convention as local dev and CI), so the
+# stage clones the public repo into exactly that position.
+
+# --- spa: Vite bundle (multi-stage node builder) ---------------------------
+FROM docker.io/library/node:22-bookworm-slim AS spa
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+# npm 10 (what node:22 ships) crashes resolving this manifest against the
+# current registry ("Cannot read properties of null (reading 'edgesOut')" in
+# arborist's peer-set walk); npm 12 resolves it. Pinned so the fix is a
+# deliberate bump, like everything else here.
+RUN npm install -g npm@12.0.2 --no-audit --no-fund
+# The audited E2EE binding, placed as the repo's sibling so the SPA's
+# file:../../build-secure-transport/js dependency resolves unchanged.
+# PINNED to the audited commit — never HEAD: this JS performs all session
+# crypto in the production bundle, so a push to that repo must not flow into
+# getbuild.ing without a deliberate pin bump reviewed here.
+ARG BUILD_SECURE_TRANSPORT_COMMIT=4bce3aacebd66a9674aaa96c6ec0d97ab4bcd793
+RUN git clone https://github.com/ZechCodes/build-secure-transport.git /build/build-secure-transport \
+ && git -C /build/build-secure-transport checkout --detach "$BUILD_SECURE_TRANSPORT_COMMIT" \
+ && ( cd /build/build-secure-transport/js && npm install --no-audit --no-fund )
+COPY spa/ /build/repo/spa/
+# The relay origin and the build's own version are baked in at build time; the
+# version also lands beside the bundle as version.json, which running clients
+# poll to learn a deploy happened.
+ARG VITE_RELAY_URL=wss://relay.getbuild.ing
+ARG VITE_BUILD_VERSION=dev
+RUN cd /build/repo/spa \
+ && npm install --legacy-peer-deps --no-audit --no-fund \
+ && VITE_RELAY_URL="$VITE_RELAY_URL" VITE_BUILD_VERSION="$VITE_BUILD_VERSION" npm run build
+# → emits /build/repo/skriftapp/buildapp/static/ (vite outDir).
+
+# --- runtime: uv-managed Python 3.13 ---------------------------------------
+# uv version pinned so builds are reproducible and pyproject's [tool.uv]
+# settings (exclude-newer cooldown) parse the same way in CI as locally.
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim AS app
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+# Dependencies first for layer caching. vendor/ carries the interim skrift
+# wheel referenced by [tool.uv.sources] until 0.2.0a10 is on PyPI.
+COPY skriftapp/pyproject.toml skriftapp/uv.lock ./
+COPY skriftapp/vendor ./vendor
+RUN uv sync --frozen --no-dev
+
+# App code + the spa stage's bundle.
+COPY skriftapp/app.yaml skriftapp/entrypoint.sh ./
+COPY skriftapp/buildapp ./buildapp
+COPY skriftapp/migrations ./migrations
+# The app's own admin templates: Skrift's engine also reads ./templates/.
+COPY skriftapp/templates ./templates
+# The bridge installer. GET /install.sh serves this file with the deployment's own
+# origin and the caller's download token substituted in, so it must sit where
+# releases.INSTALL_SCRIPT_FILE looks for it — scripts/ beside the app root, which is
+# the repository root in a source tree and / in this image.
+COPY scripts/install.sh /scripts/install.sh
+COPY --from=spa /build/repo/skriftapp/buildapp/static ./buildapp/static
+RUN chmod +x /app/entrypoint.sh \
+ && useradd --create-home --uid 10001 appuser \
+ && chown -R appuser:appuser /app
+USER appuser
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH=/app \
+    SKRIFT_ENV=production
+EXPOSE 8080
+CMD ["/app/entrypoint.sh"]

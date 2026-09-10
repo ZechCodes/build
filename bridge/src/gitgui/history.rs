@@ -1,0 +1,250 @@
+use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::path::Path;
+
+pub const GIT_SHOW_MAX_PATCH_BYTES: usize = 1_048_576;
+
+/// Cap on the `files` array of the status payload — same relay-frame
+/// rationale as [`GIT_SHOW_MAX_PATCH_BYTES`]: a huge untracked tree (say a
+/// fresh checkout with no .gitignore and a node_modules/) must degrade to
+/// the first N entries plus a `files_truncated` flag, not blow past the
+/// 8 MiB WS frame cap and reset the connection on every poll.
+pub const GIT_STATUS_MAX_FILES: usize = 2_000;
+
+/// Cap on the commit `subject` display string (git.log rides the 1.6 s poll,
+/// and git places no limit on message size). Truncated at a UTF-8 boundary;
+/// silent — no wire flag for display strings.
+pub const GIT_SUBJECT_MAX_BYTES: usize = 512;
+
+/// Cap on the commit `body` display string of `git.show`, same rationale as
+/// [`GIT_SUBJECT_MAX_BYTES`].
+pub const GIT_BODY_MAX_BYTES: usize = 65_536;
+
+pub(super) fn open_repo(repo_path: &Path) -> Result<git2::Repository, String> {
+    git2::Repository::open(repo_path).map_err(|e| format!("cannot open repository: {e}"))
+}
+
+/// Whether a `repo.head()` error means "no commits yet" rather than a broken repo.
+fn is_unborn_head_error(error: &git2::Error) -> bool {
+    matches!(
+        error.code(),
+        git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+    )
+}
+
+/// The checked-out branch name: HEAD's shorthand, or — on an unborn HEAD —
+/// the shorthand of the branch HEAD symbolically points at.
+pub(super) fn current_branch(repo: &git2::Repository) -> Result<String, String> {
+    match repo.head() {
+        Ok(head) => Ok(head.shorthand().unwrap_or("HEAD").to_string()),
+        Err(e) if is_unborn_head_error(&e) => {
+            let head_ref = repo
+                .find_reference("HEAD")
+                .map_err(|e| format!("cannot read HEAD: {e}"))?;
+            let target = head_ref.symbolic_target().unwrap_or("HEAD");
+            Ok(target
+                .strip_prefix("refs/heads/")
+                .unwrap_or(target)
+                .to_string())
+        }
+        Err(e) => Err(format!("cannot read HEAD: {e}")),
+    }
+}
+
+/// HEAD's commit id, or `None` when HEAD is unborn.
+pub(super) fn head_commit_id(repo: &git2::Repository) -> Result<Option<git2::Oid>, String> {
+    match repo.head() {
+        Ok(head) => Ok(Some(
+            head.peel_to_commit()
+                .map_err(|e| format!("cannot resolve HEAD: {e}"))?
+                .id(),
+        )),
+        Err(e) if is_unborn_head_error(&e) => Ok(None),
+        Err(e) => Err(format!("cannot read HEAD: {e}")),
+    }
+}
+
+/// The wire summary shared by `git.log` entries and `git.show`/`git.commit`.
+pub(super) fn commit_summary_json(commit: &git2::Commit) -> Value {
+    let hash = commit.id().to_string();
+    let (subject, _) = truncate_at_utf8_boundary(
+        commit.summary().unwrap_or("").to_string(),
+        GIT_SUBJECT_MAX_BYTES,
+    );
+    json!({
+        "short": hash[..7],
+        "hash": hash,
+        "subject": subject,
+        "author": commit.author().name().unwrap_or("").to_string(),
+        "email": commit.author().email().unwrap_or("").to_string(),
+        "time": commit.time().seconds(),
+    })
+}
+
+/// The set of commits reachable from HEAD but not from `base_branch` — the
+/// "ahead of base" marker set for run-scoped `git.log`. Anchored on the base
+/// branch's fork point (not the run's `base_sha`), so the materialized-plan
+/// commit and every build commit after it all read as ahead on the commit rail.
+fn commits_ahead_of(
+    repo: &git2::Repository,
+    base_branch: &str,
+) -> Result<HashSet<git2::Oid>, String> {
+    let base_tip = repo
+        .revparse_single(base_branch)
+        .map_err(|e| format!("cannot resolve base branch {base_branch}: {e}"))?
+        .peel_to_commit()
+        .map_err(|e| format!("base branch {base_branch} is not a commit: {e}"))?;
+    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
+    walk.push_head().map_err(|e| e.to_string())?;
+    walk.hide(base_tip.id()).map_err(|e| e.to_string())?;
+    walk.map(|oid| oid.map_err(|e| e.to_string())).collect()
+}
+
+/// One page of commit history from HEAD, topological newest-first. With
+/// `mark_ahead_of` (run scope), each entry carries `ahead_of_base`; without
+/// it (project scope) the field is omitted entirely.
+pub fn log_page(
+    repo_path: &Path,
+    mark_ahead_of: Option<&str>,
+    limit: usize,
+    skip: usize,
+) -> Result<Value, String> {
+    let repo = open_repo(repo_path)?;
+    let branch = current_branch(&repo)?;
+    if head_commit_id(&repo)?.is_none() {
+        return Ok(json!({ "branch": branch, "commits": [], "more": false }));
+    }
+    let ahead_set = match mark_ahead_of {
+        Some(base_branch) => Some(commits_ahead_of(&repo, base_branch)?),
+        None => None,
+    };
+    let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| e.to_string())?;
+    walk.push_head().map_err(|e| e.to_string())?;
+    let mut page = walk.skip(skip);
+    let mut commits = Vec::with_capacity(limit);
+    for _ in 0..limit {
+        let Some(oid) = page.next().transpose().map_err(|e| e.to_string())? else {
+            break;
+        };
+        let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+        let mut entry = commit_summary_json(&commit);
+        if let Some(ahead) = &ahead_set {
+            entry["ahead_of_base"] = json!(ahead.contains(&oid));
+        }
+        commits.push(entry);
+    }
+    let more = page
+        .next()
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .is_some();
+    Ok(json!({ "branch": branch, "commits": commits, "more": more }))
+}
+
+/// Whether `hash` is an acceptable `git.show` argument: 4–40 lowercase hex
+/// characters — an object-id prefix, never a general revspec.
+pub(super) fn is_valid_hash_prefix(hash: &str) -> bool {
+    (4..=40).contains(&hash.len()) && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Resolve a validated hex prefix to a commit via the object database —
+/// deliberately not `revparse`, so a branch that happens to be named like hex
+/// can never shadow an object id.
+fn resolve_commit_prefix<'repo>(
+    repo: &'repo git2::Repository,
+    hash: &str,
+) -> Result<git2::Commit<'repo>, String> {
+    let padded = format!("{hash:0<40}");
+    let prefix = git2::Oid::from_str(&padded).map_err(|e| format!("invalid hash: {e}"))?;
+    let odb = repo.odb().map_err(|e| e.to_string())?;
+    let full = odb
+        .exists_prefix(prefix, hash.len())
+        .map_err(|_| format!("unknown or ambiguous commit: {hash}"))?;
+    repo.find_commit(full)
+        .map_err(|_| format!("not a commit: {hash}"))
+}
+
+/// Unified patch + exact counts for `old_tree` → `new_tree` (`None` = empty
+/// tree, for root commits). Counting happens during the print walk, same as
+/// `diff.rs`, so the numbers always match the (pre-truncation) patch.
+fn tree_diff_patch(
+    repo: &git2::Repository,
+    old_tree: Option<&git2::Tree>,
+    new_tree: &git2::Tree,
+) -> Result<(Value, String), String> {
+    let diff = repo
+        .diff_tree_to_tree(old_tree, Some(new_tree), None)
+        .map_err(|e| e.to_string())?;
+    let files_changed = diff.deltas().len();
+    let mut insertions = 0usize;
+    let mut deletions = 0usize;
+    let mut patch = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        match line.origin() {
+            '+' => insertions += 1,
+            '-' => deletions += 1,
+            _ => {}
+        }
+        if matches!(line.origin(), '+' | '-' | ' ') {
+            patch.push(line.origin());
+        }
+        patch.push_str(&String::from_utf8_lossy(line.content()));
+        true
+    })
+    .map_err(|e| e.to_string())?;
+    let stat = json!({
+        "files_changed": files_changed,
+        "insertions": insertions,
+        "deletions": deletions,
+    });
+    Ok((stat, patch))
+}
+
+/// Truncate `text` to at most `max_bytes`, cutting back to a UTF-8 boundary.
+/// Returns the (possibly shortened) text and whether truncation happened.
+pub fn truncate_at_utf8_boundary(text: String, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut cut = max_bytes;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut truncated = text;
+    truncated.truncate(cut);
+    (truncated, true)
+}
+
+/// `git.show`: one commit's metadata, exact stat, and (capped) patch against
+/// its first parent — the empty tree for a root commit.
+pub fn show_commit(repo_path: &Path, hash: &str) -> Result<Value, String> {
+    if !is_valid_hash_prefix(hash) {
+        return Err("invalid hash: expected 4-40 lowercase hex characters".to_string());
+    }
+    let repo = open_repo(repo_path)?;
+    let commit = resolve_commit_prefix(&repo, hash)?;
+    let commit_tree = commit.tree().map_err(|e| e.to_string())?;
+    let parent_tree = if commit.parent_count() == 0 {
+        None
+    } else {
+        Some(
+            commit
+                .parent(0)
+                .map_err(|e| e.to_string())?
+                .tree()
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    let (stat, patch) = tree_diff_patch(&repo, parent_tree.as_ref(), &commit_tree)?;
+    let (patch, truncated) = truncate_at_utf8_boundary(patch, GIT_SHOW_MAX_PATCH_BYTES);
+    let mut result = commit_summary_json(&commit);
+    let (body, _) =
+        truncate_at_utf8_boundary(commit.body().unwrap_or("").to_string(), GIT_BODY_MAX_BYTES);
+    result["body"] = json!(body);
+    result["stat"] = stat;
+    result["patch"] = json!(patch);
+    result["truncated"] = json!(truncated);
+    Ok(result)
+}

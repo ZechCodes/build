@@ -1,10 +1,11 @@
 # Bridge modularization progress
 
-The remaining work continues from merged commit `738635c0`. Stages 1–2 are
-complete: nested source guards and capability-based app tests. That baseline
+Stages 3–10 and all six follow-on leaf splits are complete, continuing from
+merged commit `738635c0`. Stages 1–2 had already completed the nested source
+guards and capability-based app tests. That baseline
 contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 
-## Remaining sequence
+## Completed sequence
 
 | Stage | Responsibility | State |
 | --- | --- | --- |
@@ -17,7 +18,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 8 | Give delivery queues, receipts, and in-flight accounting their own component | Complete |
 | 9 | Give board attention and caches their own component | Complete |
 | 10 | Reverse lifecycle dependencies through owned results and settlement interfaces | Complete |
-| Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Prepared outside repository |
+| Follow-on | Split thread, store, orchestrator, worktree, git GUI, and ADK harness internals | Complete |
 
 Each stage is committed after its source review and validation. Mechanical
 extraction preserves executable bodies; ownership changes receive separate
@@ -278,3 +279,67 @@ compatibility, 26 off-lock lifecycle, 11 branch-dispatch, and 19 restore cases.
 The full suite reports 2,227 passed, one failed, and seven ignored; all 2,152
 exercised library tests pass. The sole failure remains the previously reproduced
 `concurrency_load` output floor, at 77,820 bytes. Staged Gitleaks passes.
+
+## Follow-on leaf splits
+
+The remaining large leaf files are split behind their existing public facades.
+Thread item classification stays canonical for memory and SQLite paging; Store
+retains its one connection and transaction owner. Orchestrator keeps caller-owned
+active state, WorktreeManager retains the sole backend selector, git discard
+keeps its containment fence, and ADK preserves the harness/session boundary.
+The six existing facade paths remain stable while their implementations and
+420 tests live in conventional capability modules. The combined source retains
+5,710 functions and 1,083 data declarations from the completed lifecycle stage.
+The 800 app tests and all 132 RPC names remain unchanged. Strict source review
+accounts separately for rustfmt punctuation and one call to the existing
+`ImplementableIssue::slug()` getter in place of direct private-field access;
+that getter returns the same borrowed string. No literal or branch inventory
+changes result from these moves.
+
+| Facade | Before | After | Child responsibilities |
+| --- | ---: | ---: | --- |
+| `thread.rs` | 6,552 | 36 | Items, metadata, paging, conversations, rendering |
+| `store.rs` | 5,348 | 328 | Schema, entities, conversations, operations, documents, legacy data |
+| `orchestrator.rs` | 5,943 | 21 | Plans, runs, reporting, workspace lifecycle |
+| `worktree.rs` | 3,747 | 25 | Manager, identity, discovery, comparison, commands, mutation |
+| `gitgui.rs` | 2,137 | 24 | History, status, patches, mutations, branches, network |
+| `harness/adk.rs` | 4,660 | 157 | Protocol, reader, translation, activity, session |
+
+All newly split leaf files stay below 1,500 lines; the largest is
+`worktree/tests/mutation.rs` at 1,314. Existing app test files
+`runtime/frame_locks.rs` (1,601) and `workflow/review.rs` (1,592) remain inherited
+exceptions. `app.rs` stays at 640 lines.
+
+Independent architecture, source, and test reviews close the ownership and
+preservation checks. Formatting, all-target compilation, and all-target Clippy
+with warnings denied pass. Focused validation exercises all 416 runnable leaf
+tests; four configured ADK tests remain ignored, accounting for all 420 moved
+test definitions. Three additional isolation tests selected by the worktree
+filter also pass. Semgrep reports no findings across all 94 changed Rust files,
+with the final corrected workflow files rescanned. The full suite reports
+2,227 passed, one failed, and seven ignored; all 2,152 exercised library tests
+pass. All other integration targets and doctests complete. The sole failure
+remains the previously reproduced `concurrency_load` output floor, at 75,226
+bytes. The recursive provider guard and 28-function complexity ratchet pass.
+Staged Gitleaks passes.
+
+## Final state and validation limits
+
+The original 61,274-line application file is now a 640-line facade and
+coordinator. Project, session, delivery, operation, and board state have narrow
+owners, and lifecycle disk work returns typed results to application settlement
+adapters. The original continuation baseline's 757 app tests remain, with 43
+reviewed component tests added across the ownership stages, for 800 total.
+The six leaf splits preserve all 420 of their existing tests and public facade
+paths. Per-stage source reviews distinguish mechanical relocation from
+intentional state ownership changes; no single byte-equivalence claim is made
+across those ownership changes.
+
+Validation ran locally on macOS. Other supported OS/target configurations were
+not compiled here. Live Rust/Python interop was not exercised because
+`BUILD_SECURE_TRANSPORT_PY` was unset; the test's early return is not transport
+coverage. Configured ignored tests remain ignored. The known concurrency floor
+failure is retained with its original threshold. These stages are committed on
+the modularization branch; this continuation does not merge or deploy them.
+Further lock partitioning, API redesign, performance changes, and unrelated
+large-file cleanup are outside the completed modularization plan.

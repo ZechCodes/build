@@ -1,0 +1,514 @@
+use super::activity::{spawn_shell_tail_poller, ActivitySlot};
+use super::protocol::{
+    publish_status, ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
+    TOOL_SUMMARY_LIMIT,
+};
+use super::translation::{
+    ended_summary, one_line, result_error_text, spoken, task_description, task_status_is_terminal,
+    tool_call_summary, tool_result_text, unix_millis_now, Voice,
+};
+use crate::harness::surfaces::SurfaceRevision;
+use crate::harness::{
+    ActivityReport, AgentActivity, AgentStatus, SessionStatusSnapshot, ToolOutcome,
+};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Instant;
+use tokio::sync::watch;
+
+pub(super) struct ProtocolReader {
+    pub(super) state: Arc<Mutex<ProtocolState>>,
+    status_updates: watch::Sender<SessionStatusSnapshot>,
+    pub(super) activity: ActivitySlot,
+    pub(super) calls: HashMap<String, RecordedCall>,
+    pub(super) revision: SurfaceRevision,
+    pub(super) shell_poller: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl ProtocolReader {
+    pub(super) fn new(
+        state: Arc<Mutex<ProtocolState>>,
+        activity: ActivitySlot,
+        revision: SurfaceRevision,
+        status_updates: watch::Sender<SessionStatusSnapshot>,
+    ) -> ProtocolReader {
+        ProtocolReader {
+            state,
+            status_updates,
+            activity,
+            calls: HashMap::new(),
+            revision,
+            shell_poller: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(super) fn read_line(&mut self, line: &str) {
+        self.state.lock().unwrap().last_line = Instant::now();
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            // Not protocol. A harness can print a warning to stdout before the
+            // stream starts; it is evidence the child is alive (stamped above)
+            // and nothing more.
+            return;
+        };
+        match event["type"].as_str() {
+            Some("system") => self.read_system(&event),
+            Some("assistant") => self.read_message(&event, Voice::Assistant),
+            Some("user") => self.read_message(&event, Voice::User),
+            Some("result") => self.read_result(&event),
+            Some("control_response") => self.read_control_response(&event),
+            _ => {}
+        }
+        self.publish_live_status();
+    }
+
+    fn publish_live_status(&self) {
+        let state = self.state.lock().unwrap();
+        publish_status(&self.status_updates, state.live_status());
+    }
+
+    pub(super) fn publish_status(&self, status: AgentStatus) {
+        publish_status(&self.status_updates, status);
+    }
+
+    /// The lifecycle line, and the background-task lines that ride the same
+    /// subtype. Anything else on `system` is not this session's business.
+    fn read_system(&mut self, event: &Value) {
+        let Some(subtype) = event["subtype"].as_str() else {
+            return;
+        };
+        match subtype {
+            "init" => self.read_init(event),
+            "background_tasks_changed" => self.read_task_roster(event),
+            "task_started" => self.read_task_started(event),
+            "task_updated" => self.read_task_updated(event),
+            "task_notification" => self.read_task_notification(event),
+            _ => {}
+        }
+        if SURFACE_TASK_SUBTYPES.contains(&subtype) {
+            self.read_surface_task_event(subtype, event);
+        }
+    }
+
+    fn read_surface_task_event(&mut self, subtype: &str, event: &Value) {
+        let moved = self
+            .state
+            .lock()
+            .unwrap()
+            .surfaces
+            .read_task_event(subtype, event);
+        self.note_surfaces_moved(moved);
+    }
+
+    fn bump_revision_when(&self, moved: bool) {
+        if moved {
+            self.revision.bump();
+        }
+    }
+
+    fn note_surfaces_moved(&self, moved: bool) {
+        self.bump_revision_when(moved);
+        if moved {
+            self.ensure_shell_tail_poller();
+        }
+    }
+
+    pub(super) fn ensure_shell_tail_poller(&self) {
+        let state = self.state.lock().unwrap();
+        if state.surfaces.running_shell_outputs().is_empty() {
+            return;
+        }
+        let mut poller = self.shell_poller.lock().unwrap();
+        if poller.is_some() {
+            return;
+        }
+        *poller = Some(spawn_shell_tail_poller(
+            Arc::clone(&self.state),
+            Arc::clone(&self.activity),
+            self.revision.clone(),
+            Arc::clone(&self.shell_poller),
+        ));
+    }
+
+    /// `init` is when the child can take a turn, and it carries the session id a
+    /// respawn resumes by.
+    fn read_init(&mut self, event: &Value) {
+        let mut state = self.state.lock().unwrap();
+        state.announced = true;
+        if let Some(id) = event["session_id"].as_str() {
+            state.session_id = Some(id.to_string());
+        }
+        if let Some(model) = event["model"].as_str() {
+            state.model = Some(model.to_string());
+        }
+        if let Some(announced) = event["capabilities"].as_array() {
+            state.capabilities = announced
+                .iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect();
+        }
+        publish_status(&self.status_updates, state.live_status());
+    }
+
+    /// The child's own statement of what background work is live, which
+    /// REPLACES the set rather than merging into it.
+    ///
+    /// A reconciled set cannot drift from the harness: a task Build somehow
+    /// never saw start is inserted here, and a task whose end never got its own
+    /// event is removed here. Both are membership transitions, so both mint.
+    fn read_task_roster(&mut self, event: &Value) {
+        let listed: Vec<(String, String)> = event["tasks"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|task| {
+                let id = task["task_id"].as_str()?;
+                Some((id.to_string(), task_description(task, id)))
+            })
+            .collect();
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            let mut minted = Vec::new();
+            for (id, description) in &listed {
+                if !state.tasks.contains_key(id) {
+                    minted.push(format!("{description} — started"));
+                }
+            }
+            for (id, description) in &state.tasks {
+                if !listed.iter().any(|(listed, _)| listed == id) {
+                    minted.push(format!("{description} — finished"));
+                }
+            }
+            state.tasks = listed.into_iter().collect();
+            publish_status(&self.status_updates, state.live_status());
+            minted
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// A task announcing itself. The minting trigger for a start, and the reason
+    /// status flips to `Working` without waiting for the next roster — but only
+    /// when it actually inserts, because a roster that already listed this task
+    /// has said the same thing once.
+    fn read_task_started(&mut self, event: &Value) {
+        let Some(id) = event["task_id"].as_str() else {
+            return;
+        };
+        let description = task_description(event, id);
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            let minted = match state.tasks.insert(id.to_string(), description.clone()) {
+                Some(_) => Vec::new(),
+                None => vec![format!("{description} — started")],
+            };
+            publish_status(&self.status_updates, state.live_status());
+            minted
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// A patch against one task. A terminal status ends it; anything else is
+    /// progress and touches membership not at all.
+    ///
+    /// A progress patch mints nothing. The pinned payload carries only a status
+    /// and an end time — no human-readable line of its own — so a patch that
+    /// moves no membership has nothing to say that the task's own name did not
+    /// already say. A `description` it does carry renames the task for the rows
+    /// still to come rather than minting a row about the rename.
+    fn read_task_updated(&mut self, event: &Value) {
+        let Some(id) = event["task_id"].as_str() else {
+            return;
+        };
+        let patch = &event["patch"];
+        let status = patch["status"]
+            .as_str()
+            .or_else(|| event["status"].as_str())
+            .unwrap_or_default();
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            let minted = if !task_status_is_terminal(status) {
+                if let Some(renamed) = patch["description"].as_str() {
+                    if let Some(held) = state.tasks.get_mut(id) {
+                        *held = renamed.to_string();
+                    }
+                }
+                Vec::new()
+            } else {
+                match state.tasks.remove(id) {
+                    Some(description) => vec![ended_summary(status, &description, patch)],
+                    None => Vec::new(),
+                }
+            };
+            publish_status(&self.status_updates, state.live_status());
+            minted
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// The task saying something worth reading — and, when it carries a
+    /// terminal status, the only word some tasks ever get that the work is over.
+    ///
+    /// A FOREGROUND Bash command is a task too, and the child closes it with a
+    /// notification alone: no `task_updated`, no roster, ever (probe,
+    /// 2026-08-30). A reader that took every notification for chatter would
+    /// hold that task for the life of the session and report `Working` over an
+    /// agent idle for hours — the inverse of the failure this step closes. So a
+    /// terminal status here IS a membership removal, and mints the ending row
+    /// the way the roster and the terminal patch do.
+    ///
+    /// Its text is minted under the task's own name while the set still holds
+    /// it, and on its own after that: the child empties the roster before it
+    /// delivers a background task's notification, and a name the set no longer
+    /// holds is not a name to speak with — the text says which task it is
+    /// either way. Text that only repeats the task's own name mints nothing,
+    /// because a foreground notification's summary IS the description, and a
+    /// row reading `X: X` says nothing the ending row did not.
+    fn read_task_notification(&mut self, event: &Value) {
+        let said = event["summary"]
+            .as_str()
+            .or_else(|| event["message"].as_str())
+            .unwrap_or_default()
+            .trim();
+        let status = event["status"].as_str().unwrap_or_default();
+        let ends = task_status_is_terminal(status);
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            let held = event["task_id"].as_str().and_then(|id| match ends {
+                true => state.tasks.remove(id),
+                false => state.tasks.get(id).cloned(),
+            });
+            let mut minted = Vec::new();
+            if !said.is_empty() && held.as_deref() != Some(said) {
+                minted.push(match &held {
+                    Some(description) => format!("{description}: {said}"),
+                    None => said.to_string(),
+                });
+            }
+            if ends {
+                if let Some(description) = &held {
+                    minted.push(ended_summary(status, description, event));
+                }
+            }
+            publish_status(&self.status_updates, state.live_status());
+            minted
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// Send one row per transition, in the order the transitions happened, each
+    /// clipped the way a tool summary is: this is operational text about the
+    /// work, not the agent speaking.
+    fn mint_task_updates(&self, summaries: Vec<String>) {
+        for summary in summaries {
+            self.send_report(ActivityReport::bounded_task_update(&summary));
+        }
+    }
+
+    /// The child's answer to a `control_request`. Only the outstanding
+    /// interrupt's own id counts: a response naming another request is noise,
+    /// and a session that took it as its own would swallow a real crash.
+    fn read_control_response(&mut self, event: &Value) {
+        let Some(answered) = event["response"]["request_id"]
+            .as_str()
+            .or_else(|| event["request_id"].as_str())
+        else {
+            return;
+        };
+        let mut state = self.state.lock().unwrap();
+        if let Some(pending) = state.pending_interrupt.as_mut() {
+            if pending.request_id == answered {
+                pending.acked = true;
+            }
+        }
+    }
+
+    /// The turn boundary. A result is never a completion — `done` is still the
+    /// only completion contract — so this closes the turn and, when it carried
+    /// an error, records the session's last words.
+    ///
+    /// Unless the human stopped it. An interrupted turn ends in an
+    /// `error_during_execution` result, and reporting that as a crash would end
+    /// the human's own stop with a crash notice quoting it. The ACK is what
+    /// makes the clearing safe rather than a blanket amnesty: the child answers
+    /// the control request before it emits the result, so an interrupt still
+    /// unanswered here is one the child never acted on, and the failure the
+    /// result reports is the turn's own.
+    fn read_result(&mut self, event: &Value) {
+        let failed = event["is_error"].as_bool().unwrap_or(false)
+            || event["subtype"]
+                .as_str()
+                .is_some_and(|kind| kind != "success");
+        {
+            let mut state = self.state.lock().unwrap();
+            // Taken, acked or not, so an interrupt can never leak into the turn
+            // after the one it ended.
+            let stopped = state.pending_interrupt.take();
+            // The turn queued behind an interrupt is running the moment this
+            // result lands, so the flag is handed to it rather than cleared.
+            state.turn_open = stopped.as_ref().is_some_and(|pending| pending.steered);
+            state.reported_error =
+                match failed && !stopped.as_ref().is_some_and(|pending| pending.acked) {
+                    true => Some(result_error_text(event)),
+                    false => None,
+                };
+            publish_status(&self.status_updates, state.live_status());
+        }
+        // Outside the lock, because emitting is the broadcast channel's
+        // business and not this session's state. A turn the protocol answered
+        // in full leaves nothing to close.
+        self.close_open_calls();
+    }
+
+    /// One message's content blocks, minted in the order the child reported
+    /// them.
+    ///
+    /// The voice decides what a block can be: text and thinking are the agent
+    /// speaking, so they are only read off an `assistant` message — a `user`
+    /// message carrying text is Build's own turn echoed back, and minting that
+    /// would put the human's words in the timeline a second time as narration.
+    fn read_message(&mut self, event: &Value, voice: Voice) {
+        let parent_call_id = event["parent_tool_use_id"].as_str();
+        let Some(blocks) = event["message"]["content"].as_array() else {
+            return;
+        };
+        for block in blocks {
+            match (voice, block["type"].as_str()) {
+                (Voice::Assistant, Some("thinking")) => {
+                    if let Some(summary) = spoken(block["thinking"].as_str()) {
+                        self.report(AgentActivity::Reasoning { summary }, parent_call_id);
+                    }
+                }
+                (Voice::Assistant, Some("text")) => {
+                    if let Some(summary) = spoken(block["text"].as_str()) {
+                        self.report(AgentActivity::Narration { summary }, parent_call_id);
+                    }
+                }
+                (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block, parent_call_id),
+                (Voice::User, Some("tool_result")) => {
+                    self.read_tool_result(event, block, parent_call_id)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn read_tool_use(&mut self, block: &Value, parent_call_id: Option<&str>) {
+        let tool = block["name"].as_str().unwrap_or_default().to_string();
+        let call_id = block["id"].as_str().unwrap_or_default().to_string();
+        if tool.starts_with(BUILD_MCP_TOOL_PREFIX) {
+            self.calls.insert(call_id, RecordedCall::BuildsOwn);
+            return;
+        }
+        let summary = tool_call_summary(&tool, &block["input"]);
+        if parent_call_id.is_none() {
+            let moved = self
+                .state
+                .lock()
+                .unwrap()
+                .surfaces
+                .read_tool_call(&tool, block);
+            self.bump_revision_when(moved);
+        }
+        self.calls.insert(
+            call_id.clone(),
+            RecordedCall::Minted {
+                tool,
+                parent_call_id: parent_call_id.map(str::to_string),
+            },
+        );
+        self.report(AgentActivity::ToolUse { call_id, summary }, parent_call_id);
+    }
+
+    /// One call's answer, reported as the completion of the call it names
+    /// rather than as an event of its own — the pairing this reader has always
+    /// computed, carried outward instead of thrown away.
+    ///
+    /// The answer travels alone, without the tool's name in front of it: the row
+    /// it lands on is the call, which said what tool this was when it was
+    /// minted.
+    fn read_tool_result(&mut self, event: &Value, block: &Value, parent_call_id: Option<&str>) {
+        let call_id = block["tool_use_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        // Taken, not read: a call is answered once, and a session that runs for
+        // hours must not accumulate one entry per tool call it ever made.
+        let answered = self.calls.remove(&call_id);
+        let answered_text = tool_result_text(block);
+        match answered {
+            Some(RecordedCall::BuildsOwn) => return,
+            Some(RecordedCall::Minted {
+                tool,
+                parent_call_id: None,
+            }) => {
+                let now_ms = unix_millis_now();
+                let moved = self.state.lock().unwrap().surfaces.read_tool_answer(
+                    &tool,
+                    &call_id,
+                    event,
+                    &answered_text,
+                    now_ms,
+                );
+                self.note_surfaces_moved(moved);
+            }
+            Some(RecordedCall::Minted { .. }) | None => {}
+        }
+        let outcome = match block["is_error"].as_bool().unwrap_or(false) {
+            true => ToolOutcome::Error,
+            false => ToolOutcome::Ok,
+        };
+        self.report(
+            AgentActivity::ToolResult {
+                call_id,
+                outcome,
+                summary: one_line(&answered_text, TOOL_SUMMARY_LIMIT),
+            },
+            parent_call_id,
+        );
+    }
+
+    fn close_open_calls(&mut self) {
+        let mut still_open_under_a_spawned_agent = HashMap::new();
+        for (call_id, recorded) in std::mem::take(&mut self.calls) {
+            match recorded {
+                RecordedCall::BuildsOwn => {}
+                RecordedCall::Minted {
+                    parent_call_id: Some(_),
+                    ..
+                } => {
+                    still_open_under_a_spawned_agent.insert(call_id, recorded);
+                }
+                RecordedCall::Minted { .. } => {
+                    self.report(
+                        AgentActivity::ToolResult {
+                            call_id,
+                            outcome: ToolOutcome::Unanswered,
+                            summary: String::new(),
+                        },
+                        None,
+                    );
+                }
+            }
+        }
+        self.calls = still_open_under_a_spawned_agent;
+        self.state.lock().unwrap().surfaces.close_pending_creates();
+    }
+
+    fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
+        self.send_report(match parent_call_id {
+            None => ActivityReport::own_work(activity),
+            Some(spawning_call_id) => ActivityReport {
+                activity,
+                parent_call_id: Some(spawning_call_id.to_string()),
+            },
+        });
+    }
+
+    fn send_report(&self, report: ActivityReport) {
+        if let Some(sender) = self.activity.lock().unwrap().as_ref() {
+            let _ = sender.send(report);
+        }
+    }
+}

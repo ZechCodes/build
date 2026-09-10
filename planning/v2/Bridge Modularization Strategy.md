@@ -1,9 +1,17 @@
 # Bridge Modularization Strategy
 
-**Status:** Stages 1–10 implemented; follow-on leaf splits remain
+**Status:** Stages 1–10 and all six follow-on leaf splits complete
 **Scope:** Rust bridge structure and dependency direction; no wire or behavior change
 
-## Why this work is needed
+The original diagnosis and staged design below are retained as the planning
+baseline. The implemented structure and per-stage validation are recorded in
+[Bridge Modularization Progress](Bridge%20Modularization%20Progress.md).
+`app.rs` now has 640 lines and composes project, session, delivery, operation,
+and board state owners; lifecycle disk work returns typed results to application
+settlement adapters. The six follow-on leaf facades retain their public paths
+while organizing their internals by capability.
+
+## Original diagnosis
 
 `bridge/src/app.rs` is 61,274 physical lines, 44.4% of all Rust under
 `bridge/src`. Its production portion is already a large subsystem: the first

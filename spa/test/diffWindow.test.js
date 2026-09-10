@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { diffFileHtml } from "../src/core/diffRender.js";
 import { CAPPED_PREVIEW_ROWS, COLLAPSED_PREVIEW_ROWS, normalizeRowWindow, rowWindowStart } from "../src/core/diffWindow.js";
 import { createDiffViewport } from "../src/core/diffViewport.js";
@@ -116,6 +116,89 @@ describe("the diff viewport controller", () => {
       viewport.attach(scroller);
       expect(box.scrollTop).toBe(100);
     } finally {
+      viewport.dispose();
+      restore();
+    }
+  });
+
+  it("does not repaint a diff for unrelated document interactions while idle", () => {
+    const { scroller, flush, restore } = mountedViewport();
+    const repaint = vi.fn();
+    const viewport = createDiffViewport({ repaint });
+    try {
+      viewport.attach(scroller);
+      document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      document.dispatchEvent(new Event("selectionchange"));
+      flush();
+      expect(repaint).not.toHaveBeenCalled();
+    } finally {
+      viewport.dispose();
+      restore();
+    }
+  });
+
+  it("repaints deferred viewport work once an interaction releases it", () => {
+    const { scroller, flush, restore } = mountedViewport();
+    const repaint = vi.fn();
+    const viewport = createDiffViewport({ repaint });
+    const priorSelection = document.getSelection;
+    let selecting = true;
+    try {
+      document.getSelection = () => ({ isCollapsed: !selecting, anchorNode: scroller, focusNode: scroller });
+      viewport.attach(scroller);
+      viewport.request("EDIT:huge.js");
+      selecting = false;
+      document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      flush();
+      expect(repaint).toHaveBeenCalledTimes(1);
+    } finally {
+      document.getSelection = priorSelection;
+      viewport.dispose();
+      restore();
+    }
+  });
+
+  it("retains a queued repaint that becomes frozen before its frame runs", () => {
+    const { scroller, flush, restore } = mountedViewport();
+    const repaint = vi.fn();
+    const viewport = createDiffViewport({ repaint });
+    const priorSelection = document.getSelection;
+    let selecting = false;
+    try {
+      document.getSelection = () => ({ isCollapsed: !selecting, anchorNode: scroller, focusNode: scroller });
+      viewport.attach(scroller);
+      viewport.request("EDIT:huge.js");
+      selecting = true;
+      flush();
+      expect(repaint).not.toHaveBeenCalled();
+      selecting = false;
+      document.dispatchEvent(new Event("selectionchange"));
+      flush();
+      expect(repaint).toHaveBeenCalledTimes(1);
+    } finally {
+      document.getSelection = priorSelection;
+      viewport.dispose();
+      restore();
+    }
+  });
+
+  it("does not release deferred work after disposal", () => {
+    const { scroller, flush, restore } = mountedViewport();
+    const repaint = vi.fn();
+    const viewport = createDiffViewport({ repaint });
+    const priorSelection = document.getSelection;
+    try {
+      document.getSelection = () => ({ isCollapsed: false, anchorNode: scroller, focusNode: scroller });
+      viewport.attach(scroller);
+      viewport.request("EDIT:huge.js");
+      viewport.dispose();
+      document.getSelection = priorSelection;
+      document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      document.dispatchEvent(new Event("selectionchange"));
+      flush();
+      expect(repaint).not.toHaveBeenCalled();
+    } finally {
+      document.getSelection = priorSelection;
       viewport.dispose();
       restore();
     }

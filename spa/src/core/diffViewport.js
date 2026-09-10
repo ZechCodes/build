@@ -83,7 +83,14 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
       restoreSelection();
     });
   };
-  const onInteractionChange = () => requestPaint();
+  // Document-level interaction events only release viewport work that was
+  // deferred while a selection or comment composer held the rendered rows.
+  // Treating every pointerup as new work repaints the whole git pane for taps
+  // anywhere in the app; on touch browsers that can replace the tapped node
+  // between pointerup and the synthesized click, swallowing its activation.
+  const onInteractionChange = () => {
+    if (pending) requestPaint();
+  };
 
   const selectionInside = () => {
     const selection = page()?.getSelection?.();

@@ -1832,6 +1832,7 @@ struct SettingsPatch {
     default_harness: Option<AgentProvider>,
     agent_modes: Option<Value>,
     isolation: Option<Isolation>,
+    triage_enabled: Option<bool>,
 }
 
 /// What a field does with the value a client sent for it: refuse it, or put it
@@ -1844,7 +1845,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 6] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 7] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -1887,6 +1888,14 @@ impl SettingsPatch {
                 value.as_str().unwrap_or_default(),
                 available,
             )?);
+            Ok(())
+        }),
+        ("triage_enabled", |patch, value, _| {
+            patch.triage_enabled = Some(
+                value
+                    .as_bool()
+                    .ok_or_else(|| "triage_enabled must be a boolean".to_string())?,
+            );
             Ok(())
         }),
     ];
@@ -1951,6 +1960,9 @@ pub struct AppState {
     /// every project that names no isolation of its own. Spent at creation,
     /// like `default_harness`: an existing checkout says what it is itself.
     isolation: Isolation,
+    /// Whether completed diffs automatically receive a review-prioritization pass.
+    /// Missing from older configs means off, so upgrading never starts new agent work.
+    triage_enabled: bool,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     #[cfg(test)]
@@ -2530,6 +2542,7 @@ impl AppState {
             default_harness: DEFAULT_HARNESS,
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
+            triage_enabled: false,
             config_path: None,
             #[cfg(test)]
             config_persist_failure: None,
@@ -2671,6 +2684,10 @@ impl AppState {
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;
         }
+        self.triage_enabled = config
+            .get("triage_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         self.apply_router_config(config);
         self.restore_configured_projects(config);
     }
@@ -4304,6 +4321,7 @@ impl AppState {
             "default_harness": default_harness,
             "agent_modes": self.agent_modes,
             "isolation": isolation,
+            "triage_enabled": self.triage_enabled,
             "router_model": self.router_choice,
             "projects": self.projects.iter().chain(prospective_project).map(|p| {
                 let mut entry = json!({
@@ -6083,7 +6101,8 @@ impl AppState {
                 // A stage that built hands itself to validation: the same
                 // agent, a new turn. Queued rather than written here — the done
                 // socket holds the state lock and a cold delivery needs it free.
-                triage_due = crate::orchestrator::triage_is_due(&report_for_thread, next.is_some());
+                triage_due = self.triage_enabled
+                    && crate::orchestrator::triage_is_due(&report_for_thread, next.is_some());
                 if let Some(turn) = next {
                     self.pending_agent_turns.push(PendingAgentTurn::for_run(
                         run_id,
@@ -7946,6 +7965,7 @@ impl AppState {
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
             "isolation": self.isolation,
+            "triage_enabled": self.triage_enabled,
             "isolation_available": self.account_availability(),
         })
     }
@@ -7979,13 +7999,20 @@ impl AppState {
         };
         let default_harness = patch.default_harness.unwrap_or(self.default_harness);
         let isolation = patch.isolation.unwrap_or(self.isolation);
+        let triage_enabled = patch.triage_enabled.unwrap_or(self.triage_enabled);
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
         config["agent_modes"] = json!(agent_modes);
+        config["triage_enabled"] = json!(triage_enabled);
         self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
         self.agent_modes = agent_modes;
         self.isolation = isolation;
+        self.triage_enabled = triage_enabled;
+        if !triage_enabled {
+            self.pending_agent_turns
+                .retain(|turn| turn.phase != "triage");
+        }
         Ok(self.settings_get())
     }
 
@@ -9571,6 +9598,9 @@ impl AppState {
     /// Everything fallible happens before anything is written. A disagreement
     /// recorded in two of the three places is worse than one recorded in none.
     fn triage_override(&mut self, params: &Value) -> Result<Value, String> {
+        if !self.triage_enabled {
+            return Err("triage.override: triage is disabled".to_string());
+        }
         let run_id = require_str(params, "run_id")?;
         let hunk_id = require_str(params, "hunk_id")?;
         let direction = crate::run::OverrideDirection::parse(&require_str(params, "direction")?)
@@ -17169,6 +17199,7 @@ impl AppState {
             "agents": self.agent_digests(run_id, scope),
             // Review prioritization: an overlay on the diff, never a gate.
             "triage": self.triage_json(active),
+            "triage_enabled": self.triage_enabled,
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
@@ -23212,6 +23243,16 @@ impl DeliveryRunner {
     fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
         let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
         while let Some((turn, mark)) = turns.next_turn() {
+            // A triage turn may have left the app queue before the account setting
+            // was switched off. Recheck at the last point before delivery; a turn
+            // already handed to its agent is allowed to finish and report normally.
+            if turn.phase == "triage" {
+                let mut app = timer.lock(state);
+                if !app.triage_enabled {
+                    mark.settle(&mut app);
+                    continue;
+                }
+            }
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let claimed = timer.lock(state).transition_delivery_operation(
                     operation_id,
@@ -25141,6 +25182,75 @@ mod tests {
         assert_eq!(settings["codex_mode"], "headless");
         assert_eq!(settings["agent_modes"]["claude"], "headless");
         assert_eq!(settings["agent_modes"]["codex"], "tui");
+        assert_eq!(
+            settings["triage_enabled"], false,
+            "automatic triage is opt-in"
+        );
+    }
+
+    #[test]
+    fn triage_setting_migrates_off_and_round_trips_when_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let config = tmp.path().join("config.json");
+        std::fs::write(&config, json!({ "default_harness": "pi" }).to_string()).unwrap();
+        let load = || {
+            AppState::new(
+                repo.clone(),
+                tmp.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&config)
+            .unwrap()
+        };
+
+        let mut migrated = load();
+        assert_eq!(
+            migrated.handle(req("settings.get", json!({})))["result"]["triage_enabled"],
+            false,
+            "an older config cannot opt into background work by omission"
+        );
+        let enabled = migrated.handle(req("settings.set", json!({ "triage_enabled": true })));
+        assert_eq!(enabled["result"]["triage_enabled"], true, "{enabled:?}");
+        drop(migrated);
+
+        let mut reloaded = load();
+        assert_eq!(
+            reloaded.handle(req("settings.get", json!({})))["result"]["triage_enabled"],
+            true
+        );
+        let written: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(written["triage_enabled"], true, "{written:?}");
+    }
+
+    #[test]
+    fn triage_setting_requires_a_boolean_and_a_failed_write_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let config = tmp.path().join("config.json");
+        let mut state = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+
+        let invalid = state.handle(req("settings.set", json!({ "triage_enabled": "yes" })));
+        assert_eq!(invalid["ok"], false, "{invalid:?}");
+        assert!(!state.triage_enabled);
+
+        std::fs::create_dir(&config).unwrap();
+        let failed = state.handle(req("settings.set", json!({ "triage_enabled": true })));
+        assert_eq!(failed["ok"], false, "{failed:?}");
+        assert!(
+            !state.triage_enabled,
+            "the in-memory setting follows only a successful durable write"
+        );
     }
 
     #[test]
@@ -36507,6 +36617,7 @@ mod tests {
     fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
+        state.triage_enabled = true;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-me");
         let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
         std::fs::write(
@@ -36559,6 +36670,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_completed_build_does_not_queue_triage_while_the_setting_is_off() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "no-triage");
+        std::fs::write(
+            state.runs[&run_id].worktree.path.join("crypto.rs"),
+            "fn a() {}\n",
+        )
+        .unwrap();
+        state.pending_agent_turns.clear();
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "built while triage is off".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .all(|turn| turn.phase != "triage"),
+            "the default-off setting starts no triage work"
+        );
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(view["result"]["triage_enabled"], false, "{view:?}");
+        assert!(view["result"]["triage"].is_null(), "{view:?}");
+    }
+
     /// The pass lands on the run and ships to the SPA; when the diff moves out
     /// from under it, the same pass still ships — labelled stale — and a new one
     /// is queued for the revision that replaced it.
@@ -36566,6 +36711,7 @@ mod tests {
     fn a_triage_ships_with_the_run_and_goes_stale_when_the_diff_moves() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
+        state.triage_enabled = true;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-staleness");
         let worktree = state.runs[&run_id].worktree.path.clone();
         std::fs::write(worktree.join("crypto.rs"), "fn a() {}\n").unwrap();
@@ -36627,6 +36773,118 @@ mod tests {
         );
     }
 
+    #[test]
+    fn disabling_triage_drops_queued_passes_but_keeps_the_last_report() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        state.triage_enabled = true;
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "disable-triage");
+        let worktree = state.runs[&run_id].worktree.path.clone();
+        std::fs::write(worktree.join("crypto.rs"), "fn a() {}\n").unwrap();
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "first revision".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        let (hunk_ids, revision) = diff_vocabulary(&state, &run_id);
+        state.on_agent_done(&run_id, done_triage(&revision, &hunk_ids));
+
+        std::fs::write(worktree.join("crypto.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        state.pending_agent_turns.clear();
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "second revision".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.phase == "triage"),
+            "the enabled account queued a replacement pass"
+        );
+
+        let disabled = state.handle(req("settings.set", json!({ "triage_enabled": false })));
+        assert_eq!(disabled["ok"], true, "{disabled:?}");
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .all(|turn| turn.phase != "triage"),
+            "a pass that has not started is cancelled"
+        );
+        let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(view["result"]["triage_enabled"], false, "{view:?}");
+        assert_eq!(
+            view["result"]["triage"]["based_on"], revision,
+            "turning the feature off does not erase the report history: {view:?}"
+        );
+        let refused = state.handle(req(
+            "triage.override",
+            json!({
+                "run_id": run_id,
+                "hunk_id": hunk_ids[0],
+                "direction": "surface",
+            }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(
+            refused["error"], "triage.override: triage is disabled",
+            "a stale client cannot mutate hidden triage data"
+        );
+    }
+
+    #[test]
+    fn disabling_triage_stops_a_pass_already_drained_for_delivery() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        state.triage_enabled = true;
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "drained-triage");
+        std::fs::write(
+            state.runs[&run_id].worktree.path.join("crypto.rs"),
+            "fn a() {}\n",
+        )
+        .unwrap();
+        state.pending_agent_turns.clear();
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "queue the pass".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+        let state = state.shared();
+        let turns = state.lock().unwrap().take_pending_turns();
+        {
+            let mut app = state.lock().unwrap();
+            assert!(app.turns_in_flight.holds_owner(&run_id));
+            let disabled = app.handle(req("settings.set", json!({ "triage_enabled": false })));
+            assert_eq!(disabled["ok"], true, "{disabled:?}");
+        }
+
+        DeliveryRunner::run(&state, turns);
+
+        let app = state.lock().unwrap();
+        assert!(
+            app.tabs.is_empty(),
+            "the drained triage turn was discarded before opening an agent tab"
+        );
+        assert!(
+            app.turns_in_flight.is_empty(),
+            "discarding the turn settles its delivery mark"
+        );
+    }
+
     /// Triage asks the reviewer for nothing, so it must not ring their bell.
     /// A pass finishing is status — it updates the review surface and says so
     /// quietly, unlike the `done` that produced the diff in the first place.
@@ -36634,6 +36892,7 @@ mod tests {
     fn a_finished_triage_pass_updates_the_surface_without_asking_for_the_user() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
+        state.triage_enabled = true;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-quietly");
         std::fs::write(
             state.runs[&run_id].worktree.path.join("crypto.rs"),
@@ -36681,6 +36940,7 @@ mod tests {
     fn a_report_that_changed_nothing_does_not_ask_for_the_same_triage_twice() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
+        state.triage_enabled = true;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-once");
         std::fs::write(
             state.runs[&run_id].worktree.path.join("crypto.rs"),
@@ -36737,6 +36997,7 @@ mod tests {
         branch: &str,
         files: &[(&str, &str)],
     ) -> (String, HashMap<String, String>) {
+        state.triage_enabled = true;
         let run_id = adopted_run(state, repo, dir, branch);
         let worktree = state.runs[&run_id].worktree.path.clone();
         for (path, contents) in files {

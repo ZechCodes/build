@@ -20,6 +20,7 @@ import { chosenProviderId } from "../core/agentChoice.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
 import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
 import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
+import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
 import { loadModelCatalog, refreshModelCatalog } from "../app.js";
 import {
   catalogForProvider,
@@ -72,6 +73,7 @@ export async function renderSettings() {
     ${agentModesPanelHtml()}
     ${defaultHarnessPanelHtml()}
     ${isolationPanelHtml()}
+    ${triageSettingPanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -146,6 +148,7 @@ export async function renderSettings() {
   await mountAgentModes($("#root"), { callRpc, onSaved: syncModelCatalog });
   await mountDefaultHarness($("#root"), { callRpc, onSaved: syncModelCatalog });
   await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION });
+  await mountTriageSetting($("#root"), { callRpc });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);

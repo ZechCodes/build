@@ -301,7 +301,8 @@ describe("the Settings page", () => {
     expect(at("Agent modes")).toBe(at("Agent defaults") + 1);
     expect(at("Fallback agent")).toBe(at("Agent modes") + 1);
     expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
-    expect(at("Appearance")).toBe(at("Work isolation") + 1);
+    expect(at("Diff triage")).toBe(at("Work isolation") + 1);
+    expect(at("Appearance")).toBe(at("Diff triage") + 1);
   }, SLOW_IMPORT_MS);
 
   it("updates same-page creation defaults after a mode save even when catalog refresh fails", async () => {

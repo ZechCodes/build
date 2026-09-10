@@ -55,6 +55,7 @@ async function mount({ triage = TRIAGE, projectId = "proj-1" } = {}) {
   const pane = mountGitPane(container, {
     scope: { run_id: "run-1" },
     projectId,
+    triageEnabled: () => true,
     triage: () => triage,
     callRpc,
   });
@@ -162,6 +163,7 @@ describe("the triage overlay in the Changes pane", () => {
     const pane = mountGitPane(container, {
       scope: { run_id: "run-1" },
       projectId: "proj-1",
+      triageEnabled: () => true,
       triage: () => pass,
       callRpc,
     });
@@ -173,6 +175,39 @@ describe("the triage overlay in the Changes pane", () => {
     await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
     await settle();
     expect(container.querySelector(".file.tcritical").dataset.key).toBe("EDIT:src/crypto.rs");
+  });
+
+  it("turns a preserved pass on and off while the pane stays mounted", async () => {
+    let enabled = false;
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") return dirtyStatus();
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return log();
+      return {};
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const pane = mountGitPane(container, {
+      scope: { run_id: "run-1" },
+      projectId: "proj-1",
+      triageEnabled: () => enabled,
+      triage: () => TRIAGE,
+      callRpc,
+    });
+    mounted.push(pane);
+    await settle();
+    expect(container.querySelector(".triagebar")).toBeNull();
+
+    enabled = true;
+    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    await settle();
+    expect(container.querySelector(".file.tcritical")).toBeTruthy();
+
+    enabled = false;
+    await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
+    await settle();
+    expect(container.querySelector(".triagebar")).toBeNull();
+    expect(container.querySelector(".toverride")).toBeNull();
   });
 
   it("leaves a surface with no triage to read exactly as it was", async () => {
@@ -215,6 +250,7 @@ describe("disagreeing with the pass in the Changes pane", () => {
     const pane = mountGitPane(container, {
       scope: { run_id: "run-1" },
       projectId: "proj-1",
+      triageEnabled: () => true,
       triage: () => pass,
       callRpc,
     });
@@ -368,7 +404,7 @@ describe("the triage overlay on the aggregate review stack", () => {
   const mountPlug = async (payload) => {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const plug = createReviewPlug({ fetchDiff: async () => ({ patch: DIRTY_PATCH, ...payload }) });
+    const plug = createReviewPlug({ fetchDiff: async () => ({ patch: DIRTY_PATCH, triageEnabled: true, ...payload }) });
     plug.mount(host);
     await settle();
     return { host, plug };
@@ -407,12 +443,21 @@ describe("the triage overlay on the aggregate review stack", () => {
     plug.unmount();
   });
 
+  it("hides a preserved report when the run explicitly disables triage", async () => {
+    const { host, plug } = await mountPlug({ triageEnabled: false, triage: TRIAGE, projectId: "proj-1" });
+    expect(host.querySelector(".triagebar")).toBeNull();
+    expect(host.querySelector(".tgrouphead")).toBeNull();
+    expect(host.querySelector(".toverride")).toBeNull();
+    expect(host.querySelectorAll(".file")).toHaveLength(2);
+    plug.unmount();
+  });
+
   it("posts the reviewer's disagreement and re-orders the stack on the tap", async () => {
     const submitOverride = vi.fn(async () => ({}));
     const host = document.createElement("div");
     document.body.appendChild(host);
     const plug = createReviewPlug({
-      fetchDiff: async () => ({ patch: DIRTY_PATCH, triage: TRIAGE, projectId: "proj-1" }),
+      fetchDiff: async () => ({ patch: DIRTY_PATCH, triageEnabled: true, triage: TRIAGE, projectId: "proj-1" }),
       submitOverride,
     });
     plug.mount(host);

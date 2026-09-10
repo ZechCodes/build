@@ -348,6 +348,7 @@ export async function renderBranch() {
       // changeset is open, and the reviewer's trust dial is remembered for the
       // project they are reading.
       projectId,
+      triageEnabled: () => Boolean(row && row.run && row.run.triage_enabled === true),
       triage: () => (row && row.run && row.run.triage) || null,
     });
     ensureTabsPainted();

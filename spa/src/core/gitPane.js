@@ -372,6 +372,7 @@ export function mountGitPane(
     // trust dial is remembered for. A surface with neither renders the plain
     // stack it always did.
     triage = () => null,
+    triageEnabled = () => false,
     projectId = null,
     // Whose conversation the comments written here belong in: the agent whose
     // bubble is open in the rail beside this pane. Mounted without one (the
@@ -538,20 +539,26 @@ export function mountGitPane(
   // mounts none and its stack draws no offers.
   const overrides = commentsSupported(scope)
     ? createTriageOverrides({
-        post: ({ hunk_id, direction, note }) =>
-          callRpc("triage.override", { run_id: scope.run_id, hunk_id, direction, note }),
+        post: ({ hunk_id, direction, note }) => {
+          if (!triageEnabled()) throw new Error("Review prioritization is turned off.");
+          return callRpc("triage.override", { run_id: scope.run_id, hunk_id, direction, note });
+        },
         onChange: () => render(),
       })
     : null;
 
   /** The pass as the reviewer's latest word makes it: what this pane renders,
    *  and what it decides to repaint on. */
-  const currentTriage = () => (overrides ? overrides.apply(triage()) : triage());
+  const currentTriage = () => {
+    if (!triageEnabled()) return undefined;
+    return overrides ? overrides.apply(triage()) : triage();
+  };
 
   /** The freeze key for one poll: the repo's own, plus what the triage overlay
    *  is drawing from. A pass landing (or a re-pass reclassifying) moves nothing
    *  in git, so without it the ordering would wait for the next commit. */
-  const pollKeyNow = (status, log) => [gitPollKey(status, log), triageFingerprint(currentTriage())].join("\x03");
+  const pollKeyNow = (status, log) =>
+    [gitPollKey(status, log), String(triageEnabled()), triageFingerprint(currentTriage())].join("\x03");
 
   // Comments are a conversation post, so they exist where there is an agent to
   // post to. One layer serves every changeset: switching selection keeps the
@@ -588,7 +595,7 @@ export function mountGitPane(
    *  primary checkout renders the plain stack it always did. The pass is read
    *  fresh on every paint — a re-triage lands under this pane while it is open. */
   const triageOverlay = (patch) => {
-    if (!commentsSupported(scope)) return null;
+    if (!commentsSupported(scope) || !triageEnabled()) return null;
     return {
       triage: currentTriage(),
       patch: patch || "",
@@ -596,7 +603,7 @@ export function mountGitPane(
       expandedGroups: expandedGroups.get(String(selected)) || null,
       // The offers are on the hunks of the changeset the pass actually read;
       // a hunk it never named renders none (core/triageModel).
-      overridable: Boolean(overrides),
+      overridable: Boolean(overrides) && triageEnabled(),
     };
   };
 

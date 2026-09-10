@@ -416,6 +416,7 @@ function projectClicked(target) {
   const create = target.closest("[data-project-create]");
   if (create) {
     const block = blocksPainted.get(create.dataset.projectCreate);
+    expandFold(create.dataset.projectCreate);
     closeMenu();
     openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", kind: "branch", navigate: goFromInbox });
     return true;
@@ -432,6 +433,15 @@ function toggleFold(projectId) {
   const block = blocksPainted.get(projectId);
   if (!block) return;
   folds.set(projectId, !blockIsFolded(block, folds));
+  persistProjectFolds(folds, localStorage);
+  draw();
+}
+
+/** Creating a branch gives the new row somewhere visible to land. */
+function expandFold(projectId) {
+  const block = blocksPainted.get(projectId);
+  if (!block || !blockIsFolded(block, folds)) return;
+  folds.set(projectId, false);
   persistProjectFolds(folds, localStorage);
   draw();
 }

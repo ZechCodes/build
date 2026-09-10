@@ -71,7 +71,7 @@ describe("the Changes pane's stack", () => {
       if (method === "git.log") return log();
       return {};
     });
-    const pane = mountGitPane(container, { scope, callRpc });
+    const pane = mountGitPane(container, { scope, callRpc, triageEnabled: () => Boolean(scope.run_id) });
     await settle();
     return { container, pane };
   };

@@ -109,6 +109,7 @@ export function createReviewPlug({
   // about triage at all: a surface that never mentions it renders the plain
   // stack, while one that reports `triage: null` has a pass missing and says so.
   let triageReport;
+  let triageEnabled = false;
   let triageProject = null;
   let trustDial = false;
   const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
@@ -210,7 +211,7 @@ export function createReviewPlug({
       noiseExpanded,
       empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
       review:
-        triageReport === undefined
+        !triageEnabled || triageReport === undefined
           ? null
           : {
               triage: currentTriage(),
@@ -342,7 +343,12 @@ export function createReviewPlug({
     renderedPatch = value.patch || "";
     responseDiffKey = value.diff_key || null;
     commentableNow = value.commentable !== false && Boolean(commentLayer);
-    triageReport = value.triage || null;
+    // A saved setting can be older than the run payload already on screen.
+    // Keep the report in the record, but only a live read may opt this paint
+    // into triage; the instant cached diff therefore always starts in file
+    // order and cannot expose a disabled overlay while the bridge is offline.
+    triageEnabled = false;
+    triageReport = undefined;
     if (!value.projectId || value.projectId === triageProject) return;
     triageProject = value.projectId;
     trustDial = loadTrustDial(triageProject);
@@ -377,7 +383,8 @@ export function createReviewPlug({
     const nextCommentable = payload.commentable !== false && Boolean(commentLayer);
     // The pass, and the project whose dial governs how it is read. A project
     // the plug has not seen before brings its remembered dial with it.
-    const nextTriage = Object.hasOwn(payload, "triage") ? payload.triage || null : triageReport;
+    const nextTriageEnabled = payload.triageEnabled === true;
+    const nextTriage = nextTriageEnabled && Object.hasOwn(payload, "triage") ? payload.triage || null : undefined;
     if (payload.projectId && payload.projectId !== triageProject) {
       triageProject = payload.projectId;
       trustDial = loadTrustDial(triageProject);
@@ -385,6 +392,7 @@ export function createReviewPlug({
     const key = [
       String(payload.key ?? ""),
       String(nextCommentable),
+      String(nextTriageEnabled),
       String(trustDial),
       triageFingerprint(overrides ? overrides.apply(nextTriage) : nextTriage),
       String(payload.diff_key ?? payload.revision ?? payload.patch ?? ""),
@@ -410,6 +418,7 @@ export function createReviewPlug({
     renderedPatch = payload.patch || "";
     commentableNow = nextCommentable;
     triageReport = nextTriage;
+    triageEnabled = nextTriageEnabled;
     diffKey = key;
     // Only a paint that changed anything rewrites the record — the skip branch
     // above already filtered the every-1.6s sameness out.
@@ -419,6 +428,7 @@ export function createReviewPlug({
         patch: payload.patch,
         commentable: payload.commentable !== false,
         triage: Object.hasOwn(payload, "triage") ? payload.triage || null : null,
+        triageEnabled: nextTriageEnabled,
         projectId: payload.projectId || null,
         file_edited_at: fileEditedAt,
         diff_key: responseDiffKey,

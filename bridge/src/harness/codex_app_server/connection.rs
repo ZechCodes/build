@@ -210,10 +210,17 @@ impl AppServerConnection {
                 ConnectionError::Protocol(format!("unknown response id {request_id}"))
             })?;
         let body = match (result, error) {
-            (Some(result), None) => operation
-                .decode_result(result)
-                .map_err(ConnectionError::Protocol)
-                .map(Ok)?,
+            (Some(result), None) => match operation.decode_result(result) {
+                Ok(result) => Ok(result),
+                Err(message) if matches!(operation, PendingOperation::ReadThread { .. }) => {
+                    Err(RpcError {
+                        code: -32603,
+                        message,
+                        data: None,
+                    })
+                }
+                Err(message) => return Err(ConnectionError::Protocol(message)),
+            },
             (None, Some(error)) => {
                 Err(RpcError::from_value(error).map_err(ConnectionError::Protocol)?)
             }
@@ -423,6 +430,26 @@ mod tests {
         assert!(serde_json::to_writer(&mut buffer, &"x".repeat(1024)).is_err());
         assert!(buffer.exceeded);
         assert!(buffer.bytes.len() <= 8);
+    }
+
+    #[test]
+    fn malformed_optional_thread_read_is_a_nonfatal_operation_error() {
+        let connection = AppServerConnection::memory(AppServerLimits::default().connection());
+        connection
+            .request(PendingOperation::ReadThread {
+                thread_id: "child".to_string(),
+            })
+            .unwrap();
+        let mut input = Cursor::new(b"{\"id\":1,\"result\":{\"thread\":{}}}\n");
+        let event = connection.read_event(&mut input).unwrap().unwrap();
+        assert!(matches!(
+            event,
+            ConnectionEvent::Response {
+                operation: PendingOperation::ReadThread { .. },
+                result: Err(_),
+            }
+        ));
+        assert_eq!(connection.pending_count(), 0);
     }
 
     #[test]

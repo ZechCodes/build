@@ -323,6 +323,34 @@ no findings across 244 production Rust and frontend files and all 59 extracted
 test files; staged Gitleaks passes.
 Live Python interop remains unexercised with its environment variable unset.
 
+#### Follow-up sync with main
+
+The next sync incorporates `124a4bc1`, matching both main and origin/main when
+fetched. It includes opt-in diff triage, authoritative Codex subagent metadata,
+and expanding folded projects when creating a branch. The app facade is now
+24,138 lines, with this main snapshot's production prefix unchanged.
+
+Five new upstream tests live in the existing settings and workflow-triage
+modules. Existing tests and the shared `triaged_run` helper explicitly enable
+triage where upstream does. The source audit preserves all 757 app tests and
+222 helpers; its 29 formatting/comment differences are inherited unchanged
+from the prior sync, with no new executable difference.
+
+Frontend lint and build pass, and all 150 tests in the seven updated frontend
+test files pass. The frontend source matches the selected main snapshot
+exactly. The broader frontend suite's previously recorded timing limitation
+was not re-exercised for this follow-up.
+
+Rust discovery finds 2,115 library test cases, including the 757 app tests.
+`cargo test --all --no-fail-fast` finishes with 2,184 passed, 1 failed, and
+7 ignored; the library has 2,109 passed, no failures, and 6 ignored. The only
+failed target is the previously reproduced `concurrency_load` output floor,
+measuring 75,226 bytes. All other targets pass. Formatting and all-target Clippy
+with warnings denied pass. Semgrep reports no findings across 245 production
+Rust/frontend files and all 59 extracted test files; staged Gitleaks passes.
+Live Python interop remains
+unexercised with `BUILD_SECURE_TRANSPORT_PY` unset.
+
 ### PR 3: Remove leaf-to-app utility dependencies
 
 Move base64 wire helpers beside transport/encoding and move canonical scoped

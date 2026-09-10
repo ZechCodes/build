@@ -317,6 +317,28 @@ describe("the projects face", () => {
     expect(typeof options.navigate).toBe("function");
   });
 
+  it("expands a collapsed project when creating a branch in it", () => {
+    blockFor("p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
+
+    blockFor("p1").querySelector('[data-project-create="p1"]').click();
+
+    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
+    expect(blockFor("p1").querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("true");
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
+    expect(openCreateWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("expands a quiet project that started collapsed when creating a branch in it", () => {
+    feed([branchRow({ anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
+
+    blockFor("p1").querySelector('[data-project-create="p1"]').click();
+
+    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
+  });
+
   it("opens the new-repository sheet from the top, and re-reads the feed once it is made", () => {
     list().querySelector("[data-new-project]").click();
     expect(openNewRepo).toHaveBeenCalledTimes(1);

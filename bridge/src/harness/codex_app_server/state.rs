@@ -395,6 +395,9 @@ impl CodexSessionState {
             PendingOperation::InterruptTurn { turn_id, .. } => {
                 self.interrupt_response(turn_id, expect_interrupted(result)?, limits)
             }
+            PendingOperation::ReadThread { .. } => Err(StateError(
+                "thread/read metadata response reached session state".to_string(),
+            )),
         }
     }
 

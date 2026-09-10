@@ -1832,6 +1832,7 @@ struct SettingsPatch {
     default_harness: Option<AgentProvider>,
     agent_modes: Option<Value>,
     isolation: Option<Isolation>,
+    triage_enabled: Option<bool>,
 }
 
 /// What a field does with the value a client sent for it: refuse it, or put it
@@ -1844,7 +1845,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 6] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 7] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -1887,6 +1888,14 @@ impl SettingsPatch {
                 value.as_str().unwrap_or_default(),
                 available,
             )?);
+            Ok(())
+        }),
+        ("triage_enabled", |patch, value, _| {
+            patch.triage_enabled = Some(
+                value
+                    .as_bool()
+                    .ok_or_else(|| "triage_enabled must be a boolean".to_string())?,
+            );
             Ok(())
         }),
     ];
@@ -1951,6 +1960,9 @@ pub struct AppState {
     /// every project that names no isolation of its own. Spent at creation,
     /// like `default_harness`: an existing checkout says what it is itself.
     isolation: Isolation,
+    /// Whether completed diffs automatically receive a review-prioritization pass.
+    /// Missing from older configs means off, so upgrading never starts new agent work.
+    triage_enabled: bool,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     #[cfg(test)]
@@ -2530,6 +2542,7 @@ impl AppState {
             default_harness: DEFAULT_HARNESS,
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
+            triage_enabled: false,
             config_path: None,
             #[cfg(test)]
             config_persist_failure: None,
@@ -2671,6 +2684,10 @@ impl AppState {
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;
         }
+        self.triage_enabled = config
+            .get("triage_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         self.apply_router_config(config);
         self.restore_configured_projects(config);
     }
@@ -4304,6 +4321,7 @@ impl AppState {
             "default_harness": default_harness,
             "agent_modes": self.agent_modes,
             "isolation": isolation,
+            "triage_enabled": self.triage_enabled,
             "router_model": self.router_choice,
             "projects": self.projects.iter().chain(prospective_project).map(|p| {
                 let mut entry = json!({
@@ -6083,7 +6101,8 @@ impl AppState {
                 // A stage that built hands itself to validation: the same
                 // agent, a new turn. Queued rather than written here — the done
                 // socket holds the state lock and a cold delivery needs it free.
-                triage_due = crate::orchestrator::triage_is_due(&report_for_thread, next.is_some());
+                triage_due = self.triage_enabled
+                    && crate::orchestrator::triage_is_due(&report_for_thread, next.is_some());
                 if let Some(turn) = next {
                     self.pending_agent_turns.push(PendingAgentTurn::for_run(
                         run_id,
@@ -7946,6 +7965,7 @@ impl AppState {
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
             "isolation": self.isolation,
+            "triage_enabled": self.triage_enabled,
             "isolation_available": self.account_availability(),
         })
     }
@@ -7979,13 +7999,20 @@ impl AppState {
         };
         let default_harness = patch.default_harness.unwrap_or(self.default_harness);
         let isolation = patch.isolation.unwrap_or(self.isolation);
+        let triage_enabled = patch.triage_enabled.unwrap_or(self.triage_enabled);
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
         config["agent_modes"] = json!(agent_modes);
+        config["triage_enabled"] = json!(triage_enabled);
         self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
         self.agent_modes = agent_modes;
         self.isolation = isolation;
+        self.triage_enabled = triage_enabled;
+        if !triage_enabled {
+            self.pending_agent_turns
+                .retain(|turn| turn.phase != "triage");
+        }
         Ok(self.settings_get())
     }
 
@@ -9571,6 +9598,9 @@ impl AppState {
     /// Everything fallible happens before anything is written. A disagreement
     /// recorded in two of the three places is worse than one recorded in none.
     fn triage_override(&mut self, params: &Value) -> Result<Value, String> {
+        if !self.triage_enabled {
+            return Err("triage.override: triage is disabled".to_string());
+        }
         let run_id = require_str(params, "run_id")?;
         let hunk_id = require_str(params, "hunk_id")?;
         let direction = crate::run::OverrideDirection::parse(&require_str(params, "direction")?)
@@ -17169,6 +17199,7 @@ impl AppState {
             "agents": self.agent_digests(run_id, scope),
             // Review prioritization: an overlay on the diff, never a gate.
             "triage": self.triage_json(active),
+            "triage_enabled": self.triage_enabled,
             "auto_advance": active.auto_advance,
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
@@ -23212,6 +23243,16 @@ impl DeliveryRunner {
     fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
         let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
         while let Some((turn, mark)) = turns.next_turn() {
+            // A triage turn may have left the app queue before the account setting
+            // was switched off. Recheck at the last point before delivery; a turn
+            // already handed to its agent is allowed to finish and report normally.
+            if turn.phase == "triage" {
+                let mut app = timer.lock(state);
+                if !app.triage_enabled {
+                    mark.settle(&mut app);
+                    continue;
+                }
+            }
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let claimed = timer.lock(state).transition_delivery_operation(
                     operation_id,

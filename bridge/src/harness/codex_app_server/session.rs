@@ -17,7 +17,7 @@ use super::process::{
 };
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
-    ParentThreadFilter, ParentThreadRoute, PendingOperation, RoutedServerRequest,
+    OperationResult, ParentThreadFilter, ParentThreadRoute, PendingOperation, RoutedServerRequest,
     ServerNotification, ThreadMetadataNotification,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
@@ -383,6 +383,28 @@ impl SessionCore {
     fn handle_connection(self: &Arc<Self>, event: ConnectionEvent) -> Result<(), HarnessError> {
         match event {
             ConnectionEvent::Response { operation, result } => {
+                if let PendingOperation::ReadThread { thread_id } = operation {
+                    if let Ok(OperationResult::ThreadRead(result)) = result {
+                        if result.thread.id == thread_id {
+                            if let Some(parent) = self.expected_parent_thread() {
+                                if self
+                                    .subagents
+                                    .lock()
+                                    .unwrap()
+                                    .apply_thread_read(&result, &parent)
+                                {
+                                    self.surfaces_revision.bump();
+                                }
+                            }
+                        }
+                    }
+                    self.subagents
+                        .lock()
+                        .unwrap()
+                        .hydration_finished(&thread_id, false);
+                    self.request_next_subagent_hydration();
+                    return Ok(());
+                }
                 self.log(
                     "response_received",
                     [
@@ -532,9 +554,14 @@ impl SessionCore {
     }
 
     fn translate(&self, notification: &ServerNotification) -> Result<(), HarnessError> {
-        if self.subagents.lock().unwrap().apply(notification) {
+        let changed = {
+            let mut subagents = self.subagents.lock().unwrap();
+            subagents.apply(notification)
+        };
+        if changed {
             self.surfaces_revision.bump();
         }
+        self.request_next_subagent_hydration();
         let reports = self
             .translator
             .lock()
@@ -543,6 +570,25 @@ impl SessionCore {
             .map_err(|error| HarnessError::Session(error.to_string()))?;
         self.report_all(reports);
         Ok(())
+    }
+
+    fn request_next_subagent_hydration(&self) {
+        let thread_id = self.subagents.lock().unwrap().hydration_candidate();
+        let Some(thread_id) = thread_id else { return };
+        // This is descriptive enrichment. A refused read must not fail the
+        // parent turn or hide the lifecycle data already observed.
+        if self
+            .connection
+            .request(PendingOperation::ReadThread {
+                thread_id: thread_id.clone(),
+            })
+            .is_err()
+        {
+            self.subagents
+                .lock()
+                .unwrap()
+                .hydration_finished(&thread_id, true);
+        }
     }
 
     fn expected_parent_thread(&self) -> Option<String> {
@@ -901,6 +947,7 @@ fn operation_ids(operation: &PendingOperation) -> (Option<&str>, Option<&str>) {
             (Some(thread_id), Some(turn_id))
         }
         PendingOperation::ResumeThread { thread_id, .. } => (Some(thread_id), None),
+        PendingOperation::ReadThread { thread_id } => (Some(thread_id), None),
         PendingOperation::Initialize | PendingOperation::StartThread { .. } => (None, None),
     }
 }
@@ -931,6 +978,7 @@ fn operation_event(operation: &PendingOperation) -> &'static str {
         PendingOperation::StartTurn { .. } => "turn_start_sent",
         PendingOperation::SteerTurn { .. } => "turn_steer_sent",
         PendingOperation::InterruptTurn { .. } => "turn_interrupt_sent",
+        PendingOperation::ReadThread { .. } => "thread_read_sent",
     }
 }
 
@@ -1081,7 +1129,9 @@ mod tests {
         CHILD_THREAD_ID, CHILD_TURN_ID, SELECTED_EFFORT, THREAD_ID, TURN_ID,
     };
     use crate::harness::codex_app_server::policy::AfterResponse;
-    use crate::harness::codex_app_server::protocol::ServerResponse;
+    use crate::harness::codex_app_server::protocol::{
+        ItemLifecycle, ItemNotification, RpcError, ServerResponse, ThreadReadResult, ThreadSummary,
+    };
     use crate::harness::AgentSession;
     use crate::pty::HarnessSpec;
 
@@ -1187,6 +1237,83 @@ mod tests {
         assert_eq!(session.status(), status_before);
         assert!(session.quiet_for() >= Duration::from_secs(60));
         assert_eq!(session.surfaces().unwrap().subagents.len(), 1);
+        assert_eq!(session.epitaph(), None);
+        session.end();
+    }
+
+    #[test]
+    fn thread_read_enrichment_never_touches_parent_liveness() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), "read hold");
+        let (session, _activity) = scripted_session(root.path(), &script);
+        wait_until("opened its parent thread", || {
+            session.session_id().is_some()
+        });
+        let activity = ServerNotification::Item(ItemNotification {
+            lifecycle: ItemLifecycle::Completed,
+            thread_id: THREAD_ID.to_string(),
+            turn_id: TURN_ID.to_string(),
+            item: json!({
+                "id":"activity", "type":"subAgentActivity", "agentPath":"/root/reviewer",
+                "agentThreadId":CHILD_THREAD_ID, "kind":"started"
+            }),
+        });
+        {
+            let mut subagents = session.core.subagents.lock().unwrap();
+            subagents.apply(&activity);
+            assert_eq!(
+                subagents.hydration_candidate().as_deref(),
+                Some(CHILD_THREAD_ID)
+            );
+        }
+        session.backdate_last_output(Duration::from_secs(60));
+        let status_before = session.status();
+        let result = ThreadReadResult {
+            thread: ThreadSummary {
+                id: CHILD_THREAD_ID.to_string(),
+                parent_thread_id: Some(THREAD_ID.to_string()),
+                preview: None,
+                agent_role: None,
+                agent_nickname: Some("Schrodinger".to_string()),
+                name: None,
+                model: Some(Some("gpt-5.6-sol".to_string())),
+                reasoning_effort: Some(Some("low".to_string())),
+            },
+        };
+        session
+            .core
+            .handle_connection(ConnectionEvent::Response {
+                operation: PendingOperation::ReadThread {
+                    thread_id: CHILD_THREAD_ID.to_string(),
+                },
+                result: Ok(OperationResult::ThreadRead(result.clone())),
+            })
+            .unwrap();
+        let agent = &session.surfaces().unwrap().subagents[0];
+        assert_eq!(agent.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
+
+        for response in [
+            Ok(OperationResult::ThreadRead(ThreadReadResult {
+                thread: ThreadSummary {
+                    id: "wrong-child".to_string(),
+                    ..result.thread.clone()
+                },
+            })),
+            Err(RpcError::new(-32603, "malformed optional metadata")),
+        ] {
+            session
+                .core
+                .handle_connection(ConnectionEvent::Response {
+                    operation: PendingOperation::ReadThread {
+                        thread_id: CHILD_THREAD_ID.to_string(),
+                    },
+                    result: response,
+                })
+                .unwrap();
+        }
+        assert_eq!(session.status(), status_before);
+        assert!(session.quiet_for() >= Duration::from_secs(60));
         assert_eq!(session.epitaph(), None);
         session.end();
     }

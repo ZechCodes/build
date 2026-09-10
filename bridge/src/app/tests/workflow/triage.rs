@@ -49,6 +49,7 @@ fn done_triage(based_on: &str, hunk_ids: &[String]) -> DoneReport {
 fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
+    state.triage_enabled = true;
     let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-me");
     let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
     std::fs::write(
@@ -101,6 +102,40 @@ fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
     );
 }
 
+#[test]
+fn a_completed_build_does_not_queue_triage_while_the_setting_is_off() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "no-triage");
+    std::fs::write(
+        state.runs[&run_id].worktree.path.join("crypto.rs"),
+        "fn a() {}\n",
+    )
+    .unwrap();
+    state.pending_agent_turns.clear();
+
+    state.on_agent_done(
+        &run_id,
+        DoneReport {
+            phase: DonePhase::Build,
+            status: DoneStatus::Completed,
+            summary: "built while triage is off".into(),
+            outputs: DoneOutputs::default(),
+        },
+    );
+
+    assert!(
+        state
+            .pending_agent_turns
+            .iter()
+            .all(|turn| turn.phase != "triage"),
+        "the default-off setting starts no triage work"
+    );
+    let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+    assert_eq!(view["result"]["triage_enabled"], false, "{view:?}");
+    assert!(view["result"]["triage"].is_null(), "{view:?}");
+}
+
 /// The pass lands on the run and ships to the SPA; when the diff moves out
 /// from under it, the same pass still ships — labelled stale — and a new one
 /// is queued for the revision that replaced it.
@@ -108,6 +143,7 @@ fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
 fn a_triage_ships_with_the_run_and_goes_stale_when_the_diff_moves() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
+    state.triage_enabled = true;
     let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-staleness");
     let worktree = state.runs[&run_id].worktree.path.clone();
     std::fs::write(worktree.join("crypto.rs"), "fn a() {}\n").unwrap();
@@ -169,6 +205,118 @@ fn a_triage_ships_with_the_run_and_goes_stale_when_the_diff_moves() {
     );
 }
 
+#[test]
+fn disabling_triage_drops_queued_passes_but_keeps_the_last_report() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    state.triage_enabled = true;
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "disable-triage");
+    let worktree = state.runs[&run_id].worktree.path.clone();
+    std::fs::write(worktree.join("crypto.rs"), "fn a() {}\n").unwrap();
+    state.on_agent_done(
+        &run_id,
+        DoneReport {
+            phase: DonePhase::Build,
+            status: DoneStatus::Completed,
+            summary: "first revision".into(),
+            outputs: DoneOutputs::default(),
+        },
+    );
+    let (hunk_ids, revision) = diff_vocabulary(&state, &run_id);
+    state.on_agent_done(&run_id, done_triage(&revision, &hunk_ids));
+
+    std::fs::write(worktree.join("crypto.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    state.pending_agent_turns.clear();
+    state.on_agent_done(
+        &run_id,
+        DoneReport {
+            phase: DonePhase::Build,
+            status: DoneStatus::Completed,
+            summary: "second revision".into(),
+            outputs: DoneOutputs::default(),
+        },
+    );
+    assert!(
+        state
+            .pending_agent_turns
+            .iter()
+            .any(|turn| turn.phase == "triage"),
+        "the enabled account queued a replacement pass"
+    );
+
+    let disabled = state.handle(req("settings.set", json!({ "triage_enabled": false })));
+    assert_eq!(disabled["ok"], true, "{disabled:?}");
+    assert!(
+        state
+            .pending_agent_turns
+            .iter()
+            .all(|turn| turn.phase != "triage"),
+        "a pass that has not started is cancelled"
+    );
+    let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+    assert_eq!(view["result"]["triage_enabled"], false, "{view:?}");
+    assert_eq!(
+        view["result"]["triage"]["based_on"], revision,
+        "turning the feature off does not erase the report history: {view:?}"
+    );
+    let refused = state.handle(req(
+        "triage.override",
+        json!({
+            "run_id": run_id,
+            "hunk_id": hunk_ids[0],
+            "direction": "surface",
+        }),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(
+        refused["error"], "triage.override: triage is disabled",
+        "a stale client cannot mutate hidden triage data"
+    );
+}
+
+#[test]
+fn disabling_triage_stops_a_pass_already_drained_for_delivery() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    state.triage_enabled = true;
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "drained-triage");
+    std::fs::write(
+        state.runs[&run_id].worktree.path.join("crypto.rs"),
+        "fn a() {}\n",
+    )
+    .unwrap();
+    state.pending_agent_turns.clear();
+    state.on_agent_done(
+        &run_id,
+        DoneReport {
+            phase: DonePhase::Build,
+            status: DoneStatus::Completed,
+            summary: "queue the pass".into(),
+            outputs: DoneOutputs::default(),
+        },
+    );
+    let state = state.shared();
+    let turns = state.lock().unwrap().take_pending_turns();
+    {
+        let mut app = state.lock().unwrap();
+        assert!(app.turns_in_flight.holds_owner(&run_id));
+        let disabled = app.handle(req("settings.set", json!({ "triage_enabled": false })));
+        assert_eq!(disabled["ok"], true, "{disabled:?}");
+    }
+
+    DeliveryRunner::run(&state, turns);
+
+    let app = state.lock().unwrap();
+    assert!(
+        app.tabs.is_empty(),
+        "the drained triage turn was discarded before opening an agent tab"
+    );
+    assert!(
+        app.turns_in_flight.is_empty(),
+        "discarding the turn settles its delivery mark"
+    );
+}
+
 /// Triage asks the reviewer for nothing, so it must not ring their bell.
 /// A pass finishing is status — it updates the review surface and says so
 /// quietly, unlike the `done` that produced the diff in the first place.
@@ -176,6 +324,7 @@ fn a_triage_ships_with_the_run_and_goes_stale_when_the_diff_moves() {
 fn a_finished_triage_pass_updates_the_surface_without_asking_for_the_user() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
+    state.triage_enabled = true;
     let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-quietly");
     std::fs::write(
         state.runs[&run_id].worktree.path.join("crypto.rs"),
@@ -223,6 +372,7 @@ fn a_finished_triage_pass_updates_the_surface_without_asking_for_the_user() {
 fn a_report_that_changed_nothing_does_not_ask_for_the_same_triage_twice() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
+    state.triage_enabled = true;
     let run_id = adopted_run(&mut state, &repo, dir.path(), "triage-once");
     std::fs::write(
         state.runs[&run_id].worktree.path.join("crypto.rs"),
@@ -279,6 +429,7 @@ fn triaged_run(
     branch: &str,
     files: &[(&str, &str)],
 ) -> (String, HashMap<String, String>) {
+    state.triage_enabled = true;
     let run_id = adopted_run(state, repo, dir, branch);
     let worktree = state.runs[&run_id].worktree.path.clone();
     for (path, contents) in files {

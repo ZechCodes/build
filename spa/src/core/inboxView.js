@@ -50,6 +50,7 @@ import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
+import { publishInboxAttentionCount } from "./inboxAttention.js";
 
 let items = [];
 // The board's rows for lifecycle verbs in flight (board.list's `pending`): a
@@ -127,8 +128,21 @@ function typingInList() {
 
 /** The repaint the feed asks for, which is the one that must wait. */
 function drawFromFeed() {
-  if (typingInList()) return;
+  if (typingInList()) {
+    publishAttentionCount();
+    return;
+  }
   draw();
+}
+
+function publishAttentionCount() {
+  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+  const partition = inboxEntries({ items: shown, nowMs: Date.now() });
+  publishInboxAttentionCount(
+    [...partition.entries, ...partition.recent]
+      .filter((entry) => !entry.muted && !entry.dismissed)
+      .reduce((total, entry) => total + entry.unreadCount, 0),
+  );
 }
 
 /** The one name a row has, which is what the reconciler matches rows by. */
@@ -150,6 +164,7 @@ export function setInboxView(next) {
 }
 
 function draw() {
+  publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
   const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });

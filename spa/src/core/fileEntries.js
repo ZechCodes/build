@@ -13,13 +13,14 @@
 // a hash of its own rows.
 
 import { fileKey, parseDiff } from "./diff.js";
-import { diffStackEntries, fileBodyHtml, fileFoldOf, fileFrameHtml, fileNoticeHtml, filePeekHtml } from "./diffRender.js";
+import { diffStackEntries, fileContentHtml, fileFoldOf, fileFrameHtml } from "./diffRender.js";
+import { COLLAPSED_PREVIEW_ROWS } from "./diffWindow.js";
 import { bodyMatches } from "./fileDiffs.js";
 import { hashFileRows } from "./reviewMemory.js";
 
 /** How much of a collapsed file's diff is worth keeping in the document: a peek,
  *  not a diff. */
-export const COLLAPSED_PREVIEW_ROWS = 8;
+export { COLLAPSED_PREVIEW_ROWS };
 
 const SHUT = "shut";
 
@@ -38,6 +39,7 @@ export function fileViewFromStatus(statusFile) {
     add: Number(statusFile.added) || 0,
     del: Number(statusFile.deleted) || 0,
     contentKey: statusFile.content_key,
+    editedAt: statusFile.edited_at,
     rows: null,
   };
 }
@@ -45,13 +47,14 @@ export function fileViewFromStatus(statusFile) {
 /** One file of a parsed patch (a `git.show` payload, the review aggregate) as
  *  the same view. Its content key is a hash of the rows it came with, so the
  *  re-review chip compares the same way on both stacks. */
-export function fileViewFromParsedFile(parsedFile) {
+export function fileViewFromParsedFile(parsedFile, editedAt = undefined) {
   return {
     path: parsedFile.path,
     status: parsedFile.status,
     add: parsedFile.add,
     del: parsedFile.del,
     contentKey: hashFileRows(parsedFile),
+    editedAt,
     rows: parsedFile.rows,
   };
 }
@@ -62,11 +65,11 @@ export function fileViewFromParsedFile(parsedFile) {
 function rowsOf(view, body) {
   if (view.rows) return view.rows;
   if (!bodyMatches(body, view.contentKey)) return null;
+  if (body.parsed_rows) return body.parsed_rows;
   const parsed = parseDiff(body.patch)[0];
-  return parsed ? parsed.rows : [];
+  body.parsed_rows = parsed ? parsed.rows : [];
+  return body.parsed_rows;
 }
-
-const previewOf = (file) => ({ ...file, rows: file.rows.slice(0, COLLAPSED_PREVIEW_ROWS) });
 
 /** The body cached for one file: the one a caller handed for this file, or the
  *  one the stack's `bodyOf` answers for its path. */
@@ -81,9 +84,7 @@ const truncatedNoticeHtml = (body) =>
   body && body.truncated ? '<div class="ftrunc">diff truncated at 1 MiB</div>' : "";
 
 function foldedBodyHtml(file, fold, options) {
-  const collapsed = fold === SHUT;
-  if (!file.rows) return fileNoticeHtml(collapsed ? "expand to load this file" : "loading…");
-  return collapsed ? filePeekHtml(previewOf(file), options) : fileBodyHtml(file, options);
+  return fileContentHtml(file, fold, options);
 }
 
 /** One file's entry for the keyed list: its key, and the html of it in the fold
@@ -99,13 +100,23 @@ export function fileEntry(view, options = {}) {
 }
 
 const noBodies = () => undefined;
+const hydratedViews = new WeakMap();
+
+function hydrateViews(views, bodyOf) {
+  const previous = hydratedViews.get(views);
+  const next = views.map((view) => ({ ...view, rows: rowsOf(view, bodyOf(view.path)) }));
+  const unchanged = previous && next.every((view, index) => view.rows === previous[index]?.rows);
+  if (unchanged) return previous;
+  hydratedViews.set(views, next);
+  return next;
+}
 
 /** A whole stack of views as the entries `patchList` paints: noise grouped and
  *  triage ordering as ever, with every file drawn through the fold-aware entry.
  *  `bodyOf(path)` answers the body cached for a file, or undefined. */
 export function fileStackEntries(views, options = {}) {
   const bodyOf = options.bodyOf || noBodies;
-  const hydrated = views.map((view) => ({ ...view, rows: rowsOf(view, bodyOf(view.path)) }));
+  const hydrated = hydrateViews(views, bodyOf);
   return diffStackEntries(hydrated, { ...options, renderFile: (file, fileOptions) => fileEntry(file, fileOptions).html });
 }
 

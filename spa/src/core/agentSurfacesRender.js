@@ -15,6 +15,8 @@ const ROW_DETAIL_CLASS = "surface-row-detail";
 const ROW_ERROR_CLASS = "surface-row-error";
 const ROW_NOTE_CLASS = "surface-row-note";
 const ROW_JUMP_CLASS = "surface-row-jump";
+const AGENT_DETAILS_CLASS = "surface-agent-details";
+const AGENT_FACTS_CLASS = "surface-agent-facts";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 const PHASE_CLASS = "surface-phase";
 const PHASE_HEAD_CLASS = "surface-phase-head";
@@ -95,39 +97,64 @@ function surfaceRowHtml(rowClass, row, { trailing = "", body = "" } = {}) {
   </div>`;
 }
 
-function agentStatsHtml(row) {
-  const stats = [
-    Number.isFinite(row.tokens) ? `${row.tokens} tokens` : "",
-    Number.isFinite(row.toolCalls) ? `${row.toolCalls} calls` : "",
-  ].filter(Boolean);
-  if (!stats.length) return "";
-  return `<div class="surface-row-stats">${stats.map(statHtml).join("")}</div>`;
+const notReported = (value) => value || "Not reported";
+
+function agentFactHtml(label, value, { className = "" } = {}) {
+  const classes = className ? ` class="${className}"` : "";
+  return `<div class="surface-agent-fact">
+      <dt>${esc(label)}</dt>
+      <dd${classes}>${esc(notReported(value))}</dd>
+    </div>`;
 }
 
-function agentLineHtml(row) {
-  const detail = row.error || row.result || row.lastTool;
-  if (!row.model && !detail) return "";
-  const detailClass = row.error ? `${ROW_DETAIL_CLASS} ${ROW_ERROR_CLASS}` : ROW_DETAIL_CLASS;
-  return `<div class="surface-row-line">
-      ${row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : ""}
-      ${detail ? clippedTextHtml(detail, { className: detailClass }) : ""}
-    </div>`;
+function agentState(row) {
+  return (row.stateMark && row.stateMark.label) || row.state;
 }
 
 const SPAWNING_CALL_TITLE = "Open the call that spawned this";
 
 function spawningCallHtml(row) {
-  if (!Number.isFinite(row.callSequence)) return "";
+  if (!Number.isFinite(row.callSequence)) return `<span class="surface-agent-unavailable">Not reported</span>`;
   return `<button type="button" class="${ROW_JUMP_CLASS}" data-call-sequence="${esc(row.callSequence)}"
-    title="${SPAWNING_CALL_TITLE}" aria-label="${SPAWNING_CALL_TITLE}">↗</button>`;
+    title="${SPAWNING_CALL_TITLE}" aria-label="${SPAWNING_CALL_TITLE}">Open spawning call&nbsp;↗</button>`;
 }
 
-export function agentRowHtml(row, { compact = false } = {}) {
-  return surfaceRowHtml("surface-agent", row, {
-    trailing: spawningCallHtml(row),
-    body: `${agentLineHtml(row)}
-    ${compact ? "" : agentStatsHtml(row)}`,
-  });
+function spawningCallFactHtml(row) {
+  return `<div class="surface-agent-fact">
+      <dt>Spawned by</dt>
+      <dd>${spawningCallHtml(row)}</dd>
+    </div>`;
+}
+
+function agentDetailsHtml(row) {
+  const resultClass = row.error ? `${ROW_DETAIL_CLASS} ${ROW_ERROR_CLASS}` : ROW_DETAIL_CLASS;
+  const result = row.error || row.result;
+  return `<div class="${AGENT_DETAILS_CLASS}">
+    <dl class="${AGENT_FACTS_CLASS}">
+      ${agentFactHtml("Description", row.description)}
+      ${agentFactHtml("State", agentState(row))}
+      ${agentFactHtml("Model", row.model, { className: "surface-row-model" })}
+      ${agentFactHtml("Reasoning effort", row.reasoningEffort, { className: "surface-row-effort" })}
+      ${agentFactHtml("Current activity", row.lastTool)}
+      ${agentFactHtml(row.error ? "Error" : "Result", result, { className: resultClass })}
+      ${agentFactHtml("Tokens", Number.isFinite(row.tokens) ? String(row.tokens) : "")}
+      ${agentFactHtml("Tool calls", Number.isFinite(row.toolCalls) ? String(row.toolCalls) : "")}
+      ${Number.isFinite(row.attempt) ? agentFactHtml("Attempt", String(row.attempt)) : ""}
+      ${spawningCallFactHtml(row)}
+    </dl>
+  </div>`;
+}
+
+export function agentRowHtml(row, { openedAgentKeys = new Set() } = {}) {
+  const open = openedAgentKeys.has(row.key) ? " open" : "";
+  return `<details class="surface-row surface-agent" data-key="${esc(row.key)}"${open}>
+    <summary class="${ROW_HEAD_CLASS} surface-agent-summary">
+      ${stateMarkHtml(row.stateMark)}
+      ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS, pressable: false })}
+      ${clockHtml(row.clock, row.runningSince)}
+    </summary>
+    ${agentDetailsHtml(row)}
+  </details>`;
 }
 
 const pillCountCapHtml = (count) =>

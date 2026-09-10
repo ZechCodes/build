@@ -490,7 +490,8 @@ main#root.surface { max-width:none;
 .file .fhead .fb { font-size:9px; font-weight:700; letter-spacing:.04em; padding:1px 5px; border-radius:4px; }
 .fb.EDIT { background:var(--accent-soft); color:var(--accent); } .fb.ADD { background:var(--green-bg); color:var(--green); } .fb.DEL { background:var(--red-bg); color:var(--red); }
 .file .fhead .pm { margin-left:auto; font-size:11px; display:inline-flex; gap:6px; white-space:nowrap; flex:none; } .pm .a { color:var(--green); } .pm .d { color:var(--red); }
-.file table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+.file table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; line-height:20px; }
+.file tr:not(.drow-spacer) { height:20px; }
 .file td { padding:0 8px; white-space:pre; vertical-align:top; }
 .file td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; background:var(--panel2); border-right:1px solid var(--line2); cursor:pointer; }
 .file td.ln:hover { color:var(--accent); }
@@ -636,6 +637,11 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    offers to fetch them — the one part of a folded body that stays on screen */
 .file .dpeek { overflow-x:auto; overflow-y:hidden; }
 .file.collapsed .dpeek { display:block; }
+.file .dwindow { max-height:min(70vh, 720px); overflow:auto; }
+.file:not(.capped):not(.collapsed) .dvirtual { max-height:min(70vh, 720px); }
+.file.capped .dvirtual { max-height:300px; }
+.file.collapsed .dvirtual { max-height:160px; }
+.drow-spacer td { padding:0; border:0; }
 /* a file whose body has not been fetched yet: one dim line where the diff goes */
 .file .dload { padding:10px var(--pane-gutter); color:var(--dim); font-family:var(--mono); font-size:11.5px; }
 /* The header's controls. All three are the same button — icon, optional label,
@@ -647,6 +653,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
   display:inline-flex; align-items:center; gap:5px; }
 .fcmt svg, .fopen svg, .fapprove svg { width:16px; height:16px; flex:none; }
 .fcmt:hover, .fopen:hover, .fapprove:hover { background:var(--accent-soft); color:var(--accent); }
+.fedited { margin-left:7px; color:var(--dim); font-size:11px; white-space:nowrap; }
 /* An approved file wears its verdict: the toggle fills, and the header dims to
    say the reviewer is done with this one. */
 .fapprove[aria-pressed="true"] { color:var(--green); background:color-mix(in srgb, var(--green) 12%, transparent); }

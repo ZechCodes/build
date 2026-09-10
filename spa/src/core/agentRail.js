@@ -476,7 +476,10 @@ export function mountAgentRail(host, context) {
   let paintedDigests = []; // the run totals that timeline was drawn with
   let seededSurfaces = null;
   const chatOwnership = createRailChatOwnership(chatRepository, key, () => entity);
-  const controllerForAgent = (agent) => chatOwnership.controllerFor(agent);
+  // An optimistic agent is the provisional controller gaining a visible card,
+  // not a second conversation. Keep its draft, pending sends, and eventual
+  // resolved identity on the controller that created it.
+  const controllerForAgent = (agent) => isProvisionalKey(agent?.id) ? null : chatOwnership.controllerFor(agent);
   const provisionalController = () => chatOwnership.provisional();
 
   const cacheIdentity = () => {
@@ -590,8 +593,7 @@ export function mountAgentRail(host, context) {
     }
   };
   const controllerInFocus = () => controllerForAgent(agentInFocus()) || provisionalController();
-  const conversationKey = () => {
-    const controller = controllerInFocus();
+  const conversationKey = (controller = controllerInFocus()) => {
     return `${controller.identity.entityId || key}:${controller.identity.agentId || controller.identity.draftId || AGENT_NOT_YET_BORN}`;
   };
 
@@ -835,11 +837,22 @@ export function mountAgentRail(host, context) {
 
   const shownPanelMode = () => (agentHasTerminal(agentInFocus()) ? mode : "chat");
 
-  const wantedPanelBody = () => `${shownPanelMode()}:${addingAgent ? "new" : selectedId || AGENT_NOT_YET_BORN}`;
+  const rememberedConversationIsLoading = () =>
+    !addingAgent && !!selectedId && !isProvisionalKey(selectedId) && !agentInFocus();
 
-  const adoptPanelBody = () => {
+  const panelBodyIdentity = () => {
+    if (rememberedConversationIsLoading()) return "loading";
+    if (addingAgent) return "new";
+    return conversationKey();
+  };
+
+  const wantedPanelBody = () => `${shownPanelMode()}:${panelBodyIdentity()}`;
+
+  const adoptPanelBody = (controller = null) => {
     const panel = host.querySelector("#rail-panel");
-    if (panel) panel.dataset.body = wantedPanelBody();
+    if (panel) panel.dataset.body = controller
+      ? `${shownPanelMode()}:${conversationKey(controller)}`
+      : wantedPanelBody();
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
@@ -874,7 +887,9 @@ export function mountAgentRail(host, context) {
       closeSurfaceMenu?.();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
-        ${shownMode === "chat" ? `${railViewerHostHtml()}${composerRowHtml()}` : ""}`;
+        ${shownMode === "chat"
+          ? `${railViewerHostHtml()}${rememberedConversationIsLoading() ? "" : composerRowHtml()}`
+          : ""}`;
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
@@ -884,7 +899,7 @@ export function mountAgentRail(host, context) {
       composerControl = null;
       composerModelMenu = null;
       if (shownMode === "tui") mountTui();
-      else {
+      else if (!rememberedConversationIsLoading()) {
         wireComposer(panel);
         if (autofocusComposerPending) {
           autofocusComposerPending = false;
@@ -1169,6 +1184,11 @@ export function mountAgentRail(host, context) {
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
+    if (rememberedConversationIsLoading()) {
+      body.innerHTML = '<div class="rail-chat-loading">Loading chat…</div>';
+      syncSurfaces();
+      return;
+    }
     if (!visibleAgents().length || addingAgent) {
       paintNewAgent(body);
       syncComposer();
@@ -1561,8 +1581,9 @@ export function mountAgentRail(host, context) {
     paintPanel();
   };
 
-  const renameAgentIdentity = (fromAgentId, toAgentId) => {
+  const renameAgentIdentity = (fromAgentId, toAgentId, controller) => {
     if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) return;
+    const renamedAgentIsSelected = selectedId === fromAgentId;
     if (threadAgentId === fromAgentId) threadAgentId = toAgentId;
     if (threadOwner === fromAgentId) threadOwner = toAgentId;
     const fromFaceKey = faceKey("agent", fromAgentId);
@@ -1574,8 +1595,8 @@ export function mountAgentRail(host, context) {
     }
     const strip = host.querySelector(".rail-strip");
     if (strip) rekeyEntry(strip, fromFaceKey, toFaceKey);
-    if (selectedId === fromAgentId) chooseAgent(toAgentId);
-    adoptPanelBody();
+    if (renamedAgentIsSelected) chooseAgent(toAgentId);
+    adoptPanelBody(renamedAgentIsSelected ? controller : null);
   };
 
   const provisionalMessageEntry = (messageKey, message) => ({
@@ -1679,7 +1700,7 @@ export function mountAgentRail(host, context) {
       controller.absorbAgent(createdAgent);
       controller.clearOperationKind(submission);
       handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id));
-      renameAgentIdentity(provisionalAgentId, createdAgent.id);
+      renameAgentIdentity(provisionalAgentId, createdAgent.id, controller);
       handle.rekey(provisionalAgentId, createdAgent.id, { ...provisionalAgent, ...createdAgent, id: createdAgent.id });
       const addressedSubmission = controller.addressSubmission(submission, creationCall);
       await postMessage(handle, {

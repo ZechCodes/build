@@ -528,12 +528,13 @@ const STATUS_KEY_FIELDS: [&str; 8] = [
 
 /// The per-file fields a repaint depends on. Line counts are not among them:
 /// they follow the content key, which already moved.
-const FILE_KEY_FIELDS: [&str; 5] = [
+const FILE_KEY_FIELDS: [&str; 6] = [
     "path",
     "staged",
     "index_status",
     "worktree_status",
     "content_key",
+    "edited_at",
 ];
 
 /// A stable 16-hex name for everything a client's repaint depends on, so a
@@ -593,6 +594,7 @@ fn status_shape(repo_path: &Path, max_files: usize) -> Result<(Value, String), S
 /// new path never surfaces and unstaging the row half-unstages the rename.
 fn status_files(repo: &git2::Repository, max_files: usize) -> Result<(Vec<Value>, bool), String> {
     let keys = ContentKeys::of(repo);
+    let worktree_root = repo.workdir().unwrap_or_else(|| repo.path());
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
     let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
@@ -605,6 +607,9 @@ fn status_files(repo: &git2::Repository, max_files: usize) -> Result<(Vec<Value>
             }
             let mut file = file_status_json(&path, entry.status())?;
             file["content_key"] = json!(keys.key_for(&path, &entry));
+            if let Some(edited_at) = crate::diff::file_edited_at(worktree_root, &path) {
+                file["edited_at"] = json!(edited_at);
+            }
             Some(file)
         })
         .collect();
@@ -1528,6 +1533,39 @@ mod tests {
     }
 
     #[test]
+    fn an_mtime_only_change_moves_the_status_key() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        std::fs::write(repo.join("README.md"), "changed\n").unwrap();
+        let path = repo.join("README.md");
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            ),
+        )
+        .unwrap();
+        let first = status_payload(&repo).unwrap();
+
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_001),
+            ),
+        )
+        .unwrap();
+        let touched = status_payload(&repo).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "changed\n",
+            "touching the file must not change its content"
+        );
+        assert_eq!(first["files"][0]["path"], touched["files"][0]["path"]);
+        assert_eq!(first["files"][0]["edited_at"], 1_700_000_000_000_u64);
+        assert_eq!(touched["files"][0]["edited_at"], 1_700_000_001_000_u64);
+        assert_ne!(first["status_key"], touched["status_key"]);
+    }
+
+    #[test]
     fn the_status_payload_carries_counts_and_no_patch() {
         let (_dir, repo) = crate::git_fixture::init_repo();
         std::fs::write(repo.join("README.md"), "# project\nadded\n").unwrap();
@@ -1555,6 +1593,7 @@ mod tests {
         let status = status_payload(&repo).unwrap();
         assert_eq!(status["files"][0]["content_key"], "deleted");
         assert_eq!(status["files"][0]["deleted"], 1);
+        assert!(status["files"][0].get("edited_at").is_none());
     }
 
     #[test]

@@ -92,6 +92,11 @@ export async function loadModelCatalog() {
   return catalog;
 }
 
+export async function refreshModelCatalog() {
+  App.modelCatalog = normalizeModelCatalog(await App.call("models.list"));
+  return App.modelCatalog;
+}
+
 export function rememberSelectedDevice(deviceId) {
   App.selectedDeviceId = deviceId;
   if (deviceId) localStorage.setItem(SELECTED_DEVICE_KEY, deviceId);

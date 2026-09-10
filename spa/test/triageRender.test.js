@@ -3,9 +3,9 @@
 // stack the dial (or a missing pass) falls back to. The generated-files group
 // stays what it always was — its own group, at the very bottom.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { parseDiff, patchHunks } from "../src/core/diff.js";
-import { diffStackEntries, diffStackHtml } from "../src/core/diffRender.js";
+import { createTriagePlanCache, diffStackEntries, diffStackHtml } from "../src/core/diffRender.js";
 
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n context\n`;
@@ -38,7 +38,7 @@ describe("diffStackHtml with a triage overlay", () => {
     expect(html).toContain('class="tsectionhead"');
     expect(html).toContain('class="file capped tcritical"');
     expect(html).toContain("Needs review first");
-    expect(html.indexOf("src/crypto.rs")).toBeLessThan(html.indexOf("Cargo.toml"));
+    expect(html).not.toContain("Cargo.toml");
   });
 
   it("chips a surfaced critical hunk with its level and its rationale", () => {
@@ -57,10 +57,10 @@ describe("diffStackHtml with a triage overlay", () => {
     expect(html).toContain('aria-expanded="false"');
   });
 
-  it("keeps a collapsed group's diffs in the DOM — collapsed, never dropped", () => {
+  it("keeps a collapsed group cheap until the reader opens it", () => {
     const html = stack({ triage: triage() });
     const group = html.slice(html.indexOf('class="tgroup"'));
-    expect(group).toContain('data-key="EDIT:Cargo.toml"');
+    expect(group).not.toContain('data-key="EDIT:Cargo.toml"');
   });
 
   it("opens the group the reviewer expanded", () => {
@@ -112,9 +112,9 @@ describe("diffStackHtml with a triage overlay", () => {
       commentable: true,
     });
     // The surfaced critical and the file folded into a group both keep them.
-    expect((html.match(/changed since your review/g) || []).length).toBe(2);
+    expect((html.match(/changed since your review/g) || []).length).toBe(1);
     // Both readable files keep their ✎; the noise group is still collapsed.
-    expect((html.match(/class="fcmt"/g) || []).length).toBe(2);
+    expect((html.match(/class="fcmt"/g) || []).length).toBe(1);
   });
 
   it("leaves the generated-files group its own group at the very bottom", () => {
@@ -172,6 +172,16 @@ describe("the ordered stack as keyed entries", () => {
       expect(entries(review).map((entry) => entry.html).join("")).toBe(diffStackHtml(FILES, { review: { patch: PATCH, ...review } }));
     }
   });
+
+  it("reuses the triage plan for a viewport repaint of the same source files", () => {
+    const plan = vi.fn(() => ({ sections: [] }));
+    const cached = createTriagePlanCache(plan);
+    const triageState = triage();
+    cached(FILES, PATCH, triageState, FILES);
+    cached(FILES, PATCH, { ...triageState }, FILES.slice());
+    expect(plan).toHaveBeenCalledOnce();
+  });
+
 });
 
 // Every triage decision is overridable (the issue doc's fourth principle), and
@@ -190,9 +200,7 @@ describe("the override controls on an ordered stack", () => {
     expect(critical).toContain(`data-direction="collapse"`);
     expect(critical).toContain(`data-hunk="${ids["src/crypto.rs"]}"`);
     expect(critical).toContain("Collapse");
-    const collapsed = controlsIn(html, "Cargo.toml");
-    expect(collapsed).toContain(`data-direction="surface"`);
-    expect(collapsed).toContain("Keep surfaced");
+    expect(html).not.toContain("Cargo.toml");
   });
 
   it("offers nothing on a hunk the pass never named", () => {

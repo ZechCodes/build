@@ -317,6 +317,9 @@ fn full_multi_stage_lifecycle_plan_then_run() {
         files.contains(&"result-second-half.txt".to_string()),
         "{files:?}"
     );
+    let edited_at = diff["result"]["file_edited_at"].as_object().unwrap();
+    assert!(edited_at["result-first-half.txt"].as_u64().unwrap() > 0);
+    assert!(edited_at["result-second-half.txt"].as_u64().unwrap() > 0);
 
     let merged = state.handle(req(
         "run.git_action",

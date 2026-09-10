@@ -34,6 +34,8 @@ vi.mock("../src/core/taskFeed.js", () => ({
 let App;
 let mountInboxList;
 let markSeen;
+let subscribeInboxAttentionCount;
+let attentionCount = 0;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
@@ -133,6 +135,7 @@ beforeEach(async () => {
   vi.resetModules();
   ({ App } = await import("../src/app.js"));
   ({ mountInboxList, markSeen } = await import("../src/core/inboxView.js"));
+  ({ subscribeInboxAttentionCount } = await import("../src/core/inboxAttention.js"));
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
   location.hash = "";
@@ -140,6 +143,9 @@ beforeEach(async () => {
   App.gated = false;
   App.call = vi.fn(async () => ({ ok: true }));
   refreshFeed.mockClear();
+  subscribeInboxAttentionCount((count) => {
+    attentionCount = count;
+  });
   feedItems = [branchRow(), issueRow()];
   mountInboxList();
 });
@@ -149,6 +155,27 @@ afterEach(() => {
 });
 
 describe("the inbox rail", () => {
+  it("publishes the unread message total across visible and Recent rows", () => {
+    feed([
+      branchRow({ unread_count: 4 }),
+      issueRow({ unread: true, unread_count: 2, working: false, anchor: hoursAgo(80), last_activity: hoursAgo(40) }),
+    ]);
+    expect(rowFor("iss-1")).toBeNull();
+    expect(attentionCount).toBe(6);
+
+    feed([branchRow({ unread: false, unread_count: 0 }), issueRow()]);
+    expect(attentionCount).toBe(0);
+  });
+
+  it("updates the unread total while a focused inbox input defers repainting", () => {
+    const input = document.createElement("input");
+    document.getElementById("inbox-list").appendChild(input);
+    input.focus();
+    feed([branchRow({ unread_count: 5 })]);
+    expect(attentionCount).toBe(5);
+    expect(document.activeElement).toBe(input);
+  });
+
   it("paints one list across projects, oldest anchor first, two lines to a row", () => {
     expect(rows().map((row) => row.dataset.entity)).toEqual(["run-1", "iss-1"]);
     const branch = rowFor("run-1");
@@ -485,6 +512,7 @@ describe("the inbox rail", () => {
     menuItem(rowFor("run-1"), "[data-mute]").click();
 
     expect(rowFor("run-1").className).toContain("inbox-muted");
+    expect(attentionCount).toBe(0);
     await flush();
     expect(rowFor("run-1").className).toContain("inbox-muted");
     rowFor("run-1").querySelector("[data-menu]").click();
@@ -505,6 +533,7 @@ describe("the inbox rail", () => {
 
     const row = rowFor("run-1");
     expect(row.className).not.toContain("inbox-muted");
+    expect(attentionCount).toBe(1);
     const error = row.querySelector("[data-done-error]");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toBe("the relay is offline");
@@ -569,6 +598,7 @@ describe("the inbox rail", () => {
     await flush();
     menuItem(rowFor("run-1"), "[data-dismiss]").click();
     expect(rowFor("run-1")).toBeNull();
+    expect(attentionCount).toBe(0);
 
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
@@ -589,6 +619,7 @@ describe("the inbox rail", () => {
     await flush();
     const row = rowFor("run-1");
     expect(row).toBeTruthy();
+    expect(attentionCount).toBe(1);
     const error = row.querySelector("[data-done-error]");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toBe("the relay is offline");

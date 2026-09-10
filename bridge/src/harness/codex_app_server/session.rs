@@ -4,9 +4,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 
 use super::connection::{AppServerConnection, SharedConnection};
+use super::diagnostics::SessionDiagnostics;
 use super::limits::{AppServerLimits, StateLimits};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
 use super::process::{
@@ -15,10 +17,13 @@ use super::process::{
 };
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
-    ParentThreadFilter, ParentThreadRoute, RoutedServerRequest, ServerNotification,
+    ParentThreadFilter, ParentThreadRoute, PendingOperation, RoutedServerRequest,
+    ServerNotification, ThreadMetadataNotification,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
+use super::subagents::CodexSubagents;
 use super::translator::CodexActivityTranslator;
+use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentSession, AgentStatus, HarnessError, SessionStatusSnapshot, Turn,
     TurnChoiceSupport,
@@ -156,6 +161,8 @@ struct SessionCore {
     process: Arc<AppServerProcess>,
     state: Mutex<CodexSessionState>,
     translator: Mutex<CodexActivityTranslator>,
+    subagents: Mutex<CodexSubagents>,
+    surfaces_revision: SurfaceRevision,
     activity: Mutex<Option<broadcast::Sender<ActivityReport>>>,
     status: watch::Sender<SessionStatusSnapshot>,
     terminal: Mutex<TerminalSnapshot>,
@@ -166,6 +173,9 @@ struct SessionCore {
     binary: PathBuf,
     shutting_down: AtomicBool,
     reconciliation_timer: ReconciliationTimer,
+    diagnostics: SessionDiagnostics,
+    shutdown_origin: Mutex<Option<&'static str>>,
+    last_protocol_event: Mutex<&'static str>,
 }
 
 impl CodexAppServerSession {
@@ -199,6 +209,8 @@ impl CodexAppServerSession {
                 resume_id,
             )),
             translator: Mutex::new(CodexActivityTranslator::new(limits.translator())),
+            subagents: Mutex::new(CodexSubagents::default()),
+            surfaces_revision: SurfaceRevision::default(),
             activity: Mutex::new(Some(sender)),
             status,
             terminal: Mutex::new(TerminalSnapshot::default()),
@@ -209,7 +221,11 @@ impl CodexAppServerSession {
             binary,
             shutting_down: AtomicBool::new(false),
             reconciliation_timer: ReconciliationTimer::new(),
+            diagnostics: SessionDiagnostics::new(),
+            shutdown_origin: Mutex::new(None),
+            last_protocol_event: Mutex::new("session_created"),
         });
+        core.log("session_created", []);
         core.reconciliation_timer.start(Arc::downgrade(&core));
         start_terminal_pump(Arc::downgrade(&core), terminal_events);
         start_reader(Arc::downgrade(&core), pipes.stdout, events);
@@ -223,12 +239,42 @@ impl SessionCore {
         self.started.elapsed()
     }
 
+    fn log<'a>(&self, event: &str, fields: impl IntoIterator<Item = (&'a str, Value)>) {
+        self.diagnostics.emit(event, self.elapsed(), fields);
+    }
+
+    fn remember_protocol(&self, event: &'static str) {
+        *self.last_protocol_event.lock().unwrap() = event;
+    }
+
     fn apply_state(self: &Arc<Self>, event: SessionEvent) -> Result<(), HarnessError> {
+        let event_kind = session_event_kind(&event);
+        if matches!(
+            &event,
+            SessionEvent::FailTurn(_) | SessionEvent::FailSession(_)
+        ) {
+            self.log(
+                "policy_failure",
+                [
+                    ("scope", json!(event_kind)),
+                    ("reason_present", json!(true)),
+                ],
+            );
+        }
         let (require_version, should_close, reconciliation_pending) = {
             let mut state = self.state.lock().unwrap();
+            let phase = state.diagnostic_phase();
             let transition = match state.transition(event, self.elapsed(), self.state_limits) {
                 Ok(transition) => transition,
                 Err(error) => {
+                    self.log(
+                        "state_failure",
+                        [
+                            ("error_kind", json!("state_transition")),
+                            ("trigger", json!(event_kind)),
+                            ("phase", json!(phase)),
+                        ],
+                    );
                     let error = HarnessError::Session(error.to_string());
                     drop(state);
                     self.fail(error.to_string());
@@ -268,7 +314,11 @@ impl SessionCore {
             if let Some(reason) = reason {
                 self.record_terminal_error(reason);
             }
-            self.begin_shutdown();
+            self.begin_shutdown(if event_kind == "eof" {
+                "stdout_eof"
+            } else {
+                "state_close"
+            });
         }
         if require_version {
             self.apply_state(SessionEvent::VersionEvidence(
@@ -283,6 +333,28 @@ impl SessionCore {
     fn apply_effect(&self, effect: &SessionEffect) -> Result<bool, HarnessError> {
         match effect {
             SessionEffect::Request(operation) => {
+                let (thread_id, turn_id) = operation_ids(operation);
+                self.log(
+                    if operation.method() == "turn/interrupt" {
+                        "interrupt_outgoing"
+                    } else {
+                        "request_outgoing"
+                    },
+                    [
+                        ("method", json!(operation.method())),
+                        (
+                            "origin",
+                            json!(if operation.method() == "turn/interrupt" {
+                                "state_generated"
+                            } else {
+                                "state_effect"
+                            }),
+                        ),
+                        ("provider_thread_id", json!(thread_id)),
+                        ("turn_id", json!(turn_id)),
+                    ],
+                );
+                self.remember_protocol(operation_event(operation));
                 self.connection
                     .request(operation.clone())
                     .map_err(|error| HarnessError::Session(error.to_string()))?;
@@ -310,9 +382,24 @@ impl SessionCore {
 
     fn handle_connection(self: &Arc<Self>, event: ConnectionEvent) -> Result<(), HarnessError> {
         match event {
-            response @ ConnectionEvent::Response { .. } => {
+            ConnectionEvent::Response { operation, result } => {
+                self.log(
+                    "response_received",
+                    [
+                        ("method", json!(operation.method())),
+                        ("success", json!(result.is_ok())),
+                        (
+                            "error_code",
+                            json!(result.as_ref().err().map(|error| error.code)),
+                        ),
+                    ],
+                );
+                self.remember_protocol("response_received");
                 self.accept_parent_message();
-                self.apply_state(SessionEvent::Connection(response))
+                self.apply_state(SessionEvent::Connection(ConnectionEvent::Response {
+                    operation,
+                    result,
+                }))
             }
             ConnectionEvent::Notification(notification) => self.handle_notification(notification),
             ConnectionEvent::Request(request) => self.handle_server_request(request),
@@ -330,12 +417,36 @@ impl SessionCore {
             expected_parent.as_deref(),
         ) == ParentThreadRoute::Child
         {
+            self.observe_child_thread_metadata(&inbound, expected_parent.as_deref());
             return Ok(());
         }
         self.accept_parent_message();
         let notification = ServerNotification::decode(&inbound.method, inbound.params)
             .map_err(HarnessError::Session)?;
         self.dispatch_notification(notification)
+    }
+
+    fn observe_child_thread_metadata(
+        &self,
+        inbound: &InboundNotification,
+        expected_parent: Option<&str>,
+    ) {
+        let Some(expected_parent) = expected_parent else {
+            return;
+        };
+        let Ok(Some(metadata)) =
+            ThreadMetadataNotification::decode(&inbound.method, &inbound.params)
+        else {
+            return;
+        };
+        if self
+            .subagents
+            .lock()
+            .unwrap()
+            .apply_thread_metadata(&metadata, expected_parent)
+        {
+            self.surfaces_revision.bump();
+        }
     }
 
     fn handle_server_request(
@@ -370,12 +481,32 @@ impl SessionCore {
     ) -> Result<(), HarnessError> {
         match &notification {
             ServerNotification::ThreadStarted { thread_id, .. } => {
+                self.log(
+                    "thread_correlated",
+                    [("provider_thread_id", json!(thread_id))],
+                );
+                self.remember_protocol("thread_started");
                 self.apply_state(SessionEvent::ThreadStarted(thread_id.clone()))
             }
             ServerNotification::TurnStarted { turn_id, .. } => {
+                self.log("turn_started", [("turn_id", json!(turn_id))]);
+                self.remember_protocol("turn_started");
                 self.apply_state(SessionEvent::TurnStarted(turn_id.clone()))
             }
-            ServerNotification::TurnCompleted { completion, .. } => {
+            ServerNotification::TurnCompleted {
+                thread_id,
+                completion,
+            } => {
+                self.log(
+                    "turn_completed",
+                    [
+                        ("turn_id", json!(completion.turn_id)),
+                        ("provider_thread_id", json!(thread_id)),
+                        ("status", json!(completion.status)),
+                        ("error_present", json!(completion.error.is_some())),
+                    ],
+                );
+                self.remember_protocol("turn_completed");
                 self.apply_state(SessionEvent::ObservedCompletion(completion.clone()))
             }
             ServerNotification::Item(item) => {
@@ -383,6 +514,16 @@ impl SessionCore {
                 self.translate(&notification)
             }
             ServerNotification::Error(error) => {
+                self.log(
+                    "error_notification",
+                    [
+                        ("provider_thread_id", json!(error.thread_id)),
+                        ("turn_id", json!(error.turn_id)),
+                        ("will_retry", json!(error.will_retry)),
+                        ("error_present", json!(!error.error.message.is_empty())),
+                    ],
+                );
+                self.remember_protocol("error_notification");
                 self.apply_state(SessionEvent::ObservedError(error.clone()))
             }
             ServerNotification::Delta => Ok(()),
@@ -391,6 +532,9 @@ impl SessionCore {
     }
 
     fn translate(&self, notification: &ServerNotification) -> Result<(), HarnessError> {
+        if self.subagents.lock().unwrap().apply(notification) {
+            self.surfaces_revision.bump();
+        }
         let reports = self
             .translator
             .lock()
@@ -427,12 +571,13 @@ impl SessionCore {
 
     fn apply_terminal(&self, event: CoordinatorTerminalEvent) {
         let demands_shutdown = event.demands_shutdown();
+        self.log_terminal_event(&event);
         {
             let mut snapshot = self.terminal.lock().unwrap();
-            *snapshot = snapshot.with_terminal_event(event);
+            *snapshot = snapshot.with_terminal_event(event.clone());
         }
         if demands_shutdown {
-            self.begin_shutdown();
+            self.begin_shutdown(terminal_shutdown_origin(&event));
         }
         let outcome = self.terminal.lock().unwrap().outcome();
         if let Some(outcome) = outcome {
@@ -448,11 +593,25 @@ impl SessionCore {
         let ended = AgentStatus::Ended {
             code: outcome.exit_code,
         };
-        *published = Some(outcome);
+        *published = Some(outcome.clone());
         drop(published);
+        let last = *self.last_protocol_event.lock().unwrap();
+        let origin = *self.shutdown_origin.lock().unwrap();
+        self.log(
+            "terminal_settled",
+            [
+                ("exit_code", json!(outcome.exit_code)),
+                ("epitaph_present", json!(outcome.epitaph.is_some())),
+                ("shutdown_origin", json!(origin)),
+                ("last_protocol_event", json!(last)),
+            ],
+        );
         let previous = self.status.borrow().clone();
         if let Some(next) = previous.transition(ended) {
             self.status.send_replace(next);
+        }
+        if self.subagents.lock().unwrap().settle_running() {
+            self.surfaces_revision.bump();
         }
         self.report_all(self.translator.lock().unwrap().close_all());
         self.close_activity();
@@ -466,8 +625,24 @@ impl SessionCore {
         self.record_terminal_error(reason);
     }
 
-    fn begin_shutdown(&self) {
-        if self.shutting_down.swap(true, Ordering::AcqRel) {
+    fn begin_shutdown(&self, origin: &'static str) {
+        let mut retained_origin = self.shutdown_origin.lock().unwrap();
+        let first = !self.shutting_down.swap(true, Ordering::AcqRel);
+        if first {
+            *retained_origin = Some(origin);
+        }
+        drop(retained_origin);
+        if first {
+            let last = *self.last_protocol_event.lock().unwrap();
+            self.log(
+                "shutdown_trigger",
+                [
+                    ("origin", json!(origin)),
+                    ("last_protocol_event", json!(last)),
+                ],
+            );
+        } else {
+            self.log("shutdown_consequence", [("origin", json!(origin))]);
             return;
         }
         self.reconciliation_timer.stop();
@@ -478,10 +653,59 @@ impl SessionCore {
             self.record_terminal_error(error.to_string());
         }
     }
+
+    fn log_terminal_event(&self, event: &CoordinatorTerminalEvent) {
+        let (source, error_present, exit_code) = match event {
+            CoordinatorTerminalEvent::TerminalError(_) => ("terminal_error", true, None),
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
+                reader_error,
+            }) => (
+                if reader_error.is_some() {
+                    "stdout_reader_failure"
+                } else {
+                    "stdout_eof"
+                },
+                reader_error.is_some(),
+                None,
+            ),
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled(
+                outcome,
+            )) => (
+                "process_exit",
+                outcome.monitor_error.is_some(),
+                outcome.exit_code,
+            ),
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled(
+                outcome,
+            )) => ("stderr_settled", outcome.drainer_error.is_some(), None),
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::SourceExpired {
+                source,
+                ..
+            }) => (
+                match source {
+                    TerminalSource::Stdout => "stdout_expired",
+                    TerminalSource::Stderr => "stderr_expired",
+                },
+                true,
+                None,
+            ),
+        };
+        self.log(
+            source,
+            [
+                ("error_present", json!(error_present)),
+                ("exit_code", json!(exit_code)),
+            ],
+        );
+    }
 }
 
 impl AgentSession for CodexAppServerSession {
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
+        self.core.log(
+            "turn_submitted",
+            [("choice_present", json!(turn.choice.is_some()))],
+        );
         if let Some(frozen) = &turn.choice {
             frozen
                 .model_choice
@@ -538,7 +762,7 @@ impl AgentSession for CodexAppServerSession {
     }
 
     fn end(&self) {
-        self.core.begin_shutdown();
+        self.core.begin_shutdown("explicit_end");
     }
 
     fn epitaph(&self) -> Option<String> {
@@ -566,6 +790,8 @@ impl AgentSession for CodexAppServerSession {
     }
 
     fn interrupt(&self) -> Result<(), HarnessError> {
+        self.core
+            .log("interrupt_requested", [("origin", json!("explicit"))]);
         self.core.apply_state(SessionEvent::Interrupt)
     }
 
@@ -575,6 +801,14 @@ impl AgentSession for CodexAppServerSession {
 
     fn active_model(&self) -> Option<String> {
         self.core.state.lock().unwrap().active_model()
+    }
+
+    fn surfaces(&self) -> Option<AgentSurfaces> {
+        self.core.subagents.lock().unwrap().snapshot()
+    }
+
+    fn surfaces_changed(&self) -> Option<watch::Receiver<u64>> {
+        Some(self.core.surfaces_revision.subscribe())
     }
 
     #[cfg(test)]
@@ -587,7 +821,7 @@ impl AgentSession for CodexAppServerSession {
 
 impl Drop for CodexAppServerSession {
     fn drop(&mut self) {
-        self.core.begin_shutdown();
+        self.core.begin_shutdown("session_drop");
     }
 }
 
@@ -625,9 +859,25 @@ fn read_until_settled(
                 let _ = core.apply_state(SessionEvent::Eof);
                 return None;
             }
-            Err(error) => return Some(error.to_string()),
+            Err(error) => {
+                let mut fields = vec![("error_kind", json!(connection_error_kind(&error)))];
+                if let super::connection::ConnectionError::FrameTooLarge {
+                    limit,
+                    observed_at_least,
+                } = &error
+                {
+                    fields.push(("limit_bytes", json!(limit)));
+                    fields.push(("observed_at_least_bytes", json!(observed_at_least)));
+                }
+                core.log("protocol_failure", fields);
+                return Some(error.to_string());
+            }
         };
         if let Err(error) = core.handle_connection(event) {
+            core.log(
+                "protocol_failure",
+                [("error_kind", json!("event_handling"))],
+            );
             core.fail(error.to_string());
             return None;
         }
@@ -639,6 +889,85 @@ fn unix_seconds_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_secs() as i64
+}
+
+fn operation_ids(operation: &PendingOperation) -> (Option<&str>, Option<&str>) {
+    match operation {
+        PendingOperation::StartTurn { thread_id, .. } => (Some(thread_id), None),
+        PendingOperation::SteerTurn {
+            thread_id, turn_id, ..
+        }
+        | PendingOperation::InterruptTurn { thread_id, turn_id } => {
+            (Some(thread_id), Some(turn_id))
+        }
+        PendingOperation::ResumeThread { thread_id, .. } => (Some(thread_id), None),
+        PendingOperation::Initialize | PendingOperation::StartThread { .. } => (None, None),
+    }
+}
+
+fn session_event_kind(event: &SessionEvent) -> &'static str {
+    match event {
+        SessionEvent::Start => "start",
+        SessionEvent::SendTurn(_) | SessionEvent::SendChosenTurn(_) => "send_turn",
+        SessionEvent::Interrupt => "interrupt",
+        SessionEvent::Connection(_) => "connection",
+        SessionEvent::ThreadStarted(_) => "thread_started",
+        SessionEvent::TurnStarted(_) => "turn_started",
+        SessionEvent::ObservedCompletion(_) => "turn_completed",
+        SessionEvent::ObservedError(_) => "error_notification",
+        SessionEvent::VersionEvidence(_) => "version_evidence",
+        SessionEvent::CheckTimeouts => "check_timeouts",
+        SessionEvent::FailTurn(_) => "fail_turn",
+        SessionEvent::FailSession(_) => "fail_session",
+        SessionEvent::Eof => "eof",
+    }
+}
+
+fn operation_event(operation: &PendingOperation) -> &'static str {
+    match operation {
+        PendingOperation::Initialize => "initialize_sent",
+        PendingOperation::StartThread { .. } => "thread_start_sent",
+        PendingOperation::ResumeThread { .. } => "thread_resume_sent",
+        PendingOperation::StartTurn { .. } => "turn_start_sent",
+        PendingOperation::SteerTurn { .. } => "turn_steer_sent",
+        PendingOperation::InterruptTurn { .. } => "turn_interrupt_sent",
+    }
+}
+
+fn terminal_shutdown_origin(event: &CoordinatorTerminalEvent) -> &'static str {
+    match event {
+        CoordinatorTerminalEvent::TerminalError(_) => "terminal_error",
+        CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
+            reader_error: Some(_),
+        }) => "stdout_reader_failure",
+        CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
+            reader_error: None,
+        }) => "stdout_eof",
+        CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled(_)) => {
+            "process_exit"
+        }
+        CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::SourceExpired { .. }) => {
+            "source_expiry"
+        }
+        CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled(_)) => {
+            "stderr_reader_failure"
+        }
+    }
+}
+
+fn connection_error_kind(error: &super::connection::ConnectionError) -> &'static str {
+    use super::connection::ConnectionError;
+    match error {
+        ConnectionError::Closed => "closed",
+        ConnectionError::RequestIdExhausted => "request_id_exhausted",
+        ConnectionError::PendingLimit(_) => "pending_limit",
+        ConnectionError::FrameTooLarge { .. } => "frame_too_large",
+        ConnectionError::UnterminatedFrame => "unterminated_frame",
+        ConnectionError::InvalidUtf8(_) => "invalid_utf8",
+        ConnectionError::InvalidJson(_) => "invalid_json",
+        ConnectionError::Protocol(_) => "protocol",
+        ConnectionError::Io(_) => "io",
+    }
 }
 
 fn write_server_response(
@@ -792,6 +1121,127 @@ mod tests {
             ),
             ParentThreadRoute::Parent
         );
+    }
+
+    #[test]
+    fn child_thread_metadata_updates_surfaces_without_touching_parent_lifecycle() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), "read hold");
+        let (session, _activity) = scripted_session(root.path(), &script);
+        wait_until("opened its parent thread", || {
+            session.session_id().is_some()
+        });
+        session.backdate_last_output(Duration::from_secs(60));
+        let status_before = session.status();
+        let revision = session.surfaces_changed().unwrap();
+
+        session
+            .core
+            .handle_notification(InboundNotification {
+                method: "thread/started".to_string(),
+                params: json!({
+                    "thread": {
+                        "id":CHILD_THREAD_ID, "parentThreadId":THREAD_ID,
+                        "preview":"Shorten the notice", "agentNickname":"Hegel",
+                        "model":"gpt-6-astra", "reasoningEffort":"high"
+                    }
+                }),
+            })
+            .unwrap();
+        session
+            .core
+            .handle_notification(InboundNotification {
+                method: "thread/settings/updated".to_string(),
+                params: json!({
+                    "threadId":CHILD_THREAD_ID,
+                    "threadSettings":{"model":"gpt-5.6-sol", "effort":null}
+                }),
+            })
+            .unwrap();
+
+        let agent = &session.surfaces().unwrap().subagents[0];
+        assert_eq!(agent.label, "Hegel");
+        assert_eq!(agent.description.as_deref(), Some("Shorten the notice"));
+        assert_eq!(agent.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(agent.reasoning_effort, None);
+        assert!(*revision.borrow() >= 2);
+        assert_eq!(session.status(), status_before);
+        assert!(session.quiet_for() >= Duration::from_secs(60));
+        assert_eq!(session.epitaph(), None);
+
+        for malformed_or_unknown in [
+            InboundNotification {
+                method: "thread/started".to_string(),
+                params: json!({"thread":{"parentThreadId":THREAD_ID}}),
+            },
+            InboundNotification {
+                method: "future/notification".to_string(),
+                params: json!({"threadId":CHILD_THREAD_ID}),
+            },
+        ] {
+            session
+                .core
+                .handle_notification(malformed_or_unknown)
+                .unwrap();
+        }
+        assert_eq!(session.status(), status_before);
+        assert!(session.quiet_for() >= Duration::from_secs(60));
+        assert_eq!(session.surfaces().unwrap().subagents.len(), 1);
+        assert_eq!(session.epitaph(), None);
+        session.end();
+    }
+
+    #[test]
+    fn parent_subagent_items_publish_surfaces_while_child_items_stay_isolated() {
+        let root = tempfile::tempdir().unwrap();
+        let child = serde_json::to_string(&json!({
+            "method":"item/completed",
+            "params":{
+                "threadId":CHILD_THREAD_ID,
+                "turnId":CHILD_TURN_ID,
+                "item":{"id":"child-own","type":"subAgentActivity","agentPath":"hidden","agentThreadId":"grandchild","kind":"started"}
+            }
+        })).unwrap();
+        let parent = serde_json::to_string(&json!({
+            "method":"item/completed",
+            "params":{
+                "threadId":THREAD_ID,
+                "turnId":TURN_ID,
+                "item":{
+                    "id":"spawn-call","type":"collabAgentToolCall","tool":"spawnAgent",
+                    "status":"inProgress","prompt":"Inspect parser","model":"gpt-5.6-sol",
+                    "reasoningEffort":"high","receiverThreadIds":[CHILD_THREAD_ID],
+                    "senderThreadId":THREAD_ID,
+                    "agentsStates":{CHILD_THREAD_ID:{"status":"running","message":null}}
+                }
+            }
+        }))
+        .unwrap();
+        let turn_response = serde_json::to_string(&json!({
+            "id":3,"result":{"turn":{"id":TURN_ID}}
+        }))
+        .unwrap();
+        let traffic =
+            format!("read turn; printf '%s\\n' '{turn_response}' '{child}' '{parent}'; sleep 1");
+        let script = opened_thread_script(root.path(), &traffic);
+        let (session, _activity) = scripted_session(root.path(), &script);
+        let revision = session.surfaces_changed().unwrap();
+        wait_until("opened its parent thread", || {
+            session.session_id().is_some()
+        });
+        session.send_turn(&Turn::new("delegate")).unwrap();
+
+        wait_until("published its subagent surface", || {
+            session.surfaces().is_some()
+        });
+        assert!(*revision.borrow() > 0);
+        let agents = session.surfaces().unwrap().subagents;
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, CHILD_THREAD_ID);
+        assert_eq!(agents[0].description.as_deref(), Some("Inspect parser"));
+        assert_eq!(agents[0].reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(agents[0].spawning_call_id.as_deref(), Some("spawn-call"));
+        session.end();
     }
 
     #[test]
@@ -1142,13 +1592,21 @@ mod tests {
     #[test]
     fn stdout_eof_closes_activity_and_end_is_idempotent() {
         let root = tempfile::tempdir().unwrap();
-        let (session, mut activity) = scripted_session(root.path(), "read line");
+        let (session, mut activity) =
+            scripted_session(root.path(), "read line; exec 1>&-; exec cat >/dev/null");
         wait_until("closed activity after stdout EOF", || {
             matches!(
                 activity.try_recv(),
                 Err(broadcast::error::TryRecvError::Closed)
             )
         });
+        assert_eq!(
+            *session.core.shutdown_origin.lock().unwrap(),
+            Some("stdout_eof")
+        );
+        assert!(session.core.diagnostics.captured().iter().any(|event| {
+            event["event"] == "shutdown_trigger" && event["origin"] == "stdout_eof"
+        }));
         session.end();
         session.end();
     }
@@ -1273,6 +1731,17 @@ mod tests {
         assert!(!session.exited_within(Duration::ZERO));
         assert!(!matches!(session.status(), AgentStatus::Ended { .. }));
         session.end();
+        assert_eq!(
+            *session.core.shutdown_origin.lock().unwrap(),
+            Some("explicit_end")
+        );
+        let diagnostics = session.core.diagnostics.captured();
+        assert!(diagnostics.iter().any(|event| {
+            event["event"] == "interrupt_requested" && event["origin"] == "explicit"
+        }));
+        assert!(diagnostics.iter().any(|event| {
+            event["event"] == "shutdown_trigger" && event["origin"] == "explicit_end"
+        }));
     }
 
     #[test]

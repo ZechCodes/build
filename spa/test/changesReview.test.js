@@ -17,6 +17,12 @@ const patchOf = (line) =>
     "",
   ].join("\n");
 
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((yes) => (resolve = yes));
+  return { promise, resolve };
+};
+
 describe("reviewBarHtml", () => {
   const files = [
     { path: "a.js", add: 3, del: 1 },
@@ -91,6 +97,24 @@ describe("the review plug (DOM)", () => {
     plug.unmount();
   });
 
+  it("renders aggregate file timestamps and refreshes their text without replacing file nodes", async () => {
+    const editedAt = Date.now() - 30_000;
+    const { host, plug } = mountPlug({
+      fetchDiff: async () => ({ patch: patchOf("new"), file_edited_at: { "a.txt": editedAt } }),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const file = host.querySelector(".file");
+    const timestamp = host.querySelector(".fedited");
+    expect(timestamp?.dataset.editedAt).toBe(String(editedAt));
+    expect(timestamp?.textContent).toBe("Just Now");
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(host.querySelector(".file")).toBe(file);
+    expect(host.querySelector(".fedited")).toBe(timestamp);
+    expect(timestamp.textContent).toBe("1 minute ago");
+    plug.unmount();
+  });
+
   // Sending is the surface's box under the diff, not the plug's — so the plug
   // says what is waiting and sends when asked, and the merge verb in the
   // toolbar is untouched by a comment being written.
@@ -146,13 +170,60 @@ describe("the review plug (DOM)", () => {
 
   it("leaves the diff alone while a comment is pending", async () => {
     let line = "new";
-    const { host, plug } = mountPlug({ fetchDiff: async () => ({ patch: patchOf(line) }), submit: async () => {} });
+    const requestedKeys = [];
+    const { host, plug } = mountPlug({
+      fetchDiff: async (ifDiffKey) => {
+        requestedKeys.push(ifDiffKey);
+        return { patch: patchOf(line), diff_key: line };
+      },
+      submit: async () => {},
+    });
     await vi.advanceTimersByTimeAsync(0);
     await commentOnTheFile(host);
     line = "moved underneath";
     await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
     expect(host.querySelector(".pcomment").textContent).toContain("split this up");
     expect(host.textContent).not.toContain("moved underneath");
+    expect(requestedKeys.at(-1)).toBe("new");
+    await plug.sendComments();
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    expect(host.textContent).toContain("moved underneath");
+    plug.unmount();
+  });
+
+  it("updates presentation metadata from an unchanged patch response", async () => {
+    let commentable = true;
+    const { host, plug } = mountPlug({
+      fetchDiff: async (ifDiffKey) =>
+        ifDiffKey
+          ? { unchanged: true, diff_key: "same", key: commentable, commentable }
+          : { patch: patchOf("new"), diff_key: "same", key: commentable, commentable },
+      submit: async () => {},
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.querySelector(".fcmt")).toBeTruthy();
+    commentable = false;
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    expect(host.querySelector(".fcmt")).toBe(null);
+    plug.unmount();
+  });
+
+  it("serializes overlapping refreshes and observes one queued invalidation", async () => {
+    const first = deferred();
+    const second = deferred();
+    const fetchDiff = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const { host, plug } = mountPlug({ fetchDiff });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    expect(fetchDiff).toHaveBeenCalledTimes(1);
+
+    first.resolve({ patch: patchOf("old"), diff_key: "old" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchDiff).toHaveBeenCalledTimes(2);
+    expect(fetchDiff.mock.calls[1][0]).toBe("old");
+    second.resolve({ patch: patchOf("new"), diff_key: "new" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.textContent).toContain("new");
     plug.unmount();
   });
 

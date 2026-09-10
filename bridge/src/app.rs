@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+use crate::agent_modes::AgentModes;
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::delivery::{AgentSpawnPlan, ReadyToSpawn, SessionProbes};
@@ -465,7 +466,52 @@ struct MintedCallRow {
     answered: bool,
 }
 
+struct LifecycleDiagnostic<'a> {
+    event: &'a str,
+    origin: &'a str,
+    reason: Option<&'a str>,
+    operation_id: Option<&'a str>,
+    provider_thread_id: Option<&'a str>,
+    caller: Option<&'a std::panic::Location<'a>>,
+}
+
 impl Tab {
+    fn log_lifecycle(&self, diagnostic: LifecycleDiagnostic<'_>) {
+        let Some((owner_id, agent_id)) = self.role.agent() else {
+            return;
+        };
+        let ts_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or_default();
+        let mut entry = json!({
+            "component": "app",
+            "event": diagnostic.event,
+            "ts_utc": now_rfc3339(),
+            "ts_unix_ms": ts_unix_ms,
+            "agent_id": agent_id,
+            "owner_id": owner_id,
+            "origin": diagnostic.origin,
+        });
+        if let Some(instance) = &self.session_instance {
+            entry["session_instance_id"] = json!(instance.id);
+            entry["conversation_id"] = json!(instance.conversation_id);
+        }
+        if let Some(reason) = diagnostic.reason {
+            entry["reason"] = json!(reason);
+        }
+        if let Some(operation_id) = diagnostic.operation_id {
+            entry["operation_id"] = json!(operation_id);
+        }
+        if let Some(provider_thread_id) = diagnostic.provider_thread_id {
+            entry["provider_thread_id"] = json!(provider_thread_id);
+        }
+        if let Some(caller) = diagnostic.caller {
+            entry["caller"] = json!(format!("{}:{}", caller.file(), caller.line()));
+        }
+        eprintln!("build_lifecycle {entry}");
+    }
+
     /// The wire id this tab is demuxed by on the shared terminal socket:
     /// `term-<n>` for a shell, `agent:<agent_id>` for an agent. An agent is
     /// addressed by its own durable identity, never by the run that happens to
@@ -1784,6 +1830,7 @@ fn accept_isolation(named: &str, available: &IsolationAvailability) -> Result<Is
 struct SettingsPatch {
     projects_dir: Option<std::path::PathBuf>,
     default_harness: Option<AgentProvider>,
+    agent_modes: Option<Value>,
     isolation: Option<Isolation>,
 }
 
@@ -1797,7 +1844,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 5] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 6] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -1821,6 +1868,10 @@ impl SettingsPatch {
                      \"codex\", \"codex_app_server\" or \"pi\")"
                 )
             })?);
+            Ok(())
+        }),
+        ("agent_modes", |patch, value, _| {
+            patch.agent_modes = Some(value.clone());
             Ok(())
         }),
         ("codex_mode", |patch, value, _| {
@@ -1894,6 +1945,8 @@ pub struct AppState {
     /// page and spent at creation — never re-read to move an agent that
     /// already exists.
     default_harness: AgentProvider,
+    /// Independent launch presentation for each agent family.
+    agent_modes: AgentModes,
     /// How a new checkout is isolated from the project it comes from, for
     /// every project that names no isolation of its own. Spent at creation,
     /// like `default_harness`: an existing checkout says what it is itself.
@@ -1984,6 +2037,11 @@ pub struct AppState {
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
+    /// Project-list-only gate, kept separate so a lifecycle test's global git
+    /// gate does not also stop the unrelated project.list probe it uses to
+    /// prove the mutex is free.
+    #[cfg(test)]
+    off_lock_project_list_gate: Option<OffLockGate>,
     /// The git work a verb handed to the drain, to run with this mutex
     /// released. Set by exactly one verb per dispatch and taken by the drain
     /// in the same breath, so the `Ok` the verb returned meanwhile is a
@@ -2470,6 +2528,7 @@ impl AppState {
             worktrees_root,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
+            agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             config_path: None,
             #[cfg(test)]
@@ -2499,6 +2558,8 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
+            #[cfg(test)]
+            off_lock_project_list_gate: None,
             deferred_work: None,
             pending_rows: Vec::new(),
             finishing_worktrees: std::collections::HashSet::new(),
@@ -2606,6 +2667,7 @@ impl AppState {
             self.projects_dir = expand_tilde(dir);
         }
         self.apply_default_harness_config(config);
+        self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;
         }
@@ -2630,6 +2692,17 @@ impl AppState {
                 eprintln!("config {key}: unknown {named:?}; using the default")
             }
             None => {}
+        }
+    }
+
+    fn apply_agent_modes_config(&mut self, config: &Value) {
+        self.agent_modes = AgentModes::from_legacy_default(self.default_harness);
+        let Some(value) = config.get("agent_modes") else {
+            return;
+        };
+        match self.agent_modes.merge_wire(value) {
+            Ok(modes) => self.agent_modes = modes,
+            Err(error) => eprintln!("config agent_modes: {error}; using the legacy default"),
         }
     }
 
@@ -4229,6 +4302,7 @@ impl AppState {
         json!({
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
+            "agent_modes": self.agent_modes,
             "isolation": isolation,
             "router_model": self.router_choice,
             "projects": self.projects.iter().chain(prospective_project).map(|p| {
@@ -4814,6 +4888,7 @@ impl AppState {
     /// directory they live in is about to go, so their sessions end here,
     /// recorded on the thread, rather than lingering live until the reaper
     /// notices the root is gone.
+    #[track_caller]
     fn retire_agents_of_pruned_worktree(&mut self, root: &std::path::Path) {
         let root = Self::canonical_root(root);
         let ended: Vec<SessionInstance> = self
@@ -4828,7 +4903,9 @@ impl AppState {
         }
     }
 
+    #[track_caller]
     fn retire_agent_tabs(&mut self, root: &std::path::Path) -> Vec<Retirement> {
+        let caller = std::panic::Location::caller();
         let root = Self::canonical_root(root);
         let keys: Vec<TabKey> = self
             .tabs
@@ -4837,7 +4914,7 @@ impl AppState {
             .cloned()
             .collect();
         keys.iter()
-            .filter_map(|key| self.retire_tab(key, "closed"))
+            .filter_map(|key| self.retire_tab_at(key, "closed", caller))
             .collect()
     }
 
@@ -4847,8 +4924,30 @@ impl AppState {
     /// ([`Retirement`]); the close push stays here, under the app mutex,
     /// because it is bounded — the screen's own lock and one channel send per
     /// client, exactly what it has always been.
+    #[track_caller]
     fn retire_tab(&mut self, key: &TabKey, reason: &str) -> Option<Retirement> {
+        self.retire_tab_at(key, reason, std::panic::Location::caller())
+    }
+
+    fn retire_tab_at(
+        &mut self,
+        key: &TabKey,
+        reason: &str,
+        caller: &std::panic::Location<'_>,
+    ) -> Option<Retirement> {
+        let provider_thread_id = self.tabs.get(key).and_then(|tab| {
+            let (owner_id, agent_id) = tab.role.agent()?;
+            self.recorded_resume_id(owner_id, agent_id)
+        });
         let tab = self.tabs.remove(key)?;
+        tab.log_lifecycle(LifecycleDiagnostic {
+            event: "shutdown_requested",
+            origin: "tab_retirement",
+            reason: Some(reason),
+            operation_id: None,
+            provider_thread_id: provider_thread_id.as_deref(),
+            caller: Some(caller),
+        });
         if let Some(screen) = &tab.screen {
             screen.close(reason);
         }
@@ -4861,11 +4960,24 @@ impl AppState {
     /// The clients are told nothing and stay attached, which is what keeps a
     /// browser's terminal where the human left it across an agent restart.
     /// [`ensure_agent_tab`]'s dead-tab replacement, and nothing else.
+    #[track_caller]
     fn retire_tab_keeping_screen(
         &mut self,
         key: &TabKey,
     ) -> Option<(Retirement, Option<ScreenHandle>)> {
+        let provider_thread_id = self.tabs.get(key).and_then(|tab| {
+            let (owner_id, agent_id) = tab.role.agent()?;
+            self.recorded_resume_id(owner_id, agent_id)
+        });
         let tab = self.tabs.remove(key)?;
+        tab.log_lifecycle(LifecycleDiagnostic {
+            event: "shutdown_requested",
+            origin: "dead_tab_replacement",
+            reason: Some("replaced"),
+            operation_id: None,
+            provider_thread_id: provider_thread_id.as_deref(),
+            caller: Some(std::panic::Location::caller()),
+        });
         Some((Retirement::begin(tab.session), tab.screen))
     }
 
@@ -7037,6 +7149,7 @@ impl AppState {
                 "models": harness_for(self.default_harness).models(),
                 "efforts": harness_for(self.default_harness).effort_levels(),
                 "default_provider": self.default_harness,
+                "agent_modes": self.agent_modes,
                 "providers": models::provider_catalogs(),
             })),
             "thread.revision" => self.thread_revision(params),
@@ -7069,7 +7182,7 @@ impl AppState {
             "git.merge_abort" => self.git_merge_abort(params),
             "settings.get" => Ok(self.settings_get()),
             "settings.set" => self.settings_set(params),
-            "project.list" => Ok(self.project_list()),
+            "project.list" => Ok(self.defer_project_list()),
             "project.add" => self.project_add(params),
             "project.create" => self.project_create(params),
             "project.clone" => self.project_clone(params),
@@ -7601,6 +7714,7 @@ impl AppState {
     }
 
     /// All registered projects, for the New-task picker and Settings.
+    #[cfg(test)]
     fn project_list(&self) -> Value {
         let projects: Vec<Value> = self
             .projects
@@ -7608,6 +7722,34 @@ impl AppState {
             .map(|project| self.project_json(project, git_remote_origin(&project.repo_path)))
             .collect();
         json!({ "projects": projects })
+    }
+
+    /// Capture project identity and settings under the app mutex, then leave
+    /// repository and volume probes to the deferred-read drain. The answer is
+    /// a coherent snapshot: registration changes while the probes run affect
+    /// the next list request, not this one.
+    fn defer_project_list(&mut self) -> Value {
+        let projects = self
+            .projects
+            .iter()
+            .map(|project| ProjectListRow {
+                project_id: project.id.clone(),
+                name: project.name.clone(),
+                repo_path: project.repo_path.clone(),
+                worktrees_root: self.project_worktrees_root(&project.id),
+                base_branch: project.base_branch.clone(),
+                isolation: project.isolation,
+                isolation_default: self.isolation,
+            })
+            .collect();
+        self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
+            subject: ReadSubject::ProjectList { projects },
+            issue_id: None,
+            if_diff_key: None,
+            #[cfg(test)]
+            gate: self.off_lock_project_list_gate.clone(),
+        })));
+        Value::Null
     }
 
     /// The wire row for a project: what it is, and the whole isolation picture
@@ -7793,12 +7935,14 @@ impl AppState {
         }))
     }
 
-    /// Every account setting this bridge holds. Legacy mode fields are derived
-    /// from the concrete default harness rather than stored separately.
+    /// Every account setting this bridge holds. `agent_modes` is independent;
+    /// legacy mode aliases keep describing the concrete default harness for
+    /// clients that still use those fields to choose that fallback.
     fn settings_get(&self) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
+            "agent_modes": self.agent_modes,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
             "isolation": self.isolation,
@@ -7814,6 +7958,12 @@ impl AppState {
     /// accepted one to the account is [`AppState::apply_settings`].
     fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
         let patch = SettingsPatch::parse(params, &self.account_availability())?;
+        let agent_modes = patch
+            .agent_modes
+            .as_ref()
+            .map(|value| self.agent_modes.merge_wire(value))
+            .transpose()?
+            .unwrap_or(self.agent_modes);
         // Every accepted field is put to a prospective config and written
         // BEFORE any of it reaches the account, so a refused write leaves
         // nothing applied. `projects_dir` is the one that touches the disk —
@@ -7829,9 +7979,12 @@ impl AppState {
         };
         let default_harness = patch.default_harness.unwrap_or(self.default_harness);
         let isolation = patch.isolation.unwrap_or(self.isolation);
-        self.persist_config(&self.config_value(&projects_dir, default_harness, isolation))?;
+        let mut config = self.config_value(&projects_dir, default_harness, isolation);
+        config["agent_modes"] = json!(agent_modes);
+        self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
+        self.agent_modes = agent_modes;
         self.isolation = isolation;
         Ok(self.settings_get())
     }
@@ -8315,9 +8468,19 @@ impl AppState {
     /// released. The `Value` returned is the placeholder
     /// [`AppState::deferred_work`] documents.
     fn defer_read(&mut self, subject: ReadSubject, issue_id: Option<String>) -> Value {
+        self.defer_conditional_read(subject, issue_id, None)
+    }
+
+    fn defer_conditional_read(
+        &mut self,
+        subject: ReadSubject,
+        issue_id: Option<String>,
+        if_diff_key: Option<&str>,
+    ) -> Value {
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject,
             issue_id,
+            if_diff_key: if_diff_key.map(str::to_string),
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));
@@ -9864,6 +10027,7 @@ impl AppState {
     ///
     /// The per-agent twin of [`retire_agent_tabs`](Self::retire_agent_tabs), which
     /// takes every agent in a worktree because its owner is going away.
+    #[track_caller]
     fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
         self.retire_tab(&key, "closed");
@@ -9881,6 +10045,7 @@ impl AppState {
     /// and report `done` for an issue no longer taking reports. Only this
     /// issue's own agent goes — the checkout's other agents belong to the main
     /// branch and are none of this verb's business.
+    #[track_caller]
     fn retire_issue_session(&mut self, session: Option<(std::path::PathBuf, String)>) {
         if let Some((checkout, agent_id)) = session {
             self.retire_agent(&checkout, &agent_id);
@@ -9987,12 +10152,13 @@ impl AppState {
         let worktree_id = require_str(params, "worktree_id")?;
         let external = self.resolve_external_worktree(&project_id, &worktree_id)?;
         let base_branch = self.base_for(&project_id)?;
-        Ok(self.defer_read(
+        Ok(self.defer_conditional_read(
             ReadSubject::Worktree {
                 external: Box::new(external),
                 base_branch,
             },
             None,
+            params.get("if_diff_key").and_then(Value::as_str),
         ))
     }
 
@@ -10694,7 +10860,7 @@ impl AppState {
             self.require_undecided(capture_id)?;
         }
         match action {
-            BridgeAction::ListProjects => Ok(self.project_list()),
+            BridgeAction::ListProjects => Ok(self.defer_project_list()),
             BridgeAction::ListWork => Ok(self.router_work_digest()),
             BridgeAction::ReadConversation {
                 entity_id,
@@ -14119,7 +14285,11 @@ impl AppState {
             base_sha: active.base_sha.clone(),
             base_branch: active.worktree.base_branch.clone(),
         };
-        Ok(self.defer_read(subject, issue_id))
+        Ok(self.defer_conditional_read(
+            subject,
+            issue_id,
+            params.get("if_diff_key").and_then(Value::as_str),
+        ))
     }
 
     /// Immutable stage review surface. Unlike `run.diff`, this never reads the
@@ -17388,6 +17558,28 @@ fn diff_json(diff: &crate::diff::WorktreeDiff) -> Value {
     })
 }
 
+/// Modification times for changed paths that still exist in a checkout.
+/// Deleted paths are omitted because neither Git nor the filesystem retains
+/// their last worktree modification time.
+fn diff_file_edited_at(
+    worktree_path: &std::path::Path,
+    diff: &crate::diff::WorktreeDiff,
+) -> serde_json::Map<String, Value> {
+    diff.files()
+        .iter()
+        .filter_map(|file| {
+            let edited_at = crate::diff::file_edited_at(worktree_path, &file.path)?;
+            Some((file.path.clone(), json!(edited_at)))
+        })
+        .collect()
+}
+
+fn worktree_diff_json(worktree_path: &std::path::Path, diff: &crate::diff::WorktreeDiff) -> Value {
+    let mut value = diff_json(diff);
+    value["file_edited_at"] = Value::Object(diff_file_edited_at(worktree_path, diff));
+    value
+}
+
 /// The wire view of a run stage's execution progress: id, sub-state, immutable
 /// commit boundaries, publication evidence, and its validation report if any.
 fn run_stage_json(progress: &StageProgress) -> Value {
@@ -18402,12 +18594,18 @@ struct DeferredRead {
     /// The issue that asked, when the read came in through an issue surface —
     /// stamped onto the answer, as the issue verbs did before the split.
     issue_id: Option<String>,
+    /// The complete aggregate held by the caller. We still recompute to avoid
+    /// stale filesystem answers, then suppress the equal payload on the wire.
+    if_diff_key: Option<String>,
     #[cfg(test)]
     gate: Option<OffLockGate>,
 }
 
 /// Which diff a deferred read renders.
 enum ReadSubject {
+    /// `project.list` — immutable row inputs captured at request time, with
+    /// repository and volume metadata read while the app mutex is released.
+    ProjectList { projects: Vec<ProjectListRow> },
     /// `project.diff` — a primary checkout's uncommitted work.
     Project {
         project_id: String,
@@ -18437,19 +18635,86 @@ enum ReadSubject {
     },
 }
 
+struct ProjectListRow {
+    project_id: String,
+    name: String,
+    repo_path: std::path::PathBuf,
+    worktrees_root: std::path::PathBuf,
+    base_branch: String,
+    isolation: Option<Isolation>,
+    isolation_default: Isolation,
+}
+
 impl DeferredRead {
     fn run(&self) -> Result<Value, String> {
+        let conditional_key = self.subject.conditional_key()?;
+        if let Some(diff_key) = conditional_key.as_deref() {
+            if self.if_diff_key.as_deref() == Some(diff_key) {
+                return Ok(json!({ "unchanged": true, "diff_key": diff_key }));
+            }
+        }
         let mut rendered = self.subject.render()?;
         if let (Some(issue_id), Some(object)) = (&self.issue_id, rendered.as_object_mut()) {
             object.insert("issue_id".to_string(), json!(issue_id));
+        }
+        if let Some(diff_key) = conditional_key {
+            if let Some(object) = rendered.as_object_mut() {
+                object.insert("diff_key".to_string(), json!(diff_key));
+            }
         }
         Ok(rendered)
     }
 }
 
 impl ReadSubject {
+    fn conditional_key(&self) -> Result<Option<String>, String> {
+        let material = match self {
+            Self::Worktree {
+                external,
+                base_branch,
+            } => format!(
+                "worktree\0{}\0{}\0{:?}\0{}\0{}\0{}",
+                external.id,
+                base_branch,
+                external.branch,
+                external.head_subject,
+                external.dirty_files,
+                crate::diff::key_against_merge_base(&external.path, base_branch)
+                    .map_err(|error| error.to_string())?
+            ),
+            Self::Run {
+                worktree_path,
+                base_sha,
+                base_branch,
+            } => {
+                let (base, delta_key) = match base_sha {
+                    Some(sha) => (
+                        sha.as_str(),
+                        crate::diff::key_against_base(worktree_path, sha)
+                            .map_err(|error| error.to_string())?,
+                    ),
+                    None => (
+                        base_branch.as_str(),
+                        crate::diff::key_against_merge_base(worktree_path, base_branch)
+                            .map_err(|error| error.to_string())?,
+                    ),
+                };
+                format!("run\0{}\0{}", base, delta_key)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(sha256_hex(material.as_bytes())))
+    }
+
     fn render(&self) -> Result<Value, String> {
         match self {
+            Self::ProjectList { projects } => {
+                let projects = projects
+                    .iter()
+                    .map(ProjectListRow::render)
+                    .collect::<Vec<_>>();
+                Ok(json!({ "projects": projects }))
+            }
             Self::Project {
                 project_id,
                 repo_path,
@@ -18495,6 +18760,7 @@ impl ReadSubject {
                     "adoptable": adoptable,
                     "stat": diff.stat().to_json(),
                     "files": diff_file_rows(&diff),
+                    "file_edited_at": diff_file_edited_at(&external.path, &diff),
                     "patch": diff.patch(),
                 }))
             }
@@ -18508,7 +18774,7 @@ impl ReadSubject {
                     None => crate::diff::diff_against_merge_base(worktree_path, base_branch),
                 }
                 .map_err(|error| error.to_string())?;
-                Ok(diff_json(&diff))
+                Ok(worktree_diff_json(worktree_path, &diff))
             }
             Self::Stage {
                 run_id,
@@ -18530,6 +18796,29 @@ impl ReadSubject {
                 Ok(value)
             }
         }
+    }
+}
+
+impl ProjectListRow {
+    fn render(&self) -> Value {
+        let available = IsolationAvailability::of(&self.repo_path, &self.worktrees_root);
+        let requested = self.isolation.unwrap_or(self.isolation_default);
+        let effective = if available.lock_reason(requested).is_none() {
+            requested
+        } else {
+            Isolation::default()
+        };
+        json!({
+            "project_id": self.project_id,
+            "name": self.name,
+            "path": self.repo_path.display().to_string(),
+            "base_branch": self.base_branch,
+            "remote": git_remote_origin(&self.repo_path),
+            "isolation": self.isolation,
+            "isolation_default": self.isolation_default,
+            "isolation_effective": effective,
+            "isolation_available": available,
+        })
     }
 }
 
@@ -22540,6 +22829,17 @@ fn preflight_delivery(
         if working && !turn.interrupt {
             return DeliveryPreflight::Deferred;
         }
+        if turn.interrupt {
+            let provider_thread_id = s.recorded_resume_id(&turn.owner, &turn.agent_id);
+            tab.log_lifecycle(LifecycleDiagnostic {
+                event: "interrupt_requested",
+                origin: "delivery_preflight_model_change",
+                reason: Some("replace_session_for_turn_choice"),
+                operation_id: turn.operation_id.as_deref(),
+                provider_thread_id: provider_thread_id.as_deref(),
+                caller: None,
+            });
+        }
         (
             DeliveryPreflight::Proceed { force_fresh: true },
             turn.interrupt.then(|| Arc::clone(&tab.session)),
@@ -22626,6 +22926,17 @@ fn deliver(
         });
         if !exact_instance {
             return Ok(DeliveryOutcome::Delivered(None));
+        }
+        if *interrupt && spawned == Spawned::Warm {
+            let provider_thread_id = s.recorded_resume_id(owner, agent_id);
+            tab.log_lifecycle(LifecycleDiagnostic {
+                event: "interrupt_requested",
+                origin: "deliver_warm_turn",
+                reason: Some("thread_post_interrupt"),
+                operation_id: turn.operation_id.as_deref(),
+                provider_thread_id: provider_thread_id.as_deref(),
+                caller: None,
+            });
         }
         (
             Arc::clone(&tab.session),
@@ -23186,6 +23497,9 @@ fn end_of_session(
             .expect("the tab this pump holds was just found")
             .role
             .clone();
+        let provider_thread_id = role
+            .agent()
+            .and_then(|(owner_id, agent_id)| s.recorded_resume_id(owner_id, agent_id));
         match role.agent() {
             Some(_) => {
                 let Some(instance) = instance else {
@@ -23199,6 +23513,14 @@ fn end_of_session(
                     .tabs
                     .get_mut(key)
                     .expect("the guarded agent tab still exists");
+                tab.log_lifecycle(LifecycleDiagnostic {
+                    event: "session_ended_observed",
+                    origin: "session_output_closed",
+                    reason: Some("agent_session_ended"),
+                    operation_id: None,
+                    provider_thread_id: provider_thread_id.as_deref(),
+                    caller: None,
+                });
                 tab.live = false;
                 // Told in the same acquisition that marks the tab, because a
                 // marked tab is a REPLACEABLE one: the next spawn takes this

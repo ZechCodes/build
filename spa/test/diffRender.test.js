@@ -24,15 +24,15 @@ describe("diffFilesHtml", () => {
     expect(html).toContain('class="fb EDIT"');
     expect(html).toContain('<span class="a">+1</span>');
     expect(html).toContain('<span class="d">−1</span>');
-    expect(html).toContain('<tr class="hunk">');
-    expect(html).toContain('<tr class="del" data-ln="1" data-side="old"');
-    expect(html).toContain('<tr class="add" data-ln="1" data-side="new"');
-    expect(html).toContain('<tr class="ctx" data-ln="2" data-side="new"');
+    expect(html).toContain('<tr class="hunk" aria-rowindex="1">');
+    expect(html).toContain('<tr class="del" aria-rowindex="2" data-ln="1" data-side="old"');
+    expect(html).toContain('<tr class="add" aria-rowindex="3" data-ln="1" data-side="new"');
+    expect(html).toContain('<tr class="ctx" aria-rowindex="4" data-ln="2" data-side="new"');
   });
 
   it("wraps the table in a .dscroll box so the code scrolls under a fixed header", () => {
     const html = diffFilesHtml(files);
-    expect(html).toContain('<div class="dscroll"><table>');
+    expect(html).toContain('<div class="dscroll" data-row-count="4"><table aria-rowcount="4">');
     expect(html).toContain("</table></div>");
   });
 
@@ -62,12 +62,19 @@ describe("diffFilesHtml", () => {
 });
 
 describe("diffRowsHtml", () => {
+  it("keeps a very long line intact without sending it through syntax highlighting", () => {
+    const text = `const payload = "${"x".repeat(25_000)}";`;
+    const html = diffRowsHtml([{ t: "add", n: 1, text }], "javascript");
+    expect(html).toContain(text.replaceAll('"', "&quot;"));
+    expect(html).not.toContain('class="token');
+  });
+
   it("preserves the row contract (data-ln + two td.ln columns) with an unknown language", () => {
     const html = diffRowsHtml(files[0].rows, null);
-    expect(html).toContain('<tr class="hunk"><td class="ln"></td><td class="ln"></td><td class="code">');
-    expect(html).toContain('<tr class="del" data-ln="1" data-side="old" data-old-line="1" data-new-line=""><td class="ln">1</td><td class="ln"></td><td class="code">');
-    expect(html).toContain('<tr class="add" data-ln="1" data-side="new" data-old-line="" data-new-line="1"><td class="ln"></td><td class="ln">1</td><td class="code">');
-    expect(html).toContain('<tr class="ctx" data-ln="2" data-side="new" data-old-line="2" data-new-line="2"><td class="ln">2</td><td class="ln">2</td><td class="code">');
+    expect(html).toContain('<tr class="hunk" aria-rowindex="1"><td class="ln"></td><td class="ln"></td><td class="code">');
+    expect(html).toContain('<tr class="del" aria-rowindex="2" data-ln="1" data-side="old" data-old-line="1" data-new-line=""><td class="ln">1</td><td class="ln"></td><td class="code">');
+    expect(html).toContain('<tr class="add" aria-rowindex="3" data-ln="1" data-side="new" data-old-line="" data-new-line="1"><td class="ln"></td><td class="ln">1</td><td class="code">');
+    expect(html).toContain('<tr class="ctx" aria-rowindex="4" data-ln="2" data-side="new" data-old-line="2" data-new-line="2"><td class="ln">2</td><td class="ln">2</td><td class="code">');
     // unknown lang → escaped, not tokenized
     expect(html).toContain("let x = &lt;old&gt;;");
     expect(html).not.toContain("token");
@@ -76,7 +83,7 @@ describe("diffRowsHtml", () => {
   it("keeps the exact ln columns intact when a known language tokenizes the code cell", () => {
     const html = diffRowsHtml(files[0].rows, "rust");
     // anchor metadata and line columns remain intact; only td.code innerHTML gains tokens
-    expect(html).toContain('<tr class="del" data-ln="1" data-side="old" data-old-line="1" data-new-line=""><td class="ln">1</td><td class="ln"></td><td class="code">');
+    expect(html).toContain('<tr class="del" aria-rowindex="2" data-ln="1" data-side="old" data-old-line="1" data-new-line=""><td class="ln">1</td><td class="ln"></td><td class="code">');
     expect(html).toContain('class="token');
     expect(html).not.toContain("<old>");
   });
@@ -105,9 +112,10 @@ describe("diff folding + file comments", () => {
 describe("the file header's controls", () => {
   const files = [{ path: "src/a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] }];
 
-  it("opens the file with a labelled button, not a bare glyph", () => {
+  it("opens the file with an accessible icon-only button", () => {
     const html = diffFilesHtml(files, { openable: true });
-    expect(html).toContain("Open File");
+    expect(html).toContain('aria-label="Open this file in Files"');
+    expect(html).not.toContain("<span>Open File</span>");
     expect(html).not.toContain("↗");
     expect(html).toContain("lucide-external-link");
   });
@@ -124,6 +132,7 @@ describe("the file header's controls", () => {
     expect(html).toContain("Approve");
     expect(html).toContain('class="fapprove"');
     expect(html).toContain('aria-pressed="false"');
+    expect(html).not.toContain("<span>Approve</span>");
   });
 
   it("marks an approved file's toggle pressed", () => {
@@ -147,6 +156,15 @@ describe("the file header's controls", () => {
   it("ticks the selection checkbox of a selected file", () => {
     const html = diffFilesHtml(files, { selectable: true, selected: new Set(["src/a.js"]) });
     expect(html).toMatch(/fselect-box[^>]*checked/);
+  });
+
+  it("places a valid edit time after the diffstat and omits missing or invalid times", () => {
+    const edited = { ...files[0], editedAt: Date.now() - 60_000 };
+    const html = diffFilesHtml([edited]);
+    expect(html).toContain('class="fedited"');
+    expect(html.indexOf('class="pm"')).toBeLessThan(html.indexOf('class="fedited"'));
+    expect(diffFilesHtml(files)).not.toContain('class="fedited"');
+    expect(diffFilesHtml([{ ...files[0], editedAt: 9e15 }])).not.toContain('class="fedited"');
   });
 
   it("offers no selection checkbox where the surface does not select files", () => {

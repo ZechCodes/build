@@ -202,7 +202,7 @@ describe("agent rail chat ownership", () => {
     expect(host().querySelector(".chat-recovery-entry")).toBeNull();
   });
 
-  it("retains controller drafts across remounts and keeps the provisional composer separate", async () => {
+  it("retains controller drafts across remounts and returns to the selected agent composer", async () => {
     await mountBranch();
     bubble("agent-b").click();
     await flush();
@@ -222,12 +222,129 @@ describe("agent rail chat ownership", () => {
     rail = null;
     document.body.innerHTML = '<div id="agent-rail"></div>';
     await mountBranch();
-    expect(input().value).toBe("new agent draft");
+    expect(input().value).toBe("agent B draft");
+    writeDraft("message after returning");
+    host().querySelector("#railsend").click();
+    await flush();
+    expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
+    expect(calls.filter((entry) => entry.method === "thread.post").at(-1).params).toMatchObject({
+      entity_id: "run-1",
+      agent_id: "agent-b",
+      conversation_id: "conversation-agent-b",
+      body: "message after returning",
+    });
     bubble("agent-a").click();
     await flush();
     bubble("agent-b").click();
     await flush();
+    expect(input().value).toBe("");
+  });
+
+  it("blocks a remembered conversation until its live detail resolves", async () => {
+    await mountBranch();
+    bubble("agent-b").click();
+    await flush();
+    writeDraft("agent B draft");
+    rail.dispose();
+    rail = null;
+    document.body.innerHTML = '<div id="agent-rail"></div>';
+
+    let resolveDetail;
+    const baseCall = call;
+    call = vi.fn(async (method, params = {}) => {
+      if (method !== "branch.get") return baseCall(method, params);
+      calls.push({ method, params });
+      return new Promise((resolve) => (resolveDetail = resolve));
+    });
+    adoptApplicationScope({ deviceId: "device-1", call });
+    await mountBranch();
+
+    expect(input()).toBeNull();
+    expect(host().querySelector("#railsend")).toBeNull();
+    expect(host().querySelector(".rail-chat-loading").textContent).toBe("Loading chat…");
+    expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
+    expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(0);
+
+    resolveDetail(payload);
+    await flush();
+    expect(input().disabled).toBe(false);
     expect(input().value).toBe("agent B draft");
+    writeDraft("send after hydration");
+    host().querySelector("#railsend").click();
+    await flush();
+
+    expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
+    expect(calls.find((entry) => entry.method === "thread.post").params).toMatchObject({
+      entity_id: "run-1",
+      agent_id: "agent-b",
+      conversation_id: "conversation-agent-b",
+      body: "send after hydration",
+    });
+  });
+
+  it("keeps the provisional composer and its next draft while agent creation is pending", async () => {
+    payload = { ...branchPayload(), agents: [] };
+    let resolveAdd;
+    const baseCall = call;
+    call = vi.fn(async (method, params = {}) => {
+      if (method !== "agent.add") return baseCall(method, params);
+      calls.push({ method, params });
+      return new Promise((resolve) => (resolveAdd = resolve));
+    });
+    adoptApplicationScope({ deviceId: "device-1", call });
+    await mountBranch();
+
+    const provisionalInput = input();
+    provisionalInput.focus();
+    writeDraft("create this agent");
+    host().querySelector("#railsend").click();
+    await flush();
+    writeDraft("send this when ready");
+
+    expect(input()).toBe(provisionalInput);
+    expect(document.activeElement).toBe(provisionalInput);
+    expect(input().value).toBe("send this when ready");
+    host().querySelector("#railsend").click();
+    await flush();
+
+    resolveAdd({ entity_id: "run-1", agent: agent("created-agent", 1) });
+    await flush();
+    expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(1);
+    expect(calls.filter((entry) => entry.method === "thread.post").map((entry) => entry.params.body)).toEqual([
+      "create this agent",
+      "send this when ready",
+    ]);
+  });
+
+  it("leaves the selected agent composer alone when another agent finishes creation", async () => {
+    let resolveAdd;
+    const baseCall = call;
+    call = vi.fn(async (method, params = {}) => {
+      if (method !== "agent.add") return baseCall(method, params);
+      calls.push({ method, params });
+      return new Promise((resolve) => (resolveAdd = resolve));
+    });
+    adoptApplicationScope({ deviceId: "device-1", call });
+    await mountBranch();
+
+    addBubble().click();
+    await flush();
+    writeDraft("create another agent");
+    host().querySelector("#railsend").click();
+    await flush();
+    bubble("agent-b").click();
+    await flush();
+    writeDraft("agent B stays here");
+    const selectedInput = input();
+    selectedInput.focus();
+
+    resolveAdd({ entity_id: "run-1", agent: agent("created-agent", 3) });
+    await flush();
+
+    expect(input()).toBe(selectedInput);
+    expect(document.activeElement).toBe(selectedInput);
+    expect(input().value).toBe("agent B stays here");
+    expect(bubble("agent-b").classList.contains("active")).toBe(true);
   });
 
   it("retries an uncertain agent creation with its original creation identity", async () => {

@@ -400,6 +400,58 @@ fn git_branches_does_not_flag_a_branch_a_run_already_owns() {
     assert_eq!(adopted["holder"]["kind"], "run", "{adopted:?}");
 }
 
+#[test]
+fn worktree_diff_reports_existing_file_mtimes_and_omits_deletions() {
+    let (dir, repo) = init_repo();
+    let checkout = add_external_worktree(&repo, dir.path(), "timestamped", "timestamped");
+    std::fs::write(checkout.join("new.txt"), "new\n").unwrap();
+    std::fs::remove_file(checkout.join("README.md")).unwrap();
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.projects[0].id.clone();
+    let worktree_id = state
+        .scan_external_worktrees_now(&project_id)
+        .unwrap()
+        .into_iter()
+        .find(|worktree| worktree.branch.as_deref() == Some("timestamped"))
+        .unwrap()
+        .id;
+
+    let result = state.handle(req(
+        "worktree.diff",
+        json!({ "project_id": project_id, "worktree_id": worktree_id }),
+    ));
+    assert_eq!(result["ok"], true, "{result:?}");
+    let edited_at = result["result"]["file_edited_at"].as_object().unwrap();
+    assert!(edited_at["new.txt"].as_u64().unwrap() > 0);
+    assert!(edited_at.get("README.md").is_none());
+
+    let diff_key = result["result"]["diff_key"].as_str().unwrap().to_string();
+    let unchanged = state.handle(req(
+        "worktree.diff",
+        json!({
+            "project_id": project_id, "worktree_id": worktree_id, "if_diff_key": diff_key,
+        }),
+    ));
+    assert_eq!(
+        unchanged["result"],
+        json!({ "unchanged": true, "diff_key": diff_key }),
+        "{unchanged:?}"
+    );
+
+    std::fs::write(checkout.join("new.txt"), "newer\n").unwrap();
+    let changed = state.handle(req(
+        "worktree.diff",
+        json!({
+            "project_id": project_id, "worktree_id": worktree_id, "if_diff_key": diff_key,
+        }),
+    ));
+    assert_ne!(changed["result"]["diff_key"], diff_key, "{changed:?}");
+    assert!(changed["result"]["patch"]
+        .as_str()
+        .unwrap()
+        .contains("newer"));
+}
+
 /// A branch nobody here has ever checked out is still work the user can
 /// start: it is listed once, named by the local branch it would become,
 /// and it says which remote a fetch would come from. The clone's

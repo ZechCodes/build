@@ -44,7 +44,11 @@ const rowCount = (html) => (html.match(/<tr /g) || []).length;
 describe("fileViewFromStatus", () => {
   it("carries the wire's content key, counts and path", () => {
     const view = fileViewFromStatus(statusFile("src/a.js"));
-    expect(view).toEqual({ path: "src/a.js", status: "EDIT", add: 12, del: 3, contentKey: "key-1", rows: null });
+    expect(view).toEqual({ path: "src/a.js", status: "EDIT", add: 12, del: 3, contentKey: "key-1", editedAt: undefined, rows: null });
+  });
+
+  it("preserves the file edit timestamp", () => {
+    expect(fileViewFromStatus(statusFile("src/a.js", { edited_at: 1234 })).editedAt).toBe(1234);
   });
 
   it.each([
@@ -68,6 +72,11 @@ describe("fileViewFromParsedFile", () => {
     expect(view.contentKey).toBe(hashFileRows(parsed));
     expect(view.rows).toBe(parsed.rows);
     expect(view.path).toBe("src/a.js");
+  });
+
+  it("accepts the timestamp supplied by an aggregate diff or commit", () => {
+    const parsed = parseDiff(patchFor("src/a.js", 1))[0];
+    expect(fileViewFromParsedFile(parsed, 5678).editedAt).toBe(5678);
   });
 });
 
@@ -170,7 +179,8 @@ const collapsedSelectorsWhere = (property, value) =>
 
 /** The class of the box a file's body — its table, or the line that stands in
  *  for one — is drawn in. */
-const bodyBoxOf = (html) => html.match(/<div class="([^"]+)">(?:<table>|<div class="dload">)/)[1];
+const bodyBoxOf = (html) =>
+  html.match(/<div class="([^"]+)"[^>]*>(?:<table[^>]*>|<div class="dload">)/)[1];
 
 describe("the collapsed peek", () => {
   const view = () => fileViewFromStatus(statusFile("src/a.js"));
@@ -185,7 +195,10 @@ describe("the collapsed peek", () => {
   });
 
   it("leaves the full body in the box the collapse rule hides", () => {
-    const box = bodyBoxOf(fileEntry(view(), { fold: "open", body: bodyFor("src/a.js", 20) }).html);
+    const html = fileEntry(view(), { fold: "open", body: bodyFor("src/a.js", 20) }).html;
+    const box = bodyBoxOf(html);
+    expect(html).toContain('<div class="dscroll" data-row-count="23">');
+    expect(html).toContain('<table aria-rowcount="23">');
     expect(collapsedSelectorsWhere("display", "none")).toContain(`.file.collapsed .${box}`);
   });
 });

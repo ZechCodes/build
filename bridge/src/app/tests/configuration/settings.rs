@@ -29,7 +29,7 @@ fn config_read_failure_fails_with_its_path() {
 }
 
 #[test]
-fn settings_write_failure_is_reported_and_leaves_the_default_harness_unchanged() {
+fn settings_write_failure_is_reported_and_leaves_account_modes_unchanged() {
     let directory = tempfile::tempdir().unwrap();
     let (_repo_dir, repo) = init_repo();
     let config = directory.path().join("config.json");
@@ -44,7 +44,14 @@ fn settings_write_failure_is_reported_and_leaves_the_default_harness_unchanged()
     .unwrap();
     std::fs::create_dir(&config).unwrap();
 
-    let response = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+    let before_modes = state.agent_modes;
+    let response = state.handle(req(
+        "settings.set",
+        json!({
+            "default_harness": "pi",
+            "agent_modes": { "claude": "tui", "codex": "headless" }
+        }),
+    ));
 
     assert_eq!(response["ok"], false, "{response:?}");
     assert!(
@@ -54,6 +61,7 @@ fn settings_write_failure_is_reported_and_leaves_the_default_harness_unchanged()
         "{response:?}"
     );
     assert_eq!(state.default_harness, DEFAULT_HARNESS);
+    assert_eq!(state.agent_modes, before_modes);
     assert!(
         !config.with_extension("tmp").exists(),
         "a failed atomic write leaves no temporary config behind"
@@ -78,6 +86,152 @@ fn settings_report_the_default_harness_and_the_compat_modes() {
     assert_eq!(settings["default_harness"], "claude_adk");
     assert_eq!(settings["claude_mode"], "headless");
     assert_eq!(settings["codex_mode"], "headless");
+    assert_eq!(settings["agent_modes"]["claude"], "headless");
+    assert_eq!(settings["agent_modes"]["codex"], "tui");
+}
+
+#[test]
+fn independent_agent_modes_merge_persist_and_ignore_fallback_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, repo) = init_repo();
+    let config = tmp.path().join("config.json");
+    let mut state = AppState::new(
+        repo.clone(),
+        tmp.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+
+    let claude = state.handle(req(
+        "settings.set",
+        json!({ "agent_modes": { "claude": "tui" } }),
+    ));
+    assert_eq!(claude["result"]["agent_modes"]["claude"], "tui");
+    assert_eq!(claude["result"]["agent_modes"]["codex"], "tui");
+    let codex = state.handle(req(
+        "settings.set",
+        json!({ "agent_modes": { "codex": "headless" } }),
+    ));
+    assert_eq!(codex["result"]["agent_modes"]["claude"], "tui");
+    assert_eq!(codex["result"]["agent_modes"]["codex"], "headless");
+
+    let fallback = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+    assert_eq!(fallback["result"]["default_harness"], "pi");
+    assert_eq!(
+        fallback["result"]["agent_modes"],
+        codex["result"]["agent_modes"]
+    );
+    for legacy_patch in [
+        json!({ "claude_mode": "headless" }),
+        json!({ "codex_mode": "tui" }),
+    ] {
+        let legacy = state.handle(req("settings.set", legacy_patch));
+        assert_eq!(
+            legacy["result"]["agent_modes"], codex["result"]["agent_modes"],
+            "legacy aliases must not overwrite independent preferences"
+        );
+    }
+
+    let mut reloaded = AppState::new(
+        repo,
+        tmp.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
+    assert_eq!(settings["agent_modes"]["claude"], "tui");
+    assert_eq!(settings["agent_modes"]["codex"], "headless");
+    let persisted: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+    assert_eq!(persisted["agent_modes"], settings["agent_modes"]);
+}
+
+#[test]
+fn legacy_config_derives_modes_once_and_all_normal_writes_materialize_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, repo) = init_repo();
+    let config = tmp.path().join("config.json");
+    std::fs::write(
+        &config,
+        json!({ "default_harness": "codex_app_server" }).to_string(),
+    )
+    .unwrap();
+    let mut state = AppState::new(
+        repo,
+        tmp.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    let initial = state.handle(req("settings.get", json!({})))["result"].clone();
+    assert_eq!(initial["agent_modes"]["claude"], "headless");
+    assert_eq!(initial["agent_modes"]["codex"], "headless");
+
+    let changed = state.handle(req("settings.set", json!({ "default_harness": "claude" })));
+    assert_eq!(changed["result"]["agent_modes"], initial["agent_modes"]);
+    let persisted: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+    assert_eq!(persisted["agent_modes"], initial["agent_modes"]);
+}
+
+#[test]
+fn malformed_agent_mode_patches_are_atomic() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo,
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let before = state.handle(req("settings.get", json!({})))["result"].clone();
+    for invalid in [
+        json!(null),
+        json!({}),
+        json!({ "gemini": "tui" }),
+        json!({ "claude": "future" }),
+        json!({ "codex": 1 }),
+    ] {
+        let untouched = dir.path().join("must-not-exist");
+        let response = state.handle(req(
+            "settings.set",
+            json!({ "projects_dir": untouched, "default_harness": "pi", "agent_modes": invalid }),
+        ));
+        assert_eq!(response["ok"], false, "{response:?}");
+        assert_eq!(
+            state.handle(req("settings.get", json!({})))["result"],
+            before
+        );
+        assert!(
+            !untouched.exists(),
+            "validation must precede filesystem mutation"
+        );
+    }
+}
+
+#[test]
+fn models_list_serves_independent_agent_modes() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo,
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    state.handle(req(
+        "settings.set",
+        json!({ "agent_modes": { "claude": "tui", "codex": "headless" } }),
+    ));
+    let models = state.handle(req("models.list", json!({})));
+    assert_eq!(models["result"]["agent_modes"]["claude"], "tui");
+    assert_eq!(models["result"]["agent_modes"]["codex"], "headless");
 }
 
 /// The default outlives the process it was chosen in — it is an account

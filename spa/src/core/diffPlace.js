@@ -21,7 +21,11 @@ export function createChangesetPaint(host) {
       [barPart, stackPart, trayPart] = standingParts();
     }
     patchInnerHtml(barPart, bar);
-    patchList(stackPart, entries, { keyOf: (entry) => entry.key, render: (entry) => entry.html });
+    patchList(stackPart, entries, {
+      keyOf: (entry) => entry.key,
+      render: (entry) => entry.html,
+      signatureOf: (entry) => entry.html,
+    });
     patchInnerHtml(trayPart, tray);
   };
 }

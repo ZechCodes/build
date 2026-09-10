@@ -32,7 +32,7 @@ export function defaultHarnessPanelHtml() {
 /** Wire the panel to the bridge: paint from settings.get, save with
  *  settings.set, and repaint from whatever the bridge answers. The control
  *  shows what the account actually holds, never what was merely attempted. */
-export async function mountDefaultHarness(host, { callRpc }) {
+export async function mountDefaultHarness(host, { callRpc, onSaved = async () => {} }) {
   const select = host.querySelector("#defaultharness");
   const saved = host.querySelector("#harnesssaved");
   const error = host.querySelector("#harnesserr");
@@ -70,14 +70,18 @@ export async function mountDefaultHarness(host, { callRpc }) {
     error.textContent = "";
     saved.textContent = "Saving…";
     try {
-      renderConfirmedSettings(await callRpc("settings.set", { default_harness: chosen }));
+      const settings = await callRpc("settings.set", { default_harness: chosen });
+      renderConfirmedSettings(settings);
+      await onSaved(settings);
       saved.textContent = "Saved. This fallback applies when a coding-agent creation request does not name a provider.";
       select.disabled = false;
     } catch (saveError) {
       error.textContent = saveError.message;
       saved.textContent = "";
       try {
-        renderConfirmedSettings(await callRpc("settings.get"));
+        const settings = await callRpc("settings.get");
+        renderConfirmedSettings(settings);
+        await onSaved(settings);
         select.disabled = false;
       } catch (reloadError) {
         clearUnconfirmedSelection();

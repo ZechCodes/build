@@ -64,8 +64,38 @@ body.inbox-collapsed #inbox-rail { display:none; }
 #inbox-open { display:none; position:fixed;
   top:calc(10px + env(safe-area-inset-top, 0px));
   left:calc(10px + env(safe-area-inset-left, 0px)); z-index:45;
-  background:var(--panel); border:1px solid var(--line); }
-body.inbox-collapsed #inbox-open { display:block; }
+  height:var(--inbox-toggle); padding:0; overflow:hidden;
+  align-items:center; justify-content:center;
+  grid-template:1fr / 1fr;
+  background:var(--panel); border:1px solid var(--line);
+  transition:background 180ms ease, border-color 180ms ease, border-radius 220ms ease; }
+body.inbox-collapsed #inbox-open { display:grid; }
+.inbox-open-icon, .inbox-open-count { grid-area:1 / 1; transition:opacity 180ms ease, transform 220ms ease; }
+.inbox-open-count { display:flex; align-items:center; justify-content:center;
+  align-self:stretch; justify-self:stretch; border-radius:50%; opacity:0; transform:scale(.55);
+  color:var(--accent-ink); font-size:10px; font-weight:750; letter-spacing:-.03em; }
+body.inbox-collapsed #inbox-open.has-attention {
+  background:var(--accent); border-color:var(--accent); border-radius:50%;
+  animation:inbox-toggle-bubble 220ms ease both; }
+body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
+  opacity:0; transform:scale(.55) rotate(-18deg); animation:inbox-icon-away 220ms ease both; }
+body.inbox-collapsed #inbox-open.has-attention .inbox-open-count {
+  opacity:1; transform:scale(1); animation:inbox-count-in 220ms ease both; }
+@keyframes inbox-icon-away {
+  from { opacity:1; transform:scale(1) rotate(0); }
+  to { opacity:0; transform:scale(.55) rotate(-18deg); }
+}
+@keyframes inbox-toggle-bubble {
+  from { background:var(--panel); border-color:var(--line); border-radius:6px; }
+  to { background:var(--accent); border-color:var(--accent); border-radius:50%; }
+}
+@keyframes inbox-count-in {
+  from { opacity:0; transform:scale(.55); }
+  to { opacity:1; transform:scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #inbox-open, .inbox-open-icon, .inbox-open-count { transition:none; animation:none !important; }
+}
 /* The hover peek: the pointer resting on the reopen toggle lays the collapsed
    rail over the view without docking it. Above the toggle (z-index 45), so the
    head toggle — sitting where the floating one was — takes the click. */
@@ -520,6 +550,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    agent to start one on. Only the layout is said here — the cards stack,
    because the rail is a column 400px wide and three names side by side would
    each be an initial. How a card looks is the picker's own (styles.css). */
+/* The remembered conversation before its live detail lands: the panel already
+   says whose chat this is, so the body only has to hold the space without
+   claiming the conversation is empty. */
+.rail-chat-loading { height:100%; display:flex; align-items:center;
+  justify-content:center; font-size:12.5px; color:var(--dim); }
 .rail-newagent { display:flex; height:100%; align-items:center; justify-content:center; }
 .rail-newagent .chooser { width:100%; }
 .rail-newagent .chooser-cards { flex-direction:column; }
@@ -620,10 +655,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row:hover { background:var(--line2); }
 .surface-row-head { display:flex; align-items:baseline; gap:6px; min-width:0; }
 .surface-row-label { flex:1 1 auto; min-width:0; color:var(--ink2); }
-.surface-row-model, .surface-row-note, .surface-row-detail, .surface-row-stat { color:var(--dim);
+.surface-row-model, .surface-row-effort, .surface-row-note, .surface-row-detail, .surface-row-stat { color:var(--dim);
   font-size:10.5px; }
 .surface-row-line { display:flex; align-items:baseline; gap:6px; min-width:0; }
-.surface-row-model { flex:none; }
+.surface-row-model, .surface-row-effort { flex:none; }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }
@@ -637,6 +672,23 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row-jump { flex:none; padding:0 2px; border:0; background:none; color:var(--dim);
   font:inherit; font-size:10.5px; line-height:1; cursor:pointer; }
 .surface-row-jump:hover { color:var(--accent); }
+.surface-agent { display:block; padding:0; }
+.surface-agent-summary { padding:4px 6px; cursor:pointer; list-style:none; }
+.surface-agent-summary::-webkit-details-marker { display:none; }
+.surface-agent-summary:focus-visible { outline:1px solid var(--accent); outline-offset:-1px; border-radius:6px; }
+.surface-agent-summary::before { content:"›"; flex:none; color:var(--dim); transform:rotate(0deg);
+  transition:transform 120ms ease; }
+.surface-agent[open] > .surface-agent-summary::before { transform:rotate(90deg); }
+.surface-agent-details { padding:2px 6px 8px 25px; }
+.surface-agent-facts { display:grid; grid-template-columns:minmax(82px, auto) minmax(0, 1fr);
+  gap:4px 10px; margin:0; }
+.surface-agent-fact { display:contents; }
+.surface-agent-fact dt { color:var(--dim); font-size:10.5px; }
+.surface-agent-fact dd { min-width:0; margin:0; color:var(--ink2); overflow-wrap:anywhere; }
+.surface-agent-fact .surface-row-model, .surface-agent-fact .surface-row-effort,
+.surface-agent-fact .surface-row-detail { font-size:inherit; }
+.surface-agent-unavailable { color:var(--dim); }
+.surface-agent-fact .surface-row-jump { padding:0; color:var(--accent); }
 .surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
 .surface-completed { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }
 .surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;

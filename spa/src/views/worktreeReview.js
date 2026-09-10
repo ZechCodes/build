@@ -18,6 +18,8 @@ import { mountSplitButton } from "../core/splitButton.js";
 import { gitActionConfirm, abandonConfirm, mergeFailureReason } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
+import { currentCacheScope } from "../core/cacheScope.js";
+import { coordinatedRead, rpcReadKey } from "../core/readRequests.js";
 
 export const WORKTREE_REVIEW_POLL_MS = REVIEW_POLL_MS;
 
@@ -71,6 +73,7 @@ export function createWorktreeReview({
   // "the worktree vanished" verdict.
   let acting = false;
   let meta = null; // the last worktree.diff payload's branch/base/adoptable/path
+  const requestScope = currentCacheScope() || callRpc;
 
   const branchLabel = () => (meta && meta.branch) || "the branch";
   const baseLabel = () => (meta && meta.base_branch) || "main";
@@ -95,13 +98,54 @@ export function createWorktreeReview({
     return adopting.runCall(method, params);
   };
 
+  const readWorktreeDiff = (ifDiffKey) => {
+    const params = {
+      project_id: projectId,
+      worktree_id: worktreeId,
+      // Cached aggregate patches do not carry branch/base/adoptability. Take
+      // one full live response after mount before asking conditionally.
+      ...(ifDiffKey && meta ? { if_diff_key: ifDiffKey } : {}),
+    };
+    return coordinatedRead({
+      key: rpcReadKey({
+        deviceId: currentCacheScope()?.deviceId,
+        requestScope,
+        repository: `worktree:${projectId}:${worktreeId}`,
+        call: callRpc,
+        method: "worktree.diff",
+        params,
+      }),
+      load: () => callRpc("worktree.diff", params),
+    });
+  };
+
+  const worktreePayload = (res) => {
+    if (res.unchanged)
+      return {
+        unchanged: true,
+        diff_key: res.diff_key,
+        file_edited_at: res.file_edited_at,
+        key: String(meta?.adoptable),
+        commentable: Boolean(meta?.adoptable),
+      };
+    meta = { branch: res.branch, base_branch: res.base_branch, path: res.path, adoptable: res.adoptable };
+    return {
+      patch: res.patch,
+      unchanged: res.unchanged,
+      diff_key: res.diff_key,
+      file_edited_at: res.file_edited_at,
+      key: String(res.adoptable),
+      commentable: Boolean(res.adoptable),
+    };
+  };
+
   const plug = createReviewPlug({
     isOffline,
     navigate,
     // Until this worktree is adopted it is its own entity; once it is, the run
     // it became is the one the bridge names.
     entity: () => adopting.adoptedRunId() || worktreeId,
-    fetchDiff: async () => {
+    fetchDiff: async (ifDiffKey) => {
       if (acting) return null;
       // Adopted already? The worktree lives on as a task now — never poll it
       // (the diff would 404) — hand off so its outcome is where the user can
@@ -112,15 +156,14 @@ export function createWorktreeReview({
       }
       let res;
       try {
-        res = await callRpc("worktree.diff", { project_id: projectId, worktree_id: worktreeId });
+        res = await readWorktreeDiff(ifDiffKey);
       } catch (e) {
         if (String(e && e.message).includes("unknown worktree_id") && !acting) onGone();
         return null; // otherwise transient — the poll retries
       }
-      meta = { branch: res.branch, base_branch: res.base_branch, path: res.path, adoptable: res.adoptable };
       // A non-adoptable worktree (detached HEAD, or the base branch itself)
       // only browses: there is no task for a comment to reach.
-      return { patch: res.patch, key: String(res.adoptable), commentable: Boolean(res.adoptable) };
+      return worktreePayload(res);
     },
     submit: async (messages) => {
       try {
@@ -205,13 +248,12 @@ export function createWorktreeReview({
     onFinished();
   };
 
+  // Spread, never an enumerated copy: this view answers one question of its own
+  // and the plug answers the rest, so a method the plug grows must not need a
+  // line here to reach the pane.
   return {
+    ...plug,
     /** The branch the rail's "All changes" entry names this diff against. */
     getBase: () => baseLabel(),
-    mount: (element, options) => plug.mount(element, options),
-    unmount: () => plug.unmount(),
-    refreshActions: () => plug.refreshActions(),
-    commentOffer: () => plug.commentOffer(),
-    sendComments: () => plug.sendComments(),
   };
 }

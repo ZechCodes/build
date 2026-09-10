@@ -42,6 +42,7 @@ import { patchElement } from "./domPatch.js";
 const KEY = "data-key";
 export const EXITING_ATTRIBUTE = "data-exiting";
 const ELEMENT_NODE = 1;
+const RENDER_SIGNATURE = Symbol("patchListRenderSignature");
 
 let exitsStarted = 0;
 
@@ -190,12 +191,38 @@ export function rekeyEntry(container, fromKey, toKey) {
   return true;
 }
 
+function reconcileEntry({ container, standing, entry, key, page, render, signatureOf, signature, anchor, stays }) {
+  if (standing && signatureOf && standing[RENDER_SIGNATURE] === signature) {
+    placeChangedEntry(container, standing, anchor, stays);
+    return { element: standing, made: null };
+  }
+  const next = renderEntry(render, entry, key, page);
+  if (standing && standing.tagName === next.tagName) {
+    patchElement(standing, next);
+    stampSignature(standing, signatureOf, signature);
+    placeChangedEntry(container, standing, anchor, stays);
+    return { element: standing, made: null };
+  }
+  if (standing) container.removeChild(standing);
+  container.insertBefore(next, anchor);
+  stampSignature(next, signatureOf, signature);
+  return { element: next, made: { element: next, entry, arrived: !standing } };
+}
+
+function placeChangedEntry(container, element, anchor, stays) {
+  if (!stays) place(container, element, anchor);
+}
+
+function stampSignature(element, signatureOf, signature) {
+  if (signatureOf) element[RENDER_SIGNATURE] = signature;
+}
+
 /// Make the keyed children of `container` say what `entries` says.
 ///
 /// Returns the entry elements, in order. See the contract at the top of this
 /// module: identical entries come out of a paint untouched, kept entries keep
 /// their element, and `wire` runs only for the ones that had to be made.
-export function patchList(container, entries, { keyOf, render, wire, onEnter, onExit }) {
+export function patchList(container, entries, { keyOf, render, signatureOf, wire, onEnter, onExit }) {
   const page = container.ownerDocument;
   const keys = keysWanted(entries, keyOf);
   const live = keptEntries(container, new Set(keys), onExit);
@@ -212,22 +239,22 @@ export function patchList(container, entries, { keyOf, render, wire, onEnter, on
     const entry = entries[index];
     const key = keys[index];
     const standing = live.get(key);
-    const next = renderEntry(render, entry, key, page);
-    if (standing && standing.tagName === next.tagName) {
-      patchElement(standing, next);
-      if (!staying.has(index)) place(container, standing, anchor);
-      anchor = standing;
-      painted[index] = standing;
-      continue;
-    }
-    // Either the entry is new, or the render made it a different kind of
-    // element than the one standing there — which cannot be patched into it. So
-    // the element is made, and wired, for the first time.
-    if (standing) container.removeChild(standing);
-    container.insertBefore(next, anchor);
-    made.unshift({ element: next, entry, arrived: !standing });
-    anchor = next;
-    painted[index] = next;
+    const signature = signatureOf ? signatureOf(entry) : undefined;
+    const result = reconcileEntry({
+      container,
+      standing,
+      entry,
+      key,
+      page,
+      render,
+      signatureOf,
+      signature,
+      anchor,
+      stays: staying.has(index),
+    });
+    if (result.made) made.unshift(result.made);
+    anchor = result.element;
+    painted[index] = result.element;
   }
 
   // Once, in list order, with the list already saying what it will say — so a

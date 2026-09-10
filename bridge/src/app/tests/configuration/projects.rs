@@ -44,6 +44,45 @@ fn project_add_validates_and_dedupes() {
     );
 }
 
+/// Project rows probe repository config and volume capabilities. Those reads
+/// can be slow, but must neither hold the app mutex nor tear one response.
+#[test]
+fn project_list_reads_metadata_off_lock_from_one_snapshot() {
+    let (dir, repo) = init_repo();
+    let mut app = AppState::new(
+        repo,
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let expected = app.project_list();
+    let expected_id = app.projects[0].id.clone();
+    let (gate, gate_handle) = OffLockGate::new();
+    app.off_lock_project_list_gate = Some(gate);
+    let state = app.shared();
+
+    let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}));
+    gate_handle.wait_for_arrival();
+    let models = frame_on_a_thread(&state, "s-models", "models.list", json!({}))
+        .recv_timeout(Duration::from_secs(10))
+        .expect("an unrelated foreground read answers while project metadata is blocked");
+    assert_eq!(models["ok"], true, "{models:?}");
+
+    state.lock().unwrap().projects.clear();
+    gate_handle.release();
+    let listed = listed
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the project list answers once its metadata read is released");
+    assert_eq!(listed["ok"], true, "{listed:?}");
+    assert_eq!(listed["result"], expected, "{listed:?}");
+    assert_eq!(listed["result"]["projects"][0]["project_id"], expected_id);
+    assert!(
+        state.lock().unwrap().projects.is_empty(),
+        "the stale response must not restore a project removed while it ran"
+    );
+}
+
 /// Registering a project opens the repository, shells out for its default
 /// branch and resolves it — three disk reads on a directory the daemon has
 /// never seen, none of which may hold the app mutex.

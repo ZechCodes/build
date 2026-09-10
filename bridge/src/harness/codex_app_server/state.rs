@@ -1136,6 +1136,20 @@ impl CodexSessionState {
         self.thread_id.clone()
     }
 
+    pub fn diagnostic_phase(&self) -> &'static str {
+        match self.phase {
+            Phase::Starting => "starting",
+            Phase::Initializing => "initializing",
+            Phase::AwaitingVersion => "awaiting_version",
+            Phase::OpeningThread { .. } => "opening_thread",
+            Phase::Waiting => "waiting",
+            Phase::StartingTurn { .. } => "starting_turn",
+            Phase::Working(_) => "working",
+            Phase::Ending => "ending",
+            Phase::Ended => "ended",
+        }
+    }
+
     pub fn expected_parent_thread(&self) -> Option<String> {
         self.thread_id.clone().or_else(|| match &self.phase {
             Phase::OpeningThread {

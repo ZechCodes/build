@@ -7,6 +7,14 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let fileDiffs, cache;
 
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((yes) => {
+    resolve = yes;
+  });
+  return { promise, resolve };
+};
+
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n`;
 
@@ -155,6 +163,43 @@ describe("createFileDiffs", () => {
     await diffs.sync({ status: TWO, openPaths: new Set(["a.js", "b.js"]) });
     expect(calls).toHaveLength(1);
     diffs.dispose();
+  });
+
+  it("shares the same request across repository instances on one request scope", async () => {
+    const answer = deferred();
+    const call = vi.fn(() => answer.promise);
+    const requestScope = {};
+    const first = fileDiffs.createFileDiffs({
+      deviceId: "dev-1", entityId: "run-1", scope: { run_id: "run-1" }, call, requestScope,
+    });
+    const second = fileDiffs.createFileDiffs({
+      deviceId: "dev-1", entityId: "run-1", scope: { run_id: "run-1" }, call, requestScope,
+    });
+    const firstSync = first.sync({ status: TWO, openPaths: new Set(["a.js"]) });
+    const secondSync = second.sync({ status: TWO, openPaths: new Set(["a.js"]) });
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+    answer.resolve({ files: [{ path: "a.js", ...bodyFor("a.js", "key-a") }] });
+    await Promise.all([firstSync, secondSync]);
+    expect(first.bodyOf("a.js")).toEqual(bodyFor("a.js", "key-a"));
+    expect(second.bodyOf("a.js")).toEqual(bodyFor("a.js", "key-a"));
+    first.dispose();
+    second.dispose();
+  });
+
+  it("keeps matching entity requests separate when their request scopes differ", async () => {
+    const call = vi.fn(async (_method, params) => ({
+      files: params.paths.map((path) => ({ path, ...bodyFor(path, "key-a") })),
+    }));
+    const options = { deviceId: "dev-1", entityId: "run-1", scope: { run_id: "run-1" }, call };
+    const first = fileDiffs.createFileDiffs({ ...options, requestScope: {} });
+    const second = fileDiffs.createFileDiffs({ ...options, requestScope: {} });
+    await Promise.all([
+      first.sync({ status: TWO, openPaths: new Set(["a.js"]) }),
+      second.sync({ status: TWO, openPaths: new Set(["a.js"]) }),
+    ]);
+    expect(call).toHaveBeenCalledTimes(2);
+    first.dispose();
+    second.dispose();
   });
 
   it("answers how many bodies it filled, so a caller repaints only on news", async () => {

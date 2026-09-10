@@ -6,7 +6,31 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { hunkIds, patchHunks } from "../src/core/diff.js";
+import { fnv1a64Hex, hunkIds, patchHunks } from "../src/core/diff.js";
+
+const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const SIXTY_FOUR_BITS = 0xffffffffffffffffn;
+
+function referenceFnv1a64Hex(text) {
+  let hash = FNV_OFFSET_BASIS;
+  for (const byte of new TextEncoder().encode(text)) {
+    hash = ((hash ^ BigInt(byte)) * FNV_PRIME) & SIXTY_FOUR_BITS;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+function deterministicUnicode(length) {
+  let state = 0x6d2b79f5;
+  let text = "";
+  for (let index = 0; index < length; index++) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    let codePoint = state % 0x110000;
+    if (codePoint >= 0xd800 && codePoint <= 0xdfff) codePoint += 0x800;
+    text += String.fromCodePoint(codePoint);
+  }
+  return text;
+}
 
 const FIXTURE = JSON.parse(
   readFileSync(
@@ -57,6 +81,31 @@ describe("patchHunks", () => {
     expect(FIXTURE.cases.length).toBeGreaterThan(0);
     for (const { name, patch, hunks } of FIXTURE.cases) {
       expect(patchHunks(patch), name).toEqual(hunks);
+    }
+  });
+});
+
+describe("fnv1a64Hex", () => {
+  it("matches the wrapping BigInt definition across UTF-8 boundaries", () => {
+    const inputs = [
+      "",
+      "\0\x7f\x80\xff",
+      "a".repeat(31),
+      "a".repeat(32),
+      "a".repeat(33),
+      "\u007f\u0080\u07ff\u0800\uffff",
+      "😀 café 東京 مرحبا",
+      "unpaired surrogates: \ud800 / \udfff",
+    ];
+    for (const input of inputs) {
+      expect(fnv1a64Hex(input), JSON.stringify(input)).toBe(referenceFnv1a64Hex(input));
+    }
+  });
+
+  it("matches the BigInt definition for deterministic varied Unicode", () => {
+    for (const length of [1, 2, 7, 64, 257, 1024]) {
+      const input = deterministicUnicode(length);
+      expect(fnv1a64Hex(input), `length ${length}`).toBe(referenceFnv1a64Hex(input));
     }
   });
 });

@@ -222,7 +222,8 @@ describe("openSurfaceOverlay", () => {
 
     const row = overlayRows()[0];
     expect(row.querySelector(".surface-row-model").textContent).toBe("Opus 5 · opus");
-    expect(row.querySelector(".surface-row-stats").textContent).toContain("1200 tokens");
+    expect(row.querySelector(".surface-agent-facts").textContent).toContain("Tokens");
+    expect(row.querySelector(".surface-agent-facts").textContent).toContain("1200");
     held.close();
   });
 

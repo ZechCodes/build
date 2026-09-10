@@ -230,6 +230,7 @@ fn git_status_reports_tristate_staging_and_excludes_the_mcp_config() {
     let full = file_entry(status, "full.txt");
     assert_eq!(full["staged"], "full");
     assert_eq!(full["index_status"], "A");
+    assert!(full["edited_at"].as_u64().unwrap() > 0);
     let partial = file_entry(status, "README.md");
     assert_eq!(partial["staged"], "partial");
     assert_eq!(partial["index_status"], "M");

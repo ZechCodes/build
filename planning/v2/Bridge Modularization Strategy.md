@@ -288,6 +288,41 @@ Validation on 2026-09-09:
 - Live Python interop remains unexercised because
   `BUILD_SECURE_TRANSPORT_PY` is unset; configured ignored tests remain ignored.
 
+#### Sync with main
+
+The stage-two branch incorporates `main` at `09220956` (also the fetched
+`origin/main` tip on 2026-09-09). Its only merge conflict was the old inline
+app test section. The resolved `app.rs` keeps main's production prefix
+byte-for-byte and retains the out-of-line test module; it is now 24,097 lines.
+
+Upstream adds six net app tests, bringing the inventory to 752. The relocated
+changes cover independent agent-mode settings, atomic settings persistence,
+project-list work outside the app lock, and file modification timestamps in
+diff responses. They live in the existing configuration, git, and workflow
+test modules. The rest of main's Rust and frontend changes merged directly.
+
+The source audit matches all 752 tests and 222 helpers to this main snapshot.
+Its 29 strict differences are 28 inherited formatting changes and one reworded
+test comment; no executable assertion or helper changes are introduced by the
+resolution. The frontend index and working tree also match this snapshot.
+
+Frontend lint and build pass. The full frontend test run was stopped without
+a final suite summary after prolonged execution; an isolated retry of
+`agentRailDom.test.js`'s working-status collapse test fails at line 2986,
+expecting `1:25` but rendering `Working 1:36`. This test is unchanged from the
+selected main revision. Later commits arriving on main during validation are
+outside this fixed merge snapshot.
+
+Merged Rust validation discovers 2,105 library test cases, including all 752
+app tests. `cargo test --all --no-fail-fast` finishes with 2,174 passed,
+1 failed, and 7 ignored; the library has 2,099 passed, no failures, and
+6 ignored. All other targets pass except the previously reproduced
+`concurrency_load` output-floor assertion, now measuring 77,820 bytes.
+Formatting and `cargo clippy --all-targets -- -D warnings` pass. Semgrep reports
+no findings across 244 production Rust and frontend files and all 59 extracted
+test files; staged Gitleaks passes.
+Live Python interop remains unexercised with its environment variable unset.
+
 ### PR 3: Remove leaf-to-app utility dependencies
 
 Move base64 wire helpers beside transport/encoding and move canonical scoped

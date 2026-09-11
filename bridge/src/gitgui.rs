@@ -8,6 +8,7 @@ mod patches;
 mod status;
 #[cfg(test)]
 mod tests;
+mod unpushed;
 
 pub use branches::{
     branch_delete, branch_list, branch_origin, checkout, checkout_ref, ref_list, BranchListing,
@@ -23,3 +24,4 @@ pub use mutations::{
 pub use network::{fetch, pull, push, GIT_NETWORK_TIMEOUT_SECS};
 pub use patches::{file_patches, GIT_DIFF_MAX_ANSWER_BYTES, GIT_DIFF_MAX_PATHS};
 pub use status::{status_payload, status_payload_unless};
+pub use unpushed::unpushed_payload;

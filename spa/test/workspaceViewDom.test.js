@@ -70,14 +70,14 @@ describe("workspace surface", () => {
     });
     await renderWorkspace();
     await flush();
-    const select = document.querySelector("#workspace-ref");
-    select.value = "refs/tags/v1";
-    select.dispatchEvent(new Event("change"));
+    document.querySelector("[data-refpicker-toggle]").click();
+    document.querySelector("[data-ref-kind=tag]").click();
+    document.querySelector('[data-ref="refs/tags/v1"]').click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("git.checkout_ref", {
       workspace_id: "ws-1", source_id: "repo", full_ref: "refs/tags/v1",
     });
-    expect(select.value).toBe("refs/heads/main");
+    expect(document.querySelector(".workspace-reftrigger-name").textContent).toBe("main");
     expect(document.querySelector(".workspace-referror").textContent).toContain("local changes would be overwritten");
   });
 
@@ -96,9 +96,9 @@ describe("workspace surface", () => {
     });
     await renderWorkspace();
     await flush();
-    const select = document.querySelector("#workspace-ref");
-    select.value = "refs/tags/v1";
-    select.dispatchEvent(new Event("change"));
+    document.querySelector("[data-refpicker-toggle]").click();
+    document.querySelector("[data-ref-kind=tag]").click();
+    document.querySelector('[data-ref="refs/tags/v1"]').click();
     await flush();
     await flush();
     expect(mountGitPane).toHaveBeenCalledTimes(2);
@@ -120,9 +120,9 @@ describe("workspace surface", () => {
     });
     await renderWorkspace();
     await flush();
-    const select = document.querySelector("#workspace-ref");
-    select.value = "refs/tags/v1";
-    select.dispatchEvent(new Event("change"));
+    document.querySelector("[data-refpicker-toggle]").click();
+    document.querySelector("[data-ref-kind=tag]").click();
+    document.querySelector('[data-ref="refs/tags/v1"]').click();
     App.viewDispose();
     finishCheckout({});
     await flush();

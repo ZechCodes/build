@@ -283,6 +283,32 @@ pub fn key_against_base(worktree_path: &Path, base_branch: &str) -> Result<Strin
     dirty_diff_key(&repo, Some(&tree))
 }
 
+/// The complete dirty-worktree delta against an exact commit, or the empty
+/// tree when `base` is absent. This is used by publication-aware review,
+/// whose baseline is resolved from remote-tracking refs rather than a revspec.
+pub fn diff_against_commit(
+    worktree_path: &Path,
+    base: Option<git2::Oid>,
+) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let tree = base
+        .map(|oid| repo.find_commit(oid).and_then(|commit| commit.tree()))
+        .transpose()?;
+    diff_tree_to_dirty_workdir(&repo, tree.as_ref())
+}
+
+/// Cheap identity corresponding exactly to [`diff_against_commit`].
+pub fn key_against_commit(
+    worktree_path: &Path,
+    base: Option<git2::Oid>,
+) -> Result<String, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let tree = base
+        .map(|oid| repo.find_commit(oid).and_then(|commit| commit.tree()))
+        .transpose()?;
+    dirty_diff_key(&repo, tree.as_ref())
+}
+
 pub fn key_against_merge_base(
     worktree_path: &Path,
     base_branch: &str,

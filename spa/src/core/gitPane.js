@@ -54,8 +54,40 @@ import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
+import { createReviewPlug } from "./changesReview.js";
 
 export const GIT_PANE_POLL_MS = 1600;
+
+/** Workspace directories review everything not represented by their push
+ * destination. The plug is created here so every workspace Git pane gets the
+ * aggregate without each hosting view having to remember special wiring. */
+export function createWorkspaceReview({ scope, callRpc, navigate = null, viewingContext = null, onBaseChange = () => {} }) {
+  let base = { kind: "empty", label: null };
+  const plug = createReviewPlug({
+    navigate,
+    viewingContext,
+    entity: scope.workspace_id,
+    cacheEntity: directoryCacheId(scope),
+    fetchDiff: async (ifDiffKey) => {
+      const payload = await callRpc("git.unpushed", {
+        ...scope,
+        ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}),
+      });
+      if (!payload.unchanged && payload.base) {
+        const changed = payload.base.kind !== base.kind || payload.base.label !== base.label;
+        base = payload.base;
+        if (changed) onBaseChange();
+      }
+      return { ...payload, commentable: false };
+    },
+  });
+  return {
+    ...plug,
+    getBase: () => base.label || (base.kind === "published_ancestor" ? "published history" : "Not pushed yet"),
+    getRailSubtitle: () =>
+      base.label ? `vs ${base.label}` : base.kind === "published_ancestor" ? "since published history" : "Not pushed yet",
+  };
+}
 
 // ---- repo-management decision helpers (v2) -----------------------------
 // Pure, exported, and load-bearing in the controller below. Every one tolerates
@@ -385,6 +417,9 @@ export function mountGitPane(
     viewingContext = null,
   } = {},
 ) {
+  if (!review && scope?.workspace_id && scope?.source_id) {
+    review = createWorkspaceReview({ scope, callRpc, navigate, viewingContext, onBaseChange: () => render() });
+  }
   const parsedDiffs = createParsedDiffCache();
   const viewport = createDiffViewport({ repaint: () => renderAndFetch() });
   const openFile = (navigate && navigate.openFile) || null;
@@ -893,7 +928,7 @@ export function mountGitPane(
       more: pagedMore ?? lastLog.more,
     };
     paintRail({
-      review: review ? { base: review.getBase() } : null,
+      review: review ? { base: review.getBase(), subtitle: review.getRailSubtitle?.() } : null,
       status: lastStatus,
       log: mergedLog,
       selected,

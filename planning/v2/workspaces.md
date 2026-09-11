@@ -48,16 +48,24 @@ inspect or move it aside before retrying; it never overwrites uncertain work.
 
 ## Source selection and Git views
 
-The workspace menu presents directory tabs, one for each source. The selected
+Directory tabs follow the workspace menu, collapsing into one menu on phones. The selected
 tab determines which directory the Files, Changes, and commit views display.
 It does not select a terminal or alter another source's repository state.
 
-A Git source exposes its own branch and tag selector. Choosing a branch or tag
+A Git source exposes a searchable selector above its commit list, with separate
+Branches and Tags tabs, remote branches, and indicators for available pulls.
+The indicators reflect locally fetched remote history. Choosing a branch or tag
 runs a real Git checkout in that source directory. Git may carry compatible
 working-tree edits to the selected ref. If the checkout would overwrite local
 changes, needs a destructive merge, or cannot safely preserve the working tree,
 Build does not change the ref and presents the error returned by Git. Build does
 not force a checkout, discard local changes, or automatically stash them.
+
+All changes combines unpushed commits with staged, unstaged, and untracked
+changes. Its baseline is the common ancestor with the branch's push target;
+without that target, it uses the nearest known published ancestor. A repository
+with no known published history shows its full contents. Reading this view
+does not fetch or modify Git state.
 
 Choosing a tag checks out the tag and leaves that source in detached HEAD. The
 Git view identifies the detached state clearly. Selecting another source leaves

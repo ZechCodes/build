@@ -366,6 +366,7 @@ impl AppState {
             "git.log" => self.git_log(params),
             "git.show" => self.git_show(params),
             "git.status" => self.git_status(params),
+            "git.unpushed" => self.git_unpushed(params),
             "git.diff" => self.git_diff(params),
             "git.stage" => self.git_stage(params),
             "git.unstage" => self.git_unstage(params),

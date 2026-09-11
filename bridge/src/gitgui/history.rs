@@ -174,8 +174,9 @@ fn tree_diff_patch(
     old_tree: Option<&git2::Tree>,
     new_tree: &git2::Tree,
 ) -> Result<(Value, String), String> {
+    let mut options = crate::diff::canonical_patch_options();
     let diff = repo
-        .diff_tree_to_tree(old_tree, Some(new_tree), None)
+        .diff_tree_to_tree(old_tree, Some(new_tree), Some(&mut options))
         .map_err(|e| e.to_string())?;
     let files_changed = diff.deltas().len();
     let mut insertions = 0usize;

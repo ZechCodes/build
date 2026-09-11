@@ -206,9 +206,16 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
 
   return {
     attach(nextScroller) {
+      const hadScroller = scroller !== null;
       replaceScroller(nextScroller);
-      if (observer && visible.size === 0) {
-        for (const file of [...scroller.querySelectorAll(FILE_ELEMENT)].slice(0, 3)) visible.add(file.dataset.key);
+      if (observer) {
+        const files = [...scroller.querySelectorAll(FILE_ELEMENT)];
+        const mountedKeys = new Set(files.map((file) => file.dataset.key));
+        for (const key of visible) if (!mountedKeys.has(key)) visible.delete(key);
+        if (visible.size === 0) {
+          for (const file of files.slice(0, 3)) visible.add(file.dataset.key);
+          if (hadScroller && visible.size > 0) requestPaint();
+        }
       }
       observeFiles();
       if (pending) requestPaint();

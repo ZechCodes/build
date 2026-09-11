@@ -334,13 +334,6 @@ impl AppState {
         })
     }
 
-    /// The live run that owns a branch in a project, if one does.
-    pub(in crate::app) fn run_on_branch(&self, project_id: &str, branch: &str) -> Option<String> {
-        self.live_runs_of(project_id)
-            .find(|(_, active)| active.worktree.branch() == branch)
-            .map(|(run_id, _)| run_id.clone())
-    }
-
     /// The project's external worktrees, as the last scan left them, plus
     /// whether a scan has ever landed. A read never scans: it serves what it
     /// has and claims the rescan it needs, which runs off every lock and
@@ -590,6 +583,7 @@ impl AppState {
     /// kind of entry names the cache it settles in; each arm below is that
     /// cache's own write, and an entry whose run or project has since gone is
     /// dropped by it.
+    #[cfg(test)]
     pub(in crate::app) fn store_diff_entry(&mut self, entry: DiffCacheEntry) {
         match entry {
             DiffCacheEntry::RunStat { run_id, stat } => {
@@ -606,6 +600,7 @@ impl AppState {
     }
 
     /// A run's diffstat, as of `now`.
+    #[cfg(test)]
     pub(in crate::app) fn store_run_stat(
         &mut self,
         run_id: String,
@@ -694,6 +689,7 @@ impl AppState {
         }
     }
 
+    #[cfg(test)]
     fn apply_cache_publication(&mut self, publication: CachePublication) {
         match publication {
             CachePublication::Settled(effects) => self.apply_cache_effects(effects),

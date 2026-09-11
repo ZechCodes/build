@@ -50,6 +50,20 @@ const termOf = (segment) => (isTermTab(segment) ? { term: segment } : null);
 
 const inbox = () => ({ name: "inbox" });
 
+function workspaceRoute(projectId, parts) {
+  if (!parts[0]) return inbox();
+  const hasDirectory = parts[1] === "directory";
+  const route = {
+    name: "workspace",
+    projectId,
+    workspaceId: parts[0],
+    sourceId: hasDirectory ? parts[2] : undefined,
+    tab: BRANCH_TABS.has(hasDirectory ? parts[3] : parts[1]) ? (hasDirectory ? parts[3] : parts[1]) : "changes",
+  };
+  if (!route.sourceId) delete route.sourceId;
+  return route;
+}
+
 /** A legacy stage deep-link: `<tab>/<stageId>` where the tab is one of the
  *  retired plan tabs (stages, review, conversation…). Returns the stage id, or
  *  undefined when the segments name no stage. */
@@ -134,7 +148,7 @@ function tabPlace(query) {
 export function routeFromHash(hash) {
   const [path, query] = String(hash || "").split("?");
   const route = surfaceFromHashPath(path);
-  const place = route.name === "branch" && route.tab === "files" ? tabPlace(query) : null;
+  const place = (route.name === "branch" || route.name === "workspace") && route.tab === "files" ? tabPlace(query) : null;
   return place ? { ...route, ...place } : route;
 }
 
@@ -174,6 +188,7 @@ function surfaceFromHashPath(hash) {
     case "project": {
       if (!parts[1]) return inbox();
       const projectId = parts[1];
+      if (parts[2] === "workspace") return workspaceRoute(projectId, parts.slice(3));
       if (parts[2] === "branch") return branchRoute(projectId, parts.slice(3));
       if (parts[2] === "issue" || parts[2] === "plan") {
         if (!parts[3]) return inbox();
@@ -209,6 +224,11 @@ function tabPlaceSuffix(route, tab) {
 // eslint-disable-next-line complexity -- ratchet: hashFromRoute is at 12, cap 10 — reduce it, then drop this line
 export function hashFromRoute(route) {
   const encode = encodeURIComponent;
+  if (route.name === "workspace" && route.projectId && route.workspaceId) {
+    const tab = branchTab(route.tab);
+    const source = route.sourceId ? `/directory/${encode(route.sourceId)}` : "";
+    return `#/project/${encode(route.projectId)}/workspace/${encode(route.workspaceId)}${source}/${tab}${tabPlaceSuffix(route, tab)}`;
+  }
   if (route.name === "branch" && route.projectId && route.branch) {
     const tab = branchTab(route.tab);
     return `#/project/${encode(route.projectId)}/branch/${encode(route.branch)}/${tab}${tabPlaceSuffix(route, tab)}`;

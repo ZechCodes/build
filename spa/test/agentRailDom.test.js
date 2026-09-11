@@ -2513,6 +2513,43 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   });
 });
 
+describe("a workspace conversation on a metadata-only bridge", () => {
+  it("recovers the exact adopted run and posts through its agent conversation", async () => {
+    const run = {
+      run_id: "run-3",
+      project_id: "p1",
+      branch: "build/login",
+      agents: [agent({ id: "ag-workspace", conversation_id: "conversation-workspace", state: "live" })],
+      thread: { items: [], sessions: [] },
+    };
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { id: "run-3", project_id: "p1", directories: [{ branch: "build/login" }] };
+      if (method === "run.get") return run;
+      if (method === "thread.post") return {
+        entity_id: "run-3", agent_id: "ag-workspace", conversation_id: "conversation-workspace", posted_sequence: 7,
+      };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "run-3", sourceId: "root" });
+    const input = railHost().querySelector("#railinput");
+    expect(input).not.toBeNull();
+    input.value = "fix the deployed workspace";
+    railHost().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("run.get")[0].params).toMatchObject({ run_id: "run-3" });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-3",
+      agent_id: "ag-workspace",
+      conversation_id: "conversation-workspace",
+      body: "fix the deployed workspace",
+    });
+  });
+});
+
 describe("creating an agent, before the daemon has answered for it", () => {
   const agentless = () => branchRow({ agents: [] });
   const composer = () => railHost().querySelector("#railinput");

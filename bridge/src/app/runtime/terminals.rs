@@ -33,8 +33,7 @@ pub(in crate::app) enum TermScope {
 }
 
 impl TermScope {
-    /// Parse the inline scope params: `run_id` wins (a run is worktree-scoped),
-    /// then `project_id`+`worktree_id`, then `project_id` alone.
+    /// Parse the legacy inline work-item scope params.
     pub(in crate::app) fn parse(params: &Value) -> Result<TermScope, String> {
         let field = |key: &str| {
             params
@@ -98,6 +97,19 @@ impl TermScope {
         };
         Ok(AppState::canonical_root(&root))
     }
+}
+
+/// Resolve the terminal's owning workspace. Workspace-aware clients use the
+/// container root; old work-item clients retain their checkout-root behavior.
+fn terminal_scope_root(state: &mut AppState, params: &Value) -> Result<std::path::PathBuf, String> {
+    if let Some(workspace_id) = params
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        return state.workspace_root(workspace_id);
+    }
+    TermScope::parse(params)?.resolve_root(state)
 }
 
 /// What a client is told about the tab it just attached to.
@@ -244,12 +256,11 @@ pub(in crate::app) fn term_create(
 ) -> Result<Value, String> {
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-    let scope = TermScope::parse(params)?;
     require_shell_kind(params)?;
 
     let (key, pumps) = {
         let mut s = timer.lock(state);
-        let root = scope.resolve_root(&mut s)?;
+        let root = terminal_scope_root(&mut s, params)?;
         // The cap counts the human's shells and never an agent: sixteen open
         // terminals must not be able to crowd a worktree's agent out of a
         // registry they now share.
@@ -300,8 +311,17 @@ pub(in crate::app) fn term_attach(
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
 
     let attachment = {
-        let s = timer.lock(state);
+        let mut s = timer.lock(state);
         let key = s.tab_key_of_wire_id(&term_id)?;
+        // Workspace-aware clients prove that the id belongs to the workspace
+        // currently mounted. This also keeps a stale cached id from attaching
+        // to an unrelated workspace after a directory/ref selection change.
+        if params.get("workspace_id").is_some() {
+            let requested_root = terminal_scope_root(&mut s, params)?;
+            if key.root != requested_root {
+                return Err("terminal does not belong to workspace".to_string());
+            }
+        }
         s.attachment(&key)?
     };
     Ok(attach_to_tab(attachment, sender, cols, rows))
@@ -470,7 +490,7 @@ impl AppState {
     /// run adopts it; filtering by scope made every open shell vanish from the
     /// tab row at adoption while its process kept running.
     pub(in crate::app) fn term_list(&mut self, params: &Value) -> Result<Value, String> {
-        let root = TermScope::parse(params)?.resolve_root(self)?;
+        let root = terminal_scope_root(self, params)?;
         let mut terminals: Vec<(u64, Value)> = self
             .session_registry
             .shell_tabs_at(&root)

@@ -188,25 +188,19 @@ function advancedHtml() {
         `<option value="${esc(project.id)}"${project.id === box.projectId ? " selected" : ""}>${esc(project.name || project.id)}</option>`,
     )
     .join("");
-  const kindButton = (kind, label) =>
-    `<button class="btn mini${box.kind === kind ? " primary" : ""}" type="button" data-compose-kind="${kind}">${label}</button>`;
   return `<div class="compose-advanced">
     <label for="compose-project">Project</label>
     <select id="compose-project">${projectOptions || '<option value="">No projects on this device</option>'}</select>
-    <div class="compose-kinds">${kindButton("issue", "Issue")}${kindButton("branch", "Branch")}</div>
-    ${
-      box.kind === "branch"
-        ? `<label for="compose-branch">Branch</label>
+    <div class="compose-kinds"><button class="btn mini primary" type="button" data-compose-kind="branch">Branch</button></div>
+    <label for="compose-branch">Branch</label>
            <input id="compose-branch" type="text" class="path" list="compose-branches" autocomplete="off"
              placeholder="a new branch, named after what you said" value="${esc(box.branch)}" />
            <datalist id="compose-branches">${branches
              .map((branch) => `<option value="${esc(branch)}"></option>`)
-             .join("")}</datalist>`
-        : `<div class="compose-note dim">Nothing runs until you open it and send the first message.</div>`
-    }
+             .join("")}</datalist>
     ${agentChoicePanelHtml(catalog(), box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen })}
     <button class="btn mini primary compose-manual" id="compose-manual-go" type="button"${box.busy ? " disabled" : ""}>${
-      box.kind === "branch" ? "Dispatch to the branch" : "File the issue"
+      "Dispatch to the branch"
     }</button>
   </div>`;
 }
@@ -268,13 +262,8 @@ function wireAdvanced(host) {
       paintBox({ focus: false });
     };
   }
-  host.querySelectorAll("[data-compose-kind]").forEach((control) => {
-    control.onclick = () => {
-      box.value = host.querySelector("#compose-text").value;
-      box.kind = control.dataset.composeKind;
-      paintBox({ focus: false });
-    };
-  });
+  const branchKind = host.querySelector('[data-compose-kind="branch"]');
+  if (branchKind) branchKind.onclick = () => {};
   const branch = host.querySelector("#compose-branch");
   if (branch) {
     branch.oninput = () => {
@@ -340,7 +329,7 @@ export function openCompose() {
     advancedOpen: false,
     choiceOpen: false,
     choice: loadAgentDefaults(),
-    kind: "issue",
+    kind: "branch",
     branch: "",
     projectId: (feed.projects[0] || {}).id || "",
   };
@@ -392,7 +381,7 @@ async function submitManual() {
   box.value = $("#compose-text")?.value ?? box.value;
   const text = box.value.trim();
   if (!text) {
-    fail(box.kind === "branch" ? "Say what the agent should do first." : "Describe the issue first.");
+    fail("Say what the agent should do first.");
     return;
   }
   if (!box.projectId) {

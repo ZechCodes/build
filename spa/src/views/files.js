@@ -9,6 +9,7 @@
 // server fences the scope root and every path; this view never sends host paths.
 
 import { esc } from "../core/text.js";
+import { directoryCacheId } from "../core/directoryScope.js";
 import { currentCacheScope } from "../core/cacheScope.js";
 import { readCached, writeCached } from "../core/localCache.js";
 import { renderMarkdown } from "../core/markdown.js";
@@ -249,7 +250,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null, onFileOpen
 
   // The local cache's address for one directory's listing. A primary checkout
   // names no entity and takes no part.
-  const cacheEntityId = () => (scope && (scope.run_id || scope.worktree_id)) || null;
+  const cacheEntityId = () => directoryCacheId(scope);
   const treeAddress = (path) =>
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;
 

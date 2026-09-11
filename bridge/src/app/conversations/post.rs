@@ -49,6 +49,9 @@ impl AppState {
         let normalized_params = normalize_post_viewing_contexts(params)?;
         let params = &normalized_params;
         let entity_id = require_str(params, "entity_id")?;
+        if self.plans.contains_key(&entity_id) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         if !self.plans.contains_key(&entity_id) && !self.runs.contains_key(&entity_id) {
             return Err("unknown conversation owner".to_string());
         }

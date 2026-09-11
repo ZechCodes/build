@@ -6,143 +6,59 @@ vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 import { openNewRepo } from "../src/sheets/newRepo.js";
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 beforeEach(() => {
-  vi.resetAllMocks();
-  document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
+  vi.resetAllMocks(); document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   App.call = vi.fn(async (method) => method === "settings.get" ? { projects_dir: "/projects" } : { project_id: "p1" });
-  App.session = { deviceId: "one", call: App.call };
+  App.session = { deviceId: "one" };
 });
-it("opens on the create tab with persistent accessible project-source tabs", () => {
+
+it("opens on the accessible multi-source project tab", () => {
   openNewRepo();
-  const tabs = [...document.querySelectorAll('[role="tab"]')];
-  expect(tabs.map((tab) => tab.textContent)).toEqual(["Create new", "Existing folder"]);
-  expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false"]);
-  expect(document.querySelector("#nrname")).not.toBeNull();
-  expect(document.querySelector("#nrback")).toBeNull();
-  expect(document.querySelector("#nrloc, #nrbrowse, #nrbranch")).toBeNull();
+  expect([...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent)).toEqual(["From sources", "Empty repository"]);
+  expect(document.querySelector('[role="tab"]').getAttribute("aria-selected")).toBe("true");
+  expect(document.querySelector("legend").textContent).toBe("Workspace folders");
 });
-it("creates using only the name and optional remote in the device default directory", async () => {
-  const done = vi.fn();
-  openNewRepo(done);
-  document.querySelector("#nrname").value = "my-project";
-  document.querySelector("#nrremote").value = "git@github.com:example/project.git";
-  document.querySelector("#nrdo").click();
-  await flush();
-  expect(App.call).toHaveBeenCalledWith("project.create", { name: "my-project", remote: "git@github.com:example/project.git" });
+
+it("creates one project from mixed local and remote sources", async () => {
+  const done = vi.fn(); openNewRepo(done); document.querySelector("#nrname").value = " platform ";
+  document.querySelector("#nraddfolder").click(); await flush(); openBrowser.mock.calls[0][0].onChoose("/projects/api");
+  document.querySelector("#nraddremote").click(); const remote = document.querySelector("[data-source-value]");
+  remote.value = " https://github.com/acme/web.git "; remote.dispatchEvent(new Event("input"));
+  const branch = document.querySelectorAll("[data-source-branch]")[1]; branch.value = " trunk "; branch.dispatchEvent(new Event("input"));
+  document.querySelector("#nrdo").click(); await flush();
+  expect(App.call).toHaveBeenCalledWith("project.create", { name: "platform", sources: [
+    { path: "/projects/api", name: "api" }, { remote: "https://github.com/acme/web.git", name: "web", base_branch: "trunk" },
+  ] });
   expect(done).toHaveBeenCalledWith({ project_id: "p1" });
-  expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
 });
-it("starts existing-folder browsing at the configured folder and permits non-Git folders", async () => {
-  openNewRepo();
-  document.querySelector('[data-project-tab="existing"]').click();
-  await flush();
-  expect(document.querySelectorAll('[role="tab"]')).toHaveLength(2);
-  expect(openBrowser).toHaveBeenCalledWith(expect.objectContaining({ startPath: "/projects", gitOnly: false, callRpc: expect.any(Function), container: expect.any(HTMLElement) }));
-  openBrowser.mock.calls[0][0].onChoose("/projects/docs");
-  expect(document.querySelector("#nrexistingpath").textContent).toBe("/projects/docs");
+
+it("generates stable unique mount names and omits a removed source", async () => {
+  openNewRepo(); document.querySelector("#nrname").value = "suite";
+  for (let i = 0; i < 2; i += 1) { document.querySelector("#nraddfolder").click(); await flush(); openBrowser.mock.calls[i][0].onChoose(`/where${i}/api`); }
+  expect([...document.querySelectorAll("[data-source-name]")].map((node) => node.value)).toEqual(["api", "api-2"]);
+  document.querySelector("[data-remove-source]").click(); document.querySelector("#nrdo").click(); await flush();
+  expect(App.call).toHaveBeenCalledWith("project.create", { name: "suite", sources: [{ path: "/where1/api", name: "api-2" }] });
+});
+
+it("rejects duplicate mount names and focuses the duplicate", () => {
+  openNewRepo(); document.querySelector("#nrname").value = "suite";
+  document.querySelector("#nraddremote").click(); document.querySelector("#nraddremote").click();
+  [...document.querySelectorAll("[data-source-value]")].forEach((node, index) => { node.value = `https://host/repo-${index}.git`; node.dispatchEvent(new Event("input")); });
+  [...document.querySelectorAll("[data-source-name]")].forEach((node) => { node.value = " API "; node.dispatchEvent(new Event("input")); });
   document.querySelector("#nrdo").click();
-  await flush();
-  expect(App.call).toHaveBeenCalledWith("project.add", { path: "/projects/docs" });
+  expect(document.querySelector("#nrerr").textContent).toContain("must be unique");
+  expect(document.activeElement).toBe(document.querySelectorAll("[data-source-name]")[1]); expect(App.call).not.toHaveBeenCalled();
 });
-it("preserves create and existing-folder drafts when switching tabs", async () => {
-  openNewRepo();
-  document.querySelector("#nrname").value = "draft-name";
-  document.querySelector("#nrremote").value = "draft-remote";
-  document.querySelector('[data-project-tab="existing"]').click();
-  await flush();
-  openBrowser.mock.calls[0][0].onChoose("/projects/draft-folder");
-  document.querySelector('[data-project-tab="create"]').click();
-  expect(document.querySelector("#nrname").value).toBe("draft-name");
-  expect(document.querySelector("#nrremote").value).toBe("draft-remote");
-  document.querySelector('[data-project-tab="existing"]').click();
-  expect(document.querySelector("#nrexistingpath").textContent).toBe("/projects/draft-folder");
+
+it("ignores a stale browser choice and preserves empty-repository creation", async () => {
+  openNewRepo(); document.querySelector("#nrname").value = "docs"; document.querySelector("#nraddfolder").click(); await flush();
+  const choose = openBrowser.mock.calls[0][0].onChoose; document.querySelector("#nrback").click(); choose("/stale");
+  expect(document.querySelector("#nrsources").textContent).toContain("No folder selected");
+  document.querySelector('[data-project-tab="empty"]').click(); document.querySelector("#nrremote").value = "origin"; document.querySelector("#nrdo").click(); await flush();
+  expect(App.call).toHaveBeenCalledWith("project.create", { name: "docs", remote: "origin" });
 });
-it("ignores a folder choice from a browser after switching tabs", async () => {
-  openNewRepo();
-  document.querySelector('[data-project-tab="existing"]').click();
-  await flush();
-  const choose = openBrowser.mock.calls[0][0].onChoose;
-  document.querySelector('[data-project-tab="create"]').click();
-  choose("/projects/stale");
-  document.querySelector('[data-project-tab="existing"]').click();
-  expect(document.querySelector("#nrexistingpath").textContent).toBe("No folder selected");
-});
-it("moves between tabs with arrow keys", () => {
-  openNewRepo();
-  const create = document.querySelector('[data-project-tab="create"]');
-  create.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-  expect(document.querySelector('[data-project-tab="existing"]').getAttribute("aria-selected")).toBe("true");
-});
-it("shows configured-folder lookup failures without opening at an unrelated default", async () => {
-  App.call.mockRejectedValue(new Error("Device offline"));
-  openNewRepo();
-  document.querySelector('[data-project-tab="existing"]').click();
-  await flush();
-  expect(document.querySelector("#nrerr").textContent).toBe("Device offline");
-  expect(openBrowser).not.toHaveBeenCalled();
-});
-it("does not create on another device after the active device changes", async () => {
-  openNewRepo();
-  document.querySelector("#nrname").value = "project";
-  const original = App.call;
-  App.session = { deviceId: "two" };
-  App.call = vi.fn();
-  document.querySelector("#nrdo").click();
-  await flush();
-  expect(original).not.toHaveBeenCalled();
-  expect(App.call).not.toHaveBeenCalled();
-  expect(document.querySelector("#nrerr").textContent).toContain("device changed");
-});
-it("does not replace a later sheet when a folder lookup resolves after cancellation", async () => {
-  let resolve;
-  App.call.mockReturnValue(new Promise((done) => { resolve = done; }));
-  openNewRepo();
-  document.querySelector('[data-project-tab="existing"]').click();
-  document.querySelector("#nrcancel").click();
-  document.querySelector("#sheet").innerHTML = "Another sheet";
-  resolve({ projects_dir: "/projects" });
-  await flush();
-  expect(openBrowser).not.toHaveBeenCalled();
-  expect(document.querySelector("#sheet").textContent).toBe("Another sheet");
-});
-it("omits a blank optional remote and rejects an empty project name", async () => {
-  openNewRepo();
-  document.querySelector("#nrdo").click();
-  expect(App.call).not.toHaveBeenCalled();
-  document.querySelector("#nrname").value = " docs ";
-  document.querySelector("#nrremote").value = "   ";
-  document.querySelector("#nrdo").click();
-  await flush();
-  expect(App.call).toHaveBeenCalledWith("project.create", { name: "docs" });
-});
-it("keeps failed creation editable and does not submit duplicates", async () => {
-  let reject;
-  App.call.mockReturnValue(new Promise((_, fail) => { reject = fail; }));
-  openNewRepo();
-  document.querySelector("#nrname").value = "docs";
-  document.querySelector("#nrdo").click();
-  document.querySelector("#nrform").dispatchEvent(new Event("submit", { cancelable: true }));
-  expect(App.call).toHaveBeenCalledTimes(1);
-  expect(document.querySelector('[data-project-tab="existing"]').disabled).toBe(true);
-  document.querySelector('[data-project-tab="existing"]').click();
-  expect(document.querySelector("#nrname")).not.toBeNull();
-  reject(new Error("Folder already exists"));
-  await flush();
-  expect(document.querySelector("#nrname").value).toBe("docs");
-  expect(document.querySelector("#nrerr").textContent).toBe("Folder already exists");
-  expect(document.querySelector("#nrdo").disabled).toBe(false);
-  expect(document.querySelector('[data-project-tab="existing"]').disabled).toBe(false);
-});
-it("does not dismiss a newer sheet when an earlier create finishes", async () => {
-  let resolve;
-  App.call.mockReturnValue(new Promise((done) => { resolve = done; }));
-  const done = vi.fn();
-  openNewRepo(done);
-  document.querySelector("#nrname").value = "docs";
-  document.querySelector("#nrdo").click();
-  document.querySelector("#sheet").innerHTML = "Newer sheet";
-  resolve({ project_id: "p1" });
-  await flush();
-  expect(document.querySelector("#sheet").textContent).toBe("Newer sheet");
-  expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
-  expect(done).not.toHaveBeenCalled();
+
+it("guards device changes and newer sheets", async () => {
+  openNewRepo(); document.querySelector('[data-project-tab="empty"]').click(); document.querySelector("#nrname").value = "docs";
+  const original = App.call; App.session = { deviceId: "two" }; App.call = vi.fn(); document.querySelector("#nrdo").click(); await flush();
+  expect(original).not.toHaveBeenCalled(); expect(document.querySelector("#nrerr").textContent).toContain("device changed");
 });

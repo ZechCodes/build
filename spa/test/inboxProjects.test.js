@@ -271,14 +271,15 @@ describe("the blocks the projects face lists", () => {
 describe("what a block looks like", () => {
   const block = () => projectBlocks({ projects, nowMs: NOW, items: [branch({ unread: true, unread_count: 2 })] }).blocks[0];
 
-  it("heads the block with the fold, the project's name that opens it, its unread, and one + that creates", () => {
+  it("heads the legacy block without branch or issue creation controls", () => {
     const html = projectHeadHtml(block(), {});
     expect(html).toContain('data-project-fold="p1"');
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('data-project-open="p1"');
     expect(html).toContain(">relaydb<");
     expect(html).toContain('class="badge inbox-unread">2<');
-    expect(html).toMatch(/<button class="iconbtn inbox-project-create"[^>]*data-project-create="p1"[^>]*>[\s\S]*?<svg[^>]*lucide-plus/);
+    expect(html).not.toContain("data-project-create");
+    expect(html).not.toMatch(/branch|issue/i);
     expect(html).not.toContain("splitbtn");
     expect(html).not.toContain("data-menu=");
   });

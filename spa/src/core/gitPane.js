@@ -12,6 +12,7 @@
 // tests; mountGitPane is the only DOM-touching entry point.
 
 import { esc } from "./text.js";
+import { directoryCacheId } from "./directoryScope.js";
 import { gitToolbarHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
 import {
   changesRailEntries,
@@ -256,6 +257,7 @@ export function statusAfterPoll(answer, held) {
  *  scope carries — a worktree scope names its project too, and keying on that
  *  would pool every worktree's draft with the project's own. */
 export function gitDraftKey(scope) {
+  if (scope.workspace_id) return directoryCacheId(scope);
   if (scope.run_id) return `run:${scope.run_id}`;
   if (scope.worktree_id) return `worktree:${scope.worktree_id}`;
   return `project:${scope.project_id || ""}`;
@@ -404,7 +406,7 @@ export function mountGitPane(
   const showCache = new Map(); // hash → git.show payload (commits are immutable)
   // The local cache's address for this checkout. A primary checkout names no
   // entity, so it takes no part — nothing to key by, nothing evicted with it.
-  const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
+  const cacheEntityId = directoryCacheId(scope);
   const cacheAddress = (kind, sub) =>
     cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind, sub }) || null : null;
   const readThroughCache = async (kind, sub) => {
@@ -1558,7 +1560,8 @@ export function mountGitPane(
   const watcher = watchChanges({
     refresh: poll,
     intervalMs: GIT_PANE_POLL_MS,
-    entity: scope.run_id || scope.worktree_id || null,
+    entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
+    keepPolling: Boolean(scope.workspace_id),
   });
   const editedTimeWatcher = watchEditedTimes(container);
 

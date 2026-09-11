@@ -122,9 +122,7 @@ export function projectHeadHtml(block, ui = {}) {
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
   const title = block.route ? `Open ${block.name}'s checkout` : `${block.name} has no checkout to open`;
-  const create = block.isGit
-    ? `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.id)}" title="New branch or issue in ${esc(block.name)}" aria-label="New branch or issue in ${esc(block.name)}">${ICON_PLUS}</button>`
-    : "";
+  const create = "";
   return `<div class="inbox-project-head">
     <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
     <button class="${nameClasses}" type="button" data-project-open="${esc(block.id)}" title="${esc(title)}">${esc(block.name)}</button>

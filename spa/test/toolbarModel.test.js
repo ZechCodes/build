@@ -7,6 +7,8 @@ import {
   projectMenuModel,
   toolbarIdentity,
   workMenuModel,
+  workspaceDirectoryModel,
+  workspaceMenuModel,
 } from "../src/core/toolbarModel.js";
 
 const NOW = Date.parse("2026-08-13T12:00:00Z");
@@ -204,5 +206,54 @@ describe("the branch a typed name becomes", () => {
     expect(branchNamePreview("Mascot Model Spike!")).toBe("build/mascot-model-spike");
     expect(branchNamePreview("  ")).toBe("");
     expect(branchNamePreview("***")).toBe("");
+  });
+});
+
+describe("workspace navigation", () => {
+  const workspaces = [
+    {
+      id: "ws-1",
+      project_id: "p1",
+      name: "payment-work",
+      directories: [
+        { id: "d1", source_id: "frontend", name: "Frontend", is_git: true },
+        { id: "d2", source_id: "assets", name: "Design assets", is_git: false },
+      ],
+    },
+    { workspace_id: "ws-2", project_id: "p1", name: "release" },
+    { id: "ws-3", project_id: "p2", name: "mascot work" },
+  ];
+
+  it("lists only the scoped project's workspaces and normalizes their ids", () => {
+    expect(workspaceMenuModel({ workspaces, projectId: "p1", workspaceId: "ws-2" }).map((row) => [row.id, row.current])).toEqual([
+      ["ws-1", false],
+      ["ws-2", true],
+    ]);
+    expect(workspaceMenuModel({ workspaces, projectId: "p1", query: "pay" }).map((row) => row.id)).toEqual(["ws-1"]);
+  });
+
+  it("turns workspace directories into persistent tab identities", () => {
+    expect(workspaceDirectoryModel(workspaces[0], "assets").map((row) => [row.sourceId, row.label, row.current])).toEqual([
+      ["frontend", "Frontend", false],
+      ["assets", "Design assets", true],
+    ]);
+  });
+
+  it("names a workspace and its selected directory from the canonical route", () => {
+    const identity = toolbarIdentity(
+      { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" },
+      { items: [], projects, workspaces },
+    );
+    expect(identity).toMatchObject({
+      projectId: "p1",
+      project: "relaydb",
+      kind: "workspace",
+      label: "payment-work",
+      workspaceId: "ws-1",
+    });
+    expect(identity.directories.map((row) => [row.sourceId, row.current])).toEqual([
+      ["frontend", true],
+      ["assets", false],
+    ]);
   });
 });

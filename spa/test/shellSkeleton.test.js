@@ -64,6 +64,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  App.viewDispose?.();
   if (App.poll) clearInterval(App.poll);
   App.poll = null;
   App.viewDispose = null;
@@ -172,12 +173,13 @@ describe("render dispatch", () => {
     expect(root().querySelector(".shell-stub")).toBeTruthy();
   });
 
-  it("mounts the branch surface with its two tabs and the console slot", async () => {
+  it("keeps a legacy branch conversation reachable", async () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
     const tabs = [...document.querySelectorAll("#branch-tabs [data-tab]")].map((cell) => cell.dataset.tab);
     expect(tabs).toEqual(["files", "changes"]);
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().classList.contains("surface")).toBe(true);
     // The console is reserved and shut.
     const bar = document.querySelector("#console-region .console-bar");
@@ -190,7 +192,7 @@ describe("render dispatch", () => {
     expect(root().querySelector(".tback")).toBeNull();
   });
 
-  it("navigates between the branch tabs by URL", async () => {
+  it("restores work tabs on a legacy branch URL", async () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
@@ -198,10 +200,11 @@ describe("render dispatch", () => {
     expect(location.hash).toBe("#/project/p-1/branch/build%2Flogin/files");
   });
 
-  it("mounts the issue surface as two columns, no tabs", async () => {
+  it("keeps a legacy issue transcript reachable", async () => {
     App.route = { name: "issue", projectId: "p-1", id: "i-1" };
     render();
     await flush();
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().querySelector(".ivsplit")).toBeTruthy();
     expect(document.querySelector("#branch-tabs").children).toHaveLength(0);
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
@@ -229,14 +232,13 @@ describe("render dispatch", () => {
     expect(location.hash).toBe("#/inbox");
   });
 
-  it("hands each view a clean #root and runs the outgoing view's teardown", async () => {
+  it("hands each view a clean #root", async () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    expect(document.querySelector("#console-region .console-bar")).toBeTruthy();
+    expect(document.querySelector("#branch-tabs").children.length).toBeGreaterThan(0);
     App.route = { name: "account", page: "settings" };
     render();
-    // The branch view's teardown clears the console region it mounted.
     expect(document.getElementById("console-region").innerHTML).toBe("");
     expect(App.poll).toBeNull();
   });

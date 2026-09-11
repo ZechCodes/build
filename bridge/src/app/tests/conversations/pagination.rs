@@ -376,72 +376,24 @@ fn posting_a_message_without_naming_a_page_still_answers_with_the_whole_conversa
     assert!(thread.get("thread_total").is_none(), "{thread:?}");
 }
 
-#[test]
-fn a_mutation_answers_with_the_attention_its_own_tail_settled() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let settled_fields = [
-        "needs_attention",
-        "unread",
-        "unread_count",
-        "unread_reason",
-        "agents",
-    ];
-
-    let created = state.handle(req(
-        "issue.create",
-        json!({ "goal": "settle the attention", "dispatch": false }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
-    let read_back = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
-    assert_eq!(
-        created["result"]["attention"], read_back["result"]["attention"],
-        "the create answer already carries the anchor its own tail seeded: {created:?}"
-    );
-    for field in settled_fields {
-        assert_eq!(
-            created["result"][field], read_back["result"][field],
-            "{field} on the create answer: {created:?}"
-        );
-    }
-
-    let posted = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": issue_id, "body": "start planning it" }),
-    ));
-    assert_eq!(posted["ok"], true, "{posted:?}");
-    let after_the_post = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
-    assert_eq!(
-        posted["result"]["attention"]["anchor"], after_the_post["result"]["attention"]["anchor"],
-        "a post never moves the anchor the tail already settled: {posted:?}"
-    );
-    for field in settled_fields {
-        assert_eq!(
-            posted["result"][field], after_the_post["result"][field],
-            "{field} on the post answer: {posted:?}"
-        );
-    }
-}
-
 /// The routed post: an implementation's first agent speaks in its Issue's
 /// conversation, so the branch view that answers the post carries the
 /// Issue's items. That answer is bounded by the same limit.
 #[test]
-fn posting_to_an_implementation_answers_with_a_page_of_its_issues_conversation() {
+fn posting_to_an_implementation_answers_with_a_page_of_its_conversation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "page the routed post");
+    let (_, run_id) = planned_run_in_review(&mut state, "page the run post");
     let held = {
-        let issue = state.plans.get_mut(&issue_id).unwrap();
+        let run = state.runs.get_mut(&run_id).unwrap();
         for turn in 0..250 {
-            primary_thread_mut(&mut issue.agents).post_user(
+            primary_thread_mut(&mut run.agents).post_user(
                 format!("turn {turn}"),
                 None,
                 now_rfc3339(),
             );
         }
-        primary_thread(&issue.agents).items.len()
+        primary_thread(&run.agents).items.len()
     };
 
     let posted = state.handle(req(
@@ -696,10 +648,10 @@ fn conversation_reads_reject_invalid_or_stale_explicit_identity() {
 /// `thread.activity` paths read — with the run's own span, which is what a
 /// client asks for and what the entity's own lifecycle events shift.
 fn conversation_with_a_long_run(state: &mut AppState, calls: usize) -> (String, u64, u64) {
-    let issue_id = plan_id_of(&state.handle(req(
-        "issue.create",
-        json!({ "goal": "trim the retry loop", "dispatch": false }),
-    )));
+    let issue = state
+        .plan_create(&json!({ "goal": "trim the retry loop", "dispatch": false }))
+        .expect("create a stored legacy plan below the retired RPC boundary");
+    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
     let agent_id = primary_agent_id(state, &issue_id);
     state
         .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {

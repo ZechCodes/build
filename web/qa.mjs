@@ -1,17 +1,8 @@
-// QA harness: drives the full platform over the E2EE relay and asserts behavior.
+// Full-stack QA over the E2EE relay. Exercises multi-source workspaces,
+// source-scoped files/Git, workspace-scoped terminals, and retained finish.
 //
-// Relay-direct topology: dummy-login to the api, mint a gateway token, and
-// authenticate straight to the relay's /ws/client (the node gateway is retired).
-// Runs the real browser-client logic + transport binding against a live relay +
-// bridge. Exercises the Plan/Run split lifecycle: author a project-scoped plan,
-// comment + revise its stage docs, approve it, spin up a worktree-scoped run
-// (materializing the plan), walk the per-stage validation gate, run-all
-// auto-advance, diff inspection, git merge, external-worktree adoption, error
-// handling, and parallel runs.
-//
-// Prereqs: skriftapp on API_URL (dummy auth enabled), the Rust relay on
-// RELAY_URL, and a paired bridge with BRIDGE_QA_AGENT=1 connected to it.
-//
+// Compose provides BRIDGE_REPO=/repo and BRIDGE_WORKTREES=/worktrees. This
+// script creates isolated remote and plain-folder fixtures through a terminal.
 // Usage: API_URL=http://127.0.0.1:8090 RELAY_URL=ws://127.0.0.1:18090 node qa.mjs
 
 import WebSocket from "ws";
@@ -19,382 +10,267 @@ import * as transport from "@build/secure-transport";
 import { openSession, openPushSession } from "./client.mjs";
 import { loginWithDummy } from "./skrift-auth.mjs";
 
-const b64encode = (s) => Buffer.from(s, "utf8").toString("base64");
-const b64decode = (s) => Buffer.from(s || "", "base64").toString("utf8");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(pred, ms) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    const hit = pred();
-    if (hit) return hit;
-    if (Date.now() >= deadline) return null;
-    await sleep(50);
-  }
-}
-
-const url = process.env.RELAY_URL || "ws://127.0.0.1:18090";
+const encode = (text) => Buffer.from(text, "utf8").toString("base64");
+const decode = (text) => Buffer.from(text || "", "base64").toString("utf8");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const relayUrl = process.env.RELAY_URL || "ws://127.0.0.1:18090";
 const apiUrl = process.env.API_URL || "http://127.0.0.1:8090";
-// With several devices online, pin the one under test (default: first to answer).
 const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 
 let passed = 0;
 const checks = [];
-function check(name, cond, detail = "") {
-  checks.push({ name, ok: !!cond, detail });
-  if (cond) passed++;
-  console.log(`${cond ? "✓" : "✗"} ${name}${detail ? "  — " + detail : ""}`);
+function check(name, condition, detail = "") {
+  checks.push({ name, ok: !!condition });
+  if (condition) passed++;
+  console.log(`${condition ? "✓" : "✗"} ${name}${detail ? `  — ${detail}` : ""}`);
+}
+
+async function waitFor(predicate, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = predicate();
+    if (result) return result;
+    await sleep(50);
+  }
+  return null;
 }
 
 function connect() {
-  const ws = new WebSocket(`${url}/ws/client`);
+  const ws = new WebSocket(`${relayUrl}/ws/client`);
   const queue = [];
   const waiters = [];
   ws.on("message", (data) => {
-    const msg = JSON.parse(data.toString());
-    waiters.length ? waiters.shift()(msg) : queue.push(msg);
+    const message = JSON.parse(data.toString());
+    waiters.length ? waiters.shift()(message) : queue.push(message);
   });
-  const recv = () =>
-    new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("recv timeout")), 10000);
-      const deliver = (m) => {
-        clearTimeout(timer);
-        resolve(m);
-      };
-      queue.length ? deliver(queue.shift()) : waiters.push(deliver);
-    });
-  const send = (obj) => ws.send(JSON.stringify(obj));
+  const recv = () => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("recv timeout")), 10000);
+    const deliver = (message) => {
+      clearTimeout(timer);
+      resolve(message);
+    };
+    queue.length ? deliver(queue.shift()) : waiters.push(deliver);
+  });
   const ready = new Promise((resolve, reject) => {
     ws.on("open", resolve);
     ws.on("error", reject);
   });
-  return { ws, send, recv, ready };
+  return { ws, recv, ready, send: (message) => ws.send(JSON.stringify(message)) };
+}
+
+async function authenticate(mintGatewayToken) {
+  const connection = connect();
+  await connection.ready;
+  connection.send({ type: "authenticate", token: await mintGatewayToken() });
+  return { connection, ack: await connection.recv() };
+}
+
+function pushedText(pushes, termId) {
+  return pushes
+    .filter((push) => ["term.output", "term.reset"].includes(push.type) && push.term_id === termId)
+    .map((push) => decode(push.data))
+    .join("");
 }
 
 async function main() {
-  const { mintGatewayToken } = await loginWithDummy(apiUrl, { email: process.env.QA_EMAIL || "qa@localhost" });
-  const c = connect();
-  await c.ready;
-  // First frame: authenticate with a gateway token; the relay acks and then
-  // pushes device_key for each of our online devices.
-  c.send({ type: "authenticate", token: await mintGatewayToken() });
-  const ack = await c.recv();
-  check("relay accepts the gateway token", ack.type === "authenticated", `got ${ack.type}`);
-  const { call } = await openSession({ send: c.send, recv: c.recv, transport, preferDeviceId });
-
-  // Liveness.
-  const pong = await call("ping");
-  check("ping round-trips over E2EE", pong.pong === true);
-
-  // Standard flow: author a plan → comment/revise its stage docs → approve →
-  // create a run (materializes the plan, auto-runs stage 1 to the gate) →
-  // walk the per-stage gate → diff → merge.
-  const plan = await call("issue.create", { goal: "Add a greeting banner", provider: "claude" });
-  check("issue.create reaches plan_review", plan.state === "plan_review", `state=${plan.state}`);
-
-  const board = await call("issue.stages", { issue_id: plan.issue_id });
-  check("Issue arrives as multiple stage plans", board.stages.length === 2, `${board.stages.length} stages`);
-  check(
-    "stages start planned",
-    board.stages.every((s) => s.state === "planned"),
-    board.stages.map((s) => s.state).join(",")
-  );
-  const [first, second] = board.stages;
-
-  // Normal Issue conversation messages never revise artifacts implicitly.
-  const planNote = "Keep the second stage reversible.";
-  await call("thread.post", { entity_id: plan.issue_id, body: planNote });
-  const noted = await call("issue.get", { issue_id: plan.issue_id });
-  check("thread.post keeps the Issue in review", noted.state === "plan_review", `state=${noted.state}`);
-  check(
-    "thread.post adds the message to the durable Issue conversation",
-    (noted.thread?.items || []).some(
-      (item) => item.type === "message" && item.data.role === "user" && item.data.body === planNote
-    ),
-    `${(noted.thread?.items || []).length} thread items`
-  );
-
-  const doc = await call("issue.stage_doc", { issue_id: plan.issue_id, stage_id: first.id });
-  check("stage doc mentions the goal", doc.contents.includes("Add a greeting banner"));
-
-  // Structured comment → batched send → the revision resolves it.
-  const added = await call("issue.comment_add", {
-    issue_id: plan.issue_id,
-    stage_id: first.id,
-    body: "Please tighten this step.",
-    anchor: { heading_path: ["Stage: First half"], snippet: "Implement the first half" },
+  const { mintGatewayToken } = await loginWithDummy(apiUrl, {
+    email: process.env.QA_EMAIL || "qa@localhost",
   });
-  check("comment is minted open", added.comment.state === "open", added.comment.id);
-  await call("issue.stage_revise", { issue_id: plan.issue_id, stage_id: first.id });
-  const afterRevise = await call("issue.stages", { issue_id: plan.issue_id });
-  const revisedComment = afterRevise.stages.find((s) => s.id === first.id).comments[0];
-  check("revision addresses the comment", revisedComment.state === "addressed", revisedComment.agent_reply);
-  const revisedDoc = await call("issue.stage_doc", { issue_id: plan.issue_id, stage_id: first.id });
-  check("stage doc was actually revised", revisedDoc.contents.includes("(revised)"));
+  const { connection: rpcConnection, ack } = await authenticate(mintGatewayToken);
+  check("relay accepts the gateway token", ack.type === "authenticated", `got ${ack.type}`);
+  const { call } = await openSession({
+    send: rpcConnection.send,
+    recv: rpcConnection.recv,
+    transport,
+    preferDeviceId,
+  });
+  check("ping round-trips over E2EE", (await call("ping")).pong === true);
 
-  // Mark the Issue ready, approve stage 1, and implement that stage through
-  // the canonical Issue scheduler. It creates/reuses one Issue worktree.
-  const approvedPlan = await call("issue.approve", { issue_id: plan.issue_id });
-  check("issue.approve marks the Issue ready", approvedPlan.state === "approved", `state=${approvedPlan.state}`);
-  await call("issue.stage_approve", { issue_id: plan.issue_id, stage_id: first.id });
-
-  const firstImplemented = await call("issue.implement_stage", { issue_id: plan.issue_id, stage_id: first.id });
-  const run = { run_id: firstImplemented.current_implementation_id };
-  check(
-    "Implement Stage waits at the next stage gate",
-    firstImplemented.current_implementation.state === "stage_gate",
-    `state=${firstImplemented.current_implementation.state}`
-  );
-  check("Implement Stage creates a build branch", /^build\//.test(firstImplemented.current_implementation.branch));
-  const afterFirst = await call("issue.stages", { issue_id: plan.issue_id });
-  const firstProgress = afterFirst.stages.find((s) => s.id === first.id);
-  check("stage 1 validates after its build", firstProgress.execution === "complete", firstProgress.execution);
-  check(
-    "validation carries notes for the next stage",
-    firstProgress.validation.passed === true && firstProgress.validation.notes_for_next_stage.length > 0,
-    firstProgress.validation.notes_for_next_stage
-  );
-
-  let gateErrored = false;
-  try {
-    await call("issue.implement_stage", { issue_id: plan.issue_id, stage_id: second.id });
-  } catch (e) {
-    gateErrored = /not approved/.test(e.message);
-  }
-  check("stage 2 dispatch is gated on its stage-plan approval", gateErrored);
-
-  await call("issue.stage_approve", { issue_id: plan.issue_id, stage_id: second.id });
-  const afterSecond = await call("issue.implement_stage", { issue_id: plan.issue_id, stage_id: second.id });
-  check(
-    "final stage lands the Issue implementation in review",
-    afterSecond.current_implementation.state === "review",
-    `state=${afterSecond.current_implementation.state}`
-  );
-
-  const diff = await call("issue.diff", { issue_id: plan.issue_id });
-  check(
-    "Issue diff shows both stages' files",
-    diff.files.some((f) => f.path === `result-${first.id}.txt`) &&
-      diff.files.some((f) => f.path === `result-${second.id}.txt`),
-    `${diff.stat.files_changed} files, +${diff.stat.insertions}`
-  );
-  check("Issue diff patch is non-empty", diff.patch.length > 0);
-
-  const merged = await call("issue.git_action", { issue_id: plan.issue_id, action: "merge" });
-  check(
-    "Issue merge reaches merged",
-    merged.current_implementation.state === "merged",
-    `state=${merged.current_implementation.state}`
-  );
-
-  // Implement All: approve every stage and let the Issue scheduler run the
-  // ordered sequence to review without any run-scoped browser RPC.
-  const runAllPlan = await call("issue.create", { goal: "Run-all banner polish", provider: "claude" });
-  await call("issue.approve", { issue_id: runAllPlan.issue_id });
-  const runAllBoard = await call("issue.stages", { issue_id: runAllPlan.issue_id });
-  for (const s of runAllBoard.stages) {
-    await call("issue.stage_approve", { issue_id: runAllPlan.issue_id, stage_id: s.id });
-  }
-  const chained = await call("issue.implement_all", { issue_id: runAllPlan.issue_id });
-  check(
-    "Implement All chains every stage to review",
-    chained.current_implementation.state === "review",
-    `state=${chained.current_implementation.state}`
-  );
-  const chainedStages = await call("issue.stages", { issue_id: runAllPlan.issue_id });
-  check(
-    "Implement All validates every stage",
-    chainedStages.stages.every((s) => s.execution === "complete"),
-    chainedStages.stages.map((s) => s.execution).join(",")
-  );
-  const runAllMerged = await call("issue.git_action", { issue_id: runAllPlan.issue_id, action: "merge" });
-  check("Implement All merges", runAllMerged.current_implementation.state === "merged");
-
-  // External worktree adoption: list → read-only browse → adopt → merge with
-  // cleanup=keep. Conditional: runs only when the environment pre-created an
-  // external worktree in the project repo (the local harness does this via
-  // podman exec); a vanilla stack skips it without failing.
-  const withExternals = await call("board.list");
-  const external = (withExternals.external_worktrees || []).find((w) => w.adoptable);
-  if (external) {
-    check("external worktree is listed", true, `${external.branch} (${external.worktree_id})`);
-    const browse = await call("worktree.diff", {
-      project_id: external.project_id,
-      worktree_id: external.worktree_id,
-    });
-    check("worktree browse shows the dirty diff", browse.patch.length > 0, browse.stat && `+${browse.stat.insertions}`);
-    const afterBrowse = await call("board.list");
-    check(
-      "browsing does not adopt",
-      (afterBrowse.external_worktrees || []).some((w) => w.worktree_id === external.worktree_id)
-    );
-
-    const adopted = await call("run.adopt", {
-      project_id: external.project_id,
-      worktree_id: external.worktree_id,
-    });
-    check("adopt mints a review run", adopted.state === "review" && adopted.adopted === true, `state=${adopted.state}`);
-    const afterAdopt = await call("board.list");
-    check(
-      "adopted worktree leaves the external list",
-      !(afterAdopt.external_worktrees || []).some((w) => w.worktree_id === external.worktree_id)
-    );
-
-    const adoptedMerged = await call("run.git_action", { run_id: adopted.run_id, action: "merge", cleanup: "keep" });
-    check("adopted run merges with cleanup=keep", adoptedMerged.state === "merged", `state=${adoptedMerged.state}`);
-  } else {
-    console.log("· adoption checks skipped (no external worktree in the project repo)");
-  }
-
-  // Parallel Issues remain independent. `b` is left at the stage gate — its
-  // implementation worktree and stage-plan docs feed the fs/agent checks below.
-  const aPlan = await call("issue.create", { goal: "Parallel plan A", provider: "claude" });
-  await call("issue.approve", { issue_id: aPlan.issue_id });
-  const aStages = await call("issue.stages", { issue_id: aPlan.issue_id });
-  await call("issue.stage_approve", { issue_id: aPlan.issue_id, stage_id: aStages.stages[0].id });
-  const aIssue = await call("issue.implement_stage", { issue_id: aPlan.issue_id, stage_id: aStages.stages[0].id });
-  const a = aIssue.current_implementation;
-  const bPlan = await call("issue.create", { goal: "Parallel plan B", provider: "claude" });
-  await call("issue.approve", { issue_id: bPlan.issue_id });
-  const bBoard = await call("issue.stages", { issue_id: bPlan.issue_id });
-  await call("issue.stage_approve", { issue_id: bPlan.issue_id, stage_id: bBoard.stages[0].id });
-  const bIssue = await call("issue.implement_stage", { issue_id: bPlan.issue_id, stage_id: bBoard.stages[0].id });
-  const b = bIssue.current_implementation;
-  check("two parallel Issues have distinct branches", a.branch !== b.branch);
-  const boardAll = await call("board.list");
-  check("board.list reports all Issues", boardAll.issues.length >= 4, `${boardAll.issues.length} Issues`);
-
-  // Error handling: unknown method and missing params are clean errors, not crashes.
-  let unknownErrored = false;
-  try {
-    await call("does.not.exist");
-  } catch (e) {
-    unknownErrored = /unknown method/.test(e.message);
-  }
-  check("unknown method returns a clean error", unknownErrored);
-
-  let badParamsErrored = false;
-  try {
-    await call("issue.implement_stage", {});
-  } catch (e) {
-    badParamsErrored = /issue_id/.test(e.message);
-  }
-  check("missing param returns a clean error", badParamsErrored);
-
-  // ---- Worktree surfaces (keyed terminals, agent attach, fs browse, primary) ----
-  // A dedicated second relay connection mirrors production's terminal socket:
-  // request/response terminal RPCs + server-initiated PTY pushes on one session,
-  // keeping floods off the main request-response `call` session.
   const projectList = await call("project.list");
-  const projectId = (projectList.projects || [])[0] && projectList.projects[0].project_id;
-  check("a project is registered for the surface checks", !!projectId, projectId || "none");
+  const fixtureProject = projectList.projects?.[0];
+  check("the compose fixture project is registered", !!fixtureProject, fixtureProject?.project_id || "none");
+  if (!fixtureProject) throw new Error("BRIDGE_REPO fixture project is unavailable");
 
-  const tc = connect();
-  await tc.ready;
-  tc.send({ type: "authenticate", token: await mintGatewayToken() });
-  const tack = await tc.recv();
-  check("terminal socket accepts the gateway token", tack.type === "authenticated");
+  const primaryList = await call("workspace.list", { project_id: fixtureProject.project_id });
+  const primary = primaryList.workspaces.find((workspace) =>
+    workspace.directories.some((directory) => directory.path === "/repo"));
+  check("workspace.list adopts BRIDGE_REPO", !!primary, primary?.workspace_id || "none");
+  if (!primary) throw new Error("the /repo workspace is unavailable");
+
+  const { connection: termConnection, ack: termAck } = await authenticate(mintGatewayToken);
+  check("terminal socket accepts the gateway token", termAck.type === "authenticated");
   const pushes = [];
-  const term = await openPushSession({ send: tc.send, recv: tc.recv, transport, preferDeviceId, onPush: (p) => pushes.push(p) });
+  const term = await openPushSession({
+    send: termConnection.send,
+    recv: termConnection.recv,
+    transport,
+    preferDeviceId,
+    onPush: (push) => pushes.push(push),
+  });
 
-  if (projectId) {
-    // 1. Keyed terminal round-trip in the primary scope.
-    const created = await term.call("term.create", { project_id: projectId, cols: 80, rows: 24 });
-    check("term.create mints a keyed id", /^term-\d+$/.test(created.term_id || ""), created.term_id);
-    const attached = await term.call("term.attach", { term_id: created.term_id, cols: 80, rows: 24 });
-    check(
-      "term.attach returns a snapshot + numeric cursor",
-      typeof attached.snapshot === "string" && typeof attached.cursor === "number",
-      `cursor=${attached.cursor}`,
-    );
-    const marker = `qa-term-${Date.now()}`;
-    await term.call("term.input", { term_id: created.term_id, data: b64encode(`echo ${marker}\r`) });
-    const echoed = await waitFor(() => {
-      const text = pushes
-        .filter((p) => (p.type === "term.output" || p.type === "term.reset") && p.term_id === created.term_id)
-        .map((p) => b64decode(p.data))
-        .join("");
-      return text.includes(marker) ? text : null;
-    }, 10000);
-    check("terminal echoes input back over the relay", !!echoed);
-    const listed = await term.call("term.list", { project_id: projectId });
-    check("term.list includes the open terminal", (listed.terminals || []).some((t2) => t2.term_id === created.term_id));
-    await term.call("term.close", { term_id: created.term_id });
-    const listed2 = await term.call("term.list", { project_id: projectId });
-    check("term.close removes it from term.list", !(listed2.terminals || []).some((t2) => t2.term_id === created.term_id));
+  const setupTerm = await term.call("term.create", { workspace_id: primary.workspace_id, cols: 100, rows: 30 });
+  await term.call("term.attach", { workspace_id: primary.workspace_id, term_id: setupTerm.term_id, cols: 100, rows: 30 });
+  const tag = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const remotePath = `/worktrees/qa-origin-${tag}.git`;
+  const plainPath = `/tmp/qa-assets-${tag}`;
+  const setupMarker = `qa-setup-${tag}`;
+  const setup = [
+    `git clone --bare /repo ${remotePath}`,
+    `mkdir -p ${plainPath}`,
+    `printf 'original\\n' > ${plainPath}/logo.txt`,
+    `printf '%s%s\\n' 'qa-setup-' '${tag}'`,
+  ].join(" && ");
+  await term.call("term.input", { term_id: setupTerm.term_id, data: encode(`${setup}\r`) });
+  check("workspace terminal prepares isolated QA sources", !!(await waitFor(() => pushedText(pushes, setupTerm.term_id).includes(setupMarker))));
+  await term.call("term.close", { term_id: setupTerm.term_id });
 
-    // 4. Primary-changes summary + project.diff shape.
-    const withPrimary = await call("board.list");
-    const pc = (withPrimary.primary_changes || []).find((p) => p.project_id === projectId);
-    check(
-      "board.list.primary_changes carries a branch + numeric files_changed",
-      !!pc && typeof pc.branch === "string" && pc.branch.length > 0 && typeof pc.files_changed === "number",
-      pc ? `${pc.branch} (${pc.files_changed})` : "missing",
-    );
-    const pd = await call("project.diff", { project_id: projectId });
-    check(
-      "project.diff returns the stat/files/patch shape",
-      pd && pd.stat && Array.isArray(pd.files) && typeof pd.patch === "string",
-      pd && pd.stat && `${pd.stat.files_changed} files`,
-    );
-  }
+  const project = await call("project.add", {
+    name: `qa-mixed-${tag}`,
+    sources: [
+      { name: "api", remote: `file://${remotePath}` },
+      { name: "assets", path: plainPath },
+    ],
+  });
+  check("project.add accepts remote and path sources", !!project.project_id, project.project_id);
 
-  // 2 + 3. fs round-trip and fencing, against a live run's worktree. `b`
-  // (Parallel run B) rests at the stage gate — its worktree and the materialized
-  // `.build/plan` stage docs exist on disk (the standard run merged+pruned, `a`
-  // was abandoned). fs scopes on `run_id` now (there is no plan-worktree scope).
-  const tree = await call("fs.tree", { run_id: b.run_id });
-  const names = (tree.entries || []).map((e) => e.name);
-  check("fs.tree lists .build and hides .git", names.includes(".build") && !names.includes(".git"), names.join(","));
-  const bStages = await call("issue.stages", { issue_id: bPlan.issue_id });
-  const firstStage = bStages.stages[0];
-  const stageFile = await call("fs.read", { run_id: b.run_id, path: firstStage.path });
-  const stageDoc = await call("issue.stage_doc", { issue_id: bPlan.issue_id, stage_id: firstStage.id });
-  check(
-    "fs.read returns the stage doc's exact bytes",
-    b64decode(stageFile.content_b64) === stageDoc.contents,
-    `${stageFile.size} bytes, mime=${stageFile.mime}`,
-  );
-  let fenceErrored = false;
+  const workspace = await call("workspace.create", {
+    project_id: project.project_id,
+    name: `qa-workspace-${tag}`,
+    isolation: "worktree",
+  });
+  check("workspace.create returns a ready workspace", workspace.status === "ready", `status=${workspace.status}`);
+  check("workspace.create materializes both sources", workspace.directories?.length === 2);
+  const gitDirectory = workspace.directories.find((directory) => directory.source_id === "source-1");
+  const plainDirectory = workspace.directories.find((directory) => directory.source_id === "source-2");
+  check("directories preserve source identity and capability", gitDirectory?.is_git === true && plainDirectory?.is_git === false);
+
+  const listed = await call("workspace.list", { project_id: project.project_id });
+  check("workspace.list returns the created workspace", listed.workspaces.some((item) => item.workspace_id === workspace.workspace_id));
+  const got = await call("workspace.get", { workspace_id: workspace.workspace_id });
+  check("workspace.get preserves both identity fields", got.id === got.workspace_id && got.id === workspace.workspace_id);
+  let readyRetryRejected = false;
   try {
-    await call("fs.read", { run_id: b.run_id, path: "../../../etc/passwd" });
-  } catch (e) {
-    fenceErrored = /path escapes/.test(e.message);
+    await call("workspace.retry", { workspace_id: workspace.workspace_id });
+  } catch (error) {
+    readyRetryRejected = /no failed provisioning/.test(error.message);
   }
-  check("fs.read fences a traversal path", fenceErrored);
+  check("workspace.retry refuses a workspace that is already ready", readyRetryRejected);
 
-  // 5. Agent attach: you address it by the opaque entity `id` (plan-… / run-…),
-  // but what comes back is keyed by the WORKTREE — `agent:<worktree_id>`, a hash
-  // of the canonical root — because an agent belongs to a directory, not to an
-  // entity. An entity-keyed id would let two entities over one root address two
-  // different agents, which is the whole thing the tab primitive rules out. So
-  // the id must be stable across attaches and must NOT be the entity's own id.
-  const agentLive = await term.call("agent.attach", { id: b.run_id });
-  const agentAgain = await term.call("agent.attach", { id: b.run_id });
+  const plainScope = { workspace_id: workspace.workspace_id, source_id: plainDirectory.source_id };
+  const tree = await call("fs.tree", plainScope);
+  check("fs.tree reads the paired plain source", tree.entries.some((entry) => entry.name === "logo.txt"));
+  const opened = await call("fs.read", { ...plainScope, path: "logo.txt" });
+  check("fs.read returns the fixture bytes", decode(opened.content_b64) === "original\n");
+  const replacement = "workspace copy\n";
+  const written = await call("fs.write", {
+    ...plainScope,
+    path: "logo.txt",
+    expected_revision: opened.revision,
+    content_b64: encode(replacement),
+  });
+  check("fs.write updates the paired source copy", decode(written.content_b64) === replacement);
+  let traversalRejected = false;
+  try {
+    await call("fs.read", { ...plainScope, path: "../../../etc/passwd" });
+  } catch (error) {
+    traversalRejected = /escapes/.test(error.message);
+  }
+  check("fs.read fences traversal paths", traversalRejected);
+
+  const gitScope = { workspace_id: workspace.workspace_id, source_id: gitDirectory.source_id };
+  const refs = await call("git.refs", gitScope);
+  check("Git calls accept the workspace/source pair", Array.isArray(refs.refs));
+  const gitReadme = await call("fs.read", { ...gitScope, path: "README.md" });
+  const gitReplacement = `${decode(gitReadme.content_b64).trimEnd()}\n\nQA workspace ${tag}\n`;
+  await call("fs.write", {
+    ...gitScope,
+    path: "README.md",
+    expected_revision: gitReadme.revision,
+    content_b64: encode(gitReplacement),
+  });
+  const dirty = await call("git.status", gitScope);
+  check("Git status sees a source-scoped workspace edit", dirty.files?.some((file) => file.path === "README.md"));
+  await call("git.stage", { ...gitScope, paths: ["README.md"] });
+  const committed = await call("git.commit", { ...gitScope, message: `QA workspace ${tag}` });
+  check("Git commit records the workspace edit", committed.subject === `QA workspace ${tag}`);
+  let plainGitRejected = false;
+  try {
+    await call("git.refs", plainScope);
+  } catch (error) {
+    plainGitRejected = /not a git repository/.test(error.message);
+  }
+  check("Git calls reject the paired plain source", plainGitRejected);
+  let missingSourceRejected = false;
+  try {
+    await call("git.status", { workspace_id: workspace.workspace_id });
+  } catch (error) {
+    missingSourceRejected = /source_id/.test(error.message);
+  }
+  check("Git workspace scope requires source_id", missingSourceRejected);
+
+  const workspaceTerm = await term.call("term.create", { workspace_id: workspace.workspace_id, cols: 80, rows: 24 });
+  const attached = await term.call("term.attach", {
+    workspace_id: workspace.workspace_id,
+    term_id: workspaceTerm.term_id,
+    cols: 80,
+    rows: 24,
+  });
+  check("workspace terminal attaches with snapshot and cursor", typeof attached.snapshot === "string" && typeof attached.cursor === "number");
+  const terminalMarker = `qa-term-${tag}`;
+  await term.call("term.input", {
+    term_id: workspaceTerm.term_id,
+    data: encode(`printf '%s%s\\n' 'qa-term-' '${tag}'\r`),
+  });
+  check("workspace terminal echoes over the relay", !!(await waitFor(() => pushedText(pushes, workspaceTerm.term_id).includes(terminalMarker))));
+  const terminals = await term.call("term.list", { workspace_id: workspace.workspace_id });
+  check("term.list uses workspace_id only", terminals.terminals.some((item) => item.term_id === workspaceTerm.term_id));
+
+  const finished = await call("workspace.finish", { workspace_id: workspace.workspace_id });
+  const gitFinish = finished.repositories.find((item) => item.directory_id === gitDirectory.id);
+  check("workspace.finish pushes each Git directory", finished.complete === true && gitFinish?.pushed === true);
+  check("finish results pair by directory_id", finished.repositories.every((item) => workspace.directories.some((directory) => directory.id === item.directory_id)));
+  const afterFinish = await call("workspace.get", { workspace_id: workspace.workspace_id });
+  check("finish retains the workspace and marks it finished", afterFinish.status === "finished" && afterFinish.root === workspace.root);
+  const retained = await call("fs.read", { ...plainScope, path: "logo.txt" });
+  check("finished workspace files remain available", decode(retained.content_b64) === replacement);
+  const retainedTerminals = await term.call("term.list", { workspace_id: workspace.workspace_id });
   check(
-    "agent.attach returns a worktree-keyed id + boolean live",
-    agentLive.term_id.startsWith("agent:") &&
-      agentLive.term_id !== `agent:${b.run_id}` &&
-      agentLive.term_id === agentAgain.term_id &&
-      typeof agentLive.live === "boolean",
-    `term_id=${agentLive.term_id} live=${agentLive.live}`,
+    "finish retains live workspace terminals",
+    retainedTerminals.terminals.some((item) => item.term_id === workspaceTerm.term_id),
   );
-  const agentMerged = await term.call("agent.attach", { id: run.run_id });
-  check("agent.attach on a merged run succeeds with live:false", agentMerged.live === false, `live=${agentMerged.live}`);
+  await term.call("term.close", { term_id: workspaceTerm.term_id });
 
-  tc.ws.close();
-  c.ws.close();
+  const localProject = await call("project.create", { name: `qa-local-${tag}` });
+  const localWorkspace = await call("workspace.create", {
+    project_id: localProject.project_id,
+    name: `qa-local-workspace-${tag}`,
+    isolation: "worktree",
+  });
+  const incomplete = await call("workspace.finish", { workspace_id: localWorkspace.workspace_id });
+  check("finish without a remote returns complete:false", incomplete.complete === false && incomplete.repositories.some((item) => item.pushed === false));
+  const retainedIncomplete = await call("workspace.get", { workspace_id: localWorkspace.workspace_id });
+  check("incomplete finish retains a ready workspace", retainedIncomplete.status === "ready" && retainedIncomplete.root === localWorkspace.root);
 
-  const failed = checks.filter((x) => !x.ok);
+  let unknownRejected = false;
+  try { await call("does.not.exist"); } catch (error) { unknownRejected = /unknown method/.test(error.message); }
+  check("unknown method returns a clean error", unknownRejected);
+  let missingWorkspaceRejected = false;
+  try { await call("workspace.get", {}); } catch (error) { missingWorkspaceRejected = /workspace_id/.test(error.message); }
+  check("missing workspace_id returns a clean error", missingWorkspaceRejected);
+
+  termConnection.ws.close();
+  rpcConnection.ws.close();
+  const failed = checks.filter((result) => !result.ok);
   console.log(`\n${passed}/${checks.length} checks passed`);
   if (failed.length) {
-    console.error("QA FAIL:", failed.map((x) => x.name).join("; "));
+    console.error("QA FAIL:", failed.map((result) => result.name).join("; "));
     process.exit(1);
   }
-  console.log("QA PASS: platform verified end-to-end over E2EE");
+  console.log("QA PASS: workspaces verified end-to-end over E2EE");
   process.exit(0);
 }
 
-main().catch((e) => {
-  console.error("QA ERROR:", e.message);
+main().catch((error) => {
+  console.error("QA ERROR:", error.message);
   process.exit(1);
 });

@@ -29,17 +29,24 @@ import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
-import { notifyError } from "./notify.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
-import { openCreateWork } from "./createWork.js";
-import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
+import {
+  projectMenuModel,
+  toolbarIdentity,
+  workspaceDirectoryModel,
+  workspaceMenuModel,
+} from "./toolbarModel.js";
 import { patchList } from "./patchList.js";
-import { projectRoute } from "./projectModel.js";
+import { workspaceRoute } from "./projectModel.js";
+import { openCreateWork } from "./createWork.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
 
 let feed = { items: [], projects: [] };
+let workspaces = [];
+let workspaceProjectId = null;
+let workspaceRequest = 0;
 let scopedProjectId = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
@@ -98,22 +105,75 @@ function rememberScope(projectId) {
   }
 }
 
+const normalizeWorkspace = (workspace) => ({
+  ...(workspace || {}),
+  id: workspace?.workspace_id || workspace?.id,
+});
+
+const workspaceAnswer = (answer) => normalizeWorkspace(answer?.workspace || answer);
+
+async function workspaceRows(projectId, selectedWorkspaceId) {
+  const listed = await App.call("workspace.list", { project_id: projectId });
+  const rows = (listed?.workspaces || []).map(normalizeWorkspace);
+  if (!selectedWorkspaceId) return rows;
+  const selected = rows.find((workspace) => workspace.id === selectedWorkspaceId);
+  if (Array.isArray(selected?.directories)) return rows;
+  const detail = workspaceAnswer(await App.call("workspace.get", { workspace_id: selectedWorkspaceId }));
+  return detail.id ? [...rows.filter((workspace) => workspace.id !== detail.id), detail] : rows;
+}
+
+function acceptWorkspaceRows(request, projectId, rows) {
+  if (request !== workspaceRequest || workspaceProjectId !== projectId) return;
+  workspaces = rows;
+  paint();
+}
+
+/** Read the workspace menu for one project, then hydrate the selected row so
+ * its directory tabs are available even when `workspace.list` is summarized.
+ * A route or project switch overtakes an older answer rather than letting it
+ * repaint another project's toolbar. */
+async function loadWorkspaces(projectId, selectedWorkspaceId = null) {
+  if (!projectId || !App.call) return;
+  const request = ++workspaceRequest;
+  if (workspaceProjectId !== projectId) {
+    workspaceProjectId = projectId;
+    workspaces = [];
+    paint();
+  }
+  try {
+    acceptWorkspaceRows(request, projectId, await workspaceRows(projectId, selectedWorkspaceId));
+  } catch {
+    acceptWorkspaceRows(request, projectId, []);
+  }
+}
+
 // ---- the bar ----------------------------------------------------------------
 
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label }) {
-  const itemSelector = kind
+export function toolbarHtml({ project, kind, label, directories = [] }) {
+  const itemSelector = kind === "workspace"
     ? `<span class="tb-sep">/</span>
        <button class="tb-sel tb-item" data-select="item" type="button" aria-haspopup="menu">
-         <span class="tb-name${kind === "branch" ? " mono" : ""}">${esc(label)}</span><span class="tb-caret">▾</span>
+         <span class="tb-name">${esc(label)}</span><span class="tb-caret">▾</span>
        </button>`
+    : kind
+      ? `<span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${kind === "branch" ? " mono" : ""}">${esc(label)}</span></span>`
+      : "";
+  const directoryTabs = directories.length
+    ? `<div class="tb-directories" role="tablist" aria-label="Workspace directories">${directories
+        .map(
+          (directory) =>
+            `<button class="tb-directory${directory.current ? " current" : ""}" data-directory="${esc(directory.sourceId)}" type="button" role="tab" aria-selected="${directory.current ? "true" : "false"}">${esc(directory.label)}</button>`,
+        )
+        .join("")}</div>`
     : "";
   return `<div class="toolbar">
     <button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu">
       <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
     </button>
     ${itemSelector}
+    ${directoryTabs}
     <div class="tb-right">
       <span class="tb-verb" id="tb-verb"></span>
       <button class="iconbtn tb-more" data-select="more" type="button" title="More" aria-label="More actions" aria-haspopup="menu">⋯</button>
@@ -122,7 +182,7 @@ export function toolbarHtml({ project, kind, label }) {
 }
 
 function identity() {
-  return toolbarIdentity(App.route, feed);
+  return toolbarIdentity(App.route, { ...feed, workspaces });
 }
 
 /** Repaint the bar. `entering` says the paint follows a navigation (a route the
@@ -145,6 +205,7 @@ function paint({ entering = false } = {}) {
     project: standing.project || projectNameOf(scopeProjectId()),
     kind: standing.kind,
     label: standing.label,
+    directories: standing.directories || [],
   };
   const signature = JSON.stringify(shown);
   // A poll tick that says the same thing the bar already shows must leave the
@@ -172,9 +233,26 @@ function paint({ entering = false } = {}) {
         else openJumpMenu(control);
       };
     });
+    host.querySelectorAll("[data-directory]").forEach((control) => {
+      control.onclick = () => openWorkspaceDirectory(control.dataset.directory);
+    });
   }
   paintVerb();
   if (open) paintMenu();
+}
+
+function openWorkspaceDirectory(sourceId) {
+  if (App.route.name !== "workspace" || !sourceId) return;
+  const workspace = workspaces.find((candidate) => candidate.id === App.route.workspaceId);
+  const directory = workspaceDirectoryModel(workspace, sourceId).find((candidate) => candidate.sourceId === sourceId);
+  if (!directory) return;
+  go({
+    name: "workspace",
+    projectId: App.route.projectId,
+    workspaceId: App.route.workspaceId,
+    sourceId,
+    tab: directory.is_git === false ? "files" : "changes",
+  });
 }
 
 // ---- the menu each selector opens -------------------------------------------
@@ -223,7 +301,7 @@ function openJumpMenu(anchor) {
     ...menuShell(anchor, "tbmenu"),
     select: anchor.dataset.select,
     mode: "jump",
-    list: anchor.dataset.select === "project" ? "projects" : "work",
+    list: anchor.dataset.select === "project" ? "projects" : "workspaces",
     query: "",
   };
   paintMenu();
@@ -250,7 +328,7 @@ function showList(list) {
 function paintMenu() {
   if (!open || open.mode !== "jump") return;
   paintMenuShell();
-  const entries = open.list === "projects" ? projectMenuEntries() : workMenuEntries();
+  const entries = open.list === "projects" ? projectMenuEntries() : workspaceMenuEntries();
   patchList(open.element.querySelector(".tbmenu-list"), entries, {
     keyOf: (entry) => entry.key,
     render: (entry) => entry.html,
@@ -263,7 +341,7 @@ function paintMenu() {
 function paintMenuShell() {
   if (open.element.dataset.list === open.list) return;
   open.element.dataset.list = open.list;
-  open.element.innerHTML = open.list === "projects" ? projectMenuShellHtml() : workMenuShellHtml();
+  open.element.innerHTML = open.list === "projects" ? projectMenuShellHtml() : workspaceMenuShellHtml();
   open.element.onclick = onMenuClick;
   const filter = open.element.querySelector(".tb-filter");
   filter.oninput = () => {
@@ -274,46 +352,39 @@ function paintMenuShell() {
 
 /** Every row the menu offers, answered in one place — a row that has just
  *  arrived is live without having been wired. */
-function onMenuClick(event) {
-  if (event.target.closest("[data-projects]")) {
-    showList("projects");
-    return;
-  }
-  const project = event.target.closest("[data-project]");
-  if (project) {
-    const selected = projectsOf().find((candidate) => candidate.id === project.dataset.project);
-    rememberScope(project.dataset.project);
-    if (selected?.is_git === false) {
-      closeMenu();
-      go(projectRoute(selected));
-      return;
-    }
-    showList("work");
-    return;
-  }
-  const work = event.target.closest("[data-work]");
-  if (work) {
-    const entry = workMenuModel({ items: feed.items, projectId: scopeProjectId(), query: open.query }).find(
-      (candidate) => candidate.key === work.dataset.work,
-    );
-    closeMenu();
-    if (entry) go(entry.route);
-    return;
-  }
-  const create = event.target.closest("[data-create]");
-  if (create) openCreate(create.dataset.create);
+function pickProject(element) {
+  if (!element) return false;
+  const projectId = element.dataset.project;
+  rememberScope(projectId);
+  showList("workspaces");
+  void loadWorkspaces(projectId);
+  return true;
 }
 
-/** The one create surface, on the scoped project. A device with no project
- *  has nowhere to create, and says so. */
-function openCreate(kind) {
-  const projectId = scopeProjectId();
+function pickWorkspace(element) {
+  if (!element) return false;
+  const selected = workspaceMenuModel({
+    workspaces,
+    projectId: scopeProjectId(),
+    workspaceId: App.route.workspaceId,
+    query: open.query,
+  }).find((candidate) => candidate.id === element.dataset.workspace);
   closeMenu();
-  if (!projectId || !projectsOf().some((project) => project.id === projectId)) {
-    notifyError("No project to create in.", "Add a project in Settings first.");
-    return;
+  const route = workspaceRoute(selected);
+  if (route) go(route);
+  return true;
+}
+
+function onMenuClick(event) {
+  const target = event.target;
+  if (target.closest("[data-projects]")) return showList("projects");
+  if (pickProject(target.closest("[data-project]"))) return;
+  if (pickWorkspace(target.closest("[data-workspace]"))) return;
+  if (target.closest('[data-create="workspace"]')) {
+    const projectId = scopeProjectId();
+    closeMenu();
+    openCreateWork({ projectId, projectName: projectNameOf(projectId) });
   }
-  openCreateWork({ projectId, projectName: projectNameOf(projectId), kind });
 }
 
 /** The counter a menu row wears: what is waiting inside it, and nothing at all
@@ -347,43 +418,36 @@ function projectMenuShellHtml() {
     <div class="tbmenu-list"></div>`;
 }
 
-/** The item half's rows: the scoped project's branches and issues. */
-function workMenuEntries() {
-  const work = workMenuModel({ items: feed.items, projectId: scopeProjectId(), query: open.query });
-  if (!work.length) return [{ key: "none", html: `<div class="tb-none dim">Nothing here yet.</div>` }];
-  return work.map((entry) => ({
-    key: `work:${entry.key}`,
-    html: `<button class="mi" data-work="${esc(entry.key)}" type="button" role="menuitem">
-               <span class="mi-line"><span class="mt${entry.kind === "branch" ? " mono" : ""}">${esc(entry.label)}</span>${unreadBadgeHtml(
-                 entry.unreadCount,
-                 entry.label,
-               )}</span>
-               <span class="md">${esc(entry.detail)}</span></button>`,
+function workspaceMenuEntries() {
+  const entries = workspaceMenuModel({
+    workspaces,
+    projectId: scopeProjectId(),
+    workspaceId: App.route.workspaceId,
+    query: open.query,
+  });
+  if (!entries.length) return [{ key: "none", html: `<div class="tb-none dim">No workspace by that name.</div>` }];
+  return entries.map((workspace) => ({
+    key: `workspace:${workspace.id}`,
+    html: `<button class="mi${workspace.current ? " current" : ""}" data-workspace="${esc(workspace.id)}" type="button" role="menuitem">
+      <span class="mt">${esc(workspace.name)}</span>
+      <span class="md">${esc(workspace.status || "")}</span></button>`,
   }));
 }
 
-/** The item half's frame: the filter, the scope line above the rows, and the
- *  two creates at its foot. */
-function workMenuShellHtml() {
+function workspaceMenuShellHtml() {
   const scopedName = projectNameOf(scopeProjectId()) || "This project";
-  const project = projectsOf().find((candidate) => candidate.id === scopeProjectId());
-  const create = project && project.is_git === false
-    ? ""
-    : `<div class="tbmenu-foot">
-      <button class="mi" data-create="branch" type="button" role="menuitem"><span class="mt">New branch…</span>
-        <span class="md">A checkout of its own, in ${esc(scopedName)}</span></button>
-      <button class="mi" data-create="issue" type="button" role="menuitem"><span class="mt">New issue…</span>
-        <span class="md">Nothing runs until your first message</span></button>
-    </div>`;
   return `
-    <input class="tb-filter" type="text" placeholder="Jump to a branch or issue" value="${esc(open.query)}"
-      aria-label="Filter branches and issues" autocomplete="off" />
+    <input class="tb-filter" type="text" placeholder="Jump to a workspace" value="${esc(open.query)}"
+      aria-label="Filter workspaces" autocomplete="off" />
     <div class="tb-group tb-scope">
       <span>${esc(scopedName)}</span>
       <button class="tb-scope-switch" data-projects type="button">Projects</button>
     </div>
     <div class="tbmenu-list"></div>
-    ${create}`;
+    <div class="tbmenu-foot">
+      <button class="mi" data-create="workspace" type="button" role="menuitem"><span class="mt">New workspace…</span>
+        <span class="md">Materialize every source in ${esc(scopedName)}</span></button>
+    </div>`;
 }
 
 // ---- the ⋯ -------------------------------------------------------------------
@@ -428,6 +492,7 @@ export function initToolbar() {
     paint();
   });
   paint({ entering: true });
+  if (App.route.name === "workspace") void loadWorkspaces(App.route.projectId, App.route.workspaceId);
 }
 
 /** Repaint for the route the shell just entered — the one paint that re-scopes,
@@ -436,9 +501,11 @@ export function toolbarRouteChanged() {
   if (!mounted) return;
   closeMenu();
   paint({ entering: true });
+  if (App.route.name === "workspace") void loadWorkspaces(App.route.projectId, App.route.workspaceId);
 }
 
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
+  workspaceRequest += 1;
   closeMenu();
 }

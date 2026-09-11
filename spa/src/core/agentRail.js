@@ -820,7 +820,9 @@ export function mountAgentRail(host, context) {
       host.innerHTML = `<div class="rail-strip"></div>`;
     }
     const strip = host.querySelector(".rail-strip");
-    paintStrip(strip, railBubbles({ agents: visibleAgents(), selectedId, kind: entity.kind }));
+    paintStrip(strip, railBubbles({
+      agents: visibleAgents(), selectedId, kind: entity.kind, chatCapable: entity.chatCapable !== false,
+    }));
     let panel = host.querySelector("#rail-panel");
     if (expanded && !panel) {
       panel = document.createElement("div");
@@ -889,7 +891,7 @@ export function mountAgentRail(host, context) {
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
-          ? `${railViewerHostHtml()}${rememberedConversationIsLoading() ? "" : composerRowHtml()}`
+          ? `${railViewerHostHtml()}${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
           : ""}`;
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
@@ -901,7 +903,7 @@ export function mountAgentRail(host, context) {
       composerControl = null;
       composerModelMenu = null;
       if (shownMode === "tui") mountTui();
-      else if (!rememberedConversationIsLoading()) {
+      else if (!rememberedConversationIsLoading() && entity.chatCapable !== false) {
         wireComposer(panel);
         if (autofocusComposerPending) {
           autofocusComposerPending = false;
@@ -1186,6 +1188,10 @@ export function mountAgentRail(host, context) {
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
+    if (entity.chatCapable === false) {
+      body.innerHTML = '<div class="rail-chat-loading">This workspace does not have an agent conversation yet.</div>';
+      return;
+    }
     if (rememberedConversationIsLoading()) {
       body.innerHTML = '<div class="rail-chat-loading">Loading chat…</div>';
       syncSurfaces();
@@ -1526,6 +1532,17 @@ export function mountAgentRail(host, context) {
       go({ name: "issue", projectId: entity.projectId, id: link.issue_id || link.plan_id });
       return;
     }
+    if (link.kind === "file" && entity.kind === "workspace") {
+      go({
+        name: "workspace",
+        projectId: entity.projectId,
+        workspaceId: context.workspaceId,
+        sourceId: context.sourceId,
+        tab: "files",
+        ...(link.path ? { file: link.path, line: link.line } : {}),
+      });
+      return;
+    }
     if (link.kind === "file" && entity.kind === "branch" && entity.branch) {
       go({ name: "branch", projectId: entity.projectId, branch: entity.branch, tab: "files" });
     }
@@ -1767,7 +1784,7 @@ export function mountAgentRail(host, context) {
     const provisionalMessage = provisionalMessageEntry(messageKey, submission.message);
     const addressedAgentId = submission.address.agentId;
     const agent = agentOf(addressedAgentId);
-    const wakesAgent = entity.kind === "branch" && !agentIsUp(agent);
+    const wakesAgent = (entity.kind === "branch" || entity.kind === "workspace") && !agentIsUp(agent);
 
     let messageDelivered = false;
 
@@ -1911,7 +1928,7 @@ export function mountAgentRail(host, context) {
     const agent = settledAgentInFocus();
     if (!agent || !entity.entityId) return;
     const call = chatRepository.currentCall();
-    if (!(await confirmAction(removeAgentConfirm(agent)))) return;
+    if (!(await confirmAction(removeAgentConfirm(agent, entity.kind)))) return;
     if (isPending(pendingAgentsScope(), agent.id)) return;
     const records = [removeRecord(agent.id)];
     const remaining = projectPending(visibleAgents(), records, { keyOf: agentIdOf });

@@ -44,6 +44,15 @@ impl WorktreeManager {
         self
     }
 
+    pub(crate) fn with_rift_registry_root(mut self, registry_root: impl Into<PathBuf>) -> Self {
+        self.rift = RiftBackend::with_registry_root(
+            &self.worktrees_root,
+            registry_root,
+            std::ffi::OsString::from("rift"),
+        );
+        self
+    }
+
     pub(super) fn lock_creation(&self) -> Result<MutexGuard<'_, ()>, WorktreeError> {
         self.creation_lock.lock().map_err(|_| {
             WorktreeError::Refused(

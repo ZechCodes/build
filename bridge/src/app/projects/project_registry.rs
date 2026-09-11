@@ -1,4 +1,4 @@
-use super::Project;
+use super::{Project, ProjectSource};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -92,6 +92,25 @@ impl ProjectRegistry {
             return false;
         };
         project.is_git = true;
+        if let Some(source) = project.sources.first_mut() {
+            source.is_git = true;
+        }
+        true
+    }
+
+    pub(in crate::app) fn set_sources(
+        &mut self,
+        project_id: &str,
+        sources: Vec<ProjectSource>,
+    ) -> bool {
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            return false;
+        };
+        project.sources = sources;
         true
     }
 

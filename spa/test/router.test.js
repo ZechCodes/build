@@ -2,6 +2,18 @@ import { describe, it, expect } from "vitest";
 import { routeFromHash, hashFromRoute } from "../src/core/router.js";
 
 describe("routeFromHash", () => {
+  it("parses workspace directories and their selected tab", () => {
+    expect(routeFromHash("#/project/p/workspace/ws/directory/src/files?path=lib%2Fa.js&line=8")).toEqual({
+      name: "workspace", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "files", file: "lib/a.js", line: 8,
+    });
+    expect(routeFromHash("#/project/a%20b/workspace/w%2Fs/directory/source%201/changes")).toEqual({
+      name: "workspace", projectId: "a b", workspaceId: "w/s", sourceId: "source 1", tab: "changes",
+    });
+    expect(routeFromHash("#/project/p/workspace/ws/files")).toEqual({
+      name: "workspace", projectId: "p", workspaceId: "ws", tab: "files",
+    });
+    expect(routeFromHash("#/project/p/workspace/ws/directory/src/nope").tab).toBe("changes");
+  });
   it("lands on the inbox for the empty, bare and unknown hashes", () => {
     expect(routeFromHash("")).toEqual({ name: "inbox" });
     expect(routeFromHash("#")).toEqual({ name: "inbox" });
@@ -258,6 +270,9 @@ describe("hashFromRoute", () => {
       { name: "issue", projectId: "a b", id: "pl 1", stage: "stage 2" },
       { name: "capture", id: "capture-1" },
       { name: "capture", id: "capture 1" },
+      { name: "workspace", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "changes" },
+      { name: "workspace", projectId: "a b", workspaceId: "w/s", sourceId: "source 1", tab: "files", file: "src/a b.js", line: 3 },
+      { name: "workspace", projectId: "p", workspaceId: "ws", tab: "files" },
     ]) {
       expect([route, routeFromHash(hashFromRoute(route))]).toEqual([route, route]);
     }
@@ -270,6 +285,9 @@ describe("hashFromRoute", () => {
     expect(hashFromRoute({ name: "branch", projectId: "p", branch: "build/x" })).toBe("#/project/p/branch/build%2Fx/changes");
     expect(hashFromRoute({ name: "issue", projectId: "p", id: "i-1" })).toBe("#/project/p/issue/i-1");
     expect(hashFromRoute({ name: "issue", projectId: "p", id: "i-1", stage: "s2" })).toBe("#/project/p/issue/i-1/stage/s2");
+    expect(hashFromRoute({ name: "workspace", projectId: "p", workspaceId: "ws", sourceId: "src", tab: "files" })).toBe(
+      "#/project/p/workspace/ws/directory/src/files",
+    );
     expect(hashFromRoute({ name: "capture", id: "capture-1" })).toBe("#/capture/capture-1");
     expect(hashFromRoute({ name: "capture" })).toBe("#/inbox");
     expect(hashFromRoute({ name: "account" })).toBe("#/account/settings");
@@ -285,6 +303,7 @@ describe("hashFromRoute", () => {
     // An incomplete work-item route cannot address anything.
     expect(hashFromRoute({ name: "branch", projectId: "p" })).toBe("#/inbox");
     expect(hashFromRoute({ name: "issue", id: "i" })).toBe("#/inbox");
+    expect(hashFromRoute({ name: "workspace", projectId: "p" })).toBe("#/inbox");
   });
 });
 

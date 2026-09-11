@@ -570,7 +570,7 @@ async fn delete_the_checkout(state: &Arc<Mutex<AppState>>, checkout: &std::path:
 async fn a_vanished_runs_stages_are_judged_with_the_state_lock_free() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let (_, run_id) = planned_run_in_review_delivered(&handler, "a run that vanishes");
+    let (_, run_id) = planned_run_in_review_delivered(&state, &handler, "a run that vanishes");
     let worktree = state.lock().unwrap().runs[&run_id].worktree.path.clone();
     delete_the_checkout(&state, &worktree).await;
 
@@ -732,15 +732,6 @@ async fn a_missed_checkout_says_whether_a_scan_has_ever_landed() {
         vec![
             app.resolve_external_worktree(&project_id, "wt-000000000000")
                 .expect_err("no scan has landed to resolve an id against"),
-            app.dispatch(
-                "branch.finish",
-                &json!({
-                    "project_id": project_id,
-                    "branch": "feature-loose",
-                    "action": "cleanup"
-                }),
-            )
-            .expect_err("no scan has landed to find the branch in"),
             app.dispatch(
                 "entity.dismiss",
                 &json!({ "project_id": project_id, "branch": "feature-loose" }),

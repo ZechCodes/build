@@ -79,9 +79,8 @@ describe("the capture decision model", () => {
       }),
       { projects },
     );
-    expect(model.options.map((choice) => choice.id)).toEqual(["option-1", "option-2", "option-3"]);
+    expect(model.options.map((choice) => choice.id)).toEqual(["option-2", "option-3"]);
     expect(model.options.map((choice) => choice.destination)).toEqual([
-      "relaydb · a new issue",
       "relaydb · branch build/login",
       "dotfiles",
     ]);
@@ -118,11 +117,11 @@ describe("the capture decision model", () => {
     expect(model.awaitingAnswer).toBe(false);
   });
 
-  it("names a project the feed has never heard of by its id", () => {
-    const model = captureDecisionModel(capture({ question: question({ options: [option({ project_id: "p9" })] }) }), {
+  it("names a branch option's unknown project by its id", () => {
+    const model = captureDecisionModel(capture({ question: question({ options: [option({ project_id: "p9", kind: "branch" })] }) }), {
       projects,
     });
-    expect(model.options[0].destination).toBe("p9 · a new issue");
+    expect(model.options[0].destination).toBe("p9 · a new branch");
   });
 });
 
@@ -146,7 +145,7 @@ describe("what an option stands for", () => {
 
 describe("routing it by hand", () => {
   it("answers the router in the terms it routes in", () => {
-    expect(manualRouteAnswer({ projectId: "p1", kind: "issue" })).toBe("Route this to project p1 as an issue");
+    expect(manualRouteAnswer({ projectId: "p1", kind: "issue" })).toBe("Route this to project p1 as a branch");
     expect(manualRouteAnswer({ projectId: "p1", kind: "branch" })).toBe("Route this to project p1 as a branch");
     expect(manualRouteAnswer({ projectId: "p1", kind: "branch", branch: "build/login" })).toBe(
       "Route this to project p1 as a branch, on the branch build/login",
@@ -161,7 +160,7 @@ describe("routing it by hand", () => {
     expect(manualRouteParams("capture-1", { projectId: "p2", kind: "issue" })).toEqual({
       capture_id: "capture-1",
       project_id: "p2",
-      kind: "issue",
+      kind: "branch",
     });
     expect(manualRouteParams("capture-1", { projectId: "p2", kind: "branch", branch: " build/login " })).toEqual({
       capture_id: "capture-1",
@@ -212,22 +211,22 @@ describe("cancelling a capture", () => {
 describe("the decision page's markup", () => {
   const model = () =>
     captureDecisionModel(
-      capture({ question: question({ options: [option(), option({ id: "option-2", label: "New branch" })] }) }),
+      capture({ question: question({ options: [option(), option({ id: "option-2", label: "New branch", kind: "branch" })] }) }),
       { projects },
     );
 
   it("offers every choice as its own control, and always the way out", () => {
     const html = captureDecisionHtml(model(), { projects, projectId: "p1", kind: "issue", branch: "", answer: "" });
-    expect(html).toContain('data-capture-option="option-1"');
+    expect(html).not.toContain('data-capture-option="option-1"');
     expect(html).toContain('data-capture-option="option-2"');
     expect(html).toContain('id="capture-answer"');
     expect(html).toContain('id="capture-cancel"');
     expect(html).toContain('id="capture-project"');
   });
 
-  it("discloses the branch field only for a branch", () => {
+  it("always discloses the branch field", () => {
     const ui = { projects, projectId: "p1", branch: "", answer: "", branches: ["build/login"] };
-    expect(captureDecisionHtml(model(), { ...ui, kind: "issue" })).not.toContain('id="capture-branch"');
+    expect(captureDecisionHtml(model(), { ...ui, kind: "issue" })).toContain('id="capture-branch"');
     const branchy = captureDecisionHtml(model(), { ...ui, kind: "branch" });
     expect(branchy).toContain('id="capture-branch"');
     expect(branchy).toContain('<option value="build/login">');

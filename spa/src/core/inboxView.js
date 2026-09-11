@@ -29,6 +29,7 @@ import {
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
+  workspaceEntries,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
@@ -43,7 +44,6 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
@@ -58,6 +58,7 @@ let items = [];
 // checkout being cut is on the list while its git runs.
 let pendingLifecycle = [];
 let projects = [];
+let workspaces = [];
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
 let openMenuKey = null;
@@ -137,13 +138,8 @@ function drawFromFeed() {
 }
 
 function publishAttentionCount() {
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const partition = inboxEntries({ items: shown, nowMs: Date.now() });
-  publishInboxAttentionCount(
-    [...partition.entries, ...partition.recent]
-      .filter((entry) => !entry.muted && !entry.dismissed)
-      .reduce((total, entry) => total + entry.unreadCount, 0),
-  );
+  const unread = workspaceEntries(workspaces, projects, items).filter((entry) => entry.state === "unread");
+  publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
 }
 
 /** The one name a row has, which is what the reconciler matches rows by. */
@@ -168,8 +164,7 @@ function draw() {
   publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const nowMs = Date.now();
+  const shown = workspaceEntries(workspaces, projects, items);
   list.onclick = onListClick;
   list.onkeydown = onListKeydown;
   // A different face is a different list: the one is emptied for the other,
@@ -179,10 +174,22 @@ function draw() {
     list.replaceChildren();
   }
   const scroll = list.scrollTop;
-  if (view === "projects") drawProjects(list, shown, nowMs);
-  else drawInbox(list, shown, nowMs);
+  drawWorkspaceList(list, shown);
   list.scrollTop = scroll;
   paintErrors(list);
+}
+
+/** Both rail faces now lead to the same durable workspace list. Projects are
+ * sources a workspace can contain, rather than containers for issue rows. */
+function drawWorkspaceList(list, shown) {
+  entries = shown;
+  const ui = rowUi(true);
+  paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
+  list.querySelector(":scope > .inbox-recent")?.remove();
+  list.querySelector(":scope > .inbox-new-project")?.remove();
+  list.querySelector(":scope > .inbox-unsorted")?.remove();
+  list.querySelector(":scope > .inbox-projects")?.remove();
+  patchList(list, entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
 }
 
 /** What every row is painted with. `showProject` is whether a row names its
@@ -424,8 +431,7 @@ function projectClicked(target) {
   }
   if (target.closest("[data-new-project]")) {
     openNewRepo((project) => {
-      const route = projectRoute(project);
-      if (route) goFromInbox(route);
+      if (project?.project_id) openCreateWork({ projectId: project.project_id, projectName: project.name, navigate: goFromInbox });
       refreshFeed();
     });
     return true;
@@ -666,6 +672,7 @@ export function mountInboxList() {
     items = feed.items || [];
     pendingLifecycle = feed.pending || [];
     projects = feed.projects || [];
+    workspaces = feed.workspaces || [];
     const live = new Set(items.map(entryKeyOf));
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
     reconcileOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });

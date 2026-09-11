@@ -69,19 +69,6 @@ impl AttentionIndex {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn attention_mut_for_test(
-        &mut self,
-        entity_id: &str,
-    ) -> Option<&mut Attention> {
-        self.entries.get_mut(entity_id)
-    }
-
-    #[cfg(test)]
-    pub(in crate::app) fn set_created_at(&mut self, entity_id: &str, at: String) {
-        self.entity_created_at.insert(entity_id.to_string(), at);
-    }
-
-    #[cfg(test)]
     pub(in crate::app) fn set_legacy_dismissed_through(&mut self, entity_id: &str, line: u64) {
         self.ensure_attention(entity_id).dismissed_through = line;
     }
@@ -91,13 +78,6 @@ impl AttentionIndex {
         self.entries
             .get(entity_id)
             .is_some_and(|attention| attention.agent_read_sequences.contains_key(agent_id))
-    }
-
-    #[cfg(test)]
-    pub(in crate::app) fn anchor_at(&self, entity_id: &str) -> Option<&str> {
-        self.entries
-            .get(entity_id)
-            .and_then(|attention| attention.anchor_at.as_deref())
     }
 
     #[cfg(test)]

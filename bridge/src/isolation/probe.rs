@@ -36,6 +36,31 @@ pub(crate) fn rift_availability_with(
     require_help(executable, project, &["remove", "--help"], &["--no-hooks"])
 }
 
+/// Whether Rift can copy an ordinary directory into `workspaces_root`.
+/// This uses the same CLI capability checks as Git checkout isolation, without
+/// requiring the source to contain an independent Git directory.
+pub(crate) fn rift_directory_availability_with(
+    executable: &OsStr,
+    source: &Path,
+    workspaces_root: &Path,
+) -> Result<(), String> {
+    validate_storage_paths(source, workspaces_root)?;
+    require_help(
+        executable,
+        source,
+        &["--help"],
+        &["init", "create", "remove", "list", "gc"],
+    )?;
+    require_help(executable, source, &["init", "--help"], &["--here"])?;
+    require_help(
+        executable,
+        source,
+        &["create", "--help"],
+        &["--name", "--into", "--copy-all", "--no-hooks"],
+    )?;
+    require_help(executable, source, &["remove", "--help"], &["--no-hooks"])
+}
+
 pub(crate) fn validate_paths(project: &Path, worktrees_root: &Path) -> Result<(), String> {
     let project = std::fs::canonicalize(project)
         .map_err(|error| format!("the project cannot be opened for Rift ({error})"))?;
@@ -45,9 +70,20 @@ pub(crate) fn validate_paths(project: &Path, worktrees_root: &Path) -> Result<()
                 .to_string(),
         );
     }
-    let worktrees_root = resolved_path(worktrees_root)?;
-    if worktrees_root.starts_with(&project) {
-        return Err("Rift checkout storage must be outside the project being copied".to_string());
+    validate_storage_paths(&project, worktrees_root).map_err(|reason| {
+        reason.replace(
+            "outside the directory being copied",
+            "outside the project being copied",
+        )
+    })
+}
+
+pub(crate) fn validate_storage_paths(source: &Path, workspaces_root: &Path) -> Result<(), String> {
+    let source = std::fs::canonicalize(source)
+        .map_err(|error| format!("the source cannot be opened for Rift ({error})"))?;
+    let worktrees_root = resolved_path(workspaces_root)?;
+    if worktrees_root.starts_with(&source) {
+        return Err("Rift checkout storage must be outside the directory being copied".to_string());
     }
     let ancestor = worktrees_root
         .ancestors()

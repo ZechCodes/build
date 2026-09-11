@@ -93,7 +93,8 @@ pub(in crate::app) fn dispatch_frame(
             let created = term_create(state, &params, &timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
-                    .get("run_id")
+                    .get("workspace_id")
+                    .or_else(|| params.get("run_id"))
                     .or_else(|| params.get("worktree_id"))
                     .and_then(Value::as_str)
                 {
@@ -174,13 +175,14 @@ pub(in crate::app) fn alias_param(params: &Value, canonical: &str, legacy: &str)
 /// the call is what minted it. `project_id` is deliberately absent: a project
 /// is not an entity a browser holds a detail view of.
 pub(in crate::app) fn entity_ids_of(params: &Value, result: &Value) -> Vec<String> {
-    const ENTITY_KEYS: [&str; 6] = [
+    const ENTITY_KEYS: [&str; 7] = [
         "id",
         "entity_id",
         "issue_id",
         "plan_id",
         "run_id",
         "worktree_id",
+        "workspace_id",
     ];
     let mut ids: Vec<String> = Vec::new();
     for source in [params, result] {
@@ -205,6 +207,26 @@ pub(in crate::app) fn err(e: OrchestratorError) -> String {
 /// once, so every required param reads the same to the client.
 pub(in crate::app) fn missing_param(key: &str) -> String {
     format!("missing required param: {key}")
+}
+
+/// Legacy documents remain readable, but workspaces no longer launch or
+/// mutate the retired issue/planning workflow.
+fn retired_planning_operation(method: &str) -> bool {
+    if method.starts_with("issue.") || method.starts_with("plan.") {
+        let action = method.split_once('.').map(|(_, action)| action);
+        return !matches!(
+            action,
+            Some("get" | "list" | "doc" | "stages" | "stage_doc" | "stage_diff" | "diff")
+        );
+    }
+    matches!(
+        method,
+        "run.create"
+            | "run.stage_dispatch"
+            | "run.stage_fix"
+            | "run.stage_send_notes"
+            | "run.set_auto_advance"
+    )
 }
 
 pub(in crate::app) fn optional_nonempty_string<'a>(
@@ -306,6 +328,9 @@ impl AppState {
     }
 
     pub(in crate::app) fn route(&mut self, method: &str, params: &Value) -> Result<Value, String> {
+        if retired_planning_operation(method) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.into());
+        }
         match method {
             // `push_events` rides the probe as well as the greeting: a client
             // that only ever pings can still tell whether this bridge will
@@ -349,7 +374,9 @@ impl AppState {
             "git.pull" => self.git_pull(params),
             "git.push" => self.git_push(params),
             "git.branches" => self.git_branches(params),
+            "git.refs" => self.git_refs(params),
             "git.checkout" => self.git_checkout(params),
+            "git.checkout_ref" => self.git_checkout_ref(params),
             "git.branch_delete" => self.git_branch_delete(params),
             "git.stash" => self.git_stash(params),
             "git.stash_pop" => self.git_stash_pop(params),
@@ -364,6 +391,11 @@ impl AppState {
             "project.clone" => self.project_clone(params),
             "project.set_remote" => self.project_set_remote(params),
             "project.set_isolation" => self.project_set_isolation(params),
+            "workspace.list" => self.workspace_list(params),
+            "workspace.create" => self.workspace_create(params),
+            "workspace.retry" => self.workspace_retry(params),
+            "workspace.get" => self.workspace_get(params),
+            "workspace.finish" => self.workspace_finish(params),
             "board.list" => Ok(self.board_list()),
             // Capture surface: what the user said, kept before anything routes it.
             "capture.create" => self.capture_create(params),
@@ -440,14 +472,14 @@ impl AppState {
             "run.delete" => self.run_delete(params),
             "run.adopt" => self.run_adopt(params),
             "run.release" => self.run_release(params),
-            "run.finish" => self.run_finish(params),
+            "run.finish" => self.workspace_finish_legacy(params),
             // Branch surface: the work item the feed and the URLs speak, over
             // whichever of run / worktree / primary checkout stores it.
             "branch.get" => self.branch_get(params),
             "branch.dispatch" => self.branch_dispatch(params),
-            "branch.finish" => self.branch_finish(params),
+            "branch.finish" => self.workspace_finish_legacy(params),
             "worktree.create" => self.worktree_create(params),
-            "worktree.finish" => self.worktree_finish(params),
+            "worktree.finish" => self.workspace_finish_legacy(params),
             "entity.seen" => self.entity_seen(params),
             "entity.mute" => self.entity_mute(params),
             "entity.dismiss" => self.entity_dismiss(params),

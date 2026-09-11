@@ -62,6 +62,22 @@ describe("workspace toolbar", () => {
     bar().querySelector('[data-directory="assets"]').click();
     expect(App.route).toEqual({ name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "assets", tab: "files" });
   });
+  it("collapses directories into a phone menu without changing directory routing", async () => {
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
+    toolbarRouteChanged();
+    await flush();
+    const picker = bar().querySelector('[data-select="directory"]');
+    expect(picker.textContent.trim()).toBe("Frontend▾");
+    picker.click();
+    expect([...menu().querySelectorAll("[data-menu-directory]")].map((node) => [node.textContent.trim(), node.classList.contains("current")])).toEqual([
+      ["Frontend", true], ["Design assets", false],
+    ]);
+    expect(document.activeElement).toBe(menu().querySelector('[data-menu-directory="frontend"]'));
+    expect(menu().querySelector('[data-menu-directory="frontend"]').getAttribute("aria-checked")).toBe("true");
+    expect(menu().querySelector('[data-menu-directory="assets"]').getAttribute("aria-checked")).toBe("false");
+    menu().querySelector('[data-menu-directory="assets"]').click();
+    expect(App.route).toEqual({ name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "assets", tab: "files" });
+  });
   it("keeps Archive and project settings in More", () => {
     open("more");
     expect([...menu().querySelectorAll("[data-action]")].map((row) => row.dataset.action)).toEqual(["archive", "settings"]);

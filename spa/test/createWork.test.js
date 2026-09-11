@@ -27,11 +27,11 @@ describe("workspace creation", () => {
     openCreateWork({ projectId: "p1", projectName: "Payments", navigate });
     modal().querySelector("#create-work-input").value = " Release ";
     modal().querySelector("#create-work-input").dispatchEvent(new Event("input"));
-    modal().querySelector("#create-work-isolation").value = "cow";
+    modal().querySelector("#create-work-isolation").value = "rift";
     modal().querySelector("#create-work-isolation").dispatchEvent(new Event("change"));
     modal().querySelector("[data-create-go]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: "Release", isolation: "cow" });
+    expect(App.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: "Release", isolation: "rift" });
     expect(navigate).toHaveBeenCalledWith({
       name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes",
     });

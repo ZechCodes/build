@@ -332,8 +332,8 @@ describe("the rows a lifecycle verb in flight leaves", () => {
   // moment it is asked for, so the row stands for the card in that too: a
   // reader of a row's isolation gets the same answer before and after the git.
   it("carries the isolation the checkout is being made as", () => {
-    const [entry] = mergePendingRows([], [creating({ isolation: "cow" })]);
-    expect(entry.isolation).toBe("cow");
+    const [entry] = mergePendingRows([], [creating({ isolation: "rift" })]);
+    expect(entry.isolation).toBe("rift");
   });
 
   // A verb that cuts nothing — a discard, an adoption of a checkout already on

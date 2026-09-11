@@ -3,6 +3,7 @@
 // unless the user explicitly chooses an override.
 
 import { App, go } from "../app.js";
+import { isolationOptionsHtml } from "./isolation.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { workspaceRoute } from "./projectModel.js";
 import { replyOrNothing } from "./session.js";
@@ -28,9 +29,7 @@ export function createWorkBodyHtml(state) {
     <input id="create-work-input" type="text" placeholder="Workspace" autocomplete="off" value="${esc(state.name)}" />
     <label class="create-label" for="create-work-isolation">Isolation</label>
     <select id="create-work-isolation">
-      <option value=""${state.isolation ? "" : " selected"}>Inherit project setting</option>
-      <option value="worktree"${state.isolation === "worktree" ? " selected" : ""}>Git worktrees / directory copies</option>
-      <option value="cow"${state.isolation === "cow" ? " selected" : ""}>Copy on write</option>
+      ${isolationOptionsHtml(state.isolation, null, { inheritLabel: "Inherit project setting" })}
     </select>
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
     <div class="row create-row">

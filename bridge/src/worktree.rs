@@ -7,7 +7,8 @@ mod manager;
 mod mutation;
 
 pub use crate::isolation::{
-    branch_teardown, copy_directory, BranchTeardown, ResolvedIsolation, WorktreeError,
+    branch_teardown, copy_directory, copy_directory_with_rift_root, BranchTeardown,
+    ResolvedIsolation, WorktreeError,
 };
 pub(crate) use command::{
     bounded_git_fetch, configured_remote_for_branch, git_default_branch, git_in, git_remote_origin,

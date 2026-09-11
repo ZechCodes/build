@@ -77,22 +77,22 @@ describe("openProjectSettings", () => {
   // The one project-level choice about how work is checked out. The sheet
   // writes no RPC name, label or isolation word of its own: it mounts the
   // control the settings panel mounts, told to save on this project.
-  it("offers the account default first, named after what the account holds", async () => {
+  it("offers the device default first, named after what the device holds", async () => {
     const callRpc = vi.fn().mockResolvedValue({
-      projects: [{ ...PROJECT, isolation: null, isolation_default: "cow", isolation_available: { cow: true } }],
+      projects: [{ ...PROJECT, isolation: null, isolation_default: "rift", isolation_available: { rift: true } }],
     });
     openProjectSettings("proj-1", { callRpc });
     await flush();
     const select = document.querySelector("#sheet [data-isolation=select]");
 
-    expect([...select.options].map((option) => option.value)).toEqual(["", "worktree", "cow"]);
-    expect(select.options[0].textContent).toBe("Account default (Copy-on-write clone)");
+    expect([...select.options].map((option) => option.value)).toEqual(["", "worktree", "rift"]);
+    expect(select.options[0].textContent).toBe("Device default (Rift (copy-on-write))");
     expect(select.value).toBe("");
     expect(select.disabled).toBe(false);
   });
 
   it("saves this project's own isolation on change, and clears it the same way", async () => {
-    const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { cow: true } };
+    const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { rift: true } };
     const callRpc = vi.fn().mockImplementation((method, params) =>
       method === "project.list"
         ? Promise.resolve({ projects: [row] })
@@ -102,12 +102,12 @@ describe("openProjectSettings", () => {
     await flush();
     const select = document.querySelector("#sheet [data-isolation=select]");
 
-    select.value = "cow";
+    select.value = "rift";
     select.dispatchEvent(new Event("change"));
     await flush();
     await flush();
-    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "cow" });
-    expect(select.value).toBe("cow");
+    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "rift" });
+    expect(select.value).toBe("rift");
 
     select.value = "";
     select.dispatchEvent(new Event("change"));
@@ -117,14 +117,14 @@ describe("openProjectSettings", () => {
     expect(document.querySelector("#sheet [data-isolation=select]").value).toBe("");
   });
 
-  it("shows a project whose volume cannot clone why, and offers it no clone", async () => {
+  it("shows why Rift is unavailable and does not offer it", async () => {
     const callRpc = vi.fn().mockResolvedValue({
       projects: [
         {
           ...PROJECT,
           isolation: null,
           isolation_default: "worktree",
-          isolation_available: { cow: false, reason: "the project is on a volume that cannot clone" },
+          isolation_available: { rift: false, reason: "Rift CLI was not found" },
         },
       ],
     });
@@ -137,27 +137,27 @@ describe("openProjectSettings", () => {
       true,
     ]);
     expect(document.querySelector("#sheet [data-isolation=lock]").textContent).toBe(
-      "Locked to git worktrees on this device: the project is on a volume that cannot clone.",
+      "Rift is unavailable on this device: Rift CLI was not found.",
     );
   });
 
   it("keeps the remote's save separate from the isolation's refusal", async () => {
-    const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { cow: true } };
+    const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { rift: true } };
     const callRpc = vi.fn().mockImplementation((method) =>
       method === "project.list"
         ? Promise.resolve({ projects: [row] })
-        : Promise.reject(new Error("copy-on-write isolation is unavailable: r; locked to worktrees")),
+        : Promise.reject(new Error("Rift isolation is unavailable: Rift CLI was not found")),
     );
     openProjectSettings("proj-1", { callRpc });
     await flush();
     const select = document.querySelector("#sheet [data-isolation=select]");
 
-    select.value = "cow";
+    select.value = "rift";
     select.dispatchEvent(new Event("change"));
     await flush();
     await flush();
 
-    expect(document.querySelector("#sheet [data-isolation=error]").textContent).toContain("locked to worktrees");
+    expect(document.querySelector("#sheet [data-isolation=error]").textContent).toContain("Rift CLI was not found");
     expect(document.getElementById("pserr").textContent).toBe("");
     expect(select.value).toBe("");
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);

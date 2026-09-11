@@ -28,6 +28,38 @@ fn truncation_respects_utf8_boundaries_and_flags() {
     assert_eq!(exact, "abcd");
     assert!(!truncated);
 }
+
+#[test]
+fn show_commit_keeps_canonical_prefixes_under_local_diff_config() {
+    for (key, value) in [("diff.mnemonicPrefix", "true"), ("diff.noprefix", "true")] {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        git_ok(dir.path(), &["config", "--local", key, value]);
+        let root = git_run(dir.path(), &["rev-list", "--max-parents=0", "HEAD"]);
+        assert!(root.status.success());
+        let root = String::from_utf8(root.stdout).unwrap();
+        let root_patch = show_commit(dir.path(), root.trim()).unwrap();
+        let root_patch = root_patch["patch"].as_str().unwrap();
+        assert!(
+            root_patch.contains("diff --git a/f.txt b/f.txt"),
+            "{key} changed a root commit patch:\n{root_patch}"
+        );
+        assert!(root_patch.contains("--- /dev/null\n+++ b/f.txt"));
+
+        write(dir.path(), "f.txt", "base\nnext\n");
+        git_ok(dir.path(), &["commit", "-q", "-am", "next"]);
+        let head = git_run(dir.path(), &["rev-parse", "HEAD"]);
+        assert!(head.status.success());
+        let head = String::from_utf8(head.stdout).unwrap();
+        let patch = show_commit(dir.path(), head.trim()).unwrap();
+        let patch = patch["patch"].as_str().unwrap();
+        assert!(
+            patch.contains("diff --git a/f.txt b/f.txt"),
+            "{key} changed a normal commit patch:\n{patch}"
+        );
+        assert!(patch.contains("--- a/f.txt\n+++ b/f.txt"));
+    }
+}
 #[test]
 fn status_files_list_is_capped_with_a_truncation_flag() {
     let dir = tempfile::tempdir().unwrap();

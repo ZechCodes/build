@@ -2,12 +2,13 @@ use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{require_str, AppState, DeferredGit, DeferredWork};
 use crate::isolation::Isolation;
 use crate::workspace::{Workspace, WorkspaceDirectory, WorkspaceRegistry, WorkspaceSource};
-use crate::worktree::{copy_directory, WorktreeManager};
+use crate::worktree::{copy_directory_with_rift_root, WorktreeManager};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 struct WorkspaceCreateWork {
     registry_root: PathBuf,
+    rift_root: PathBuf,
     workspace_id: String,
     workspace_name: String,
     sources: Vec<WorkspaceSource>,
@@ -30,7 +31,8 @@ impl DeferredGitWork for WorkspaceCreateWork {
                     let manager = WorktreeManager::new(
                         &source.path,
                         destination.parent().unwrap_or(destination),
-                    );
+                    )
+                    .with_rift_registry_root(&self.rift_root);
                     let effective = if manager.availability().lock_reason(isolation).is_some() {
                         Isolation::Worktree
                     } else {
@@ -46,8 +48,13 @@ impl DeferredGitWork for WorkspaceCreateWork {
                         .map_err(|error| error.to_string())?;
                     Ok((Some(checkout.worktree.recorded_branch), effective))
                 } else {
-                    let resolved = copy_directory(&source.path, destination, isolation)
-                        .map_err(|error| error.to_string())?;
+                    let resolved = copy_directory_with_rift_root(
+                        &source.path,
+                        destination,
+                        isolation,
+                        &self.rift_root,
+                    )
+                    .map_err(|error| error.to_string())?;
                     Ok((None, resolved.isolation))
                 }
             },
@@ -197,6 +204,7 @@ impl AppState {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
                 registry_root: self.workspaces.root().to_path_buf(),
+                rift_root: self.project_worktrees_root(&project_id),
                 workspace_id: workspace.id.clone(),
                 workspace_name: workspace.name.clone(),
                 sources,
@@ -265,6 +273,7 @@ impl AppState {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
                 registry_root: self.workspaces.root().to_path_buf(),
+                rift_root: self.project_worktrees_root(&workspace.project_id),
                 workspace_id: workspace.id.clone(),
                 workspace_name: workspace.name,
                 sources,
@@ -480,7 +489,7 @@ impl AppState {
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                if crate::isolation::Isolation::of(&path) != Some(Isolation::Cow)
+                if crate::isolation::Isolation::of(&path) != Some(Isolation::Rift)
                     || held_paths.iter().any(|held| same_path(held, &path))
                 {
                     continue;

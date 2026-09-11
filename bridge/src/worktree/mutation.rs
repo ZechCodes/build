@@ -163,6 +163,7 @@ impl WorktreeManager {
         destination: &Path,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
         if destination.exists() {
             return Err(WorktreeError::Refused(format!(
                 "{} already exists",
@@ -211,6 +212,7 @@ impl WorktreeManager {
         base_branch: &str,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
         let backend = self.backend(isolation)?;
         let repo = git2::Repository::open(&self.repo_path)?;
         let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
@@ -249,6 +251,7 @@ impl WorktreeManager {
         base_branch: &str,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
         let repo = git2::Repository::open(&self.repo_path)?;
         let prepared = self
             .prepare_existing_branch(&repo, branch)?
@@ -275,6 +278,7 @@ impl WorktreeManager {
         base_branch: &str,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
         let repo = git2::Repository::open(&self.repo_path)?;
         let prepared = match self.prepare_existing_branch(&repo, branch)? {
             Some(prepared) => prepared,
@@ -356,13 +360,22 @@ impl WorktreeManager {
         std::fs::create_dir_all(&self.worktrees_root)?;
         Ok(self.worktrees_root.join(name))
     }
-    /// Ask every backend to be rid of the checkout at `path`. Removal's goal is
-    /// ABSENCE, and absence is success for every backend, so a checkout that is
-    /// already gone and one that is still there take the same path — and a
-    /// record left behind by an outside cleanup is cleared either way.
+    /// Remove a live checkout through its owner before clearing stale records.
+    /// A provider may need the directory's marker to unregister it, or a
+    /// filesystem-specific operation to remove it. Other backends only see
+    /// the absent path after its owner has finished.
     pub fn remove_checkout(&self, path: &Path) -> Result<(), WorktreeError> {
+        let owner = Isolation::of(path);
+        if owner.is_none() && (path.join(".rift").exists() || path.join(".git").is_dir()) {
+            return Err(WorktreeError::NotABuildCheckout(path.to_path_buf()));
+        }
+        if let Some(isolation) = owner {
+            self.backend(isolation)?.remove(&self.repo_path, path)?;
+        }
         for backend in self.every_backend() {
-            backend.remove(&self.repo_path, path)?;
+            if Some(backend.kind()) != owner {
+                backend.remove(&self.repo_path, path)?;
+            }
         }
         Ok(())
     }
@@ -604,6 +617,7 @@ impl WorktreeManager {
         when_unregistered: UnregisteredRestore,
         isolation: Isolation,
     ) -> Result<Worktree, WorktreeError> {
+        let _creation = self.lock_creation()?;
         self.refuse_outside_root(worktree)?;
         if worktree.path.exists() {
             return self.verify_existing_checkout(worktree);

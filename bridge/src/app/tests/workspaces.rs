@@ -118,6 +118,10 @@ fn mixed_project_workspace_isolates_git_and_plain_sources() {
         .unwrap()
         .contains("not a git repository"));
 
+    assert_workspace_has_no_agents(&mut state, workspace_id);
+}
+
+fn assert_workspace_has_no_agents(state: &mut AppState, workspace_id: &str) {
     let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
     assert_eq!(detail["ok"], true, "{detail:?}");
     assert_eq!(detail["result"]["entity_id"], Value::Null, "{detail:?}");

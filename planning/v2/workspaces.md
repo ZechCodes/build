@@ -37,8 +37,8 @@ Build materializes each source independently beneath the workspace root.
 
 Copying follows the selected isolation backend's defaults. For non-Git
 directories, the worktree backend makes a normal independent copy. The
-copy-on-write backend uses filesystem cloning, including reflinks where
-available, and falls back to a normal copy when unsupported.
+Rift backend delegates cloning to the installed Rift CLI and falls back to a
+normal copy when Rift is unavailable or fails without leaving a destination.
 
 Each source has independent state and recovery. After an interrupted creation,
 Build reloads the workspace manifest and shows the incomplete workspace as

@@ -3,17 +3,14 @@
 
 use std::path::Path;
 
-use super::cow::clone_tree;
-use super::probe::directory_cow_availability;
-use super::{Isolation, ResolvedIsolation, WorktreeError};
+use super::{Isolation, ResolvedIsolation, RiftBackend, WorktreeError};
 
 /// Copy the ordinary directory tree at `source` to the new `destination`.
 ///
-/// `Worktree` means an independent recursive copy. `Cow` uses a filesystem
-/// clone when this source and destination volume support one, and otherwise
-/// makes the independent copy while returning the reason for the downgrade.
-/// This operation never initializes Git. The destination must not exist, and
-/// any partial destination made by this call is removed on error.
+/// `Worktree` means an independent recursive copy. `Rift` asks the configured
+/// Rift CLI for a copy-on-write snapshot, and falls back to the independent
+/// copy when Rift is unavailable. The destination must not exist, and any
+/// partial destination made by this call is removed on error.
 pub fn copy_directory(
     source: &Path,
     destination: &Path,
@@ -29,16 +26,62 @@ pub fn copy_directory(
     }
     refuse_overlapping_destination(source, destination)?;
 
+    let root = destination.parent().ok_or_else(|| {
+        WorktreeError::Refused(format!(
+            "destination has no parent directory: {}",
+            destination.display()
+        ))
+    })?;
+    copy_directory_with_backend(source, destination, requested, &RiftBackend::new(root))
+}
+
+/// Copy a directory while keeping Rift's registry stable across destination
+/// roots that belong to the same project.
+pub fn copy_directory_with_rift_root(
+    source: &Path,
+    destination: &Path,
+    requested: Isolation,
+    rift_root: &Path,
+) -> Result<ResolvedIsolation, WorktreeError> {
+    refuse_existing_destination(destination)?;
+    let source_metadata = std::fs::metadata(source)?;
+    if !source_metadata.is_dir() {
+        return Err(WorktreeError::Refused(format!(
+            "{} is not a directory",
+            source.display()
+        )));
+    }
+    refuse_overlapping_destination(source, destination)?;
+    let destination_root = destination.parent().ok_or_else(|| {
+        WorktreeError::Refused(format!(
+            "destination has no parent directory: {}",
+            destination.display()
+        ))
+    })?;
+    let backend = RiftBackend::with_registry_root(destination_root, rift_root, "rift");
+    copy_directory_with_backend(source, destination, requested, &backend)
+}
+
+fn copy_directory_with_backend(
+    source: &Path,
+    destination: &Path,
+    requested: Isolation,
+    rift: &RiftBackend,
+) -> Result<ResolvedIsolation, WorktreeError> {
     match requested {
         Isolation::Worktree => {
             copy_tree(source, destination)?;
             Ok(ResolvedIsolation::honoured(Isolation::Worktree))
         }
-        Isolation::Cow => match directory_cow_availability(source, destination) {
-            Ok(()) => {
-                clone_tree(source, destination)?;
-                Ok(ResolvedIsolation::honoured(Isolation::Cow))
-            }
+        Isolation::Rift => match rift.directory_availability(source) {
+            Ok(()) => match rift.materialize_directory(source, destination) {
+                Ok(()) => Ok(ResolvedIsolation::honoured(Isolation::Rift)),
+                Err(error) if !destination.exists() => {
+                    copy_tree(source, destination)?;
+                    Ok(ResolvedIsolation::downgraded(&error.to_string()))
+                }
+                Err(error) => Err(error),
+            },
             Err(reason) => {
                 copy_tree(source, destination)?;
                 Ok(ResolvedIsolation::downgraded(&reason))
@@ -237,7 +280,7 @@ mod tests {
         std::fs::write(source.join("owned"), b"source").unwrap();
         let destination = dir.path().join("missing-parent").join("destination");
 
-        let error = copy_directory(&source, &destination, Isolation::Cow).unwrap_err();
+        let error = copy_directory(&source, &destination, Isolation::Rift).unwrap_err();
 
         assert!(error.to_string().contains("No such file"), "{error}");
         assert!(!destination.exists());
@@ -252,7 +295,7 @@ mod tests {
         std::fs::write(source.join("owned"), b"source").unwrap();
         let destination = source.join("nested");
 
-        let error = copy_directory(&source, &destination, Isolation::Cow).unwrap_err();
+        let error = copy_directory(&source, &destination, Isolation::Rift).unwrap_err();
 
         assert!(error.to_string().contains("inside itself"), "{error}");
         assert!(!destination.exists());
@@ -298,24 +341,28 @@ mod tests {
     }
 
     #[test]
-    fn cow_copies_a_plain_directory_when_the_volume_supports_it() {
+    fn rift_copies_a_plain_directory_when_available() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("file"), b"plain tree").unwrap();
         let destination = dir.path().join("destination");
 
-        let resolved = copy_directory(&source, &destination, Isolation::Cow).unwrap();
+        let resolved = copy_directory(&source, &destination, Isolation::Rift).unwrap();
 
         assert_eq!(
             std::fs::read(destination.join("file")).unwrap(),
             b"plain tree"
         );
-        if directory_cow_availability(&source, &dir.path().join("another")).is_ok() {
-            assert_eq!(resolved, ResolvedIsolation::honoured(Isolation::Cow));
+        if resolved.isolation == Isolation::Rift {
+            assert_eq!(resolved, ResolvedIsolation::honoured(Isolation::Rift));
         } else {
             assert_eq!(resolved.isolation, Isolation::Worktree);
             assert!(resolved.downgrade.is_some());
+            assert!(
+                !source.join(".rift").exists(),
+                "a failed Rift attempt left its source marker behind"
+            );
         }
     }
 }

@@ -1,7 +1,7 @@
 use super::command::commit_file;
 use super::manager::manager;
 use crate::git_fixture::{git_in, init_repo};
-use crate::isolation::probe::cow_or_skip;
+use crate::isolation::probe::rift_or_skip;
 use crate::isolation::Isolation;
 use crate::worktree::{
     describe_checkout, external_worktree_id, primary_checkout_holder, unix_now, ExternalWorktree,
@@ -260,12 +260,12 @@ fn discover_lists_every_checkout_but_the_project_and_the_excluded() {
 #[test]
 fn discover_lists_a_clone_and_a_linked_worktree_of_the_same_project() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
     let clone = mgr
-        .create("cloned", "main", Isolation::Cow)
+        .create("cloned", "main", Isolation::Rift)
         .unwrap()
         .worktree;
     let linked = dir.path().join("worktrees").join("wt-linked");
@@ -283,7 +283,7 @@ fn discover_lists_a_clone_and_a_linked_worktree_of_the_same_project() {
         .collect();
     assert_eq!(found.len(), 2, "{isolations:?}");
     assert!(
-        isolations.contains(&("cloned".to_string(), Isolation::Cow)),
+        isolations.contains(&("cloned".to_string(), Isolation::Rift)),
         "{isolations:?}"
     );
     assert!(

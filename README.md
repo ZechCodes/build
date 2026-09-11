@@ -80,8 +80,9 @@ directories that have no Git repository.
 
 When Build creates a workspace, it materializes each source separately. A
 non-Git source is copied using the selected backend: a regular copy with the
-worktree backend, or filesystem cloning with the copy-on-write backend, falling
-back to a regular copy when unsupported. Git sources are checked out independently.
+worktree backend, or the installed Rift CLI with the Rift backend, falling
+back to a regular copy when Rift is unavailable or cannot create the copy safely.
+Git sources are checked out independently.
 An older project whose root is itself a Git checkout remains a single-directory
 project represented by `.` and is never moved.
 
@@ -106,6 +107,33 @@ source configuration.
 
 For the complete workspace behavior, see
 [`planning/v2/workspaces.md`](planning/v2/workspaces.md).
+
+## Work isolation
+
+Build uses Git worktrees by default. For copy-on-write checkouts, install the
+[Rift CLI](https://github.com/anomalyco/rift#install) on the machine running the
+bridge and make `rift` available on the bridge's `PATH`. Select **Rift
+(copy-on-write)** in Work isolation settings, either as the account default or
+as a project override. The choice applies to new checkouts.
+
+Rift owns filesystem cloning and snapshot creation. Build requests full copies
+to retain ignored build caches, skips Rift hooks, and checks out the task's
+branch for Git sources. Workspace completion verifies pushes and retains files
+with either backend. Build does not install or update Rift for you.
+
+The first Rift task initializes its source project. On Btrfs, Rift may convert
+the source directory into a subvolume; on other supported filesystems it
+registers the directory in place. Git sources must have their own `.git`
+directory; ordinary directories need no Git metadata. The checkouts folder
+must be outside the source. Filesystem support and
+initialization errors are reported by Rift when creating the checkout.
+
+Build keeps a private Rift registry under each project's checkouts folder at
+`.rift/registry.sqlite`, so its garbage collection does not touch workspaces
+registered by other Rift users. A project already registered in a different
+Rift registry cannot be initialized in Build's registry; Build leaves its
+marker untouched and reports the conflict. Keep the Rift CLI installed while
+Build has Rift checkouts to manage.
 
 ## Develop
 

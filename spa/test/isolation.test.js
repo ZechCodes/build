@@ -19,7 +19,7 @@ import {
   isolationLockReason,
   isolationOptionsHtml,
   isolationPanelHtml,
-  ACCOUNT_ISOLATION,
+  DEVICE_ISOLATION,
   projectIsolationTarget,
   mountIsolation,
 } from "../src/core/isolation.js";
@@ -152,22 +152,22 @@ describe("the settings panel", () => {
 
 describe("where a chosen isolation is sent", () => {
   it("puts the account's choice to settings.set, with nothing to inherit", () => {
-    expect(ACCOUNT_ISOLATION).toEqual({ rpc: "settings.set", params: {}, inherits: false, inheritLabel: null });
+    expect(DEVICE_ISOLATION).toEqual({ rpc: "settings.set", params: {}, inherits: false, inheritLabel: null });
   });
 
-  it("keys a project's choice on its own id and names the account default it replaces", () => {
+  it("keys a project's choice on its own id and names the device default it replaces", () => {
     expect(projectIsolationTarget({ project_id: "p1", isolation_default: "rift" })).toEqual({
       rpc: "project.set_isolation",
       params: { project_id: "p1" },
       inherits: true,
-      inheritLabel: "Account default (Rift (copy-on-write))",
+      inheritLabel: "Device default (Rift (copy-on-write))",
     });
   });
 
   it("names a git worktree as the default the bridge did not name", () => {
-    expect(projectIsolationTarget({ project_id: "p2" }).inheritLabel).toBe("Account default (Git worktree)");
+    expect(projectIsolationTarget({ project_id: "p2" }).inheritLabel).toBe("Device default (Git worktree)");
     expect(projectIsolationTarget({ project_id: "p2", isolation_default: "nope" }).inheritLabel).toBe(
-      "Account default (Git worktree)",
+      "Device default (Git worktree)",
     );
   });
 });
@@ -229,7 +229,7 @@ describe("the mounted control", () => {
   it("reads the account's setting itself when the caller hands it none", async () => {
     const callRpc = vi.fn(async () => ({ isolation: "rift", isolation_available: { rift: true, reason: null } }));
     document.body.innerHTML = isolationPanelHtml();
-    await mountIsolation(document.body, { callRpc, target: ACCOUNT_ISOLATION });
+    await mountIsolation(document.body, { callRpc, target: DEVICE_ISOLATION });
 
     expect(callRpc).toHaveBeenCalledWith("settings.get");
     expect(select().value).toBe("rift");
@@ -241,7 +241,7 @@ describe("the mounted control", () => {
       throw new Error("the bridge is offline");
     });
     document.body.innerHTML = isolationPanelHtml();
-    await mountIsolation(document.body, { callRpc, target: ACCOUNT_ISOLATION });
+    await mountIsolation(document.body, { callRpc, target: DEVICE_ISOLATION });
 
     expect(error().textContent).toBe("the bridge is offline");
     expect(select().disabled).toBe(true);
@@ -249,7 +249,7 @@ describe("the mounted control", () => {
 
   it("paints the choice it was handed, without asking the bridge again", async () => {
     const callRpc = vi.fn();
-    await mount(ACCOUNT_ISOLATION, { isolation: "rift", isolation_available: { rift: true, reason: null } }, callRpc);
+    await mount(DEVICE_ISOLATION, { isolation: "rift", isolation_available: { rift: true, reason: null } }, callRpc);
 
     expect(callRpc).not.toHaveBeenCalled();
     expect(select().disabled).toBe(false);
@@ -259,7 +259,7 @@ describe("the mounted control", () => {
 
   it("sends the account's choice to its own target and repaints from the answer", async () => {
     const callRpc = vi.fn(async () => ({ isolation: "rift", isolation_available: { rift: true } }));
-    await mount(ACCOUNT_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
+    await mount(DEVICE_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
 
     await choose("rift");
 
@@ -275,7 +275,7 @@ describe("the mounted control", () => {
   // control shows.
   it("lands on what the bridge answered, not on what was chosen", async () => {
     const callRpc = vi.fn(async () => ({ isolation: "worktree", isolation_available: { rift: true } }));
-    await mount(ACCOUNT_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
+    await mount(DEVICE_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
 
     await choose("rift");
 
@@ -286,7 +286,7 @@ describe("the mounted control", () => {
     const callRpc = vi.fn(async () => {
       throw new Error("Rift isolation is unavailable: Rift CLI was not found; locked to worktrees");
     });
-    await mount(ACCOUNT_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
+    await mount(DEVICE_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
 
     await choose("rift");
 
@@ -299,7 +299,7 @@ describe("the mounted control", () => {
   it("shows why Rift is unavailable and still lets a worktree be chosen", async () => {
     const callRpc = vi.fn(async () => ({ isolation: "worktree", isolation_available: { rift: false, reason: "Rift CLI was not found" } }));
     await mount(
-      ACCOUNT_ISOLATION,
+      DEVICE_ISOLATION,
       { isolation: "worktree", isolation_available: { rift: false, reason: "Rift CLI was not found" } },
       callRpc,
     );
@@ -316,7 +316,7 @@ describe("the mounted control", () => {
 
   it("renders the bridge's lock sentence as words, never as markup", async () => {
     const host = await mount(
-      ACCOUNT_ISOLATION,
+      DEVICE_ISOLATION,
       { isolation: "worktree", isolation_available: { rift: false, reason: '<img src=x onerror="boom">' } },
       vi.fn(),
     );
@@ -325,12 +325,12 @@ describe("the mounted control", () => {
     expect(host.querySelector("img")).toBe(null);
   });
 
-  it("leads a project with the account default it can fall back to", async () => {
+  it("leads a project with the device default it can fall back to", async () => {
     const row = { project_id: "p1", isolation: null, isolation_default: "rift", isolation_available: { rift: true } };
     await mount(projectIsolationTarget(row), row, vi.fn());
 
     expect([...select().options].map((option) => option.value)).toEqual(["", "worktree", "rift"]);
-    expect(select().options[0].textContent).toBe("Account default (Rift (copy-on-write))");
+    expect(select().options[0].textContent).toBe("Device default (Rift (copy-on-write))");
     expect(select().value).toBe("");
   });
 
@@ -402,55 +402,10 @@ describe("the Settings page", () => {
     return {};
   };
 
-  it("puts the isolation panel directly under the fallback agent, on what the account holds", async () => {
+  it("keeps device-owned isolation out of account settings", async () => {
     await renderWith(settingsCall({ isolation: "rift", isolation_available: { rift: true, reason: null } }));
 
-    const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
-    const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
-    expect(document.querySelector("#root [data-isolation=select]").value).toBe("rift");
-    expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(false);
-  }, SLOW_IMPORT_MS);
-
-  it("shows why Rift is unavailable rather than offering it", async () => {
-    await renderWith(
-      settingsCall({ isolation: "worktree", isolation_available: { rift: false, reason: "Rift CLI was not found" } }),
-    );
-
-    expect(document.querySelector("#root [data-isolation=lock]").textContent).toBe(
-      "Rift is unavailable on this device: Rift CLI was not found.",
-    );
-    const options = [...document.querySelector("#root [data-isolation=select]").options];
-    expect(options.map((option) => option.disabled)).toEqual([false, true]);
-  }, SLOW_IMPORT_MS);
-
-  it("saves a chosen isolation through the account's own method", async () => {
-    const call = await renderWith(settingsCall({ isolation: "worktree", isolation_available: { rift: true } }));
-    const select = document.querySelector("#root [data-isolation=select]");
-
-    select.value = "rift";
-    select.dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
-
-    expect(call).toHaveBeenCalledWith("settings.set", { isolation: "rift" });
-  }, SLOW_IMPORT_MS);
-
-  // Every panel on this page owns its own bridge read: a settings.get the
-  // bridge refuses takes down the isolation panel and nothing else — not the
-  // devices list, which is api-backed and lives while the bridge is gone.
-  it("survives a settings read the bridge refuses, panel by panel", async () => {
-    await renderWith(async (method) => {
-      if (method === "project.list") return { projects: [] };
-      if (method === "models.list") return { default_provider: "claude", providers: [] };
-      throw new Error("the bridge is offline");
-    });
-
-    expect(document.querySelector("#root [data-isolation=error]").textContent).toBe("the bridge is offline");
-    expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(true);
-    expect(document.querySelector("#pushtoggle").textContent).not.toBe("checking…");
-    expect(document.querySelector("#devlist").textContent).not.toContain("loading…");
-    expect(document.querySelector("#themepick")).not.toBe(null);
+    expect(document.querySelector("#root [data-isolation=select]")).toBe(null);
   }, SLOW_IMPORT_MS);
 
   it("names on every project row what that project will actually do", async () => {

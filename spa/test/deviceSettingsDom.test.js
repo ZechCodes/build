@@ -13,10 +13,127 @@ beforeEach(() => {
   document.body.innerHTML = '<main id="root"></main><div id="scrim"><div id="sheet"></div></div>';
   App.devices = [{ id: "other", name: "Other machine", status: "online" }];
   App.route = { name: "device", id: "other" };
-  session = { deviceId: "other", call: vi.fn().mockResolvedValue({ projects_dir: "/projects" }), close: vi.fn() };
+  session = {
+    deviceId: "other",
+    call: vi.fn(async (method) => {
+      if (method === "settings.get") return {
+        projects_dir: "/projects",
+        isolation: "worktree",
+        isolation_available: { rift: true },
+        default_harness: "claude",
+        agent_modes: { claude: "headless", codex: "headless" },
+        triage_enabled: true,
+      };
+      if (method === "models.list") return { providers: [{ id: "claude", label: "Claude Code" }] };
+      return {};
+    }),
+    close: vi.fn(),
+  };
   openSession.mockResolvedValue(session);
 });
 describe("device settings", () => {
+  it("shows bridge-owned preferences on the named device and saves isolation through its pinned session", async () => {
+    await renderDeviceSettings();
+
+    expect(document.querySelector("#root").textContent).toContain("Work isolation");
+    expect(document.querySelector("#root").textContent).toContain("Agent modes");
+    expect(document.querySelector("#root").textContent).toContain("Fallback agent");
+    expect(document.querySelector("#root").textContent).toContain("Diff triage");
+    const select = document.querySelector("[data-isolation=select]");
+    select.value = "rift";
+    select.dispatchEvent(new Event("change"));
+    await new Promise((done) => setTimeout(done, 0));
+
+    expect(session.call).toHaveBeenCalledWith("settings.set", { isolation: "rift" });
+  });
+
+  it("uses the named device's Rift capability rather than the active application session", async () => {
+    App.call = vi.fn().mockResolvedValue({ isolation_available: { rift: true } });
+    session.call.mockImplementation(async (method) => {
+      if (method === "settings.get") return {
+        projects_dir: "/projects",
+        isolation: "worktree",
+        isolation_available: { rift: false, reason: "Rift CLI was not found" },
+        default_harness: "claude",
+        agent_modes: { claude: "headless", codex: "headless" },
+        triage_enabled: true,
+      };
+      if (method === "models.list") return { providers: [{ id: "claude", label: "Claude Code" }] };
+      return {};
+    });
+
+    await renderDeviceSettings();
+
+    const rift = [...document.querySelector("[data-isolation=select]").options].find(({ value }) => value === "rift");
+    expect(rift.disabled).toBe(true);
+    expect(document.querySelector("[data-isolation=lock]").textContent).toContain("Rift CLI was not found");
+    expect(App.call).not.toHaveBeenCalled();
+  });
+
+  it("does not let a detached preference control call its old device", async () => {
+    await renderDeviceSettings();
+    const stale = document.querySelector("[data-isolation=select]");
+    App.viewDispose();
+
+    stale.value = "rift";
+    stale.dispatchEvent(new Event("change"));
+    await new Promise((done) => setTimeout(done, 0));
+
+    expect(session.call).not.toHaveBeenCalledWith("settings.set", expect.anything());
+  });
+
+  it.each(["resolve", "reject"])(
+    "keeps reconnected isolation authoritative when an old save %ss late",
+    async (completion) => {
+      await renderDeviceSettings();
+      const oldSession = session;
+      const oldSelect = document.querySelector("[data-isolation=select]");
+      let resolveSave;
+      let rejectSave;
+      oldSession.call.mockReturnValueOnce(new Promise((resolve, reject) => {
+        resolveSave = resolve;
+        rejectSave = reject;
+      }));
+      oldSelect.value = "rift";
+      oldSelect.dispatchEvent(new Event("change"));
+
+      openSession.mock.calls[0][1].onLost();
+      const newSettings = {
+        projects_dir: "/new",
+        isolation: "worktree",
+        isolation_available: { rift: false, reason: "Rift is absent on the reconnected device" },
+        default_harness: "claude",
+        agent_modes: { claude: "headless", codex: "headless" },
+        triage_enabled: false,
+      };
+      const newSession = {
+        deviceId: "other",
+        close: vi.fn(),
+        call: vi.fn(async (method) =>
+          method === "models.list" ? { providers: [{ id: "claude", label: "Claude Code" }] } : newSettings),
+      };
+      openSession.mockResolvedValueOnce(newSession);
+      document.querySelector("#device-settings-retry").click();
+      await new Promise((done) => setTimeout(done, 0));
+      await new Promise((done) => setTimeout(done, 0));
+      const callsBeforeLateSave = newSession.call.mock.calls.length;
+
+      if (completion === "resolve") resolveSave({ isolation: "rift", isolation_available: { rift: true } });
+      else rejectSave(new Error("old save failed"));
+      await new Promise((done) => setTimeout(done, 0));
+      await new Promise((done) => setTimeout(done, 0));
+
+      const currentSelect = document.querySelector("[data-isolation=select]");
+      expect(currentSelect).not.toBe(oldSelect);
+      expect(currentSelect.value).toBe("worktree");
+      expect([...currentSelect.options].find(({ value }) => value === "rift").disabled).toBe(true);
+      expect(document.querySelector("[data-isolation=lock]").textContent).toContain(
+        "Rift is absent on the reconnected device",
+      );
+      expect(newSession.call).toHaveBeenCalledTimes(callsBeforeLateSave);
+    },
+  );
+
   it("opens the named device and saves through the same connection as the folder browser", async () => {
     await renderDeviceSettings();
     expect(openSession).toHaveBeenCalledWith("other", { onLost: expect.any(Function) });

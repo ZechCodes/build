@@ -77,7 +77,7 @@ describe("openProjectSettings", () => {
   // The one project-level choice about how work is checked out. The sheet
   // writes no RPC name, label or isolation word of its own: it mounts the
   // control the settings panel mounts, told to save on this project.
-  it("offers the account default first, named after what the account holds", async () => {
+  it("offers the device default first, named after what the device holds", async () => {
     const callRpc = vi.fn().mockResolvedValue({
       projects: [{ ...PROJECT, isolation: null, isolation_default: "rift", isolation_available: { rift: true } }],
     });
@@ -86,7 +86,7 @@ describe("openProjectSettings", () => {
     const select = document.querySelector("#sheet [data-isolation=select]");
 
     expect([...select.options].map((option) => option.value)).toEqual(["", "worktree", "rift"]);
-    expect(select.options[0].textContent).toBe("Account default (Rift (copy-on-write))");
+    expect(select.options[0].textContent).toBe("Device default (Rift (copy-on-write))");
     expect(select.value).toBe("");
     expect(select.disabled).toBe(false);
   });

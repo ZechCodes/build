@@ -5,6 +5,16 @@ import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { openDeviceSettingsSession } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
+import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
+import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
+import { DEVICE_ISOLATION, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
+import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
+
+const devicePreferencesHtml = () => `
+  ${agentModesPanelHtml()}
+  ${defaultHarnessPanelHtml()}
+  ${isolationPanelHtml()}
+  ${triageSettingPanelHtml()}`;
 
 export async function renderDeviceSettings() {
   const device = App.devices.find((item) => item.id === App.route.id);
@@ -24,11 +34,13 @@ export async function renderDeviceSettings() {
         <button class="btn" id="device-projects-change" disabled>Choose folder…</button></div>
       <p id="device-settings-status" role="status" aria-live="polite"></p>
       <button class="btn mini" id="device-settings-retry" hidden>Retry</button>
-    </div>`;
+    </div>
+    <div id="device-preferences"></div>`;
   const pathLabel = root.querySelector("#device-projects-path");
   const change = root.querySelector("#device-projects-change");
   const status = root.querySelector("#device-settings-status");
   const retry = root.querySelector("#device-settings-retry");
+  const preferences = root.querySelector("#device-preferences");
   let active = true;
   let connectionAttempt = 0;
   let session = null;
@@ -38,9 +50,13 @@ export async function renderDeviceSettings() {
     if (browserOpen) $("#scrim").classList.remove("show");
     browserOpen = false;
   };
+  const clearPreferences = () => {
+    preferences.innerHTML = "";
+  };
   App.viewDispose = () => {
     active = false;
     closeBrowser();
+    clearPreferences();
     session?.close();
   };
   const callRpc = (method, params) => {
@@ -85,6 +101,7 @@ export async function renderDeviceSettings() {
     session?.close();
     session = null;
     closeBrowser();
+    clearPreferences();
     change.disabled = true;
     status.textContent = "Device disconnected. Bring it online, then retry.";
     retry.hidden = false;
@@ -95,6 +112,7 @@ export async function renderDeviceSettings() {
     change.disabled = true;
     retry.hidden = true;
     status.textContent = "Connecting…";
+    clearPreferences();
     try {
       session?.close();
       const opened = await openDeviceSettingsSession(device.id, { onLost: () => disconnected(attempt) });
@@ -103,6 +121,23 @@ export async function renderDeviceSettings() {
       const settings = await callRpc("settings.get");
       if (!current()) return;
       pathLabel.textContent = settings.projects_dir;
+      preferences.innerHTML = devicePreferencesHtml();
+      const scopedCall = async (method, params) => {
+        if (!current() || opened !== session) throw new Error("Device settings are no longer open.");
+        const result = await opened.call(method, params);
+        if (!current() || opened !== session) throw new Error("Device settings are no longer open.");
+        return result;
+      };
+      const invalidateActiveCatalog = () => {
+        if (current() && opened === session && App.session?.deviceId === device.id) App.modelCatalog = null;
+      };
+      await Promise.all([
+        mountAgentModes(preferences, { callRpc: scopedCall, onSaved: invalidateActiveCatalog }),
+        mountDefaultHarness(preferences, { callRpc: scopedCall, onSaved: invalidateActiveCatalog }),
+        mountIsolation(preferences, { callRpc: scopedCall, target: DEVICE_ISOLATION, settings }),
+        mountTriageSetting(preferences, { callRpc: scopedCall }),
+      ]);
+      if (!current()) return;
       status.textContent = "";
       change.disabled = false;
     } catch (error) {
@@ -118,7 +153,7 @@ export async function renderDeviceSettings() {
   retry.onclick = connect;
   if (device.status !== "online") {
     pathLabel.textContent = "Unavailable while offline";
-    status.textContent = "Bring this device online, then retry to choose its projects folder.";
+    status.textContent = "Bring this device online, then retry to configure it.";
     retry.hidden = false;
     return;
   }

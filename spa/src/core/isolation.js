@@ -1,4 +1,4 @@
-// How a task's checkout is isolated from the project — the account's choice,
+// How a task's checkout is isolated from the project — the device's choice,
 // overridable per project.
 //
 // A git worktree shares the project's repository and starts empty. Rift makes
@@ -85,17 +85,17 @@ export function isolationPanelHtml() {
     </div>`;
 }
 
-/** The account's own choice: settings.set, and nothing above it to inherit. */
-export const ACCOUNT_ISOLATION = { rpc: "settings.set", params: {}, inherits: false, inheritLabel: null };
+/** The device's own choice: settings.set, and nothing above it to inherit. */
+export const DEVICE_ISOLATION = { rpc: "settings.set", params: {}, inherits: false, inheritLabel: null };
 
-/** A project's override, keyed on its id, naming the account default it
+/** A project's override, keyed on its id, naming the device default it
  *  replaces so the inherit option reads as what choosing it does. */
 export function projectIsolationTarget(project) {
   return {
     rpc: "project.set_isolation",
     params: { project_id: project.project_id },
     inherits: true,
-    inheritLabel: `Account default (${isolationLabel(project && project.isolation_default)})`,
+    inheritLabel: `Device default (${isolationLabel(project && project.isolation_default)})`,
   };
 }
 
@@ -111,7 +111,7 @@ const lockLine = (available) => {
   return reason ? `Rift is unavailable on this device: ${reason}.` : "";
 };
 
-/** Wire a select to one place a chosen isolation is sent — `ACCOUNT_ISOLATION`
+/** Wire a select to one place a chosen isolation is sent — `DEVICE_ISOLATION`
  *  or `projectIsolationTarget(project)` — and to the payload that place answers
  *  with. A caller holding the payload already, as a project surface holds its
  *  row, hands it over; a caller holding none leaves it out and the control reads

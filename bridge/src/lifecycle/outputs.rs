@@ -53,6 +53,10 @@ pub struct OpenedRepository {
     pub base: String,
     pub remote: Option<String>,
     pub created_checkout: Option<PathBuf>,
+    pub is_git: bool,
+}
+pub struct InitializedRepository {
+    pub project_id: String,
 }
 pub struct RemoteChanged {
     pub remote: Option<String>,

@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "../src/core/inboxProjects.js";
+import { projectRoute } from "../src/core/projectModel.js";
 
 const NOW = Date.parse("2026-09-02T12:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3600 * 1000).toISOString();
@@ -83,6 +84,14 @@ const names = (blocks) => blocks.map((block) => block.name);
 const keys = (entries) => entries.map((entry) => entry.key);
 
 describe("the blocks the projects face lists", () => {
+  it("maps project.add results to their primary surface", () => {
+    expect(projectRoute({ project_id: "folder-1", is_git: false, base_branch: "trunk" })).toEqual({
+      name: "branch", projectId: "folder-1", branch: "trunk", tab: "files",
+    });
+    expect(projectRoute({ project_id: "repo-1", is_git: true, base_branch: "main" })).toEqual({
+      name: "branch", projectId: "repo-1", branch: "main", tab: "changes",
+    });
+  });
   it("files every row under its project in inbox order, and stands the blocks in the order their first live row holds", () => {
     const { blocks } = projectBlocks({
       projects,
@@ -231,6 +240,21 @@ describe("the blocks the projects face lists", () => {
       tab: "changes",
     });
     expect(blocks.find((block) => block.id === "p2").route).toBeNull();
+  });
+
+  it("opens a plain folder directly in Files even though it has no board row", () => {
+    const { blocks } = projectBlocks({
+      projects: [{ id: "folder-1", name: "notes", is_git: false, base_branch: "main" }],
+      items: [],
+      nowMs: NOW,
+    });
+    expect(blocks[0].route).toEqual({
+      name: "branch",
+      projectId: "folder-1",
+      branch: "main",
+      tab: "files",
+    });
+    expect(projectHeadHtml(blocks[0], {})).not.toContain("data-project-create");
   });
 
   it("counts a block's unread across every row in it", () => {

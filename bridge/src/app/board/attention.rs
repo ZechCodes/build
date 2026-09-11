@@ -628,6 +628,7 @@ impl AppState {
         let project_ids: Vec<String> = self
             .projects
             .iter()
+            .filter(|project| project.is_git)
             .map(|project| project.id.clone())
             .collect();
         if project_ids.iter().any(|project_id| {
@@ -869,7 +870,12 @@ impl AppState {
     /// id is a run's or an issue's. A checkout on a branch IS that branch's
     /// row; one with no branch is only ever itself.
     pub(in crate::app) fn checkout_row(&mut self, worktree_id: &str) -> Option<EntitylessRow> {
-        let project_ids: Vec<String> = self.projects.ids().map(str::to_string).collect();
+        let project_ids: Vec<String> = self
+            .projects
+            .iter()
+            .filter(|project| project.is_git)
+            .map(|project| project.id.clone())
+            .collect();
         for project_id in project_ids {
             let Some(checkout) = self
                 .external_worktrees(&project_id)

@@ -250,6 +250,7 @@ impl AppState {
         let projects: Vec<(String, String, String)> = self
             .projects
             .iter()
+            .filter(|project| project.is_git)
             .map(|p| (p.id.clone(), p.name.clone(), p.base_branch.clone()))
             .collect();
         let mut rows = ExternalWorktreeRows::default();
@@ -328,7 +329,12 @@ impl AppState {
             entry
         };
 
-        let project_ids: Vec<String> = self.projects.ids().map(str::to_string).collect();
+        let project_ids: Vec<String> = self
+            .projects
+            .iter()
+            .filter(|project| project.is_git)
+            .map(|project| project.id.clone())
+            .collect();
         project_ids
             .into_iter()
             .filter_map(|project_id| {
@@ -389,6 +395,19 @@ impl AppState {
         };
         let checkouts = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
+        let projects = self
+            .projects
+            .iter()
+            .map(|project| {
+                json!({
+                    "project_id": project.id,
+                    "name": project.name,
+                    "path": project.repo_path.display().to_string(),
+                    "base_branch": project.base_branch,
+                    "is_git": project.is_git,
+                })
+            })
+            .collect::<Vec<_>>();
         // The inbox is in-flight work the user started in Build, nothing else:
         // a branch Build never cut or adopted (no run behind it, and it is not
         // the project's own primary checkout) earns no row here, ever — not
@@ -412,6 +431,7 @@ impl AppState {
             // §Entity model). The keys below it are the same state told the way
             // the pre-redesign SPA reads it, and keep shipping until it stops.
             "items": items,
+            "projects": projects,
             "issues": plans,
             "plans": plans,
             "runs": runs,

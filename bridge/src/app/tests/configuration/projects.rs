@@ -92,6 +92,128 @@ fn project_add_validates_and_dedupes() {
     );
 }
 
+#[test]
+fn plain_folder_add_does_not_initialize_git_and_can_be_initialized_explicitly() {
+    let (dir, repo) = init_repo();
+    let plain = dir.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    std::fs::write(plain.join("notes.txt"), "keep me\n").unwrap();
+    let mut state = AppState::new(
+        repo,
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+
+    let added = state.handle(req("project.add", json!({"path": plain})));
+    assert_eq!(added["ok"], true, "{added:?}");
+    assert_eq!(added["result"]["is_git"], false);
+    assert!(!plain.join(".git").exists());
+    let project_id = added["result"]["project_id"].as_str().unwrap();
+
+    let initialized = state.handle(req("project.init_git", json!({"project_id": project_id})));
+    assert_eq!(initialized["ok"], true, "{initialized:?}");
+    assert_eq!(initialized["result"]["is_git"], true);
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.txt")).unwrap(),
+        "keep me\n"
+    );
+    let status = std::process::Command::new("git")
+        .args(["-C", plain.to_str().unwrap(), "status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "?? notes.txt\n");
+}
+
+#[test]
+fn plain_folder_persists_and_remains_browsable_after_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_initial_dir, initial_repo) = init_repo();
+    let plain = tmp.path().join("plain");
+    let config = tmp.path().join("config.json");
+    std::fs::create_dir(&plain).unwrap();
+    std::fs::write(plain.join("notes.txt"), "hello\n").unwrap();
+    {
+        let mut state = AppState::new(
+            initial_repo.clone(),
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+        assert_eq!(
+            state.handle(req("project.add", json!({"path": plain})))["ok"],
+            true
+        );
+    }
+
+    let mut state = AppState::new(
+        initial_repo,
+        tmp.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config)
+    .unwrap();
+    let listed = state.handle(req("project.list", json!({})));
+    let project = listed["result"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["path"] == plain.display().to_string())
+        .unwrap();
+    assert_eq!(project["is_git"], false);
+    let tree = state.handle(req("fs.tree", json!({"project_id": project["project_id"]})));
+    assert_eq!(tree["ok"], true, "{tree:?}");
+    assert_eq!(tree["result"]["entries"][0]["name"], "notes.txt");
+    let read = state.handle(req(
+        "fs.read",
+        json!({"project_id": project["project_id"], "path": "notes.txt"}),
+    ));
+    assert_eq!(read["ok"], true, "{read:?}");
+    assert_eq!(read["result"]["content_b64"], "aGVsbG8K");
+    let board = state.handle(req("board.list", json!({})));
+    let board_project = board["result"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["project_id"] == project["project_id"])
+        .unwrap();
+    assert_eq!(board_project["is_git"], false);
+    assert!(board["result"]["primary_changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|summary| summary["project_id"] != project["project_id"]));
+    assert!(!plain.join(".git").exists());
+}
+
+#[test]
+fn adding_subdirectory_of_parent_repo_registers_that_folder_as_plain() {
+    let (dir, repo) = init_repo();
+    let nested = repo.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let mut state = AppState::new(
+        repo,
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+
+    let added = state.handle(req("project.add", json!({"path": nested})));
+    assert_eq!(added["ok"], true, "{added:?}");
+    assert_eq!(added["result"]["is_git"], false);
+    assert_eq!(
+        added["result"]["path"],
+        std::fs::canonicalize(nested).unwrap().display().to_string()
+    );
+}
+
 /// Project rows probe repository config and volume capabilities. Those reads
 /// can be slow, but must neither hold the app mutex nor tear one response.
 #[test]

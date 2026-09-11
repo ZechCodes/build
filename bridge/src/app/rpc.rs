@@ -359,6 +359,7 @@ impl AppState {
             "settings.set" => self.settings_set(params),
             "project.list" => Ok(self.defer_project_list()),
             "project.add" => self.project_add(params),
+            "project.init_git" => self.project_init_git(params),
             "project.create" => self.project_create(params),
             "project.clone" => self.project_clone(params),
             "project.set_remote" => self.project_set_remote(params),

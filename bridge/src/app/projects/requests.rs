@@ -2,7 +2,8 @@ use super::{repo_name_from_url, requested_base_branch, usable_project_name};
 use crate::app::config::accept_isolation;
 use crate::app::{expand_tilde, require_str, AppState};
 use crate::lifecycle::{
-    CloneRepo, CreateRepo, OpenRepo, PendingRow, PendingState, SetRemote, WorktreeMutation,
+    CloneRepo, CreateRepo, InitializeRepo, OpenRepo, PendingRow, PendingState, SetRemote,
+    WorktreeMutation,
 };
 use crate::worktree::git_remote_origin;
 use serde_json::Value;
@@ -23,6 +24,31 @@ impl AppState {
                 path,
             },
             crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
+        )
+    }
+
+    pub(in crate::app) fn project_init_git(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let project = self
+            .projects
+            .get(&project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        if project.is_git {
+            return Err("project is already a git repository".to_string());
+        }
+        let path = project.repo_path.clone();
+        let base_branch = project.base_branch.clone();
+        let title = project.name.clone();
+        self.defer_project(
+            path.clone(),
+            title,
+            PendingState::Updating,
+            InitializeRepo {
+                project_id: project_id.clone(),
+                path,
+                base_branch,
+            },
+            crate::app::runtime::lifecycle::InitializeRepositorySettlement,
         )
     }
 
@@ -131,6 +157,9 @@ impl AppState {
             .iter()
             .find(|project| project.id == project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        if !project.is_git {
+            return Err("project is not a git repository; initialize Git first".to_string());
+        }
         let repo_path = project.repo_path.clone();
         let title = project.name.clone();
         // The repository is the row's identity here as it is for every other

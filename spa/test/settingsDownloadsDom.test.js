@@ -34,6 +34,7 @@ const call = vi.fn(async (method) => {
 vi.mock("../src/app.js", () => ({
   App: { call: (...args) => call(...args) },
   loadModelCatalog: async () => CATALOG,
+  go: vi.fn(),
 }));
 vi.mock("../src/api.js", () => ({
   revokeDevice: async () => {},

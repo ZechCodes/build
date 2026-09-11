@@ -11,7 +11,13 @@ impl AppState {
         let projects: Vec<Value> = self
             .projects
             .iter()
-            .map(|project| self.project_json(project, git_remote_origin(&project.repo_path)))
+            .map(|project| {
+                let remote = project
+                    .is_git
+                    .then(|| git_remote_origin(&project.repo_path))
+                    .flatten();
+                self.project_json(project, remote)
+            })
             .collect();
         json!({ "projects": projects })
     }
@@ -30,6 +36,7 @@ impl AppState {
                 repo_path: project.repo_path.clone(),
                 worktrees_root: self.project_worktrees_root(&project.id),
                 base_branch: project.base_branch.clone(),
+                is_git: project.is_git,
                 isolation: project.isolation,
                 isolation_default: self.isolation,
             })
@@ -60,6 +67,7 @@ impl AppState {
             "name": p.name,
             "path": p.repo_path.display().to_string(),
             "base_branch": p.base_branch,
+            "is_git": p.is_git,
             "remote": remote,
             "isolation": p.isolation,
             "isolation_default": self.isolation,

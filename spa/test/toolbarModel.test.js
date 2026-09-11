@@ -71,6 +71,15 @@ describe("what the toolbar says you are standing in", () => {
   it("names nothing on a route that is not a work item", () => {
     expect(toolbarIdentity({ name: "inbox" }, feed)).toMatchObject({ kind: null, label: "" });
   });
+
+  it("names a plain folder's prospective branch without inventing a board row", () => {
+    const folder = { id: "folder-1", name: "notes", is_git: false, base_branch: "main" };
+    const identity = toolbarIdentity(
+      { name: "branch", projectId: "folder-1", branch: "main", tab: "files" },
+      { items: [], projects: [folder] },
+    );
+    expect(identity).toMatchObject({ projectId: "folder-1", project: "notes", kind: "branch", label: "main", row: null });
+  });
 });
 
 describe("the project selector's menu", () => {

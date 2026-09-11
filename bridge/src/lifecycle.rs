@@ -22,11 +22,11 @@ pub use implementation::{
 };
 pub use outputs::{
     AdoptedImplementation, AdoptionPrepared, CreatedCheckout, DispatchReached, DispatchedCheckout,
-    ImplementationPrepared, JoinedCheckout, OpenedPlanWorkspace, OpenedRepository, RemoteChanged,
-    RestoredCheckout,
+    ImplementationPrepared, InitializedRepository, JoinedCheckout, OpenedPlanWorkspace,
+    OpenedRepository, RemoteChanged, RestoredCheckout,
 };
 pub use planning::OpenPlanWorkspace;
-pub use projects::{CloneRepo, CreateRepo, OpenRepo, SetRemote};
+pub use projects::{CloneRepo, CreateRepo, InitializeRepo, OpenRepo, SetRemote};
 pub(crate) use publication::classify_stage_publication;
 pub use publication::{StagePublicationQuery, StagePublications};
 pub use rows::{PendingRow, PendingState, WorktreeChange};

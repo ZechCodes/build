@@ -11,8 +11,34 @@ use std::path::PathBuf;
 /// created from nothing.
 fn open_repo(path: PathBuf, requested_base: Option<String>) -> Result<OpenedRepository, String> {
     let path = std::fs::canonicalize(&path).unwrap_or(path);
-    let repo =
-        git2::Repository::open(&path).map_err(|error| format!("not a git repository: {error}"))?;
+    if !path.is_dir() {
+        return Err(format!("not a directory: {}", path.display()));
+    }
+    let repo = git2::Repository::open_ext(
+        &path,
+        git2::RepositoryOpenFlags::NO_SEARCH,
+        std::iter::empty::<&std::ffi::OsStr>(),
+    )
+    .ok();
+    if repo.is_none() && path.join(".git").exists() {
+        return Err(format!("invalid git repository: {}", path.display()));
+    }
+    if repo.is_none() {
+        return Ok(OpenedRepository {
+            path,
+            base: requested_base.unwrap_or_else(|| "main".to_string()),
+            remote: None,
+            created_checkout: None,
+            is_git: false,
+        });
+    }
+    let repo = repo.expect("repository was checked above");
+    if repo.is_bare() || repo.workdir() != Some(path.as_path()) {
+        return Err(format!(
+            "repository has no working tree at {}",
+            path.display()
+        ));
+    }
     let base = requested_base
         .or_else(|| git_default_branch(&path))
         .unwrap_or_else(|| "main".to_string());
@@ -23,7 +49,55 @@ fn open_repo(path: PathBuf, requested_base: Option<String>) -> Result<OpenedRepo
         path,
         base,
         created_checkout: None,
+        is_git: true,
     })
+}
+
+/// Explicitly turn a registered folder into a repository without touching its files.
+pub struct InitializeRepo {
+    pub project_id: String,
+    pub path: PathBuf,
+    pub base_branch: String,
+}
+
+impl WorktreeMutation for InitializeRepo {
+    type Output = crate::lifecycle::InitializedRepository;
+
+    fn perform(self) -> Result<Performed<Self::Output>, String> {
+        if self.path.join(".git").exists() {
+            return Err("project is already a git repository".to_string());
+        }
+        let mut options = git2::RepositoryInitOptions::new();
+        options
+            .initial_head(&self.base_branch)
+            .external_template(false);
+        let repo = git2::Repository::init_opts(&self.path, &options)
+            .map_err(|error| format!("git init failed: {error}"))?;
+        let tree_id = repo
+            .treebuilder(None)
+            .and_then(|tree| tree.write())
+            .map_err(|error| format!("cannot create empty git tree: {error}"))?;
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|error| format!("cannot read empty git tree: {error}"))?;
+        let signature = git2::Signature::now("Build", "build@build.ing")
+            .map_err(|error| format!("cannot create git identity: {error}"))?;
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "Initial commit",
+            &tree,
+            &[],
+        )
+        .map_err(|error| format!("cannot create initial git commit: {error}"))?;
+        Ok(Performed {
+            change: WorktreeChange::nothing(),
+            output: crate::lifecycle::InitializedRepository {
+                project_id: self.project_id,
+            },
+        })
+    }
 }
 
 /// One repository's registration, once its directory is on disk. Every project

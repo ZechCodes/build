@@ -66,6 +66,114 @@ describe("the branch surface", () => {
     expect(shouldRetainDirtyFilesPane("changes", { hasUnsavedChanges: () => true })).toBe(false);
   });
 
+  it("browses a plain folder without calling branch or git RPCs", async () => {
+    const { stopFeed } = await import("../src/core/taskFeed.js");
+    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "files" };
+    App.call = vi.fn(async (method) => {
+      if (method === "board.list") return { items: [] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: false, base_branch: "main" }] };
+      if (method === "fs.tree") return { path: "", entries: [{ name: "notes.txt", kind: "file", size: 12 }] };
+      if (method === "fs.read") return { mime: "text/plain", size: 12, editable: true, encoding: "utf-8", revision: "notes-1", content_b64: btoa("folder notes") };
+      throw new Error(`unexpected ${method}`);
+    });
+    await renderBranch();
+    await vi.waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
+    expect(document.querySelector("#tabbody .files")).toBeTruthy();
+    expect(document.querySelector("#tabbody .ffile").textContent).toContain("notes.txt");
+    document.querySelector("#tabbody .ffile").click();
+    await vi.waitFor(() => expect(document.querySelector("#tabbody .fpbody")?.textContent).toContain("folder notes"));
+    expect(App.call.mock.calls.some(([method]) => method === "branch.get" || method.startsWith("git."))).toBe(false);
+    expect(document.querySelector('[data-tab="files"]').classList.contains("active")).toBe(true);
+    stopFeed();
+  });
+
+  it("offers Git initialization in Changes and remounts Git after it succeeds", async () => {
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    let initialized = false;
+    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    App.call = vi.fn(async (method) => {
+      if (method === "board.list") return { items: initialized ? [{ ...row, branch: "main", primary: true, worktree_id: null }] : [] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized, base_branch: "main" }] };
+      if (method === "project.init_git") {
+        initialized = true;
+        return { project_id: "p1", name: "notes", is_git: true, base_branch: "main" };
+      }
+      if (method === "branch.get") return { ...row, branch: "main", primary: true, worktree_id: null };
+      if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
+      if (method === "git.log") return { commits: [] };
+      return {};
+    });
+    await refreshFeed();
+    await renderBranch();
+    await flush();
+    expect(document.querySelector("#init-git")).toBeTruthy();
+    expect(App.call.mock.calls.some(([method]) => method.startsWith("git."))).toBe(false);
+
+    document.querySelector("#init-git").click();
+    await flush();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
+    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+    stopFeed();
+  });
+
+  it("shows initialization failures and leaves a retry enabled", async () => {
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    App.call = vi.fn(async (method) => {
+      if (method === "board.list") return { items: [] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: false }] };
+      if (method === "project.init_git") throw new Error("disk is read-only");
+      return {};
+    });
+    await refreshFeed();
+    await renderBranch();
+    document.querySelector("#init-git").click();
+    await flush();
+    const status = document.querySelector('[role="status"]');
+    expect(status.textContent).toContain("disk is read-only");
+    expect(document.querySelector("#init-git").disabled).toBe(false);
+    stopFeed();
+  });
+
+  it("does not mount after navigation while project metadata is loading", async () => {
+    let answerProjects;
+    App.call = vi.fn((method) => {
+      if (method === "project.list") return new Promise((resolve) => { answerProjects = resolve; });
+      return Promise.resolve({});
+    });
+    const mounting = renderBranch();
+    await flush();
+    App.viewDispose();
+    document.querySelector("#tabbody").innerHTML = '<div id="next-view">next</div>';
+    answerProjects({ projects: [{ project_id: "p1", is_git: false }] });
+    await mounting;
+    expect(document.querySelector("#next-view")).toBeTruthy();
+  });
+
+  it("detects Git initialized by another client and replaces the folder prompt", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    let initialized = false;
+    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    App.call = vi.fn(async (method) => {
+      if (method === "board.list") return { items: [] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized }] };
+      if (method === "branch.get") return { ...row, branch: "main", primary: true, worktree_id: null };
+      if (method === "git.status") return { files: [], head: "abc" };
+      if (method === "git.log") return { commits: [] };
+      return {};
+    });
+    await refreshFeed();
+    await renderBranch();
+    expect(document.querySelector("#init-git")).toBeTruthy();
+    initialized = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+    stopFeed();
+    vi.useRealTimers();
+  });
+
   // The reviewer's complaint: switching branches showed a bare loading frame
   // for the length of a round trip. The feed row stands the surface up first.
   it("stands the surface up from the feed row before the first read answers", async () => {

@@ -676,8 +676,8 @@ fn git_branches_refuses_a_project_whose_repository_cannot_be_read() {
         res["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("could not find repository"),
-        "git's own refusal reaches the caller: {res:?}"
+            .contains("initialize Git first"),
+        "plain folders explain how to enable Git operations: {res:?}"
     );
 }
 

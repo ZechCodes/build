@@ -351,6 +351,7 @@ impl ProjectAdded {
                 base,
                 remote,
                 created_checkout,
+                is_git: true,
             }),
         )
     }

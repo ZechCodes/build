@@ -23,6 +23,7 @@ pub(in crate::app) struct Project {
     pub(in crate::app) name: String,
     pub(in crate::app) repo_path: std::path::PathBuf,
     pub(in crate::app) base_branch: String,
+    pub(in crate::app) is_git: bool,
     pub(in crate::app) orch: Orchestrator,
     /// Which isolation this project's new checkouts are made with, when the
     /// account's answer is not the one wanted here. `None` inherits it.
@@ -127,7 +128,8 @@ impl AppState {
         if let Some(existing) = self.projects.find_by_canonical_path(&repo_path) {
             return existing.id.clone();
         }
-        let project = self.project_candidate(repo_path, base_branch);
+        let is_git = repo_path.join(".git").exists();
+        let project = self.project_candidate(repo_path, base_branch, is_git);
         self.insert_project(project)
     }
 
@@ -135,6 +137,7 @@ impl AppState {
         &self,
         repo_path: std::path::PathBuf,
         base_branch: String,
+        is_git: bool,
     ) -> ProjectCandidate {
         let worktrees_root = self.worktrees_root.clone();
         let agent = self.agent.clone();
@@ -159,6 +162,7 @@ impl AppState {
                     name,
                     repo_path: repo_path.to_path_buf(),
                     base_branch: base_branch.to_string(),
+                    is_git,
                     orch,
                     isolation: None,
                 }
@@ -166,8 +170,11 @@ impl AppState {
     }
 
     fn insert_project(&mut self, project: ProjectCandidate) -> String {
+        let is_git = project.project().is_git;
         let id = self.projects.publish(project).into_string();
-        self.board.diff_mut().register_project(id.clone());
+        if is_git {
+            self.board.diff_mut().register_project(id.clone());
+        }
         // A project is a section of the feed; registering one adds every row
         // its checkouts stand behind.
         self.note_board_changed();
@@ -222,7 +229,11 @@ impl AppState {
 
     /// The orchestrator for a project id.
     pub(in crate::app) fn orch_for(&self, project_id: &str) -> Result<&Orchestrator, String> {
-        Ok(&self.project_for(project_id)?.orch)
+        let project = self.project_for(project_id)?;
+        if !project.is_git {
+            return Err("project is not a git repository; initialize Git first".to_string());
+        }
+        Ok(&project.orch)
     }
 
     /// The base branch configured for a project id.

@@ -27,15 +27,16 @@
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
 import { entryRoute, inboxEntries } from "./inbox.js";
+import { projectRoute } from "./projectModel.js";
 
 /** The blocks' identity and names: the device's projects in its order, plus
  *  one for any project a row names that the device has not listed — the row
  *  is still work, and it is still somewhere. */
 function projectsNamed(projects, items) {
-  const named = new Map(projects.map((project) => [project.id, project.name || project.id]));
+  const named = new Map(projects.map((project) => [project.id, project]));
   for (const item of items) {
     if (!item.project_id || named.has(item.project_id)) continue;
-    named.set(item.project_id, item.project || item.project_id);
+    named.set(item.project_id, { id: item.project_id, name: item.project || item.project_id });
   }
   return named;
 }
@@ -75,18 +76,23 @@ export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } 
   const liveRank = firstRank(inbox.entries);
   const quietRank = firstRank(inbox.recent);
   const under = (entries, id) => entries.filter((entry) => entry.projectId === id);
-  const blocks = [...projectsNamed(projects, items)].map(([id, name]) => {
+  const blocks = [...projectsNamed(projects, items)].map(([id, project]) => {
     const entries = under(inbox.entries, id);
     const recent = under(inbox.recent, id);
     const primary = items.find((row) => row.kind === "branch" && row.primary && row.project_id === id);
     const block = {
       key: `project:${id}`,
       id,
-      name,
+      name: project.name || id,
+      isGit: project.is_git !== false,
       entries,
       recent,
       flat: entries.length === 0,
-      route: primary ? entryRoute(primary) : null,
+      route: primary
+        ? entryRoute(primary)
+        : project.is_git === false
+          ? projectRoute(project)
+          : null,
       unreadCount: [...entries, ...recent].reduce((total, entry) => total + entry.unreadCount, 0),
     };
     return { ...block, rank: rankOf(block, liveRank, quietRank) };
@@ -116,11 +122,14 @@ export function projectHeadHtml(block, ui = {}) {
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
   const title = block.route ? `Open ${block.name}'s checkout` : `${block.name} has no checkout to open`;
+  const create = block.isGit
+    ? `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.id)}" title="New branch or issue in ${esc(block.name)}" aria-label="New branch or issue in ${esc(block.name)}">${ICON_PLUS}</button>`
+    : "";
   return `<div class="inbox-project-head">
     <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
     <button class="${nameClasses}" type="button" data-project-open="${esc(block.id)}" title="${esc(title)}">${esc(block.name)}</button>
     ${unread}
-    <button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.id)}" title="New branch or issue in ${esc(block.name)}" aria-label="New branch or issue in ${esc(block.name)}">${ICON_PLUS}</button>
+    ${create}
   </div>`;
 }
 

@@ -122,8 +122,15 @@ impl AppState {
             .projects
             .iter()
             .find(|p| p.id == project_id)
-            .map(|project| project.repo_path.clone())
+            .map(|project| {
+                if project.is_git {
+                    Ok(project.repo_path.clone())
+                } else {
+                    Err("project is not a git repository; initialize Git first".to_string())
+                }
+            })
             .ok_or_else(|| "unknown project_id".to_string())?;
+        let repo_path = repo_path?;
         Ok(self.defer_read(
             ReadSubject::Project {
                 project_id,
@@ -191,6 +198,9 @@ impl AppState {
                     .iter()
                     .find(|p| p.id == project_id)
                     .ok_or_else(|| "unknown project_id".to_string())?;
+                if !project.is_git {
+                    return Err("project is not a git repository; initialize Git first".to_string());
+                }
                 Ok(GitScope {
                     repo_path: project.repo_path.clone(),
                     project_id: Some(project.id.clone()),

@@ -3,7 +3,8 @@ use super::runner::LifecycleSettlement;
 use crate::app::AppState;
 use crate::lifecycle::{
     AdoptedImplementation, AdoptionPrepared, CreatedCheckout, DispatchReached,
-    ImplementationPrepared, OpenedRepository, RemoteChanged, RestoredCheckout, StagePublications,
+    ImplementationPrepared, InitializedRepository, OpenedRepository, RemoteChanged,
+    RestoredCheckout, StagePublications,
 };
 use crate::models::ModelChoice;
 use crate::orchestrator::ActiveRun;
@@ -256,6 +257,29 @@ impl LifecycleSettlement<OpenedRepository> for ProjectRegistrationSettlement {
         result: Result<OpenedRepository, String>,
     ) -> Result<Value, String> {
         state.register_opened_repository(result?)
+    }
+}
+pub struct InitializeRepositorySettlement;
+impl LifecycleSettlement<InitializedRepository> for InitializeRepositorySettlement {
+    fn settle(
+        self,
+        state: &mut AppState,
+        result: Result<InitializedRepository, String>,
+    ) -> Result<Value, String> {
+        let initialized = result?;
+        if !state.projects.mark_git(&initialized.project_id) {
+            return Err(format!("unknown project: {}", initialized.project_id));
+        }
+        state
+            .board
+            .diff_mut()
+            .register_project(initialized.project_id.clone());
+        state.persist();
+        let project = state
+            .projects
+            .get(&initialized.project_id)
+            .expect("project was just marked");
+        Ok(state.project_json(project, None))
     }
 }
 pub struct SetRemoteSettlement {

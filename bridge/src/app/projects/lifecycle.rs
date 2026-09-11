@@ -31,7 +31,7 @@ impl AppState {
         if let Some(existing) = self.projects.find_by_canonical_path(&opened.path) {
             return Ok(self.project_json(existing, opened.remote));
         }
-        let project = self.project_candidate(opened.path, opened.base);
+        let project = self.project_candidate(opened.path, opened.base, opened.is_git);
         let config = self.config_value_with_project(
             &self.projects_dir,
             self.default_harness,

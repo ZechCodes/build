@@ -300,6 +300,7 @@ pub(in crate::app) struct ProjectListRow {
     pub(in crate::app) repo_path: std::path::PathBuf,
     pub(in crate::app) worktrees_root: std::path::PathBuf,
     pub(in crate::app) base_branch: String,
+    pub(in crate::app) is_git: bool,
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) isolation_default: Isolation,
 }
@@ -318,7 +319,8 @@ impl ProjectListRow {
             "name": self.name,
             "path": self.repo_path.display().to_string(),
             "base_branch": self.base_branch,
-            "remote": git_remote_origin(&self.repo_path),
+            "is_git": self.is_git,
+            "remote": self.is_git.then(|| git_remote_origin(&self.repo_path)).flatten(),
             "isolation": self.isolation,
             "isolation_default": self.isolation_default,
             "isolation_effective": effective,

@@ -1,61 +1,104 @@
-// Create a brand-new git repo: browse to a location, name it, optionally set a
-// remote. `pre` carries field values across the Browse round-trip.
-
+// One entry point for adding a project: open an existing folder, or create a
+// repository in this device's configured projects directory.
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { openBrowser } from "./browser.js";
 
-export function openNewRepo(onDone, pre = {}) {
-  $("#sheet").innerHTML = `
-    <h3>New repository</h3>
-    <div class="sub">Build creates a git repo at the chosen location and registers it.</div>
-    <div class="field"><label>Location</label>
-      <div class="locrow"><input id="nrloc" style="flex:1" placeholder="(projects folder)" value="${esc(pre.location || "")}" readonly />
-        <button class="btn" id="nrbrowse" type="button">Browse…</button></div></div>
-    <div class="field"><label>Name</label><input id="nrname" placeholder="my-new-project" style="width:100%" value="${esc(pre.name || "")}" /></div>
-    <div class="field"><label>Base branch</label><input id="nrbranch" placeholder="main" style="width:100%" value="${esc(pre.base_branch || "")}" /></div>
-    <div class="field"><label>Remote URL (optional)</label><input id="nrremote" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(pre.remote || "")}" /></div>
-    <div class="row"><button class="btn" id="nrcancel" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo">Create</button></div>
-    <div class="adderr" id="nrerr"></div>`;
-  $("#scrim").classList.add("show");
-  $("#nrname").focus();
-  const fields = () => ({
-    location: $("#nrloc").value,
-    name: $("#nrname").value,
-    base_branch: $("#nrbranch").value,
-    remote: $("#nrremote").value,
-  });
-  $("#nrcancel").onclick = () => $("#scrim").classList.remove("show");
-  $("#nrbrowse").onclick = () => {
-    const current = fields();
-    openBrowser({
-      title: "Choose where to create the repo",
-      gitOnly: false,
-      onChoose: (path) => openNewRepo(onDone, { ...current, location: path }),
-      onCancel: () => openNewRepo(onDone, current),
-    });
-  };
-  $("#nrdo").onclick = async () => {
-    const name = $("#nrname").value.trim();
-    if (!name) {
-      $("#nrerr").textContent = "Enter a name first.";
-      return;
+export function openNewRepo(onDone) {
+  const sheet = $("#sheet");
+  const scrim = $("#scrim");
+  const session = App.session;
+  const call = App.call;
+  let active = true;
+  let busy = false;
+  const draft = { name: "", remote: "" };
+  const visible = (node) => active && node.isConnected && scrim.classList.contains("show");
+  const close = () => { active = false; scrim.classList.remove("show"); };
+  const callRpc = (method, params) => {
+    if (!active || App.session !== session || App.call !== call) {
+      return Promise.reject(new Error("The active device changed. Reopen Add project on the device you want."));
     }
-    const parent = $("#nrloc").value.trim() || undefined;
-    const base_branch = $("#nrbranch").value.trim() || undefined;
-    const remote = $("#nrremote").value.trim() || undefined;
-    $("#nrdo").disabled = true;
-    $("#nrdo").textContent = "creating…";
-    $("#nrerr").textContent = "";
+    return call(method, params);
+  };
+  const submit = async (method, params, errorElement, button) => {
+    if (busy) return;
+    busy = true;
+    const anchor = sheet.firstElementChild;
+    if (button) button.disabled = true;
+    errorElement.textContent = "";
     try {
-      await App.call("project.create", { name, parent, base_branch, remote });
-      $("#scrim").classList.remove("show");
-      onDone && onDone();
-    } catch (e) {
-      $("#nrerr").textContent = e.message;
-      $("#nrdo").disabled = false;
-      $("#nrdo").textContent = "Create";
+      const project = await callRpc(method, params);
+      if (!visible(anchor) || App.session !== session) return;
+      close();
+      onDone?.(project);
+    } catch (error) {
+      if (visible(anchor)) errorElement.textContent = error.message;
+    } finally {
+      busy = false;
+      if (button?.isConnected) button.disabled = false;
     }
   };
+  const chooseExisting = async () => {
+    const anchor = sheet.firstElementChild;
+    const button = $("#nrexisting");
+    button.disabled = true;
+    try {
+      const { projects_dir } = await callRpc("settings.get");
+      if (!visible(anchor)) return;
+      if (!projects_dir) throw new Error("This device did not return a projects folder.");
+      await openBrowser({
+        title: "Use an existing project folder",
+        gitOnly: false,
+        startPath: projects_dir,
+        callRpc,
+        onCancel: paintChoices,
+        onChoose: (path) => submit("project.add", { path }, $("#berr") || $("#nrerr"), $("#choosecur")),
+      });
+    } catch (error) {
+      if (visible(anchor)) $("#nrerr").textContent = error.message;
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  };
+  function paintChoices() {
+    sheet.innerHTML = `
+      <h3>Add project</h3>
+      <p class="sub">Use a folder on this device, or create a project in its configured projects folder.</p>
+      <div class="row"><button class="btn" id="nrexisting" type="button">Use existing folder…</button>
+      <button class="btn primary" id="nrnew" type="button">Create new project</button></div>
+      <div class="row"><button class="btn" id="nrcancel" type="button">Cancel</button></div>
+      <div class="adderr" id="nrerr" role="status"></div>`;
+    $("#nrexisting").onclick = chooseExisting;
+    $("#nrnew").onclick = paintCreate;
+    $("#nrcancel").onclick = close;
+  }
+  function paintCreate() {
+    sheet.innerHTML = `
+      <h3>Create new project</h3>
+      <p class="sub">The project will be created in this device's configured projects folder.</p>
+      <form id="nrform">
+        <div class="field"><label for="nrname">Name</label><input id="nrname" required placeholder="my-project" style="width:100%" value="${esc(draft.name)}" /></div>
+        <div class="field"><label for="nrremote">Git remote (optional)</label><input id="nrremote" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(draft.remote)}" /></div>
+        <div class="row"><button class="btn" id="nrback" type="button">Back</button>
+        <button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button>
+        <button class="btn primary" id="nrdo" type="submit">Create project</button></div>
+        <div class="adderr" id="nrerr" role="status"></div>
+      </form>`;
+    $("#nrcancel").onclick = close;
+    const remember = () => { draft.name = $("#nrname").value; draft.remote = $("#nrremote").value; };
+    $("#nrback").onclick = () => { remember(); paintChoices(); };
+    $("#nrform").onsubmit = (event) => {
+      event.preventDefault();
+      remember();
+      const name = draft.name.trim();
+      if (!name) { $("#nrerr").textContent = "Enter a name first."; return; }
+      const params = { name };
+      if (draft.remote.trim()) params.remote = draft.remote.trim();
+      void submit("project.create", params, $("#nrerr"), $("#nrdo"));
+    };
+    $("#nrname").focus();
+  }
+  scrim.classList.add("show");
+  paintChoices();
 }

@@ -34,6 +34,7 @@ import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
 import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
 import { patchList } from "./patchList.js";
+import { projectRoute } from "./projectModel.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
@@ -280,9 +281,13 @@ function onMenuClick(event) {
   }
   const project = event.target.closest("[data-project]");
   if (project) {
-    // There is no project page to go to: picking a project scopes the toolbar
-    // and hands you its work, which is what you came for.
+    const selected = projectsOf().find((candidate) => candidate.id === project.dataset.project);
     rememberScope(project.dataset.project);
+    if (selected?.is_git === false) {
+      closeMenu();
+      go(projectRoute(selected));
+      return;
+    }
     showList("work");
     return;
   }
@@ -361,6 +366,15 @@ function workMenuEntries() {
  *  two creates at its foot. */
 function workMenuShellHtml() {
   const scopedName = projectNameOf(scopeProjectId()) || "This project";
+  const project = projectsOf().find((candidate) => candidate.id === scopeProjectId());
+  const create = project && project.is_git === false
+    ? ""
+    : `<div class="tbmenu-foot">
+      <button class="mi" data-create="branch" type="button" role="menuitem"><span class="mt">New branch…</span>
+        <span class="md">A checkout of its own, in ${esc(scopedName)}</span></button>
+      <button class="mi" data-create="issue" type="button" role="menuitem"><span class="mt">New issue…</span>
+        <span class="md">Nothing runs until your first message</span></button>
+    </div>`;
   return `
     <input class="tb-filter" type="text" placeholder="Jump to a branch or issue" value="${esc(open.query)}"
       aria-label="Filter branches and issues" autocomplete="off" />
@@ -369,12 +383,7 @@ function workMenuShellHtml() {
       <button class="tb-scope-switch" data-projects type="button">Projects</button>
     </div>
     <div class="tbmenu-list"></div>
-    <div class="tbmenu-foot">
-      <button class="mi" data-create="branch" type="button" role="menuitem"><span class="mt">New branch…</span>
-        <span class="md">A checkout of its own, in ${esc(scopedName)}</span></button>
-      <button class="mi" data-create="issue" type="button" role="menuitem"><span class="mt">New issue…</span>
-        <span class="md">Nothing runs until your first message</span></button>
-    </div>`;
+    ${create}`;
 }
 
 // ---- the ⋯ -------------------------------------------------------------------

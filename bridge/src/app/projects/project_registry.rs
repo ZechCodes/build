@@ -83,6 +83,18 @@ impl ProjectRegistry {
         true
     }
 
+    pub(in crate::app) fn mark_git(&mut self, project_id: &str) -> bool {
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            return false;
+        };
+        project.is_git = true;
+        true
+    }
+
     pub(in crate::app) fn find_by_canonical_path(&self, path: &Path) -> Option<&Project> {
         self.projects
             .iter()
@@ -103,6 +115,7 @@ impl ProjectRegistry {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn ids(&self) -> impl Iterator<Item = &str> {
         self.projects.iter().map(|project| project.id.as_str())
     }

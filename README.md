@@ -71,6 +71,19 @@ new repositories and clones; existing repositories and task worktrees stay
 where they are. `BRIDGE_PROJECTS_DIR` supplies the initial default when no
 projects folder has been saved in the bridge configuration.
 
+## Adding projects
+
+**Add project** offers two choices. **Use existing folder** starts the directory
+browser in the selected device's configured projects folder and opens the folder
+you choose. A folder without Git opens in **Files**; it stays an ordinary folder
+until you select **Initialize Git** on **Changes**. Initializing Git leaves your
+existing files untracked so you can review them before committing.
+
+**Create new project** asks for a name and an optional Git remote. Build creates
+the repository inside the configured projects folder using `main` as its initial
+branch. The optional remote is configured as `origin`; creation does not clone
+or push it.
+
 ## Develop
 
 ```bash

@@ -90,10 +90,63 @@ export function shouldRetainDirtyFilesPane(tab, pane) {
 
 const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
 
+function seedBranchState(projectId, branch) {
+  let snapshot = null;
+  const unsubscribe = subscribeFeed((feed) => {
+    snapshot = feed;
+  });
+  unsubscribe();
+  if (!snapshot) return { row: null, defaultTab: "changes" };
+  const seeded = (snapshot.items || []).find(
+    (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
+  );
+  if (seeded) return { row: seeded, defaultTab: "changes" };
+  const project = (snapshot.projects || []).find((candidate) => candidate.id === projectId);
+  if (!project || project.is_git !== false) return { row: null, defaultTab: "changes" };
+  return {
+    row: { kind: "branch", project_id: projectId, project: project.name, branch, primary: true, is_git: false },
+    defaultTab: "files",
+  };
+}
+
+async function loadPlainBranch(callRpc, projectId, branch) {
+  try {
+    const listed = await callRpc("project.list");
+    const project = (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId);
+    if (!project || project.is_git !== false) return null;
+    return { kind: "branch", project_id: projectId, project: project.name, branch, primary: true, is_git: false };
+  } catch {
+    return null;
+  }
+}
+
+async function projectGitState(callRpc, projectId) {
+  try {
+    const listed = await callRpc("project.list");
+    const project = (listed.projects || []).find((candidate) => (candidate.project_id || candidate.id) === projectId);
+    return project ? project.is_git !== false : null;
+  } catch {
+    return null;
+  }
+}
+
+async function initialBranchState(callRpc, projectId, branch, requestedTab) {
+  const seeded = seedBranchState(projectId, branch);
+  const row = seeded.row || (await loadPlainBranch(callRpc, projectId, branch));
+  const defaultTab = row?.is_git === false ? "files" : seeded.defaultTab;
+  return { row, tab: requestedTab || defaultTab };
+}
+
+function mountPlainChanges(host, onInitialize) {
+  App.routeLeaveGuard = null;
+  host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host"><div class="railtabs"></div></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
+  host.querySelector("#init-git").onclick = onInitialize;
+}
+
 export async function renderBranch() {
   const root = $("#root");
   const { projectId, branch } = App.route;
-  const tab = App.route.tab || "changes";
+  let tab = App.route.tab || "changes";
   // Consumed once: only the navigation the toolbar's create form just fired
   // means it, and a later revisit to this same branch must not keep stealing
   // focus back to the composer.
@@ -146,7 +199,7 @@ export async function renderBranch() {
   };
   // The basement, at the bottom of the view column: this branch's checkout, as
   // terminals. Shut unless the last visit left it open.
-  const consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
+  let consolePanel = null;
   // The agents beside the work, not instead of it: the rail belongs to this
   // branch, so it is mounted with the surface and torn down with it. Which
   // bubble is open is the whole surface's business — the row this view reads
@@ -172,14 +225,19 @@ export async function renderBranch() {
   const adopterFor = createAdopters(callRpc);
   const adoptingHere = () => adopterFor(branchScope(row, projectId));
 
-  const rail = mountAgentRail($("#agent-rail"), {
-    kind: "branch",
-    projectId,
-    branch,
-    selection: agentSelection,
-    adopting: adoptingHere,
-    autofocusComposer,
-  });
+  let rail = null;
+  const ensureBranchChrome = () => {
+    if (!consolePanel) consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
+    if (!rail)
+      rail = mountAgentRail($("#agent-rail"), {
+        kind: "branch",
+        projectId,
+        branch,
+        selection: agentSelection,
+        adopting: adoptingHere,
+        autofocusComposer,
+      });
+  };
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
@@ -317,28 +375,7 @@ export async function renderBranch() {
     };
   };
 
-  /** Mount the open tab's body over the resolved row. Idempotent per
-   *  (tab, backing): polls repaint nothing — the panes own their own polls —
-   *  so only a change of backing (adoption, worktree pruned) remounts. */
-  const mountBody = () => {
-    const host = $("#tabbody");
-    if (!host) return;
-    const scope = branchScope(row, projectId);
-    const key = paneKey(tab, scope);
-    if (key === mountedKey) return;
-    // Adoption can change the backing key under this same Files surface. Keep
-    // its live editor mounted until the draft is saved or explicitly left;
-    // polling must never turn a background ownership update into data loss.
-    if (shouldRetainDirtyFilesPane(tab, pane)) {
-      pane.retargetScope(scope);
-      mountedKey = key;
-      return;
-    }
-    if (pane) {
-      pane.dispose();
-      pane = null;
-    }
-    mountedKey = key;
+  const mountFreshBody = (host, scope) => {
     if (!scope) {
       host.innerHTML = `<div class="empty">No checkout on this device carries <span class="mono">${esc(branch)}</span>.</div>`;
       return;
@@ -354,6 +391,29 @@ export async function renderBranch() {
         onFileOpen: (path) => markRoute({ name: "branch", projectId, branch, tab: "files", file: path }),
       });
       App.routeLeaveGuard = pane.canLeave;
+      ensureTabsPainted();
+      return;
+    }
+    if (row && row.is_git === false) {
+      mountPlainChanges(host, async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          await callRpc("project.init_git", { project_id: projectId });
+          if (disposed) return;
+          await refreshFeed();
+          if (disposed) return;
+          row = null;
+          mountedKey = null;
+          await refresh(true);
+          if (disposed) return;
+          ensureBranchChrome();
+        } catch (error) {
+          if (disposed) return;
+          button.disabled = false;
+          host.querySelector("#init-git-status").textContent = error.message || String(error);
+        }
+      });
       ensureTabsPainted();
       return;
     }
@@ -376,10 +436,33 @@ export async function renderBranch() {
     ensureTabsPainted();
   };
 
+  /** Mount the open tab's body over the resolved row. Idempotent per
+   *  (tab, backing): polls repaint nothing — the panes own their own polls —
+   *  so only a change of backing (adoption, worktree pruned) remounts. */
+  const mountBody = () => {
+    const host = $("#tabbody");
+    if (!host) return;
+    const scope = branchScope(row, projectId);
+    const key = paneKey(tab, scope);
+    if (key === mountedKey) return;
+    // Adoption can change the backing key under this same Files surface. Keep
+    // its live editor mounted until the draft is saved or explicitly left;
+    // polling must never turn a background ownership update into data loss.
+    if (shouldRetainDirtyFilesPane(tab, pane)) {
+      pane.retargetScope(scope);
+      mountedKey = key;
+      return;
+    }
+    pane?.dispose();
+    pane = null;
+    mountedKey = key;
+    mountFreshBody(host, scope);
+  };
+
   /** One read of the branch row. `force` remounts even when the backing is
    *  unchanged (an adoption just happened underneath the plug). */
   // eslint-disable-next-line complexity -- ratchet: this callback is at 12, cap 10 — reduce it, then drop this line
-  const refresh = async (force = false) => {
+  const refreshGit = async (force = false) => {
     let payload;
     try {
       payload = await callRpc("branch.get", {
@@ -411,6 +494,22 @@ export async function renderBranch() {
     if (force || runAppeared) mountedKey = null;
     mountBody();
     paintFinish();
+    ensureBranchChrome();
+  };
+
+  const refresh = async (force = false) => {
+    if (row && row.is_git === false) {
+      const gitState = await projectGitState(callRpc, projectId);
+      if (disposed) return;
+      if (gitState !== true) {
+        if (force) mountedKey = null;
+        mountBody();
+        return;
+      }
+      row = null;
+      mountedKey = null;
+    }
+    await refreshGit(force);
   };
 
   let watcher = null;
@@ -426,8 +525,8 @@ export async function renderBranch() {
     clearToolbarVerb(paintFinish);
     if (pane) pane.dispose();
     pane = null;
-    rail.dispose();
-    consolePanel.dispose();
+    rail?.dispose();
+    consolePanel?.dispose();
   };
   // The feed already carries this branch's row — ids, scope, agents — and the
   // cached snapshot replays synchronously at subscribe. Standing the tabs and
@@ -435,19 +534,17 @@ export async function renderBranch() {
   // then fills from its own caches) instead of a bare loading frame for the
   // length of a round trip; the first live read reconciles.
   if (!row) {
-    let seeded = null;
-    const unsubscribe = subscribeFeed((feed) => {
-      seeded =
-        (feed.items || []).find(
-          (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
-        ) || null;
-    });
-    unsubscribe();
-    if (seeded) {
-      row = seeded;
+    const initial = await initialBranchState(callRpc, projectId, branch, App.route.tab);
+    if (disposed) return;
+    row = initial.row;
+    tab = initial.tab;
+    if (row) {
       mountBody();
       paintFinish();
     }
+  }
+  if (!row || row.is_git !== false) {
+    ensureBranchChrome();
   }
   await refresh();
   // The first read can outlive the view: a navigation mid-flight has already

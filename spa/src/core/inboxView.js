@@ -43,6 +43,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
+import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
@@ -422,7 +423,11 @@ function projectClicked(target) {
     return true;
   }
   if (target.closest("[data-new-project]")) {
-    openNewRepo(() => refreshFeed());
+    openNewRepo((project) => {
+      const route = projectRoute(project);
+      if (route) goFromInbox(route);
+      refreshFeed();
+    });
     return true;
   }
   return false;

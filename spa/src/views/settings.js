@@ -3,7 +3,8 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { App } from "../app.js";
+import { App, go } from "../app.js";
+import { projectRoute } from "../core/projectModel.js";
 import { refreshDevices } from "../devices.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -11,7 +12,6 @@ import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openBrowser } from "../sheets/browser.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
-import { openClone } from "../sheets/clone.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
@@ -39,17 +39,11 @@ export async function renderSettings() {
       <h3>📁 Projects</h3>
       <div id="projlist"><span class="dim" style="font-size:13px">loading…</span></div>
       <div class="addproj">
-        <button class="btn primary" id="newrepo">New repo…</button>
-        <button class="btn" id="browseadd">Browse for a repo…</button>
-        <button class="btn" id="cloneadd">Clone from URL…</button>
+        <button class="btn primary" id="newrepo">Add project…</button>
       </div>
       <div class="projfolder">Projects folder: <code id="pdir">…</code>
         <button class="btn mini" id="changedir">Change…</button>
         <span class="dim">clones land here</span></div>
-      <details class="manualadd"><summary>or enter a path manually</summary>
-        <div class="addproj"><input id="projpath" class="path" placeholder="~/code/your-repo" />
-          <input id="projbranch" placeholder="auto" style="max-width:90px" />
-          <button class="btn" id="addproj">Add</button></div></details>
       <div class="adderr" id="adderr"></div>
     </div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -109,9 +103,9 @@ export async function renderSettings() {
           .map(
             (p) => `
         <div class="projrow"><span class="pname">${esc(p.name)}</span>
-          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${esc(p.base_branch)} · ${isolationLabel(p.isolation_effective)}</span>
+          <span class="ppath">${esc(p.path)}</span><span class="dim" style="font-size:11.5px">${p.is_git === false ? "Folder · Git not initialized" : esc(p.base_branch) + " · " + isolationLabel(p.isolation_effective)}</span>
           <span class="premote">${p.remote ? "⇄ " + esc(p.remote) : '<span class="dim">no remote</span>'}</span>
-          <button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button></div>`,
+          ${p.is_git === false ? "" : `<button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button>`}</div>`,
           )
           .join("") || '<div class="dim" style="font-size:13px">No projects yet.</div>';
       const { projects_dir } = await App.call("settings.get");
@@ -151,7 +145,10 @@ export async function renderSettings() {
   await mountTriageSetting($("#root"), { callRpc });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
-  $("#newrepo").onclick = () => openNewRepo(refresh);
+  $("#newrepo").onclick = () => openNewRepo(async (project) => {
+    if (project?.project_id) go(projectRoute(project));
+    else await refresh();
+  });
 
   // The agent defaults panel: the same three selectors the New issue sheet hides
   // behind its harness button, saved on every change (there is no Save button —
@@ -196,24 +193,6 @@ export async function renderSettings() {
     $("#defeffort").onchange = () => store({ ...current, effort: $("#defeffort").value }, "Saved.");
   }
 
-  // Browse the host filesystem and add the chosen git repo — no typing.
-  $("#browseadd").onclick = () =>
-    openBrowser({
-      title: "Browse for a git repo",
-      gitOnly: true,
-      onChoose: async (path) => {
-        try {
-          await App.call("project.add", { path });
-          $("#scrim").classList.remove("show");
-          await refresh();
-        } catch (e) {
-          const err = $("#berr");
-          if (err) err.textContent = e.message;
-        }
-      },
-    });
-  // Clone a remote into the projects folder.
-  $("#cloneadd").onclick = () => openClone(refresh);
   // Pick a different projects folder (any directory).
   $("#changedir").onclick = () =>
     openBrowser({
@@ -230,23 +209,6 @@ export async function renderSettings() {
         }
       },
     });
-  $("#addproj").onclick = async () => {
-    const path = $("#projpath").value.trim();
-    if (!path) return;
-    const base_branch = $("#projbranch").value.trim() || undefined;
-    $("#addproj").disabled = true;
-    $("#adderr").textContent = "";
-    try {
-      await App.call("project.add", { path, base_branch });
-      $("#projpath").value = "";
-      $("#projbranch").value = "";
-      await refresh();
-    } catch (e) {
-      $("#adderr").textContent = e.message;
-    }
-    $("#addproj").disabled = false;
-  };
-
   // Notifications: a single toggle backed by the browser's push subscription.
   const refreshPushToggle = async () => {
     const toggle = $("#pushtoggle");

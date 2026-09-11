@@ -124,6 +124,24 @@ describe("the sentence the toolbar prints", () => {
 });
 
 describe("the two menus, one per half", () => {
+  it("offers no branch or issue creation for a plain folder", async () => {
+    feed = { items: [], projects: [{ id: "p1", name: "notes", is_git: false }] };
+    await refreshFeed();
+    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "files" };
+    toolbarRouteChanged();
+    expect(openJump("item").querySelectorAll("[data-create]")).toHaveLength(0);
+    feed = savedFeed;
+    await refreshFeed();
+  });
+
+  it("opens Files when a plain folder is picked from the project menu", async () => {
+    feed = { items: [], projects: [{ id: "p1", name: "notes", is_git: false, base_branch: "main" }] };
+    await refreshFeed();
+    openJump("project").querySelector('[data-project="p1"]').click();
+    expect(App.route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "files" });
+    feed = savedFeed;
+    await refreshFeed();
+  });
   it("lists projects and only projects on the project half", () => {
     const popup = openJump("project");
     expect([...popup.querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);

@@ -10,6 +10,7 @@
 //! a backend does. `WorktreeManager` is the only caller.
 
 pub mod cow;
+mod directory;
 pub mod probe;
 pub mod worktree;
 
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::git_process::GitError;
 
+pub use directory::copy_directory;
 pub use worktree::WorktreeBackend;
 
 /// Things that can go wrong managing a checkout.

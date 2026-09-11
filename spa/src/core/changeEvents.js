@@ -82,7 +82,8 @@ function entityIdsOf(watcher) {
 
 function startTimer(watcher) {
   clearInterval(watcher.timer);
-  watcher.timer = setInterval(watcher.tick, pollIntervalMs(watcher.intervalMs));
+  const interval = watcher.keepPolling ? watcher.intervalMs : pollIntervalMs(watcher.intervalMs);
+  watcher.timer = setInterval(watcher.tick, interval);
 }
 
 /** Run a watcher's refresh for an event, under the same visibility gate its
@@ -130,6 +131,7 @@ export function watchChanges({
   entity = null,
   catchUpOnVisible = true,
   pausesWhileHidden = true,
+  keepPolling = false,
 }) {
   const watcher = {
     refresh,
@@ -137,6 +139,7 @@ export function watchChanges({
     entity,
     catchUpOnVisible,
     pausesWhileHidden,
+    keepPolling,
     // A surface that named no entity is the feed, whatever its entity getter
     // would answer later.
     boardScoped: entity === null || entity === undefined,

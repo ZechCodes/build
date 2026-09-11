@@ -244,3 +244,9 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .docmarker.addressed:hover { background:var(--green); color:var(--bg); }
 /* A heading with an unsent comment on it, marked while the comment is pending. */
 .plan .dochl { background:var(--hl-bg); color:var(--hl-ink); border-radius:4px; }
+.workspace-refbar { display:flex; align-items:center; gap:8px; min-height:42px; padding:6px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.workspace-refbar label { color:var(--muted); font-size:12px; }
+.workspace-refbar select { max-width:min(360px, 42vw); }
+.workspace-refstate { color:var(--muted); font-family:var(--mono); font-size:12px; }
+.workspace-referror { margin-left:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.workspace-gitpane { min-height:0; height:100%; overflow:hidden; }

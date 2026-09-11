@@ -713,6 +713,33 @@ fn unreachable_turn(state: &mut AppState, owner: &str) -> PendingAgentTurn {
     }
 }
 
+/// Install the stored Issue shape these runtime tests need without going
+/// through the retired Issue/planning mutation surface. Runtime delivery and
+/// idle recovery still support legacy records loaded from disk, which is the
+/// behavior under test here.
+fn insert_legacy_drafting_issue(state: &mut AppState, issue_id: &str, goal: &str) {
+    let project_id = state.project_at(0).id.clone();
+    let project = state
+        .orch_for(&project_id)
+        .expect("the test project has an orchestrator")
+        .clone();
+    let store = state
+        .require_store()
+        .expect("the test daemon has a store")
+        .clone();
+    let mut active = project.create_plan(PlanId::new(issue_id), goal, "main", Default::default());
+    let workspace = project
+        .prepare_plan_workspace(issue_id, &store)
+        .expect("the legacy Issue workspace is prepared");
+    project
+        .open_plan_drafting(&mut active, workspace)
+        .expect("the legacy Issue is drafting");
+    state.projects.bind_entity(issue_id.to_string(), project_id);
+    state
+        .finish_plan_mutation(issue_id.to_string(), active)
+        .expect("the legacy Issue is persisted");
+}
+
 /// A delivery that never reached an agent used to be a silent `eprintln!`:
 /// the run had already transitioned to `Building` and been persisted, so it
 /// sat there working with nobody working, forever. The failure has to land
@@ -909,20 +936,20 @@ fn a_working_run_with_no_agent_tab_is_an_anomaly_not_a_skip() {
     assert!(got["result"]["last_error"].is_null(), "{got:?}");
 }
 
-/// The plan half of the same hole. A plan's turns are queued and delivered
-/// by exactly the same path as a run's, so a planning agent that never
-/// starts must land on the PLAN the same way — `plan.get` says why, and the
-/// reason survives a restart.
+/// The legacy Issue half of the same hole. Its turns are queued and delivered
+/// by exactly the same path as a run's, so an agent that never starts must
+/// land on the Issue the same way, and the reason must survive a restart.
 #[test]
-fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_plan() {
+fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_legacy_issue() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let plan_id = plan_id_of(&app.handle(req("plan.create", json!({ "goal": "unreachable" }))));
+    let issue_id = "issue-unreachable";
+    insert_legacy_drafting_issue(&mut app, issue_id, "unreachable");
     let state = app.shared();
     {
         let mut app = state.lock().unwrap();
         app.delivery_queue.clear_queued();
-        let turn = unreachable_turn(&mut app, &plan_id);
+        let turn = unreachable_turn(&mut app, issue_id);
         app.delivery_queue.enqueue(turn);
     }
 
@@ -931,11 +958,11 @@ fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_plan() {
     let got = state
         .lock()
         .unwrap()
-        .handle(req("plan.get", json!({ "plan_id": plan_id })));
+        .handle(req("issue.get", json!({ "issue_id": issue_id })));
     let last_error = got["result"]["last_error"].as_str().unwrap_or_default();
     assert!(
         last_error.contains("could not reach the agent"),
-        "the failure must be legible on the plan: {got:?}"
+        "the failure must be legible on the legacy Issue: {got:?}"
     );
     let record = state
         .lock()
@@ -946,25 +973,25 @@ fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_plan() {
         .load_all_plans()
         .unwrap()
         .into_iter()
-        .find(|p| p.id == plan_id)
-        .expect("the plan is persisted");
+        .find(|p| p.id == issue_id)
+        .expect("the legacy Issue is persisted");
     assert!(
         record.last_error.unwrap_or_default().contains("agent"),
         "the failure must be persisted, not just held in memory"
     );
 }
 
-/// The plan half of the tabless anomaly: a drafting plan whose agent never
-/// arrived is demoted by the sweep, and one whose turn is still queued is
-/// left alone.
+/// The legacy Issue half of the tabless anomaly: a drafting Issue whose agent
+/// never arrived is demoted by the sweep, and one whose turn is still queued
+/// is left alone.
 #[test]
-fn a_working_plan_with_no_agent_tab_is_an_anomaly_not_a_skip() {
+fn a_working_legacy_issue_with_no_agent_tab_is_an_anomaly_not_a_skip() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let plan_id = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "tabless" }))));
-    state.plans.get_mut(&plan_id).unwrap().plan.state = PlanState::Drafting;
+    let issue_id = "issue-tabless";
+    insert_legacy_drafting_issue(&mut state, issue_id, "tabless");
     state.delivery_queue.clear_queued();
-    let turn = unreachable_turn(&mut state, &plan_id);
+    let turn = unreachable_turn(&mut state, issue_id);
     state.delivery_queue.enqueue(turn);
     assert!(
         state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
@@ -974,10 +1001,10 @@ fn a_working_plan_with_no_agent_tab_is_an_anomaly_not_a_skip() {
     state.delivery_queue.clear_queued();
     assert_eq!(
         state.mark_idle_tasks(Duration::from_secs(3600)),
-        vec![plan_id.clone()],
-        "a drafting plan with no agent at all must be demoted, not skipped"
+        vec![issue_id.to_string()],
+        "a drafting legacy Issue with no agent at all must be demoted, not skipped"
     );
-    let got = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
+    let got = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
     assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
     // No harness exited here, so no exit-code claim is invented.
     assert!(got["result"]["last_error"].is_null(), "{got:?}");

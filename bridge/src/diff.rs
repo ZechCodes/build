@@ -213,7 +213,9 @@ pub fn diff_between_commits(
     let completion = repo.find_commit(git2::Oid::from_str(completion_sha)?)?;
     let start_tree = start.tree()?;
     let completion_tree = completion.tree()?;
-    let diff = repo.diff_tree_to_tree(Some(&start_tree), Some(&completion_tree), None)?;
+    let mut opts = canonical_diff_options();
+    let diff =
+        repo.diff_tree_to_tree(Some(&start_tree), Some(&completion_tree), Some(&mut opts))?;
     worktree_diff_from_git_diff(&diff)
 }
 
@@ -243,11 +245,21 @@ fn delta_path(delta: &git2::DiffDelta) -> String {
 /// one difference: the review surface loads new files so it can print them, the
 /// stat surface never does — it counts their lines off disk instead.
 fn dirty_workdir_options(with_untracked_content: bool) -> git2::DiffOptions {
-    let mut opts = git2::DiffOptions::new();
+    let mut opts = canonical_diff_options();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(with_untracked_content)
         .max_size(LARGE_FILE_BYTES as i64);
+    opts
+}
+
+/// Keep the patch wire format stable regardless of the user's Git config.
+/// In particular, `diff.mnemonicPrefix=true` changes `a/` and `b/` to prefixes
+/// such as `c/` and `i/`; hunk ids and the browser parser intentionally use
+/// Git's canonical patch prefixes.
+fn canonical_diff_options() -> git2::DiffOptions {
+    let mut opts = git2::DiffOptions::new();
+    opts.old_prefix("a/").new_prefix("b/");
     opts
 }
 

@@ -15,6 +15,8 @@ const CROSS_VOLUME: &str =
     "the project and the worktrees folder are on different volumes; clones cannot cross volumes";
 const WORKTREES_ROOT_UNREADABLE: &str = "the worktrees folder cannot be created or read";
 const PROJECT_UNREADABLE: &str = "the project folder cannot be read";
+const DIRECTORY_SOURCE_UNREADABLE: &str = "the source directory cannot be read";
+const DIRECTORY_DESTINATION_UNREADABLE: &str = "the destination's parent directory cannot be read";
 
 /// A sentence this module owns with the operating system's words in
 /// parentheses, so nothing the probe answers is raw io text: every `Err` here
@@ -41,6 +43,24 @@ pub fn cow_availability(project: &Path, worktrees_root: &Path) -> Result<(), Str
         return Err(CROSS_VOLUME.to_string());
     }
     clone_probe(worktrees_root)
+}
+
+/// `Ok(())` when an ordinary directory can be cloned beside `destination`.
+/// Unlike checkout availability this has no `.git` ownership requirement.
+pub(crate) fn directory_cow_availability(source: &Path, destination: &Path) -> Result<(), String> {
+    let destination_parent = destination.parent().ok_or_else(|| {
+        "the destination has no parent directory for copy-on-write cloning".to_string()
+    })?;
+    let source_volume = std::fs::metadata(source)
+        .map_err(|error| because(DIRECTORY_SOURCE_UNREADABLE, error))?
+        .dev();
+    let destination_volume = std::fs::metadata(destination_parent)
+        .map_err(|error| because(DIRECTORY_DESTINATION_UNREADABLE, error))?
+        .dev();
+    if source_volume != destination_volume {
+        return Err(CROSS_VOLUME.to_string());
+    }
+    clone_probe(destination_parent)
 }
 
 /// How many probes this process has run, so two running at once cannot name

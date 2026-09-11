@@ -26,6 +26,7 @@ export function consoleSize(value) {
  *  own — the terminals are the checkout's, so the size belongs to it too. */
 export function consoleKey(context) {
   if (!context) return "none";
+  if (context.kind === "workspace") return `workspace:${context.workspaceId}`;
   return context.kind === "issue" ? `issue:${context.issueId}` : `branch:${context.projectId}:${context.branch}`;
 }
 
@@ -82,9 +83,15 @@ export function grownConsoleSize(size) {
  * `row` is the branch's `branch.get` payload; an issue needs none — its agent
  * runs on the primary checkout, which the project alone names.
  */
-export function consoleScope(context, row) {
-  if (!context) return null;
-  if (context.kind === "issue") return context.projectId ? { project_id: context.projectId } : null;
+const scopeResolvers = {
+  // A workspace owns its terminals as a whole. Its selected source directory
+  // deliberately does not participate in terminal identity.
+  workspace: (context) => context.workspaceId ? { workspace_id: context.workspaceId } : null,
+  issue: (context) => context.projectId ? { project_id: context.projectId } : null,
+  branch: (context, row) => branchConsoleScope(context, row),
+};
+
+function branchConsoleScope(context, row) {
   if (!row) return null;
   if (row.run_id) return { run_id: row.run_id };
   const projectId = row.project_id || context.projectId;
@@ -93,6 +100,10 @@ export function consoleScope(context, row) {
   // A branch row with neither is the repository itself: main, in the checkout
   // every project is cloned into.
   return row.primary ? { project_id: projectId } : null;
+}
+
+export function consoleScope(context, row) {
+  return scopeResolvers[context?.kind]?.(context, row) || null;
 }
 
 /** Whether the backtick is the console's to take, given what has focus.

@@ -77,7 +77,7 @@ fn suggested(labels: &[(&str, Option<&str>)]) -> Vec<crate::thread::MessageOptio
 fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "the tests are red");
+    let (_, run_id) = planned_run_in_review(&mut state, "the tests are red");
     let offer = state
         .on_mcp_action(
             &run_id,
@@ -109,7 +109,7 @@ fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
     assert_eq!(pressed["ok"], true, "{pressed:?}");
 
     // The choice is on the offer, which is the only place the chat shows it.
-    let items = primary_thread(&state.plans[&issue_id].agents).items.clone();
+    let items = primary_thread(&state.runs[&run_id].agents).items.clone();
     let crate::thread::ThreadItem::Message(offered) = items
         .iter()
         .find(|item| matches!(item, crate::thread::ThreadItem::Message(message) if message.id == offer_id))
@@ -140,7 +140,7 @@ fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
 fn a_choice_made_after_the_conversation_moved_on_is_refused() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "the tests are red");
+    let (_, run_id) = planned_run_in_review(&mut state, "the tests are red");
     let offer = state
         .on_mcp_action(
             &run_id,
@@ -162,7 +162,7 @@ fn a_choice_made_after_the_conversation_moved_on_is_refused() {
 
     let again = state.handle(req("thread.post", choice));
     assert_eq!(again["ok"], false, "{again:?}");
-    let thread = primary_thread(&state.plans[&issue_id].agents);
+    let thread = primary_thread(&state.runs[&run_id].agents);
     assert_eq!(
         thread
             .items
@@ -320,10 +320,10 @@ fn thread_post_in_review_posts_unread_and_moves_no_state() {
 }
 
 #[tokio::test]
-async fn thread_post_addressed_to_issue_nudges_its_live_implementation_agent() {
+async fn thread_post_addressed_to_run_nudges_its_live_agent() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "issue-addressed post");
+    let (_, run_id) = planned_run_in_review(&mut state, "run-addressed post");
     let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
     let (mut tab, _rx) = Tab::spawn_agent(
         run_id.clone(),
@@ -359,7 +359,7 @@ async fn thread_post_addressed_to_issue_nudges_its_live_implementation_agent() {
     let posted = call(
         &handler,
         "thread.post",
-        json!({ "entity_id": issue_id, "body": "read this in the implementation" }),
+        json!({ "entity_id": run_id, "body": "read this in the implementation" }),
     );
     assert_eq!(posted["ok"], true, "{posted:?}");
 
@@ -390,12 +390,10 @@ async fn thread_post_addressed_to_issue_nudges_its_live_implementation_agent() {
         .any(|message| message["body"] == "read this in the implementation"));
 }
 
-/// A reply IS the unblock: posting to a parked plan applies the `Reply`
-/// transition the state machine already defines, so the composer the user
-/// is typing into resumes drafting instead of leaving the card stranded
-/// at BLOCKED with no way out.
+/// Legacy plan conversations remain readable, but posting cannot revive their
+/// planning agents after the Issue surface is retired.
 #[test]
-fn thread_post_to_a_parked_plan_is_the_reply_that_resumes_drafting() {
+fn thread_post_refuses_a_retired_plan_without_changing_its_state() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     for parked in [
@@ -403,7 +401,9 @@ fn thread_post_to_a_parked_plan_is_the_reply_that_resumes_drafting() {
         PlanState::Failed,
         PlanState::IdleUnreported,
     ] {
-        let plan = state.handle(req("plan.create", json!({ "goal": "park me" })));
+        let plan = state
+            .plan_create(&json!({ "goal": "park me", "dispatch": false }))
+            .expect("legacy fixture is created below the retired RPC boundary");
         let plan_id = plan_id_of(&plan);
         state.plans.get_mut(&plan_id).unwrap().plan.state = parked;
 
@@ -411,13 +411,10 @@ fn thread_post_to_a_parked_plan_is_the_reply_that_resumes_drafting() {
             "thread.post",
             json!({ "entity_id": plan_id, "body": "here is your answer" }),
         ));
-        assert_eq!(posted["ok"], true, "{parked:?}: {posted:?}");
-        assert_eq!(
-            posted["result"]["state"], "drafting",
-            "{parked:?}: the reply resumes drafting: {posted:?}"
-        );
+        assert_eq!(posted["ok"], false, "{parked:?}: {posted:?}");
+        assert_eq!(posted["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
         let active = state.plans.get(&plan_id).unwrap();
-        assert_eq!(active.plan.state, PlanState::Drafting, "{parked:?}");
+        assert_eq!(active.plan.state, parked, "{parked:?}");
     }
 }
 
@@ -454,15 +451,15 @@ fn thread_post_to_a_parked_run_is_the_reply_that_resumes_building() {
 /// live implementation it wakes: posting to the Issue while its run is
 /// parked resumes that run.
 #[test]
-fn thread_post_addressed_to_issue_unblocks_its_parked_implementation() {
+fn thread_post_addressed_to_run_unblocks_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "issue-addressed unblock");
+    let (_, run_id) = planned_run_in_review(&mut state, "run-addressed unblock");
     state.runs.get_mut(&run_id).unwrap().run.state = RunState::Blocked;
 
     let posted = state.handle(req(
         "thread.post",
-        json!({ "entity_id": issue_id, "body": "here is your answer" }),
+        json!({ "entity_id": run_id, "body": "here is your answer" }),
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
     let active = state.runs.get(&run_id).unwrap();
@@ -474,13 +471,11 @@ fn thread_post_addressed_to_issue_unblocks_its_parked_implementation() {
 }
 
 #[test]
-fn planned_run_conversation_and_mcp_alias_the_issue_thread() {
+fn run_post_and_mcp_read_the_same_conversation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (plan_id, run_id) = planned_run_in_review(&mut state, "one issue thread");
-    let plan_state = state.plans[&plan_id].plan.state;
+    let (_, run_id) = planned_run_in_review(&mut state, "one run thread");
     let run_state = state.runs[&run_id].run.state;
-    let issue_agent_id = state.plans[&plan_id].agents.sole().id.clone();
     let execution_agent_id = state.runs[&run_id].agents.primary().unwrap().id.clone();
     state
         .runs
@@ -494,38 +489,21 @@ fn planned_run_conversation_and_mcp_alias_the_issue_thread() {
             model: Some("gpt-5.6-sol".into()),
             effort: Some("high".into()),
         });
-    let context = state
-        .issue_execution_context(&plan_id)
-        .expect("the live implementation executes the issue conversation");
-    assert_eq!(context["entity_id"], run_id);
-    assert_eq!(context["agent_id"], execution_agent_id);
-    assert_eq!(context["conversation_id"], issue_agent_id);
-    assert_eq!(context["agent"]["provider"], "codex");
-    assert_eq!(context["agent"]["choice_revision"], 1);
-    assert_ne!(
-        context["agent"]["provider"],
-        state.agent_digests(&plan_id, DigestScope::List)[0]["provider"],
-        "issue and execution settings remain independently owned"
+    assert_eq!(
+        state.runs[&run_id].agents.primary().unwrap().id,
+        execution_agent_id
     );
-    let issue_view = state.plan_view(
-        &plan_id,
-        &state.plans[&plan_id],
-        ThreadDetail::Digest,
-        DigestScope::Detail,
-    );
-    assert_eq!(issue_view["execution_context"], context);
 
     let posted = state.handle(req(
         "thread.post",
         json!({ "entity_id": run_id, "body": "shared implementation note" }),
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
-    assert_eq!(state.plans[&plan_id].plan.state, plan_state);
     assert_eq!(state.runs[&run_id].run.state, run_state);
     assert!(primary_thread(&state.runs[&run_id].agents)
         .items
         .iter()
-        .all(|item| !matches!(item, crate::thread::ThreadItem::Message(message) if message.body == "shared implementation note")));
+        .any(|item| matches!(item, crate::thread::ThreadItem::Message(message) if message.body == "shared implementation note")));
 
     let run_view = state.handle(req("run.get", json!({ "run_id": run_id })));
     assert!(run_view["result"]["thread"]["items"]
@@ -533,11 +511,11 @@ fn planned_run_conversation_and_mcp_alias_the_issue_thread() {
         .unwrap()
         .iter()
         .any(|item| item["data"]["body"] == "shared implementation note"));
-    let issue_conversation = primary_thread(&state.plans[&plan_id].agents).id.clone();
+    let run_conversation = primary_thread(&state.runs[&run_id].agents).id.clone();
     let unread = state
         .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
         .unwrap();
-    assert_eq!(unread["thread_id"], issue_conversation);
+    assert_eq!(unread["thread_id"], run_conversation);
     assert!(unread["messages"]
         .as_array()
         .unwrap()
@@ -546,7 +524,7 @@ fn planned_run_conversation_and_mcp_alias_the_issue_thread() {
 }
 
 #[test]
-fn explicit_issue_post_never_executes_its_implementation_alias() {
+fn explicit_issue_post_is_refused_without_reaching_the_run() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (issue_id, run_id) = planned_run_in_review(&mut state, "explicit issue address");
@@ -564,7 +542,7 @@ fn explicit_issue_post_never_executes_its_implementation_alias() {
         }),
     ));
 
-    assert_eq!(posted["ok"], true, "{posted:?}");
+    assert_eq!(posted["ok"], false, "{posted:?}");
     assert!(
         state.delivery_queue.queued_is_empty(),
         "the Issue workspace was handed off, so its explicitly addressed agent has no PTY; \
@@ -575,7 +553,7 @@ fn explicit_issue_post_never_executes_its_implementation_alias() {
         .unwrap()
         .items
         .iter()
-        .any(|item| matches!(
+        .all(|item| !matches!(
             item,
             crate::thread::ThreadItem::Message(message)
                 if message.body == "answer the issue agent itself"
@@ -1351,22 +1329,6 @@ fn thread_post_refuses_terminal_and_unknown_entities() {
         "{refused_archived:?}"
     );
 
-    let plan = state.handle(req("plan.create", json!({ "goal": "dropped plan" })));
-    let plan_id = plan_id_of(&plan);
-    state.handle(req("plan.abandon", json!({ "plan_id": plan_id })));
-    let refused_plan = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": plan_id, "body": "anyone home?" }),
-    ));
-    assert_eq!(refused_plan["ok"], false, "{refused_plan:?}");
-    assert!(
-        refused_plan["error"]
-            .as_str()
-            .unwrap()
-            .contains("abandoned"),
-        "{refused_plan:?}"
-    );
-
     let unknown = state.handle(req(
         "thread.post",
         json!({ "entity_id": "nope", "body": "hi" }),
@@ -1424,54 +1386,5 @@ fn thread_post_is_not_blocked_by_a_stage_awaiting_validation() {
             .iter()
             .any(|item| item["data"]["body"] == "for the record"),
         "{posted:?}"
-    );
-}
-
-/// The plan review gate refuses `plan.message` (the dispatching verb) but
-/// accepts a post; a mismatched anchor artifact is rejected by the shared
-/// validator.
-#[test]
-fn thread_post_reaches_a_plan_at_its_review_gate() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let plan = state.handle(req("plan.create", json!({ "goal": "gate keeping" })));
-    let plan_id = plan_id_of(&plan);
-    assert_eq!(plan["result"]["state"], "plan_review", "{plan:?}");
-
-    let dispatching = state.handle(req(
-        "plan.message",
-        json!({ "plan_id": plan_id, "message": "psst" }),
-    ));
-    assert_eq!(dispatching["ok"], false, "{dispatching:?}");
-
-    let posted = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": plan_id, "body": "a note at the gate" }),
-    ));
-    assert_eq!(posted["ok"], true, "{posted:?}");
-    assert_eq!(posted["result"]["state"], "plan_review", "{posted:?}");
-    let items = posted["result"]["thread"]["items"].as_array().unwrap();
-    let message = items
-        .iter()
-        .find(|item| item["data"]["body"] == "a note at the gate")
-        .unwrap_or_else(|| panic!("posted message missing: {posted:?}"));
-    assert_eq!(message["data"]["role"], "user", "{message:?}");
-    assert!(message["data"].get("seen_at").is_none(), "{message:?}");
-
-    let bad_anchor = state.handle(req(
-        "thread.post",
-        json!({
-            "entity_id": plan_id,
-            "body": "anchored wrong",
-            "anchor": { "artifact": "diff", "heading_path": ["A"], "snippet": "x" }
-        }),
-    ));
-    assert_eq!(bad_anchor["ok"], false, "{bad_anchor:?}");
-    assert!(
-        bad_anchor["error"]
-            .as_str()
-            .unwrap()
-            .contains("anchor artifact must be plan"),
-        "{bad_anchor:?}"
     );
 }

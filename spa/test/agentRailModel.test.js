@@ -251,6 +251,16 @@ describe("which agent can be taken back off", () => {
     expect(plan.confirmLabel).toBe("Remove agent");
     expect(plan.danger).toBe(true);
   });
+
+  it("names a workspace when removing one of its agents", () => {
+    const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex" }), "workspace");
+    expect(plan.title).toBe("Remove Codex TUI 2 from this workspace?");
+    expect(plan.actions).toEqual([
+      "End the agent's session, if one is running",
+      "Remove Codex TUI 2 and its conversation from the workspace",
+      "Leave the workspace and its files untouched",
+    ]);
+  });
 });
 
 describe("what the rail is the rail of", () => {

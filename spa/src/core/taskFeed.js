@@ -19,6 +19,7 @@ const EMPTY_SCOPED_FEED = Object.freeze({
   pending: [],
   primaryChanges: [],
   projects: [],
+  workspaces: [],
   cached: true,
 });
 
@@ -50,7 +51,7 @@ export function primaryRunIdFor(feed, projectId) {
 const ownsFeedContext = ({ session, scope }) =>
   session === App.session && scope === App.cacheScope && (!scope || scope.active());
 
-const liveFeedSnapshot = (board, projectList) => ({
+const liveFeedSnapshot = (board, projectList, workspaceList) => ({
   // The redesigned feed: one row per work item (branch or issue). The
   // legacy collections below still ship, and still feed what has not moved
   // over yet.
@@ -70,18 +71,22 @@ const liveFeedSnapshot = (board, projectList) => ({
     ...project,
     id: project.project_id || project.id,
   })),
+  workspaces: workspaceList?.workspaces || [],
 });
 
 async function tick() {
   const context = { session: App.session, scope: App.cacheScope };
   const call = App.call;
   try {
-    const [board, projectList] = await Promise.all([
+    const [board, projectList, workspaceList] = await Promise.all([
       call("board.list"),
       call("project.list"),
+      // A workspace-list failure must not take the board and agent rails down
+      // with it; the next feed tick will retry the landing list independently.
+      Promise.resolve(call("workspace.list")).catch(() => ({ workspaces: [] })),
     ]);
     if (!ownsFeedContext(context)) return;
-    last = liveFeedSnapshot(board, projectList);
+    last = liveFeedSnapshot(board, projectList, workspaceList);
     subscribers.forEach((fn) => fn(last));
   } catch {
     /* offline / transient — the next tick retries */

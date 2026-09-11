@@ -4,7 +4,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
-import { projectRoute } from "../core/projectModel.js";
+import { openCreateWork } from "../core/createWork.js";
 import { refreshDevices } from "../devices.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -146,7 +146,7 @@ export async function renderSettings() {
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(async (project) => {
-    if (project?.project_id) go(projectRoute(project));
+    if (project?.project_id) openCreateWork({ projectId: project.project_id, projectName: project.name, navigate: go });
     else await refresh();
   });
 

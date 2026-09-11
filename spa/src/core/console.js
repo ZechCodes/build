@@ -102,10 +102,10 @@ export function terminalTabsController(scope) {
 }
 
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */
-export function mountUserTerminalPane(host, termId, { onExit }) {
+export function mountUserTerminalPane(host, termId, { scope = {}, onExit }) {
   const manager = terminalManager();
   return mountTerminalPane(host, {
-    attach: (opts) => manager.attachTerminal(termId, opts),
+    attach: (opts) => manager.attachTerminal(termId, scope, opts),
     input: (data) => manager.input(termId, data),
     resize: (cols, rows) => manager.resize(termId, cols, rows),
     onExit,
@@ -188,7 +188,7 @@ export function mountConsole(host, context) {
   // ---- the terminals ---------------------------------------------------------
 
   const resolveScope = async () => {
-    if (context.kind === "issue") return consoleScope(context, null);
+    if (context.kind === "issue" || context.kind === "workspace") return consoleScope(context, null);
     let row = null;
     try {
       row = await App.call("branch.get", {
@@ -482,7 +482,7 @@ export function mountConsole(host, context) {
     paneTermId = termId;
     region.innerHTML = `<div class="termpane console-pane"></div>`;
     const paneHost = region.querySelector(".console-pane");
-    mountUserTerminalPane(paneHost, termId, { onExit: () => afterTerminalGone(termId) }).then(
+    mountUserTerminalPane(paneHost, termId, { scope, onExit: () => afterTerminalGone(termId) }).then(
       (mounted) => {
         if (disposed || paneTermId !== termId) {
           mounted.dispose();

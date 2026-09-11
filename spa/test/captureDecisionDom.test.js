@@ -116,14 +116,14 @@ describe("the capture decision page", () => {
     expect(App.call).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
     expect(host.textContent).toContain("fix the login redirect");
     expect(host.textContent).toContain("Which project is the login redirect in?");
-    expect(choices().map((choice) => choice.dataset.captureOption)).toEqual(["option-1", "option-2"]);
-    expect(choices()[1].textContent).toContain("relaydb · branch build/login");
+    expect(choices().map((choice) => choice.dataset.captureOption)).toEqual(["option-2"]);
+    expect(choices()[0].textContent).toContain("relaydb · branch build/login");
     expect(host.textContent).toContain("Waiting for your answer");
   });
 
   it("answers with the choice that was tapped, and shows the router deciding again", async () => {
     record = capture({ state: "routing", question: { ...asking().question, answer: "…", chosen_option_id: "option-2" } });
-    choices()[1].click();
+    choices()[0].click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" });
     expect(refreshFeed).toHaveBeenCalled();
@@ -164,7 +164,7 @@ describe("the capture decision page", () => {
     expect(App.call).toHaveBeenCalledWith("capture.reroute", {
       capture_id: "capture-1",
       project_id: "p1",
-      kind: "issue",
+      kind: "branch",
     });
   });
 

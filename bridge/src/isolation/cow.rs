@@ -23,18 +23,38 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 
 /// Clone the file or directory tree at `src` to `dst`, which must not exist.
-/// On macOS one `clonefile` clones a whole tree atomically. On Linux the tree
-/// is walked: directories and symlinks are recreated and every regular file is
-/// reflinked with `FICLONE`, and any other file type is an error. Anywhere
-/// else there is no clone at all. A failure that got as far as making `dst`
-/// removes it, so a half-made clone is never left behind; a destination that
-/// was already there is somebody else's and is left exactly as it was found.
+/// On macOS `clonefile` clones each entry (recursively for directories). On
+/// Linux the tree is walked: directories and symlinks are recreated and every
+/// regular file is reflinked with `FICLONE`; any other file type is an error.
+/// Anywhere else there is no clone at all. The destination root is reserved
+/// before the walk, so a failure removes only a tree this call created; a
+/// destination already there is somebody else's and remains untouched.
 pub(crate) fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    clone_into(src, dst).inspect_err(|error| {
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            discard(dst);
-        }
-    })
+    let metadata = std::fs::symlink_metadata(src)?;
+    if metadata.is_dir() {
+        // Reserve the root atomically. Cleanup is safe only after this call
+        // has proved that the destination belongs to us.
+        std::fs::create_dir(dst)?;
+        clone_directory_contents(src, dst)
+            .and_then(|()| std::fs::set_permissions(dst, metadata.permissions()))
+            .inspect_err(|_| discard(dst))
+    } else {
+        clone_into(src, dst).inspect_err(|error| {
+            // File/symlink creation is atomic. AlreadyExists means somebody
+            // else owns the destination and it must be left alone.
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                discard(dst);
+            }
+        })
+    }
+}
+
+fn clone_directory_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        clone_into(&entry.path(), &dst.join(entry.file_name()))?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

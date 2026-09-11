@@ -272,8 +272,8 @@ deletes the moment you exit — write nothing that has to outlive this session.
 You have no checkout and you change no code; the agent you hand this to does.
 
 Your tools: `list_projects` (every project on this device), `list_work` (the
-branches and issues in flight), `read_conversation` (read one of them; read-only),
-`create_issue`, `dispatch_branch`, `ask_user`, and `done`. There are no others —
+branches in flight), `read_conversation` (read one of them; read-only),
+`dispatch_branch`, `ask_user`, and `done`. There are no others —
 you cannot read files, and you cannot talk to a coding agent's conversation.
 
 The decision rule, in order:
@@ -281,19 +281,17 @@ The decision rule, in order:
 1. Call `dispatch_branch` ONLY when the capture names an existing branch or
    worktree, or unambiguously continues work already in flight on one. Read that
    branch's conversation with `read_conversation` before you believe it does.
-2. Otherwise call `create_issue` on the project the capture most likely belongs
-   to. An issue starts a planning agent that reads and drafts and changes no
-   code, so a wrong guess costs the user one tap. A branch dispatch starts an
-   agent that changes code, so a wrong guess costs them a diff to unpick. When
-   in doubt, file the issue.
+2. Otherwise call `dispatch_branch` on the project the capture most likely
+   belongs to, using the capture as its instruction and omitting `branch` so a
+   new branch is created.
 3. Call `ask_user` ONLY when even the project is ambiguous. A question at capture
-   time is the friction this surface exists to remove; a best-guess issue is
+   time is the friction this surface exists to remove; a best-guess project is
    almost always the better answer. When you do ask, offer up to 3 options: the
    destinations you are choosing between, each a few words the user can tap, each
    with the `project_id` and `kind` it stands for. A tap comes back as an answer
    naming that destination, and the user can type instead of any of them.
 
-Call exactly one of `create_issue`, `dispatch_branch` or `ask_user`, then call
+Call exactly one of `dispatch_branch` or `ask_user`, then call
 `done` with phase=\"route\", status=\"completed\" and one concise sentence saying
 where the capture went and why. If nothing lets you decide, call `done` with
 status=\"failed\" and one concise sentence saying what stopped you — the capture
@@ -839,17 +837,16 @@ mod tests {
     }
 
     /// The decision rule is the router's whole contract, so the template has to
-    /// state it in the order it is applied — and has to say why the fallback is
-    /// an issue rather than a branch, because that asymmetry is the rule.
+    /// state it in the order it is applied.
     #[test]
     fn the_router_template_carries_the_decision_rule_in_order() {
         let router = collapse_whitespace(&Templates::default().router);
         let dispatch = router.find("`dispatch_branch` ONLY when").expect("rule 1");
-        let issue = router
-            .find("Otherwise call `create_issue`")
+        let fallback = router
+            .find("Otherwise call `dispatch_branch`")
             .expect("rule 2");
         let ask = router.find("`ask_user` ONLY when").expect("rule 3");
-        assert!(dispatch < issue && issue < ask, "{router}");
+        assert!(dispatch < fallback && fallback < ask, "{router}");
 
         assert!(
             router.contains("names an existing branch or worktree")
@@ -860,11 +857,7 @@ mod tests {
             router.contains("even the project is ambiguous"),
             "a question is reserved for an ambiguous project: {router}"
         );
-        assert!(
-            router.contains("An issue starts a planning agent")
-                && router.contains("starts an agent that changes code"),
-            "the template must say why the cheap side is the default: {router}"
-        );
+        assert!(router.contains("omitting `branch`"), "{router}");
     }
 
     /// Every row of the decision rule, in the template's own words.
@@ -883,14 +876,12 @@ mod tests {
             // happen before the router believes it is in that case.
             "Call `dispatch_branch` ONLY when the capture names an existing branch or worktree, or unambiguously continues work already in flight on one.",
             "Read that branch's conversation with `read_conversation` before you believe it does.",
-            // Rule 2: the default, and the asymmetry that makes it the default.
-            "Otherwise call `create_issue` on the project the capture most likely belongs to.",
-            "An issue starts a planning agent that reads and drafts and changes no code, so a wrong guess costs the user one tap.",
-            "A branch dispatch starts an agent that changes code, so a wrong guess costs them a diff to unpick.",
+            // Rule 2: new work starts a new branch on the likeliest project.
+            "Otherwise call `dispatch_branch` on the project the capture most likely belongs to, using the capture as its instruction and omitting `branch` so a new branch is created.",
             // Rule 3: the one case a question beats a guess, and the shape of
             // the offer that goes with it.
             "Call `ask_user` ONLY when even the project is ambiguous.",
-            "a best-guess issue is almost always the better answer.",
+            "a best-guess project is almost always the better answer.",
             "When you do ask, offer up to 3 options: the destinations you are choosing between, each a few words the user can tap, each with the `project_id` and `kind` it stands for.",
             "the user can type instead of any of them.",
         ] {
@@ -910,7 +901,6 @@ mod tests {
             "list_projects",
             "list_work",
             "read_conversation",
-            "create_issue",
             "dispatch_branch",
             "ask_user",
             "done",
@@ -923,6 +913,7 @@ mod tests {
                 "{coding_tool} is not on the router's surface: {router}"
             );
         }
+        assert!(!router.contains("create_issue"), "{router}");
         assert!(router.contains("You are not in a repository"), "{router}");
         assert!(router.contains("phase=\"route\""), "{router}");
         assert!(router.contains("status=\"failed\""), "{router}");

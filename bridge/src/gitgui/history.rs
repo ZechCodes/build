@@ -24,6 +24,17 @@ pub(super) fn open_repo(repo_path: &Path) -> Result<git2::Repository, String> {
     git2::Repository::open(repo_path).map_err(|e| format!("cannot open repository: {e}"))
 }
 
+/// The identity Git can recover from HEAD itself.
+///
+/// A detached HEAD deliberately carries only a commit id. Git does not retain
+/// which tag (if any) was used to reach that commit, and several tags may point
+/// at the same commit, so callers must not guess a selected tag from equality.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum HeadIdentity {
+    Branch { name: String, full_ref: String },
+    Detached { commit: git2::Oid },
+}
+
 /// Whether a `repo.head()` error means "no commits yet" rather than a broken repo.
 fn is_unborn_head_error(error: &git2::Error) -> bool {
     matches!(
@@ -32,22 +43,53 @@ fn is_unborn_head_error(error: &git2::Error) -> bool {
     )
 }
 
-/// The checked-out branch name: HEAD's shorthand, or — on an unborn HEAD —
-/// the shorthand of the branch HEAD symbolically points at.
-pub(super) fn current_branch(repo: &git2::Repository) -> Result<String, String> {
+/// Read HEAD without collapsing a detached checkout into a pretend branch.
+/// An unborn symbolic HEAD is still a branch identity even though its local
+/// ref has not been created yet.
+pub(super) fn head_identity(repo: &git2::Repository) -> Result<HeadIdentity, String> {
     match repo.head() {
-        Ok(head) => Ok(head.shorthand().unwrap_or("HEAD").to_string()),
-        Err(e) if is_unborn_head_error(&e) => {
+        Ok(head) if head.is_branch() => {
+            let full_ref = head
+                .name()
+                .ok_or_else(|| "cannot read HEAD branch name".to_string())?
+                .to_string();
+            let name = full_ref
+                .strip_prefix("refs/heads/")
+                .unwrap_or(&full_ref)
+                .to_string();
+            Ok(HeadIdentity::Branch { name, full_ref })
+        }
+        Ok(head) => {
+            let commit = head
+                .peel_to_commit()
+                .map_err(|e| format!("cannot resolve HEAD: {e}"))?
+                .id();
+            Ok(HeadIdentity::Detached { commit })
+        }
+        Err(error) if is_unborn_head_error(&error) => {
             let head_ref = repo
                 .find_reference("HEAD")
                 .map_err(|e| format!("cannot read HEAD: {e}"))?;
-            let target = head_ref.symbolic_target().unwrap_or("HEAD");
-            Ok(target
+            let full_ref = head_ref
+                .symbolic_target()
+                .ok_or_else(|| "cannot read unborn HEAD target".to_string())?
+                .to_string();
+            let name = full_ref
                 .strip_prefix("refs/heads/")
-                .unwrap_or(target)
-                .to_string())
+                .unwrap_or(&full_ref)
+                .to_string();
+            Ok(HeadIdentity::Branch { name, full_ref })
         }
-        Err(e) => Err(format!("cannot read HEAD: {e}")),
+        Err(error) => Err(format!("cannot read HEAD: {error}")),
+    }
+}
+
+/// The checked-out branch name: HEAD's shorthand, or — on an unborn HEAD —
+/// the shorthand of the branch HEAD symbolically points at.
+pub(super) fn current_branch(repo: &git2::Repository) -> Result<String, String> {
+    match head_identity(repo)? {
+        HeadIdentity::Branch { name, .. } => Ok(name),
+        HeadIdentity::Detached { .. } => Ok("HEAD".to_string()),
     }
 }
 

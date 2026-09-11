@@ -81,6 +81,7 @@ describe("the size a work item is remembered at", () => {
   it("keys the memory by the branch or the issue, so each is its own console", () => {
     expect(consoleKey({ kind: "branch", projectId: "p1", branch: "build/login" })).toBe("branch:p1:build/login");
     expect(consoleKey({ kind: "issue", projectId: "p1", issueId: "i-7" })).toBe("issue:i-7");
+    expect(consoleKey({ kind: "workspace", workspaceId: "ws-7", sourceId: "src-2" })).toBe("workspace:ws-7");
   });
 
   it("round-trips through the device's storage, shut until something is chosen", () => {
@@ -101,6 +102,10 @@ describe("the size a work item is remembered at", () => {
 });
 
 describe("whose terminals the console holds", () => {
+  it("scopes terminals to the workspace and ignores the selected source", () => {
+    expect(consoleScope({ kind: "workspace", workspaceId: "ws-7", sourceId: "src-2" }, null)).toEqual({ workspace_id: "ws-7" });
+  });
+
   it("scopes a branch to the run's worktree when Build cut one", () => {
     const context = { kind: "branch", projectId: "p1", branch: "build/login" };
     const row = { project_id: "p1", run_id: "run-3", worktree_id: "wt-3", primary: false };

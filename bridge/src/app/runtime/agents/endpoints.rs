@@ -188,6 +188,14 @@ pub(in crate::app) fn agent_start(
 ) -> Result<Value, String> {
     let agent = {
         let mut s = timer.lock(state);
+        let requested_entity = params
+            .get("id")
+            .or_else(|| params.get("run_id"))
+            .or_else(|| params.get("plan_id"))
+            .and_then(Value::as_str);
+        if requested_entity.is_some_and(|entity_id| s.plans.contains_key(entity_id)) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         let agent = s.addressed_agent(params)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
@@ -733,10 +741,7 @@ impl AppState {
             return Err("agent.add: creation_id is too long".to_string());
         }
         if self.plans.contains_key(&entity_id) {
-            return Err(format!(
-                "agent.add: {entity_id} is an issue, and an issue carries exactly one agent \
-                 session — implement it to hand the work to a new agent on a branch"
-            ));
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
         }
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.add: unknown entity {entity_id}"));
@@ -828,6 +833,9 @@ impl AppState {
     /// menu offers.
     pub(in crate::app) fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        if self.plans.contains_key(&entity_id) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         let requested_agent = named_agent_id(params)?;
         let agent = self
             .entity_agents(&entity_id)?
@@ -952,10 +960,7 @@ impl AppState {
         let entity_id = require_str(params, "entity_id")?;
         let agent_id = require_str(params, "agent_id")?;
         if self.plans.contains_key(&entity_id) {
-            return Err(format!(
-                "agent.remove: {entity_id} is an issue, and its one agent is the issue's own \
-                 conversation — abandon the issue instead"
-            ));
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
         }
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.remove: unknown entity {entity_id}"));

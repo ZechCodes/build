@@ -369,10 +369,22 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    the project name and the right side leave it, rather than truncating at a
    fixed share of the bar while the rest of the row sits empty. */
 .tb-item { flex:1 1 auto; max-width:none; }
+.tb-legacy-item { display:flex; align-items:center; min-width:0; padding:4px var(--tbsel-inset);
+  font-size:13px; color:var(--ink); }
 .tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tb-project .tb-name { font-weight:600; }
 .tb-caret { flex:none; font-size:9px; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
+.tb-directories { display:flex; align-self:stretch; align-items:stretch; min-width:0;
+  overflow-x:auto; scrollbar-width:none; margin-left:6px; }
+.tb-directories::-webkit-scrollbar { display:none; }
+.tb-directory { flex:none; position:relative; max-width:170px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; padding:0 10px; border:0;
+  background:none; color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
+.tb-directory:hover { color:var(--ink); background:var(--panel2); }
+.tb-directory.current { color:var(--ink); }
+.tb-directory.current::after { content:""; position:absolute; left:9px; right:9px;
+  bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent); }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized

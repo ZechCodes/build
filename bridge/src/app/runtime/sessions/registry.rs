@@ -741,13 +741,6 @@ impl SessionRegistry {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn test_agent_by_owner_mut(&mut self, owner: &str) -> Option<&mut Tab> {
-        self.tabs
-            .values_mut()
-            .find(|tab| tab.role.agent().is_some_and(|(had, _)| had == owner))
-    }
-
-    #[cfg(test)]
     pub(in crate::app) fn test_remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
         self.tabs.remove(key)
     }

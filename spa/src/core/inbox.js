@@ -30,8 +30,57 @@
 import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
+import { workspaceRoute } from "./projectModel.js";
+import { workspaceRun } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
+
+/** The durable workspace rows shown by the landing rail. */
+function workspaceFacts(directories) {
+  if (!directories.length) return "No directories";
+  const gitCount = directories.filter((directory) => directory.is_git).length;
+  const noun = directories.length === 1 ? "directory" : "directories";
+  return `${directories.length} ${noun}${gitCount ? ` · ${gitCount} Git` : ""}`;
+}
+
+const firstText = (...values) => values.find(Boolean) || "";
+
+function toWorkspaceEntry(workspace, projectNames, conversation) {
+  const directories = workspace.directories || [];
+  const activity = conversation || { working: workspace.status === "active" };
+  return {
+    key: `workspace:${workspace.id}`,
+    kind: "workspace",
+    workspaceId: workspace.id,
+    projectId: workspace.project_id,
+    project: firstText(projectNames.get(workspace.project_id), workspace.project, workspace.project_id),
+    name: firstText(workspace.name, workspace.root, "Workspace"),
+    title: firstText(workspace.root, workspace.name, "Workspace"),
+    entityId: entityIdOf(conversation),
+    state: entryState(activity),
+    unreadCount: activity.unread_count || 0,
+    reason: unreadReasonText(activity.unread_reason, "branch"),
+    muted: !!activity.muted,
+    dismissed: !!activity.dismissed,
+    working: !!activity.working,
+    canFinish: false,
+    facts: workspaceFacts(directories),
+    route: workspaceRoute(workspace),
+    anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
+    lastActivityMs: ms(workspace.updated_at),
+  };
+}
+
+export function workspaceEntries(workspaces = [], projects = [], items = []) {
+  const projectNames = new Map(projects.map((project) => [project.id || project.project_id, project.name]));
+  const conversations = new Map(items.filter((item) => item.kind === "branch" && entityIdOf(item))
+    .map((item) => [JSON.stringify([item.project_id, entityIdOf(item)]), item]));
+  return workspaces.map((workspace) => {
+    const owner = workspace.entity_id || workspace.run_id || workspace.id;
+    const conversation = conversations.get(JSON.stringify([workspace.project_id, owner])) || workspaceRun(workspace, items);
+    return toWorkspaceEntry(workspace, projectNames, conversation);
+  });
+}
 
 /** How long a row can say nothing before it belongs to Recent rather than to
  *  the list proper. */
@@ -436,6 +485,10 @@ export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
  *  every row on screen — Recent included, since an open one is on screen. */
 export function activeEntryKey(route, entries) {
   if (!route) return null;
+  if (route.name === "workspace") {
+    const workspace = entries.find((entry) => entry.kind === "workspace" && entry.workspaceId === route.workspaceId);
+    return workspace ? workspace.key : null;
+  }
   if (route.name === "capture") {
     const capture = entries.find((entry) => entry.kind === "capture" && entry.captureId === route.id);
     return capture ? capture.key : null;
@@ -469,6 +522,7 @@ export function activeEntryKey(route, entries) {
  *  to take. A row with neither Done nor Mute still has its menu — Clear is
  *  what it is for. */
 function menuHtml(entry, open) {
+  if (entry.kind === "workspace") return "";
   // A row the daemon is in the middle of making or removing is not the
   // reader's to act on: every verb here would race the one already running,
   // and the daemon refuses a second claim on the same thing anyway.
@@ -535,7 +589,7 @@ export function inboxRowHtml(entry, ui = {}) {
     <div class="inbox-body">
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${unread}</div>
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
-      <span class="warn" data-done-error hidden></span>
+      ${entry.kind === "workspace" ? "" : '<span class="warn" data-done-error hidden></span>'}
     </div>
     <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
@@ -619,17 +673,14 @@ function rerouteBranchHtml(projectId, branches) {
 }
 
 /** The destination picker behind the reroute chip: every project, and the two
- *  things a capture can become in it. An issue takes one tap — there is nothing
- *  else to say about it; a branch discloses the field that names it.
+ *  branch destination a capture can become in it.
  *
  *  `ui`: { projects, rerouteBranchProject, rerouteBranches }. */
 function rerouteMenuHtml(entry, ui = {}) {
   const rows = (ui.projects || [])
     .map(
       (project) => `<div class="reroute-project"><span class="mt">${esc(project.name || project.id)}</span>
-        <span class="reroute-kinds">
-          <button class="btn mini" type="button" data-reroute-project="${esc(project.id)}" data-reroute-kind="issue">Issue</button>
-          <button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"
+        <span class="reroute-kinds"><button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"
             data-reroute-branch-open="${esc(project.id)}">Branch</button>
         </span></div>${project.id === ui.rerouteBranchProject ? rerouteBranchHtml(project.id, ui.rerouteBranches) : ""}`,
     )

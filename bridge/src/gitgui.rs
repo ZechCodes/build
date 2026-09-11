@@ -10,7 +10,8 @@ mod status;
 mod tests;
 
 pub use branches::{
-    branch_delete, branch_list, branch_origin, checkout, BranchListing, BranchOrigin, BranchRow,
+    branch_delete, branch_list, branch_origin, checkout, checkout_ref, ref_list, BranchListing,
+    BranchOrigin, BranchRow, CurrentRef, RefKind, RefListing, RefRow,
 };
 pub use history::{
     log_page, show_commit, truncate_at_utf8_boundary, GIT_BODY_MAX_BYTES, GIT_SHOW_MAX_PATCH_BYTES,

@@ -83,6 +83,12 @@ describe("statusAfterPoll", () => {
 });
 
 describe("gitDraftKey", () => {
+  it("keeps commit drafts separate across workspace directories", () => {
+    const frontend = gitDraftKey({ workspace_id: "w1", source_id: "frontend" });
+    expect(frontend).not.toBe(gitDraftKey({ workspace_id: "w1", source_id: "api" }));
+    expect(frontend).not.toBe(gitDraftKey({ workspace_id: "w2", source_id: "frontend" }));
+    expect(frontend).toBe(gitDraftKey({ workspace_id: "w1", source_id: "frontend" }));
+  });
   it("keys run scope by run_id", () => {
     expect(gitDraftKey({ run_id: "t1" })).toBe("run:t1");
   });

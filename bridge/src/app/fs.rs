@@ -8,6 +8,63 @@ use serde_json::{json, Value};
 
 use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState, TermScope};
 
+/// The directory whose files an `fs.*` call may reach.
+///
+/// Workspace browsing names one configured source explicitly. The legacy
+/// worktree-backed shapes remain valid for clients that have not learned
+/// workspace sources yet; they continue to resolve through `TermScope`.
+#[derive(Debug, Clone)]
+enum FileScope {
+    WorkspaceSource {
+        workspace_id: String,
+        source_id: String,
+    },
+    Legacy(TermScope),
+}
+
+impl FileScope {
+    fn parse(params: &Value) -> Result<Self, String> {
+        let workspace_id = scope_field(params, "workspace_id")?;
+        let source_id = scope_field(params, "source_id")?;
+        let has_legacy_scope = ["run_id", "project_id", "worktree_id"]
+            .iter()
+            .any(|name| params.get(*name).is_some_and(|value| !value.is_null()));
+        if (workspace_id.is_some() || source_id.is_some()) && has_legacy_scope {
+            return Err(
+                "workspace source scope cannot be combined with legacy scope ids".to_string(),
+            );
+        }
+        match (workspace_id, source_id) {
+            (Some(workspace_id), Some(source_id)) => Ok(Self::WorkspaceSource {
+                workspace_id,
+                source_id,
+            }),
+            (Some(_), None) => Err("missing required param: source_id".to_string()),
+            (None, Some(_)) => Err("missing required param: workspace_id".to_string()),
+            (None, None) => TermScope::parse(params).map(Self::Legacy),
+        }
+    }
+
+    fn resolve_root(&self, state: &mut AppState) -> Result<std::path::PathBuf, String> {
+        match self {
+            Self::WorkspaceSource {
+                workspace_id,
+                source_id,
+            } => state.resolve_workspace_source(workspace_id, source_id),
+            Self::Legacy(scope) => scope.resolve_root(state),
+        }
+    }
+}
+
+fn scope_field(params: &Value, name: &str) -> Result<Option<String>, String> {
+    match params.get(name) {
+        None => Ok(None),
+        Some(Value::String(value)) if value.is_empty() => Err(format!("{name} cannot be empty")),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("{name} must be a string")),
+    }
+}
+
 /// Source/document previews stay tightly capped; playable media gets a larger
 /// bounded response because browsers cannot decode a truncated data URL.
 pub(in crate::app) const FS_READ_MAX_BYTES: u64 = 1_048_576;
@@ -60,7 +117,7 @@ impl AppState {
     /// scope resolution, the shared fence, `.git` skipped, dirs before
     /// files+symlinks, each group case-insensitive.
     pub(in crate::app) fn fs_tree(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = TermScope::parse(params)?;
+        let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
         let path = params
             .get("path")
@@ -103,7 +160,7 @@ impl AppState {
     /// Read one file from a worktree-backed scope, base64 always, capped at the
     /// source limit or the larger bounded media limit server-side.
     pub(in crate::app) fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = TermScope::parse(params)?;
+        let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
         let path = require_str(params, "path")?;
         let target = fenced_scope_path(&root, &path)?;
@@ -144,7 +201,7 @@ impl AppState {
     /// the editor opened. The descriptor-relative helper holds the fenced
     /// parent through the atomic rename, defeating ancestor symlink swaps.
     pub(in crate::app) fn fs_write(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = TermScope::parse(params)?;
+        let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
         let path = require_str(params, "path")?;
         let expected_revision = require_str(params, "expected_revision")?;
@@ -162,24 +219,30 @@ impl AppState {
             return Err("file is not editable UTF-8 text".to_string());
         }
         replace_text(&root, &path, &expected_revision, &replacement)?;
+        if let FileScope::WorkspaceSource { workspace_id, .. } = &scope {
+            self.reopen_workspace(workspace_id)?;
+        }
         self.invalidate_file_scope(&scope);
         self.fs_read(params)
     }
 
-    fn invalidate_file_scope(&mut self, scope: &TermScope) {
+    fn invalidate_file_scope(&mut self, scope: &FileScope) {
         match scope {
-            TermScope::Run { run_id } => {
+            FileScope::WorkspaceSource { .. } => {}
+            FileScope::Legacy(TermScope::Run { run_id }) => {
                 self.invalidate_run_stat(run_id);
                 self.note_entity_changed(run_id);
             }
-            TermScope::ExternalWorktree {
+            FileScope::Legacy(TermScope::ExternalWorktree {
                 project_id,
                 worktree_id,
-            } => {
+            }) => {
                 self.rescan_external_worktrees(project_id);
                 self.note_entity_changed(worktree_id);
             }
-            TermScope::Primary { project_id } => self.invalidate_primary_summary(project_id),
+            FileScope::Legacy(TermScope::Primary { project_id }) => {
+                self.invalidate_primary_summary(project_id)
+            }
         }
         self.note_board_changed();
     }
@@ -224,4 +287,103 @@ fn open_regular_read(
         return Err("not a file".to_string());
     }
     Ok((file, metadata))
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_file_scope_requires_both_ids() {
+        for (params, missing) in [
+            (json!({ "workspace_id": "workspace-1" }), "source_id"),
+            (json!({ "source_id": "source-1" }), "workspace_id"),
+        ] {
+            let error = FileScope::parse(&params).unwrap_err();
+            assert_eq!(error, format!("missing required param: {missing}"));
+        }
+    }
+
+    #[test]
+    fn workspace_file_scope_does_not_fall_through_to_a_legacy_scope() {
+        let error = FileScope::parse(&json!({
+            "workspace_id": "workspace-1",
+            "source_id": "source-1",
+            "project_id": "proj-1",
+        }))
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "workspace source scope cannot be combined with legacy scope ids"
+        );
+    }
+
+    #[test]
+    fn legacy_file_scopes_remain_valid() {
+        assert!(matches!(
+            FileScope::parse(&json!({ "project_id": "proj-1" })).unwrap(),
+            FileScope::Legacy(TermScope::Primary { project_id }) if project_id == "proj-1"
+        ));
+        assert!(matches!(
+            FileScope::parse(&json!({ "run_id": "run-1" })).unwrap(),
+            FileScope::Legacy(TermScope::Run { run_id }) if run_id == "run-1"
+        ));
+    }
+
+    #[test]
+    fn workspace_tree_is_fenced_to_the_selected_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = AppState::new_unrooted(
+            directory.path().join("worktrees"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let sources = [
+            crate::workspace::WorkspaceSource {
+                id: "source-1".to_string(),
+                name: "frontend".to_string(),
+                mount: "frontend".to_string(),
+                path: directory.path().join("frontend-source"),
+                is_git: false,
+                base_branch: "main".to_string(),
+            },
+            crate::workspace::WorkspaceSource {
+                id: "source-2".to_string(),
+                name: "api".to_string(),
+                mount: "api".to_string(),
+                path: directory.path().join("api-source"),
+                is_git: false,
+                base_branch: "main".to_string(),
+            },
+        ];
+        let workspace = state
+            .workspaces
+            .begin("proj-1", "selected-source", &sources)
+            .unwrap();
+        for source in &workspace.directories {
+            std::fs::create_dir_all(&source.path).unwrap();
+            std::fs::write(
+                source.path.join(format!("{}.txt", source.name)),
+                &source.name,
+            )
+            .unwrap();
+        }
+
+        let tree = state
+            .fs_tree(&json!({
+                "workspace_id": workspace.id,
+                "source_id": "source-2",
+            }))
+            .unwrap();
+        assert_eq!(tree["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(tree["entries"][0]["name"], "api.txt");
+
+        let escape = state.fs_tree(&json!({
+            "workspace_id": workspace.id,
+            "source_id": "source-2",
+            "path": "../frontend",
+        }));
+        assert_eq!(escape.unwrap_err(), "path escapes the worktree");
+    }
 }

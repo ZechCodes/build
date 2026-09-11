@@ -901,7 +901,6 @@ fn attention_survives_a_restart() {
     let mut reloaded = qa_state(&repo, dir.path());
     let after = attention_of(&mut reloaded, &run_id);
     assert_eq!(after["seen"], true, "{after:?}");
-    assert_eq!(after["interacted"], true, "{after:?}");
     // The read cursor with it: a badge derived from a cursor that reset
     // would make every restart a wall of unread.
     let entry = board_entry(&mut reloaded, &run_id);

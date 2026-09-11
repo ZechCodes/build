@@ -336,13 +336,26 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
   min-width:0; min-height:0; overflow:hidden; position:relative;
 }
 #toolbar { flex:none; border-bottom:1px solid var(--line); }
-#view-body { display:grid; grid-template-columns:minmax(0, 1fr) auto;
+#view-body { display:grid; grid-template-columns:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; }
+#branch-tabs:empty { display:none; }
+#branch-tabs { width:76px; min-height:0; border-right:1px solid var(--line);
+  background:var(--bg); padding:10px 6px; display:flex; flex-direction:column; gap:8px; }
+.branch-tab { position:relative; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:6px; width:100%; min-height:74px; padding:9px 3px;
+  border:0; border-radius:9px; background:none; color:var(--ink2); cursor:pointer;
+  font:inherit; font-size:12px; }
+.branch-tab:hover { background:var(--line2); color:var(--ink); }
+.branch-tab.active { background:var(--accent-soft); color:var(--accent); }
+.branch-tab.active::before { content:""; position:absolute; left:-6px; top:7px; bottom:7px;
+  width:3px; border-radius:0 3px 3px 0; background:var(--accent); }
+.branch-tab svg { width:23px; height:23px; display:block; }
 /* #root is a grid cell now, not a flex child: it fills its share. A reading
    page scrolls itself; a view that wants the full-height tab shell adds
    `.surface` and hands scrolling to its own body (that geometry lives in
    styles.css, beside the panes that read it), so it keeps its clip. */
-#shell main#root { min-width:0; min-height:0; }
+#shell main#root { grid-column:2; min-width:0; min-height:0; }
+#agent-rail { grid-column:3; }
 #shell main#root:not(.surface) { overflow-y:auto; }
 
 /* ---- the view area's toolbar ----

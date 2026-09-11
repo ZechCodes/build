@@ -71,7 +71,7 @@ afterEach(() => {
 
 describe("the shell's markup", () => {
   it("carries the three panels, the console slot and the chrome that outlives views", () => {
-    for (const id of ["shell", "inbox-rail", "inbox-list", "view", "toolbar", "view-body", "root", "agent-rail", "console-region"]) {
+    for (const id of ["shell", "inbox-rail", "inbox-list", "view", "toolbar", "view-body", "branch-tabs", "root", "agent-rail", "console-region"]) {
       expect([id, !!document.getElementById(id)]).toEqual([id, true]);
     }
     // The banners, the sheet scrim and the device picker survive the rebuild.
@@ -102,7 +102,7 @@ describe("the shell's grid", () => {
     expect(shellCss).toMatch(/#shell \{[^}]*display:grid/);
     expect(shellCss).toMatch(/#shell \{[^}]*grid-template-columns:auto minmax\(0, 1fr\)/);
     expect(shellCss).toMatch(/#view \{[^}]*grid-template-rows:auto minmax\(0, 1fr\) auto/);
-    expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:minmax\(0, 1fr\) auto/);
+    expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:auto minmax\(0, 1fr\) auto/);
   });
 
   it("pins each panel to its own track, so the view column never lands in the rail's", () => {
@@ -176,8 +176,8 @@ describe("render dispatch", () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    const tabs = [...root().querySelectorAll(".railtabs [data-tab]")].map((cell) => cell.dataset.tab);
-    expect(tabs).toEqual(["changes", "files"]);
+    const tabs = [...document.querySelectorAll("#branch-tabs [data-tab]")].map((cell) => cell.dataset.tab);
+    expect(tabs).toEqual(["files", "changes"]);
     expect(root().classList.contains("surface")).toBe(true);
     // The console is reserved and shut.
     const bar = document.querySelector("#console-region .console-bar");
@@ -194,7 +194,7 @@ describe("render dispatch", () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    root().querySelector('.railtabs [data-tab="files"]').click();
+    document.querySelector('#branch-tabs [data-tab="files"]').click();
     expect(location.hash).toBe("#/project/p-1/branch/build%2Flogin/files");
   });
 
@@ -203,7 +203,7 @@ describe("render dispatch", () => {
     render();
     await flush();
     expect(root().querySelector(".ivsplit")).toBeTruthy();
-    expect(root().querySelector(".railtabs")).toBeNull();
+    expect(document.querySelector("#branch-tabs").children).toHaveLength(0);
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
   });
 

@@ -5,8 +5,8 @@
 // are both the toolbar's now (core/toolbar.js) — the branch name because the
 // nav bar already says it, Done (the same `branch.finish` the inbox row's
 // Done sends) through the toolbar's verb slot (`setToolbarVerb`), so a reader
-// standing IN the branch finds it beside the name it ends. Changes/Files
-// themselves pin to the bottom of whichever rail is open (`paintTabs`) —
+// standing IN the branch finds it beside the name it ends. Files/Changes have
+// a narrow view rail between the inbox and the pane's own list (`paintTabs`) —
 // #tabbody is flush against the toolbar, nothing above it spends the height.
 // core/branchFinish.js decides when Done is offered and what it promises.
 //
@@ -24,7 +24,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go, markRoute } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
-import { tabShellHtml } from "../core/tabshell.js";
+import { ICON_FILE, ICON_GIT_BRANCH } from "../core/icons.js";
 import { mountConsole } from "../core/console.js";
 import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -52,8 +52,8 @@ import "../styles/shell.css";
 import "../styles/surfaces.css";
 
 const BRANCH_TABS = [
-  { id: "changes", label: "Changes" },
-  { id: "files", label: "Files" },
+  { id: "files", label: "Files", icon: ICON_FILE },
+  { id: "changes", label: "Changes", icon: ICON_GIT_BRANCH },
 ];
 
 // The cadence every work surface has always read its entity at: fast enough
@@ -139,7 +139,7 @@ async function initialBranchState(callRpc, projectId, branch, requestedTab) {
 
 function mountPlainChanges(host, onInitialize) {
   App.routeLeaveGuard = null;
-  host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host"><div class="railtabs"></div></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
+  host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host"></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
   host.querySelector("#init-git").onclick = onInitialize;
 }
 
@@ -157,46 +157,20 @@ export async function renderBranch() {
   const openAt = App.route.file ? { path: App.route.file, line: App.route.line || null } : null;
   root.className = "surface";
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
-  /** Changes/Files, painted into whichever rail the mounted pane just built
-   *  (.crail-host or .ftree — both flex columns ending in a slot for exactly
-   *  this) and pinned there by CSS (.railtabs). Returns whether a rail was
-   *  there to paint into. */
+  /** Changes/Files live in their own narrow rail between the inbox and the
+   *  pane's commit/file list. It is part of the branch shell, so it remains
+   *  available while the pane is loading or has no checkout. */
   const paintTabs = () => {
-    const railHost = $("#tabbody .crail-host, #tabbody .ftree");
-    if (!railHost) return false;
-    let bar = railHost.querySelector(".railtabs");
-    if (!bar) {
-      bar = document.createElement("div");
-      bar.className = "railtabs";
-      railHost.appendChild(bar);
-    }
-    bar.innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
+    const bar = $("#branch-tabs");
+    if (!bar) return;
+    bar.innerHTML = BRANCH_TABS.map(
+      (item) => `<button class="branch-tab${item.id === tab ? " active" : ""}" data-tab="${item.id}" type="button" aria-current="${item.id === tab ? "page" : "false"}">${item.icon}<span>${item.label}</span></button>`,
+    ).join("");
     bar.querySelectorAll("[data-tab]").forEach((cell) => {
       cell.onclick = () => go({ name: "branch", projectId, branch, tab: cell.dataset.tab });
     });
-    return true;
   };
-  // The pane just mounted builds its own rail asynchronously (gitPane's
-  // skeleton waits on its first git.status/git.log; the files tree is
-  // synchronous but this stays uniform either way) — there is nothing to
-  // paint tabs into yet at the moment mountBody() calls this. Watch #tabbody
-  // until the rail actually lands, then paint once and stop watching.
-  let tabsWatcher = null;
-  const ensureTabsPainted = () => {
-    if (tabsWatcher) {
-      tabsWatcher.disconnect();
-      tabsWatcher = null;
-    }
-    if (paintTabs()) return;
-    const host = $("#tabbody");
-    if (!host) return;
-    tabsWatcher = new MutationObserver(() => {
-      if (!paintTabs()) return;
-      tabsWatcher.disconnect();
-      tabsWatcher = null;
-    });
-    tabsWatcher.observe(host, { childList: true, subtree: true });
-  };
+  paintTabs();
   // The basement, at the bottom of the view column: this branch's checkout, as
   // terminals. Shut unless the last visit left it open.
   let consolePanel = null;
@@ -391,7 +365,6 @@ export async function renderBranch() {
         onFileOpen: (path) => markRoute({ name: "branch", projectId, branch, tab: "files", file: path }),
       });
       App.routeLeaveGuard = pane.canLeave;
-      ensureTabsPainted();
       return;
     }
     if (row && row.is_git === false) {
@@ -414,7 +387,6 @@ export async function renderBranch() {
           host.querySelector("#init-git-status").textContent = error.message || String(error);
         }
       });
-      ensureTabsPainted();
       return;
     }
     App.routeLeaveGuard = null;
@@ -433,7 +405,6 @@ export async function renderBranch() {
       triageEnabled: () => Boolean(row && row.run && row.run.triage_enabled === true),
       triage: () => (row && row.run && row.run.triage) || null,
     });
-    ensureTabsPainted();
   };
 
   /** Mount the open tab's body over the resolved row. Idempotent per
@@ -520,8 +491,8 @@ export async function renderBranch() {
     // slot it put it in.
     if (watcher) watcher.dispose();
     watcher = null;
-    if (tabsWatcher) tabsWatcher.disconnect();
-    tabsWatcher = null;
+    const branchTabs = $("#branch-tabs");
+    if (branchTabs) branchTabs.innerHTML = "";
     clearToolbarVerb(paintFinish);
     if (pane) pane.dispose();
     pane = null;
@@ -538,6 +509,7 @@ export async function renderBranch() {
     if (disposed) return;
     row = initial.row;
     tab = initial.tab;
+    paintTabs();
     if (row) {
       mountBody();
       paintFinish();

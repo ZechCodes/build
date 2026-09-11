@@ -219,8 +219,8 @@ main#root.surface { max-width:none;
      and hands scrolling to #tabbody. */
   height:100%;
   display:flex; flex-direction:column; overflow:hidden; }
-/* The branch surface has no bar of its own any more: Changes/Files pin to the
-   bottom of whichever rail is open (.railtabs, near .crail-host below), and
+/* The branch surface has no bar of its own any more: Changes/Files live in the
+   narrow branch rail beside this surface, and
    Done lives in the toolbar's verb slot (core/toolbar.js's #tb-verb) — #tabbody
    is the surface's only child, flush against the toolbar above it. */
 .cluster-pane .board-head { margin-bottom:14px; }
@@ -555,8 +555,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    width and the diffs get whatever is left. The subjects ellipsize instead
    (.crow .csubject below), which is what they are marked up for. */
 /* A flex column now, not the scroller itself: .crail (below) scrolls in the
-   room this leaves it, and .railtabs (shared with .ftree, near the bottom of
-   this file) pins under it, unscrolled. */
+   room this leaves it. */
 .crail-host { flex:0 1 var(--pane-rail); min-width:0; border-right:1px solid var(--line);
   display:flex; flex-direction:column; min-height:0; }
 .crail { flex:1 1 auto; min-height:0; overflow-y:auto; }
@@ -959,23 +958,10 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    has to take the room from somewhere, and taking it from the tree leaves the
    preview readable, where taking it from the preview leaves the tree listing
    files there is nowhere to read. */
-/* A flex column: .ftree-list (what loadTree replaces) scrolls in the room
-   .railtabs (below) leaves it, unscrolled at the bottom of the column. */
+/* A flex column: .ftree-list (what loadTree replaces) scrolls inside it. */
 .ftree { flex:0 1 var(--pane-rail); min-width:0; border-right:1px solid var(--line);
   display:flex; flex-direction:column; min-height:0; }
 .ftree-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:6px 0; }
-/* Changes/Files, pinned under whichever rail is open (.crail-host above,
-   .ftree here) — a plain flex-column child of a flex-column parent needs no
-   position:sticky to sit fixed at the bottom: the scroller above it already
-   takes only the room this leaves. */
-.railtabs { flex:none; border-top:1px solid var(--line); padding:8px var(--pane-gutter) 8px var(--tabbar-gutter); }
-.railtabs .tabs { margin-bottom:0; }
-/* Two tabs, half the rail each, label centred in its half: this bar is the
-   rail's floor rather than a row of pills at the top of a surface, and a
-   two-way switch that fills the column it belongs to reads as the column's own
-   control. The pill inset is still paid — it is what keeps the label off the
-   fill's edge when the rail is squeezed. */
-.railtabs .tabs .t { flex:1 1 0; min-width:0; justify-content:center; }
 /* The floor is the preview's share of that squeeze, and it is deliberately
    below what any real two-column pane hands it — it changes nothing until the
    pane is too narrow for both columns. */

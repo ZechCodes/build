@@ -7,9 +7,18 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
 
+function bindCancel(container, cancel) {
+  const button = container.querySelector("#bcancel");
+  if (button) button.onclick = cancel;
+}
+
 export async function openBrowser(opts) {
   const callRpc = opts.callRpc || ((method, params) => App.call(method, params));
   const sheet = $("#sheet");
+  const container = opts.container || sheet;
+  const embedded = container !== sheet;
+  const titleHtml = embedded ? "" : `<h3>${esc(opts.title)}</h3>`;
+  const cancelHtml = embedded ? "" : '<button class="btn" id="bcancel" style="margin-left:auto">Cancel</button>';
   let request = 0;
   const cancel = () => {
     request += 1;
@@ -38,25 +47,25 @@ export async function openBrowser(opts) {
       !opts.gitOnly || data.is_git
         ? `<button class="btn primary" id="choosecur" data-path="${esc(data.path)}">${opts.gitOnly ? "Use this repo" : "Use this folder"}</button>`
         : "";
-    $("#sheet").innerHTML = `
-      <h3>${esc(opts.title)}</h3>
+    container.innerHTML = `
+      ${titleHtml}
       <div class="browse-path">${esc(data.path)}</div>
       <label class="toggle browse-toggle"><input type="checkbox" id="showhidden" ${showHidden ? "checked" : ""}> Show hidden${hiddenCount && !showHidden ? ` (${hiddenCount})` : ""}</label>
       <div class="browse-list">
         ${data.parent ? `<div class="browse-row"><button type="button" class="bname browse-nav dim" data-path="${esc(data.parent)}">⬆ up — parent folder</button></div>` : ""}
         ${rows || '<div class="dim" style="font-size:13px;padding:10px">No subfolders here.</div>'}
       </div>
-      <div class="row">${footer}<button class="btn" id="bcancel" style="margin-left:auto">Cancel</button></div>
+      <div class="row">${footer}${cancelHtml}</div>
       <div class="adderr" id="berr"></div>`;
-    $("#showhidden").onchange = (e) => {
+    container.querySelector("#showhidden").onchange = (e) => {
       showHidden = e.target.checked;
       paint();
     };
-    $("#bcancel").onclick = cancel;
-    const chooseCurrent = $("#choosecur");
+    bindCancel(container, cancel);
+    const chooseCurrent = container.querySelector("#choosecur");
     if (chooseCurrent) chooseCurrent.onclick = () => opts.onChoose(chooseCurrent.dataset.path);
-    $("#sheet").querySelectorAll(".browse-nav").forEach((row) => (row.onclick = () => nav(row.dataset.path)));
-    $("#sheet").querySelectorAll(".use").forEach(
+    container.querySelectorAll(".browse-nav").forEach((row) => (row.onclick = () => nav(row.dataset.path)));
+    container.querySelectorAll(".use").forEach(
       (btn) =>
         (btn.onclick = (event) => {
           event.stopPropagation();
@@ -66,23 +75,23 @@ export async function openBrowser(opts) {
   };
   const nav = async (path) => {
     const version = ++request;
-    const loading = sheet.firstElementChild;
+    const loading = container.firstElementChild;
     try {
       const next = await callRpc("fs.list", path ? { path } : {});
       if (version !== request || !loading.isConnected) return;
       data = next;
     } catch (e) {
       if (version !== request || !loading.isConnected) return;
-      const err = $("#berr");
+      const err = container.querySelector("#berr");
       if (err) err.textContent = e.message;
-      sheet.querySelector(".browse-loading")?.remove();
+      container.querySelector(".browse-loading")?.remove();
       return;
     }
     paint();
   };
   $("#scrim").classList.add("show");
-  sheet.innerHTML = `<h3>${esc(opts.title)}</h3><div class="dim browse-loading" style="padding:14px">loading…</div>
-    <button class="btn" id="bcancel">Cancel</button><div class="adderr" id="berr" role="status"></div>`;
-  $("#bcancel").onclick = cancel;
+  container.innerHTML = `${titleHtml}<div class="dim browse-loading" style="padding:14px">loading…</div>
+    ${cancelHtml}<div class="adderr" id="berr" role="status"></div>`;
+  bindCancel(container, cancel);
   await nav(opts.startPath || null);
 }

@@ -17,6 +17,27 @@ it("uses the supplied device connection and initial folder", async () => {
   document.querySelector("#choosecur").click();
   expect(onChoose).toHaveBeenCalledWith("/device-projects");
 });
+it("can render inside a host without replacing its surrounding controls", async () => {
+  document.querySelector("#sheet").innerHTML = '<div id="tabs">tabs</div><div id="browser-host"></div><button id="outside">Add project</button>';
+  const host = document.querySelector("#browser-host");
+  const callRpc = vi.fn().mockResolvedValue(listing("/device-projects"));
+  await openBrowser({ title: "Projects", callRpc, startPath: "/device-projects", container: host, onChoose: vi.fn() });
+  expect(document.querySelector("#tabs").textContent).toBe("tabs");
+  expect(document.querySelector("#outside")).not.toBeNull();
+  expect(host.querySelector("#choosecur")).not.toBeNull();
+  expect(host.querySelector("#bcancel")).toBeNull();
+});
+it("does not overwrite newer embedded content when a listing completes late", async () => {
+  document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';
+  const host = document.querySelector("#browser-host");
+  let resolve;
+  const callRpc = vi.fn(() => new Promise((done) => { resolve = done; }));
+  const opening = openBrowser({ title: "Projects", callRpc, container: host, onChoose: vi.fn() });
+  host.innerHTML = "New tab content";
+  resolve(listing("/projects"));
+  await opening;
+  expect(host.textContent).toBe("New tab content");
+});
 it("shows initial failures and keeps Cancel available", async () => {
   const callRpc = vi.fn().mockRejectedValue(new Error("Device offline"));
   await openBrowser({ title: "Projects", callRpc });

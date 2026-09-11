@@ -53,7 +53,7 @@ import "../styles/surfaces.css";
 
 const BRANCH_TABS = [
   { id: "files", label: "Files", icon: ICON_FILE },
-  { id: "changes", label: "Changes", icon: ICON_GIT_BRANCH },
+  { id: "changes", label: "git", icon: ICON_GIT_BRANCH },
 ];
 
 // The cadence every work surface has always read its entity at: fast enough

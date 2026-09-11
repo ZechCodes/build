@@ -339,16 +339,16 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
 #view-body { display:grid; grid-template-columns:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; }
 #branch-tabs:empty { display:none; }
-#branch-tabs { width:76px; min-height:0; border-right:1px solid var(--line);
-  background:var(--bg); padding:10px 6px; display:flex; flex-direction:column; gap:8px; }
+#branch-tabs { width:56px; min-height:0; border-right:1px solid var(--line);
+  background:var(--bg); padding:10px 0; display:flex; flex-direction:column; gap:8px; }
 .branch-tab { position:relative; display:flex; flex-direction:column; align-items:center;
   justify-content:center; gap:6px; width:100%; min-height:74px; padding:9px 3px;
-  border:0; border-radius:9px; background:none; color:var(--ink2); cursor:pointer;
+  border:0; background:none; color:var(--ink2); cursor:pointer;
   font:inherit; font-size:12px; }
 .branch-tab:hover { background:var(--line2); color:var(--ink); }
 .branch-tab.active { background:var(--accent-soft); color:var(--accent); }
-.branch-tab.active::before { content:""; position:absolute; left:-6px; top:7px; bottom:7px;
-  width:3px; border-radius:0 3px 3px 0; background:var(--accent); }
+.branch-tab.active::before { content:""; position:absolute; left:0; top:7px; bottom:7px;
+  width:3px; background:var(--accent); }
 .branch-tab svg { width:23px; height:23px; display:block; }
 /* #root is a grid cell now, not a flex child: it fills its share. A reading
    page scrolls itself; a view that wants the full-height tab shell adds

@@ -1,4 +1,4 @@
-// The account fallback harness, held by the bridge. It is used only when a
+// The device fallback harness, held by the bridge. It is used only when a
 // coding-agent creation request does not name a provider. Visible creation
 // pickers send their displayed Claude Code or Codex provider and override it.
 // The bridge's provider catalog supplies this selector's choices and labels.
@@ -19,7 +19,7 @@ export function defaultHarnessOf(settings, providers) {
 export function defaultHarnessPanelHtml() {
   return `<div class="panel">
       <h3>🖥️ Fallback agent</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">This account fallback is used only when a coding-agent creation request does not name a provider. Creation pickers send the displayed Claude Code or Codex provider and override this fallback.</div>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">This device fallback is used only when a coding-agent creation request does not name a provider. Creation pickers send the displayed Claude Code or Codex provider and override this fallback.</div>
       <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">
         <div class="field" style="flex:1;min-width:180px"><label for="defaultharness">Fallback agent</label>
           <select id="defaultharness" disabled><option>loading…</option></select></div>

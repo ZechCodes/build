@@ -1,22 +1,23 @@
 //! How a checkout is isolated from the project it came from.
 //!
 //! Build gives every task its own checkout. There are two ways to make one — a
-//! git linked worktree of the project repository, and a copy-on-write clone of
-//! the whole project directory — and this module is where that variation
+//! git linked worktree of the project repository, and a Rift snapshot of the
+//! whole project directory — and this module is where that variation
 //! lives. [`Isolation`] is the choice as a value, [`Isolation::of`] reads the
 //! choice back off a checkout on disk (the environment is the source of truth;
 //! nothing about isolation is persisted), [`IsolationAvailability`] answers
-//! whether a volume can make one, and [`IsolationBackend`] is the whole of what
+//! whether its prerequisites are available, and [`IsolationBackend`] is what
 //! a backend does. `WorktreeManager` is the only caller.
 
-pub mod cow;
 pub mod probe;
+pub mod rift;
 pub mod worktree;
 
 use std::path::{Path, PathBuf};
 
 use crate::git_process::GitError;
 
+pub use rift::RiftBackend;
 pub use worktree::WorktreeBackend;
 
 /// Things that can go wrong managing a checkout.
@@ -57,19 +58,19 @@ pub enum Isolation {
     /// A git linked worktree of the project repository (`git worktree add`).
     #[default]
     Worktree,
-    /// A copy-on-write clone of the whole project directory, `.git` included.
-    Cow,
+    /// A copy-on-write workspace made and registered by the Rift CLI.
+    Rift,
 }
 
 impl Isolation {
     /// Every isolation there is.
-    pub const ALL: [Isolation; 2] = [Isolation::Worktree, Isolation::Cow];
+    pub const ALL: [Isolation; 2] = [Isolation::Worktree, Isolation::Rift];
 
     /// The word the wire, the settings file and the controls all use.
     pub fn wire(self) -> &'static str {
         match self {
             Isolation::Worktree => "worktree",
-            Isolation::Cow => "cow",
+            Isolation::Rift => "rift",
         }
     }
 
@@ -82,7 +83,7 @@ impl Isolation {
 
     /// How the checkout at `path` is isolated, read from the checkout itself.
     /// `None` when it is not a checkout Build could have made: no `.git`, or a
-    /// standalone repository without the clone marker. Two `stat`s — this runs
+    /// standalone repository without Build's Rift marker. Two `stat`s — this runs
     /// on every poll-path use of a checkout, so it never opens git.
     pub fn of(path: &Path) -> Option<Isolation> {
         let git_dir = path.join(".git");
@@ -90,8 +91,8 @@ impl Isolation {
         if metadata.is_file() {
             return Some(Isolation::Worktree);
         }
-        if metadata.is_dir() && git_dir.join(COW_MARKER).exists() {
-            return Some(Isolation::Cow);
+        if metadata.is_dir() && marker_is_rift(&git_dir.join(BUILD_ISOLATION_MARKER)) {
+            return Some(Isolation::Rift);
         }
         None
     }
@@ -151,12 +152,12 @@ pub fn local_branch_ref(branch: &str) -> String {
 
 /// Git's directory for the checkout at `checkout`: the one `<checkout>/.git`
 /// points at for a linked worktree, and `<checkout>/.git` itself for a
-/// repository of its own — a clone, or a project's main checkout. A relative
+/// repository of its own — a Rift checkout, or a project's main checkout. A relative
 /// `gitdir:` pointer (git 2.48+ with `worktree.useRelativePaths`) is resolved
 /// against the directory holding the pointer, which is what git does with it.
 ///
 /// The one owner of where a checkout keeps its git directory, so every marker
-/// beside a checkout — the clone's and the teardown's alike — is found the same
+/// beside a checkout — Rift's and the teardown's alike — is found the same
 /// way and no backend spells a marker path.
 pub fn checkout_git_dir(checkout: &Path) -> Result<PathBuf, WorktreeError> {
     let pointer = checkout.join(".git");
@@ -180,41 +181,46 @@ pub fn checkout_git_dir(checkout: &Path) -> Result<PathBuf, WorktreeError> {
     })
 }
 
-/// The file inside a clone's `.git` that says the clone is Build's and which
-/// project it was cloned from. A clone is a repository like any other, so this
+/// The file inside a Rift checkout's `.git` that says the checkout is Build's
+/// and which project it came from. A Rift checkout is a repository like any other, so this
 /// is the only thing that tells it apart; its contents are compared, never used
 /// to build a path to act on.
-pub const COW_MARKER: &str = "build-isolation";
+pub const BUILD_ISOLATION_MARKER: &str = "build-isolation";
 
-/// The marker a clone of `project` carries: its isolation and the project's
+/// The marker a Rift checkout of `project` carries: its isolation and the project's
 /// canonical path, one per line.
-fn cow_marker_body(project: &Path) -> std::io::Result<String> {
+fn rift_marker_body(project: &Path) -> std::io::Result<String> {
     let canonical = std::fs::canonicalize(project)?;
     Ok(format!(
         "{}\n{}\n",
-        Isolation::Cow.wire(),
+        Isolation::Rift.wire(),
         canonical.display()
     ))
 }
 
-/// Write the marker into `checkout`, naming `project` as where it was cloned from.
-pub fn write_cow_marker(checkout: &Path, project: &Path) -> Result<(), WorktreeError> {
+/// Write the marker into `checkout`, naming `project` as its source.
+pub fn write_rift_marker(checkout: &Path, project: &Path) -> Result<(), WorktreeError> {
     std::fs::write(
-        checkout_git_dir(checkout)?.join(COW_MARKER),
-        cow_marker_body(project)?,
+        checkout_git_dir(checkout)?.join(BUILD_ISOLATION_MARKER),
+        rift_marker_body(project)?,
     )?;
     Ok(())
 }
 
-/// Whether the checkout at `checkout` carries a clone marker naming `project`.
-pub fn cow_marker_names(checkout: &Path, project: &Path) -> bool {
+/// Whether the checkout at `checkout` carries Build's Rift marker naming `project`.
+pub fn rift_marker_names(checkout: &Path, project: &Path) -> bool {
     let Ok(git_dir) = checkout_git_dir(checkout) else {
         return false;
     };
-    let Ok(found) = std::fs::read_to_string(git_dir.join(COW_MARKER)) else {
+    let Ok(found) = std::fs::read_to_string(git_dir.join(BUILD_ISOLATION_MARKER)) else {
         return false;
     };
-    cow_marker_body(project).is_ok_and(|expected| found == expected)
+    rift_marker_body(project).is_ok_and(|expected| found == expected)
+}
+
+fn marker_is_rift(marker: &Path) -> bool {
+    std::fs::read_to_string(marker)
+        .is_ok_and(|body| body.lines().next() == Some(Isolation::Rift.wire()))
 }
 
 /// What removing a checkout does to the branch it is on.
@@ -230,7 +236,7 @@ pub enum BranchTeardown {
 
 /// The file, in the checkout's own git directory, that records its
 /// [`BranchTeardown`]. That directory goes when the checkout does — git prunes
-/// a linked worktree's entry with it, and a clone's `.git` is inside it — so
+/// a linked worktree's entry with it, and a Rift checkout's `.git` is inside it — so
 /// the fact cannot outlive what it describes.
 pub(crate) const BRANCH_TEARDOWN_MARKER: &str = "build-branch-teardown";
 
@@ -259,7 +265,7 @@ impl BranchTeardown {
 
 /// Record what teardown of the checkout at `checkout` owns. Isolation-blind:
 /// the marker lands in whatever git directory the checkout has, which for a
-/// clone is its own `.git` beside [`COW_MARKER`] and for a linked worktree is
+/// Rift workspace is its own `.git` beside [`BUILD_ISOLATION_MARKER`] and for a linked worktree is
 /// the entry git keeps for it in the project.
 pub fn record_branch_teardown(
     checkout: &Path,
@@ -307,41 +313,42 @@ pub fn teardown_in_git_dir(git_dir: &Path) -> Result<BranchTeardown, WorktreeErr
     }
 }
 
-/// Which isolations can be used for a project on this volume.
+/// Which isolations have their prerequisites available on this device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsolationAvailability {
-    /// `Ok(())` when a clone can be made for this project on this volume;
+    /// `Ok(())` when the CLI and project layout support attempting Rift creation;
+    /// Rift checks filesystem support during initialization and creation.
     /// `Err(reason)` is the sentence the settings controls show.
-    pub cow: Result<(), String>,
+    pub rift: Result<(), String>,
 }
 
 impl IsolationAvailability {
-    /// What this volume can do for `project`, whose checkouts live under
+    /// Which prerequisites are available for `project`, whose checkouts live under
     /// `worktrees_root`.
     pub fn of(project: &Path, worktrees_root: &Path) -> Self {
         IsolationAvailability {
-            cow: probe::cow_availability(project, worktrees_root),
+            rift: probe::rift_availability(project, worktrees_root),
         }
     }
 
-    /// Nothing can be cloned, for a reason no volume answered — the caller's
+    /// Rift is unavailable for a reason no probe answered — the caller's
     /// own sentence, carried in the shape every control already reads, so the
     /// representation stays here rather than being rebuilt by whoever has a
     /// sentence of their own.
     pub fn unavailable(reason: impl Into<String>) -> Self {
         IsolationAvailability {
-            cow: Err(reason.into()),
+            rift: Err(reason.into()),
         }
     }
 
     /// Why `isolation` cannot be used here, or `None` when it can. A linked
-    /// worktree is never locked; a clone is locked by the probe's reason. The
+    /// worktree is never locked; Rift is locked by the probe's reason. The
     /// one owner of which isolation a volume can lock, so nothing outside this
     /// module has to name a variant to ask.
     pub fn lock_reason(&self, isolation: Isolation) -> Option<&str> {
         match isolation {
             Isolation::Worktree => None,
-            Isolation::Cow => self.cow.as_ref().err().map(String::as_str),
+            Isolation::Rift => self.rift.as_ref().err().map(String::as_str),
         }
     }
 }
@@ -350,8 +357,8 @@ impl serde::Serialize for IsolationAvailability {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let mut shape = serializer.serialize_struct("IsolationAvailability", 2)?;
-        shape.serialize_field("cow", &self.cow.is_ok())?;
-        shape.serialize_field("reason", &self.cow.as_ref().err())?;
+        shape.serialize_field("rift", &self.rift.is_ok())?;
+        shape.serialize_field("reason", &self.rift.as_ref().err())?;
         shape.end()
     }
 }
@@ -365,7 +372,8 @@ pub trait IsolationBackend: Send + Sync {
     fn kind(&self) -> Isolation;
 
     /// Put a checkout of `branch` (which already exists in `project`) at `path`.
-    /// On any failure nothing is left at `path`.
+    /// Undo a failed checkout when ownership is established. Provider or
+    /// cleanup failures are reported without deleting an unowned destination.
     fn materialize(&self, project: &Path, branch: &str, path: &Path) -> Result<(), WorktreeError>;
 
     /// Everything only this backend can check about the checkout at `path`:
@@ -446,10 +454,10 @@ mod tests {
         let clone = dir.path().join("clone");
         std::fs::create_dir_all(clone.join(".git")).unwrap();
         assert_eq!(Isolation::of(&clone), None);
-        write_cow_marker(&clone, &repo).unwrap();
-        assert_eq!(Isolation::of(&clone), Some(Isolation::Cow));
-        assert!(cow_marker_names(&clone, &repo));
-        assert!(!cow_marker_names(&clone, dir.path()));
+        write_rift_marker(&clone, &repo).unwrap();
+        assert_eq!(Isolation::of(&clone), Some(Isolation::Rift));
+        assert!(rift_marker_names(&clone, &repo));
+        assert!(!rift_marker_names(&clone, dir.path()));
 
         assert_eq!(
             Isolation::of(&repo),
@@ -492,17 +500,17 @@ mod tests {
         let availability = IsolationAvailability::of(&repo, &dir.path().join("worktrees"));
 
         assert_eq!(availability.lock_reason(Isolation::Worktree), None);
-        // A clone is locked exactly when the probe could not make one, in the
+        // Rift is locked exactly when the probe cannot use the installed CLI, in the
         // probe's own words — no platform assumption either way.
         assert_eq!(
-            availability.lock_reason(Isolation::Cow),
-            availability.cow.as_ref().err().map(String::as_str),
+            availability.lock_reason(Isolation::Rift),
+            availability.rift.as_ref().err().map(String::as_str),
         );
         assert_eq!(
             serde_json::to_value(&availability).unwrap(),
             serde_json::json!({
-                "cow": availability.cow.is_ok(),
-                "reason": availability.cow.as_ref().err(),
+                "rift": availability.rift.is_ok(),
+                "reason": availability.rift.as_ref().err(),
             }),
         );
     }

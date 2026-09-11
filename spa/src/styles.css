@@ -802,6 +802,10 @@ textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); 
 .addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
 .addproj input.path { flex:1; }
 .adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
+/* Add project is a centered modal, so it does not need the bottom-sheet inset.
+   Its error slot should take space only when it has a message. */
+#sheet:has(#nrerr) { padding-bottom:22px; }
+#nrerr:empty { display:none; }
 .btn.mini { padding:4px 9px; font-size:12px; }
 .taskactions .btn { padding:4px 9px; font-size:12px; }
 select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink2); max-width:150px; }
@@ -884,6 +888,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
      words than three columns of broken ones. */
   .addproj { flex-wrap:wrap; }
   .sheet { width:94vw; padding:16px 14px calc(16px + env(safe-area-inset-bottom, 0px)); max-height:88vh; overflow-y:auto; }
+  #sheet:has(#nrerr) { padding-bottom:16px; }
   .sheet .field-row { flex-direction:column; gap:0 !important; }
   .comment-pop { max-width:calc(100vw - 16px); }
   .splitmenu { right:auto; left:0; }

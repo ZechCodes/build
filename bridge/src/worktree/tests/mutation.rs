@@ -2,8 +2,8 @@ use super::super::mutation::{CreatedLocalRef, PreparedBranch};
 use super::command::{commit_file, git_output, tip_of};
 use super::manager::{bare_origin_of, manager, pathdiff_from, push_feature_x_from_another_clone};
 use crate::git_fixture::{git_in, init_repo, init_repo_named};
-use crate::isolation::cow::CowBackend;
-use crate::isolation::probe::cow_or_skip;
+use crate::isolation::probe::rift_or_skip;
+use crate::isolation::rift::RiftBackend;
 use crate::isolation::{
     branch_teardown, record_branch_teardown, BranchTeardown, Isolation, IsolationBackend,
     BRANCH_TEARDOWN_MARKER,
@@ -954,24 +954,24 @@ fn a_branch_is_deleted_only_while_it_still_points_where_it_was_read() {
     );
 }
 /// The whole of a clone create through the façade: the branch is cut in the
-/// project repo, the working directory is a copy-on-write clone on that
+/// project repo, the working directory is a Rift checkout on that
 /// branch, and `Isolation::of` reads it back as a clone.
 #[test]
 fn create_materializes_a_clone_end_to_end() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
 
     let wt = mgr
-        .create("cloned", "main", Isolation::Cow)
+        .create("cloned", "main", Isolation::Rift)
         .unwrap()
         .worktree;
 
     assert_eq!(wt.recorded_branch, "build/cloned");
     assert_eq!(wt.base_branch, "main");
-    assert_eq!(Isolation::of(&wt.path), Some(Isolation::Cow));
+    assert_eq!(Isolation::of(&wt.path), Some(Isolation::Rift));
     assert!(wt.path.join("README.md").exists(), "the clone is warm");
     let r = git2::Repository::open(&repo).unwrap();
     assert!(
@@ -994,7 +994,7 @@ fn create_materializes_a_clone_end_to_end() {
 #[test]
 fn create_on_branch_clones_onto_an_existing_branch() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
@@ -1003,7 +1003,7 @@ fn create_on_branch_clones_onto_an_existing_branch() {
     r.branch("build/started-by-hand", &head, false).unwrap();
 
     let added = mgr
-        .create_on_existing_branch("build/started-by-hand", "main", Isolation::Cow)
+        .create_on_existing_branch("build/started-by-hand", "main", Isolation::Rift)
         .unwrap();
 
     assert_eq!(
@@ -1011,7 +1011,7 @@ fn create_on_branch_clones_onto_an_existing_branch() {
         BranchTeardown::KeepsBranch,
         "the branch was already there, not cut again"
     );
-    assert_eq!(Isolation::of(&added.worktree.path), Some(Isolation::Cow));
+    assert_eq!(Isolation::of(&added.worktree.path), Some(Isolation::Rift));
     assert_eq!(
         git2::Repository::open(&added.worktree.path)
             .unwrap()
@@ -1027,12 +1027,12 @@ fn create_on_branch_clones_onto_an_existing_branch() {
 #[test]
 fn restore_recreates_a_deleted_clone_on_its_recorded_branch() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
     let wt = mgr
-        .create("recover-clone", "main", Isolation::Cow)
+        .create("recover-clone", "main", Isolation::Rift)
         .unwrap()
         .worktree;
     commit_file(&wt.path, "clone-stage");
@@ -1043,12 +1043,12 @@ fn restore_recreates_a_deleted_clone_on_its_recorded_branch() {
         .restore(
             &wt,
             UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
-            Isolation::Cow,
+            Isolation::Rift,
         )
         .unwrap();
 
     assert_eq!(restored, wt);
-    assert_eq!(Isolation::of(&wt.path), Some(Isolation::Cow));
+    assert_eq!(Isolation::of(&wt.path), Some(Isolation::Rift));
     assert!(
         wt.path.join("clone-stage.txt").exists(),
         "the recreated clone carries the published work"
@@ -1059,17 +1059,20 @@ fn restore_recreates_a_deleted_clone_on_its_recorded_branch() {
 #[test]
 fn restore_verifies_a_clone_and_rejects_one_of_another_project() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
 
-    let mine = mgr.create("mine", "main", Isolation::Cow).unwrap().worktree;
+    let mine = mgr
+        .create("mine", "main", Isolation::Rift)
+        .unwrap()
+        .worktree;
     assert_eq!(
         mgr.restore(
             &mine,
             UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
-            Isolation::Cow
+            Isolation::Rift
         )
         .unwrap(),
         mine
@@ -1077,7 +1080,7 @@ fn restore_verifies_a_clone_and_rejects_one_of_another_project() {
 
     let other = init_repo_named(dir.path(), "other");
     let intruder_path = dir.path().join("worktrees").join("intruder");
-    CowBackend
+    RiftBackend::new(dir.path().join("worktrees"))
         .materialize(&other, "main", &intruder_path)
         .unwrap();
     let intruder = Worktree {
@@ -1091,12 +1094,12 @@ fn restore_verifies_a_clone_and_rejects_one_of_another_project() {
         .restore(
             &intruder,
             UnregisteredRestore::Write(BranchTeardown::DeletesBranch),
-            Isolation::Cow,
+            Isolation::Rift,
         )
         .unwrap_err()
         .to_string();
     assert!(
-        refused.contains("not a copy-on-write clone of this project"),
+        refused.contains("not a Rift checkout of this project"),
         "{refused}"
     );
 }
@@ -1105,17 +1108,17 @@ fn restore_verifies_a_clone_and_rejects_one_of_another_project() {
 #[test]
 fn create_cutting_branch_clones_onto_the_branch_it_cut() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
 
     let added = mgr
-        .create_cutting_branch("hotfix-login", "main", Isolation::Cow)
+        .create_cutting_branch("hotfix-login", "main", Isolation::Rift)
         .unwrap();
 
     assert_eq!(added.teardown, BranchTeardown::DeletesBranch);
-    assert_eq!(Isolation::of(&added.worktree.path), Some(Isolation::Cow));
+    assert_eq!(Isolation::of(&added.worktree.path), Some(Isolation::Rift));
     assert_eq!(
         git2::Repository::open(&added.worktree.path)
             .unwrap()
@@ -1132,7 +1135,7 @@ fn create_cutting_branch_clones_onto_the_branch_it_cut() {
 #[test]
 fn a_clones_teardown_marker_round_trips_in_its_own_git_directory() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let mgr = manager(&dir, &repo);
@@ -1140,9 +1143,9 @@ fn a_clones_teardown_marker_round_trips_in_its_own_git_directory() {
     let head = r.head().unwrap().peel_to_commit().unwrap();
     r.branch("theirs", &head, false).unwrap();
 
-    let cut = mgr.create("cut-for-me", "main", Isolation::Cow).unwrap();
+    let cut = mgr.create("cut-for-me", "main", Isolation::Rift).unwrap();
     let borrowed = mgr
-        .create_on_existing_branch("theirs", "main", Isolation::Cow)
+        .create_on_existing_branch("theirs", "main", Isolation::Rift)
         .unwrap();
 
     assert!(
@@ -1173,6 +1176,31 @@ fn remove_checkout_on_a_missing_path_succeeds() {
     mgr.remove_checkout(&ghost)
         .expect("absence is success for every backend");
 }
+/// Removing a Rift checkout must go through Rift before the generic worktree
+/// cleanup sees its directory. Recreating the same checkout proves Rift also
+/// removed its registry entry instead of only deleting files from disk.
+#[test]
+fn remove_checkout_releases_a_rift_checkout_for_recreation() {
+    let (dir, repo) = init_repo();
+    if !rift_or_skip(dir.path()) {
+        return;
+    }
+    let mgr = manager(&dir, &repo);
+    let first = mgr
+        .create_on_existing_branch("main", "main", Isolation::Rift)
+        .unwrap()
+        .worktree;
+
+    mgr.remove_checkout(&first.path).unwrap();
+    assert!(!first.path.exists(), "the Rift checkout was removed");
+
+    let recreated = mgr
+        .create_on_existing_branch("main", "main", Isolation::Rift)
+        .expect("Rift released its registry entry")
+        .worktree;
+    assert_eq!(recreated.path, first.path);
+    assert_eq!(Isolation::of(&recreated.path), Some(Isolation::Rift));
+}
 /// A directory that is not a checkout is still a directory the teardown was
 /// pointed at: there is nothing to publish from, and it goes.
 #[test]
@@ -1197,6 +1225,25 @@ fn removing_a_directory_that_is_no_longer_a_checkout_still_clears_it() {
             .is_ok(),
         "the kept branch is untouched"
     );
+}
+/// A damaged standalone checkout still looks like a repository Rift may own.
+/// Without Build's ownership marker the manager refuses it instead of routing
+/// it through generic worktree cleanup and recursively deleting user files.
+#[test]
+fn removing_an_unowned_rift_shaped_directory_refuses_and_preserves_it() {
+    let (dir, repo) = init_repo();
+    let manager = manager(&dir, &repo);
+    let checkout = dir.path().join("worktrees").join("unowned");
+    std::fs::create_dir_all(checkout.join(".git")).unwrap();
+    std::fs::write(checkout.join(".rift"), "registry marker\n").unwrap();
+    std::fs::write(checkout.join("valuable.txt"), "keep me\n").unwrap();
+
+    manager
+        .remove_checkout(&checkout)
+        .expect_err("an unowned standalone checkout is ambiguous");
+
+    assert!(checkout.join("valuable.txt").exists());
+    assert!(checkout.join(".rift").exists());
 }
 #[test]
 fn removing_a_vanished_worktree_leaves_a_branch_it_can_no_longer_vouch_for() {
@@ -1269,12 +1316,12 @@ fn removing_a_checkout_that_cannot_answer_destroys_nothing() {
 #[test]
 fn a_vanished_clone_cannot_vouch_and_its_branch_stands() {
     let (dir, repo) = init_repo();
-    if !cow_or_skip(dir.path()) {
+    if !rift_or_skip(dir.path()) {
         return;
     }
     let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
     let wt = manager
-        .create("cloned-away", "main", Isolation::Cow)
+        .create("cloned-away", "main", Isolation::Rift)
         .unwrap()
         .worktree;
     std::fs::remove_dir_all(&wt.path).unwrap();

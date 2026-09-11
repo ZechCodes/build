@@ -72,7 +72,24 @@ pub fn run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Out
 }
 
 fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::Result<Output> {
-    let child = Command::new("git")
+    run_command_with_deadline(OsStr::new("git"), dir, args, deadline)
+}
+
+/// Run a Git or isolation-provider executable directly, with bounded execution
+/// and concurrent pipe draining. Arguments are never interpreted by a shell.
+pub(crate) fn run_command_with_deadline(
+    executable: &OsStr,
+    dir: &Path,
+    args: &[&OsStr],
+    deadline: Duration,
+) -> std::io::Result<Output> {
+    let mut command = Command::new(executable);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let child = command
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
@@ -81,7 +98,7 @@ fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::
         .stderr(Stdio::piped())
         .current_dir(dir)
         .spawn()?;
-    bounded(child, args, deadline)
+    bounded(child, executable, args, deadline)
 }
 
 /// Everything `child` said, or the deadline it did not answer within. Both
@@ -89,7 +106,12 @@ fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::
 /// bounds the whole of it — the pipes reaching their end and the process
 /// reaching its exit, which are two events and not one: a child that has let go
 /// of both pipes and not yet exited is killed like any other.
-fn bounded(mut child: Child, args: &[&OsStr], deadline: Duration) -> std::io::Result<Output> {
+fn bounded(
+    mut child: Child,
+    executable: &OsStr,
+    args: &[&OsStr],
+    deadline: Duration,
+) -> std::io::Result<Output> {
     let (closed, pipe_closed) = std::sync::mpsc::channel();
     let stdout = drain(child.stdout.take(), closed.clone());
     let stderr = drain(child.stderr.take(), closed);
@@ -99,16 +121,16 @@ fn bounded(mut child: Child, args: &[&OsStr], deadline: Duration) -> std::io::Re
         if let Err(unread) = pipe_closed.recv_timeout(left) {
             kill_and_reap(&mut child);
             return Err(match unread {
-                std::sync::mpsc::RecvTimeoutError::Timeout => timed_out(args, deadline),
+                std::sync::mpsc::RecvTimeoutError::Timeout => timed_out(executable, args, deadline),
                 std::sync::mpsc::RecvTimeoutError::Disconnected => std::io::Error::other(format!(
-                    "git {args:?}: a pipe reader died before the child did"
+                    "{executable:?} {args:?}: a pipe reader died before the child did"
                 )),
             });
         }
     }
     let Some(status) = exit_before(&mut child, expiry)? else {
         kill_and_reap(&mut child);
-        return Err(timed_out(args, deadline));
+        return Err(timed_out(executable, args, deadline));
     };
     Ok(Output {
         status,
@@ -120,15 +142,24 @@ fn bounded(mut child: Child, args: &[&OsStr], deadline: Duration) -> std::io::Re
 /// End a child nobody is going to wait for, so no caller is answered while the
 /// process it asked about is still running.
 fn kill_and_reap(child: &mut Child) {
+    // A provider can spawn Git helpers. End its whole process group so those
+    // helpers cannot keep changing the checkout after a timeout is reported.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
 
 /// How a child that outlived its deadline is answered.
-fn timed_out(args: &[&OsStr], deadline: Duration) -> std::io::Error {
+fn timed_out(executable: &OsStr, args: &[&OsStr], deadline: Duration) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        format!("git {args:?} did not return within {}s", deadline.as_secs()),
+        format!(
+            "{executable:?} {args:?} did not return within {}s",
+            deadline.as_secs()
+        ),
     )
 }
 
@@ -191,6 +222,47 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn provider_arguments_are_literal_and_failures_keep_the_exit_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let argument = "a path; $(touch should-not-exist)";
+        let output = run_command_with_deadline(
+            OsStr::new("sh"),
+            dir.path(),
+            &[
+                OsStr::new("-c"),
+                OsStr::new("printf '%s' \"$1\"; printf 'provider error' >&2; exit 7"),
+                OsStr::new("test-provider"),
+                OsStr::new(argument),
+            ],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, argument.as_bytes());
+        assert_eq!(output.stderr, b"provider error");
+        assert!(!dir.path().join("should-not-exist").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_provider_cannot_leave_a_helper_modifying_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = run_command_with_deadline(
+            OsStr::new("sh"),
+            dir.path(),
+            &[
+                OsStr::new("-c"),
+                OsStr::new("(sleep 0.3; touch late-write) & wait"),
+            ],
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!dir.path().join("late-write").exists());
+    }
+
     /// A `git://` endpoint that completes the connection but never sends the
     /// ref advertisement, so a real `git fetch` against it blocks on read the
     /// way an unreachable server would — a git that never returns, with no
@@ -243,8 +315,13 @@ mod tests {
             .unwrap();
 
         let started = Instant::now();
-        let error =
-            bounded(child, &[OsStr::new("linger")], Duration::from_millis(300)).unwrap_err();
+        let error = bounded(
+            child,
+            OsStr::new("sh"),
+            &[OsStr::new("linger")],
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
         assert!(

@@ -10,7 +10,7 @@ use std::io::Write as _;
 /// with, spelled once so an operator reading the log and a human reading the
 /// thread are told the same thing in the same words.
 pub(in crate::app) fn isolation_downgrade_note(reason: &str) -> String {
-    format!("Created a git worktree: copy-on-write isolation is unavailable here — {reason}")
+    format!("Created a git worktree: Rift isolation is unavailable here — {reason}")
 }
 
 impl AppState {

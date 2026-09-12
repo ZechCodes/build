@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The model menu on the composer's left, opposite the send.
+// The model and reasoning menus on the composer's left, opposite the send.
 //
 // It is the split button's menu half and nothing else: one button that says
 // what the next turn will run on, and a menu of the models the agent's own
@@ -31,10 +31,15 @@ const CATALOG = {
 
 const host = () => document.querySelector("#host");
 const slot = () => host().querySelector(`#${composerPartIds(IDS.input).modelMenu}`);
+const reasoningSlot = () => host().querySelector(`#${composerPartIds(IDS.input).reasoningMenu}`);
 const button = () => slot().querySelector(".caret");
+const reasoningButton = () => reasoningSlot().querySelector(".caret");
 const menu = () => slot().querySelector(".splitmenu");
+const reasoningMenu = () => reasoningSlot().querySelector(".splitmenu");
 const items = () => [...menu().querySelectorAll(".mi")].map((item) => item.dataset.action);
+const reasoningItems = () => [...reasoningMenu().querySelectorAll(".mi")].map((item) => item.dataset.action);
 const item = (action) => menu().querySelector(`.mi[data-action="${action}"]`);
+const reasoningItem = (action) => reasoningMenu().querySelector(`.mi[data-action="${action}"]`);
 
 const mount = (choice, { provider = "claude_adk", onChoose = vi.fn(), activeModel = "" } = {}) => {
   document.body.innerHTML = `<div id="host">${composerHtml({
@@ -55,6 +60,7 @@ describe("where the menu sits", () => {
     const bar = html.slice(html.indexOf('class="composer-bar"'));
     expect(bar.indexOf("composer-model")).toBeLessThan(bar.indexOf("composer-actions"));
     expect(bar).toContain('id="imodel"');
+    expect(bar).toContain('id="ireasoning"');
   });
 
   it("is absent from a composer that does not ask for it", () => {
@@ -64,21 +70,25 @@ describe("where the menu sits", () => {
 });
 
 describe("what the menu offers", () => {
-  it("says what the next turn runs on, and offers the harness's models and efforts", () => {
+  it("shows separate model and reasoning controls with their own choices", () => {
     mount({ provider: "claude_adk", model: "claude-opus-5", effort: "high" });
-    expect(button().textContent).toContain("Claude Opus 5 · high");
+    expect(button().textContent).toContain("Claude Opus 5");
+    expect(reasoningButton().textContent).toContain("Reasoning: high");
     button().click();
-    expect(items()).toEqual([
-      "model:", "model:claude-opus-5", "model:claude-haiku-4-5", "effort:", "effort:low", "effort:high",
-    ]);
+    expect(items()).toEqual(["model:", "model:claude-opus-5", "model:claude-haiku-4-5"]);
+    reasoningButton().click();
+    expect(reasoningItems()).toEqual(["effort:", "effort:low", "effort:high"]);
     expect(item("model:claude-opus-5").className).toContain("on");
+    expect(reasoningItem("effort:high").className).toContain("on");
   });
 
   it("offers the models of the harness the agent is on, and no harness of its own", () => {
     mount({ provider: "codex", model: "", effort: "" }, { provider: "codex" });
     expect(button().textContent).toContain("Default model");
     button().click();
-    expect(items()).toEqual(["model:", "model:gpt", "effort:", "effort:medium"]);
+    expect(items()).toEqual(["model:", "model:gpt"]);
+    reasoningButton().click();
+    expect(reasoningItems()).toEqual(["effort:", "effort:medium"]);
     expect(items().some((action) => action.startsWith("provider"))).toBe(false);
   });
 
@@ -86,6 +96,7 @@ describe("what the menu offers", () => {
     mount({ provider: "claude_adk", model: "claude-haiku-4-5", effort: "" });
     button().click();
     expect(items()).toEqual(["model:", "model:claude-opus-5", "model:claude-haiku-4-5"]);
+    expect(reasoningSlot().hidden).toBe(true);
   });
 });
 
@@ -106,6 +117,15 @@ describe("choosing", () => {
     item("model:claude-haiku-4-5").click();
     expect(onChoose).toHaveBeenCalledWith({ provider: "claude_adk", model: "claude-haiku-4-5", effort: "" });
   });
+
+  it("changes reasoning independently of the selected model", () => {
+    const { onChoose } = mount({ provider: "claude_adk", model: "claude-opus-5", effort: "low" });
+    reasoningButton().click();
+    reasoningItem("effort:high").click();
+
+    expect(onChoose).toHaveBeenCalledWith({ provider: "claude_adk", model: "claude-opus-5", effort: "high" });
+    expect(reasoningButton().textContent).toContain("Reasoning: high");
+  });
 });
 
 describe("a repaint under the poll", () => {
@@ -124,7 +144,8 @@ describe("a repaint under the poll", () => {
   it("repaints when the choice moved under it — another device chose", () => {
     const { control } = mount({ provider: "claude_adk", model: "", effort: "" });
     control.set(CATALOG, "claude_adk", { provider: "claude_adk", model: "claude-opus-5", effort: "low" });
-    expect(button().textContent).toContain("Claude Opus 5 · low");
+    expect(button().textContent).toContain("Claude Opus 5");
+    expect(reasoningButton().textContent).toContain("Reasoning: low");
   });
 });
 

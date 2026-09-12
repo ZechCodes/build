@@ -137,6 +137,8 @@ const CATALOG = {
 const railHost = () => document.getElementById("agent-rail");
 const modelMenuButton = () => railHost().querySelector(".composer-model .caret");
 const menuItem = (action) => railHost().querySelector(`.composer-model .mi[data-action="${action}"]`);
+const reasoningMenuButton = () => railHost().querySelector(".composer-reasoning .caret");
+const reasoningMenuItem = (action) => railHost().querySelector(`.composer-reasoning .mi[data-action="${action}"]`);
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
@@ -1865,10 +1867,15 @@ describe("the composer's model menu", () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "low" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · low");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("Reasoning: low");
     modelMenuButton().click();
     expect([...railHost().querySelectorAll(".composer-model .mi")].map((mi) => mi.dataset.action)).toEqual([
-      "model:", "model:claude-opus-5", "model:claude-haiku-4-5", "effort:", "effort:low", "effort:high",
+      "model:", "model:claude-opus-5", "model:claude-haiku-4-5",
+    ]);
+    reasoningMenuButton().click();
+    expect([...railHost().querySelectorAll(".composer-reasoning .mi")].map((mi) => mi.dataset.action)).toEqual([
+      "effort:", "effort:low", "effort:high",
     ]);
   });
 
@@ -1892,15 +1899,16 @@ describe("the composer's model menu", () => {
     modelMenuButton().click();
     menuItem("model:claude-opus-5").click();
     await flush();
-    modelMenuButton().click();
-    menuItem("effort:high").click();
+    reasoningMenuButton().click();
+    reasoningMenuItem("effort:high").click();
     await flush();
 
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "high" })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · high");
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("Reasoning: high");
   });
 
   it("says the model the open agent is actually running on, with no second round trip", async () => {
@@ -2006,6 +2014,40 @@ describe("the composer's model menu", () => {
       agent_id: "ag-1",
       choice_revision: 1,
       body: "use the new model",
+    });
+  });
+
+  it("uses model and reasoning changes made in an existing conversation on the next send", async () => {
+    payload = branchRow({
+      agents: [agent({ model: "claude-opus-5", effort: "low", active_model: "claude-opus-5" })],
+    });
+    await mount();
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+    modelMenuButton().click();
+    menuItem("model:claude-opus-5").click();
+    await flush();
+    reasoningMenuButton().click();
+    reasoningMenuItem("effort:high").click();
+    await flush();
+
+    const composer = panel().querySelector("#railinput");
+    composer.value = "continue with these settings";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("agent.choose").at(-1).params).toMatchObject({
+      agent_id: "ag-1",
+      model: "claude-opus-5",
+      effort: "high",
+    });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      agent_id: "ag-1",
+      choice_revision: 3,
+      body: "continue with these settings",
     });
   });
 

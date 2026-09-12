@@ -1309,7 +1309,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   resize:none; border:0; border-radius:12px 12px 0 0; padding:11px 12px 4px;
   background:transparent; color:var(--ink); font:13px/1.5 var(--sans); }
 .composer textarea:focus { outline:none; }
-.composer-bar { display:flex; align-items:center; gap:10px; padding:6px 8px 7px 8px; }
+.composer-bar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:6px 8px 7px 8px; }
 .composer-bar .hint { flex:1 1 auto; min-width:0; color:var(--dim); font-size:11.5px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* Not a control: the reminder that the keyboard can send, sized down and out
@@ -1335,14 +1335,23 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    turn will run on. It states a standing answer rather than asking for a press,
    so it is the quietest control on the row — the mini vocabulary in dim ink,
    with its chrome arriving on hover. */
-.composer-model { flex:0 0 auto; }
-.composer-model .btn.mini { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+.composer-choice-controls { flex:0 1 auto; min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:4px; }
+.composer-model { flex:1 1 auto; min-width:0; }
+.composer-reasoning { flex:0 0 auto; min-width:0; }
+.composer-model .btn.mini, .composer-reasoning .btn.mini { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color:var(--dim); background:none; border-color:transparent; }
-.composer-model .btn.mini:hover { color:var(--ink2); border-color:var(--line); }
+.composer-model .btn.mini:hover, .composer-reasoning .btn.mini:hover { color:var(--ink2); border-color:var(--line); }
 /* One button, so it keeps its own left edge and its own corners. */
-.composer-model .splitbtn .caret { border-left:0; border-radius:8px; }
+.composer-model .splitbtn .caret, .composer-reasoning .splitbtn .caret { border-left:0; border-radius:8px; }
 /* Anchored to the left edge it hangs from, unlike the send's menu at the right. */
-.composer-model .splitmenu { left:0; right:auto; max-height:280px; overflow-y:auto; }
+.composer-model .splitmenu, .composer-reasoning .splitmenu { left:0; right:auto; max-height:280px; overflow-y:auto; }
+@media (max-width: 720px) {
+  .composer-bar { flex-wrap:wrap; gap:4px 8px; }
+  .composer-choice-controls { flex:1 1 100%; }
+  .composer-bar .hint { order:2; }
+  .composer-shortcut, .composer-actions { order:2; }
+  .composer-model .btn.mini, .composer-reasoning .btn.mini { max-width:calc(50vw - 34px); }
+}
 .composer-attach { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
   border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer; }
 .composer-attach:hover { background:var(--panel); color:var(--ink2); }

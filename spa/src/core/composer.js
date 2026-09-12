@@ -15,7 +15,14 @@
 import { esc } from "./text.js";
 import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_X } from "./icons.js";
 import { menuButtonMarkup, mountSplitMenu, splitButtonMarkup } from "./splitButton.js";
-import { modelMenuLabel, modelMenuOptions, modelMenuSelection, modelMenuTitle } from "./agentChoice.js";
+import {
+  modelMenuLabel,
+  modelMenuSelection,
+  modelMenuTitle,
+  modelSelectorOptions,
+  reasoningSelectorLabel,
+  reasoningSelectorOptions,
+} from "./agentChoice.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -119,6 +126,7 @@ export const composerPartIds = (inputId) => ({
   file: `${inputId}file`,
   sendControl: `${inputId}sendcontrol`,
   modelMenu: `${inputId}model`,
+  reasoningMenu: `${inputId}reasoning`,
   context: `${inputId}context`,
 });
 
@@ -178,7 +186,10 @@ export function composerHtml({
       ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
       <textarea id="${esc(inputId)}" rows="1" placeholder="${esc(placeholder)}"></textarea>
       <div class="composer-bar">
-        ${modelMenu ? `<div class="composer-model" id="${esc(parts.modelMenu)}"></div>` : ""}
+        ${modelMenu ? `<div class="composer-choice-controls">
+          <div class="composer-model" id="${esc(parts.modelMenu)}"></div>
+          <div class="composer-reasoning" id="${esc(parts.reasoningMenu)}"></div>
+        </div>` : ""}
         <span class="hint" id="${esc(hintId)}"></span>
         <span class="composer-shortcut" aria-hidden="true">⌘↵</span>
         <div class="composer-actions">
@@ -206,30 +217,43 @@ const choiceKey = (provider, choice, activeModel) =>
 /// provider, choice)` paints it; a call that would change nothing repaints
 /// nothing, because a poll must not shut a menu the human just opened.
 export function mountComposerModelMenu(root, { ids, onChoose }) {
-  const slot = root.querySelector(`#${composerPartIds(ids.input).modelMenu}`);
-  if (!slot) return null;
+  const parts = composerPartIds(ids.input);
+  const modelSlot = root.querySelector(`#${parts.modelMenu}`);
+  const reasoningSlot = root.querySelector(`#${parts.reasoningMenu}`);
+  if (!modelSlot || !reasoningSlot) return null;
 
   // What the menu on screen was painted from: the choice, in words, and the
   // catalog it was read out of — which lands after the first paint and brings
   // the models with it.
   let painted = null;
   let paintedCatalog = null;
+  let closeModelMenu = null;
+  let closeReasoningMenu = null;
 
   const render = (catalog, provider, choice, activeModel) => {
+    closeModelMenu?.();
+    closeReasoningMenu?.();
     painted = choiceKey(provider, choice, activeModel);
     paintedCatalog = catalog;
-    slot.innerHTML = menuButtonMarkup(
-      modelMenuLabel(catalog, provider, choice, activeModel),
-      modelMenuOptions(catalog, provider, choice),
+    const choose = (action) => {
+      const next = modelMenuSelection(action, choice);
+      render(catalog, provider, next, activeModel);
+      onChoose(next);
+    };
+    modelSlot.innerHTML = menuButtonMarkup(
+      modelMenuLabel(catalog, provider, { ...choice, effort: "" }, activeModel),
+      modelSelectorOptions(catalog, provider, choice),
       { title: modelMenuTitle(catalog, provider, choice, activeModel) },
     );
-    mountSplitMenu(slot, {
-      onChoose: (action) => {
-        const next = modelMenuSelection(action, choice);
-        render(catalog, provider, next, activeModel);
-        onChoose(next);
-      },
-    });
+    closeModelMenu = mountSplitMenu(modelSlot, { onChoose: choose }).closeMenu;
+    const reasoningOptions = reasoningSelectorOptions(catalog, provider, choice);
+    reasoningSlot.hidden = reasoningOptions.length === 0;
+    reasoningSlot.innerHTML = reasoningOptions.length
+      ? menuButtonMarkup(reasoningSelectorLabel(choice), reasoningOptions, { title: "Reasoning level for the next turn" })
+      : "";
+    closeReasoningMenu = reasoningOptions.length
+      ? mountSplitMenu(reasoningSlot, { onChoose: choose }).closeMenu
+      : null;
   };
 
   return {

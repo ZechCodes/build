@@ -144,6 +144,20 @@ export function modelMenuOptions(catalog, providerId, choice) {
   ];
 }
 
+/** The model and reasoning controls are separate in the composer so both
+ * choices remain visible without opening an ambiguously named combined menu. */
+export function modelSelectorOptions(catalog, providerId, choice) {
+  return modelMenuOptions(catalog, providerId, choice).filter((option) => option.id.startsWith("model:"));
+}
+
+export function reasoningSelectorOptions(catalog, providerId, choice) {
+  return modelMenuOptions(catalog, providerId, choice).filter((option) => option.id.startsWith("effort:"));
+}
+
+export function reasoningSelectorLabel(choice) {
+  return choice.effort ? `Reasoning: ${choice.effort}` : "Reasoning: default";
+}
+
 export function activeModelLabel(catalog, providerId, modelId) {
   if (!modelId) return "";
   const model = matchCatalogModel(catalogForProvider(catalog || {}, providerId).models || [], modelId);

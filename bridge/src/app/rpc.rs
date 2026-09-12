@@ -1,6 +1,7 @@
 use crate::app::{
-    agent_attach, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello, stream_start,
-    term_ack, term_attach, term_create, term_input, term_resize, AppState, DeliveryRunner,
+    agent_attach, agent_interrupt, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello,
+    stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
+    DeliveryRunner,
 };
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::harness::harness_for;
@@ -117,6 +118,7 @@ pub(in crate::app) fn dispatch_frame(
         // `DeliveryRunner`, which needs the shared handle `dispatch` does not
         // have.
         "agent.start" => agent_start(state, &params, &timer),
+        "agent.interrupt" => agent_interrupt(state, &params, &timer),
         _ => {
             // A verb whose git work must not run under the lock hands that
             // work back rather than doing it here; the drain below runs it with

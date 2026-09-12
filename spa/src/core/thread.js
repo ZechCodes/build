@@ -7,7 +7,6 @@ import { paintRunsShowingLatest } from "./activityRunScroll.js";
 import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
 import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "./activityDigest.js";
 import {
-  INTERRUPT_SEND_OPTION,
   autoGrow,
   composerHtml,
   composerPartIds,
@@ -1723,20 +1722,14 @@ export function wireThreadLinks(root, openLink) {
 /// a wedged-looking box invites. Restoring the button here — before any
 /// repaint — keeps that true even when the caller's rebuild is frozen.
 ///
-/// `onSubmit(body, attachments, { interrupt })` does the transport —
-/// `interrupt` is true only where the send control offered the alternative and
-/// the writer chose it. `upload` (with the
+/// `onSubmit(body, attachments)` does the transport. `onInterrupt` stops the
+/// active turn when the empty composer is showing its stop control. `upload` (with the
 /// `readAttachments`/`writeAttachments` draft pair) turns the box into one that
 /// takes files; without it the composer is the plain text box it always was.
 ///
 /// Returns a controller: `setCanInterrupt(flag)` moves the send between its two
 /// shapes in place, for a surface whose poll can change the answer under a box
 /// somebody is typing in.
-/// The send button's word. It wraps its label so a busy state can rewrite the
-/// word without wiping the icon beside it; the split shape, which has no icon
-/// to protect, is driven directly.
-const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
-
 function mountViewingContext(root, inputId, viewingContext) {
   const tray = root.querySelector(`#${composerPartIds(inputId).context}`);
   const paint = (context = viewingContext?.snapshot?.()) => {
@@ -1755,6 +1748,7 @@ function mountViewingContext(root, inputId, viewingContext) {
 export function wireThreadComposer(root, {
   ids,
   onSubmit,
+  onInterrupt,
   readDraft,
   writeDraft,
   onError,
@@ -1776,36 +1770,43 @@ export function wireThreadComposer(root, {
   const say = (message) => {
     if (hint) hint.textContent = message;
   };
-  const tray = upload
+  let canInterrupt = !!send?.classList.contains("is-stop");
+  let submitting = false;
+  let blocked = false;
+  let tray = null;
+  const hasDraft = () => input.value.trim() !== "" || !!(tray && !tray.isEmpty());
+  const paintAction = () => {
+    if (!control || submitting) return;
+    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt, hasDraft: hasDraft() });
+    wireSendControl();
+    setPressable(true);
+  };
+  tray = upload
     ? mountComposerAttachments(root, {
         ids,
         upload,
         readAttachments,
         writeAttachments,
         onError: say,
+        onChange: () => queueMicrotask(paintAction),
       })
     : null;
 
   input.value = readDraft();
   input.oninput = () => {
     writeDraft(input.value);
-    say("");
+    if (!blocked) say("");
+    paintAction();
   };
   const fitToText = autoGrow(input);
 
-  /// The caret half of a split send, when the control is wearing that shape.
-  const caretOf = () => control && control.querySelector(".caret");
-  let blocked = false;
-  let submitting = false;
   const setPressable = (pressable) => {
     const disabled = !pressable || blocked;
     send.disabled = disabled;
-    const caret = caretOf();
-    if (caret) caret.disabled = disabled;
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
-  const submit = async ({ interrupt = false } = {}) => {
+  const submit = async () => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;
     if (tray && tray.busy()) {
@@ -1824,23 +1825,22 @@ export function wireThreadComposer(root, {
     }
     setPressable(false);
     submitting = true;
-    sendLabel(send).textContent = "sending…";
     try {
-      const result = await onSubmit(body, tray ? tray.attachments() : [], { interrupt });
+      const result = await onSubmit(body, tray ? tray.attachments() : []);
       if (!submissionOwnsDraft) writeDraft("");
       input.value = "";
       fitToText();
       if (tray) tray.clear();
       submitting = false;
       setPressable(true);
-      sendLabel(send).textContent = "Send";
+      paintAction();
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
       // The text and the files stay put: a failed send must never cost the user
       // their words, and re-picking the files would be worse.
       submitting = false;
       setPressable(true);
-      sendLabel(send).textContent = "Send";
+      paintAction();
       if (onError) onError(error);
     }
   };
@@ -1850,26 +1850,34 @@ export function wireThreadComposer(root, {
   const wireSendControl = () => {
     send = root.querySelector(`#${ids.send}`);
     if (!send) return;
-    send.onclick = () => submit();
-    if (control) {
-      mountSplitMenu(control, { onChoose: (action) => submit({ interrupt: action === INTERRUPT_SEND_OPTION.id }) });
-    }
+    send.onclick = async () => {
+      if (send.dataset.action !== "stop") return submit();
+      if (send.disabled || !onInterrupt) return;
+      setPressable(false);
+      submitting = true;
+      try {
+        await onInterrupt();
+      } catch (error) {
+        if (onError) onError(error);
+      } finally {
+        submitting = false;
+        paintAction();
+      }
+    };
   };
 
-  /// Move the send between its two shapes. Never mid-press: a send in flight
-  /// owns the button's word, and an open menu is a choice being made — the
-  /// poll comes round again a second later, and by then the press has landed.
-  let splitShown = !!(control && control.querySelector(".splitmenu"));
+  /// Record whether the active turn can be stopped. A request already in
+  /// flight keeps its disabled control until it settles, then paints the latest
+  /// turn and draft state.
   const setCanInterrupt = (wanted) => {
-    const split = !!wanted;
-    if (!control || split === splitShown) return;
-    if (send.disabled || control.querySelector(".splitmenu:not([hidden])")) return;
-    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt: split });
-    splitShown = split;
-    wireSendControl();
+    const next = !!wanted;
+    if (!control || next === canInterrupt) return;
+    canInterrupt = next;
+    paintAction();
   };
 
   wireSendControl();
+  paintAction();
   input.onkeydown = (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -1882,7 +1890,6 @@ export function wireThreadComposer(root, {
     setPressable(!submitting);
     if (!submitting) {
       say(blocked ? message : "");
-      sendLabel(send).textContent = blocked ? message : "Send";
     }
   };
 

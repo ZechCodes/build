@@ -1996,7 +1996,7 @@ describe("the composer's model menu", () => {
 
     expect(callsTo("thread.post")).toEqual([]);
     expect(panel().querySelector("#railsend").disabled).toBe(true);
-    expect(panel().querySelector("#railsend").textContent).toContain("Applying model…");
+    expect(panel().querySelector("#railhint").textContent).toContain("Applying model…");
 
     acknowledgeChoice({
       entity_id: "run-3",
@@ -2098,57 +2098,51 @@ describe("the composer's model menu", () => {
   });
 });
 
-// A message to an agent mid-turn can be handed over two ways: queued for its
-// next step — which for a carrier that can be steered usually decides the same
-// turn — or after stopping the turn outright. Two behaviours behind one verb,
-// so the send is a split button, and the stop is never the default press.
+// An empty composer stops an interruptible active turn. As soon as there is a
+// draft, the same stable control sends it instead.
 describe("interrupting the turn", () => {
-  const splitSend = () => panel().querySelector(".composer-send-control .splitbtn");
-  const menuItem = (action) =>
-    [...panel().querySelectorAll(".composer-send-control .splitmenu .mi")].find((mi) => mi.dataset.action === action);
+  const send = () => panel().querySelector("#railsend");
 
   it("offers the plain send to an agent whose turn cannot be stopped", async () => {
     payload = branchRow({ agents: [agent({ working: true })] });
     await mount();
-    expect(splitSend()).toBe(null);
-    expect(panel().querySelector("#railsend")).toBeTruthy();
+    expect(send().dataset.action).toBe("send");
   });
 
   it("offers the plain send to an agent that is not working, whatever it can do", async () => {
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
     await mount();
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
   });
 
-  it("splits the send for a working agent that announced the interrupt", async () => {
+  it("shows stop for a working agent that announced the interrupt", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    expect(splitSend()).toBeTruthy();
-    // The default press is the send it always was, still the button by that id.
-    expect(splitSend().querySelector("#railsend").dataset.action).toBe("send");
-    expect(menuItem("interrupt_send").textContent).toContain("Interrupt & send");
+    expect(send().dataset.action).toBe("stop");
+    expect(send().getAttribute("aria-label")).toBe("Stop agent");
   });
 
-  it("posts the message with the interrupt flag when that is the option chosen", async () => {
+  it("invokes the standalone interrupt when stop is pressed", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    panel().querySelector("#railinput").value = "stop, do this instead";
-    splitSend().querySelector(".caret").click();
-    menuItem("interrupt_send").click();
+    send().click();
     await flush();
-    expect(callsTo("thread.post")[0].params).toMatchObject({
-      entity_id: "run-3", agent_id: "ag-1", body: "stop, do this instead", interrupt: true,
+    expect(callsTo("agent.interrupt")[0].params).toMatchObject({
+      entity_id: "run-3", agent_id: "ag-1", conversation_id: "ag-1",
     });
   });
 
-  it("leaves the flag off the default press", async () => {
+  it("changes stop back to send as soon as the user types", async () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
-    panel().querySelector("#railinput").value = "when you get a moment";
-    panel().querySelector("#railsend").click();
+    const input = panel().querySelector("#railinput");
+    input.value = "when you get a moment";
+    input.dispatchEvent(new Event("input"));
+    expect(send().dataset.action).toBe("send");
+    send().click();
     await flush();
     expect(callsTo("thread.post")[0].params.body).toBe("when you get a moment");
-    expect(callsTo("thread.post")[0].params.interrupt).toBeUndefined();
+    expect(callsTo("agent.interrupt")).toHaveLength(0);
   });
 
   // The condition changes every time an agent starts or finishes a turn, which
@@ -2159,13 +2153,13 @@ describe("interrupting the turn", () => {
     await mount();
     const input = panel().querySelector("#railinput");
     input.value = "half a sent";
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
 
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(splitSend()).toBeTruthy();
+    expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
 
@@ -2173,7 +2167,7 @@ describe("interrupting the turn", () => {
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
     vi.advanceTimersByTime(1600);
     await flush();
-    expect(splitSend()).toBe(null);
+    expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
   });

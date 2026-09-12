@@ -13,8 +13,8 @@
 // the view's draft, not the DOM's.
 
 import { esc } from "./text.js";
-import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_X } from "./icons.js";
-import { menuButtonMarkup, mountSplitMenu, splitButtonMarkup } from "./splitButton.js";
+import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_SQUARE, ICON_X } from "./icons.js";
+import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
 import {
   modelMenuLabel,
   modelMenuSelection,
@@ -130,34 +130,12 @@ export const composerPartIds = (inputId) => ({
   context: `${inputId}context`,
 });
 
-/// The two ways one message can reach an agent that is already working.
-///
-/// The default is the send it has always been: the message is queued and the
-/// agent takes it at the next step of the turn it is running — which, for a
-/// carrier that can be steered mid-turn, usually decides that turn's outcome.
-/// The alternative stops the turn first. It is never the default press: the
-/// queued send costs nothing and mostly gets there anyway, so the human reaches
-/// for the interrupt deliberately or not at all.
-export const SEND_OPTION = {
-  id: "send",
-  label: "Send",
-  description: "Hand this message to the agent at its next step",
-  busyLabel: "sending…",
-};
-export const INTERRUPT_SEND_OPTION = {
-  id: "interrupt_send",
-  menuLabel: "Interrupt & send",
-  description: "Stop what the agent is doing now and hand it this message",
-  busyLabel: "sending…",
-};
-
-/// The send control in its two shapes, keyed by whether there is a turn to
-/// stop. The button is named `sendId` in both, so one lookup wires either.
-export function sendControlHtml({ sendId, canInterrupt = false }) {
-  if (!canInterrupt) {
-    return `<button class="btn primary composer-send" id="${esc(sendId)}"><span class="composer-send-label">Send</span>${ICON_ARROW_RIGHT}</button>`;
-  }
-  return splitButtonMarkup([SEND_OPTION, INTERRUPT_SEND_OPTION], { variant: "primary", primaryId: sendId });
+/// The right-hand action is an arrow while there is something to send. When a
+/// turn is active and the draft is empty, the same stable button becomes Stop.
+export function sendControlHtml({ sendId, canInterrupt = false, hasDraft = false }) {
+  const stopping = canInterrupt && !hasDraft;
+  const label = stopping ? "Stop agent" : "Send message";
+  return `<button type="button" class="btn primary composer-send${stopping ? " is-stop" : ""}" id="${esc(sendId)}" data-action="${stopping ? "stop" : "send"}" aria-label="${label}" title="${label}">${stopping ? ICON_SQUARE : ICON_ARROW_RIGHT}</button>`;
 }
 
 /// The composer's markup. `attachable` adds the paperclip and the tray; a

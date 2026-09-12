@@ -1420,6 +1420,14 @@ export function mountAgentRail(host, context) {
         return call("thread.attach", { entity_id: entityId, filename: file.name, content_b64: contentBase64 });
       },
       onSubmit: (message, attachments, options) => sendFrom(controller, message, attachments, options),
+      onInterrupt: () => {
+        const { entityId, agentId, conversationId } = controller.identity;
+        return chatRepository.currentCall()("agent.interrupt", {
+          entity_id: entityId,
+          agent_id: agentId,
+          conversation_id: conversationId,
+        });
+      },
       onError: (error) => notifyError("Message failed", error.message),
     });
     composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });

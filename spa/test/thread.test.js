@@ -175,7 +175,7 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector(".thread-event-detail")).toBeNull();
     expect(document.querySelector("details")).toBeNull();
     expect(document.querySelector("#planthreadinput")).not.toBeNull();
-    expect(document.querySelector("#planthreadsend .composer-send-label").textContent).toBe("Send");
+    expect(document.querySelector("#planthreadsend").getAttribute("aria-label")).toBe("Send message");
   });
 
   // The timeline's avatar spine is drawn by the timeline itself, so a
@@ -226,7 +226,7 @@ describe("conversation thread rendering", () => {
     // sitting open at a height nothing has filled yet.
     expect(document.querySelector("#diffthreadinput").rows).toBe(1);
     expect(document.querySelector("#diffthreadhint")).not.toBeNull();
-    expect(document.querySelector("#diffthreadsend .composer-send-label").textContent).toBe("Send");
+    expect(document.querySelector("#diffthreadsend").getAttribute("aria-label")).toBe("Send message");
     expect(document.querySelector("#diffthreadsend").classList.contains("composer-send")).toBe(true);
   });
 
@@ -1091,6 +1091,42 @@ describe("thread composer wiring", () => {
   };
   const cmdEnter = (input) => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true }));
 
+  const mountActionControl = () => {
+    document.body.innerHTML = `<div id="host">${composerHtml({
+      inputId: "ci", sendId: "cs", hintId: "ch", placeholder: "Say something…", canInterrupt: true,
+    })}</div>`;
+    return document.querySelector("#host");
+  };
+
+  it("changes Stop to Send while typing and follows a turn that ends during the stop request", async () => {
+    const host = mountActionControl();
+    let finishInterrupt;
+    const control = wireThreadComposer(host, {
+      ids: { input: "ci", send: "cs", hint: "ch" },
+      readDraft: () => "",
+      writeDraft: () => {},
+      onSubmit: () => Promise.resolve(),
+      onInterrupt: () => new Promise((resolve) => { finishInterrupt = resolve; }),
+    });
+    expect(host.querySelector("#cs").dataset.action).toBe("stop");
+
+    const input = host.querySelector("#ci");
+    input.value = "new direction";
+    input.dispatchEvent(new Event("input"));
+    expect(host.querySelector("#cs").dataset.action).toBe("send");
+
+    input.value = "";
+    input.dispatchEvent(new Event("input"));
+    host.querySelector("#cs").click();
+    control.setCanInterrupt(false);
+    expect(host.querySelector("#cs").disabled).toBe(true);
+    finishInterrupt();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(host.querySelector("#cs").dataset.action).toBe("send");
+    expect(host.querySelector("#cs").disabled).toBe(false);
+  });
+
   it("posts once when Cmd+Enter is pressed repeatedly during an in-flight send", async () => {
     // Cmd+Enter bypasses the button's native disabled gate, so without an
     // explicit re-entry guard the obvious retry double-posts.
@@ -1157,13 +1193,14 @@ describe("thread composer wiring", () => {
 });
 
 describe("sending a message that carries files", () => {
-  const mountWithTray = (overrides = {}) => {
+  const mountWithTray = (overrides = {}, composerOverrides = {}) => {
     document.body.innerHTML = `<div id="host">${composerHtml({
       inputId: "ti",
       sendId: "ts",
       hintId: "th",
       placeholder: "Say something…",
       attachable: true,
+      ...composerOverrides,
     })}</div>`;
     const host = document.querySelector("#host");
     const sent = [];
@@ -1189,6 +1226,14 @@ describe("sending a message that carries files", () => {
   const settle = async () => {
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   };
+
+  it("changes Stop to Send when a file is attached without any text", async () => {
+    const { host } = mountWithTray({}, { canInterrupt: true });
+    expect(host.querySelector("#ts").dataset.action).toBe("stop");
+    drop(host, [new File(["a"], "shot.png", { type: "image/png" })]);
+    await settle();
+    expect(host.querySelector("#ts").dataset.action).toBe("send");
+  });
 
   it("names the uploaded files on the send and empties the tray after", async () => {
     const { host, sent } = mountWithTray();

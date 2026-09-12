@@ -8,6 +8,7 @@ pub(in crate::app::tests) struct SessionLog {
     turns: Arc<Mutex<Vec<String>>>,
     choices: Arc<Mutex<Vec<Option<ModelChoice>>>>,
     ended: Arc<std::sync::atomic::AtomicBool>,
+    interrupted: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SessionLog {
@@ -24,6 +25,10 @@ impl SessionLog {
     /// retirement thread that carries the kill.
     pub(in crate::app::tests) fn ended(&self) -> bool {
         settles(|| self.ended.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub(in crate::app::tests) fn interrupted(&self) -> bool {
+        self.interrupted.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -42,6 +47,7 @@ pub(in crate::app::tests) struct DictatedSession {
     watched_status: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
     active_model: Option<String>,
     native_choices: Vec<ModelChoice>,
+    interruptible: bool,
 }
 
 impl DictatedSession {
@@ -56,6 +62,7 @@ impl DictatedSession {
             watched_status: None,
             active_model: None,
             native_choices: Vec::new(),
+            interruptible: false,
         }
     }
 
@@ -112,6 +119,11 @@ impl DictatedSession {
         self.native_choices.push(choice);
         self
     }
+
+    pub(in crate::app::tests) fn interruptible(mut self) -> Self {
+        self.interruptible = true;
+        self
+    }
 }
 
 impl AgentSession for DictatedSession {
@@ -138,6 +150,20 @@ impl AgentSession for DictatedSession {
         self.watched_status
             .as_ref()
             .map_or(self.status, |status| status.borrow().status)
+    }
+    fn can_interrupt(&self) -> bool {
+        self.interruptible && matches!(self.status(), AgentStatus::Working)
+    }
+    fn interrupt(&self) -> Result<(), HarnessError> {
+        if !self.can_interrupt() {
+            return Err(HarnessError::Unsupported(
+                "dictated session cannot interrupt".into(),
+            ));
+        }
+        self.log
+            .interrupted
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
     fn status_changed(
         &self,

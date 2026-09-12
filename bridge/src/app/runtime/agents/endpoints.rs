@@ -8,7 +8,6 @@ use crate::app::{
 use crate::app::{Tab, TabRole};
 use crate::carrier::SessionSender;
 use crate::harness::harness_for;
-#[cfg(test)]
 use crate::harness::AgentStatus;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::reaper::Retirement;
@@ -232,6 +231,67 @@ pub(in crate::app) fn agent_start(
         "term_id": agent_tab_id(&agent.agent_id),
         "agent_id": agent.agent_id,
         "notified": agent.has_unread,
+    }))
+}
+
+/// Stop the turn running in one exact agent session without ending that
+/// session or posting anything to its conversation.
+pub(in crate::app) fn agent_interrupt(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let entity_id = require_str(params, "entity_id")?;
+    let agent_id = require_str(params, "agent_id")?;
+    let conversation_id = require_str(params, "conversation_id")?;
+    let session = {
+        let s = timer.lock(state);
+        if s.plans.contains_key(&entity_id) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
+        let address = s.resolve_conversation_address(&entity_id, Some(&agent_id))?;
+        if address.conversation_id != conversation_id {
+            return Err(format!(
+                "agent.interrupt: stale conversation_id {conversation_id}; agent {agent_id} is bound to {}",
+                address.conversation_id
+            ));
+        }
+        let root = s.entity_agent_root(&entity_id)?;
+        let tab = s
+            .session_registry
+            .agent_snapshot(&TabKey::agent(&root, &agent_id))
+            .ok_or_else(|| "agent.interrupt: this agent has no running session".to_string())?;
+        let exact = tab.role.agent() == Some((entity_id.as_str(), agent_id.as_str()))
+            && tab.instance.as_ref().is_some_and(|instance| {
+                instance.entity_id == entity_id
+                    && instance.agent_id == agent_id
+                    && instance.conversation_id == conversation_id
+                    && instance.checkout == root.display().to_string()
+            });
+        if !exact {
+            return Err(
+                "agent.interrupt: the running session does not match this conversation".to_string(),
+            );
+        }
+        if !tab.live || matches!(tab.session.status(), AgentStatus::Ended { .. }) {
+            return Err("agent.interrupt: this agent has no running session".to_string());
+        }
+        if !matches!(tab.session.status(), AgentStatus::Working) {
+            return Err("agent.interrupt: this agent is not running a turn".to_string());
+        }
+        if !tab.session.can_interrupt() {
+            return Err("agent.interrupt: this running turn cannot be interrupted".to_string());
+        }
+        Arc::clone(&tab.session)
+    };
+    session
+        .interrupt()
+        .map_err(|error| format!("agent.interrupt: {error}"))?;
+    Ok(json!({
+        "entity_id": entity_id,
+        "agent_id": agent_id,
+        "conversation_id": conversation_id,
+        "interrupted": true,
     }))
 }
 

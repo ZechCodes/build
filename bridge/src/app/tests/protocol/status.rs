@@ -1,5 +1,137 @@
 use super::*;
 
+#[test]
+fn agent_interrupt_stops_only_the_exact_running_turn() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let root = {
+        let mut app = state.lock().unwrap();
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-interrupt",
+            RunState::Building,
+        )
+    };
+    let log = SessionLog::default();
+    let key = {
+        let mut app = state.lock().unwrap();
+        insert_dictated_agent_tab(
+            &mut app,
+            &root,
+            "run-interrupt",
+            DictatedSession::reporting(AgentStatus::Working)
+                .recording_into(&log)
+                .interruptible(),
+        )
+    };
+    let agent_id = crate::agent::derived_agent_id("run-interrupt");
+    let before_items = state.lock().unwrap().runs["run-interrupt"]
+        .agents
+        .primary()
+        .unwrap()
+        .thread
+        .items
+        .len();
+
+    let response = call(
+        &handler,
+        "agent.interrupt",
+        json!({
+            "entity_id": "run-interrupt",
+            "agent_id": agent_id,
+            "conversation_id": agent_id,
+        }),
+    );
+
+    assert_eq!(response["ok"], true, "{response:?}");
+    assert_eq!(response["result"]["interrupted"], true);
+    assert!(
+        log.interrupted(),
+        "the live session received the stop request"
+    );
+    let app = state.lock().unwrap();
+    assert!(
+        app.session_registry.contains(&key),
+        "the session remains attached"
+    );
+    assert_eq!(
+        app.runs["run-interrupt"]
+            .agents
+            .primary()
+            .unwrap()
+            .thread
+            .items
+            .len(),
+        before_items,
+        "stopping a turn posts no conversation message"
+    );
+}
+
+#[test]
+fn agent_interrupt_refuses_stale_idle_and_unsupported_sessions() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let root = {
+        let mut app = state.lock().unwrap();
+        insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-interrupt-refused",
+            RunState::Building,
+        )
+    };
+    let agent_id = crate::agent::derived_agent_id("run-interrupt-refused");
+    {
+        let mut app = state.lock().unwrap();
+        insert_dictated_agent_tab(
+            &mut app,
+            &root,
+            "run-interrupt-refused",
+            DictatedSession::reporting(AgentStatus::Working),
+        );
+    }
+    let request = |conversation_id: &str| {
+        json!({
+            "entity_id": "run-interrupt-refused",
+            "agent_id": agent_id,
+            "conversation_id": conversation_id,
+        })
+    };
+
+    let stale = call(&handler, "agent.interrupt", request("conversation-stale"));
+    assert_eq!(stale["ok"], false, "{stale:?}");
+    assert!(stale["error"]
+        .as_str()
+        .unwrap()
+        .contains("stale conversation_id"));
+
+    let unsupported = call(&handler, "agent.interrupt", request(&agent_id));
+    assert_eq!(unsupported["ok"], false, "{unsupported:?}");
+    assert!(unsupported["error"]
+        .as_str()
+        .unwrap()
+        .contains("cannot be interrupted"));
+
+    {
+        let mut app = state.lock().unwrap();
+        insert_dictated_agent_tab(
+            &mut app,
+            &root,
+            "run-interrupt-refused",
+            DictatedSession::reporting(AgentStatus::Waiting).interruptible(),
+        );
+    }
+    let idle = call(&handler, "agent.interrupt", request(&agent_id));
+    assert_eq!(idle["ok"], false, "{idle:?}");
+    assert!(idle["error"]
+        .as_str()
+        .unwrap()
+        .contains("not running a turn"));
+}
+
 /// Step 3's refusals, live in production for the first time.
 ///
 /// Until a provider answered `has_terminal` false, every terminal verb's

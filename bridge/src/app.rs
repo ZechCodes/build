@@ -80,8 +80,8 @@ pub(in crate::app) use self::runs::views::{
 #[cfg(test)]
 pub(in crate::app) use self::runtime::agents::endpoints::agent_is_working;
 pub(in crate::app) use self::runtime::agents::endpoints::{
-    activity_event_kind, agent_attach, agent_start, has_agent_choice, model_choice_from,
-    named_agent_id, AgentSpawnRequest, DigestScope,
+    activity_event_kind, agent_attach, agent_interrupt, agent_start, has_agent_choice,
+    model_choice_from, named_agent_id, AgentSpawnRequest, DigestScope,
 };
 pub(in crate::app) use self::runtime::agents::records::{
     record_activity, PumpWake, SelfReport, NO_ANSWER_SESSION_ENDED, SESSION_DIED_SUMMARY,

@@ -1,6 +1,13 @@
 use serde_json::{json, Value};
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkSummary {
+    pub pushes: u64,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PublishedBase {
     PushTarget {
@@ -115,6 +122,84 @@ fn published_base(repo: &git2::Repository) -> Result<PublishedBase, String> {
         Some(oid) => PublishedBase::PublishedAncestor(oid),
         None => PublishedBase::Empty,
     })
+}
+
+fn unpublished_commit_count(
+    repo: &git2::Repository,
+    base: Option<git2::Oid>,
+) -> Result<u64, String> {
+    let Some(head) = repo.head().ok().and_then(|head| head.target()) else {
+        return Ok(0);
+    };
+    let mut walk = repo.revwalk().map_err(|error| error.to_string())?;
+    walk.push(head).map_err(|error| error.to_string())?;
+    if let Some(base) = base {
+        walk.hide(base).map_err(|error| error.to_string())?;
+    }
+    walk.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?
+        .len()
+        .try_into()
+        .map_err(|_| "unpushed commit count exceeds u64".to_string())
+}
+
+/// Counts the work not represented by this checkout's publication base.
+/// The diff is base-to-worktree, so committed and dirty edits are represented
+/// once in their final form rather than by adding per-commit diffstats.
+pub fn work_summary(repo_path: &Path) -> Result<WorkSummary, String> {
+    let repo = git2::Repository::open_ext(
+        repo_path,
+        git2::RepositoryOpenFlags::NO_SEARCH,
+        std::iter::empty::<&Path>(),
+    )
+    .map_err(|error| error.to_string())?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| "repository has no working directory".to_string())?;
+    let requested = repo_path
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let opened = workdir.canonicalize().map_err(|error| error.to_string())?;
+    if opened != requested {
+        return Err("path is not the repository working directory".to_string());
+    }
+    let base = published_base(&repo)?;
+    let pushes = unpublished_commit_count(&repo, base.oid())?;
+    let stat = crate::diff::diff_against_commit(repo_path, base.oid())
+        .map_err(|error| error.to_string())?
+        .stat();
+    Ok(WorkSummary {
+        pushes,
+        additions: stat.insertions as u64,
+        deletions: stat.deletions as u64,
+    })
+}
+
+pub fn aggregate_work_summary(repo_paths: &[std::path::PathBuf]) -> Result<WorkSummary, String> {
+    repo_paths.iter().try_fold(
+        WorkSummary {
+            pushes: 0,
+            additions: 0,
+            deletions: 0,
+        },
+        |total, path| {
+            let summary = work_summary(path)?;
+            Ok(WorkSummary {
+                pushes: total
+                    .pushes
+                    .checked_add(summary.pushes)
+                    .ok_or_else(|| "workspace push count exceeds u64".to_string())?,
+                additions: total
+                    .additions
+                    .checked_add(summary.additions)
+                    .ok_or_else(|| "workspace addition count exceeds u64".to_string())?,
+                deletions: total
+                    .deletions
+                    .checked_add(summary.deletions)
+                    .ok_or_else(|| "workspace deletion count exceeds u64".to_string())?,
+            })
+        },
+    )
 }
 
 /// The same destination precedence used by workspace finish. Reading config

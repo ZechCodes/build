@@ -118,3 +118,70 @@ fn branch_push_remote_wins_over_push_default_and_upstream_remote() {
     let payload = unpushed_payload(&clone, None).unwrap();
     assert_eq!(payload["base"]["label"], "branch-fork/main");
 }
+
+#[test]
+fn work_summary_counts_local_commits_and_the_final_tree_delta_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+    write(&clone, "committed.txt", "one\ntwo\n");
+    git_ok(&clone, &["add", "."]);
+    git_ok(&clone, &["commit", "-q", "-m", "local one"]);
+    write(&clone, "committed.txt", "one\ntwo\nthree\n");
+    git_ok(&clone, &["commit", "-q", "-am", "local two"]);
+    write(&clone, "untracked.txt", "four\n");
+
+    let summary = work_summary(&clone).unwrap();
+
+    assert_eq!(summary.pushes, 2);
+    assert_eq!(summary.additions, 4);
+    assert_eq!(summary.deletions, 0);
+}
+
+#[test]
+fn work_summary_does_not_discover_a_repository_below_the_requested_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    init_repo(&nested);
+
+    assert!(work_summary(dir.path()).is_err());
+}
+
+#[test]
+fn work_summary_rejects_a_bare_repository_without_a_working_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    git_ok(dir.path(), &["init", "-q", "--bare"]);
+
+    assert!(work_summary(dir.path()).is_err());
+}
+
+#[test]
+fn work_summary_rejects_the_git_directory_of_a_nonbare_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+
+    assert!(work_summary(&dir.path().join(".git")).is_err());
+}
+
+#[test]
+fn aggregate_work_summary_combines_two_repositories_and_dirty_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let first_root = dir.path().join("first");
+    let second_root = dir.path().join("second");
+    std::fs::create_dir(&first_root).unwrap();
+    std::fs::create_dir(&second_root).unwrap();
+    let first = clone_of_an_origin_carrying_feature_x(&first_root);
+    let second = clone_of_an_origin_carrying_feature_x(&second_root);
+    for (repo, name) in [(&first, "first.txt"), (&second, "second.txt")] {
+        write(repo, name, "committed\n");
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "-q", "-m", "local"]);
+        write(repo, "untracked.txt", "dirty\n");
+    }
+
+    let summary = aggregate_work_summary(&[first, second]).unwrap();
+
+    assert_eq!(summary.pushes, 2);
+    assert_eq!(summary.additions, 4);
+    assert_eq!(summary.deletions, 0);
+}

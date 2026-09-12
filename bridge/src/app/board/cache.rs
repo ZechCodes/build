@@ -25,6 +25,7 @@ pub(in crate::app) const TASK_STAT_TTL: Duration = Duration::from_secs(10);
 /// How long the primary-checkout `task.list.primary_changes` summary is served
 /// from cache before the next poll recomputes it (spec §5.3).
 pub(in crate::app) const PRIMARY_SUMMARY_TTL: Duration = Duration::from_secs(10);
+pub(in crate::app) const WORKSPACE_SUMMARY_TTL: Duration = Duration::from_secs(10);
 
 /// A claimed diff-cache refresh on its way to the blocking pool: the git work
 /// and the test seam that watches it start.
@@ -63,6 +64,10 @@ impl DiffCacheRefresh {
             Self::PrimarySummary { project_id, .. } => {
                 DiffCacheKey::PrimarySummary(project_id.clone())
             }
+            Self::WorkspaceSummary {
+                workspace_id,
+                repositories,
+            } => DiffCacheKey::WorkspaceSummary(workspace_id.clone(), repositories.clone()),
         }
     }
 
@@ -111,6 +116,17 @@ impl DiffCacheRefresh {
                     summary,
                 }
             }),
+            Self::WorkspaceSummary {
+                workspace_id,
+                repositories,
+            } => {
+                let summary = workspace_work_summary(repositories);
+                Some(DiffCacheEntry::WorkspaceSummary {
+                    workspace_id: workspace_id.clone(),
+                    repositories: repositories.clone(),
+                    summary,
+                })
+            }
         }
     }
 }
@@ -174,6 +190,24 @@ pub(in crate::app) enum DiffCacheRefresh {
         repo_path: std::path::PathBuf,
         base_branch: String,
     },
+    WorkspaceSummary {
+        workspace_id: String,
+        repositories: Vec<std::path::PathBuf>,
+    },
+}
+
+fn workspace_work_summary(repositories: &[std::path::PathBuf]) -> Value {
+    if repositories.is_empty() {
+        return Value::Null;
+    }
+    let Ok(summary) = crate::gitgui::aggregate_work_summary(repositories) else {
+        return Value::Null;
+    };
+    json!({
+        "pushes": summary.pushes,
+        "additions": summary.additions,
+        "deletions": summary.deletions,
+    })
 }
 
 /// Called on the thread that is about to compute a diff-cache entry, before the
@@ -425,6 +459,35 @@ impl AppState {
             .diff()
             .primary_summary(project_id)
             .map(|cached| (cached.computed_at, cached.value))
+    }
+
+    pub(in crate::app) fn workspace_summary_of(
+        &self,
+        workspace_id: &str,
+        repositories: &[std::path::PathBuf],
+    ) -> Option<(std::time::Instant, &Value)> {
+        self.board
+            .diff()
+            .workspace_summary(workspace_id, repositories)
+            .map(|cached| (cached.computed_at, cached.value))
+    }
+
+    pub(in crate::app) fn sync_workspace_summaries(
+        &mut self,
+        memberships: &[(String, Vec<std::path::PathBuf>)],
+    ) {
+        self.board.diff_mut().sync_workspace_summaries(memberships);
+    }
+
+    pub(in crate::app) fn workspace_summary_refresh(
+        &self,
+        workspace_id: &str,
+        repositories: Vec<std::path::PathBuf>,
+    ) -> DiffCacheRefresh {
+        DiffCacheRefresh::WorkspaceSummary {
+            workspace_id: workspace_id.to_string(),
+            repositories,
+        }
     }
 
     // ---- the poll surfaces' diff caches (stale-while-revalidate) -------------

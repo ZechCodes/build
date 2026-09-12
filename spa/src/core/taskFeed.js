@@ -71,7 +71,11 @@ const liveFeedSnapshot = (board, projectList, workspaceList) => ({
     ...project,
     id: project.project_id || project.id,
   })),
-  workspaces: workspaceList?.workspaces || [],
+  workspaces: (workspaceList?.workspaces || []).map((workspace) => {
+    const id = workspace.workspace_id || workspace.id;
+    const summary = (board.workspace_summaries || []).find((candidate) => candidate.workspace_id === id);
+    return summary ? { ...workspace, work_summary: summary.work_summary } : workspace;
+  }),
 });
 
 async function tick() {

@@ -35,18 +35,18 @@ import { workspaceRun } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
-/** The durable workspace rows shown by the landing rail. */
-function workspaceFacts(directories) {
-  if (!directories.length) return "No directories";
-  const gitCount = directories.filter((directory) => directory.is_git).length;
-  const noun = directories.length === 1 ? "directory" : "directories";
-  return `${directories.length} ${noun}${gitCount ? ` · ${gitCount} Git` : ""}`;
+/** Work still local to every Git directory in a durable workspace. The bridge
+ * omits the summary when even one repository cannot be read, so absence must
+ * remain visibly unknown rather than looking like a clean workspace. */
+function workspaceFacts(summary) {
+  const values = summary && [summary.pushes, summary.additions, summary.deletions];
+  if (!values || values.some((value) => !Number.isSafeInteger(value) || value < 0)) return "Work summary unavailable";
+  return `${summary.pushes} ${summary.pushes === 1 ? "push" : "pushes"} · +${summary.additions} −${summary.deletions}`;
 }
 
 const firstText = (...values) => values.find(Boolean) || "";
 
 function toWorkspaceEntry(workspace, projectNames, conversation) {
-  const directories = workspace.directories || [];
   const activity = conversation || { working: workspace.status === "active" };
   return {
     key: `workspace:${workspace.id}`,
@@ -64,7 +64,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     dismissed: !!activity.dismissed,
     working: !!activity.working,
     canFinish: false,
-    facts: workspaceFacts(directories),
+    facts: workspaceFacts(workspace.work_summary),
     route: workspaceRoute(workspace),
     anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
     lastActivityMs: ms(workspace.updated_at),

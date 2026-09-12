@@ -1,4 +1,6 @@
-use crate::app::{run_state_str, DigestScope, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL};
+use crate::app::{
+    run_state_str, DigestScope, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL, WORKSPACE_SUMMARY_TTL,
+};
 use crate::run::RunState;
 use crate::store::now_rfc3339;
 use crate::thread::ThreadDetail;
@@ -354,6 +356,42 @@ impl AppState {
             .map(|(_, summary)| summary.clone())
     }
 
+    /// Workspace-wide publication-aware summaries, served stale while every
+    /// repository walk runs through the existing off-lock cache worker.
+    fn workspace_summaries_json(&mut self) -> Vec<Value> {
+        let workspaces = self
+            .workspaces
+            .list(None)
+            .into_iter()
+            .map(|workspace| {
+                let repositories = workspace
+                    .directories
+                    .iter()
+                    .filter(|directory| directory.is_git)
+                    .map(|directory| directory.path.clone())
+                    .collect::<Vec<_>>();
+                (workspace.id.clone(), repositories)
+            })
+            .collect::<Vec<_>>();
+        self.sync_workspace_summaries(&workspaces);
+        workspaces
+            .into_iter()
+            .map(|(workspace_id, repositories)| {
+                let computed_at = self
+                    .workspace_summary_of(&workspace_id, &repositories)
+                    .map(|(at, _)| at);
+                let refresh = self.workspace_summary_refresh(&workspace_id, repositories.clone());
+                self.refresh_if_stale(computed_at, WORKSPACE_SUMMARY_TTL, refresh);
+                json!({
+                    "workspace_id": workspace_id,
+                    "work_summary": self.workspace_summary_of(&workspace_id, &repositories)
+                        .map(|(_, summary)| summary.clone())
+                        .unwrap_or(Value::Null),
+                })
+            })
+            .collect()
+    }
+
     // ---- Board + views --------------------------------------------------------
 
     /// The board: workspace branches and runs (each run carries a live
@@ -384,6 +422,7 @@ impl AppState {
         };
         let checkouts = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
+        let workspace_summaries = self.workspace_summaries_json();
         let projects = self
             .projects
             .iter()
@@ -433,6 +472,7 @@ impl AppState {
             // again.
             "scanning": checkouts.scanning,
             "primary_changes": primary_changes,
+            "workspace_summaries": workspace_summaries,
         })
     }
 

@@ -1116,6 +1116,10 @@ impl AppState {
                 .clone()
                 .or(next_start.model)
                 .unwrap_or_default(),
+            "active_effort": agent
+                .active_effort
+                .clone()
+                .unwrap_or_default(),
             "state": if live {
                 crate::agent::AgentLifecycle::Live.as_str()
             } else {
@@ -1195,8 +1199,8 @@ impl AppState {
                 self.record_agent_resume_id(owner, agent_id, Some(named));
             }
         }
-        if let Some(running) = report.model {
-            self.record_agent_active_model(owner, agent_id, Some(running));
+        if report.model.is_some() {
+            self.record_agent_runtime_choice(owner, agent_id, report.model, report.effort);
         }
     }
 }

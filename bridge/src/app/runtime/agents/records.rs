@@ -26,13 +26,16 @@ pub(in crate::app) enum PumpWake {
 pub(in crate::app) struct SelfReport {
     pub(in crate::app) named: Option<String>,
     pub(in crate::app) model: Option<String>,
+    pub(in crate::app) effort: Option<String>,
 }
 
 impl SelfReport {
     pub(in crate::app) fn read(session: &Arc<dyn AgentSession>) -> SelfReport {
+        let (model, effort) = session.active_choice();
         SelfReport {
             named: session.session_id(),
-            model: session.active_model(),
+            model,
+            effort,
         }
     }
 }
@@ -420,6 +423,18 @@ impl AppState {
             .clone()
     }
 
+    pub(in crate::app) fn recorded_active_effort(
+        &self,
+        owner: &str,
+        agent_id: &str,
+    ) -> Option<String> {
+        self.entity_agents(owner)
+            .ok()?
+            .by_id(agent_id)?
+            .active_effort
+            .clone()
+    }
+
     /// A turn is on its way to this agent, so why the LAST one never arrived is
     /// history: the row the client is about to wear a "starting" state on must
     /// not be answered by the failure before it.
@@ -440,6 +455,7 @@ impl AppState {
         });
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn record_agent_active_model(
         &mut self,
         owner: &str,
@@ -451,6 +467,27 @@ impl AppState {
         }
         self.edit_agent_record("record_agent_active_model", owner, agent_id, |agent| {
             agent.active_model = running;
+        });
+    }
+
+    pub(in crate::app) fn record_agent_runtime_choice(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) {
+        let unchanged = self
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .is_some_and(|agent| agent.active_model == model && agent.active_effort == effort);
+        if unchanged {
+            return;
+        }
+        self.edit_agent_record("record_agent_runtime_choice", owner, agent_id, |agent| {
+            agent.active_model = model;
+            agent.active_effort = effort;
         });
     }
 

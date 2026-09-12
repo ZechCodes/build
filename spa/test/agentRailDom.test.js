@@ -1868,14 +1868,14 @@ describe("the composer's model menu", () => {
     await mount();
 
     expect(modelMenuButton().textContent).toContain("Claude Opus 5");
-    expect(reasoningMenuButton().textContent).toContain("Reasoning: low");
+    expect(reasoningMenuButton().textContent).toContain("low");
     modelMenuButton().click();
     expect([...railHost().querySelectorAll(".composer-model .mi")].map((mi) => mi.dataset.action)).toEqual([
-      "model:", "model:claude-opus-5", "model:claude-haiku-4-5",
+      "model:claude-opus-5", "model:claude-haiku-4-5",
     ]);
     reasoningMenuButton().click();
     expect([...railHost().querySelectorAll(".composer-reasoning .mi")].map((mi) => mi.dataset.action)).toEqual([
-      "effort:", "effort:low", "effort:high",
+      "effort:low", "effort:high",
     ]);
   });
 
@@ -1908,14 +1908,15 @@ describe("the composer's model menu", () => {
     await flush();
 
     expect(modelMenuButton().textContent).toContain("Claude Opus 5");
-    expect(reasoningMenuButton().textContent).toContain("Reasoning: high");
+    expect(reasoningMenuButton().textContent).toContain("high");
   });
 
   it("says the model the open agent is actually running on, with no second round trip", async () => {
-    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5", active_effort: "high" })] });
     await mount();
 
     expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(reasoningMenuButton().textContent).toContain("high");
     expect(callsTo("agent.choose")).toEqual([]);
   });
 
@@ -1945,11 +1946,11 @@ describe("the composer's model menu", () => {
     expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
   });
 
-  it("says Default model for an agent that has never run and chose nothing", async () => {
+  it("asks for a model when an agent has never run and chose nothing", async () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Default model");
+    expect(modelMenuButton().textContent).toContain("Select model");
   });
 
   it("moves the label the instant a model is picked, before agent.choose answers", async () => {

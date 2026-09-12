@@ -429,6 +429,16 @@ fn an_agents_digest_carries_the_model_it_is_actually_running() {
         "claude-opus-5",
         "the newer announcement wins"
     );
+
+    state.record_agent_runtime_choice(
+        "run-active-model",
+        &agent_id,
+        Some("claude-opus-5".to_string()),
+        Some("high".to_string()),
+    );
+    let digest = state.agent_digests("run-active-model", DigestScope::List)[0].clone();
+    assert_eq!(digest["active_model"], "claude-opus-5");
+    assert_eq!(digest["active_effort"], "high");
 }
 
 #[test]

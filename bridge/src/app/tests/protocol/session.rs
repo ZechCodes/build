@@ -584,6 +584,7 @@ fn seed_exact_resumable_session(
         SelfReport {
             named: Some(resume_id.to_string()),
             model: None,
+            effort: None,
         },
     );
     app.record_agent_session_end(owner, &agent_id, &instance);

@@ -114,9 +114,6 @@ export function agentChoiceParams(catalog, choice) {
 // and what to.
 
 const MENU_FIELD_SEPARATOR = ":";
-/** What every effort row says about itself. The menu is one list, and this is
- *  what tells its second half from the models above it. */
-const EFFORT_ROW = "reasoning effort";
 const menuOption = (field, value, label, description, selected) => ({
   id: `${field}${MENU_FIELD_SEPARATOR}${value}`,
   label,
@@ -139,23 +136,33 @@ export function modelMenuOptions(catalog, providerId, choice) {
   const levels = effortLevels(forProvider.efforts, modelInCatalog(models, choice.model));
   return [
     ...rows,
-    menuOption("effort", "", "Default effort", EFFORT_ROW, !choice.effort),
-    ...levels.map((level) => menuOption("effort", level, level, EFFORT_ROW, level === choice.effort)),
+    menuOption("effort", "", "Default effort", "", !choice.effort),
+    ...levels.map((level) => menuOption("effort", level, level, "", level === choice.effort)),
   ];
 }
 
 /** The model and reasoning controls are separate in the composer so both
  * choices remain visible without opening an ambiguously named combined menu. */
 export function modelSelectorOptions(catalog, providerId, choice) {
-  return modelMenuOptions(catalog, providerId, choice).filter((option) => option.id.startsWith("model:"));
+  return modelMenuOptions(catalog, providerId, choice)
+    .filter((option) => option.id.startsWith("model:") && option.id !== "model:");
 }
 
-export function reasoningSelectorOptions(catalog, providerId, choice) {
-  return modelMenuOptions(catalog, providerId, choice).filter((option) => option.id.startsWith("effort:"));
+const effectiveEffort = (catalog, providerId, choice, activeModel, activeEffort) =>
+  choice.effort || (!movesAtNextStart(catalog, providerId, choice, activeModel) && activeEffort) || "";
+
+export function reasoningSelectorOptions(catalog, providerId, choice, activeModel = "", activeEffort = "") {
+  const selectedEffort = effectiveEffort(catalog, providerId, choice, activeModel, activeEffort);
+  const models = catalogForProvider(catalog || {}, providerId).models || [];
+  const effectiveModel = choice.model || activeModel;
+  const model = matchCatalogModel(models, effectiveModel)?.id || effectiveModel;
+  return modelMenuOptions(catalog, providerId, { ...choice, model })
+    .filter((option) => option.id.startsWith("effort:") && option.id !== "effort:")
+    .map((option) => ({ ...option, selected: option.id === `effort:${selectedEffort}` }));
 }
 
-export function reasoningSelectorLabel(choice) {
-  return choice.effort ? `Reasoning: ${choice.effort}` : "Reasoning: default";
+export function reasoningSelectorLabel(catalog, providerId, choice, activeModel = "", activeEffort = "") {
+  return effectiveEffort(catalog, providerId, choice, activeModel, activeEffort) || "Select effort";
 }
 
 export function activeModelLabel(catalog, providerId, modelId) {
@@ -185,7 +192,7 @@ export function movesAtNextStart(catalog, providerId, choice, activeModel) {
 }
 
 export function modelMenuLabel(catalog, providerId, choice, activeModel = "") {
-  if (!activeModel) return choice.model ? pendingModelLabel(catalog, providerId, choice) : "Default model";
+  if (!activeModel) return choice.model ? pendingModelLabel(catalog, providerId, choice) : "Select model";
   const active = activeModelLabel(catalog, providerId, activeModel);
   if (!movesAtNextStart(catalog, providerId, choice, activeModel)) return withChoiceEffort(active, choice);
   return `${active} → ${pendingModelLabel(catalog, providerId, choice)}`;
@@ -197,7 +204,7 @@ export function modelMenuTitle(catalog, providerId, choice, activeModel = "") {
   if (movesAtNextStart(catalog, providerId, choice, activeModel)) {
     return `${running} ${pendingModelLabel(catalog, providerId, choice)} at the next start.`;
   }
-  if (!choice.model) return `${running} The harness default at the next start.`;
+  if (!choice.model) return `${running} Select the model for the next start.`;
   return "Model and reasoning effort";
 }
 

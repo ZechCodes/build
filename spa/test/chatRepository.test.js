@@ -291,14 +291,15 @@ describe("per-agent model choices", () => {
 
   it("does not let an older snapshot retire a newer local model intent", () => {
     const controller = createRepository().controller(address());
-    controller.absorbAgent({ model: "old", effort: "", active_model: "running", choice_revision: 4 });
+    controller.absorbAgent({ model: "old", effort: "", active_model: "running", active_effort: "medium", choice_revision: 4 });
     const intent = controller.requestChoice({ model: "new", effort: "high" });
 
-    controller.absorbAgent({ model: "old", effort: "", active_model: "running", choice_revision: 4 });
+    controller.absorbAgent({ model: "old", effort: "", active_model: "running", active_effort: "medium", choice_revision: 4 });
 
     expect(controller.choice()).toMatchObject({
       requestedModel: "new",
       activeModel: "running",
+      activeEffort: "medium",
       effort: "high",
       revision: 4,
       pending: true,

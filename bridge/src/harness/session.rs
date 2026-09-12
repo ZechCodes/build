@@ -332,6 +332,16 @@ pub trait AgentSession: Send + Sync {
         None
     }
 
+    /// The reasoning effort reported by the running conversation.
+    fn active_effort(&self) -> Option<String> {
+        None
+    }
+
+    /// A consistent snapshot of the running model and reasoning effort.
+    fn active_choice(&self) -> (Option<String>, Option<String>) {
+        (self.active_model(), self.active_effort())
+    }
+
     /// Age the evidence-of-work stamp, so a live session reports the silence of
     /// one that has been sitting idle for `ago`.
     ///

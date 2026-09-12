@@ -1172,9 +1172,12 @@ impl CodexSessionState {
         self.active_model.clone()
     }
 
-    #[cfg(test)]
     pub fn active_effort(&self) -> Option<String> {
         self.active_effort.clone()
+    }
+
+    pub fn active_choice(&self) -> (Option<String>, Option<String>) {
+        (self.active_model.clone(), self.active_effort.clone())
     }
 
     pub fn epitaph(&self) -> Option<String> {

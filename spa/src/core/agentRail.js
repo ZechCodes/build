@@ -1301,7 +1301,7 @@ export function mountAgentRail(host, context) {
     const agent = agentInFocus();
     const settled = composerController?.choice();
     const choice = composerDisplayChoice(agent, settled);
-    composerModelMenu.set(catalog, choice.provider, choice, settled?.activeModel || "");
+    composerModelMenu.set(catalog, choice.provider, choice, settled?.activeModel || "", settled?.activeEffort || "");
   };
 
   const syncChatRecovery = () => {

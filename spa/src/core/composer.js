@@ -206,8 +206,8 @@ export function composerHtml({
 
 /// What one painting of the menu says, as one string to compare the next
 /// against.
-const choiceKey = (provider, choice, activeModel) =>
-  [provider, choice.model || "", choice.effort || "", activeModel || ""].join("/");
+const choiceKey = (provider, choice, activeModel, activeEffort) =>
+  [provider, choice.model || "", choice.effort || "", activeModel || "", activeEffort || ""].join("/");
 
 /// Wire the menu on the composer's left: what the NEXT turn will run on.
 ///
@@ -230,14 +230,14 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
   let closeModelMenu = null;
   let closeReasoningMenu = null;
 
-  const render = (catalog, provider, choice, activeModel) => {
+  const render = (catalog, provider, choice, activeModel, activeEffort) => {
     closeModelMenu?.();
     closeReasoningMenu?.();
-    painted = choiceKey(provider, choice, activeModel);
+    painted = choiceKey(provider, choice, activeModel, activeEffort);
     paintedCatalog = catalog;
     const choose = (action) => {
       const next = modelMenuSelection(action, choice);
-      render(catalog, provider, next, activeModel);
+      render(catalog, provider, next, activeModel, activeEffort);
       onChoose(next);
     };
     modelSlot.innerHTML = menuButtonMarkup(
@@ -246,10 +246,10 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
       { title: modelMenuTitle(catalog, provider, choice, activeModel) },
     );
     closeModelMenu = mountSplitMenu(modelSlot, { onChoose: choose }).closeMenu;
-    const reasoningOptions = reasoningSelectorOptions(catalog, provider, choice);
+    const reasoningOptions = reasoningSelectorOptions(catalog, provider, choice, activeModel, activeEffort);
     reasoningSlot.hidden = reasoningOptions.length === 0;
     reasoningSlot.innerHTML = reasoningOptions.length
-      ? menuButtonMarkup(reasoningSelectorLabel(choice), reasoningOptions, { title: "Reasoning level for the next turn" })
+      ? menuButtonMarkup(reasoningSelectorLabel(catalog, provider, choice, activeModel, activeEffort), reasoningOptions, { title: "Reasoning level for the next turn" })
       : "";
     closeReasoningMenu = reasoningOptions.length
       ? mountSplitMenu(reasoningSlot, { onChoose: choose }).closeMenu
@@ -257,9 +257,9 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
   };
 
   return {
-    set(catalog, provider, choice, activeModel = "") {
-      if (choiceKey(provider, choice, activeModel) === painted && catalog === paintedCatalog) return;
-      render(catalog, provider, choice, activeModel);
+    set(catalog, provider, choice, activeModel = "", activeEffort = "") {
+      if (choiceKey(provider, choice, activeModel, activeEffort) === painted && catalog === paintedCatalog) return;
+      render(catalog, provider, choice, activeModel, activeEffort);
     },
   };
 }

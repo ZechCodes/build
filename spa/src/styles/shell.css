@@ -378,10 +378,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:inherit; font-size:13px; color:var(--ink); background:none; border:none;
   border-radius:6px; padding:4px var(--tbsel-inset); cursor:pointer; }
 .tb-sel:hover { background:var(--panel2); }
-/* The branch/issue half is the one that runs long. It grows to fill whatever
-   the project name and the right side leave it, rather than truncating at a
-   fixed share of the bar while the rest of the row sits empty. */
-.tb-item { flex:1 1 auto; max-width:none; }
+/* Leave the workspace name at its natural width so its directory tabs begin
+   immediately after it. Long names still yield before the action cluster. */
+.tb-item { flex:0 1 auto; max-width:42%; }
 .tb-legacy-item { display:flex; align-items:center; min-width:0; padding:4px var(--tbsel-inset);
   font-size:13px; color:var(--ink); }
 .tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -398,6 +397,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-directory.current { color:var(--ink); }
 .tb-directory.current::after { content:""; position:absolute; left:9px; right:9px;
   bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent); }
+.tb-directory-menu { display:none; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
@@ -753,6 +753,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   padding:0 0 2px 10px; }
 
 @media (max-width: 760px) {
+  /* Directory tabs consume the entire toolbar surprisingly quickly. Keep the
+     selected directory in place and put every directory in its popup menu. */
+  .tb-directories { display:none; }
+  .tb-directory-menu { display:flex; flex:0 1 auto; max-width:34%; }
+
   /* A phone has no room for two columns, so the panel is laid over the work
      rather than beside it; the strip stays where it is.
      Over the VIEW COLUMN (#view is the positioned ancestor), starting below the

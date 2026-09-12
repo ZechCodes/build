@@ -244,9 +244,26 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .docmarker.addressed:hover { background:var(--green); color:var(--bg); }
 /* A heading with an unsent comment on it, marked while the comment is pending. */
 .plan .dochl { background:var(--hl-bg); color:var(--hl-ink); border-radius:4px; }
-.workspace-refbar { display:flex; align-items:center; gap:8px; min-height:42px; padding:6px var(--pane-gutter); border-bottom:1px solid var(--line); }
-.workspace-refbar label { color:var(--muted); font-size:12px; }
-.workspace-refbar select { max-width:min(360px, 42vw); }
-.workspace-refstate { color:var(--muted); font-family:var(--mono); font-size:12px; }
-.workspace-referror { margin-left:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.workspace-refbar { position:relative; flex:none; min-width:0; max-width:100%; padding:8px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.workspace-refpicker { position:relative; min-width:0; max-width:100%; }
+.workspace-reftrigger { width:100%; min-width:0; display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--panel); cursor:pointer; text-align:left; }
+.workspace-reftrigger:disabled { cursor:default; opacity:.65; }
+.workspace-reftrigger-kind { flex:none; color:var(--ink2); font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+.workspace-reftrigger-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px var(--mono); }
+.workspace-refmenu { position:absolute; z-index:12; top:calc(100% + 5px); left:0; width:min(340px, calc(100vw - 32px)); max-width:100%; padding:7px; border:1px solid var(--line); border-radius:9px; background:var(--panel); box-shadow:0 12px 30px var(--shadow); }
+.workspace-reftabs { display:grid; grid-template-columns:1fr 1fr; gap:3px; padding:2px; background:var(--panel2); border-radius:7px; }
+.workspace-reftabs button { border:0; border-radius:5px; padding:5px; color:var(--ink2); background:transparent; cursor:pointer; font:inherit; font-size:11px; }
+.workspace-reftabs button[aria-selected=true] { color:var(--ink); background:var(--panel); box-shadow:0 1px 3px var(--shadow-soft); }
+.workspace-refsearch { box-sizing:border-box; width:100%; margin:7px 0 5px; padding:7px 8px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--bg); font:inherit; font-size:12px; }
+.workspace-refrows { max-height:min(310px, 48vh); overflow:auto; }
+.workspace-refrow { width:100%; min-width:0; display:flex; align-items:center; gap:6px; border:0; border-radius:6px; padding:7px 8px; color:var(--ink); background:transparent; cursor:pointer; text-align:left; }
+.workspace-refrow:hover, .workspace-refrow:focus-visible { background:var(--panel2); outline:none; }
+.workspace-refname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:12px var(--mono); }
+.workspace-refcurrent, .workspace-refremote, .workspace-refpull, .workspace-refdiverged { flex:none; font-size:10px; color:var(--ink2); }
+.workspace-refremote { max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.workspace-refcurrent { color:var(--green); }
+.workspace-refpull { color:var(--accent); }
+.workspace-refdiverged { color:var(--amber); }
+.workspace-refempty { padding:14px 8px; color:var(--ink2); font-size:12px; text-align:center; }
+.workspace-referror { display:block; padding-top:5px; overflow-wrap:anywhere; font-size:11px; }
 .workspace-gitpane { min-height:0; height:100%; overflow:hidden; }

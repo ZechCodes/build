@@ -122,20 +122,19 @@ pub struct BranchListing {
     pub rows: Vec<BranchRow>,
 }
 
-/// A checkoutable local reference kind. Remote-tracking refs remain part of
-/// the legacy branch picker: selecting one there creates its local tracking
-/// branch. The explicit refs picker only offers identities it can check out
-/// without DWIM resolution.
+/// A checkoutable reference kind. Remote-tracking refs create a same-name
+/// local tracking branch; exact full refs keep every selection unambiguous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
     Branch,
+    RemoteBranch,
     Tag,
 }
 
 impl RefKind {
     fn as_str(self) -> &'static str {
         match self {
-            RefKind::Branch => "branch",
+            RefKind::Branch | RefKind::RemoteBranch => "branch",
             RefKind::Tag => "tag",
         }
     }
@@ -148,6 +147,10 @@ pub struct RefRow {
     pub name: String,
     pub full_ref: String,
     pub current: bool,
+    pub remote: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
 }
 
 impl RefRow {
@@ -157,6 +160,10 @@ impl RefRow {
             "name": self.name,
             "full_ref": self.full_ref,
             "current": self.current,
+            "remote": self.remote,
+            "upstream": self.upstream,
+            "ahead": self.ahead,
+            "behind": self.behind,
         })
     }
 }
@@ -183,7 +190,7 @@ impl CurrentRef {
     }
 }
 
-/// Every exact local branch and tag, plus HEAD's current identity.
+/// Every exact local branch, remote-only branch, and tag, plus HEAD's current identity.
 pub struct RefListing {
     pub current: CurrentRef,
     pub refs: Vec<RefRow>,
@@ -386,9 +393,9 @@ fn current_ref(identity: &HeadIdentity) -> CurrentRef {
     }
 }
 
-/// `git.refs`: exact local branches and tags suitable for an unambiguous ref
-/// picker. Remote-tracking refs are intentionally absent; the legacy branch
-/// picker owns their "create a local tracking branch" behavior.
+/// `git.refs`: exact branches and tags suitable for an unambiguous ref picker.
+/// Cached remote-tracking refs are included without fetching; selecting one
+/// creates its local tracking branch.
 pub fn ref_list(repo_path: &Path) -> Result<RefListing, String> {
     let repo = open_repo(repo_path)?;
     let identity = head_identity(&repo)?;
@@ -397,7 +404,74 @@ pub fn ref_list(repo_path: &Path) -> Result<RefListing, String> {
         HeadIdentity::Detached { .. } => None,
     };
     let mut refs = Vec::new();
-    for reference in repo.references().map_err(|e| e.to_string())? {
+    let mut local_names = HashSet::new();
+    for item in repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(|e| e.to_string())?
+    {
+        let (branch, _) = item.map_err(|e| e.to_string())?;
+        if branch.get().kind() != Some(git2::ReferenceType::Direct) {
+            continue;
+        }
+        let Some(name) = branch.name().map_err(|e| e.to_string())? else {
+            continue;
+        };
+        if !branch_name_is_switchable(name) {
+            continue;
+        }
+        let full_ref = format!("refs/heads/{name}");
+        let head = branch.get().peel_to_commit().map_err(|e| e.to_string())?;
+        let sync = upstream_sync(&repo, &branch, &head)?;
+        local_names.insert(name.to_string());
+        refs.push(RefRow {
+            kind: RefKind::Branch,
+            name: name.to_string(),
+            full_ref: full_ref.clone(),
+            current: current_full_ref == Some(full_ref.as_str()),
+            remote: None,
+            upstream: sync.upstream,
+            ahead: sync.ahead,
+            behind: sync.behind,
+        });
+    }
+
+    for remote in remotes_in_fetch_precedence(&repo).map_err(|e| e.to_string())? {
+        let prefix = format!("refs/remotes/{remote}/");
+        for reference in repo
+            .references_glob(&format!("{prefix}*"))
+            .map_err(|e| e.to_string())?
+        {
+            let reference = reference.map_err(|e| e.to_string())?;
+            if reference.kind() != Some(git2::ReferenceType::Direct) {
+                continue;
+            }
+            let Some(full_ref) = reference.name() else {
+                continue;
+            };
+            let Some(name) = full_ref.strip_prefix(&prefix) else {
+                continue;
+            };
+            if local_names.contains(name) || !branch_name_is_switchable(name) {
+                continue;
+            }
+            local_names.insert(name.to_string());
+            refs.push(RefRow {
+                kind: RefKind::RemoteBranch,
+                name: name.to_string(),
+                full_ref: full_ref.to_string(),
+                current: false,
+                remote: Some(remote.clone()),
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+            });
+        }
+    }
+
+    for reference in repo
+        .references_glob("refs/tags/*")
+        .map_err(|e| e.to_string())?
+    {
         let reference = reference.map_err(|e| e.to_string())?;
         if reference.kind() != Some(git2::ReferenceType::Direct) {
             continue;
@@ -405,21 +479,18 @@ pub fn ref_list(repo_path: &Path) -> Result<RefListing, String> {
         let Some(full_ref) = reference.name() else {
             continue;
         };
-        let (kind, name) = if let Some(name) = full_ref.strip_prefix("refs/heads/") {
-            if !branch_name_is_switchable(name) {
-                continue;
-            }
-            (RefKind::Branch, name)
-        } else if let Some(name) = full_ref.strip_prefix("refs/tags/") {
-            (RefKind::Tag, name)
-        } else {
+        let Some(name) = full_ref.strip_prefix("refs/tags/") else {
             continue;
         };
         refs.push(RefRow {
-            kind,
+            kind: RefKind::Tag,
             name: name.to_string(),
             full_ref: full_ref.to_string(),
-            current: current_full_ref == Some(full_ref),
+            current: false,
+            remote: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
         });
     }
 
@@ -432,6 +503,10 @@ pub fn ref_list(repo_path: &Path) -> Result<RefListing, String> {
                 name: name.clone(),
                 full_ref: full_ref.clone(),
                 current: true,
+                remote: None,
+                upstream: None,
+                ahead: 0,
+                behind: 0,
             });
         }
     }
@@ -470,6 +545,8 @@ fn checkout_ref_target(full_ref: &str) -> Result<(RefKind, &str), String> {
         (RefKind::Branch, name)
     } else if let Some(name) = full_ref.strip_prefix("refs/tags/") {
         (RefKind::Tag, name)
+    } else if let Some(name) = full_ref.strip_prefix("refs/remotes/") {
+        (RefKind::RemoteBranch, name)
     } else {
         return Err("ref must be a full local branch or tag name".to_string());
     };
@@ -504,6 +581,22 @@ fn validate_checkout_ref(repo_path: &Path, full_ref: &str) -> Result<(RefKind, S
     reference
         .peel_to_commit()
         .map_err(|_| format!("ref does not point to a commit: {full_ref}"))?;
+    if kind == RefKind::RemoteBranch {
+        let remote = remotes_in_fetch_precedence(&repo)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|remote| full_ref.starts_with(&format!("refs/remotes/{remote}/")))
+            .ok_or_else(|| format!("unknown remote branch ref: {full_ref}"))?;
+        let branch = full_ref
+            .strip_prefix(&format!("refs/remotes/{remote}/"))
+            .unwrap_or("");
+        validate_branch_name(repo_path, branch)
+            .map_err(|_| format!("invalid remote branch ref: {full_ref}"))?;
+        if repo.find_reference(&format!("refs/heads/{branch}")).is_ok() {
+            return Err(format!("local branch already exists: {branch}"));
+        }
+        return Ok((kind, branch.to_string()));
+    }
     Ok((kind, name.to_string()))
 }
 
@@ -546,7 +639,7 @@ pub fn checkout(repo_path: &Path, branch: &str, create: bool) -> Result<(), Stri
 }
 
 /// `git.checkout_ref`: checkout one exact ref from [`ref_list`]. Local branch
-/// refs attach HEAD to that branch; tags detach HEAD at the tag's commit.
+/// refs attach HEAD, remote-only refs create a local tracking branch, and tags detach HEAD.
 /// Ordinary `git switch` semantics preserve compatible local edits and refuse
 /// when switching would overwrite them. No force, discard, merge, or stash
 /// option is used.
@@ -566,6 +659,18 @@ pub fn checkout_ref(repo_path: &Path, full_ref: &str) -> Result<(), String> {
                 "switch",
                 "--no-overwrite-ignore",
                 "--detach",
+                "--",
+                full_ref,
+            ],
+        ),
+        RefKind::RemoteBranch => run_git(
+            repo_path,
+            &[
+                "switch",
+                "--no-overwrite-ignore",
+                "--track",
+                "-c",
+                &name,
                 "--",
                 full_ref,
             ],

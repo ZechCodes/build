@@ -13,7 +13,8 @@ import { mountAgentRail } from "../core/agentRail.js";
 import { createAgentSelection } from "../core/agentSelection.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { renderFilesTab } from "./files.js";
-import { directoryId, refLabel, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
+import { directoryId, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
+import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import "../styles/surfaces.css";
 
 const TABS = [
@@ -25,17 +26,9 @@ function mountChanges(body, { scope, callRpc, projectId, navigate, viewingContex
   body.innerHTML = `<div class="workspace-gitpane"></div>`;
   const refbar = document.createElement("div");
   refbar.className = "workspace-refbar";
-  refbar.innerHTML = `
-    <label for="workspace-ref">Branch or tag</label>
-    <select id="workspace-ref" aria-label="Branch or tag" disabled><option>Loading refs…</option></select>
-    <span class="workspace-refstate"></span><span class="error workspace-referror" role="status"></span>`;
-  const select = refbar.querySelector("#workspace-ref");
-  const state = refbar.querySelector(".workspace-refstate");
-  const errorHost = refbar.querySelector(".workspace-referror");
   const gitHost = body.querySelector(".workspace-gitpane");
   let gitPane = mountGitPane(gitHost, { scope, callRpc, projectId, navigate, viewingContext });
   let disposed = false;
-  let currentRef = "";
   const attachRefbar = () => {
     const rail = gitHost.querySelector(".crail-host");
     if (!rail) return false;
@@ -46,44 +39,15 @@ function mountChanges(body, { scope, callRpc, projectId, navigate, viewingContex
   const attachObserver = new MutationObserver(attachRefbar);
   attachRefbar();
   attachObserver.observe(gitHost, { childList: true, subtree: true });
-  const loadRefs = async () => {
-    const answer = await callRpc("git.refs", scope);
-    if (disposed) return;
-    const refs = answer.refs || [];
-    currentRef = answer.current?.full_ref || refs.find((entry) => entry.current)?.full_ref || "";
-    const detached = answer.current?.kind === "detached" && !refs.some((entry) => entry.full_ref === currentRef)
-      ? `<option value="" disabled selected>${esc(refLabel(answer.current))}</option>`
-      : "";
-    select.innerHTML = detached + refs.map((entry) =>
-      `<option value="${esc(entry.full_ref)}"${entry.full_ref === currentRef ? " selected" : ""}>${esc(entry.name)}${entry.kind === "tag" ? " (tag)" : ""}</option>`,
-    ).join("");
-    select.disabled = refs.length === 0;
-    state.textContent = refLabel(answer.current);
-  };
-  loadRefs().catch((error) => {
-    select.innerHTML = `<option>Refs unavailable</option>`;
-    errorHost.textContent = error.message || String(error);
-  });
-  select.onchange = async () => {
-    const requested = select.value;
-    select.disabled = true;
-    errorHost.textContent = "";
-    try {
-      await callRpc("git.checkout_ref", { ...scope, full_ref: requested });
-      if (disposed) return;
-      await loadRefs();
+  const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, onCheckout: async () => {
       if (disposed) return;
       gitPane.dispose();
       gitPane = mountGitPane(gitHost, { scope, callRpc, projectId, navigate, viewingContext });
-    } catch (error) {
-      select.value = currentRef;
-      select.disabled = false;
-      errorHost.textContent = error.message || String(error);
-    }
-  };
+    } });
   return { dispose: () => {
     disposed = true;
     attachObserver.disconnect();
+    refPicker.dispose();
     gitPane.dispose();
   } };
 }

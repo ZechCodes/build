@@ -70,6 +70,28 @@ afterEach(() => {
 });
 
 describe("the shape and its bodies", () => {
+  it("opens workspace directories on every change not represented by their push target", async () => {
+    const tree = worktreeOf({ "dirty.js": "dirty" });
+    const aggregatePatch = tree.wholePatch();
+    const { container, pane, calls } = await mount({
+      tree,
+      scope: { workspace_id: "ws-1", source_id: "dir-1" },
+      answers: {
+        "git.unpushed": () => ({
+          patch: aggregatePatch,
+          diff_key: "all-1",
+          base: { kind: "push_target", label: "fork/main" },
+          file_edited_at: {},
+        }),
+      },
+    });
+    expect(container.querySelector('.rrow[data-sel="review"]')).toBeTruthy();
+    expect(container.querySelector('.rrow[data-sel="review"] .rsub').textContent).toBe("vs fork/main");
+    expect(container.textContent).toContain("dirty");
+    expect(calls.some(({ method, params }) => method === "git.unpushed" && params.workspace_id === "ws-1")).toBe(true);
+    pane.dispose();
+  });
+
   it("draws the shape's files, then their bodies from git.diff", async () => {
     const tree = worktreeOf({ "src/a.js": "new line", "src/b.js": "second" });
     const { container, pane, calls } = await mount({ tree });

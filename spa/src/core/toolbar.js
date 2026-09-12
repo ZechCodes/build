@@ -166,7 +166,10 @@ export function toolbarHtml({ project, kind, label, directories = [] }) {
           (directory) =>
             `<button class="tb-directory${directory.current ? " current" : ""}" data-directory="${esc(directory.sourceId)}" type="button" role="tab" aria-selected="${directory.current ? "true" : "false"}">${esc(directory.label)}</button>`,
         )
-        .join("")}</div>`
+        .join("")}</div>
+       <button class="tb-sel tb-directory-menu" data-select="directory" type="button" aria-haspopup="menu" aria-label="Choose workspace directory">
+         <span class="tb-name">${esc(directories.find((directory) => directory.current)?.label || directories[0].label)}</span><span class="tb-caret">▾</span>
+       </button>`
     : "";
   return `<div class="toolbar">
     <button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu">
@@ -297,16 +300,22 @@ function closeMenu() {
 }
 
 function openJumpMenu(anchor) {
+  const list = anchor.dataset.select === "project"
+    ? "projects"
+    : anchor.dataset.select === "directory"
+      ? "directories"
+      : "workspaces";
   open = {
     ...menuShell(anchor, "tbmenu"),
     select: anchor.dataset.select,
     mode: "jump",
-    list: anchor.dataset.select === "project" ? "projects" : "workspaces",
+    list,
     query: "",
   };
   paintMenu();
   const filter = open.element.querySelector(".tb-filter");
-  if (filter) filter.focus();
+  const initialChoice = open.element.querySelector('[aria-checked="true"]') || open.element.querySelector("[role=menuitem]");
+  (filter || initialChoice)?.focus();
 }
 
 /** Move the open menu to the other list. The query goes with the list it was
@@ -328,7 +337,11 @@ function showList(list) {
 function paintMenu() {
   if (!open || open.mode !== "jump") return;
   paintMenuShell();
-  const entries = open.list === "projects" ? projectMenuEntries() : workspaceMenuEntries();
+  const entries = open.list === "projects"
+    ? projectMenuEntries()
+    : open.list === "directories"
+      ? directoryMenuEntries()
+      : workspaceMenuEntries();
   patchList(open.element.querySelector(".tbmenu-list"), entries, {
     keyOf: (entry) => entry.key,
     render: (entry) => entry.html,
@@ -341,10 +354,14 @@ function paintMenu() {
 function paintMenuShell() {
   if (open.element.dataset.list === open.list) return;
   open.element.dataset.list = open.list;
-  open.element.innerHTML = open.list === "projects" ? projectMenuShellHtml() : workspaceMenuShellHtml();
+  open.element.innerHTML = open.list === "projects"
+    ? projectMenuShellHtml()
+    : open.list === "directories"
+      ? directoryMenuShellHtml()
+      : workspaceMenuShellHtml();
   open.element.onclick = onMenuClick;
   const filter = open.element.querySelector(".tb-filter");
-  filter.oninput = () => {
+  if (filter) filter.oninput = () => {
     open.query = filter.value;
     paintMenu();
   };
@@ -378,6 +395,12 @@ function pickWorkspace(element) {
 function onMenuClick(event) {
   const target = event.target;
   if (target.closest("[data-projects]")) return showList("projects");
+  const directory = target.closest("[data-menu-directory]");
+  if (directory) {
+    closeMenu();
+    openWorkspaceDirectory(directory.dataset.menuDirectory);
+    return;
+  }
   if (pickProject(target.closest("[data-project]"))) return;
   if (pickWorkspace(target.closest("[data-workspace]"))) return;
   if (target.closest('[data-create="workspace"]')) {
@@ -385,6 +408,20 @@ function onMenuClick(event) {
     closeMenu();
     openCreateWork({ projectId, projectName: projectNameOf(projectId) });
   }
+}
+
+function directoryMenuEntries() {
+  if (App.route.name !== "workspace") return [];
+  const workspace = workspaces.find((candidate) => candidate.id === App.route.workspaceId);
+  return workspaceDirectoryModel(workspace, App.route.sourceId).map((directory) => ({
+    key: `directory:${directory.sourceId}`,
+    html: `<button class="mi${directory.current ? " current" : ""}" data-menu-directory="${esc(directory.sourceId)}" type="button" role="menuitemradio" aria-checked="${directory.current ? "true" : "false"}">
+      <span class="mt">${esc(directory.label)}</span></button>`,
+  }));
+}
+
+function directoryMenuShellHtml() {
+  return `<div class="tbmenu-list" aria-label="Workspace directories"></div>`;
 }
 
 /** The counter a menu row wears: what is waiting inside it, and nothing at all

@@ -439,8 +439,8 @@ impl AppState {
         project_id.is_some_and(|project_id| self.projects.iter().any(|p| p.id == project_id))
     }
 
-    /// `git.refs` — every exact local branch and tag offered by a workspace
-    /// directory, including the checkout's current branch or detached commit.
+    /// `git.refs` — every exact local branch, cached remote branch, and tag offered
+    /// by a workspace directory, including its current branch or detached commit.
     /// The shared resolver keeps this available to the legacy scopes too.
     pub(in crate::app) fn git_refs(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, _| {
@@ -448,7 +448,7 @@ impl AppState {
         })
     }
 
-    /// `git.checkout_ref` — check out one exact local branch or tag. Git's
+    /// `git.checkout_ref` — check out one exact listed branch or tag. Git's
     /// overwrite refusal is returned unchanged, leaving the checkout and its
     /// local changes in place.
     pub(in crate::app) fn git_checkout_ref(&mut self, params: &Value) -> Result<Value, String> {
@@ -493,6 +493,16 @@ impl AppState {
         self.defer_git(params, false, |scope, params| {
             let if_status_key = params.get("if_status_key").and_then(Value::as_str);
             scope.status_payload_unless(if_status_key)
+        })
+    }
+
+    /// Every local change not represented by the checkout's push destination.
+    pub(in crate::app) fn git_unpushed(&mut self, params: &Value) -> Result<Value, String> {
+        self.defer_git(params, false, |scope, params| {
+            crate::gitgui::unpushed_payload(
+                &scope.repo_path,
+                params.get("if_diff_key").and_then(Value::as_str),
+            )
         })
     }
 

@@ -86,9 +86,12 @@ Git sources are checked out independently.
 An older project whose root is itself a Git checkout remains a single-directory
 project represented by `.` and is never moved.
 
-The workspace menu lists its source directories. Selecting one controls the
-Files, Changes, and commit views. A Git source also shows its own branch and tag
-selector. Switching a ref performs a real checkout in that source. Compatible
+Directory tabs follow the workspace menu and collapse into a directory menu
+on phones. Selecting a directory controls the Files, Changes, and commit views.
+All changes includes unpushed commits and uncommitted edits, using locally known
+remote history as its baseline. A searchable selector above the commit list
+separates branches and tags and identifies remote branches and available pulls.
+Switching a ref performs a real checkout in that source. Compatible
 uncommitted edits remain in place; if a checkout would overwrite or otherwise
 lose local changes, Build leaves the source untouched and reports Git's reason.
 Selecting a tag results in a detached HEAD and the interface says so.

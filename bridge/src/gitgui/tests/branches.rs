@@ -135,14 +135,17 @@ fn ref_listing_json_keeps_ref_kind_and_full_name_explicit() {
 }
 
 #[test]
-fn ref_list_excludes_remote_tracking_and_symbolic_refs() {
+fn ref_list_includes_remote_branches_but_excludes_symbolic_remote_head() {
     let dir = tempfile::tempdir().unwrap();
     let clone = clone_of_an_origin_carrying_feature_x(dir.path());
 
     let listing = ref_list(&clone).unwrap();
 
-    assert_eq!(listing.refs.len(), 1, "{:#?}", listing.refs);
+    assert_eq!(listing.refs.len(), 2, "{:#?}", listing.refs);
     assert_eq!(listing.refs[0].full_ref, "refs/heads/main");
+    assert_eq!(listing.refs[1].full_ref, "refs/remotes/origin/feature-x");
+    assert_eq!(listing.refs[1].name, "feature-x");
+    assert_eq!(listing.refs[1].remote.as_deref(), Some("origin"));
 }
 
 #[test]
@@ -162,6 +165,20 @@ fn ref_list_includes_an_unborn_current_branch() {
     assert_eq!(listing.refs.len(), 1);
     assert_eq!(listing.refs[0].full_ref, "refs/heads/main");
     assert!(listing.refs[0].current);
+}
+
+#[test]
+fn ref_list_excludes_a_symbolic_local_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    git_ok(
+        dir.path(),
+        &["symbolic-ref", "refs/heads/alias", "refs/heads/main"],
+    );
+
+    let listing = ref_list(dir.path()).unwrap();
+
+    assert!(listing.refs.iter().all(|row| row.name != "alias"));
 }
 
 #[test]
@@ -190,6 +207,40 @@ fn checkout_ref_attaches_branches_and_detaches_tags() {
     let listing = ref_list(dir.path()).unwrap();
     assert_eq!(listing.current, CurrentRef::Detached { commit });
     assert!(listing.refs.iter().all(|row| !row.current));
+}
+
+#[test]
+fn checkout_ref_creates_a_local_tracking_branch_from_a_remote_only_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+
+    checkout_ref(&clone, "refs/remotes/origin/feature-x").unwrap();
+
+    let repo = git2::Repository::open(&clone).unwrap();
+    assert_eq!(repo.head().unwrap().name(), Some("refs/heads/feature-x"));
+    let branch = repo
+        .find_branch("feature-x", git2::BranchType::Local)
+        .unwrap();
+    assert_eq!(
+        branch.upstream().unwrap().name().unwrap(),
+        Some("origin/feature-x")
+    );
+}
+
+#[test]
+fn checkout_ref_refuses_a_remote_ref_when_its_local_branch_already_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+    git_ok(&clone, &["branch", "feature-x"]);
+    let before = git_run(&clone, &["rev-parse", "refs/heads/feature-x"]);
+
+    let error = checkout_ref(&clone, "refs/remotes/origin/feature-x").unwrap_err();
+
+    assert!(error.contains("local branch already exists"), "{error}");
+    let repo = git2::Repository::open(&clone).unwrap();
+    assert_eq!(repo.head().unwrap().name(), Some("refs/heads/main"));
+    let after = git_run(&clone, &["rev-parse", "refs/heads/feature-x"]);
+    assert_eq!(before.stdout, after.stdout);
 }
 
 #[test]

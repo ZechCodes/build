@@ -44,7 +44,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
+import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectHeadHtml, workspaceProjectBlocks } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
@@ -174,13 +174,13 @@ function draw() {
     list.replaceChildren();
   }
   const scroll = list.scrollTop;
-  drawWorkspaceList(list, shown);
+  if (view === "projects") drawProjects(list, shown);
+  else drawWorkspaceList(list, shown);
   list.scrollTop = scroll;
   paintErrors(list);
 }
 
-/** Both rail faces now lead to the same durable workspace list. Projects are
- * sources a workspace can contain, rather than containers for issue rows. */
+/** The inbox face's flat durable workspace list. */
 function drawWorkspaceList(list, shown) {
   entries = shown;
   const ui = rowUi(true);
@@ -224,10 +224,10 @@ function drawInbox(list, shown, nowMs) {
   paintRecent(list, partition, ui, "inbox");
 }
 
-/** The projects face: the new-project control, the unrouted captures on their
- *  own, then a block per project with its rows and its own Recent. */
-function drawProjects(list, shown, nowMs) {
-  const face = projectBlocks({ items: shown, projects, nowMs });
+/** The projects face: the new-project control, any workspaces without a
+ * project, then one durable workspace block per project. */
+function drawProjects(list, shown) {
+  const face = workspaceProjectBlocks(shown, projects, App.route.workspaceId);
   entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(face.blocks.map((block) => [block.id, block]));
   const ui = { ...rowUi(false), folded: new Set(face.blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.id)) };
@@ -426,7 +426,7 @@ function projectClicked(target) {
     const block = blocksPainted.get(create.dataset.projectCreate);
     expandFold(create.dataset.projectCreate);
     closeMenu();
-    openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", kind: "branch", navigate: goFromInbox });
+    openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", navigate: goFromInbox });
     return true;
   }
   if (target.closest("[data-new-project]")) {

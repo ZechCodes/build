@@ -29,6 +29,36 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
 import { entryRoute, inboxEntries } from "./inbox.js";
 import { projectRoute } from "./projectModel.js";
 
+/** Group the landing rail's normalized workspace entries by project. Project
+ * ids, rather than display names, are the identity: two projects may share a
+ * name, and a workspace may arrive before its project metadata does. */
+export function workspaceProjectBlocks(entries = [], projects = [], activeWorkspaceId = null) {
+  const groups = new Map();
+  const addProject = (id, name, project = {}) => {
+    if (!id || groups.has(id)) return;
+    groups.set(id, { id, name: name || id, project, entries: [] });
+  };
+  for (const project of projects) addProject(project.id || project.project_id, project.name, project);
+  for (const entry of entries) {
+    addProject(entry.projectId, entry.project, {});
+    if (entry.projectId) groups.get(entry.projectId).entries.push(entry);
+  }
+  const blocks = [...groups.values()].map(({ id, name, project, entries: grouped }) => ({
+    key: `project:${id}`,
+    id,
+    name,
+    isGit: project.is_git !== false,
+    entries: grouped,
+    recent: [],
+    flat: grouped.length === 0,
+    route: (grouped.find((entry) => entry.workspaceId === activeWorkspaceId && entry.route)
+      || grouped.find((entry) => entry.route))?.route || null,
+    unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, 0),
+    workspaceGroup: true,
+  }));
+  return { unsorted: entries.filter((entry) => !entry.projectId), blocks };
+}
+
 /** The blocks' identity and names: the device's projects in its order, plus
  *  one for any project a row names that the device has not listed — the row
  *  is still work, and it is still somewhere. */
@@ -121,8 +151,12 @@ export function projectHeadHtml(block, ui = {}) {
   const foldable = block.entries.length > 0 || block.recent.length > 0;
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
-  const title = block.route ? `Open ${block.name}'s checkout` : `${block.name} has no checkout to open`;
-  const create = "";
+  const title = block.route
+    ? `Open ${block.name}'s ${block.workspaceGroup ? "workspace" : "checkout"}`
+    : `${block.name} has no ${block.workspaceGroup ? "workspace" : "checkout"} to open`;
+  const create = block.workspaceGroup
+    ? `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.id)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`
+    : "";
   return `<div class="inbox-project-head">
     <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
     <button class="${nameClasses}" type="button" data-project-open="${esc(block.id)}" title="${esc(title)}">${esc(block.name)}</button>

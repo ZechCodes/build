@@ -4,7 +4,7 @@
 // per block, and the unrouted captures standing above them all.
 
 import { describe, it, expect } from "vitest";
-import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "../src/core/inboxProjects.js";
+import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
 import { projectRoute } from "../src/core/projectModel.js";
 
 const NOW = Date.parse("2026-09-02T12:00:00Z");
@@ -82,6 +82,38 @@ const capture = (over = {}) => ({
 
 const names = (blocks) => blocks.map((block) => block.name);
 const keys = (entries) => entries.map((entry) => entry.key);
+
+describe("workspace project blocks", () => {
+  it("groups normalized workspaces by project identity and includes empty and inferred projects", () => {
+    const entry = (id, projectId, project, unreadCount = 0) => ({
+      key: `workspace:${id}`, workspaceId: id, projectId, project, unreadCount,
+      route: { name: "workspace", projectId, workspaceId: id, tab: "changes" },
+    });
+    const { blocks, unsorted } = workspaceProjectBlocks([
+      entry("one", "p1", "Same", 2),
+      entry("two", "p9", "Same", 3),
+      entry("loose", "", ""),
+    ], [{ id: "p1", name: "Same" }, { id: "p2", name: "Empty" }]);
+    expect(blocks.map((block) => block.id)).toEqual(["p1", "p2", "p9"]);
+    expect(blocks.map((block) => keys(block.entries))).toEqual([["workspace:one"], [], ["workspace:two"]]);
+    expect(blocks.map((block) => block.unreadCount)).toEqual([2, 0, 3]);
+    expect(keys(unsorted)).toEqual(["workspace:loose"]);
+    expect(projectHeadHtml(blocks[0], {})).toContain('data-project-create="p1"');
+    expect(projectHeadHtml(blocks[0], {})).toContain("New workspace in Same");
+  });
+
+  it("uses the active workspace as its project's heading destination", () => {
+    const entries = ["first", "active"].map((workspaceId) => ({
+      key: `workspace:${workspaceId}`,
+      workspaceId,
+      projectId: "p1",
+      project: "Project",
+      unreadCount: 0,
+      route: { name: "workspace", projectId: "p1", workspaceId, tab: "changes" },
+    }));
+    expect(workspaceProjectBlocks(entries, [{ id: "p1", name: "Project" }], "active").blocks[0].route.workspaceId).toBe("active");
+  });
+});
 
 describe("the blocks the projects face lists", () => {
   it("maps project.add results to their primary surface", () => {

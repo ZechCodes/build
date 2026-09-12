@@ -113,6 +113,36 @@ impl AppState {
         }))
     }
 
+    /// Create one plain directory in a host folder selected by the user.
+    /// The parent follows `fs.list`'s host-browsing authority; accepting the
+    /// child separately keeps traversal and implicit parent creation out of the
+    /// mutation surface.
+    pub(in crate::app) fn fs_mkdir(&self, params: &Value) -> Result<Value, String> {
+        let parent_value = require_str(params, "parent")?;
+        let parent = std::fs::canonicalize(expand_tilde(&parent_value))
+            .map_err(|error| format!("cannot open parent folder: {error}"))?;
+        if !parent.is_dir() {
+            return Err("parent is not a directory".to_string());
+        }
+        let name = require_str(params, "name")?;
+        let is_single_component = !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains(['/', '\\'])
+            && std::path::Path::new(&name)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)));
+        if !is_single_component {
+            return Err("name must be a single folder name".to_string());
+        }
+        let target = parent.join(name);
+        std::fs::create_dir(&target)
+            .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
+        let path = std::fs::canonicalize(&target)
+            .map_err(|error| format!("cannot open created folder: {error}"))?;
+        Ok(json!({ "path": path.display().to_string() }))
+    }
+
     /// One directory level of a worktree-backed scope (spec §4.2): server-side
     /// scope resolution, the shared fence, `.git` skipped, dirs before
     /// files+symlinks, each group case-insensitive.

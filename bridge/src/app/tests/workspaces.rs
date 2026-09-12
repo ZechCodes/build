@@ -1,5 +1,7 @@
 use super::*;
 
+mod git_init_deferred;
+
 fn app(root: &Path) -> AppState {
     AppState::new_unrooted(root.join("worktrees"), "main", true, "/tmp/test-mcp.sock")
 }
@@ -59,6 +61,378 @@ fn directory<'a>(workspace: &'a Value, source_id: &str) -> &'a Value {
         .iter()
         .find(|directory| directory["source_id"] == source_id)
         .unwrap_or_else(|| panic!("source {source_id} is present: {workspace:?}"))
+}
+
+#[test]
+fn git_init_can_target_workspace_copy_without_mutating_its_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    std::fs::write(plain.join("kept.txt"), "keep me\n").unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": plain})));
+    let project_id = added["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace_id, "source_id": "source-1", "target": "workspace"}),
+    ));
+
+    assert_eq!(initialized["ok"], true, "{initialized:?}");
+    assert_eq!(initialized["result"]["results"][0]["status"], "initialized");
+    assert_eq!(
+        initialized["result"]["workspace"]["directories"][0]["is_git"], true,
+        "{initialized:?}"
+    );
+    assert_eq!(initialized["result"]["source"]["is_git"], false);
+    let copy = Path::new(
+        initialized["result"]["workspace"]["directories"][0]["path"]
+            .as_str()
+            .unwrap(),
+    );
+    assert!(copy.join(".git").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(copy.join("kept.txt")).unwrap(),
+        "keep me\n"
+    );
+    assert!(!plain.join(".git").exists());
+}
+
+#[test]
+fn git_init_source_refreshes_an_adopted_same_path_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": plain})));
+    let project_id = added["result"]["project_id"].as_str().unwrap();
+    let listed = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    let adopted = &listed["result"]["workspaces"][0];
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": adopted["workspace_id"], "source_id": "source-1", "target": "source"}),
+    ));
+
+    assert_eq!(
+        initialized["result"]["results"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        initialized["result"]["source"]["is_git"], true,
+        "{initialized:?}"
+    );
+    assert_eq!(
+        initialized["result"]["workspace"]["directories"][0]["is_git"],
+        true
+    );
+}
+
+#[test]
+fn git_init_source_updates_only_the_exact_project_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("first");
+    let second = tmp.path().join("second");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    let mut state = app(tmp.path());
+    let project_id = create_mixed_project(&mut state, &first, &second);
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace_id, "source_id": "source-2", "target": "source"}),
+    ));
+
+    assert_eq!(initialized["ok"], true, "{initialized:?}");
+    assert!(!first.join(".git").exists());
+    assert!(second.join(".git").is_dir());
+    assert_eq!(initialized["result"]["source"]["id"], "source-2");
+    assert_eq!(initialized["result"]["source"]["is_git"], true);
+    assert_eq!(
+        initialized["result"]["workspace"]["directories"][1]["is_git"],
+        false
+    );
+}
+
+#[test]
+fn git_init_reconciles_an_existing_repository_and_preserves_its_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": plain})));
+    let project_id = added["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    git_in(&plain, &["init", "-b", "develop"]);
+    git_in(&plain, &["config", "user.name", "Build Test"]);
+    git_in(&plain, &["config", "user.email", "test@build.invalid"]);
+    git_in(&plain, &["commit", "--allow-empty", "-m", "existing"]);
+    let before = git2::Repository::open(&plain)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap();
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace_id, "source_id": "source-1", "target": "source"}),
+    ));
+
+    assert_eq!(
+        initialized["result"]["results"][0]["status"],
+        "already_initialized"
+    );
+    assert_eq!(
+        git2::Repository::open(&plain)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target(),
+        Some(before)
+    );
+    assert_eq!(initialized["result"]["source"]["base_branch"], "develop");
+}
+
+#[test]
+fn git_init_rejects_a_nul_branch_without_writing_git_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req(
+        "project.add",
+        json!({"path": plain, "base_branch": "bad\u{0}branch"}),
+    ));
+    let project_id = added["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "work");
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace["workspace_id"], "source_id": "source-1", "target": "source"}),
+    ));
+
+    assert_eq!(initialized["ok"], true, "{initialized:?}");
+    assert_eq!(initialized["result"]["results"][0]["status"], "failed");
+    assert!(!plain.join(".git").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn git_init_rejects_a_symlink_swapped_workspace_directory() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let replacement = tmp.path().join("replacement");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&replacement).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": source})));
+    let workspace = create_workspace(
+        &mut state,
+        added["result"]["project_id"].as_str().unwrap(),
+        "work",
+    );
+    let workspace_path = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
+    let original = workspace_path.with_extension("original");
+    std::fs::rename(&workspace_path, &original).unwrap();
+    symlink(&replacement, &workspace_path).unwrap();
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace["workspace_id"], "source_id": "source-1", "target": "workspace"}),
+    ));
+
+    assert_eq!(initialized["result"]["results"][0]["status"], "failed");
+    assert!(initialized["result"]["results"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("not a directory"));
+    assert!(!replacement.join(".git").exists());
+    assert!(!original.join(".git").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn git_init_rejects_a_symlink_swapped_project_source() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let replacement = tmp.path().join("replacement");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&replacement).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": source})));
+    let workspace = create_workspace(
+        &mut state,
+        added["result"]["project_id"].as_str().unwrap(),
+        "work",
+    );
+    let original = source.with_extension("original");
+    std::fs::rename(&source, &original).unwrap();
+    symlink(&replacement, &source).unwrap();
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace["workspace_id"], "source_id": "source-1", "target": "source"}),
+    ));
+
+    assert_eq!(initialized["result"]["results"][0]["status"], "failed");
+    assert!(initialized["result"]["results"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("no longer matches"));
+    assert!(!replacement.join(".git").exists());
+    assert!(!original.join(".git").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn git_init_refuses_a_dangling_git_marker_without_replacing_it() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": source})));
+    let workspace = create_workspace(
+        &mut state,
+        added["result"]["project_id"].as_str().unwrap(),
+        "work",
+    );
+    symlink("missing-git-dir", source.join(".git")).unwrap();
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace["workspace_id"], "source_id": "source-1", "target": "source"}),
+    ));
+
+    assert_eq!(initialized["result"]["results"][0]["status"], "failed");
+    assert!(initialized["result"]["results"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("symlink"));
+    assert_eq!(
+        std::fs::read_link(source.join(".git")).unwrap(),
+        PathBuf::from("missing-git-dir")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn git_init_both_reports_partial_success_and_retries_without_duplicate_initialization() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": source})));
+    let workspace = create_workspace(
+        &mut state,
+        added["result"]["project_id"].as_str().unwrap(),
+        "work",
+    );
+    symlink("missing-git-dir", source.join(".git")).unwrap();
+    let params = json!({
+        "workspace_id": workspace["workspace_id"],
+        "source_id": "source-1",
+        "target": "both",
+    });
+
+    let partial = state.handle(req("workspace.init_git", params.clone()));
+    assert_eq!(partial["result"]["results"].as_array().unwrap().len(), 2);
+    assert_eq!(partial["result"]["results"][0]["target"], "workspace");
+    assert_eq!(partial["result"]["results"][0]["status"], "initialized");
+    assert_eq!(partial["result"]["results"][1]["target"], "source");
+    assert_eq!(partial["result"]["results"][1]["status"], "failed");
+
+    std::fs::remove_file(source.join(".git")).unwrap();
+    let retried = state.handle(req("workspace.init_git", params));
+    assert_eq!(retried["result"]["results"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        retried["result"]["results"][0]["status"],
+        "already_initialized"
+    );
+    assert_eq!(retried["result"]["results"][1]["status"], "initialized");
+    assert_eq!(
+        retried["result"]["workspace"]["directories"][0]["is_git"],
+        true
+    );
+    assert_eq!(retried["result"]["source"]["is_git"], true);
+}
+
+#[test]
+fn git_init_preserves_an_unborn_repository_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": source})));
+    let workspace = create_workspace(
+        &mut state,
+        added["result"]["project_id"].as_str().unwrap(),
+        "work",
+    );
+    git_in(&source, &["init", "-b", "develop"]);
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace["workspace_id"], "source_id": "source-1", "target": "source"}),
+    ));
+
+    assert_eq!(initialized["result"]["results"][0]["status"], "initialized");
+    let repository = git2::Repository::open(&source).unwrap();
+    assert_eq!(repository.head().unwrap().shorthand(), Some("develop"));
+    assert!(repository.head().unwrap().target().is_some());
+    assert_eq!(initialized["result"]["source"]["base_branch"], "develop");
+}
+
+#[test]
+fn git_init_uses_a_resolvable_configured_base_without_moving_head() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = init_repo_named(tmp.path(), "source");
+    git_in(&source, &["branch", "release"]);
+    git_in(&source, &["switch", "-c", "develop"]);
+    git_in(&source, &["commit", "--allow-empty", "-m", "develop"]);
+    let before = git2::Repository::open(&source)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap();
+    let mut state = app(tmp.path());
+    let added = state.handle(req(
+        "project.add",
+        json!({"path": source, "base_branch": "release"}),
+    ));
+    let workspace = create_workspace(
+        &mut state,
+        added["result"]["project_id"].as_str().unwrap(),
+        "work",
+    );
+
+    let initialized = state.handle(req(
+        "workspace.init_git",
+        json!({"workspace_id": workspace["workspace_id"], "source_id": "source-1", "target": "source"}),
+    ));
+
+    assert_eq!(
+        initialized["result"]["results"][0]["status"],
+        "already_initialized"
+    );
+    let repository = git2::Repository::open(&source).unwrap();
+    assert_eq!(repository.head().unwrap().shorthand(), Some("develop"));
+    assert_eq!(repository.head().unwrap().target(), Some(before));
+    assert_eq!(initialized["result"]["source"]["base_branch"], "release");
 }
 
 #[test]

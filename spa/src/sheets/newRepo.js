@@ -3,13 +3,12 @@ import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { openBrowser } from "./browser.js";
 
-const TABS = ["sources", "empty"];
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
 export function openNewRepo(onDone) {
   const sheet = $("#sheet"), scrim = $("#scrim"), session = App.session, call = App.call;
-  const draft = { name: "", remote: "", sources: [] };
-  let active = true, busy = false, tab = "sources", serial = 0, version = 0, projectsDir;
+  const draft = { name: "", sources: [] };
+  let active = true, busy = false, serial = 0, version = 0, projectsDir;
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
   const close = () => { active = false; version += 1; scrim.classList.remove("show"); };
   const callRpc = (method, params) => active && App.session === session && App.call === call
@@ -17,7 +16,6 @@ export function openNewRepo(onDone) {
     : Promise.reject(new Error("The active device changed. Reopen Add project on the device you want."));
   const remember = () => {
     if (sheet.querySelector("#nrname")) draft.name = $("#nrname").value;
-    if (sheet.querySelector("#nrremote")) draft.remote = $("#nrremote").value;
   };
   const uniqueName = (value, except) => {
     const base = inferredName(value), used = new Set(draft.sources.filter((source) => source !== except).map((source) => source.name.trim().toLowerCase()));
@@ -26,20 +24,6 @@ export function openNewRepo(onDone) {
     return name;
   };
   const addSource = (kind) => { const source = { id: ++serial, kind, path: "", remote: "", name: "", base_branch: "", automaticName: true }; draft.sources.push(source); return source; };
-  const tabsHtml = () => `<div class="segmented create-tabs" role="tablist" aria-label="Project creation method">${TABS.map((kind) => `<button class="btn seg${kind === tab ? " primary" : ""}" type="button" role="tab" aria-selected="${kind === tab}" tabindex="${kind === tab ? "0" : "-1"}" data-project-tab="${kind}">${kind === "sources" ? "From sources" : "Empty repository"}</button>`).join("")}</div>`;
-  const bindTabs = () => {
-    const buttons = [...sheet.querySelectorAll("[data-project-tab]")];
-    const activate = (kind, focus) => { if (busy || kind === tab) return; remember(); tab = kind; paint(); if (focus) sheet.querySelector(`[data-project-tab="${kind}"]`)?.focus(); };
-    buttons.forEach((button, index) => {
-      button.onclick = () => activate(button.dataset.projectTab);
-      button.onkeydown = (event) => {
-        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
-        activate(buttons[next].dataset.projectTab, true);
-      };
-    });
-  };
   const submit = async (params) => {
     if (busy) return;
     busy = true;
@@ -93,7 +77,7 @@ export function openNewRepo(onDone) {
       const host = $("#nrbrowser");
       if (requestVersion !== version || !visible(host)) return;
       if (!projectsDir) throw new Error("This device did not return a projects folder.");
-      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, startPath: projectsDir, callRpc, container: host, onChoose: (path) => {
+      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, startPath: projectsDir, callRpc, container: host, onChoose: (path) => {
         if (requestVersion !== version || !visible(host)) return;
         const source = draft.sources.find((item) => item.id === sourceId);
         if (!source) return;
@@ -103,11 +87,11 @@ export function openNewRepo(onDone) {
   };
   const paintSources = () => {
     version += 1;
-    sheet.innerHTML = `<h3>Add project</h3>${tabsHtml()}<p class="sub">Add Git remotes or folders from this device. Each becomes a folder in the project.</p><form id="nrform">
+    sheet.innerHTML = `<h3>Add project</h3><p class="sub">Add Git remotes or folders from this device. Each becomes a folder in the project.</p><form id="nrform">
       <div class="field"><label for="nrname">Project name</label><input id="nrname" required value="${esc(draft.name)}"></div>
-      <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add existing folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
+      <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
       <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
-    bindTabs(); $("#nrcancel").onclick = close;
+    $("#nrcancel").onclick = close;
     $("#nraddfolder").onclick = () => { remember(); void browseFor(addSource("path").id); };
     $("#nraddremote").onclick = () => { remember(); const source = addSource("remote"); paint(); $(`#nrsource-${source.id}`)?.focus(); };
     sheet.querySelectorAll("[data-source-value]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceValue)); source.remote = input.value; if (source.automaticName) { source.name = uniqueName(input.value, source); $(`#nrmount-${source.id}`).value = source.name; } });
@@ -118,13 +102,6 @@ export function openNewRepo(onDone) {
     $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); void submit({ name: draft.name.trim(), sources }); };
     $("#nrname").focus();
   };
-  const paintEmpty = () => {
-    version += 1;
-    sheet.innerHTML = `<h3>Add project</h3>${tabsHtml()}<p class="sub">Create a new empty Git repository in this device's configured projects folder.</p><form id="nrform"><div class="field"><label for="nrname">Project name</label><input id="nrname" required value="${esc(draft.name)}"></div><div class="field"><label for="nrremote">Origin remote (optional)</label><input id="nrremote" value="${esc(draft.remote)}" placeholder="git@github.com:org/repo.git"></div><div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status"></div></form>`;
-    bindTabs(); $("#nrcancel").onclick = close;
-    $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); if (!draft.name.trim()) { $("#nrerr").textContent = "Enter a project name."; $("#nrname").focus(); return; } const params = { name: draft.name.trim() }; if (draft.remote.trim()) params.remote = draft.remote.trim(); void submit(params); };
-    $("#nrname").focus();
-  };
-  function paint() { if (!active) return; tab === "sources" ? paintSources() : paintEmpty(); }
+  function paint() { if (active) paintSources(); }
   scrim.classList.add("show"); paint();
 }

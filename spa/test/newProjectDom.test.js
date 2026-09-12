@@ -11,10 +11,9 @@ beforeEach(() => {
   App.session = { deviceId: "one" };
 });
 
-it("opens on the accessible multi-source project tab", () => {
+it("opens the multi-source project form without creation tabs", () => {
   openNewRepo();
-  expect([...document.querySelectorAll('[role="tab"]')].map((node) => node.textContent)).toEqual(["From sources", "Empty repository"]);
-  expect(document.querySelector('[role="tab"]').getAttribute("aria-selected")).toBe("true");
+  expect(document.querySelector('[role="tab"]')).toBeNull();
   expect(document.querySelector("legend").textContent).toBe("Workspace folders");
 });
 
@@ -49,16 +48,17 @@ it("rejects duplicate mount names and focuses the duplicate", () => {
   expect(document.activeElement).toBe(document.querySelectorAll("[data-source-name]")[1]); expect(App.call).not.toHaveBeenCalled();
 });
 
-it("ignores a stale browser choice and preserves empty-repository creation", async () => {
+it("ignores a stale browser choice and enables directory creation in the picker", async () => {
   openNewRepo(); document.querySelector("#nrname").value = "docs"; document.querySelector("#nraddfolder").click(); await flush();
+  expect(openBrowser.mock.calls[0][0].allowCreateDirectory).toBe(true);
   const choose = openBrowser.mock.calls[0][0].onChoose; document.querySelector("#nrback").click(); choose("/stale");
   expect(document.querySelector("#nrsources").textContent).toContain("No folder selected");
-  document.querySelector('[data-project-tab="empty"]').click(); document.querySelector("#nrremote").value = "origin"; document.querySelector("#nrdo").click(); await flush();
-  expect(App.call).toHaveBeenCalledWith("project.create", { name: "docs", remote: "origin" });
 });
 
 it("guards device changes and newer sheets", async () => {
-  openNewRepo(); document.querySelector('[data-project-tab="empty"]').click(); document.querySelector("#nrname").value = "docs";
+  openNewRepo(); document.querySelector("#nrname").value = "docs"; document.querySelector("#nraddremote").click();
+  document.querySelector("[data-source-value]").value = "https://example.com/docs.git";
+  document.querySelector("[data-source-value]").dispatchEvent(new Event("input"));
   const original = App.call; App.session = { deviceId: "two" }; App.call = vi.fn(); document.querySelector("#nrdo").click(); await flush();
   expect(original).not.toHaveBeenCalled(); expect(document.querySelector("#nrerr").textContent).toContain("device changed");
 });

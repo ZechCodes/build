@@ -272,6 +272,30 @@ impl WorkspaceRegistry {
         self.workspaces.get(id)
     }
 
+    pub fn record_git_repository(
+        &mut self,
+        workspace_id: &str,
+        source_id: &str,
+        branch: &str,
+    ) -> Result<Workspace, String> {
+        let workspace = self
+            .workspaces
+            .get_mut(workspace_id)
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        let directory = workspace
+            .directories
+            .iter_mut()
+            .find(|directory| directory.source_id == source_id)
+            .ok_or_else(|| format!("unknown source_id {source_id} in workspace {workspace_id}"))?;
+        directory.is_git = true;
+        directory.branch = Some(branch.to_string());
+        directory.base_branch = branch.to_string();
+        if workspace.managed {
+            persist(workspace)?;
+        }
+        Ok(workspace.clone())
+    }
+
     pub fn reopen(&mut self, id: &str) -> Result<(), String> {
         let workspace = self
             .workspaces

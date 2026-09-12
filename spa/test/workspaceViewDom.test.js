@@ -8,7 +8,10 @@ const { mountGitPane, mountConsole, mountAgentRail, renderFilesTab } = vi.hoiste
   }),
   mountConsole: vi.fn(() => ({ dispose: vi.fn() })),
   mountAgentRail: vi.fn(() => ({ dispose: vi.fn() })),
-  renderFilesTab: vi.fn(() => ({ dispose: vi.fn(), canLeave: vi.fn(async () => false) })),
+  renderFilesTab: vi.fn((host) => {
+    host.innerHTML = '<aside class="ftree"></aside><main class="file-editor"></main>';
+    return { dispose: vi.fn(), canLeave: vi.fn(async () => false) };
+  }),
 }));
 
 vi.mock("../src/core/gitPane.js", () => ({ mountGitPane }));
@@ -27,6 +30,20 @@ const workspace = {
     { source_id: "repo", name: "Repository", is_git: true },
     { source_id: "assets", name: "Assets", is_git: false },
   ],
+};
+
+const plainWorkspace = {
+  id: "ws-1",
+  project_id: "p-1",
+  directories: [{
+    source_id: "assets", name: "Assets", path: "/tmp/workspaces/ws-1/assets", is_git: false,
+    source_path: "/srv/projects/assets", source_is_git: false,
+  }],
+};
+const initOptions = {
+  workspace_id: "ws-1", source_id: "assets",
+  workspace: { path: "/tmp/workspaces/ws-1/assets", is_git: false, available: true },
+  source: { path: "/srv/projects/assets", is_git: false, available: true },
 };
 
 beforeEach(() => {
@@ -182,5 +199,187 @@ describe("workspace surface", () => {
     expect(originalPane.dispose).not.toHaveBeenCalled();
     expect(App.routeLeaveGuard).toBe(originalGuard);
     expect(mountConsole).toHaveBeenCalledTimes(1);
+  });
+
+  it("initializes a workspace copy without remounting Files or navigating away", async () => {
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files", file: "draft.md" };
+    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? {
+      workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
+      outcomes: [{ target: "workspace", status: "initialized", is_git: true }],
+      source: { source_id: "assets", path: "/srv/projects/assets", is_git: false },
+    } : plainWorkspace);
+    await renderWorkspace();
+    const pane = renderFilesTab.mock.results[0].value;
+    const guard = App.routeLeaveGuard;
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    document.querySelector('[data-init-target="workspace"]').click();
+    document.querySelector("[data-confirm-init-git]").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
+    expect([...document.querySelectorAll(".railtabs [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+    expect(App.route).toMatchObject({ tab: "files", file: "draft.md" });
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(pane.dispose).not.toHaveBeenCalled();
+    expect(App.routeLeaveGuard).toBe(guard);
+    expect(mountConsole).toHaveBeenCalledTimes(1);
+    expect(mountAgentRail).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("[data-init-git]").textContent).toContain("original source");
+  });
+
+  it("describes independent repositories and lets a failed target be retried", async () => {
+    let calls = 0;
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = vi.fn(async (method) => {
+      if (method === "workspace.git_init_options") return initOptions;
+      if (method !== "workspace.init_git") return plainWorkspace;
+      calls += 1;
+      return calls === 1 ? {
+        workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
+        outcomes: [
+          { target: "workspace", status: "initialized", is_git: true },
+          { target: "source", status: "failed", is_git: false, error: "permission denied" },
+        ],
+        source: { source_id: "assets", path: "/srv/projects/assets", is_git: false },
+      } : {
+        workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
+        outcomes: [{ target: "source", status: "initialized", is_git: true }],
+        source: { source_id: "assets", path: "/srv/projects/assets", is_git: true },
+      };
+    });
+    await renderWorkspace();
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    document.querySelector('[data-init-target="both"]').click();
+    expect(document.querySelector(".workspace-init-copy").textContent).toContain("/tmp/workspaces/ws-1/assets");
+    expect(document.querySelector(".workspace-init-source").textContent).toContain("/srv/projects/assets");
+    expect(document.querySelector(".workspace-init-note").textContent).toContain("independent repositories");
+    document.querySelector("[data-confirm-init-git]").click();
+    await flush();
+    expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: permission denied");
+    expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry original source");
+    document.querySelector("[data-confirm-init-git]").click();
+    await flush();
+    expect(App.call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "source" });
+  });
+
+  it("ignores an initialization response after the workspace view is disposed", async () => {
+    let finish;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
+    await renderWorkspace();
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    document.querySelector('[data-init-target="workspace"]').click();
+    document.querySelector("[data-confirm-init-git]").click();
+    App.viewDispose();
+    finish({ workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] }, outcomes: [] });
+    await flush();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".modal-scrim")).toBeNull();
+  });
+
+  it("keeps both failures visible and retries both targets together", async () => {
+    let attempts = 0;
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = vi.fn(async (method) => {
+      if (method === "workspace.git_init_options") return initOptions;
+      if (method !== "workspace.init_git") return plainWorkspace;
+      attempts += 1;
+      if (attempts === 1) return {
+        workspace: plainWorkspace,
+        source: { id: "assets", is_git: false },
+        results: [
+          { target: "workspace", status: "failed", is_git: false, error: "copy failed" },
+          { target: "source", status: "failed", is_git: false, error: "source failed" },
+        ],
+      };
+      return { workspace: plainWorkspace, source: { id: "assets", is_git: false }, results: [] };
+    });
+    await renderWorkspace();
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    document.querySelector('[data-init-target="both"]').click();
+    document.querySelector("[data-confirm-init-git]").click();
+    await flush();
+    expect(document.querySelector("[data-init-error]").textContent).toContain("Workspace copy: copy failed");
+    expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: source failed");
+    expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both");
+    document.querySelector("[data-confirm-init-git]").click();
+    await flush();
+    expect(App.call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" });
+  });
+
+  it("can reopen initialization after Escape dismisses the dialog", async () => {
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : plainWorkspace);
+    await renderWorkspace();
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    expect(document.querySelector(".modal-scrim")).toBeNull();
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    expect(document.querySelector(".modal-workspace-init")).not.toBeNull();
+    expect(App.call).toHaveBeenCalledTimes(3);
+  });
+
+  it("discovers a plain original source after reloading a Git workspace copy", async () => {
+    const initializedCopy = { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] };
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? {
+      ...initOptions, workspace: { ...initOptions.workspace, is_git: true },
+    } : initializedCopy);
+    await renderWorkspace();
+    await flush();
+    expect(document.querySelector("[data-init-git]").textContent).toContain("original source");
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers and clears workspace reconciliation after an interrupted initialization", async () => {
+    const initializedCopy = { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] };
+    const reconciliationOptions = {
+      ...initOptions,
+      workspace: { ...initOptions.workspace, is_git: true, needs_reconciliation: true },
+      source: { ...initOptions.source, is_git: true },
+    };
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? reconciliationOptions : method === "workspace.init_git" ? {
+      workspace: initializedCopy, source: { id: "assets", is_git: true },
+      results: [{ target: "workspace", status: "already_initialized", is_git: true }],
+    } : initializedCopy);
+    await renderWorkspace();
+    await flush();
+    expect(document.querySelector("[data-init-git]").textContent).toContain("Finish Git initialization");
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    document.querySelector('[data-init-target="workspace"]').click();
+    document.querySelector("[data-confirm-init-git]").click();
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    expect(document.querySelector("[data-init-git]")).toBeNull();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not publish a Git initialization response from a replaced device RPC", async () => {
+    let finish;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    const originalCall = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = originalCall;
+    await renderWorkspace();
+    document.querySelector("[data-init-git]").click();
+    await flush();
+    document.querySelector('[data-init-target="workspace"]').click();
+    document.querySelector("[data-confirm-init-git]").click();
+    App.call = vi.fn();
+    finish({
+      workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
+      source: { id: "assets", is_git: false }, results: [{ target: "workspace", status: "initialized", is_git: true }],
+    });
+    await flush();
+    expect([...document.querySelectorAll(".railtabs [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files"]);
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 });

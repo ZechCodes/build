@@ -821,6 +821,8 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .browse-nav:focus-visible { outline:2px solid var(--accent); }
 .browse-row .bname { flex:1; }
 .browse-row .bgit { font-size:9px; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
+.browse-create { flex-wrap:wrap; }
+.browse-create input { flex:1 1 180px; min-width:0; }
 /* text inputs in modals/sheets */
 .sheet input:not([type=checkbox]) { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
 .field input { width:100%; }

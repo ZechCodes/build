@@ -402,6 +402,7 @@ impl AppState {
         git: &DeferredGit,
         result: Result<Value, String>,
     ) -> Result<Value, String> {
+        let result = result.and_then(|value| git.call.settle(self, value));
         if !git.invalidates || (result.is_err() && !git.call.invalidates_on_error()) {
             return result;
         }

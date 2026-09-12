@@ -1104,6 +1104,19 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .modal h3 { margin:0 0 3px; font-size:17px; }
 .modal .sub { color:var(--ink2); font-size:13px; }
 .modal .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
+.workspace-init-host { padding:10px 13px 12px var(--pane-gutter); border-top:1px solid var(--line2); }
+.workspace-init-open { border:0; background:none; color:var(--accent); padding:0; font:inherit; font-size:12px; cursor:pointer; text-align:left; }
+.workspace-init-open:disabled { color:var(--dim); cursor:default; }
+.workspace-init-open-status { display:block; margin-top:5px; color:var(--red); font-size:11px; }
+.modal-workspace-init { max-width:520px; }
+.workspace-init-path { display:flex; flex-direction:column; gap:3px; margin-top:14px; }
+.workspace-init-path strong { font-size:13px; }
+.workspace-init-path code { overflow-wrap:anywhere; color:var(--ink2); font-size:11.5px; }
+.workspace-init-detail, .workspace-init-note { margin:4px 0 0; color:var(--ink2); font-size:12px; line-height:1.4; }
+.workspace-init-choices { display:flex; gap:7px; flex-wrap:wrap; margin-top:14px; }
+.workspace-init-choice { border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--ink); padding:7px 10px; font:inherit; font-size:12px; cursor:pointer; }
+.workspace-init-choice[aria-pressed="true"] { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+.workspace-init-error { min-height:17px; margin-top:8px; color:var(--red); font-size:12px; }
 /* The create modal: two tabs, one field, and the harness question on the
    Issue tab. The field takes the dialog's width; the preview of the branch
    the daemon will cut sits at the row's left, the verbs at its right. */

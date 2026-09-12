@@ -15,6 +15,7 @@ import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { renderFilesTab } from "./files.js";
 import { directoryId, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
+import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import "../styles/surfaces.css";
 
 const TABS = [
@@ -132,8 +133,75 @@ function mountDirectoryPane(body, { directory, canonical, scope, callRpc }) {
   });
 }
 
-function directoryTabsPainter(body, directory, canonical) {
+function paintGitInitialization(rail, state, sourceId, directory) {
+  if (directory.is_git !== false && state.sourceGit == null) {
+    probeSourceGit(state, sourceId);
+    return;
+  }
+  const canInitialize = directory.is_git === false || state.workspaceNeedsReconciliation || state.sourceGit === false || state.sourceNeedsReconciliation;
+  let initHost = rail.querySelector(".workspace-init-host");
+  if (!canInitialize) {
+    initHost?.remove();
+    return;
+  }
+  if (!initHost) {
+    initHost = document.createElement("div");
+    initHost.className = "workspace-init-host";
+    rail.appendChild(initHost);
+    const controller = mountWorkspaceGitInitialization({
+      host: initHost, workspaceId: state.route.workspaceId, sourceId, callRpc: state.callRpc,
+      isActive: () => workspaceSourceIsActive(state, sourceId),
+      onUpdate: (answer) => {
+        if (answer.workspace) state.workspace = answer.workspace;
+        if (answer.source && typeof answer.source.is_git === "boolean") state.sourceGit = answer.source.is_git;
+        clearReconciledTargets(state, answer.results || answer.outcomes || []);
+        state.paintTabs?.();
+      },
+    });
+    state.gitInitialization.push(controller);
+  }
+  const initButton = initHost.querySelector("[data-init-git]");
+  initButton.textContent = gitInitializationLabel(state, directory);
+}
+
+function gitInitializationLabel(state, directory) {
+  if (state.workspaceNeedsReconciliation) return "Finish Git initialization…";
+  return directory.is_git === false ? "Initialize Git…" : "Initialize original source…";
+}
+
+function clearReconciledTargets(state, results) {
+  const completed = new Set(results.filter((result) => result.status !== "failed").map((result) => result.target));
+  if (completed.has("workspace") || completed.has("both")) state.workspaceNeedsReconciliation = false;
+  if (completed.has("source") || completed.has("both")) state.sourceNeedsReconciliation = false;
+}
+
+function workspaceSourceIsActive(state, sourceId) {
+  if (state.disposed || App.call !== state.callRpc) return false;
+  if (App.route.name !== "workspace" || App.route.workspaceId !== state.route.workspaceId || App.route.sourceId !== sourceId) return false;
+  return (state.workspace?.directories || []).some((directory) => directoryId(directory) === sourceId);
+}
+
+async function probeSourceGit(state, sourceId) {
+  if (state.sourceProbePending) return;
+  state.sourceProbePending = true;
+  try {
+    const options = await state.callRpc("workspace.git_init_options", { workspace_id: state.route.workspaceId, source_id: sourceId });
+    if (state.disposed || App.call !== state.callRpc) return;
+    state.sourceGit = options.source?.is_git !== false;
+    state.sourceNeedsReconciliation = options.source?.needs_reconciliation === true;
+    state.workspaceNeedsReconciliation = options.workspace?.needs_reconciliation === true;
+    state.paintTabs?.();
+  } catch {
+    if (workspaceSourceIsActive(state, sourceId)) state.sourceGit = false;
+  } finally {
+    state.sourceProbePending = false;
+  }
+}
+
+function directoryTabsPainter(body, state, sourceId) {
   return () => {
+    const directory = selectedDirectory(state.workspace, sourceId);
+    if (!directory) return false;
     const rail = body.querySelector(".crail-host, .ftree");
     if (!rail) return false;
     let host = rail.querySelector(".railtabs");
@@ -143,10 +211,11 @@ function directoryTabsPainter(body, directory, canonical) {
       rail.appendChild(host);
     }
     const tabs = directory.is_git === false ? TABS.filter((entry) => entry.id === "files") : TABS;
-    host.innerHTML = tabShellHtml({ tabs, active: canonical.tab });
+    host.innerHTML = tabShellHtml({ tabs, active: App.route.tab });
     host.querySelectorAll("[data-tab]").forEach((control) => {
-      control.onclick = () => go({ ...canonical, tab: control.dataset.tab });
+      control.onclick = () => go({ ...App.route, tab: control.dataset.tab });
     });
+    paintGitInitialization(rail, state, sourceId, directory);
     return true;
   };
 }
@@ -198,6 +267,7 @@ function mountWorkspaceAgentRail(workspace, route, sourceId) {
 function mountWorkspace(workspace, state) {
   if (state.disposed) return;
   const { route, callRpc } = state;
+  state.workspace = workspace;
   installWorkspaceAction(state, workspace);
   const directory = selectedDirectory(workspace, route.sourceId);
   const sourceId = directoryId(directory);
@@ -219,13 +289,14 @@ function mountWorkspace(workspace, state) {
     return;
   }
 
-  App.viewDispose = observeTabs(mounted.body, directoryTabsPainter(mounted.body, mounted.directory, mounted.canonical), App.viewDispose);
+  state.paintTabs = directoryTabsPainter(mounted.body, state, sourceId);
+  App.viewDispose = observeTabs(mounted.body, state.paintTabs, App.viewDispose);
   state.consolePanel = mountConsole($("#console-region"), { kind: "workspace", workspaceId: route.workspaceId });
 }
 
 export async function renderWorkspace() {
   const root = $("#root");
-  const state = { route: App.route, callRpc: App.call, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null };
+  const state = { route: App.route, callRpc: App.call, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, gitInitialization: [] };
   root.className = "surface";
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   App.viewDispose = () => {
@@ -234,6 +305,7 @@ export async function renderWorkspace() {
     state.pane?.dispose?.();
     state.consolePanel?.dispose?.();
     state.agentRail?.dispose?.();
+    state.gitInitialization.forEach((controller) => controller.dispose());
     clearToolbarVerb(state.toolbarAction);
   };
   try {

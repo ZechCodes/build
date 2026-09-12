@@ -397,6 +397,8 @@ impl AppState {
             "workspace.create" => self.workspace_create(params),
             "workspace.retry" => self.workspace_retry(params),
             "workspace.get" => self.workspace_get(params),
+            "workspace.git_init_options" => self.workspace_git_init_options(params),
+            "workspace.init_git" => self.workspace_init_git(params),
             "workspace.finish" => self.workspace_finish(params),
             "board.list" => Ok(self.board_list()),
             // Capture surface: what the user said, kept before anything routes it.

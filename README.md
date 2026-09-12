@@ -96,6 +96,14 @@ uncommitted edits remain in place; if a checkout would overwrite or otherwise
 lose local changes, Build leaves the source untouched and reports Git's reason.
 Selecting a tag results in a detached HEAD and the interface says so.
 
+The directory picker can create a new folder while adding project sources.
+From a workspace directory, Initialize Git offers the workspace copy, the
+original project source, or both. Initializing the source enables Git for future
+workspaces; initializing only the copy leaves the original source unchanged.
+When they are separate folders, initializing both creates independent
+repositories and preserves the files in each. If the workspace and source are
+the same folder, Git is initialized there once.
+
 Terminals belong to the workspace, not to the selected source or ref. A new
 terminal starts at the workspace root and remains open when the selected source
 or its ref changes. A terminal that has changed directory stays where its shell

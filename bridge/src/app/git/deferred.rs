@@ -63,6 +63,10 @@ pub(in crate::app) trait DeferredGitWork: Send {
     fn run(&self, params: &Value) -> Result<Value, String>;
     fn invalidate(&self, app: &mut AppState);
 
+    fn settle(&self, _app: &mut AppState, result: Value) -> Result<Value, String> {
+        Ok(result)
+    }
+
     /// Provisioning can durably record partial progress before returning an
     /// error. Its in-memory view must still reconcile with that journal.
     fn invalidates_on_error(&self) -> bool {

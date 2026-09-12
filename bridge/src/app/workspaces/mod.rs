@@ -6,6 +6,8 @@ use crate::worktree::{copy_directory_with_rift_root, WorktreeManager};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+mod git_initialization;
+
 struct WorkspaceCreateWork {
     registry_root: PathBuf,
     rift_root: PathBuf,

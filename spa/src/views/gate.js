@@ -4,9 +4,8 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { onlineStickyDeviceId } from "../core/devicePolicy.js";
 import { App, render } from "../app.js";
-import { openAppSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
+import { openBootSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -16,6 +15,9 @@ import { startFeed, stopFeed } from "../core/taskFeed.js";
 import { startCacheSync } from "../core/cacheSync.js";
 import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
+
+let gateGeneration = 0;
+let connectingPromise = null;
 
 // The gate screens are self-contained — body.gated hides the inbox rail (and
 // its reopen toggle), the toolbar, the agent rail and the console via CSS while
@@ -29,17 +31,11 @@ function setGate(on) {
   }
 }
 
-async function enterApp() {
-  if (App._connecting) return;
-  App._connecting = true;
-  try {
-    // Honor an explicit device choice when that device is online; otherwise
-    // whichever of the user's devices answers first.
-    const preferDeviceId = onlineStickyDeviceId(App.devices, App.selectedDeviceId);
-    adoptSession(await openAppSession({ preferDeviceId }));
-  } finally {
-    App._connecting = false;
-  }
+async function connectToApp() {
+  // Prefer the remembered device while it reports online, then try the other
+  // known devices in bootstrap order.
+  adoptSession(await openBootSession(App.devices));
+  gateGeneration += 1;
   if (App._watch) {
     clearInterval(App._watch);
     App._watch = null;
@@ -58,11 +54,25 @@ async function enterApp() {
   render(); // the hash route survives the gate, so deep links land where they point
 }
 
+async function enterApp() {
+  if (connectingPromise) return connectingPromise;
+  App._connecting = true;
+  connectingPromise = connectToApp();
+  try {
+    return await connectingPromise;
+  } finally {
+    connectingPromise = null;
+    App._connecting = false;
+  }
+}
+
 // Poll for a device to come online, then connect automatically.
 function watchForOnline() {
   if (App._watch) clearInterval(App._watch);
+  const generation = gateGeneration;
   App._watch = setInterval(async () => {
     const devices = await refreshDevices();
+    if (generation !== gateGeneration) return;
     if (!devices.length) {
       clearInterval(App._watch);
       App._watch = null;
@@ -70,12 +80,10 @@ function watchForOnline() {
       return;
     }
     paintWaiting(devices);
-    if (devices.some((d) => d.status === "online")) {
-      try {
-        await enterApp();
-      } catch {
-        /* warming up */
-      }
+    try {
+      await enterApp();
+    } catch {
+      /* warming up */
     }
   }, 3000);
 }
@@ -172,6 +180,12 @@ async function renderOnboarding() {
 function paintWaiting(devices) {
   const list = $("#waitlist");
   if (!list) return;
+  const intro = $("#waitintro");
+  if (intro) {
+    intro.textContent = devices.some((device) => device.status === "online")
+      ? "Your devices report online, but Build could not reach one yet. It will keep trying automatically — no need to refresh."
+      : "None of your devices are online right now. Start your bridge and Build will connect automatically — no need to refresh.";
+  }
   const html = devices
     .map(
       (d) => `
@@ -191,7 +205,7 @@ function renderWaiting(devices) {
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
       <h1 style="margin:0 0 6px">Waiting for your device</h1>
-      <p class="settings-intro" style="margin:0 0 18px">None of your devices are online right now. Start your bridge and Build will connect automatically — no need to refresh.</p>
+      <p class="settings-intro" id="waitintro" style="margin:0 0 18px"></p>
       <div class="panel"><div id="waitlist"></div></div>
       <div class="row" style="margin-top:14px"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
         <button class="btn" id="retrybtn" style="margin-left:auto">Retry now</button>
@@ -204,21 +218,28 @@ function renderWaiting(devices) {
 }
 
 export async function boot() {
+  const generation = ++gateGeneration;
+  if (App._watch) {
+    clearInterval(App._watch);
+    App._watch = null;
+  }
   setGate(true);
   setConn('<span class="dot" style="background:var(--amber)"></span>connecting…');
   const devices = await refreshDevices();
+  if (generation !== gateGeneration) return;
   if (!devices.length) {
     await renderOnboarding();
     return;
   }
-  if (devices.some((d) => d.status === "online")) {
-    try {
-      await enterApp();
-      return;
-    } catch {
-      /* status stale or warming up → waiting */
-    }
+  try {
+    await enterApp();
+    return;
+  } catch {
+    /* API presence is only a hint; the relay is not ready yet → waiting */
   }
-  renderWaiting(devices);
+  if (generation !== gateGeneration) return;
+  const refreshedDevices = await refreshDevices();
+  if (generation !== gateGeneration) return;
+  renderWaiting(refreshedDevices);
   watchForOnline();
 }

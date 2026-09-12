@@ -18,6 +18,7 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => creat
 const projects = [{ id: "project-1", name: "Payments" }, { id: "project-2", name: "Website" }];
 const workspace = (overrides = {}) => ({
   id: "workspace-1", project_id: "project-1", name: "Checkout", root: "/work/checkout", status: "active",
+  work_summary: { pushes: 2, additions: 8, deletions: 3 },
   directories: [{ id: "api", source_id: "source-api", is_git: true }], ...overrides,
 });
 const feed = (workspaces) => subscriber({ items: [], pending: [], projects, workspaces });
@@ -45,8 +46,8 @@ describe("workspace inbox", () => {
     feed([workspace(), workspace({ id: "workspace-2", project_id: "project-2", name: "Marketing", directories: [] })]);
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:workspace-1", "workspace:workspace-2"]);
     expect(rows()[0].textContent).toContain("Payments");
-    expect(rows()[0].textContent).toContain("1 directory · 1 Git");
-    expect(rows()[1].textContent).toContain("No directories");
+    expect(rows()[0].textContent).toContain("2 pushes · +8 −3");
+    expect(rows()[1].textContent).toContain("2 pushes · +8 −3");
   });
 
   it("opens the canonical workspace route", () => {

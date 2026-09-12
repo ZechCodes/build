@@ -34,6 +34,7 @@ describe("workspace inbox rows", () => {
           name: "Checkout",
           root: "/work/checkout",
           status: "active",
+          work_summary: { pushes: 3, additions: 42, deletions: 7 },
           directories: [
             { id: "docs", source_id: "source-docs", is_git: false },
             { id: "api", source_id: "source-api", is_git: true },
@@ -50,7 +51,7 @@ describe("workspace inbox rows", () => {
       sourceId: "source-api",
       tab: "changes",
     });
-    expect(entry.facts).toBe("2 directories · 1 Git");
+    expect(entry.facts).toBe("3 pushes · +42 −7");
     expect(inboxRowHtml(entry)).not.toMatch(/data-done|branch\.finish|Delete/);
   });
 
@@ -63,7 +64,24 @@ describe("workspace inbox rows", () => {
       workspaceId: "workspace-1",
       tab: "changes",
     });
-    expect(entry.facts).toBe("No directories");
+    expect(entry.facts).toBe("Work summary unavailable");
     expect(activeEntryKey(entry.route, [entry])).toBe("workspace:workspace-1");
+  });
+
+  it("does not turn an unknown workspace work summary into zero work", () => {
+    const [entry] = workspaceEntries([{ id: "workspace-1", project_id: "project-1", work_summary: null }], projects);
+    expect(entry.facts).toBe("Work summary unavailable");
+    const [partial] = workspaceEntries([{ id: "workspace-2", project_id: "project-1", work_summary: { pushes: 1 } }], projects);
+    expect(partial.facts).toBe("Work summary unavailable");
+    for (const invalid of ["1", -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const [malformed] = workspaceEntries([
+        { id: "workspace-3", project_id: "project-1", work_summary: { pushes: invalid, additions: 0, deletions: 0 } },
+      ], projects);
+      expect(malformed.facts).toBe("Work summary unavailable");
+    }
+    const [clean] = workspaceEntries([
+      { id: "workspace-4", project_id: "project-1", work_summary: { pushes: 0, additions: 0, deletions: 0 } },
+    ], projects);
+    expect(clean.facts).toBe("0 pushes · +0 −0");
   });
 });

@@ -153,10 +153,14 @@ export function createRelayLink({
       // the broker (or someone on the socket) is substituting keys — abort loudly.
       const pinnedKeyB64 = await getPinnedDeviceKey(deviceId);
       if (!pinnedKeyB64) {
-        throw new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`);
+        throw Object.assign(new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`), {
+          securityCritical: true,
+        });
       }
       if (hello.transport_public_key !== pinnedKeyB64) {
-        throw new Error("relay-supplied device key does not match the api-pinned key — possible tampering");
+        throw Object.assign(new Error("relay-supplied device key does not match the api-pinned key — possible tampering"), {
+          securityCritical: true,
+        });
       }
 
       reattaching = Boolean(carrying() && session && session.deviceId === deviceId);

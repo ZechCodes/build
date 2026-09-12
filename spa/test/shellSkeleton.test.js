@@ -101,7 +101,7 @@ describe("the shell's markup", () => {
 describe("the shell's grid", () => {
   it("lays the rail beside the view column, and the view column in three rows", () => {
     expect(shellCss).toMatch(/#shell \{[^}]*display:grid/);
-    expect(shellCss).toMatch(/#shell \{[^}]*grid-template-columns:auto minmax\(0, 1fr\)/);
+    expect(shellCss).toMatch(/#shell \{[^}]*grid-template-columns:var\(--inbox-space\) minmax\(0, 1fr\)/);
     expect(shellCss).toMatch(/#view \{[^}]*grid-template-rows:auto minmax\(0, 1fr\) auto/);
     expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:auto minmax\(0, 1fr\) auto/);
   });
@@ -134,12 +134,16 @@ describe("the shell's grid", () => {
     // Capture works before a device does, so the rail survives the gate as the
     // carrier for that one control — and takes up no room doing it.
     expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*width:0/);
+    expect(shellCss).toMatch(/body\.gated \{[^}]*--inbox-space:0px/);
+    expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*visibility:visible/);
+    expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*pointer-events:auto/);
     expect(shellCss).toMatch(/body\.gated #compose \{[^}]*position:fixed/);
   });
 
   it("overlays the inbox on a narrow viewport, the way the rail it replaces did", () => {
     const narrow = shellCss.match(/@media \(max-width: 900px\) \{[\s\S]*?\n\}/)[0];
-    expect(narrow).toMatch(/#inbox-rail \{[^}]*position:fixed/);
+    expect(narrow).toMatch(/#inbox-rail \{[^}]*position:absolute/);
+    expect(narrow).toMatch(/body \{[^}]*--inbox-space:0px/);
     expect(narrow).toMatch(/#inbox-scrim/);
   });
 

@@ -36,8 +36,8 @@ describe("iPad PWA document metadata", () => {
   });
 
   it("provides theme-aware chrome and iOS install assets", () => {
-    expect(metaContent("theme-color", "(prefers-color-scheme: light)")).toBe("#fafafa");
-    expect(metaContent("theme-color", "(prefers-color-scheme: dark)")).toBe("#15171c");
+    expect(metaContent("theme-color", "(prefers-color-scheme: light)")).toBe("#f3f7f8");
+    expect(metaContent("theme-color", "(prefers-color-scheme: dark)")).toBe("#07151b");
     expect(indexSource).toMatch(/<link\s+rel="manifest"\s+href="[^"]+"\s*\/>/);
     expect(indexSource).toMatch(/<link\s+rel="apple-touch-icon"\s+href="[^"]+"\s*\/>/);
   });
@@ -54,8 +54,8 @@ describe("installable PWA manifest", () => {
       lang: "en",
       dir: "ltr",
       orientation: "any",
-      theme_color: "#fafafa",
-      background_color: "#fafafa",
+      theme_color: "#f3f7f8",
+      background_color: "#f3f7f8",
     });
   });
 

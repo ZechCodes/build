@@ -891,7 +891,7 @@ export function mountAgentRail(host, context) {
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
-          ? `${railViewerHostHtml()}${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
+          ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
           : ""}`;
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
@@ -1254,6 +1254,7 @@ export function mountAgentRail(host, context) {
   /// bottom edge past the panel.
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
+      ${railViewerHostHtml()}
       ${railStatusRowHtml()}
       <div class="chat-recovery" id="rail-chat-recovery"></div>
       ${composerHtml({

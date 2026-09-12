@@ -463,7 +463,8 @@ describe("the overlay's own height", () => {
     menuItem(SHELL_ENTRY_KIND).click();
 
     expect(overlay().closest(".rail-surfaces-viewer")).toBe(null);
-    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:34vh/);
+    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:min\(46vh, 420px\)/);
+    expect(shellCss).toMatch(/\.surface-popover-body\s*\{[^}]*overflow-y:auto/);
     expect(shellCss).not.toContain(".modal-surface");
     expect(appCss).toMatch(/\.modal\.modal-surface\s*\{[^}]*max-height/);
     expect(appCss).toMatch(/\.modal-surface\s+\.surface-overlay-body\s*\{[^}]*overflow-y:auto/);

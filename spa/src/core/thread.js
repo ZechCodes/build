@@ -997,6 +997,7 @@ function activityRunHtml(span, summary, children) {
   return `<details class="thread-activity-group" ${RENDERED_FOLD_ATTRIBUTE} ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_FROM_ATTRIBUTE}="${esc(String(span.from))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
     <summary class="thread-activity-head thread-activity-group-head">
       <span class="thread-event-icon" aria-hidden="true">${esc(summary.icon)}</span>
+      <span class="thread-activity-label">Actions</span>
       <span class="thread-activity-count">${summary.count}</span>
       <span class="thread-activity-preview">${esc(summary.meat)}</span>
       ${toolOutcomeHtml(summary.outcome)}

@@ -2315,7 +2315,12 @@ describe("the agent's surfaces, carried by the status row", () => {
     await openPanelWithSurfaces();
 
     const block = railHost().querySelector(".rail-composer");
-    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", "rail-chat-recovery", ""]);
+    expect([...block.children].map((child) => child.id)).toEqual([
+      "rail-surfaces-viewer",
+      "rail-status",
+      "rail-chat-recovery",
+      "",
+    ]);
     expect(block.querySelector('#rail-status-pills [data-surface-kind="shells"]')).not.toBe(null);
     expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
   });
@@ -3112,8 +3117,8 @@ describe("the one status row", () => {
   });
 });
 
-describe("the viewer at the bottom of the conversation column", () => {
-  it("stands between the conversation and the composer, with nothing drawn between", async () => {
+describe("the viewer above the conversation footer", () => {
+  it("is anchored inside the composer block so opening it cannot reflow the transcript", async () => {
     payload = branchRow({
       agents: [agent({ surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: [] }] } })],
     });
@@ -3122,18 +3127,21 @@ describe("the viewer at the bottom of the conversation column", () => {
     expect([...panel().children].map((child) => child.className)).toEqual([
       "rail-head",
       "rail-body",
-      "rail-surfaces-viewer",
       "rail-composer",
     ]);
+    expect(panel().querySelector(".rail-composer > .rail-surfaces-viewer")).not.toBeNull();
     expect(railHost().querySelector("#rail-surfaces-viewer").hidden).toBe(true);
   });
 
-  it("is drawn with no border and no divider of its own", () => {
+  it("is an independently scrolling popover anchored above the footer", () => {
     const viewerRule = shellCss.match(/\.rail-surfaces-viewer \{[^}]*\}/)[0];
-    expect(viewerRule).toMatch(/max-height:34vh/);
-    expect(viewerRule).toMatch(/overflow-y:auto/);
-    expect(viewerRule).not.toMatch(/border:/);
-    expect(viewerRule).not.toMatch(/border-top/);
+    const composerRule = shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
+    expect(composerRule).toMatch(/position:relative/);
+    expect(viewerRule).toMatch(/position:absolute/);
+    expect(viewerRule).toMatch(/bottom:100%/);
+    expect(viewerRule).toMatch(/max-height:min\(46vh, 420px\)/);
+    expect(viewerRule).toMatch(/overflow:hidden/);
+    expect(shellCss).toMatch(/\.surface-popover-body \{[^}]*overflow-y:auto/);
   });
 });
 

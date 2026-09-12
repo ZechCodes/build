@@ -127,8 +127,8 @@ describe("a split button's primary is the app's primary button", () => {
   it("settles the destructive primary on the accent background", () => {
     render(splitButtonMarkup([DONE_OPTION]));
     const primary = document.querySelector(".splitbtn .btn:not(.caret)");
-    expect(settledValue(primary, "background")).toBe("var(--accent)");
-    expect(settledValue(primary, "border-color")).toBe("var(--accent)");
+    expect(settledValue(primary, "background")).toBe("var(--accent-fill)");
+    expect(settledValue(primary, "border-color")).toBe("var(--accent-fill)");
   });
 
   it("keeps the standard border and radius, so it reads like every other button", () => {

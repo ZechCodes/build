@@ -19,28 +19,31 @@
      and spacing, never by a fill. The token stays so a surface can still say
      which color it wants; it just resolves to the page's. --panel2 is the one
      exception: the faintly recessed fill under a gutter or a quiet card. */
-  --bg:#fafafa; --panel:#fafafa; --panel2:#fcfcfd;
-  --ink:#18181b; --ink2:#52525b; --dim:#a1a1aa;
-  --line:#e4e4e7; --line2:#f1f1f4; --line3:#c7c7ce;
-  --accent:#5b62e8; --accent-soft:#eef0fe; --accent-ink:#fff;
-  --green:#16a34a; --green-bg:#f0fdf4;
-  --red:#dc2626; --red-bg:#fef2f2;
+  --bg:#f3f7f8; --panel:#f8fbfb; --panel2:#eaf1f2;
+  --ink:#13262c; --ink2:#496169; --dim:#5d747c;
+  --line:#cbdadd; --line2:#dce7e9; --line3:#adc3c7;
+  --accent:#007f68; --accent-fill:#00b88f; --accent-soft:#d8f2eb; --accent-ink:#03251d;
+  --green:#087b5f; --green-bg:#dcf3e9;
+  --red:#c43d52; --red-bg:#fbe9ec; --danger-ink:#fff;
   /* The waiting tone. Something pending review is not something broken: it is
      yellow, and --red is kept for what actually went wrong (blocked, failed,
      a merge left half-done). */
-  --amber:#b45309; --amber-bg:#fffbeb;
-  --violet:#7c3aed;
-  --code-bg:#f4f4f5; --sel:#c7d2fe;
-  --scrim:rgba(24,24,27,.32); --shadow:rgba(0,0,0,.16); --shadow-soft:rgba(0,0,0,.08);
+  --amber:#986411; --amber-bg:#fff3d5;
+  --violet:#7456a6;
+  --code-bg:#edf3f4; --sel:#b8e6da;
+  --scrim:rgba(7,21,27,.38); --shadow:rgba(15,42,50,.2); --shadow-soft:rgba(15,42,50,.1);
+  --focus-ring:color-mix(in srgb, var(--accent) 32%, transparent);
+  --motion-fast:110ms; --motion-base:180ms; --motion-slow:280ms; --ease-out:cubic-bezier(.2,.8,.2,1);
   /* The comment popover is an inverted chip in BOTH themes, so anything drawn
      on it needs colours picked against a dark ground, not against --bg. */
-  --pop-bg:#18181b; --pop-ink:#fafafa; --pop-warn:#fbbf24;
+  --pop-bg:#10262f; --pop-ink:#eaf4f5; --pop-warn:#ffd36a;
   /* diff: the ink inside an added/removed row, the hunk header, and the
      scroll-to-line flash */
   --add-ink:#14532d; --del-ink:#7f1d1d; --hunk-bg:#f6f6fb;
   --hl-bg:#fef3c7; --hl-ln:#fde68a; --hl-ink:#92400e; --mark:#fde68a;
   /* A terminal is dark in both themes — that is what a terminal looks like. */
-  --term-bg:#15161e; --term-fg:#a9b1d6;
+  --term-bg:#07151b; --term-fg:#c2d6da;
+  --sans:"Inter",system-ui,sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
 }
 /* Dark: easy on the eyes rather than maximum contrast — the page is a soft
@@ -49,25 +52,25 @@
    on top of a filled accent because near-black on neon is what reads. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg:#15171c; --panel:#15171c; --panel2:#1b1e25;
-  --ink:#e3e6ee; --ink2:#a6adbb; --dim:#6e7684;
-  --line:#282c35; --line2:#1e222a; --line3:#3b414d;
+  --bg:#07151b; --panel:#0b1b22; --panel2:#10262f;
+  --ink:#e5f1f2; --ink2:#9db2b8; --dim:#839ea7;
+  --line:#1b3640; --line2:#122a33; --line3:#31505a;
   /* Neon green, kept to the cool side of green on purpose: the lime side runs
      into --amber (pending review), and it has to stay louder than --green
      (merged, passed) so an affordance never reads as a state. */
-  --accent:#2bff88; --accent-soft:#102a1c; --accent-ink:#06170e;
-  --green:#3ddc84; --green-bg:#122318;
-  --red:#ff5c72; --red-bg:#2a1620;
+  --accent:#21e6b3; --accent-fill:#21e6b3; --accent-soft:#0b3a34; --accent-ink:#03251d;
+  --green:#39dca5; --green-bg:#0c3028;
+  --red:#ff5c72; --red-bg:#2a1620; --danger-ink:#26050b;
   --amber:#ffd447; --amber-bg:#2b2210;
   --violet:#c4a2ff;
   /* Selection is an accent surface — it follows the accent's hue, as the light
      theme's indigo-tinted --sel follows its own. */
-  --code-bg:#1b1e26; --sel:#1c4a35;
+  --code-bg:#0d2028; --sel:#155345;
   --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.62); --shadow-soft:rgba(0,0,0,.45);
-  --pop-bg:#242833; --pop-ink:#e3e6ee; --pop-warn:#ffd447;
+  --pop-bg:#10262f; --pop-ink:#e5f1f2; --pop-warn:#ffd447;
   --add-ink:#b9f4cf; --del-ink:#ffc3cd; --hunk-bg:#1c2028;
   --hl-bg:#3a2f10; --hl-ln:#4a3c12; --hl-ink:#ffd447; --mark:#4a3c12;
-  --term-bg:#15171c; --term-fg:#c3cae0;
+  --term-bg:#061218; --term-fg:#c2d6da;
 }
 /* ---- layout tokens ----------------------------------------------------------
    The tab shell's geometry, in one place. Every tab body resolves to this width
@@ -98,6 +101,7 @@
      there the pill alone is the whole distance. */
   --tabbar-gutter:max(0px, calc(var(--pane-gutter) - var(--tab-inset))); }
 * { box-sizing:border-box; }
+::selection { background:var(--sel); }
 html, body { overscroll-behavior:none; }
 /* The native controls this client does not restyle — checkboxes, the select
    popup, scrollbars — take their cue from color-scheme on :root; the tick
@@ -110,13 +114,13 @@ input[type=checkbox] { accent-color:var(--accent); }
    offline banner and the shell are the only in-flow children; everything else
    on body is position:fixed. */
 body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:column;
-  background:var(--bg); color:var(--ink); font:14px/1.55 "Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+  background:var(--bg); color:var(--ink); font:14px/1.55 var(--sans); -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 #offbar { flex:none; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
 .dim { color:var(--dim); }
 /* shared chrome bits (used by the inbox rail and gate/settings views) */
-.badge { background:var(--accent); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
+.badge { background:var(--accent-fill); color:var(--accent-ink); border-radius:999px; font-size:10px; padding:0 5px; font-weight:700; }
 .dot { width:7px; height:7px; border-radius:999px; background:var(--green); display:inline-block; margin-right:5px; }
 /* Device picker: separate native controls keep selection and settings accessible. */
 #devpick { font:inherit; font-size:12px; color:var(--ink2); position:relative; max-width:100%; padding:0; border:0; background:none; }
@@ -161,9 +165,12 @@ main { max-width:min(1180px, 100%); margin:0 auto;
 .board-head { display:flex; align-items:flex-start; margin-bottom:22px; }
 .board-head h1 { font-size:24px; margin:0 0 2px; letter-spacing:-.02em; }
 .board-head p { margin:0; color:var(--ink2); font-size:14px; }
-.btn { font:inherit; font-weight:600; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:8px 14px; cursor:pointer; }
-.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
-.btn.primary:hover { filter:brightness(1.06); }
+.btn { font:inherit; font-weight:600; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:8px 14px; cursor:pointer; transition:background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform var(--motion-fast), box-shadow var(--motion-fast); }
+.btn:hover:not(:disabled) { border-color:var(--line3); background:var(--panel2); }
+.btn:active:not(:disabled) { transform:translateY(1px); }
+.btn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; box-shadow:0 0 0 4px var(--focus-ring); }
+.btn.primary { background:var(--accent-fill); border-color:var(--accent-fill); color:var(--accent-ink); }
+.btn.primary:hover:not(:disabled) { background:var(--accent-fill); border-color:var(--accent-fill); color:var(--accent-ink); filter:brightness(1.06); }
 .btn:disabled { opacity:.5; cursor:default; }
 .bucket { margin:26px 0 8px; }
 .bucket h2 { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:700; text-transform:uppercase; margin:0 0 10px; display:flex; gap:8px; align-items:center; }
@@ -191,9 +198,20 @@ main { max-width:min(1180px, 100%); margin:0 auto;
 .empty.gone .btn { margin-top:14px; }
 /* settings stub */
 .settings-intro { color:var(--ink2); font-size:14px; max-width:620px; margin-bottom:18px; }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:620px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:620px; box-shadow:0 8px 24px var(--shadow-soft); }
 .panel + .panel { margin-top:18px; }
 .panel h3 { margin:0 0 12px; font-size:14px; display:flex; align-items:center; gap:8px; }
+.panel .field select, .panel .field input:not([type=checkbox]), .panel .field textarea {
+  width:100%; min-height:36px; padding:7px 10px; font:inherit; color:var(--ink);
+  background:var(--bg); border:1px solid var(--line); border-radius:8px;
+  transition:background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast); }
+.panel .field select:hover:not(:disabled), .panel .field input:not([type=checkbox]):hover:not(:disabled),
+.panel .field textarea:hover:not(:disabled) { border-color:var(--line3); background:var(--panel); }
+.panel .field select:focus-visible, .panel .field input:not([type=checkbox]):focus-visible,
+.panel .field textarea:focus-visible { outline:none; border-color:var(--accent); background:var(--panel);
+  box-shadow:0 0 0 3px var(--focus-ring); }
+.panel .field select:disabled, .panel .field input:not([type=checkbox]):disabled,
+.panel .field textarea:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
 .panel .row { display:flex; gap:12px; padding:8px 0; border-top:1px solid var(--line2); font-size:13px; }
 .panel .row:first-of-type { border-top:0; }
 .panel .row .k { font-family:var(--mono); color:var(--ink); min-width:140px; }
@@ -351,9 +369,9 @@ main#root.surface { max-width:none;
    button. Red text over an accent fill is the collision that made the branch
    surface's Done read green-with-red-words. */
 .btn.danger { border-color:var(--red); color:var(--red); }
-.btn.danger:hover { background:var(--red-bg); }
-.btn.primary.danger { background:var(--red); border-color:var(--red); color:var(--accent-ink); }
-.btn.primary.danger:hover { background:var(--red); filter:brightness(1.06); }
+.btn.danger:hover:not(:disabled) { background:var(--red-bg); border-color:var(--red); color:var(--red); }
+.btn.primary.danger { background:var(--red); border-color:var(--red); color:var(--danger-ink); }
+.btn.primary.danger:hover:not(:disabled) { background:var(--red); border-color:var(--red); color:var(--danger-ink); filter:brightness(1.06); }
 .card .cerr { margin-top:8px; color:var(--red); font-size:12px; word-break:break-word; }
 /* Pills: no rule under the row, no underline on the active tab — the selected
    pill carries its own soft fill, everything else is bare. */
@@ -486,7 +504,7 @@ main#root.surface { max-width:none;
 .commentcard .cc-reply { margin-top:6px; font-size:12.5px; color:var(--ink2); border-top:1px dashed var(--line); padding-top:5px; }
 .commentcard .cc-reply .cc-reply-k { font-weight:600; color:var(--green); font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin-right:5px; }
 .comment-pop { position:fixed; z-index:60; background:var(--pop-bg); border-radius:9px; padding:6px; box-shadow:0 8px 24px var(--shadow); display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start; }
-.comment-pop button { font:inherit; background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
+.comment-pop button { font:inherit; background:var(--accent-fill); color:var(--accent-ink); border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
 /* The popover is a dark chip in both themes, so the field states its own page
    colours rather than inheriting the UA's white against dark ink. */
 .cp-input { font:inherit; border:none; border-radius:6px; padding:6px 9px; min-width:240px; max-width:min(90vw, 360px); resize:none; background:var(--bg); color:var(--ink); }
@@ -592,7 +610,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .file td.ln { position:relative; }
 .dcmt { position:absolute; right:-9px; top:50%; transform:translateY(-50%); z-index:2;
   display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px; padding:0;
-  border:none; border-radius:5px; cursor:pointer; background:var(--accent); color:var(--accent-ink);
+  border:none; border-radius:5px; cursor:pointer; background:var(--accent-fill); color:var(--accent-ink);
   box-shadow:0 1px 4px var(--shadow-soft); }
 .dcmt svg { width:12px; height:12px; }
 .dcmt:hover { filter:brightness(1.08); }
@@ -786,7 +804,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 /* per-file discard + armed danger confirms */
 .gitfile .fhead .gitdiscard { margin-left:auto; }
 .gitfile .fhead .pm + .gitdiscard { margin-left:8px; }
-.btn.danger.armed { background:var(--red); border-color:var(--red); color:var(--accent-ink); }
+.btn.danger.armed { background:var(--red); border-color:var(--red); color:var(--danger-ink); }
 /* new task sheet */
 .scrim { position:fixed; inset:0; background:var(--scrim); display:none; align-items:flex-start; justify-content:center; padding-top:9vh; z-index:30; }
 .scrim.show { display:flex; }
@@ -1065,7 +1083,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    is an accent-tinted key, locked is a filled one. */
 .termkey-mod.armed { background:color-mix(in srgb, var(--accent) 30%, var(--term-bg));
   border-color:var(--accent); color:var(--term-fg); }
-.termkey-mod.locked { background:var(--accent); border-color:var(--accent);
+.termkey-mod.locked { background:var(--accent-fill); border-color:var(--accent-fill);
   color:var(--accent-ink); font-weight:700; }
 /* Per-pane connectivity chip (same visual family as .agent-idle) — shown while
    the shared terminal socket is not connected, over a dimmed frozen screen. */
@@ -1188,7 +1206,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .review-thread.is-empty .thread-actions { margin-left:0; }
 .thread-message { position:relative; margin-left:44px; min-width:0; }
 .thread-avatar { position:absolute; left:-44px; top:0; z-index:1; display:grid; place-items:center; width:38px; height:38px; border:3px solid var(--bg); border-radius:50%; background:var(--panel); color:var(--ink2); font-weight:700; font-size:12px; }
-.thread-message.user .thread-avatar { background:var(--accent); color:var(--accent-ink); }
+.thread-message.user .thread-avatar { background:var(--accent-fill, var(--accent)); color:var(--accent-ink); }
 .thread-comment-card { overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
 .thread-message-head { display:flex; justify-content:space-between; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); background:color-mix(in srgb, var(--bg) 55%, var(--panel)); color:var(--dim); font-size:12px; }
 .thread-message-head strong { color:var(--ink); }
@@ -1422,15 +1440,57 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-attachment:hover { border-color:var(--accent); color:var(--accent); }
 .thread-attachment-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread-attachment-size { flex:0 0 auto; color:var(--dim); font-size:11px; }
+
+/* Conversation treatment shared by the full-page thread and the agent rail.
+   Messages keep their metadata and rich children, but the transcript reads as
+   prose with a quiet reply bubble instead of a stack of issue cards. */
+.thread-timeline { gap:20px; padding:20px 0; }
+.thread-timeline::before { display:none; }
+.thread-message { margin-left:0; }
+.thread-avatar { display:none; }
+.thread-comment-card { overflow:visible; border:0; border-radius:0; background:transparent; }
+.thread-message-head { justify-content:flex-start; gap:7px; padding:0 0 5px; border:0;
+  background:transparent; font-size:11px; }
+.thread-message-head time::before { content:"· "; }
+.thread-body { padding:0; color:var(--ink); font-size:13.5px; line-height:1.55; }
+.thread-message.user { align-self:flex-end; width:min(78%, 520px); }
+.thread-message.user .thread-comment-card { overflow:hidden; border-radius:18px;
+  background:var(--panel2); }
+.thread-message.user .thread-message-head { padding:7px 12px 0; }
+.thread-message.user .thread-body { padding:6px 12px 9px; }
+.thread-message.user .thread-references,
+.thread-message.user .thread-attachments,
+.thread-message.user .thread-options { padding-inline:12px; }
+.thread-outcome { margin:0 0 7px; padding:5px 0; border:0; }
+.thread-anchor { padding:4px 0 0; }
+.thread-references, .thread-attachments, .thread-options { padding-inline:0; }
+.thread-event { min-height:24px; padding:1px 0 1px 20px; }
+.thread-event-icon { left:0; top:2px; width:14px; height:14px; border:0;
+  background:transparent; font-size:9px; }
+.thread-activity-group { margin-left:0; border-left:1px solid var(--line3); }
+.thread-activity-group-head { min-height:28px; padding:3px 0 3px 18px; }
+.thread-activity-group-head::before { content:"›"; flex:none; color:var(--ink2);
+  transform:rotate(0deg); transition:transform var(--motion-fast, 120ms) ease; }
+.thread-activity-group[open] > .thread-activity-group-head::before { transform:rotate(90deg); }
+.thread-activity-group-head .thread-event-icon { display:none; }
+.thread-activity-label { display:none; color:var(--ink2); }
+.thread-activity-group[open] .thread-activity-label { display:inline; }
+.thread-activity-group[open] .thread-activity-count,
+.thread-activity-group[open] .thread-activity-preview { display:none; }
+.thread-activity-group-list { margin-left:17px; }
+.thread-activity-children { border-left-color:var(--line3); }
+.thread-revision-view, .thread-composer { margin-left:0; }
+.composer { border:0; border-radius:0; background:transparent; }
+.composer:focus-within { border-color:transparent; box-shadow:none; }
+.composer textarea { min-height:72px; border:1px solid var(--line); border-radius:11px;
+  padding:13px 14px; background:var(--bg); font-size:13.5px; }
+.composer textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring,
+  color-mix(in srgb, var(--accent) 18%, transparent)); }
+.composer-bar { padding:7px 8px 8px; }
+.composer-send { width:34px; height:34px; border-radius:8px; }
+.composer-attach { width:34px; height:34px; }
 @media (max-width: 640px) {
-  .thread-timeline::before { left:15px; }
-  .thread-message, .thread-composer, .thread-revision-view { margin-left:38px; }
-  .thread-avatar { left:-38px; width:32px; height:32px; border-width:2px; }
-  .thread-event { padding-left:38px; }
-  .thread-event-icon { left:2px; }
-  .thread-activity .thread-event-icon { left:5px; }
-  .thread-activity-group-head { padding-left:38px; }
-  .thread-activity-group-head .thread-event-icon { left:5px; }
+  .thread-message.user { width:min(88%, 520px); }
   .thread-message-head { flex-direction:column; gap:4px; }
 }
 
@@ -1446,3 +1506,27 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .notice-summary { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .notice-detail { margin:8px 0 0; font-family:var(--mono); font-size:11px; white-space:pre-wrap; word-break:break-word; max-height:40vh; overflow:auto; color:var(--ink2); }
 .notice-x, .notice-expand { background:none; border:none; color:var(--dim); cursor:pointer; font-size:13px; }
+
+/* Shared surface finish: dialogs, menus and work panes use the same cool,
+   bordered layers. These rules live after the feature sheets so their visual
+   treatment stays consistent without changing any component geometry. */
+.sheet, .modal, .assign-pop, .splitmenu, .device-picker-menu, .workspace-refmenu {
+  border:1px solid var(--line3);
+  box-shadow:0 18px 48px var(--shadow), inset 0 1px color-mix(in srgb, white 4%, transparent);
+}
+.sheet, .modal { background:var(--panel); }
+.file, .browse-list, .modal-create .branch-picker { border-color:var(--line); box-shadow:0 4px 16px var(--shadow-soft); }
+.file .fhead, .fphead, .workspace-refbar { background:var(--panel); }
+.empty.gone, .fpidle { color:var(--ink2); }
+.notice { border-color:var(--line3); background:var(--panel); box-shadow:0 14px 38px var(--shadow); }
+.notice-x, .notice-expand, .iconbtn, .fmenu, .tdial, .workspace-refrow, .ivassign-head,
+.browse-nav, .chooser-card, .stagerow, .frow, .srow {
+  transition:background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), opacity var(--motion-fast), transform var(--motion-fast);
+}
+.notice-x:hover, .notice-expand:hover { color:var(--ink); }
+:where(button, input, select, textarea, [tabindex]):focus-visible { outline-color:var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior:auto !important; animation-duration:.01ms !important;
+    animation-iteration-count:1 !important; transition-duration:.01ms !important; }
+}

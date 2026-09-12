@@ -480,7 +480,7 @@ describe("tab layout primitives", () => {
     // The inbox rail leaves the flow under the same query the panes stack
     // under. Were they different numbers, one of the two transitions would
     // land in a frame sized for the other.
-    const overlay = rulesFor("#inbox-rail").find((rule) => declaration(rule.body, "position") === "fixed");
+    const overlay = rulesFor("#inbox-rail").find((rule) => declaration(rule.body, "position") === "absolute");
     expect(overlay).toBeTruthy();
     expect(enclosingAtRule(overlay.at)).toBe(STACK_QUERY);
     expect(shellWidth(STACK_WIDTH)).toBe(STACK_WIDTH);
@@ -1065,9 +1065,8 @@ describe("the collapsed toolbar's clearance", () => {
   // same — whatever is right of the toggle always starts one head-gap away.
   it("derives the clearance from the toggle, so both states share one gap", () => {
     expect(strippedSource).toMatch(/--inbox-toggle:28px/);
-    expect(strippedSource).toMatch(
-      /--inbox-open-clear:calc\(10px \+ var\(--inbox-toggle\) \+ 8px - var\(--tbsel-inset\)\)/,
-    );
+    expect(strippedSource).toMatch(/--inbox-open-clear:calc\(148px \+ env\(safe-area-inset-left, 0px\)\)/);
+    expect(strippedSource).toMatch(/\.toolbar \{[^}]*transition:padding-left 240ms cubic-bezier\(\.2,\.8,\.2,1\)/);
     // Both toggles wear the width the clearance is derived from…
     const toggles = cssRules().find((rule) => rule.selector.includes("#inbox-open") && rule.selector.includes("#inbox-collapse"));
     expect(toggles).toBeTruthy();

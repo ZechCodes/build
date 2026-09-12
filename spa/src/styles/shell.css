@@ -88,9 +88,16 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 .inbox-head .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
 /* The rail's two faces, one icon each at the head's right edge; the standing
    one is pressed. */
-.inbox-views { margin-right:auto; display:flex; gap:2px; }
+.inbox-views { display:flex; gap:2px; padding:2px; border-radius:8px; background:var(--line); }
 .inbox-view svg { width:16px; height:16px; display:block; }
 .inbox-view.on { color:var(--accent); background:var(--accent-soft); }
+.inbox-new-project { display:flex; align-items:center; justify-content:center; gap:4px;
+  min-width:0; height:28px; margin-left:auto; padding:0 7px; border:1px solid var(--line);
+  border-radius:7px; background:var(--panel); color:var(--dim); font:inherit;
+  font-size:11.5px; cursor:pointer; }
+.inbox-new-project:hover { color:var(--ink2); border-color:var(--dim); }
+.inbox-new-project svg { width:14px; height:14px; flex:none; }
+#inbox-collapse { display:grid; height:var(--inbox-toggle); padding:0; place-items:center; }
 #inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding-bottom:12px; }
 .inbox-foot { border-top:1px solid var(--line); padding-top:8px; display:flex;
   flex-direction:column; gap:8px; }
@@ -98,36 +105,20 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 /* The floating reopen toggle, only while the rail is away. */
 #inbox-open { position:relative; display:grid;
   height:var(--inbox-toggle); padding:0; overflow:visible;
-  align-items:center; justify-content:center;
+  place-items:center;
   grid-template:1fr / 1fr;
-  background:var(--panel); border:1px solid var(--line);
-  transition:background 180ms ease, border-color 180ms ease, border-radius 220ms ease; }
+  background:none; border:0;
+  transition:color 180ms ease; }
+#inbox-open:hover { background:none; color:var(--ink2); }
 .inbox-open-icon, .inbox-open-count { grid-area:1 / 1; transition:opacity 180ms ease, transform 220ms ease; }
+.inbox-open-icon { display:grid; place-items:center; }
 .inbox-open-count { display:flex; align-items:center; justify-content:center;
   align-self:stretch; justify-self:stretch; border-radius:50%; opacity:0; transform:scale(.55);
   color:var(--accent-ink); font-size:10px; font-weight:750; letter-spacing:-.03em; }
-body.inbox-collapsed #inbox-open.has-attention {
-  background:var(--accent-fill); border-color:var(--accent-fill); border-radius:50%;
-  animation:inbox-toggle-bubble 220ms ease both; }
-body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
-  opacity:0; transform:scale(.55) rotate(-18deg); animation:inbox-icon-away 220ms ease both; }
-body.inbox-collapsed #inbox-open.has-attention .inbox-open-count {
-  opacity:1; transform:scale(1); animation:inbox-count-in 220ms ease both; }
-#inbox-open.has-attention { background:var(--panel); border-color:var(--line); border-radius:6px; animation:none; }
-body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
-  opacity:1; transform:none; animation:none; }
 #inbox-open.has-attention .inbox-open-count { position:absolute; top:-6px; right:-7px;
   width:auto; height:16px; min-width:16px; padding:0 3px; align-self:auto; justify-self:auto;
   border:1px solid var(--panel); border-radius:999px; background:var(--accent-fill, var(--accent));
   color:var(--accent-ink); opacity:1; transform:none; animation:inbox-count-in 180ms ease both; }
-@keyframes inbox-icon-away {
-  from { opacity:1; transform:scale(1) rotate(0); }
-  to { opacity:0; transform:scale(.55) rotate(-18deg); }
-}
-@keyframes inbox-toggle-bubble {
-  from { background:var(--panel); border-color:var(--line); border-radius:6px; }
-  to { background:var(--accent-fill); border-color:var(--accent-fill); border-radius:50%; }
-}
 @keyframes inbox-count-in {
   from { opacity:0; transform:scale(.55); }
   to { opacity:1; transform:scale(1); }
@@ -141,10 +132,8 @@ body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
    head toggle — sitting where the floating one was — takes the click. */
 #inbox-scrim { display:none; }
 
-/* ---- global compose ----
-   Pinned above the entries, on every route: what you want to get done goes in
-   here and the router decides where it goes. */
-#compose { flex:none; margin:0 0 8px; }
+/* ---- legacy global compose internals ----
+   Kept for queued-capture compatibility; the shell no longer mounts it. */
 .compose-prompt { width:100%; text-align:left; cursor:pointer;
   background:var(--panel); border:1px solid var(--line); border-radius:9px;
   padding:9px 10px; font-size:12.5px; color:var(--dim); }
@@ -316,13 +305,7 @@ body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
    The inbox, grouped by project. Each block is a box: its head — fold, name,
    unread, the + that creates — and its rows; the block holding the branch or
    issue the route stands on wears the composer's focused look. The unrouted
-   captures stand above every block on their own, and the new-project control
-   heads the list. */
-.inbox-new-project { display:flex; align-items:center; gap:6px; width:100%; margin:0 0 8px;
-  background:none; border:1px dashed var(--line2); border-radius:9px; padding:7px 10px;
-  cursor:pointer; font:inherit; font-size:12px; color:var(--dim); text-align:left; }
-.inbox-new-project:hover { color:var(--ink2); border-color:var(--dim); }
-.inbox-new-project svg { width:14px; height:14px; flex:none; }
+   captures stand above every block on their own. */
 .inbox-unsorted:not(:empty) { margin-bottom:8px; }
 .inbox-project { border:1px solid var(--line); border-radius:12px; padding:4px 4px 5px;
   margin-bottom:8px; transition:border-color .12s ease, box-shadow .12s ease; }
@@ -372,7 +355,8 @@ body.inbox-collapsed #inbox-open.has-attention .inbox-open-icon {
   grid-template-rows:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; position:relative;
 }
-#toolbar { flex:none; border-bottom:1px solid var(--line3, var(--line)); background:var(--panel); }
+#toolbar { flex:none; border-bottom:1px solid var(--line3, var(--line)); background:var(--panel);
+  container:toolbar-shell / inline-size; }
 #view-body { display:grid; grid-template-columns:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; }
 #branch-tabs:empty { display:none; }
@@ -581,10 +565,15 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   border-left:1px solid var(--line); }
 .rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 9px 8px 14px;
   min-height:46px; border-bottom:1px solid var(--line); background:var(--panel); }
+.rail-harness-icon { flex:none; width:20px; height:20px; display:grid; place-items:center;
+  color:var(--ink); }
+.rail-harness-icon svg { display:block; width:20px; height:20px; }
+.rail-harness-icon-variant { display:block; }
+.rail-harness-icon-dark { display:none; }
+:root[data-theme="dark"] .rail-harness-icon-light { display:none; }
+:root[data-theme="dark"] .rail-harness-icon-dark { display:block; }
 .rail-who { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; font-size:13.5px; font-weight:600; }
-.rail-who::before { content:"⌘"; margin-right:9px; color:var(--accent); font-size:18px;
-  font-weight:500; vertical-align:-1px; }
 .rail-mode { flex:none; border:1px solid var(--line); border-radius:6px; background:none;
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
@@ -817,12 +806,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   .surface-agent-summary::before { transition:none; }
 }
 
-@media (max-width: 760px) {
+@container toolbar-shell (max-width: 760px) {
   /* Directory tabs consume the entire toolbar surprisingly quickly. Keep the
      selected directory in place and put every directory in its popup menu. */
   .tb-directories { display:none; }
   .tb-directory-menu { display:flex; flex:0 1 auto; max-width:34%; }
+}
 
+@media (max-width: 760px) {
   /* A phone has no room for two columns, so the panel is laid over the work
      rather than beside it; the strip stays where it is.
      Over the VIEW COLUMN (#view is the positioned ancestor), starting below the
@@ -899,10 +890,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    beats the display each region states above. */
 #toolbar:empty, #console-region:empty, #agent-rail:empty { display:none; }
 
-/* ---- the gate owns the whole frame, except compose ----
-   Compose works before a device does — what is said there is kept and sent when
-   one answers. So the rail stays as a zero-width carrier for that one control,
-   pinned over the gate screen, and everything else the shell owns is gone. */
+/* ---- the gate owns the whole frame ---- */
 body.gated #global-brand,
 body.gated #inbox-open,
 body.gated #inbox-scrim,
@@ -910,17 +898,7 @@ body.gated #toolbar,
 body.gated #agent-rail,
 body.gated #console-region { display:none !important; }
 body.gated { --inbox-space:0px; }
-body.gated #inbox-rail { display:flex; width:0; padding:0; border:0; overflow:visible;
-  background:none; opacity:1; visibility:visible; transform:none; pointer-events:auto; }
-body.gated.inbox-collapsed #inbox-rail { opacity:1; visibility:visible; transform:none;
-  pointer-events:auto; transition:none; transition-delay:0s; }
-body.gated .inbox-head,
-body.gated #inbox-list,
-body.gated .inbox-foot { display:none !important; }
-body.gated #compose { position:fixed; z-index:50;
-  top:calc(10px + env(safe-area-inset-top, 0px));
-  left:calc(10px + env(safe-area-inset-left, 0px));
-  width:min(92vw, 320px); margin:0; }
+body.gated #inbox-rail { display:none; }
 
 /* ---- narrow viewports: the inbox overlays, as the project rail used to ---- */
 @media (max-width: 900px) {
@@ -928,6 +906,7 @@ body.gated #compose { position:fixed; z-index:50;
   #inbox-rail { position:absolute; left:0; top:var(--global-head);
     bottom:0; height:auto; margin:0; z-index:40;
     box-shadow:8px 0 24px var(--shadow-soft); width:min(86vw, 300px); }
+  #inbox-collapse { display:none; }
   body:not(.inbox-collapsed):not(.gated) #inbox-scrim {
     display:block; position:fixed; inset:0; z-index:35; background:var(--scrim); }
   body.inbox-collapsed.inbox-popover-open:not(.gated) #inbox-scrim {

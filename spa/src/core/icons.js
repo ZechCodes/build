@@ -24,6 +24,7 @@ export { default as ICON_ARROW_RIGHT } from "lucide-static/icons/arrow-right.svg
 export { default as ICON_SQUARE } from "lucide-static/icons/square.svg?raw";
 export { default as ICON_FOLDERS } from "lucide-static/icons/folders.svg?raw";
 export { default as ICON_PLUS } from "lucide-static/icons/plus.svg?raw";
+export { default as ICON_PIN } from "lucide-static/icons/pin.svg?raw";
 export { default as ICON_CHEVRON_DOWN } from "lucide-static/icons/chevron-down.svg?raw";
 export { default as ICON_SETTINGS } from "lucide-static/icons/settings.svg?raw";
 export { default as ICON_CHEVRON_RIGHT } from "lucide-static/icons/chevron-right.svg?raw";

@@ -62,6 +62,9 @@ beforeEach(async () => {
   vi.resetModules();
   localStorage.clear();
   document.body.innerHTML = bodyHtml;
+  const composeHost = document.createElement("div");
+  composeHost.id = "compose";
+  document.getElementById("inbox-rail").insertBefore(composeHost, document.getElementById("inbox-list"));
   document.body.className = "";
   location.hash = "";
   feedItems = [{ kind: "branch", project_id: "p1", project: "relaydb", branch: "build/login", run_id: "run-1" }];

@@ -51,12 +51,9 @@
           <!-- The rail's two faces: the one list, or the projects. Painted by
                core/inboxShell.js, which remembers the choice. -->
           <div class="inbox-views" id="inbox-views" role="group" aria-label="Rail view"></div>
-          <button class="iconbtn" id="inbox-collapse" type="button" title="Unpin the inbox" aria-label="Unpin the inbox" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6-3 1-4 4-1 5-2-2 1-5 4-4 1-3-6-2Z"/><path d="m4 20 6-6"/></svg></button>
+          <button class="inbox-new-project" id="inbox-new-project" type="button" title="New project" aria-label="New project"></button>
+          <button class="iconbtn" id="inbox-collapse" type="button" title="Unpin the inbox" aria-label="Unpin the inbox" aria-pressed="true"></button>
         </div>
-        <!-- Global compose: capture first, route after. Pinned above the
-             entries, on every route — the gate keeps it too, and holds what is
-             said there until a device answers. -->
-        <div id="compose"></div>
         <div id="inbox-list"></div>
         <div class="inbox-foot">
           <div class="srow snav" id="nav-account"><span class="sicon">◉</span><span class="stitle">Account</span></div>

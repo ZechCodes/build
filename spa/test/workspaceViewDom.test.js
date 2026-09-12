@@ -146,17 +146,11 @@ describe("workspace surface", () => {
     expect(mountGitPane).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the workspace and lists repositories that could not be pushed on Finish", async () => {
+  it("does not offer Finish for a ready workspace", async () => {
     App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => method === "workspace.finish"
-      ? { complete: false, repositories: [{ directory_id: "repo", pushed: false, reason: "no upstream" }] }
-      : workspace);
+    App.call = vi.fn(async () => ({ ...workspace, status: "ready" }));
     await renderWorkspace();
-    document.querySelector("[data-workspace-action]").click();
-    await flush();
-    expect(App.call).toHaveBeenCalledWith("workspace.finish", { workspace_id: "ws-1" });
-    expect(document.querySelector(".workspace-action-status").textContent).toContain("repo: no upstream");
-    expect(document.querySelector("#root").textContent).not.toContain("Workspace unavailable");
+    expect(document.querySelector("[data-workspace-action]")).toBeNull();
   });
 
   it("refreshes a failed workspace pane after Retry without replacing its terminal console", async () => {
@@ -172,6 +166,8 @@ describe("workspace surface", () => {
     expect(renderFilesTab).toHaveBeenCalledTimes(2);
     expect(App.routeLeaveGuard).not.toBe(firstGuard);
     expect(mountConsole).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("[data-workspace-action]")).toBeNull();
+    expect(document.querySelector(".workspace-action-status").textContent).toBe("Workspace ready.");
   });
 
   it("preserves edits in an already-ready source while Retry repairs another source", async () => {

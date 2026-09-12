@@ -46,8 +46,7 @@ if (location.pathname.startsWith("/app")) {
 
 initRouter();
 initDevicePicker();
-// Before the gate: what you want to get done is worth keeping whether or not a
-// device is there to take it.
+// Load captures saved by earlier builds so they can flush after connection.
 initCompose();
 
 $(".logo").onclick = () => go({ name: "inbox" });

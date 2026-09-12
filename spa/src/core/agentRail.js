@@ -100,6 +100,7 @@ import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
+import { harnessIconHtml } from "./harnessIcon.js";
 import "../styles/shell.css";
 
 /** How often the rail re-reads its work item. The same cadence the detail
@@ -401,7 +402,7 @@ function surfaceMenuRegionHtml(options) {
   return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
 }
 
-export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true, surfaceOptions = [] } = {}) {
+export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [] } = {}) {
   const removeTitle = `Remove ${who} from this branch`;
   const remove = removable
     ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
@@ -414,6 +415,7 @@ export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true
         aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`
     : "";
   return `<div class="rail-head">
+    ${harnessIconHtml(provider)}
     <span class="rail-who">${esc(who)}</span>
     ${tui}
     ${surfaceMenuRegionHtml(surfaceOptions)}
@@ -864,6 +866,7 @@ export function mountAgentRail(host, context) {
     if (!panel) return;
     const agent = agentInFocus();
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    const provider = agent?.provider || "";
     const settled = settledAgentInFocus();
     const removable = canRemoveAgent({
       agents: visibleAgents(),
@@ -880,7 +883,7 @@ export function mountAgentRail(host, context) {
     const shownMode = shownPanelMode();
     // The head is rewritten only when what it SAYS changed: the name, whether
     // this agent can be taken back off, and whether it has a basement.
-    const wantedHead = `${who}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
+    const wantedHead = `${who}:${provider}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
@@ -888,7 +891,7 @@ export function mountAgentRail(host, context) {
       disposeTui();
       disposeSurfaces();
       closeSurfaceMenu?.();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
@@ -917,6 +920,7 @@ export function mountAgentRail(host, context) {
       // eat a press that landed mid-repaint.
       closeSurfaceMenu?.();
       panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
+        provider,
         removable,
         hasTerminal,
         surfaceOptions: surfaceMenuOptionsInFocus(),

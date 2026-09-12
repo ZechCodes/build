@@ -44,7 +44,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectHeadHtml, workspaceProjectBlocks } from "./inboxProjects.js";
+import { blockIsFolded, projectBlockHtml, projectHeadHtml, workspaceProjectBlocks } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
@@ -186,7 +186,6 @@ function drawWorkspaceList(list, shown) {
   const ui = rowUi(true);
   paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
   list.querySelector(":scope > .inbox-recent")?.remove();
-  list.querySelector(":scope > .inbox-new-project")?.remove();
   list.querySelector(":scope > .inbox-unsorted")?.remove();
   list.querySelector(":scope > .inbox-projects")?.remove();
   patchList(list, entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
@@ -242,7 +241,7 @@ function projectsFrame(list) {
   let unsorted = list.querySelector(":scope > .inbox-unsorted");
   if (!unsorted) {
     unsorted = el('<div class="inbox-unsorted"></div>');
-    list.append(el(newProjectButtonHtml()), unsorted, el('<div class="inbox-projects"></div>'));
+    list.append(unsorted, el('<div class="inbox-projects"></div>'));
   }
   return { unsorted, blocks: list.querySelector(":scope > .inbox-projects") };
 }
@@ -429,14 +428,15 @@ function projectClicked(target) {
     openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", navigate: goFromInbox });
     return true;
   }
-  if (target.closest("[data-new-project]")) {
-    openNewRepo((project) => {
-      if (project?.project_id) openCreateWork({ projectId: project.project_id, projectName: project.name, navigate: goFromInbox });
-      refreshFeed();
-    });
-    return true;
-  }
   return false;
+}
+
+/** Open the project flow exposed by the header in either rail face. */
+export function openNewProject() {
+  openNewRepo((project) => {
+    if (project?.project_id) openCreateWork({ projectId: project.project_id, projectName: project.name, navigate: goFromInbox });
+    refreshFeed();
+  });
 }
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */

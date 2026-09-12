@@ -17,6 +17,7 @@ vi.mock("../src/app.js", () => ({
 vi.mock("../src/core/inboxView.js", () => ({
   mountInboxList: vi.fn(),
   inboxListRouteChanged: vi.fn(),
+  openNewProject: vi.fn(),
   setInboxView: vi.fn(),
 }));
 
@@ -63,8 +64,10 @@ describe("the inbox head", () => {
   it("keeps global branding outside the persistent rail content", () => {
     const head = document.querySelector(".inbox-head");
     const order = [...head.children].map((child) => child.id || child.className);
-    expect(order).toEqual(["inbox-views", "inbox-collapse"]);
+    expect(order).toEqual(["inbox-views", "inbox-new-project", "inbox-collapse"]);
     expect(document.querySelector("#global-brand #inbox-open")).toBeTruthy();
+    expect(document.getElementById("inbox-new-project").textContent).toContain("New project");
+    expect(document.getElementById("inbox-collapse").querySelector("svg")).toBeTruthy();
   });
 
   it("names the app with an uppercase B", () => {
@@ -213,6 +216,13 @@ describe("the docked rail's head toggle", () => {
     document.getElementById("inbox-collapse").click();
     expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
   });
+
+  it("does not let the hidden pin change state on a narrow viewport", () => {
+    vi.stubGlobal("innerWidth", 900);
+    setInboxCollapsed(true, { persist: false, reveal: false });
+    document.getElementById("inbox-collapse").click();
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
+  });
 });
 
 describe("the floating card", () => {
@@ -227,6 +237,24 @@ describe("the floating card", () => {
     expect(document.body.classList.contains("inbox-popover-open")).toBe(false);
     expect(document.activeElement).toBe(document.getElementById("inbox-open"));
     expect(localStorage.getItem("build.inbox.collapsed")).toBe("1");
+  });
+
+  it("dismisses the transient rail before opening the new-project sheet", () => {
+    setInboxCollapsed(true);
+    const saved = localStorage.getItem("build.inbox.collapsed");
+    document.getElementById("inbox-new-project").click();
+    expect(document.body.classList.contains("inbox-popover-open")).toBe(false);
+    expect(document.body.classList.contains("inbox-peek")).toBe(false);
+    expect(localStorage.getItem("build.inbox.collapsed")).toBe(saved);
+  });
+
+  it("dismisses a docked rail after a resize to the mobile breakpoint", () => {
+    vi.stubGlobal("innerWidth", 900);
+    setInboxCollapsed(false);
+    const saved = localStorage.getItem("build.inbox.collapsed");
+    document.getElementById("inbox-new-project").click();
+    expect(document.body.classList.contains("inbox-collapsed")).toBe(true);
+    expect(localStorage.getItem("build.inbox.collapsed")).toBe(saved);
   });
 
   it("lets the mobile scrim dismiss a pinned overlay without changing its saved choice", () => {
@@ -245,17 +273,13 @@ describe("the floating card", () => {
     expect(document.body.classList.contains("inbox-popover-open")).toBe(true);
   });
 
-  it("keeps the rail node, draft and scroll position across pin changes", () => {
+  it("keeps the rail node and scroll position across pin changes", () => {
     const rail = document.getElementById("inbox-rail");
     const list = document.getElementById("inbox-list");
-    const draft = document.createElement("textarea");
-    document.getElementById("compose").append(draft);
-    draft.value = "keep this thought";
     list.scrollTop = 37;
     setInboxCollapsed(true);
     document.getElementById("inbox-collapse").click();
     expect(document.getElementById("inbox-rail")).toBe(rail);
-    expect(draft.value).toBe("keep this thought");
     expect(list.scrollTop).toBe(37);
   });
 
@@ -285,11 +309,13 @@ describe("the peek's geometry", () => {
     expect(floating).toMatch(/z-index:46/);
   });
 
-  it("animates the icon into the count unless reduced motion is requested", () => {
+  it("keeps the icon centered and exposes attention as a separate badge", () => {
+    expect(shellCss).toMatch(/#inbox-open \{[^}]*place-items:center/);
+    expect(shellCss).toMatch(/#inbox-open \{[^}]*background:none; border:0/);
+    expect(shellCss).toMatch(/\.inbox-open-icon \{[^}]*place-items:center/);
     expect(shellCss).toMatch(/\.inbox-open-icon, \.inbox-open-count \{[^}]*transition:/);
-    expect(shellCss).toMatch(/#inbox-open\.has-attention \{[^}]*animation:inbox-toggle-bubble/);
-    expect(shellCss).toMatch(/body\.inbox-collapsed #inbox-open\.has-attention \.inbox-open-count \{[^}]*animation:inbox-count-in/);
     expect(shellCss).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
     expect(shellCss).toMatch(/#inbox-open\.has-attention \.inbox-open-count \{[^}]*position:absolute/);
+    expect(shellCss).not.toMatch(/inbox-toggle-bubble|inbox-icon-away/);
   });
 });

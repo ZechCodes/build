@@ -85,7 +85,8 @@ describe("workspace inbox", () => {
       ["workspace:workspace-3"],
     ]);
     expect(blocks.map((block) => block.querySelector(".inbox-project-name").textContent)).toEqual(["Payments", "Website"]);
-    expect(document.querySelector("[data-new-project]")).not.toBeNull();
+    expect(document.querySelector("#inbox-new-project")).not.toBeNull();
+    expect(document.querySelector("#inbox-list .inbox-new-project")).toBeNull();
     expect(document.querySelector("[data-done], [data-dismiss], [data-mute]")).toBeNull();
     expect(document.querySelectorAll("[data-project-create]")).toHaveLength(2);
     expect(document.getElementById("inbox-list").textContent).not.toMatch(/branch|issue/i);

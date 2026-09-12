@@ -186,6 +186,3 @@ export function projectBlockHtml(block, ui = {}) {
 }
 
 /** The one control at the head of the projects face. */
-export function newProjectButtonHtml() {
-  return `<button class="inbox-new-project" type="button" data-new-project>${ICON_PLUS}<span>New project</span></button>`;
-}

@@ -10,8 +10,7 @@
 // create opens the one create surface (core/createWork.js) on that project.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's
-// Done, say — then the ⋯ that carries what used to be the tab row's right
-// cluster (the archive and the project's settings). The working-time ticker
+// Done, say. The working-time ticker
 // and the diffstat used to sit beside it too; they pin above the agent rail's
 // composer now instead (core/agentRail.js) — a fact about the work item, read
 // beside the conversation about it rather than in a bar that outlives every
@@ -29,7 +28,6 @@ import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
-import { openProjectSettings } from "../sheets/projectSettings.js";
 import {
   projectMenuModel,
   toolbarIdentity,
@@ -52,6 +50,7 @@ let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
 let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
 let verbRender = null; // (host) => void, the standing view's own verb-slot paint
+let toolbarResizeObserver = null;
 
 /** Register the standing view's verb-slot content — called every repaint the
  *  toolbar does, poll-driven ticks included, so the caller's own function must
@@ -154,7 +153,7 @@ async function loadWorkspaces(projectId, selectedWorkspaceId = null) {
 export function toolbarHtml({ project, kind, label, directories = [] }) {
   const itemSelector = kind === "workspace"
     ? `<span class="tb-sep">/</span>
-       <button class="tb-sel tb-item" data-select="item" type="button" aria-haspopup="menu">
+       <button class="tb-sel tb-item" data-select="item" type="button" aria-haspopup="menu" aria-expanded="false">
          <span class="tb-name">${esc(label)}</span><span class="tb-caret">▾</span>
        </button>`
     : kind
@@ -167,20 +166,17 @@ export function toolbarHtml({ project, kind, label, directories = [] }) {
             `<button class="tb-directory${directory.current ? " current" : ""}" data-directory="${esc(directory.sourceId)}" type="button" role="tab" aria-selected="${directory.current ? "true" : "false"}">${esc(directory.label)}</button>`,
         )
         .join("")}</div>
-       <button class="tb-sel tb-directory-menu" data-select="directory" type="button" aria-haspopup="menu" aria-label="Choose workspace directory">
+       <button class="tb-sel tb-directory-menu" data-select="directory" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Choose workspace directory">
          <span class="tb-name">${esc(directories.find((directory) => directory.current)?.label || directories[0].label)}</span><span class="tb-caret">▾</span>
        </button>`
     : "";
   return `<div class="toolbar">
-    <button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu">
+    <button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
       <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
     </button>
     ${itemSelector}
     ${directoryTabs}
-    <div class="tb-right">
-      <span class="tb-verb" id="tb-verb"></span>
-      <button class="iconbtn tb-more" data-select="more" type="button" title="More" aria-label="More actions" aria-haspopup="menu">⋯</button>
-    </div>
+    <div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>
   </div>`;
 }
 
@@ -222,18 +218,19 @@ function paint({ entering = false } = {}) {
     // A repaint replaces the very buttons a menu hangs off, so an open menu is
     // re-pointed at the new one — otherwise its anchor is a detached node and
     // the selector that opened it stops toggling it shut.
-    if (open) open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
+    if (open) {
+      open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
+      open.anchor.setAttribute("aria-expanded", "true");
+    }
     host.querySelectorAll("[data-select]").forEach((control) => {
       control.onclick = (event) => {
         event.stopPropagation();
-        const wanted = control.dataset.select;
         if (open && open.anchor === control) {
           closeMenu();
           return;
         }
         closeMenu();
-        if (wanted === "more") openSurfaceMenu(control);
-        else openJumpMenu(control);
+        openJumpMenu(control);
       };
     });
     host.querySelectorAll("[data-directory]").forEach((control) => {
@@ -273,7 +270,7 @@ function menuShell(anchor, className) {
   document.body.appendChild(element);
 
   const onKeydown = (event) => {
-    if (event.key === "Escape") closeMenu();
+    if (event.key === "Escape") closeMenu({ restoreFocus: true });
   };
   const onOutside = (event) => {
     if (element.contains(event.target)) return;
@@ -292,11 +289,29 @@ function menuShell(anchor, className) {
   };
 }
 
-function closeMenu() {
+function closeMenu({ restoreFocus = false } = {}) {
   if (!open) return;
+  const anchor = open.anchor;
+  open.anchor?.setAttribute("aria-expanded", "false");
   open.dismiss();
   open.element.remove();
   open = null;
+  if (restoreFocus && anchor?.isConnected) anchor.focus();
+}
+
+/** A directory popup can be open while the toolbar crosses its container
+ * breakpoint. Dismiss it when its trigger becomes hidden so focus and menu
+ * state never remain attached to an unavailable control. */
+function reconcileOpenMenu() {
+  if (open?.select !== "directory") return;
+  if (getComputedStyle(open.anchor).display === "none") closeMenu();
+}
+
+function observeToolbar(host) {
+  toolbarResizeObserver?.disconnect();
+  if (typeof ResizeObserver !== "function") return;
+  toolbarResizeObserver = new ResizeObserver(reconcileOpenMenu);
+  toolbarResizeObserver.observe(host);
 }
 
 function openJumpMenu(anchor) {
@@ -312,6 +327,7 @@ function openJumpMenu(anchor) {
     list,
     query: "",
   };
+  anchor.setAttribute("aria-expanded", "true");
   paintMenu();
   const filter = open.element.querySelector(".tb-filter");
   const initialChoice = open.element.querySelector('[aria-checked="true"]') || open.element.querySelector("[role=menuitem]");
@@ -487,35 +503,13 @@ function workspaceMenuShellHtml() {
     </div>`;
 }
 
-// ---- the ⋯ -------------------------------------------------------------------
-
-/** What the tab row's right cluster used to carry. Archive is an account page
- *  now (the inbox is global, so an archive of it is too); settings is the
- *  project's own sheet. */
-function openSurfaceMenu(anchor) {
-  open = { ...menuShell(anchor, "tbmenu tbmenu-actions"), select: anchor.dataset.select, mode: "more" };
-  open.element.innerHTML = `
-    <button class="mi" data-action="archive" type="button" role="menuitem"><span class="mt">Archive</span>
-      <span class="md">Work that has been finished</span></button>
-    <button class="mi" data-action="settings" type="button" role="menuitem"><span class="mt">Project settings</span>
-      <span class="md">Name, path, base branch, remote</span></button>`;
-  open.element.querySelectorAll("[data-action]").forEach((row) => {
-    row.onclick = () => {
-      const action = row.dataset.action;
-      const projectId = scopeProjectId();
-      closeMenu();
-      if (action === "archive") go({ name: "account", page: "archive" });
-      else if (projectId) openProjectSettings(projectId);
-    };
-  });
-}
-
 // ---- mounting ----------------------------------------------------------------
 
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */
 export function initToolbar() {
   if (mounted) {
     paint({ entering: true });
+    observeToolbar($("#toolbar"));
     return;
   }
   mounted = true;
@@ -529,6 +523,7 @@ export function initToolbar() {
     paint();
   });
   paint({ entering: true });
+  observeToolbar($("#toolbar"));
   if (App.route.name === "workspace") void loadWorkspaces(App.route.projectId, App.route.workspaceId);
 }
 
@@ -544,5 +539,7 @@ export function toolbarRouteChanged() {
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
   workspaceRequest += 1;
+  toolbarResizeObserver?.disconnect();
+  toolbarResizeObserver = null;
   closeMenu();
 }

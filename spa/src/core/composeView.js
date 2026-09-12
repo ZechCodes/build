@@ -318,6 +318,7 @@ function loadCatalogForPanel() {
 // ---- opening, closing, sending ------------------------------------------------
 
 export function openCompose() {
+  if (!$("#compose")) return;
   if (box) {
     $("#compose-text")?.focus();
     return;
@@ -429,11 +430,12 @@ export function initCompose() {
   }
   mounted = true;
   queue = loadCaptureQueue();
-  paintPrompt();
   subscribeFeed((next) => {
     feed = { items: next.items || [], projects: next.projects || [] };
     syncTracked();
   });
+  if (!$("#compose")) return;
+  paintPrompt();
   document.addEventListener("keydown", (event) => {
     // A modal is a question in flight; opening a box behind it would answer
     // neither.

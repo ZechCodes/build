@@ -224,6 +224,18 @@ describe("the bubble strip", () => {
     expect(bubbles().length).toBe(3);
   });
 
+  it("repaints the header icon when a provider update arrives", async () => {
+    await mount();
+    expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");
+
+    payload = branchRow({ agents: [agent({ provider: "codex_app_server" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
+    expect(panel().querySelector(".rail-who").textContent).toBe("Codex 1");
+  });
+
   // The rail reads the row every 1.6s and nearly every read says the same
   // thing. A rewrite then swaps the button a press is landing on for an
   // identical one, and the press is swallowed.

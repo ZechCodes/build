@@ -5,9 +5,10 @@
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
-import { inboxListRouteChanged, mountInboxList, setInboxView } from "./inboxView.js";
+import { inboxListRouteChanged, mountInboxList, openNewProject, setInboxView } from "./inboxView.js";
 import { loadRailView, persistRailView, railViewSwitchHtml } from "./railMode.js";
 import { subscribeInboxAttentionCount } from "./inboxAttention.js";
+import { ICON_PIN, ICON_PLUS } from "./icons.js";
 import "../styles/shell.css";
 
 const COLLAPSED_KEY = "build.inbox.collapsed";
@@ -16,9 +17,10 @@ const COLLAPSED_KEY = "build.inbox.collapsed";
  *  room there is. A viewport narrow enough to overlay the rail starts with it
  *  away; a choice, once made, is what counts. */
 export function railStartsCollapsed(stored, viewportWidth) {
+  if (viewportWidth <= 900) return true;
   if (stored === "1") return true;
   if (stored === "") return false;
-  return viewportWidth < 900;
+  return false;
 }
 
 export function setInboxCollapsed(on, { animate = true, persist = true, reveal = on } = {}) {
@@ -164,7 +166,7 @@ function setInboxPopover(on, { restoreFocus = false } = {}) {
 }
 
 function dismissInbox({ restoreFocus = false } = {}) {
-  const pinnedMobile = window.innerWidth < 900 && !document.body.classList.contains("inbox-collapsed");
+  const pinnedMobile = window.innerWidth <= 900 && !document.body.classList.contains("inbox-collapsed");
   if (pinnedMobile) setInboxCollapsed(true, { persist: false, reveal: false });
   else setInboxPopover(false, { restoreFocus });
   if (restoreFocus) $("#inbox-open")?.focus();
@@ -250,8 +252,19 @@ export function initInboxRail() {
   setInboxCollapsed(startsCollapsed, { animate: false, persist: false, reveal: false });
   // One toggle in two places: the head button docks or puts the rail away, and
   // the floating one — at the same spot, while the rail is away — docks it.
-  $("#inbox-collapse").onclick = () =>
+  const pin = $("#inbox-collapse");
+  pin.innerHTML = ICON_PIN;
+  pin.onclick = () => {
+    if (window.innerWidth <= 900) return;
     setInboxCollapsed(!document.body.classList.contains("inbox-collapsed"));
+  };
+  const newProject = $("#inbox-new-project");
+  newProject.innerHTML = `${ICON_PLUS}<span>New project</span>`;
+  newProject.onclick = () => {
+    setInboxPeek(false);
+    dismissInbox();
+    openNewProject();
+  };
   const open = $("#inbox-open");
   subscribeInboxAttentionCount(paintAttentionCount);
   open.onclick = () => {

@@ -22,15 +22,15 @@
   --bg:#f3f7f8; --panel:#f8fbfb; --panel2:#eaf1f2;
   --ink:#13262c; --ink2:#496169; --dim:#5d747c;
   --line:#cbdadd; --line2:#dce7e9; --line3:#adc3c7;
-  --accent:#007f68; --accent-fill:#00b88f; --accent-soft:#d8f2eb; --accent-ink:#03251d;
-  --green:#087b5f; --green-bg:#dcf3e9;
+  --accent:#006d43; --accent-fill:#51ffb4; --accent-soft:#ddffed; --accent-ink:#062719;
+  --green:#137344; --green-bg:#e3fff0;
   --red:#c43d52; --red-bg:#fbe9ec; --danger-ink:#fff;
   /* The waiting tone. Something pending review is not something broken: it is
      yellow, and --red is kept for what actually went wrong (blocked, failed,
      a merge left half-done). */
   --amber:#986411; --amber-bg:#fff3d5;
   --violet:#7456a6;
-  --code-bg:#edf3f4; --sel:#b8e6da;
+  --code-bg:#edf3f4; --sel:#b8ffd8;
   --scrim:rgba(7,21,27,.38); --shadow:rgba(15,42,50,.2); --shadow-soft:rgba(15,42,50,.1);
   --focus-ring:color-mix(in srgb, var(--accent) 32%, transparent);
   --motion-fast:110ms; --motion-base:180ms; --motion-slow:280ms; --ease-out:cubic-bezier(.2,.8,.2,1);
@@ -48,24 +48,22 @@
 }
 /* Dark: easy on the eyes rather than maximum contrast — the page is a soft
    near-black and the text a warm off-white, so a long review does not glare.
-   The accents are the loud part: neon against that quiet ground, with dark ink
+   The accents are electric mint against that quiet ground, with dark ink
    on top of a filled accent because near-black on neon is what reads. */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg:#07151b; --panel:#0b1b22; --panel2:#10262f;
   --ink:#e5f1f2; --ink2:#9db2b8; --dim:#839ea7;
   --line:#1b3640; --line2:#122a33; --line3:#31505a;
-  /* Neon green, kept to the cool side of green on purpose: the lime side runs
-     into --amber (pending review), and it has to stay louder than --green
-     (merged, passed) so an affordance never reads as a state. */
-  --accent:#21e6b3; --accent-fill:#21e6b3; --accent-soft:#0b3a34; --accent-ink:#03251d;
-  --green:#39dca5; --green-bg:#0c3028;
+  /* Electric mint is a clear affordance against the dark ground. --green stays
+     slightly quieter so merged and passed states do not compete with actions. */
+  --accent:#51ffb4; --accent-fill:#51ffb4; --accent-soft:#123b29; --accent-ink:#062719;
+  --green:#54e8a2; --green-bg:#103b29;
   --red:#ff5c72; --red-bg:#2a1620; --danger-ink:#26050b;
   --amber:#ffd447; --amber-bg:#2b2210;
   --violet:#c4a2ff;
-  /* Selection is an accent surface — it follows the accent's hue, as the light
-     theme's indigo-tinted --sel follows its own. */
-  --code-bg:#0d2028; --sel:#155345;
+  /* Selection is an accent surface — both themes keep it mint-tinted. */
+  --code-bg:#0d2028; --sel:#1a6643;
   --scrim:rgba(0,0,0,.6); --shadow:rgba(0,0,0,.62); --shadow-soft:rgba(0,0,0,.45);
   --pop-bg:#10262f; --pop-ink:#e5f1f2; --pop-warn:#ffd447;
   --add-ink:#b9f4cf; --del-ink:#ffc3cd; --hunk-bg:#1c2028;
@@ -518,8 +516,9 @@ main#root.surface { max-width:none;
 .file .dscroll { overflow-x:auto; overflow-y:hidden; }
 .file table { min-width:100%; }
 .file td.code { white-space:pre; }
-.file { background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:clip; }
+.file { container-type:inline-size; background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:12px; overflow:clip; }
 .file .fhead { position:sticky; top:var(--diff-sticky-top, 0); z-index:3; display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--line2); background:var(--panel); font-family:var(--mono); font-size:12.5px; }
+.file .fidentity, .file .fmeta, .file .factions { display:contents; }
 .file .fhead .fpath { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .file .fhead .fb { font-size:9px; font-weight:700; letter-spacing:.04em; padding:1px 5px; border-radius:4px; }
 .fb.EDIT { background:var(--accent-soft); color:var(--accent); } .fb.ADD { background:var(--green-bg); color:var(--green); } .fb.DEL { background:var(--red-bg); color:var(--red); }
@@ -590,7 +589,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* Rows of controls, not surfaces: their box still spans to the seam (the
    toolbar's rule is the pane's own line) while the buttons and boxes on them
    stop a gutter short of it. */
-.gp-toolbar { padding:12px var(--pane-gutter) 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.gp-toolbar { container-type:inline-size; padding:12px var(--pane-gutter) 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
 /* Below the stacking width there is no divider to clear — the rail floats over
    this column instead of sitting beside it — so the column's own left gutter
    goes, and the split's left inset with the column's right gutter leave the
@@ -687,6 +686,18 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .fcmt svg, .fopen svg, .fapprove svg { width:16px; height:16px; flex:none; }
 .fcmt:hover, .fopen:hover, .fapprove:hover { background:var(--accent-soft); color:var(--accent); }
 .fedited { margin-left:7px; color:var(--dim); font-size:11px; white-space:nowrap; }
+@container (max-width: 600px) {
+  .file .fhead { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:5px 7px; }
+  .file .fidentity { display:flex; align-items:flex-start; gap:9px; min-width:0; }
+  .file .fhead .fpath { overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere; }
+  .file .fmeta { display:flex; grid-column:1 / -1; grid-row:2; align-items:center; flex-wrap:wrap; gap:5px 9px; }
+  .file .fhead:has(.fselect-box) .fmeta { padding-left:calc(13px + 9px); }
+  .file .fmeta .pm, .file .fmeta .fedited, .file .fmeta .fchanged { margin-left:0; }
+  .file .factions { display:flex; align-items:center; align-self:start; gap:2px; }
+  .file .factions > .fcmt, .file .factions > .fopen, .file .factions > .fapprove { margin-left:0; padding-inline:5px; }
+  .file .fhead:has(.fmenu-pop) .fidentity { grid-column:1 / -1; }
+  .file .fhead:has(.fmenu-pop) .factions { grid-column:1 / -1; grid-row:3; flex-wrap:wrap; justify-content:flex-end; }
+}
 /* An approved file wears its verdict: the toggle fills, and the header dims to
    say the reviewer is done with this one. */
 .fapprove[aria-pressed="true"] { color:var(--green); background:color-mix(in srgb, var(--green) 12%, transparent); }
@@ -783,6 +794,10 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .gtstatus .gtweight { font-size:12px; }
 /* Everything the banner takes over when the repository is mid-operation. */
 .gtrest { display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1; min-width:0; }
+@container (max-width: 600px) {
+  .gittoolbar .gtrest { order:1; flex-basis:100%; column-gap:4px; }
+  .gittoolbar .gtstatus { order:2; width:100%; }
+}
 /* The line that says the verbs after it belong to something else. */
 .gtdivider { width:1px; align-self:stretch; min-height:20px; background:var(--line); margin:0 2px; }
 .gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }

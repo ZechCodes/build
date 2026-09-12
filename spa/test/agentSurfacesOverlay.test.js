@@ -163,6 +163,14 @@ afterEach(() => {
 });
 
 describe("panelHeadHtml's surface menu", () => {
+  it("keeps the title as text beside the selected harness icon", () => {
+    const html = panelHeadHtml("My agent", "chat", { provider: "codex_app_server" });
+    document.body.innerHTML = html;
+
+    expect(document.querySelector(".rail-who").textContent).toBe("My agent");
+    expect(document.querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
+  });
+
   it("writes no menu at all when the agent has nothing to show", () => {
     const html = panelHeadHtml("Claude Code", "chat", { surfaceOptions: [] });
     expect(html).toContain("rail-surface-menu");

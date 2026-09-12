@@ -57,17 +57,6 @@ function errorHtml(message) {
   return `<div class="empty"><h2>Workspace unavailable</h2><p>${esc(message)}</p></div>`;
 }
 
-function workspaceAction(workspace) {
-  return workspace?.status === "failed" ? { label: "Retry", method: "workspace.retry" } : { label: "Finish", method: "workspace.finish" };
-}
-
-function finishOutcome(answer) {
-  if (answer.complete) return { message: "Finished. Workspace files were kept.", failed: false };
-  const failures = (answer.repositories || []).filter((repository) => !repository.pushed);
-  const detail = failures.map((repository) => `${repository.directory_id}: ${repository.reason || "not pushed"}`).join(" · ");
-  return { message: detail || "Workspace has incomplete or missing directories and cannot be finished.", failed: true };
-}
-
 function applyRetry(answer, state, previous) {
   const selectedNeedsRefresh = selectedDirectory(previous, state.route.sourceId)?.status !== "ready";
   const current = answer.workspace || answer;
@@ -76,28 +65,28 @@ function applyRetry(answer, state, previous) {
 }
 
 function installWorkspaceAction(state, workspace) {
+  if (workspace?.status !== "failed") return;
   let current = workspace;
   let pending = false;
   let message = "";
   let failed = false;
   const render = (host) => {
-    const action = workspaceAction(current);
+    if (current?.status !== "failed") {
+      host.innerHTML = `<span class="workspace-action-status" role="status">${esc(message)}</span>`;
+      return;
+    }
     host.innerHTML = `<span class="workspace-action-status ${failed ? "error" : ""}" role="status">${esc(message)}</span>
-      <button class="btn mini" type="button" data-workspace-action${pending ? " disabled" : ""}>${esc(action.label)}</button>`;
+      <button class="btn mini" type="button" data-workspace-action${pending ? " disabled" : ""}>Retry</button>`;
     host.querySelector("[data-workspace-action]").onclick = async () => {
       pending = true;
       message = "";
       failed = false;
       render(host);
       try {
-        const answer = await state.callRpc(action.method, { workspace_id: state.route.workspaceId });
+        const answer = await state.callRpc("workspace.retry", { workspace_id: state.route.workspaceId });
         if (state.disposed) return;
-        if (action.method === "workspace.finish") {
-          ({ message, failed } = finishOutcome(answer));
-        } else {
-          current = applyRetry(answer, state, current);
-          message = "Workspace ready.";
-        }
+        current = applyRetry(answer, state, current);
+        message = "Workspace ready.";
       } catch (error) {
         if (state.disposed) return;
         failed = true;

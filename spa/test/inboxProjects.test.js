@@ -4,7 +4,7 @@
 // per block, and the unrouted captures standing above them all.
 
 import { describe, it, expect } from "vitest";
-import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
+import { blockIsFolded, projectBlockHtml, projectBlocks, projectHeadHtml, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
 import { projectRoute } from "../src/core/projectModel.js";
 
 const NOW = Date.parse("2026-09-02T12:00:00Z");
@@ -365,9 +365,4 @@ describe("what a block looks like", () => {
     expect(projectBlockHtml(block(), { activeProjectId: "p2" })).not.toContain(" active");
   });
 
-  it("offers a new project", () => {
-    expect(newProjectButtonHtml()).toContain("data-new-project");
-    expect(newProjectButtonHtml()).toContain("New project");
-    expect(newProjectButtonHtml()).toContain("<svg");
-  });
 });

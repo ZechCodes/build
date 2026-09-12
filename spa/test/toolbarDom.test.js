@@ -9,8 +9,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => { subscribers.add(fn); fn(feed); return () => subscribers.delete(fn); },
   startFeed() {}, stopFeed() {}, refreshFeed: async () => subscribers.forEach((fn) => fn(feed)), primaryRunIdFor: () => null,
 }));
-const openProjectSettings = vi.fn();
-vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings }));
 const { App } = await import("../src/app.js");
 const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -19,11 +17,11 @@ const menu = () => document.querySelector(".tbmenu");
 const open = (selector) => { bar().querySelector(`[data-select="${selector}"]`).click(); return menu(); };
 
 beforeEach(() => {
+  stopToolbar();
   document.body.innerHTML = '<div id="toolbar"></div><div id="root"></div><div id="console-region"></div><div id="agent-rail"></div>';
   App.gated = true;
   App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
   App.call = vi.fn(async (method) => method === "workspace.list" ? { workspaces: [workspace] } : method === "workspace.get" ? { workspace } : {});
-  openProjectSettings.mockClear();
   initToolbar();
   toolbarRouteChanged();
 });
@@ -69,6 +67,7 @@ describe("workspace toolbar", () => {
     const picker = bar().querySelector('[data-select="directory"]');
     expect(picker.textContent.trim()).toBe("Frontend▾");
     picker.click();
+    expect(picker.getAttribute("aria-expanded")).toBe("true");
     expect([...menu().querySelectorAll("[data-menu-directory]")].map((node) => [node.textContent.trim(), node.classList.contains("current")])).toEqual([
       ["Frontend", true], ["Design assets", false],
     ]);
@@ -78,10 +77,8 @@ describe("workspace toolbar", () => {
     menu().querySelector('[data-menu-directory="assets"]').click();
     expect(App.route).toEqual({ name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "assets", tab: "files" });
   });
-  it("keeps Archive and project settings in More", () => {
-    open("more");
-    expect([...menu().querySelectorAll("[data-action]")].map((row) => row.dataset.action)).toEqual(["archive", "settings"]);
-    menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings).toHaveBeenCalledWith("p1");
+  it("leaves finish and contextual actions out of the navigation toolbar", () => {
+    expect(bar().querySelector("#tb-verb").children).toHaveLength(0);
+    expect(bar().querySelector('[data-select="more"]')).toBeNull();
   });
 });

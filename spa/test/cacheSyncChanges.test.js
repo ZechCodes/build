@@ -180,6 +180,30 @@ describe("pulling only on a key miss", () => {
     expect(called("branch.get")).toHaveLength(1);
   });
 
+  it("asks for nothing when the pushed state is what the feed row already says", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [], deliveredSequence: 1 },
+    );
+    sync.startCacheSync();
+    await feed([branchItem({ state: "building", agents: [{ id: "ag-1" }], unread_reason: null })]);
+    App.call.mockClear();
+    await deliver([{ entity_id: "run-1", state: { run: "building", agents: 1, attention: "none" } }]);
+    expect(called("branch.get")).toEqual([]);
+  });
+
+  it("re-reads the entity's detail when the pushed state disagrees with the row", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [], deliveredSequence: 1 },
+    );
+    sync.startCacheSync();
+    await feed([branchItem({ state: "building", agents: [{ id: "ag-1" }], unread_reason: null })]);
+    App.call.mockClear();
+    await deliver([{ entity_id: "run-1", state: { run: "building", agents: 1, attention: "agent_message" } }]);
+    expect(called("branch.get")).toHaveLength(1);
+  });
+
   it("re-reads the entity's detail when its state moved", async () => {
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },

@@ -489,3 +489,57 @@ async fn a_write_in_a_watched_worktree_is_pushed_with_its_path() {
     assert!(item["git"]["status_key"].is_string(), "{item:?}");
     assert_eq!(frames[0]["subscription_id"], "s-focus");
 }
+
+/// The `state` item says what the board row says — the lifecycle state, how
+/// many agents are on the entity, and its attention — rather than the empty
+/// object that only ever meant "refetch everything about this".
+#[tokio::test]
+async fn a_state_item_carries_the_row_the_board_would_paint() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let plan = call(
+        &handler,
+        "plan.create",
+        json!({ "goal": "state rides the item" }),
+    );
+    let plan_id = plan_id_of(&plan);
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-focus",
+                "scope": { "kind": "entity", "id": plan_id },
+                "kinds": ["state"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    state.lock().unwrap().note_entity_changed(&plan_id);
+
+    let pushes = settled_pushes(&mut rx, &key).await;
+    let item = pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == plan_id)
+        .unwrap_or_else(|| panic!("no changes item for the issue: {pushes:?}"));
+    let board = call(&handler, "board.list", json!({}));
+    let row = board["result"]["items"]
+        .as_array()
+        .expect("the board lists items")
+        .iter()
+        .find(|row| row["issue_id"] == plan_id.as_str())
+        .unwrap_or_else(|| panic!("no board row for the issue: {board:?}"));
+    assert_eq!(
+        item["state"],
+        json!({
+            "run": row["state"],
+            "agents": row["agents"].as_array().expect("a row lists agents").len(),
+            "attention": row["unread_reason"].as_str().unwrap_or("none"),
+        }),
+        "{item:?} against {row:?}"
+    );
+}

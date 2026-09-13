@@ -4,12 +4,14 @@
 //! [`ChangeBus`] knows nothing about [`AppState`]; it is handed two closures
 //! at construction. Both run off the app mutex — the entity list is a map
 //! snapshot the watchers hold, and the facts source takes the mutex for the
-//! thread tails only, then runs the git status walks with it released.
+//! thread tails and the state rows only, then runs the git status walks with
+//! it released.
 
 use super::watchers::{WorktreeRoots, WorktreeWatchers};
 use super::AppState;
 use crate::changes::{ChangeBus, EntityFacts, FactsRequest, ThreadTip};
 use crate::gitgui::{status_shape, GIT_STATUS_MAX_FILES};
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -51,6 +53,10 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
                 } else {
                     Vec::new()
                 },
+                state: request
+                    .state
+                    .then(|| app.entity_state_item(&request.entity_id))
+                    .flatten(),
                 ..EntityFacts::default()
             })
             .collect::<Vec<_>>();
@@ -88,6 +94,29 @@ impl AppState {
             }
         }
         roots
+    }
+
+    /// Where this entity's row stands — the `state` item, which carries what
+    /// the board row shows about it and nothing the bridge cannot read: the
+    /// lifecycle state string the board serialises, how many agents are on it,
+    /// and the attention its row carries (`"none"` when it wants nothing).
+    ///
+    /// `None` for an id with no lifecycle of its own — a project's primary
+    /// checkout, an external worktree — whose item stays the bare "refetch".
+    pub(in crate::app) fn entity_state_item(&self, entity_id: &str) -> Option<Value> {
+        let lifecycle = match self.runs.get(entity_id) {
+            Some(active) => super::run_state_str(&active.run.state),
+            None => super::plan_state_str(&self.plans.get(entity_id)?.plan.state),
+        };
+        let agents = self
+            .entity_agents(entity_id)
+            .map(|roster| roster.iter().count())
+            .unwrap_or(0);
+        Some(json!({
+            "run": lifecycle,
+            "agents": agents,
+            "attention": self.unread_for(entity_id, None).reason.unwrap_or("none"),
+        }))
     }
 
     /// Where each of an entity's conversations stands — the `thread` item.

@@ -383,10 +383,32 @@ async function threadBehind(context, entityId, tips) {
   return false;
 }
 
-/** `state` is a refetch marker — the bridge sends `{}` and the detail read is
- *  the comparison — while `thread` carries tips this cache can answer from. */
+/** The feed row's own state, in the shape the `state` item carries it: the
+ *  bridge fills that item from the same board row this cache holds, so the two
+ *  are compared field by field with no translation. */
+const rowState = (row) => ({
+  run: row.state,
+  agents: (row.agents || []).length,
+  attention: row.unread_reason || "none",
+});
+
+/** Whether a pushed `state` says anything the held row does not. An empty
+ *  object — an entity the bridge keeps no row for — names no field and stays
+ *  what it always was: the bare "refetch". A field this build does not know is
+ *  news too; a later minor never goes unread. */
+function stateMoved(row, state) {
+  const held = rowState(row);
+  const fields = Object.keys(state);
+  if (!fields.length) return true;
+  return fields.some((field) => String(state[field]) !== String(held[field]));
+}
+
+/** `state` and `thread` are both answered from what this cache holds: the
+ *  pushed row against the feed row, and each pushed tip against the window
+ *  stored for that agent. The detail read happens only where one disagrees. */
 async function applyDetail(context, entityId, row, item) {
-  if (!item.state && !(await threadBehind(context, entityId, item.thread))) return;
+  const moved = item.state ? stateMoved(row, item.state) : false;
+  if (!moved && !(await threadBehind(context, entityId, item.thread))) return;
   await refreshThreads(context, entityId, row);
 }
 

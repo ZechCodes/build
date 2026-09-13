@@ -348,6 +348,8 @@ pub struct FactsRequest {
     pub git: bool,
     /// Each conversation's `last_sequence`.
     pub thread: bool,
+    /// The row's lifecycle, agents and attention.
+    pub state: bool,
 }
 
 /// One conversation's tail, as a `thread` item carries it.
@@ -364,8 +366,10 @@ pub struct EntityFacts {
     pub status_key: Option<String>,
     pub head: Option<String>,
     pub threads: Vec<ThreadTip>,
-    /// The row's own state, as the board reads it; `None` leaves the item's
-    /// `state` an empty object, which still says "this moved, refetch".
+    /// The row's own state, as the board reads it — the same lifecycle,
+    /// agent count and attention its board row carries. `None` (an entity the
+    /// board has no row for) leaves the item's `state` an empty object, which
+    /// still says "this moved, refetch".
     pub state: Option<Value>,
 }
 
@@ -1243,25 +1247,26 @@ impl Subscription {
 
 /// What the frames due this turn need looked up, one request per entity.
 fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
-    let mut wanted: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
+    let mut wanted: BTreeMap<&str, FactsRequest> = BTreeMap::new();
     for frame in frames {
         for (id, item) in &frame.items {
             if id == BOARD_ITEM_ID {
                 continue;
             }
-            let entry = wanted.entry(id.as_str()).or_insert((false, false));
-            entry.0 |= item.kinds.contains(Kind::Git);
-            entry.1 |= item.kinds.contains(Kind::Thread);
+            let entry = wanted.entry(id.as_str()).or_insert_with(|| FactsRequest {
+                entity_id: id.clone(),
+                git: false,
+                thread: false,
+                state: false,
+            });
+            entry.git |= item.kinds.contains(Kind::Git);
+            entry.thread |= item.kinds.contains(Kind::Thread);
+            entry.state |= item.kinds.contains(Kind::State);
         }
     }
     wanted
-        .into_iter()
-        .filter(|(_, (git, thread))| *git || *thread)
-        .map(|(entity_id, (git, thread))| FactsRequest {
-            entity_id: entity_id.to_string(),
-            git,
-            thread,
-        })
+        .into_values()
+        .filter(|request| request.git || request.thread || request.state)
         .collect()
 }
 

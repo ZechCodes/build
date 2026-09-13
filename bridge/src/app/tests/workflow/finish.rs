@@ -137,7 +137,7 @@ fn stage_publication_of_a_linked_worktree_survives_publishing_first() {
     );
 }
 
-/// The same finish over a copy-on-write clone. A clone is its own
+/// The same finish over a Rift checkout. A Rift checkout is its own
 /// repository, so its commits reach the project only through the publish
 /// the façade does first, and git's worktree registry has never heard of
 /// the directory: the app's own git could neither merge the work nor take
@@ -145,12 +145,12 @@ fn stage_publication_of_a_linked_worktree_survives_publishing_first() {
 #[test]
 fn a_finish_merge_of_a_clone_lands_its_work_and_takes_its_branch() {
     let (dir, repo) = init_repo();
-    if !crate::isolation::probe::cow_or_skip(dir.path()) {
+    if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
     }
     let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
     let clone = worktrees
-        .create_cutting_branch("landed", "main", Isolation::Cow)
+        .create_cutting_branch("landed", "main", Isolation::Rift)
         .unwrap()
         .worktree;
     std::fs::write(clone.path.join("landed.txt"), "shipped\n").unwrap();

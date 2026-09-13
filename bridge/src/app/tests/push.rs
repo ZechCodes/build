@@ -70,7 +70,18 @@ async fn the_greeting_announces_push_events() {
     );
     assert_eq!(
         hello["result"]["events"],
-        json!(["board.changed", "entity.changed"]),
+        json!(["board.changed", "entity.changed", "changes"]),
+        "{hello:?}"
+    );
+    // Step 1.5: what a Part 1 adapter reads instead of probing.
+    assert_eq!(
+        hello["result"]["changes"],
+        json!({
+            "subscriptions": true,
+            "mode": "legacy",
+            "kinds": ["state", "thread", "git", "files"],
+            "batch_ms": { "min": 1000, "max": 600_000 },
+        }),
         "{hello:?}"
     );
     assert!(
@@ -380,4 +391,101 @@ async fn an_entity_change_names_the_entity_that_moved() {
             json!({ "type": "entity.changed", "id": plan_id }),
         ]
     );
+}
+
+// ==== Subscriptions and the per-worktree watcher =============================
+
+/// `changes.subscribe` covering a worktree with `git` or `files` puts a
+/// watcher on it and answers `watch: "live"`; the last unsubscribe covering it
+/// drops the watcher. The reconcile runs on the off-lock drain, so the reply
+/// already knows whether the start succeeded.
+#[tokio::test]
+async fn a_subscription_covering_a_worktree_starts_its_watcher() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, _rx, _key) = greeted_push_session(&repo, dir.path());
+    let board = handler.call(sender.clone(), req("board.list", json!({})));
+    let project_id = board["result"]["projects"][0]["project_id"]
+        .as_str()
+        .expect("the QA daemon lists its repo as a project")
+        .to_string();
+
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-focus",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["git", "files"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    assert_eq!(subscribed["result"]["watch"], "live", "{subscribed:?}");
+    assert!(state.lock().unwrap().watchers().is_watching(&project_id));
+
+    let listed = handler.call(sender.clone(), req("changes.list", json!({})));
+    assert_eq!(
+        listed["result"]["subscriptions"][0]["subscription_id"],
+        "s-focus"
+    );
+
+    let unsubscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.unsubscribe",
+            json!({ "subscription_id": "s-focus" }),
+        ),
+    );
+    assert_eq!(unsubscribed["result"]["ok"], true, "{unsubscribed:?}");
+    assert!(!state.lock().unwrap().watchers().is_watching(&project_id));
+}
+
+/// A write in a watched worktree reaches the subscription as a `changes`
+/// frame naming the path — the producer, the bus and the flusher wired end to
+/// end, with the facts source filling the git keys.
+#[tokio::test]
+async fn a_write_in_a_watched_worktree_is_pushed_with_its_path() {
+    let (dir, repo) = init_repo();
+    let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let board = handler.call(sender.clone(), req("board.list", json!({})));
+    let project_id = board["result"]["projects"][0]["project_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let subscribed = handler.call(
+        sender.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-focus",
+                "scope": { "kind": "entity", "id": project_id },
+                "kinds": ["git", "files"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["result"]["watch"], "live", "{subscribed:?}");
+    settled_pushes(&mut rx, &key).await;
+
+    std::fs::write(repo.join("noted.txt"), "hello").unwrap();
+    let mut frames = Vec::new();
+    for _ in 0..40 {
+        frames.extend(
+            settled_pushes(&mut rx, &key)
+                .await
+                .into_iter()
+                .filter(|push| push["type"] == "changes"),
+        );
+        if !frames.is_empty() {
+            break;
+        }
+    }
+    let item = frames
+        .iter()
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .find(|item| item["entity_id"] == project_id)
+        .unwrap_or_else(|| panic!("no changes item for the project: {frames:?}"));
+    assert_eq!(item["files"]["paths"], json!(["noted.txt"]), "{item:?}");
+    assert!(item["git"]["status_key"].is_string(), "{item:?}");
+    assert_eq!(frames[0]["subscription_id"], "s-focus");
 }

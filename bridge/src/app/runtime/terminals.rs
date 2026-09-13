@@ -5,7 +5,7 @@ use crate::app::{
     HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
 };
 use crate::carrier::SessionSender;
-use crate::changes::ANNOUNCED_EVENTS;
+use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};
 use crate::encoding::b64decode;
 use crate::models::AgentProvider;
 use crate::pty::HarnessSpec;
@@ -194,6 +194,14 @@ pub(in crate::app) fn terminal_size(cols: u16, rows: u16) -> PtySize {
 /// Greet a browser session: announce what this bridge pushes, and subscribe the
 /// session to it.
 ///
+/// `"changes"` picks which push contract the session speaks (wire spec, step
+/// 1.5). `"legacy"` — the default, and what every client that predates
+/// subscriptions sends — is today's behaviour: the session hears
+/// `board.changed` / `entity.changed` for every entity on the device.
+/// `"subscriptions"` means it hears nothing until it calls
+/// `changes.subscribe`, and drops any legacy subscription it already had, so
+/// a reconnecting client that switches contracts is not served both.
+///
 /// `push_events: true` is the feature detection. A bridge that predates push
 /// invalidation answers `unknown method: session.hello`, and a client that
 /// predates it never asks — so a new SPA against an old bridge, and an old SPA
@@ -211,7 +219,12 @@ pub(in crate::app) fn session_hello(
     // released — each takes its own leaf lock, and nothing in this daemon may
     // nest one lock inside another it did not have to.
     let changes = timer.lock(state).changes();
-    changes.subscribe(sender);
+    let subscriptions = params.get("changes").and_then(Value::as_str) == Some("subscriptions");
+    if subscriptions {
+        changes.unsubscribe_legacy(sender.session_id());
+    } else {
+        changes.subscribe_legacy(sender);
+    }
     timer.clock().clients().record(
         sender.session_id(),
         DeclaredClient::from_hello_params(params),
@@ -221,6 +234,15 @@ pub(in crate::app) fn session_hello(
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,
+        // What a Part 1 adapter reads instead of probing for
+        // `changes.subscribe`: whether this bridge serves subscriptions, the
+        // kinds it filters on, and the clamp on a batch interval.
+        "changes": {
+            "subscriptions": true,
+            "mode": if subscriptions { "subscriptions" } else { "legacy" },
+            "kinds": Kind::ALL.map(Kind::as_str),
+            "batch_ms": { "min": MIN_BATCH_MS, "max": MAX_BATCH_MS },
+        },
         "thread_post_operations": {
             "version": 1,
             "status_method": "thread.operation",

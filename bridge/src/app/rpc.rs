@@ -55,12 +55,14 @@ pub(in crate::app) fn dispatch_frame(
     // browser disconnect): release its attachments so the bridge stops encrypting
     // terminal output into a session nobody will ever read.
     if frame.frame_type == transport::CLOSE_FRAME_TYPE {
-        let changes = {
+        let (changes, watchers) = {
             let mut app = timer.lock(state);
             app.drop_session(sender.session_id());
-            app.changes()
+            (app.changes(), app.watchers())
         };
         changes.unsubscribe(sender.session_id());
+        // Its subscriptions went with it; the watchers they covered follow.
+        watchers.wake();
         timer.clock().clients().forget(sender.session_id());
         return json!({ "ok": true });
     }
@@ -79,7 +81,11 @@ pub(in crate::app) fn dispatch_frame(
 
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
         Some(outcome) => outcome.map_err(ApiError::from),
-        None => routed(state, &method, &params, &timer),
+        // The caller is named for the frame: the `changes.*` verbs push to
+        // it, and `routed` carries only the state.
+        None => crate::api::v1::changes::with_session(&sender, || {
+            routed(state, &method, &params, &timer)
+        }),
     };
     api::reply(id, result)
 }

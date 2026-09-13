@@ -22,11 +22,13 @@
 //!
 //! Families: [`board`] (`board.list`, `archive.list`, `archived.list`,
 //! `project.*`, `capture.*`, `settings.*`, `models.list`), [`thread`]
-//! (`thread.*`, `agent.add/choose/remove/list`), [`git`] (`git.*`, `fs.*`,
+//! (`thread.*`, `agent.add/choose/remove/list`), [`changes`]
+//! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
 //! and the diff reads), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
 //! `branch.*`, `worktree.create/finish`, `entity.*`, `triage.override`).
 
 pub mod board;
+pub mod changes;
 pub mod git;
 pub mod lifecycle;
 pub mod thread;
@@ -211,9 +213,10 @@ pub fn call_typed<P: DeserializeOwned, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 4] {
+fn families() -> [&'static [(&'static str, Handler)]; 5] {
     [
         board::methods(),
+        changes::methods(),
         thread::methods(),
         git::methods(),
         lifecycle::methods(),

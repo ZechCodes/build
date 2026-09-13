@@ -6,6 +6,7 @@ mod mutations;
 mod network;
 mod patches;
 mod status;
+pub(crate) use status::status_shape;
 #[cfg(test)]
 mod tests;
 

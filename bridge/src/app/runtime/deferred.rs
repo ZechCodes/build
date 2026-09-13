@@ -43,6 +43,9 @@ pub(in crate::app) enum DeferredWork {
     Git(Box<DeferredGit>),
     /// One diff to render for a review surface.
     Read(Box<DeferredRead>),
+    /// A subscribe or unsubscribe: reconcile the worktree watchers against
+    /// the new coverage, then answer with the watch state that produced.
+    Watch(Box<DeferredWatch>),
 }
 
 impl DeferredWork {
@@ -69,6 +72,39 @@ impl DeferredWork {
                 }
                 DeferredOutcome::Read(read.run())
             }
+            Self::Watch(watch) => DeferredOutcome::Watch(watch.run()),
+        }
+    }
+}
+
+/// The lock-free half of `changes.subscribe` / `changes.unsubscribe`: the bus
+/// already holds the new subscription set; what is left is starting or
+/// dropping watchers, which walks trees and so runs here, and the reply,
+/// which can only say `live` or `polled` once that has happened.
+pub(in crate::app) struct DeferredWatch {
+    pub(in crate::app) watchers: Arc<crate::app::watchers::WorktreeWatchers>,
+    pub(in crate::app) bus: Arc<crate::changes::ChangeBus>,
+    pub(in crate::app) answer: WatchAnswer,
+}
+
+/// What the verb answers once the watchers are reconciled.
+pub(crate) enum WatchAnswer {
+    /// `changes.subscribe`: the subscription as stored, whose `watch` is read
+    /// off the bus after the reconcile.
+    Subscribed(crate::changes::SubscriptionSpec),
+    /// `changes.unsubscribe`: `{"ok": true}`.
+    Unsubscribed,
+}
+
+impl DeferredWatch {
+    pub(in crate::app) fn run(&self) -> Value {
+        self.watchers.reconcile(&self.bus);
+        match &self.answer {
+            WatchAnswer::Subscribed(spec) => json!({
+                "subscription_id": spec.id,
+                "watch": self.bus.watch_state(spec),
+            }),
+            WatchAnswer::Unsubscribed => json!({ "ok": true }),
         }
     }
 }
@@ -85,6 +121,8 @@ pub(in crate::app) enum DeferredOutcome {
         result: Result<Value, String>,
     },
     Read(Result<Value, String>),
+    /// The subscribe/unsubscribe reply, watchers reconciled.
+    Watch(Value),
 }
 
 /// A read whose git work needs nothing the app mutex holds: the lock resolves
@@ -435,6 +473,7 @@ impl AppState {
             DeferredOutcome::Finish { .. } => true,
             DeferredOutcome::Git { git, .. } => git.invalidates,
             DeferredOutcome::Read(_) => false,
+            DeferredOutcome::Watch(_) => false,
         };
         let queued_before = self.delivery_queue.checkpoint();
         let applied = match done {
@@ -445,6 +484,7 @@ impl AppState {
             DeferredOutcome::Git { git, result } => self.apply_git(&git, result),
             // A read writes nothing back: its answer is the whole result.
             DeferredOutcome::Read(result) => result,
+            DeferredOutcome::Watch(reply) => Ok(reply),
         };
         match &applied {
             Ok(result) => {
@@ -498,6 +538,21 @@ impl AppState {
         issue_id: Option<String>,
     ) -> Value {
         self.defer_conditional_read(subject, issue_id, None)
+    }
+
+    /// Hand a changed subscription set to the drain, which reconciles the
+    /// worktree watchers with the mutex released and answers from the result.
+    /// The roots snapshot is refreshed here so the reconcile sees the board
+    /// as this verb saw it. The `Value` returned is the placeholder
+    /// [`AppState::deferred_work`] documents.
+    pub(crate) fn defer_watch(&mut self, answer: WatchAnswer) -> Value {
+        self.watchers.set_roots(self.worktree_roots());
+        self.deferred_work = Some(DeferredWork::Watch(Box::new(DeferredWatch {
+            watchers: Arc::clone(&self.watchers),
+            bus: Arc::clone(&self.changes),
+            answer,
+        })));
+        Value::Null
     }
 
     pub(in crate::app) fn defer_conditional_read(
@@ -688,6 +743,9 @@ impl AppState {
     /// liveness. Queues only — the send happens with this mutex released.
     pub(in crate::app) fn note_board_changed(&self) {
         self.changes.note_board();
+        // An entity may have arrived with a checkout or left with one: the
+        // watchers follow the board, off this mutex.
+        self.watchers.board_moved(self.worktree_roots());
     }
 
     /// One entity's detail moved: its thread, stages, git state or diff. The

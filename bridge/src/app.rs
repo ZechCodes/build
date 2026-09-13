@@ -15,6 +15,7 @@ mod board;
 mod board_index;
 mod captures;
 mod config;
+mod facts;
 mod fs;
 mod git;
 mod issues;
@@ -26,6 +27,7 @@ mod runs;
 mod runtime;
 mod streams;
 mod transactions;
+mod watchers;
 mod worktrees;
 
 #[cfg(test)]
@@ -88,6 +90,8 @@ pub(in crate::app) use self::runtime::agents::records::{
 pub use self::runtime::deferred::OffLockGate;
 #[cfg(test)]
 pub(in crate::app) use self::runtime::deferred::OffLockGateHandle;
+/// The `changes.*` verbs' off-lock half; see [`runtime::deferred::WatchAnswer`].
+pub(crate) use self::runtime::deferred::WatchAnswer;
 pub(in crate::app) use self::runtime::deferred::{
     DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
 };
@@ -239,6 +243,8 @@ use crate::transport::{self, Frame};
 #[cfg(test)]
 use crate::worktree::{git_remote_origin, git_stdout, WorktreeManager};
 pub(crate) use crate::{encoding::b64encode, fs_scope::fenced_scope_path};
+use facts::FactsHandle;
+use watchers::WorktreeWatchers;
 
 mod conversations;
 mod qa;
@@ -413,6 +419,12 @@ pub struct AppState {
     /// changes holding this state's mutex, and the flusher SENDS them holding
     /// no lock at all. See [`crate::changes`].
     changes: Arc<ChangeBus>,
+    /// The filesystem watchers on the worktrees subscriptions cover, and the
+    /// board's worktree roots they are reconciled against. See
+    /// [`watchers::WorktreeWatchers`].
+    watchers: Arc<WorktreeWatchers>,
+    /// Where the bus's facts source finds this state once it is shared.
+    facts_handle: FactsHandle,
     /// What every frame's four durations are recorded against.
     ///
     /// It lives on the state rather than beside it because the state is what
@@ -477,6 +489,9 @@ impl AppState {
         let state_root = context.state_root.clone();
         let bridge_exe = context.bridge_exe.clone();
         let agent = build_agent(qa_agent, context);
+        let watchers = WorktreeWatchers::new();
+        let facts_handle = FactsHandle::default();
+        let changes = facts::bus_with_sources(DEFAULT_COALESCE_WINDOW, &watchers, &facts_handle);
         let mut state = AppState {
             projects: ProjectRegistry::new(),
             worktrees_root,
@@ -525,7 +540,9 @@ impl AppState {
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
             peers: SessionPeers::with_factory(Arc::new(NoPeerFactory)),
-            changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
+            changes,
+            watchers,
+            facts_handle,
             frame_clock: FrameClock::new(),
         };
         if let Some(repo_path) = repo_path {
@@ -607,16 +624,21 @@ impl AppState {
     /// can spawn pump tasks (see the `self_handle` field).
     pub fn shared(self) -> Arc<Mutex<AppState>> {
         let state = Arc::new(Mutex::new(self));
-        let changes = {
+        let (changes, watchers) = {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
-            Arc::clone(&app.changes)
+            let _ = app.facts_handle.set(Arc::downgrade(&state));
+            app.watchers.set_roots(app.worktree_roots());
+            (Arc::clone(&app.changes), Arc::clone(&app.watchers))
         };
         // The flusher runs on a task of its own and never takes this mutex —
         // that is the whole reason the bus is not a field it would have to
         // lock. A build with no runtime under it (the synchronous unit tests)
-        // gets no flusher and simply never sends.
-        ChangeBus::spawn_flusher(changes);
+        // gets no flusher and simply never sends. The watcher reconciler is
+        // the same shape: it starts watchers, which is a tree walk, so it too
+        // runs off this mutex.
+        ChangeBus::spawn_flusher(Arc::clone(&changes));
+        WorktreeWatchers::spawn_reconciler(watchers, changes);
         state
     }
 
@@ -626,12 +648,18 @@ impl AppState {
         Arc::clone(&self.changes)
     }
 
+    /// The per-worktree watchers — how the subscribe verbs and the board
+    /// reconcile which checkouts are watched.
+    pub(in crate::app) fn watchers(&self) -> Arc<WorktreeWatchers> {
+        Arc::clone(&self.watchers)
+    }
+
     /// Tests only: coalesce over a shorter window, so a push test does not have
     /// to sleep out the production one. Must precede [`AppState::shared`] —
     /// that is where the flusher takes its handle.
     #[cfg(test)]
     fn with_change_window(mut self, window: Duration) -> Self {
-        self.changes = ChangeBus::new(window);
+        self.changes = facts::bus_with_sources(window, &self.watchers, &self.facts_handle);
         self
     }
 }

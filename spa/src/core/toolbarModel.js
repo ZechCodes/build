@@ -1,11 +1,7 @@
-// The view-area toolbar's pure model: what the two selectors say, what each
-// one's menu offers, and what the right side reports.
-//
-// The toolbar names where you are standing — project, then branch or issue —
-// and each name opens the menu of its own kind: the project half lists projects,
-// the item half lists the scoped project's branches and issues. Two questions,
-// two lists; a menu that answered both at once made the same list appear behind
-// both names. Everything here is pure; core/toolbar.js renders and wires it.
+// Pure identities and menu rows for the view-area toolbar. Workspace routes
+// show one workspace switcher and directory tabs; its popup moves between the
+// scoped project's workspaces and the project list. Legacy work routes keep
+// their project selector and static item identity. core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
 

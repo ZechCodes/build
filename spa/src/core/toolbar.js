@@ -1,13 +1,11 @@
 // The view area's toolbar: where you are standing, how to go somewhere else,
 // and what the work you are standing in is doing.
 //
-// Left: the project name, then the branch or issue name. They are two words of
-// one sentence and each opens the menu of its own kind — the project name lists
-// projects, the branch-or-issue name lists that project's branches and issues,
-// with the two creates at its foot. Picking a project re-scopes and hands you
-// straight to its work list (there is no project page any more; branches and
-// issues are the only navigation targets); picking work goes there; picking a
-// create opens the one create surface (core/createWork.js) on that project.
+// Left: a workspace switcher followed immediately by that workspace's directory
+// tabs. Its popup starts with the active project's workspaces; Switch project
+// moves the same popup to the project list, and a project choice moves it back
+// after loading that project's workspaces. Legacy branch and issue links retain
+// their project selector and static item identity while those routes remain supported.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's
 // Done, say. The working-time ticker
@@ -42,9 +40,9 @@ import "../styles/shell.css";
 const SCOPE_KEY = "build.toolbar.project";
 
 let feed = { items: [], projects: [] };
-let workspaces = [];
-let workspaceProjectId = null;
+const workspacesByProject = new Map();
 let workspaceRequest = 0;
+let loadingWorkspaceProjectId = null;
 let scopedProjectId = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
@@ -122,8 +120,9 @@ async function workspaceRows(projectId, selectedWorkspaceId) {
 }
 
 function acceptWorkspaceRows(request, projectId, rows) {
-  if (request !== workspaceRequest || workspaceProjectId !== projectId) return;
-  workspaces = rows;
+  if (request !== workspaceRequest) return;
+  workspacesByProject.set(projectId, rows);
+  loadingWorkspaceProjectId = null;
   paint();
 }
 
@@ -134,11 +133,8 @@ function acceptWorkspaceRows(request, projectId, rows) {
 async function loadWorkspaces(projectId, selectedWorkspaceId = null) {
   if (!projectId || !App.call) return;
   const request = ++workspaceRequest;
-  if (workspaceProjectId !== projectId) {
-    workspaceProjectId = projectId;
-    workspaces = [];
-    paint();
-  }
+  loadingWorkspaceProjectId = projectId;
+  paint();
   try {
     acceptWorkspaceRows(request, projectId, await workspaceRows(projectId, selectedWorkspaceId));
   } catch {
@@ -151,14 +147,18 @@ async function loadWorkspaces(projectId, selectedWorkspaceId = null) {
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
 export function toolbarHtml({ project, kind, label, directories = [] }) {
-  const itemSelector = kind === "workspace"
-    ? `<span class="tb-sep">/</span>
-       <button class="tb-sel tb-item" data-select="item" type="button" aria-haspopup="menu" aria-expanded="false">
+  const identity = kind === "workspace"
+    ? `<button class="tb-sel tb-workspace" data-select="workspace" type="button" aria-haspopup="menu" aria-expanded="false">
          <span class="tb-name">${esc(label)}</span><span class="tb-caret">▾</span>
        </button>`
     : kind
-      ? `<span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${kind === "branch" ? " mono" : ""}">${esc(label)}</span></span>`
-      : "";
+      ? `<button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
+           <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
+         </button>
+         <span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${kind === "branch" ? " mono" : ""}">${esc(label)}</span></span>`
+      : `<button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
+           <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
+         </button>`;
   const directoryTabs = directories.length
     ? `<div class="tb-directories" role="tablist" aria-label="Workspace directories">${directories
         .map(
@@ -171,17 +171,17 @@ export function toolbarHtml({ project, kind, label, directories = [] }) {
        </button>`
     : "";
   return `<div class="toolbar">
-    <button class="tb-sel tb-project" data-select="project" type="button" aria-haspopup="menu" aria-expanded="false">
-      <span class="tb-name">${esc(project || "Projects")}</span><span class="tb-caret">▾</span>
-    </button>
-    ${itemSelector}
+    ${identity}
     ${directoryTabs}
     <div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>
   </div>`;
 }
 
 function identity() {
-  return toolbarIdentity(App.route, { ...feed, workspaces });
+  return toolbarIdentity(App.route, {
+    ...feed,
+    workspaces: workspacesByProject.get(App.route.projectId) || [],
+  });
 }
 
 /** Repaint the bar. `entering` says the paint follows a navigation (a route the
@@ -197,8 +197,7 @@ function paint({ entering = false } = {}) {
   const host = $("#toolbar");
   if (!host) return;
   const standing = identity();
-  // Navigating into a work item scopes the menu to its project — the toolbar
-  // reads as one sentence, so the two halves can never name different projects.
+  // Navigating into a workspace scopes its popup to that workspace's project.
   if (entering && standing.projectId) rememberScope(standing.projectId);
   const shown = {
     project: standing.project || projectNameOf(scopeProjectId()),
@@ -243,7 +242,7 @@ function paint({ entering = false } = {}) {
 
 function openWorkspaceDirectory(sourceId) {
   if (App.route.name !== "workspace" || !sourceId) return;
-  const workspace = workspaces.find((candidate) => candidate.id === App.route.workspaceId);
+  const workspace = (workspacesByProject.get(App.route.projectId) || []).find((candidate) => candidate.id === App.route.workspaceId);
   const directory = workspaceDirectoryModel(workspace, sourceId).find((candidate) => candidate.sourceId === sourceId);
   if (!directory) return;
   go({
@@ -320,6 +319,7 @@ function openJumpMenu(anchor) {
     : anchor.dataset.select === "directory"
       ? "directories"
       : "workspaces";
+  if (list === "workspaces" && App.route.name === "workspace") rememberScope(App.route.projectId);
   open = {
     ...menuShell(anchor, "tbmenu"),
     select: anchor.dataset.select,
@@ -364,8 +364,8 @@ function paintMenu() {
   });
 }
 
-/** The frame the rows sit in: the filter, and — on the work list — the scope
- *  line and the two creates. Switching lists is a different menu, so that is the
+/** The frame the rows sit in: the filter, and — on the workspace list — the
+ *  project scope and create action. Switching lists is a different menu, so that is the
  *  one thing that builds it again. */
 function paintMenuShell() {
   if (open.element.dataset.list === open.list) return;
@@ -390,14 +390,17 @@ function pickProject(element) {
   const projectId = element.dataset.project;
   rememberScope(projectId);
   showList("workspaces");
-  void loadWorkspaces(projectId);
+  const selectedWorkspaceId = App.route.name === "workspace" && App.route.projectId === projectId
+    ? App.route.workspaceId
+    : null;
+  void loadWorkspaces(projectId, selectedWorkspaceId);
   return true;
 }
 
 function pickWorkspace(element) {
   if (!element) return false;
   const selected = workspaceMenuModel({
-    workspaces,
+    workspaces: workspacesByProject.get(scopeProjectId()) || [],
     projectId: scopeProjectId(),
     workspaceId: App.route.workspaceId,
     query: open.query,
@@ -428,7 +431,7 @@ function onMenuClick(event) {
 
 function directoryMenuEntries() {
   if (App.route.name !== "workspace") return [];
-  const workspace = workspaces.find((candidate) => candidate.id === App.route.workspaceId);
+  const workspace = (workspacesByProject.get(App.route.projectId) || []).find((candidate) => candidate.id === App.route.workspaceId);
   return workspaceDirectoryModel(workspace, App.route.sourceId).map((directory) => ({
     key: `directory:${directory.sourceId}`,
     html: `<button class="mi${directory.current ? " current" : ""}" data-menu-directory="${esc(directory.sourceId)}" type="button" role="menuitemradio" aria-checked="${directory.current ? "true" : "false"}">
@@ -472,13 +475,17 @@ function projectMenuShellHtml() {
 }
 
 function workspaceMenuEntries() {
+  const projectId = scopeProjectId();
   const entries = workspaceMenuModel({
-    workspaces,
-    projectId: scopeProjectId(),
+    workspaces: workspacesByProject.get(projectId) || [],
+    projectId,
     workspaceId: App.route.workspaceId,
     query: open.query,
   });
-  if (!entries.length) return [{ key: "none", html: `<div class="tb-none dim">No workspace by that name.</div>` }];
+  if (!entries.length) {
+    const message = loadingWorkspaceProjectId === projectId ? "Loading workspaces…" : "No workspace by that name.";
+    return [{ key: "none", html: `<div class="tb-none dim">${message}</div>` }];
+  }
   return entries.map((workspace) => ({
     key: `workspace:${workspace.id}`,
     html: `<button class="mi${workspace.current ? " current" : ""}" data-workspace="${esc(workspace.id)}" type="button" role="menuitem">
@@ -494,7 +501,7 @@ function workspaceMenuShellHtml() {
       aria-label="Filter workspaces" autocomplete="off" />
     <div class="tb-group tb-scope">
       <span>${esc(scopedName)}</span>
-      <button class="tb-scope-switch" data-projects type="button">Projects</button>
+      <button class="tb-scope-switch" data-projects type="button">Switch project</button>
     </div>
     <div class="tbmenu-list"></div>
     <div class="tbmenu-foot">

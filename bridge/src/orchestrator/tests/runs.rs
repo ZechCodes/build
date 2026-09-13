@@ -665,6 +665,18 @@ async fn message_run_redirects_building_continues_and_refuses_gates() {
         .expect_err("review gate refuses messages");
     assert!(err.to_string().contains("review gate"), "{err}");
 }
+/// Every cold prompt, on every carrier, tells the agent to name its
+/// conversation first: the header wears that name in place of the harness
+/// name, and says "Starting" until it arrives.
+#[test]
+fn conversation_prompt_tells_the_agent_to_set_the_topic_first() {
+    let prompt = conversation_prompt("do the work");
+    assert!(prompt.contains("`set_topic`"), "{prompt}");
+    assert!(
+        prompt.contains("2-4 words"),
+        "the shape of a topic is stated where the tool is named: {prompt}"
+    );
+}
 #[test]
 fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
     let prompt = conversation_prompt("do the work");

@@ -125,6 +125,12 @@ pub struct Agent {
     /// never been asked to run.
     #[serde(default)]
     pub start_error: Option<String>,
+    /// The agent's own word for what this conversation is about — a 2-4 word
+    /// objective it sets over MCP (`set_topic`), which the conversation header
+    /// wears in place of the harness name. `None` until it has: the header
+    /// says "Starting" until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
 }
 
 impl Agent {
@@ -154,6 +160,7 @@ impl Agent {
             active_model: None,
             working_since: None,
             start_error: None,
+            topic: None,
         }
     }
 

@@ -31,6 +31,16 @@ export function agentTitle(agent) {
   return `${providerLabel(agent && agent.provider)} ${(agent && agent.ordinal) || 1}`;
 }
 
+/** What the header over the conversation says: the topic the agent named its
+ *  work with (`set_topic`, 2-4 words), or "Starting" until it has — flagged so
+ *  the head can shimmer the word rather than sit on it. A blank topic is no
+ *  topic. */
+export const STARTING_HEADING = "Starting";
+export function agentHeading(agent) {
+  const topic = agent && typeof agent.topic === "string" ? agent.topic.trim() : "";
+  return topic ? { text: topic, starting: false } : { text: STARTING_HEADING, starting: true };
+}
+
 /** Whether this agent has a terminal to drop into.
  *
  *  The terminal is a capability, not a guarantee: a harness that reports its own

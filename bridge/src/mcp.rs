@@ -307,6 +307,12 @@ pub enum BridgeAction {
     SearchConversation {
         query: crate::thread::ConversationQuery,
     },
+    /// Name what this conversation is about: a 2-4 word objective the header
+    /// wears in place of the harness name. Already normalized — trimmed, one
+    /// space between words — by the tool boundary.
+    SetTopic {
+        topic: String,
+    },
     /// Every project on this device. Router only.
     ListProjects,
     /// The branches and issues in flight, as a digest. Router only.
@@ -366,6 +372,7 @@ impl BridgeAction {
             BridgeAction::ReadOperationMessages { .. } => "read_unread_messages",
             BridgeAction::PostThreadMessage { .. } => "post_thread_message",
             BridgeAction::SearchConversation { .. } => "search_conversation",
+            BridgeAction::SetTopic { .. } => "set_topic",
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
             BridgeAction::ReadConversation { .. } => "read_conversation",
@@ -383,7 +390,8 @@ impl BridgeAction {
             BridgeAction::ReadUnreadMessages
             | BridgeAction::ReadOperationMessages { .. }
             | BridgeAction::PostThreadMessage { .. }
-            | BridgeAction::SearchConversation { .. } => McpSurface::Coding,
+            | BridgeAction::SearchConversation { .. }
+            | BridgeAction::SetTopic { .. } => McpSurface::Coding,
             BridgeAction::ListProjects
             | BridgeAction::ListWork
             | BridgeAction::ReadConversation { .. }
@@ -778,6 +786,16 @@ impl DoneServer {
                                     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
                                 }
                             }
+                        }, {
+                            "name": "set_topic",
+                            "description": SET_TOPIC_DESCRIPTION,
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "topic": { "type": "string", "description": "The objective, in 2-4 words. Title-case the first word, no trailing period. Examples: \"Unify prompt delivery\", \"Fix login redirect\"." }
+                                },
+                                "required": ["topic"]
+                            }
                         }]
                     }),
                 )),
@@ -843,6 +861,24 @@ impl DoneServer {
             return match conversation_query(&arguments) {
                 Ok(query) => Handled {
                     action: Some(BridgeAction::SearchConversation { query }),
+                    action_id: Some(id),
+                    ..Handled::default()
+                },
+                Err(message) => Handled {
+                    reply: Some(tool_error(id, message)),
+                    ..Handled::default()
+                },
+            };
+        }
+        if name == "set_topic" {
+            let topic = params
+                .and_then(|p| p.get("arguments"))
+                .and_then(|arguments| arguments.get("topic"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            return match normalized_topic(topic) {
+                Ok(topic) => Handled {
+                    action: Some(BridgeAction::SetTopic { topic }),
                     action_id: Some(id),
                     ..Handled::default()
                 },
@@ -1169,6 +1205,37 @@ fn error(id: Value, code: i64, message: &str) -> String {
 }
 
 /// An MCP tool result reporting success (`isError: false`).
+/// What `set_topic` says about itself on every `tools/list`. The cold prompt
+/// asks for the call; this is what is still in context when the agent makes
+/// it, so it carries the shape rule itself.
+const SET_TOPIC_DESCRIPTION: &str = "Name what this conversation is about, in 2-4 words: the objective you are setting out to achieve, not the steps. The conversation header shows it in place of the harness name, and says \"Starting\" until you call this. Call it first thing in a new conversation, and again if the objective changes.";
+
+/// The most bytes a topic may carry after normalization. Four words leave
+/// room under this; it is the guard against one enormous \"word\".
+const MAX_TOPIC_BYTES: usize = 80;
+
+/// The topic a `set_topic` call names, normalized to one space between words,
+/// or why the call is refused. Two to four words, because the header wears it
+/// where a harness name used to fit.
+fn normalized_topic(raw: &str) -> Result<String, String> {
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    if !(2..=4).contains(&words.len()) {
+        return Err(format!(
+            "topic must be an objective in 2-4 words, got {} word(s): {:?}",
+            words.len(),
+            raw.trim()
+        ));
+    }
+    let topic = words.join(" ");
+    if topic.len() > MAX_TOPIC_BYTES {
+        return Err(format!(
+            "topic must be at most {MAX_TOPIC_BYTES} bytes, got {}",
+            topic.len()
+        ));
+    }
+    Ok(topic)
+}
+
 fn tool_ok(id: Value, text: &str) -> String {
     result(
         id,
@@ -1217,12 +1284,66 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
         assert_eq!(tools[0]["name"], "read_unread_messages");
         assert_eq!(tools[1]["name"], "post_thread_message");
         assert_eq!(tools[2]["name"], "done");
         assert_eq!(tools[3]["name"], "search_conversation");
+        assert_eq!(tools[4]["name"], "set_topic");
         assert!(tools[2]["inputSchema"]["properties"]["phase"].is_object());
+    }
+
+    /// The topic is the agent's own word for what the conversation is about,
+    /// and the header wears it in place of the harness name — so it has to
+    /// be a short objective, not a sentence. Two to four words is the shape;
+    /// anything else comes back as a correctable tool error naming the rule,
+    /// never a silently truncated heading.
+    #[test]
+    fn set_topic_takes_a_two_to_four_word_objective_and_refuses_the_rest() {
+        let call = |topic: &str| {
+            server().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{{"name":"set_topic","arguments":{{"topic":{}}}}}}}"#,
+                serde_json::to_string(topic).unwrap()
+            ))
+        };
+        let h = call("  Unify   prompt delivery ");
+        assert!(
+            h.reply.is_none(),
+            "an accepted call is an action, not a reply"
+        );
+        assert_eq!(
+            h.action,
+            Some(BridgeAction::SetTopic {
+                topic: "Unify prompt delivery".to_string()
+            }),
+            "trimmed, and the spaces between words folded to one"
+        );
+        assert_eq!(
+            call("Add topic tool now").action,
+            Some(BridgeAction::SetTopic {
+                topic: "Add topic tool now".to_string()
+            })
+        );
+
+        for (topic, why) in [
+            ("", "empty"),
+            ("Refactor", "one word"),
+            ("Make the parser handle five", "five words"),
+        ] {
+            let h = call(topic);
+            assert!(h.action.is_none(), "{why}: {topic:?}");
+            let reply = parse(&h.reply.expect(why));
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                reply["result"]["isError"] == true && text.contains("2") && text.contains("4"),
+                "{why}: the refusal names the rule: {text}"
+            );
+        }
+        let missing = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"set_topic","arguments":{}}}"#,
+        );
+        assert!(missing.action.is_none());
+        assert_eq!(parse(&missing.reply.unwrap())["result"]["isError"], true);
     }
 
     /// This description outlives context compaction (it rides every
@@ -1971,6 +2092,7 @@ mod tests {
                 "post_thread_message",
                 "done",
                 "search_conversation",
+                "set_topic",
             ],
             "the coding surface is unchanged by the router's arrival"
         );

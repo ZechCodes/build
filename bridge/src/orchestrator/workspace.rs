@@ -222,6 +222,7 @@ pub(crate) fn conversation_prompt(prompt: &str) -> String {
     // an in-order reader hits the carve-out before committing to silence.
     out.push_str(
         "\n\nBuild conversation protocol:\n\
+         - First, call `set_topic` with the objective of this conversation in 2-4 words (e.g. \"Unify prompt delivery\"). The conversation header shows it and says \"Starting\" until you do. Call it again if the objective changes.\n\
          - Before acting, call `read_unread_messages` and process every unread Issue message.\n\
          - When Build says new reviewer messages are available, call `read_unread_messages`.\n\
          - If a reviewer message reads as either a question or a directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\

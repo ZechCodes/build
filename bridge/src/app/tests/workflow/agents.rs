@@ -1,6 +1,62 @@
 use super::*;
+use crate::mcp::BridgeAction;
 
 // ==== Agents: one entity, several conversations ==========================
+
+/// The conversation's topic is the agent's own word for what it is doing:
+/// set over MCP, kept on the agent record, and carried on the bubble so the
+/// header can wear it in place of the harness name. Until one is set the
+/// bubble says so with a null, which is what the client reads as "starting".
+#[test]
+fn set_topic_names_the_conversation_on_the_agents_bubble() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-topic");
+    let agent_id = primary_agent_id(&state, &run_id);
+    let bubble = |state: &mut AppState| -> Value {
+        let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+        listed["result"]["agents"][0].clone()
+    };
+    assert_eq!(
+        bubble(&mut state)["topic"],
+        Value::Null,
+        "nothing named yet, and the field is there to say so"
+    );
+
+    let set = state
+        .on_agent_mcp_action(
+            &run_id,
+            &agent_id,
+            BridgeAction::SetTopic {
+                topic: "Unify prompt delivery".to_string(),
+            },
+        )
+        .expect("the agent names its own conversation");
+    assert_eq!(set["topic"], "Unify prompt delivery");
+    assert_eq!(bubble(&mut state)["topic"], "Unify prompt delivery");
+
+    // Renamed when the objective moves on: the newest word wins.
+    state
+        .on_agent_mcp_action(
+            &run_id,
+            &agent_id,
+            BridgeAction::SetTopic {
+                topic: "Align headless carriers".to_string(),
+            },
+        )
+        .unwrap();
+    assert_eq!(bubble(&mut state)["topic"], "Align headless carriers");
+    assert_eq!(
+        state.runs[&run_id]
+            .agents
+            .by_id(&agent_id)
+            .expect("the agent")
+            .topic
+            .as_deref(),
+        Some("Align headless carriers"),
+        "kept on the record, so it survives a restart with the rest of the roster"
+    );
+}
 
 /// The rail needs to know whether an agent has a basement to offer, so the
 /// digest says it. It is a different question from `working` — one asks

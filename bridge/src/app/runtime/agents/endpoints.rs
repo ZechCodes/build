@@ -1146,6 +1146,10 @@ impl AppState {
             // opened — the only word a start that failed ever gets to say.
             "start_error": agent.start_error,
             "created_at": agent.created_at,
+            // What the agent named its conversation, for the header to wear in
+            // place of the harness name. Null until it has, which the client
+            // shows as "Starting".
+            "topic": agent.topic,
         });
         if let Some(surfaces) = tab.and_then(|tab| tab.surfaces) {
             digest["surfaces"] = surfaces;

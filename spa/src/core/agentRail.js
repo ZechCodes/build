@@ -31,6 +31,7 @@ import {
   agentIsUp,
   agentSessionAnswered,
   agentStartFailure,
+  agentHeading,
   agentTitle,
   canRemoveAgent,
   providerLabel,
@@ -42,7 +43,7 @@ import {
   selectAgentId,
   startFailuresLearned,
 } from "./agentRailModel.js";
-import { railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
+import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "./agentRailRender.js";
 import { createGitStatusTicker } from "./gitStatusTicker.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
@@ -401,7 +402,7 @@ function surfaceMenuRegionHtml(options) {
   return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
 }
 
-export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true, surfaceOptions = [] } = {}) {
+export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true, surfaceOptions = [], heading = null } = {}) {
   const removeTitle = `Remove ${who} from this branch`;
   const remove = removable
     ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
@@ -414,7 +415,7 @@ export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true
         aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`
     : "";
   return `<div class="rail-head">
-    <span class="rail-who">${esc(who)}</span>
+    ${railWhoHtml(who, heading)}
     ${tui}
     ${surfaceMenuRegionHtml(surfaceOptions)}
     ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
@@ -862,6 +863,10 @@ export function mountAgentRail(host, context) {
     if (!panel) return;
     const agent = agentInFocus();
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    // The head wears the topic the agent named its work with, and "Starting"
+    // until it has; the harness name stays as the hover title and the remove
+    // button's wording.
+    const heading = agent ? agentHeading(agent) : { text: who, starting: false };
     const settled = settledAgentInFocus();
     const removable = canRemoveAgent({
       agents: visibleAgents(),
@@ -878,7 +883,7 @@ export function mountAgentRail(host, context) {
     const shownMode = shownPanelMode();
     // The head is rewritten only when what it SAYS changed: the name, whether
     // this agent can be taken back off, and whether it has a basement.
-    const wantedHead = `${who}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
+    const wantedHead = `${who}:${heading.text}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
@@ -886,7 +891,7 @@ export function mountAgentRail(host, context) {
       disposeTui();
       disposeSurfaces();
       closeSurfaceMenu?.();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${railViewerHostHtml()}${rememberedConversationIsLoading() ? "" : composerRowHtml()}`
@@ -910,7 +915,8 @@ export function mountAgentRail(host, context) {
       }
     } else if (panel.dataset.head !== wantedHead) {
       // The name changed under the panel (an agent whose provider was picked
-      // after the fact), or the last agent beside this one went away. Nothing
+      // after the fact, or one that just named its topic), or the last agent
+      // beside this one went away. Nothing
       // else in the head can move on a poll, and rewriting it every tick would
       // eat a press that landed mid-repaint.
       closeSurfaceMenu?.();
@@ -918,6 +924,7 @@ export function mountAgentRail(host, context) {
         removable,
         hasTerminal,
         surfaceOptions: surfaceMenuOptionsInFocus(),
+        heading,
       });
       panel.dataset.head = wantedHead;
       wireHead(panel);

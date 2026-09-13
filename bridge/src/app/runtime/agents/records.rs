@@ -440,6 +440,25 @@ impl AppState {
         });
     }
 
+    /// What the agent says its conversation is about, written onto its record
+    /// and answered back so the tool result confirms what the header now wears.
+    pub(in crate::app) fn set_agent_topic(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        topic: &str,
+    ) -> Result<serde_json::Value, String> {
+        let mut found = false;
+        self.edit_agent_record("set_topic", owner, agent_id, |agent| {
+            found = true;
+            agent.topic = Some(topic.to_string());
+        });
+        if !found {
+            return Err(format!("agent {agent_id} is not on {owner}"));
+        }
+        Ok(serde_json::json!({ "topic": topic }))
+    }
+
     pub(in crate::app) fn record_agent_active_model(
         &mut self,
         owner: &str,

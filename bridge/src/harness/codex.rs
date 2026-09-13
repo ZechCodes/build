@@ -414,6 +414,7 @@ fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
             "post_thread_message",
             "done",
             "search_conversation",
+            "set_topic",
         ],
         crate::mcp::McpSurface::Router => vec![
             "list_projects",

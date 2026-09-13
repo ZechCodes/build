@@ -313,6 +313,12 @@ impl AppState {
         if let BridgeAction::SearchConversation { query } = &action {
             return self.search_agent_conversations(entity_id, agent_id, query);
         }
+        // The topic is the AGENT's, not the conversation's: two agents sharing
+        // an Issue's thread each name their own work, and the record is where
+        // the bubble reads it from.
+        if let BridgeAction::SetTopic { topic } = &action {
+            return self.set_agent_topic(entity_id, agent_id, topic);
+        }
         if let BridgeAction::PostThreadMessage { links, .. } = &action {
             self.validate_thread_links_for_owner(entity_id, links)?;
         }

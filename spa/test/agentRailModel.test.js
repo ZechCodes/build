@@ -8,6 +8,7 @@ import {
   agentIsUp,
   agentSessionAnswered,
   agentSessionIsLive,
+  agentHeading,
   agentPattern,
   agentTitle,
   bubbleTip,
@@ -39,6 +40,20 @@ const agent = (over = {}) => ({
   unread_reason: null,
   working: false,
   ...over,
+});
+
+describe("what the conversation is called", () => {
+  it("wears the topic the agent set, and says it is starting until then", () => {
+    expect(agentHeading(agent())).toEqual({ text: "Starting", starting: true });
+    expect(agentHeading(agent({ topic: "Unify prompt delivery" }))).toEqual({
+      text: "Unify prompt delivery",
+      starting: false,
+    });
+    // A blank topic is no topic: the bridge never sends one, but a client
+    // that trusted the field's presence would show an empty header.
+    expect(agentHeading(agent({ topic: "   " }))).toEqual({ text: "Starting", starting: true });
+    expect(agentHeading(null)).toEqual({ text: "Starting", starting: true });
+  });
 });
 
 describe("who an agent is", () => {

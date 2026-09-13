@@ -176,3 +176,63 @@ fn the_internal_refusal_census_can_only_shrink() {
         sentences.join("\n")
     );
 }
+
+/// A `git.*` verb answers through the deferred drain, so the check inside
+/// `api::v1::answer` sees only the `Value::Null` placeholder. The declared
+/// result type travels with the job instead, and the drain holds the real
+/// value to it: an implementation whose shape has drifted is this bridge's
+/// bug, and reads as `internal`.
+#[test]
+fn a_deferred_git_verb_answering_the_wrong_shape_is_reported_as_internal() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = project_id_of(&mut state);
+    let params = json!({ "project_id": project_id });
+
+    let (answered, deferred) = state.dispatch_deferring("git.status", &params);
+    assert_eq!(
+        answered.expect("git.status resolved under the lock"),
+        Value::Null,
+        "the deferral placeholder"
+    );
+    let mut done = deferred.expect("git.status defers its git").run();
+    done.answer_instead(json!({ "branch": 7 }));
+
+    let refused = crate::api::ApiError::classify(
+        state
+            .apply_deferred("git.status", &params, done)
+            .expect_err("a wrong-shaped deferred reply is not published"),
+    );
+    assert_eq!(refused.code(), "internal");
+    assert!(
+        refused.message().starts_with("git.status: "),
+        "the refusal names the method: {}",
+        refused.message()
+    );
+    assert!(
+        refused.message().contains("GitStatusResult"),
+        "the refusal carries what serde refused, naming the declared type: {}",
+        refused.message()
+    );
+}
+
+#[test]
+fn a_deferred_git_verb_answering_its_declared_shape_is_published() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = project_id_of(&mut state);
+    let params = json!({ "project_id": project_id });
+
+    let (_, deferred) = state.dispatch_deferring("git.status", &params);
+    let done = deferred.expect("git.status defers its git").run();
+
+    let raw = state.dispatch("git.status", &params);
+    println!(
+        "RAW {}",
+        serde_json::to_string_pretty(&raw.unwrap()).unwrap()
+    );
+    let published = state
+        .apply_deferred("git.status", &params, done)
+        .expect("the implementation's own shape passes its declared type");
+    assert_eq!(published["branch"], "main", "{published}");
+}

@@ -48,6 +48,10 @@ pub struct Handler {
     call: fn(&mut AppState, &Value) -> Result<Value, ApiError>,
     parse_params: fn(&Value) -> Result<(), String>,
     round_trip_result: fn(&Value) -> Result<Value, String>,
+    /// The verb's declared result type, as a check a value must pass. Handed
+    /// to the drain by [`dispatch`] for a verb that deferred its work, whose
+    /// real answer this facade never sees.
+    check_result: crate::app::DeferredResultCheck,
 }
 
 impl Handler {
@@ -79,7 +83,8 @@ macro_rules! v1_methods {
 /// Build a [`Handler`] from a typed handler function, naming the params it
 /// takes and the result its fixture holds. The result named is the wire shape
 /// — for a verb that answers through the deferred drain, the handler still
-/// names it, and [`Answer`] carries the placeholder.
+/// names it, [`Answer`] carries the placeholder, and the drain holds the real
+/// value to the same type ([`Handler::check_result`]).
 #[macro_export]
 macro_rules! v1_method {
     ($name:literal, $handler:path, $params:ty, $result:ty) => {
@@ -91,6 +96,7 @@ macro_rules! v1_method {
                 },
                 $crate::api::v1::parse_as::<$params>,
                 $crate::api::v1::round_trip_as::<$result>,
+                $crate::api::v1::check_as::<$result>,
             ),
         )
     };
@@ -102,11 +108,13 @@ impl Handler {
         call: fn(&mut AppState, &Value) -> Result<Value, ApiError>,
         parse_params: fn(&Value) -> Result<(), String>,
         round_trip_result: fn(&Value) -> Result<Value, String>,
+        check_result: crate::app::DeferredResultCheck,
     ) -> Handler {
         Handler {
             call,
             parse_params,
             round_trip_result,
+            check_result,
         }
     }
 }
@@ -116,14 +124,21 @@ impl Handler {
 ///
 /// The implementations under `app/` predate the facade and answer in
 /// [`Value`]; rewriting them to build `R` would rewrite the git, so `R` is
-/// carried as a type parameter instead. It is not decoration: the contract
-/// test holds every fixture to it, and in test builds [`answer`] checks the
-/// value the implementation actually produced against it too.
+/// carried as a type parameter instead. It is not decoration, and nothing a
+/// verb answers escapes it:
 ///
-/// A [`Value::Null`] is the deferral placeholder `AppState::deferred_work`
-/// documents — the handler resolved the request under the lock and queued the
-/// work; the drain replaces this with the real result, so there is nothing
-/// here to check.
+/// - the contract test holds every fixture to it;
+/// - in test builds [`answer`] checks the value the implementation produced
+///   against it, here, where the handler answered directly;
+/// - a [`Value::Null`] is the deferral placeholder `AppState::deferred_work`
+///   documents — the handler resolved the request under the lock and queued
+///   the work, and the real value only exists after the mutex is released.
+///   There is nothing to check HERE, so [`dispatch`] hands the check
+///   ([`Handler::check_result`]) to the drain with the job, and
+///   `AppState::apply_deferred` runs it on the value it is about to publish.
+///   That is every `git.*` verb and every diff read, in release builds as
+///   well as test ones; a mismatch is `internal`, naming the method and what
+///   serde refused.
 pub struct Answer<R> {
     value: Value,
     shape: PhantomData<R>,
@@ -194,6 +209,15 @@ pub fn parse_as<P: DeserializeOwned>(params: &Value) -> Result<(), String> {
         .map_err(|error| error.message().to_string())
 }
 
+/// The verb's declared result type as a check: does this value parse as `R`?
+/// What the drain holds a deferred reply to.
+#[doc(hidden)]
+pub fn check_as<R: DeserializeOwned>(result: &Value) -> Result<(), String> {
+    serde_json::from_value::<R>(result.clone())
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 #[doc(hidden)]
 pub fn round_trip_as<R: DeserializeOwned + Serialize>(result: &Value) -> Result<Value, String> {
     let parsed: R = serde_json::from_value(result.clone()).map_err(|e| e.to_string())?;
@@ -237,6 +261,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
                         handler.call,
                         handler.parse_params,
                         handler.round_trip_result,
+                        handler.check_result,
                     ),
                 )
             })
@@ -261,7 +286,12 @@ pub fn dispatch(
     params: &Value,
 ) -> Option<Result<Value, ApiError>> {
     let handler = registry().get(method)?;
-    Some((handler.call)(app, params))
+    let answered = (handler.call)(app, params);
+    // A verb that handed its git to the drain answered `Value::Null` here, so
+    // the check in `answer` had nothing to look at. Send the declared type
+    // along with the work instead: it is checked when the real value lands.
+    app.expect_deferred_result(handler.check_result);
+    Some(answered)
 }
 
 /// What every family's unit tests hold their fixtures to. The contract test

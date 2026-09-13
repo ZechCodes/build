@@ -86,6 +86,9 @@ pub(in crate::app) use self::runtime::agents::endpoints::{
 pub(in crate::app) use self::runtime::agents::records::{
     record_activity, PumpWake, SelfReport, NO_ANSWER_SESSION_ENDED, SESSION_DIED_SUMMARY,
 };
+/// How a deferred reply is held to its verb's declared result type; see
+/// [`runtime::deferred::DeferredResultCheck`].
+pub(crate) use self::runtime::deferred::DeferredResultCheck;
 #[cfg(test)]
 pub use self::runtime::deferred::OffLockGate;
 #[cfg(test)]
@@ -93,7 +96,7 @@ pub(in crate::app) use self::runtime::deferred::OffLockGateHandle;
 /// The `changes.*` verbs' off-lock half; see [`runtime::deferred::WatchAnswer`].
 pub(crate) use self::runtime::deferred::WatchAnswer;
 pub(in crate::app) use self::runtime::deferred::{
-    DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
+    DeferredJob, DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
 };
 pub(in crate::app) use self::runtime::delivery::preflight::{
     chosen_option_id, deliver, NEW_THREAD_MESSAGES_PROMPT, WORKING_INDICATOR_NOTICE,
@@ -337,6 +340,11 @@ pub struct AppState {
     /// seconds; every other frame, every terminal pump and the relay's own
     /// read loop need this mutex while they run.
     deferred_work: Option<DeferredWork>,
+    /// The result type `api/v1` declares for the verb that filled
+    /// [`AppState::deferred_work`], as a check the published value must pass.
+    /// Set by [`AppState::expect_deferred_result`] and taken with the work it
+    /// belongs to; a verb the facade does not serve leaves it `None`.
+    deferred_result_check: Option<DeferredResultCheck>,
     /// Rows a lifecycle verb has claimed and not yet settled: the board's
     /// carrier for a checkout being cut or discarded right now, and the claim
     /// that keeps a second verb off the same name, branch or checkout while its
@@ -521,6 +529,7 @@ impl AppState {
             #[cfg(test)]
             off_lock_project_list_gate: None,
             deferred_work: None,
+            deferred_result_check: None,
             pending_rows: Vec::new(),
             finishing_worktrees: std::collections::HashSet::new(),
             #[cfg(test)]

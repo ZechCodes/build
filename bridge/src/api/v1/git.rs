@@ -310,9 +310,11 @@ pub struct StatusFile {
     pub index_status: String,
     pub worktree_status: String,
     pub content_key: String,
-    /// Absent for a path that no longer exists in the checkout.
+    /// Last modification, milliseconds since the epoch — what the SPA's
+    /// relative "edited" label counts from. Absent for a path that no longer
+    /// exists in the checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edited_at: Option<String>,
+    pub edited_at: Option<u64>,
     pub added: u64,
     pub deleted: u64,
     pub binary: bool,
@@ -332,8 +334,14 @@ pub struct StatusPayload {
     pub repo_state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
-    pub ahead: u64,
-    pub behind: u64,
+    /// Commits this branch holds that its upstream does not, and the other
+    /// way round. Both are absent — the implementation writes `null` — when
+    /// the branch tracks nothing: there is no count, and zero would read as
+    /// "level with a remote" to a client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind: Option<u64>,
     pub stash_count: u64,
     pub files: Vec<StatusFile>,
     pub files_truncated: bool,
@@ -500,8 +508,9 @@ pub struct FsFileResult {
     pub revision: Option<String>,
 }
 
-/// A modification time per changed path that still exists in the checkout.
-pub type FileEditedAt = BTreeMap<String, String>;
+/// A modification time per changed path that still exists in the checkout,
+/// in milliseconds since the epoch (see [`StatusFile::edited_at`]).
+pub type FileEditedAt = BTreeMap<String, u64>;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectDiffResult {

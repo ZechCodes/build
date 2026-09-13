@@ -48,6 +48,56 @@ pub(in crate::app) enum DeferredWork {
     Watch(Box<DeferredWatch>),
 }
 
+/// How the drain holds a deferred reply to the result type `api/v1` declares
+/// for the verb that deferred it. Built from `serde_json::from_value::<R>` at
+/// dispatch time, when `R` is still known.
+pub(crate) type DeferredResultCheck = fn(&Value) -> Result<(), String>;
+
+/// One verb's deferred work, with the type check its answer owes.
+///
+/// The check rides ALONG with the work rather than being looked up when the
+/// reply lands: the app mutex is released while the work runs, and by then
+/// the state carries whatever the next frame put on it.
+pub(in crate::app) struct DeferredJob {
+    work: DeferredWork,
+    check: Option<DeferredResultCheck>,
+}
+
+impl DeferredJob {
+    /// The lock-free phase, keeping the check for the write-back.
+    pub(in crate::app) fn run(self) -> DeferredDone {
+        DeferredDone {
+            outcome: self.work.run(),
+            check: self.check,
+        }
+    }
+}
+
+/// What [`DeferredJob::run`] brought back: the outcome to write down, and the
+/// check the published value must pass.
+pub(in crate::app) struct DeferredDone {
+    outcome: DeferredOutcome,
+    check: Option<DeferredResultCheck>,
+}
+
+#[cfg(test)]
+impl DeferredDone {
+    /// Answer something else than the implementation did — how a test stands
+    /// in for an implementation whose shape has drifted from the type
+    /// `api/v1` declares for it.
+    pub(in crate::app) fn answer_instead(&mut self, value: Value) {
+        match &mut self.outcome {
+            DeferredOutcome::Git { result, .. } | DeferredOutcome::Read(result) => {
+                *result = Ok(value);
+            }
+            DeferredOutcome::Watch(reply) => *reply = value,
+            DeferredOutcome::Lifecycle(_) | DeferredOutcome::Finish { .. } => {
+                panic!("only a git verb, a read or a watch answers a value of its own")
+            }
+        }
+    }
+}
+
 impl DeferredWork {
     /// The lock-free phase. Consumes the work so nothing can run it twice.
     pub(in crate::app) fn run(self) -> DeferredOutcome {
@@ -436,13 +486,13 @@ impl AppState {
         &mut self,
         method: &str,
         params: &Value,
-    ) -> (Result<Value, ApiError>, Option<DeferredWork>) {
+    ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
         let outcome = self.route(method, params);
         if outcome.is_err() {
             self.drop_turns_queued_since(queued_before);
         }
-        match self.deferred_work.take() {
+        match self.take_deferred() {
             // Nothing is settled until the git work returns, so the stamp waits
             // for `apply_deferred` too.
             Some(deferred) => (outcome, Some(deferred)),
@@ -462,8 +512,12 @@ impl AppState {
         &mut self,
         method: &str,
         params: &Value,
-        done: DeferredOutcome,
+        done: DeferredDone,
     ) -> Result<Value, String> {
+        let DeferredDone {
+            outcome: done,
+            check,
+        } = done;
         // Whether the git that just ran off-lock CHANGED anything. A read
         // deferred its work to keep the mutex free and writes nothing back, so
         // nothing about it is worth telling a browser; a mutating git verb
@@ -501,7 +555,51 @@ impl AppState {
             }
             Err(_) => self.drop_turns_queued_since(queued_before),
         }
-        applied
+        // LAST, and deliberately after the write-back: the git ran and the
+        // state it moved is written down whatever shape the value took, so
+        // only the reply is refused. A mismatch is this bridge's own bug —
+        // an implementation that drifted from the type `api/v1` declares for
+        // its verb — and reads as `internal` to the client.
+        Self::checked_reply(method, check, applied)
+    }
+
+    /// Hold a deferred reply to the result type its verb declares. Runs in
+    /// release builds too: it is one deserialise per deferred reply, and the
+    /// verbs that answer this way — every `git.*` and every diff read — are
+    /// exactly the ones the facade's own check never sees.
+    fn checked_reply(
+        method: &str,
+        check: Option<DeferredResultCheck>,
+        applied: Result<Value, String>,
+    ) -> Result<Value, String> {
+        let (Some(check), Ok(result)) = (check, &applied) else {
+            return applied;
+        };
+        match check(result) {
+            Ok(()) => applied,
+            Err(error) => Err(format!(
+                "{method}: the deferred reply does not match the type api/v1 declares for it: {error}"
+            )),
+        }
+    }
+
+    /// Take the work a verb deferred, with the type check `api/v1` attached
+    /// to it. Any check left behind by a verb that did NOT defer goes with
+    /// it, so nothing can be checked against the wrong verb's type.
+    pub(in crate::app) fn take_deferred(&mut self) -> Option<DeferredJob> {
+        let check = self.deferred_result_check.take();
+        let work = self.deferred_work.take()?;
+        Some(DeferredJob { work, check })
+    }
+
+    /// Name the result type the verb just dispatched declares, for the work
+    /// it deferred. Called by [`crate::api::v1::dispatch`] the moment the
+    /// handler returns, while `R` is still known; a verb that deferred
+    /// nothing has nothing to check.
+    pub(crate) fn expect_deferred_result(&mut self, check: DeferredResultCheck) {
+        if self.deferred_work.is_some() {
+            self.deferred_result_check = Some(check);
+        }
     }
 
     /// Forget what a failed request queued for an agent. A turn is not

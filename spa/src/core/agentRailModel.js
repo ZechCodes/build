@@ -148,7 +148,7 @@ export function bubbleTip(agent) {
 const supportsMultipleAgents = (kind) => kind === "branch" || kind === "workspace";
 const addAgentTitle = (kind) => `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
 
-export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true } = {}) {
+export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false } = {}) {
   if (!agents.length) {
     return [
       {
@@ -169,7 +169,7 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch", c
     label: "",
     pattern: agentPattern(agent.ordinal),
     title: bubbleTip(agent),
-    active: agent.id === selectedId,
+    active: !addingAgent && agent.id === selectedId,
     unread: agent.unread_count || 0,
     working: !!agent.working,
     live: agentSessionIsLive(agent),
@@ -184,7 +184,7 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch", c
       label: "+",
       pattern: null,
       title: addAgentTitle(kind),
-      active: false,
+      active: addingAgent,
       unread: 0,
       working: false,
     });
@@ -350,7 +350,7 @@ export function railEntity(payload, kind = "branch") {
       primary: false,
       adoptable: false,
       canAdd: !!entityId && agents.length > 0,
-      chatCapable: !!entityId,
+      chatCapable: true,
       executionContext: row.execution_context || null,
       agents,
       thread: (row.run && row.run.thread) || row.thread || null,

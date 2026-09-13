@@ -61,17 +61,18 @@ afterEach(() => {
 });
 
 describe("the inbox head", () => {
-  it("keeps global branding outside the persistent rail content", () => {
+  it("keeps the global inbox control outside the persistent rail content", () => {
     const head = document.querySelector(".inbox-head");
     const order = [...head.children].map((child) => child.id || child.className);
     expect(order).toEqual(["inbox-views", "inbox-new-project", "inbox-collapse"]);
-    expect(document.querySelector("#global-brand #inbox-open")).toBeTruthy();
+    expect(document.querySelector("#global-controls #inbox-open")).toBeTruthy();
     expect(document.getElementById("inbox-new-project").textContent).toContain("New project");
     expect(document.getElementById("inbox-collapse").querySelector("svg")).toBeTruthy();
   });
 
-  it("names the app with an uppercase B", () => {
-    expect(document.querySelector("#global-brand .logo").textContent).toBe("Build");
+  it("does not render global branding", () => {
+    expect(document.querySelector("#global-controls .logo")).toBeNull();
+    expect(document.querySelector("#global-controls .brand-mark")).toBeNull();
   });
 });
 

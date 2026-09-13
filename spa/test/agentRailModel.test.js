@@ -165,6 +165,14 @@ describe("the bubble strip", () => {
     expect(types("issue")).not.toContain("add");
   });
 
+  it("marks the add bubble as the open conversation", () => {
+    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "workspace", addingAgent: true });
+    expect(bubbles.map((bubble) => [bubble.type, bubble.active])).toEqual([
+      ["agent", false],
+      ["add", true],
+    ]);
+  });
+
   it("shows one ghost where no agent has been born yet, and nothing to add to", () => {
     const bubbles = railBubbles({ agents: [], selectedId: null, kind: "branch" });
     expect(bubbles.map((b) => b.type)).toEqual(["ghost"]);

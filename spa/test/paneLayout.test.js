@@ -1059,13 +1059,11 @@ describe("the view column's seam with the agent rail", () => {
 });
 
 describe("the collapsed toolbar's clearance", () => {
-  // The reviewer's screenshots: docked, "Build" sits 8px from the toggle;
-  // collapsed, the project name sat far from the same toggle. One token for
-  // the toggle's width and a clearance derived from it keep the two gaps the
-  // same — whatever is right of the toggle always starts one head-gap away.
-  it("derives the clearance from the toggle, so both states share one gap", () => {
+  // The clearance accounts for the toggle's left offset, width, and the gap
+  // before toolbar content without reserving room for removed branding.
+  it("derives a compact clearance from the toggle", () => {
     expect(strippedSource).toMatch(/--inbox-toggle:28px/);
-    expect(strippedSource).toMatch(/--inbox-open-clear:calc\(148px \+ env\(safe-area-inset-left, 0px\)\)/);
+    expect(strippedSource).toMatch(/--inbox-open-clear:calc\(48px \+ env\(safe-area-inset-left, 0px\)\)/);
     expect(strippedSource).toMatch(/\.toolbar \{[^}]*transition:padding-left 240ms cubic-bezier\(\.2,\.8,\.2,1\)/);
     // Both toggles wear the width the clearance is derived from…
     const toggles = cssRules().find((rule) => rule.selector.includes("#inbox-open") && rule.selector.includes("#inbox-collapse"));

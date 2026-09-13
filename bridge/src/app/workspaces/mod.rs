@@ -1,5 +1,5 @@
 use crate::app::git::deferred::DeferredGitWork;
-use crate::app::{require_str, AppState, DeferredGit, DeferredWork};
+use crate::app::{model_choice_from, require_str, AppState, DeferredGit, DeferredWork};
 use crate::isolation::Isolation;
 use crate::workspace::{Workspace, WorkspaceDirectory, WorkspaceRegistry, WorkspaceSource};
 use crate::worktree::{copy_directory_with_rift_root, WorktreeManager};
@@ -94,6 +94,57 @@ impl DeferredGitWork for WorkspaceFinishWork {
 }
 
 impl AppState {
+    /// Ensure this exact workspace root has an entity for conversations and
+    /// agents. Unlike `run.adopt`, this never chooses a source checkout or
+    /// writes Git metadata; multi-source and ordinary-directory workspaces are
+    /// represented by their container root.
+    pub(in crate::app) fn workspace_ensure_conversation(
+        &mut self,
+        params: &Value,
+    ) -> Result<Value, String> {
+        let workspace_id = require_str(params, "workspace_id")?;
+        let workspace = self
+            .workspaces
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        if workspace.status != crate::workspace::WorkspaceStatus::Ready {
+            return Err(format!(
+                "workspace.ensure_conversation: workspace is {:?}",
+                workspace.status
+            )
+            .to_lowercase());
+        }
+        if let Some(run_id) = self.workspace_conversation_owner(&workspace) {
+            return Ok(json!({
+                "workspace_id": workspace_id,
+                "entity_id": run_id,
+                "run_id": run_id,
+            }));
+        }
+
+        let model_choice = model_choice_from(params, self.default_harness)?;
+        let run_id = format!("run-{}", uuid::Uuid::new_v4());
+        let active = crate::orchestrator::ActiveRun::workspace_conversation(
+            crate::run::RunId::new(&run_id),
+            workspace.name,
+            workspace.root,
+            model_choice,
+        );
+        self.projects
+            .bind_entity(run_id.clone(), workspace.project_id);
+        if let Err(error) = self.finish_run_mutation(run_id.clone(), active) {
+            self.runs.remove(&run_id);
+            self.forget_run(&run_id);
+            return Err(error);
+        }
+        Ok(json!({
+            "workspace_id": workspace_id,
+            "entity_id": run_id,
+            "run_id": run_id,
+        }))
+    }
+
     pub(in crate::app) fn workspace_list(&mut self, params: &Value) -> Result<Value, String> {
         self.adopt_legacy_workspaces();
         self.workspaces.refresh_local_capabilities();
@@ -306,6 +357,17 @@ impl AppState {
             .and_then(Value::as_str);
         let branch = params.get("branch").and_then(Value::as_str);
         let project_id = params.get("project_id").and_then(Value::as_str);
+        let owned_root = direct.and_then(|run_id| {
+            self.runs.get(run_id).map(|run| {
+                (
+                    self.projects
+                        .project_id_of(run_id)
+                        .unwrap_or_default()
+                        .to_string(),
+                    run.worktree.path.clone(),
+                )
+            })
+        });
         let workspace_id = self
             .workspaces
             .list(project_id)
@@ -317,6 +379,8 @@ impl AppState {
                             .directories
                             .iter()
                             .any(|directory| directory.id == id)
+                }) || owned_root.as_ref().is_some_and(|(owner_project_id, root)| {
+                    workspace.project_id == *owner_project_id && same_path(&workspace.root, root)
                 }) || branch.is_some_and(|branch| {
                     workspace
                         .directories
@@ -400,9 +464,26 @@ impl AppState {
             self.workspaces
                 .adopt_root(&project_id, id, name, path, source_id, is_git);
         }
+        // A durable workspace may use a run-shaped entity solely as its
+        // conversation owner. Such owners deliberately have no Git base branch;
+        // their root is already represented by the manifest, so do not also
+        // import them as legacy one-directory workspaces. Real Git adoptions
+        // retain their base branch and their run-id workspace compatibility.
+        let workspace_roots = self
+            .workspaces
+            .list(None)
+            .into_iter()
+            .map(|workspace| workspace.root.clone())
+            .collect::<Vec<_>>();
         let runs = self
             .runs
             .values()
+            .filter(|run| {
+                !run.worktree.base_branch.is_empty()
+                    || !workspace_roots
+                        .iter()
+                        .any(|root| same_path(root, &run.worktree.path))
+            })
             .map(|run| {
                 let project_id = self
                     .projects

@@ -495,6 +495,212 @@ fn mixed_project_workspace_isolates_git_and_plain_sources() {
     assert_workspace_has_no_agents(&mut state, workspace_id);
 }
 
+#[test]
+fn workspace_conversation_owns_the_exact_multi_source_root_and_is_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "api");
+    let plain = tmp.path().join("assets");
+    std::fs::create_dir(&plain).unwrap();
+    std::fs::write(plain.join("logo.txt"), "asset\n").unwrap();
+    let mut state = app(tmp.path());
+    let project_id = create_mixed_project(&mut state, &repo, &plain);
+    let workspace = create_workspace(&mut state, &project_id, "conversation");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+
+    let first = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    let second = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(first["ok"], true, "{first:?}");
+    assert_eq!(second["result"], first["result"], "{second:?}");
+    let run_id = first["result"]["run_id"].as_str().unwrap();
+    assert_eq!(state.runs.len(), 1);
+    assert_eq!(
+        state.runs[run_id].worktree.path,
+        PathBuf::from(workspace["root"].as_str().unwrap())
+    );
+    assert_ne!(
+        state.runs[run_id].worktree.path,
+        PathBuf::from(directory(&workspace, "source-1")["path"].as_str().unwrap())
+    );
+    assert_ne!(
+        state.runs[run_id].worktree.path,
+        PathBuf::from(directory(&workspace, "source-2")["path"].as_str().unwrap())
+    );
+
+    let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(detail["result"]["entity_id"], run_id);
+    assert_eq!(detail["result"]["agents"], json!([]));
+    let added = state.handle(req("agent.add", json!({"entity_id": run_id})));
+    assert_eq!(added["ok"], true, "{added:?}");
+    assert_eq!(
+        state.entity_agent_root(run_id).unwrap(),
+        AppState::canonical_root(Path::new(workspace["root"].as_str().unwrap()))
+    );
+}
+
+#[test]
+fn workspace_conversation_survives_restart_without_adding_a_legacy_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "api");
+    let plain = tmp.path().join("assets");
+    std::fs::create_dir(&plain).unwrap();
+    let config = tmp.path().join("config.json");
+    let worktrees = tmp.path().join("worktrees");
+    let context =
+        || HarnessContext::resolved(tmp.path().join("mcp.sock"), tmp.path().to_path_buf()).unwrap();
+    let (workspace_id, run_id, project_id) = {
+        let mut state = AppState::new_unrooted_configured(&worktrees, "main", true, context())
+            .with_config(&config)
+            .unwrap()
+            .with_task_store(tmp.path().join("store"))
+            .unwrap();
+        let project_id = create_mixed_project(&mut state, &repo, &plain);
+        let workspace = create_workspace(&mut state, &project_id, "durable-chat");
+        let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+        let ensured = state.handle(req(
+            "workspace.ensure_conversation",
+            json!({"workspace_id": workspace_id}),
+        ));
+        assert_eq!(ensured["ok"], true, "{ensured:?}");
+        (
+            workspace_id,
+            ensured["result"]["run_id"].as_str().unwrap().to_string(),
+            project_id,
+        )
+    };
+
+    let mut restarted = AppState::new_unrooted_configured(&worktrees, "main", true, context())
+        .with_config(&config)
+        .unwrap()
+        .with_task_store(tmp.path().join("store"))
+        .unwrap();
+    let detail = restarted.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(detail["result"]["run_id"], run_id, "{detail:?}");
+    let ensured = restarted.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(ensured["result"]["run_id"], run_id, "{ensured:?}");
+    let listed = restarted.handle(req("workspace.list", json!({"project_id": project_id})));
+    let root = detail["result"]["root"].as_str().unwrap();
+    let same_root = listed["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|workspace| workspace["root"] == root)
+        .collect::<Vec<_>>();
+    assert_eq!(same_root.len(), 1, "{listed:?}");
+    assert_eq!(same_root[0]["workspace_id"], workspace_id);
+    assert_eq!(same_root[0]["directories"].as_array().unwrap().len(), 2);
+    assert!(restarted.workspaces.get(&workspace_id).unwrap().managed);
+    assert_eq!(restarted.runs.len(), 1);
+}
+
+#[test]
+fn workspace_conversation_persistence_failure_leaves_no_owner_and_can_retry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "repo");
+    let context =
+        HarnessContext::resolved(tmp.path().join("mcp.sock"), tmp.path().to_path_buf()).unwrap();
+    let mut state =
+        AppState::new_unrooted_configured(tmp.path().join("worktrees"), "main", true, context)
+            .with_task_store(tmp.path().join("store"))
+            .unwrap();
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "retry-chat");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    state.store.as_ref().unwrap().fail_next_write();
+
+    let failed = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(failed["ok"], false, "{failed:?}");
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .contains("injected store failure"));
+    assert!(state.runs.is_empty());
+    let unowned = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(unowned["result"]["entity_id"], Value::Null, "{unowned:?}");
+
+    let retried = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(retried["ok"], true, "{retried:?}");
+    assert_eq!(state.runs.len(), 1);
+}
+
+#[test]
+fn workspace_conversation_rejects_workspaces_that_are_not_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "repo");
+    let mut state = app(tmp.path());
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "finished");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    let finished = state.handle(req(
+        "workspace.finish",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+
+    let refused = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(refused["error"].as_str().unwrap().contains("finished"));
+    assert!(state.runs.is_empty());
+}
+
+#[test]
+fn legacy_run_finish_routes_a_workspace_conversation_owner_to_its_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "repo");
+    let mut state = app(tmp.path());
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "finish-by-owner");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap();
+
+    let finished = state.handle(req("run.finish", json!({"run_id": run_id})));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    assert_eq!(finished["result"]["complete"], true, "{finished:?}");
+    let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(detail["result"]["status"], "finished", "{detail:?}");
+}
+
+#[test]
+fn legacy_primary_adoption_still_has_its_run_id_workspace_route() {
+    let (tmp, repo) = init_repo();
+    let mut state = qa_state(&repo, tmp.path());
+    let project_id = state.project_at(0).id.clone();
+    let adopted = state.handle(req(
+        "run.adopt",
+        json!({"project_id": project_id, "primary": true}),
+    ));
+    assert_eq!(adopted["ok"], true, "{adopted:?}");
+    let run_id = adopted["result"]["run_id"].as_str().unwrap();
+
+    let detail = state.handle(req("workspace.get", json!({"workspace_id": run_id})));
+    assert_eq!(detail["ok"], true, "{detail:?}");
+    assert_eq!(detail["result"]["entity_id"], run_id, "{detail:?}");
+}
+
 fn assert_workspace_has_no_agents(state: &mut AppState, workspace_id: &str) {
     let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
     assert_eq!(detail["ok"], true, "{detail:?}");

@@ -342,7 +342,7 @@ describe("the bubble strip", () => {
     expect(callsTo("agent.add")).toEqual([]);
     const chooser = railHost().querySelector(".rail-newagent");
     expect(chooser).toBeTruthy();
-    expect(chooser.querySelector(".chooser-card.chosen").dataset.provider).toBe("codex");
+    expect(chooser.querySelector(".rail-harness-choice.chosen").dataset.provider).toBe("codex");
     expect(railHost().querySelector(".rail-who").textContent).toBe("New agent");
     expect(railHost().querySelector("#railinput").placeholder).toContain("start an agent");
   });
@@ -368,7 +368,7 @@ describe("the bubble strip", () => {
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
-    expect(railHost().querySelector(".rail-newagent .chooser-card.chosen").dataset.provider).toBe("claude_adk");
+    expect(railHost().querySelector(".rail-newagent .rail-harness-choice.chosen").dataset.provider).toBe("claude_adk");
   });
 
   it("backs out of the chooser onto whichever bubble is pressed", async () => {
@@ -1737,7 +1737,7 @@ describe("the first message", () => {
 // conversation has. Sending is the one act that creates one and speaks to it.
 describe("the chat tab of a branch with no agent", () => {
   const agentless = () => branchRow({ agents: [] });
-  const cards = () => [...railHost().querySelectorAll(".rail-newagent .chooser-card")];
+  const cards = () => [...railHost().querySelectorAll(".rail-newagent .rail-harness-choice")];
   const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);
   const chosenCard = () => cards().find((entry) => entry.classList.contains("chosen"));
   const send = async (body) => {
@@ -1789,6 +1789,36 @@ describe("the chat tab of a branch with no agent", () => {
 
     await send("start here");
     expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
+  });
+
+  it("keeps model and effort when the selected harness is pressed again", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    }));
+    payload = agentless();
+    await mount();
+
+    chosenCard().click();
+    await flush();
+    expect(document.activeElement).toBe(chosenCard());
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+  });
+
+  it("passes a custom saved model through for a compatible harness", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "company-custom-model", effort: "custom",
+    }));
+    payload = agentless();
+    await mount();
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      provider: "claude_adk", model: "company-custom-model", effort: "custom",
+    });
   });
 
   it("adopts a checkout Build owns nothing in before it creates the agent", async () => {
@@ -2601,6 +2631,90 @@ describe("a workspace conversation on a metadata-only bridge", () => {
       conversation_id: "conversation-workspace",
       body: "fix the deployed workspace",
     });
+  });
+
+  it("shows the shared new-conversation composer without creating storage on open", async () => {
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" });
+    if (!panel()) {
+      railHost().querySelector('[data-bubble="ghost"]').click();
+      await flush();
+    }
+
+    expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+    expect(callsTo("workspace.ensure_conversation")).toEqual([]);
+    expect(callsTo("agent.add")).toEqual([]);
+  });
+
+  it("creates the workspace conversation on first send and uses saved defaults", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    }));
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      if (method === "workspace.ensure_conversation") return { workspace_id: "workspace-1", entity_id: "run-workspace" };
+      if (method === "agent.add") return { entity_id: "run-workspace", agent: agent({ id: "ag-workspace", ordinal: 1, state: "idle" }) };
+      if (method === "thread.post") return { posted_sequence: 1 };
+      if (method === "agent.start") return { agent_id: "ag-workspace" };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
+    railHost().querySelector("#railinput").value = "start in this workspace";
+    railHost().querySelector("#railsend").click();
+    await flush();
+
+    expect(calls.filter((entry) => ["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"].includes(entry.method))
+      .map((entry) => entry.method)).toEqual(["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"]);
+    expect(callsTo("workspace.ensure_conversation")[0].params).toEqual({ workspace_id: "workspace-1" });
+    expect(callsTo("agent.add")[0].params).toMatchObject({
+      entity_id: "run-workspace", provider: "claude_adk", model: "claude-opus-5", effort: "high",
+    });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-workspace", agent_id: "ag-workspace", body: "start in this workspace",
+    });
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-workspace", agent_id: "ag-workspace" });
+  });
+
+  it("restores the draft and retries workspace creation after ensure fails", async () => {
+    let ensureAttempts = 0;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "workspace.get") return { workspace: { id: "workspace-1", project_id: "p1", entity_id: null, agents: [] } };
+      if (method === "workspace.ensure_conversation") {
+        ensureAttempts += 1;
+        if (ensureAttempts === 1) throw new Error("workspace unavailable");
+        return { entity_id: "run-workspace" };
+      }
+      if (method === "agent.add") return { agent: agent({ id: "ag-workspace", state: "idle" }) };
+      return {};
+    });
+
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
+    railHost().querySelector("#railinput").value = "keep this draft";
+    railHost().querySelector("#railsend").click();
+    await flush();
+    expect(railHost().querySelector("#railinput").value).toBe("keep this draft");
+    expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
+    expect(callsTo("agent.add")).toEqual([]);
+    expect(callsTo("thread.post")).toEqual([]);
+    expect(callsTo("agent.start")).toEqual([]);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "workspace unavailable");
+
+    railHost().querySelector("#railsend").click();
+    await flush();
+    expect(callsTo("workspace.ensure_conversation")).toHaveLength(2);
+    expect(callsTo("agent.add")).toHaveLength(1);
   });
 });
 

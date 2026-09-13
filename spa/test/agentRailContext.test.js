@@ -43,6 +43,19 @@ describe("agent rail context adapters", () => {
     });
   });
 
+  it("creates conversation ownership only for a workspace context", async () => {
+    const call = vi.fn(async () => ({ entity_id: "run-1" }));
+    const workspace = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" });
+    const branch = createAgentRailContext({ kind: "branch", projectId: "p1", branch: "build/chat" });
+    const issue = createAgentRailContext({ kind: "issue", projectId: "p1", issueId: "issue-1" });
+
+    expect(await workspace.ensureConversation(call)).toEqual({ entity_id: "run-1" });
+    expect(branch.ensureConversation(call)).toBeNull();
+    expect(issue.ensureConversation(call)).toBeNull();
+    expect(call).toHaveBeenCalledOnce();
+    expect(call).toHaveBeenCalledWith("workspace.ensure_conversation", { workspace_id: "workspace-1" });
+  });
+
   it("recovers an adopted run by its exact workspace id on a metadata-only bridge", async () => {
     const metadata = { id: "run-1", directories: [{ branch: "build/shared" }] };
     const run = { run_id: "run-1", agents: [{ id: "agent-1" }] };

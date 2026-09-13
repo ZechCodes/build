@@ -36,6 +36,7 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("run.abandon", "run_id"),
     ("run.release", "run_id"),
     ("run.adopt", "worktree_id"),
+    ("workspace.ensure_conversation", "workspace_id"),
     ("thread.post", "entity_id"),
 ];
 
@@ -399,6 +400,7 @@ impl AppState {
             "workspace.create" => self.workspace_create(params),
             "workspace.retry" => self.workspace_retry(params),
             "workspace.get" => self.workspace_get(params),
+            "workspace.ensure_conversation" => self.workspace_ensure_conversation(params),
             "workspace.git_init_options" => self.workspace_git_init_options(params),
             "workspace.init_git" => self.workspace_init_git(params),
             "workspace.finish" => self.workspace_finish(params),

@@ -32,6 +32,10 @@ class BranchRailContext {
     return call("branch.get", { project_id: this.projectId, branch: this.branch, ...scope });
   }
 
+  ensureConversation() {
+    return null;
+  }
+
   olderPage(call, { entityId, agentId, beforeSequence }) {
     return call("thread.page", {
       entity_id: entityId,
@@ -63,6 +67,10 @@ class IssueRailContext {
     return call("issue.get", { issue_id: this.issueId, ...issueScope });
   }
 
+  ensureConversation() {
+    return null;
+  }
+
   olderPage(call, { entityId, agentId, beforeSequence }) {
     return call("thread.page", {
       entity_id: entityId,
@@ -91,6 +99,9 @@ class WorkspaceRailContext {
     // Workspace-only bridges initially returned metadata here. Recover the
     // exact adopted run without guessing from a branch shared by checkouts.
     return legacyWorkspaceDetail(call, payload, this.workspaceId, scope);
+  }
+  ensureConversation(call) {
+    return call("workspace.ensure_conversation", { workspace_id: this.workspaceId });
   }
 
   olderPage(call, { entityId, agentId, beforeSequence }) {

@@ -57,7 +57,7 @@ import {
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
 import { hide, motionSettled, reveal } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
-import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
+import { catalogForProvider, creatableCatalog, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { currentCacheScope } from "./cacheScope.js";
@@ -101,6 +101,7 @@ import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js"
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
+import { providerInSameFamily } from "./providerCatalog.js";
 import "../styles/shell.css";
 
 /** How often the rail re-reads its work item. The same cadence the detail
@@ -146,6 +147,27 @@ const UNREAD_INK = "#ffd447";
 
 const operationIsUncertain = (error) =>
   error?.uncertain === true || (error?.timedOut === true && error?.uncertain !== false);
+
+const providerChoiceIsCompatible = (offered, chosen, requested) =>
+  !!requested && (requested === chosen || providerInSameFamily(offered.providers, requested) === chosen);
+
+const clampKnownModelChoice = (provider, providerCatalog, choice, matchedModel) => {
+  const efforts = effortLevels(providerCatalog.efforts || [], matchedModel);
+  const effort = effortSupported(providerCatalog.models || [], matchedModel.id) && efforts.includes(choice.effort)
+    ? choice.effort
+    : "";
+  return { provider, model: matchedModel.id, effort };
+};
+
+const clampStoredAgentChoice = (catalog, choice) => {
+  const offered = creatableCatalog(catalog || {});
+  const provider = chosenProviderId(offered, choice);
+  if (!providerChoiceIsCompatible(offered, provider, choice.provider)) return { provider, model: "", effort: "" };
+  const providerCatalog = catalogForProvider(offered, provider);
+  const matchedModel = matchCatalogModel(providerCatalog.models || [], choice.model || "");
+  if (matchedModel) return clampKnownModelChoice(provider, providerCatalog, choice, matchedModel);
+  return { provider, model: choice.model || "", effort: choice.effort || "" };
+};
 
 const recoveryExcerpt = (recovery) => {
   const body = recovery.body.trim();
@@ -551,6 +573,7 @@ export function mountAgentRail(host, context) {
   let adopting = null;
   let catalog = null; // models.list, once it lands: the harnesses and their models
   let creating = null;
+  let ensuringConversation = null;
   const faces = new Map();
   let agentlessOnce = false; // an answer that lost the agents, waiting to be repeated
   let feedRow = null; // this work item's row off the shared feed, for the pinned status line
@@ -621,6 +644,11 @@ export function mountAgentRail(host, context) {
     return { ...said, provider: chosenProviderId(creatable(), said) };
   };
   const writeNewAgentChoice = (next) => provisionalController().setProvisionalChoice(next);
+
+  const seedNewAgentDefaults = () => {
+    if (!catalog || provisionalController().choice().provider) return;
+    writeNewAgentChoice(clampStoredAgentChoice(catalog, loadAgentDefaults()));
+  };
 
   /** That choice as `agent.add` params: empties omitted, so the harness's own
    *  default stands where nothing was said. */
@@ -824,6 +852,7 @@ export function mountAgentRail(host, context) {
     const strip = host.querySelector(".rail-strip");
     paintStrip(strip, railBubbles({
       agents: visibleAgents(), selectedId, kind: entity.kind, chatCapable: entity.chatCapable !== false,
+      addingAgent,
     }));
     let panel = host.querySelector("#rail-panel");
     if (expanded && !panel) {
@@ -840,7 +869,7 @@ export function mountAgentRail(host, context) {
     if (expanded) paintPanel();
   };
 
-  const shownPanelMode = () => (agentHasTerminal(agentInFocus()) ? mode : "chat");
+  const shownPanelMode = () => (!agentInFocus() || !agentHasTerminal(agentInFocus()) ? "chat" : mode);
 
   const rememberedConversationIsLoading = () =>
     !addingAgent && !!selectedId && !isProvisionalKey(selectedId) && !agentInFocus();
@@ -873,7 +902,7 @@ export function mountAgentRail(host, context) {
       agentId: settled ? settled.id : null,
       kind: entity.kind,
     });
-    const hasTerminal = agentHasTerminal(agent);
+    const hasTerminal = !!agent && agentHasTerminal(agent);
     // Which face this agent can actually wear. `mode` is remembered per work
     // item, so opening a terminal-less agent's bubble — or one whose digest
     // stopped offering a terminal under an open panel — arrives holding "tui"
@@ -1052,17 +1081,31 @@ export function mountAgentRail(host, context) {
   const paintNewAgent = (body) => {
     const chosen = newAgentChoice().provider;
     if (body.dataset.newAgent === chosen) return;
-    body.innerHTML = `<div class="rail-newagent">${providerCardsHtml(creatable().providers, chosen)}</div>`;
+    const choices = creatable().providers.map((provider) =>
+      `<button class="rail-harness-choice${provider.id === chosen ? " chosen" : ""}" type="button"
+        data-provider="${esc(provider.id)}" aria-pressed="${provider.id === chosen}">
+        ${harnessIconHtml(provider.id)}<span>${esc(provider.label)}</span>
+      </button>`,
+    ).join("");
+    body.innerHTML = `<div class="rail-newagent">
+      <p>Start a new conversation</p>
+      <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
+    </div>`;
     body.dataset.newAgent = chosen;
     body.querySelector(".rail-newagent").onclick = (event) => {
-      const card = event.target.closest(".chooser-card");
+      const card = event.target.closest(".rail-harness-choice");
       if (!card) return;
+      if (card.dataset.provider === newAgentChoice().provider) {
+        card.focus();
+        return;
+      }
       // A model belongs to its harness, so moving the highlight drops one
       // chosen under the harness beside it.
       writeNewAgentChoice(
         reconcileAgentChoice({ ...newAgentChoice(), provider: card.dataset.provider }, { providerChanged: true }),
       );
       paintChat();
+      body.querySelector(".rail-harness-choice.chosen")?.focus();
     };
   };
 
@@ -1602,6 +1645,23 @@ export function mountAgentRail(host, context) {
    *  owns nothing here yet — an agent needs an owner for `done` to report to. */
   const ensureEntity = async (call) => {
     if (entity.entityId && !entity.adoptable) return entity.entityId;
+    if (!ensuringConversation) {
+      const ensureConversation = railContext.ensureConversation(call);
+      if (ensureConversation) {
+        ensuringConversation = Promise.resolve(ensureConversation).then((answer) => {
+          const entityId = answer?.entity_id || answer?.run_id;
+          if (!entityId) throw new Error("workspace.ensure_conversation did not return an entity id");
+          entity = { ...entity, entityId, chatCapable: true };
+          return entityId;
+        }).catch((error) => {
+          ensuringConversation = null;
+          throw error;
+        });
+      }
+    }
+    if (ensuringConversation) {
+      return ensuringConversation;
+    }
     const adopt = adoptingCall(call);
     if (!adopt) return entity.entityId;
     return adopt.adopt();
@@ -1911,14 +1971,7 @@ export function mountAgentRail(host, context) {
       // clamped to the offer — the record the silent + used to spend outright.
       // The human now sees the choice before anything is created; the send is
       // what creates, exactly as it does on a branch with no agents at all.
-      if (!provisionalController().choice().provider) {
-        const defaults = loadAgentDefaults();
-        writeNewAgentChoice({
-          provider: chosenProviderId(creatable(), defaults),
-          model: defaults.model || "",
-          effort: defaults.effort || "",
-        });
-      }
+      seedNewAgentDefaults();
       expanded = true;
       writeExpanded(true);
       disposeTui();
@@ -2057,6 +2110,7 @@ export function mountAgentRail(host, context) {
   loadModelCatalog().then((answer) => {
     if (disposed) return;
     catalog = answer;
+    seedNewAgentDefaults();
     paint();
   });
   // Read at delivery, not here: the rail learns which entity it is standing on

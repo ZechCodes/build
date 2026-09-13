@@ -14,11 +14,9 @@
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:38px;     /* the view column's top row — what a full console clears */
   --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
-  /* What the collapsed toolbar clears: the floating toggle's 10px offset, its
-     box, and the head's own 8px gap — less the name button's inset, so the
-     project name starts the same gap from the toggle that "Build" does when
-     the rail is docked. */
-  --inbox-open-clear:calc(148px + env(safe-area-inset-left, 0px));
+  /* What the collapsed toolbar clears: the floating toggle's 12px offset, its
+     box, and the 8px gap before the toolbar content. */
+  --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
 }
 
 /* The frame is viewport-locked (styles.css body): the page never scrolls, each
@@ -34,16 +32,11 @@
 }
 body.inbox-collapsed { --inbox-space:0px; }
 
-#global-brand { position:absolute; z-index:48;
+#global-controls { position:absolute; z-index:48;
   top:0; left:env(safe-area-inset-left, 0px);
-  height:var(--global-head); display:flex; align-items:center; gap:8px;
+  height:var(--global-head); display:flex; align-items:center;
   padding:0 12px; pointer-events:none; }
-#global-brand > * { pointer-events:auto; }
-.brand-mark { color:var(--accent-fill, var(--accent)); line-height:1; }
-.brand-mark svg { display:block; width:25px; height:25px; fill:none; stroke:currentColor;
-  stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-#global-brand .logo { border:0; background:none; color:var(--ink); padding:4px 2px;
-  font:700 15px/1 inherit; letter-spacing:-.02em; cursor:pointer; }
+#global-controls > * { pointer-events:auto; }
 
 /* ---- inbox rail (left) ---- */
 /* Track 1 by name, not by order: the rail leaves the flow whenever it is
@@ -63,8 +56,8 @@ body.inbox-collapsed { --inbox-space:0px; }
 }
 body.inbox-collapsed #inbox-rail { position:absolute; z-index:46;
   top:var(--global-head);
-  left:calc(42px + env(safe-area-inset-left, 0px)); bottom:auto;
-  width:min(var(--inbox-rail), calc(100vw - 54px));
+  left:calc(12px + env(safe-area-inset-left, 0px)); bottom:auto;
+  width:min(var(--inbox-rail), calc(100vw - 24px - env(safe-area-inset-left, 0px)));
   height:auto; max-height:calc(100dvh - var(--global-head) - 12px); margin:0;
   padding:10px; border:1px solid var(--line3, var(--line)); border-radius:10px;
   box-shadow:0 18px 48px var(--shadow); opacity:0; visibility:hidden;
@@ -76,7 +69,7 @@ body.inbox-transitioning #inbox-rail { opacity:1; visibility:visible; transform:
   pointer-events:auto; transition-delay:0s; }
 body.inbox-collapsed.inbox-popover-open #inbox-rail::before,
 body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absolute;
-  left:44px; top:-6px; width:10px; height:10px; transform:rotate(45deg);
+  left:8px; top:-6px; width:10px; height:10px; transform:rotate(45deg);
   border-left:1px solid var(--line3, var(--line)); border-top:1px solid var(--line3, var(--line));
   background:var(--panel); }
 .inbox-head { display:flex; align-items:center; gap:8px; min-height:30px; margin:0 2px 10px; }
@@ -85,7 +78,6 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 #inbox-open, #inbox-collapse { width:var(--inbox-toggle); }
 #inbox-open svg, #inbox-collapse svg { display:block; width:17px; height:17px;
   fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.inbox-head .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
 /* The rail's two faces, one icon each at the head's right edge; the standing
    one is pressed. */
 .inbox-views { display:flex; gap:2px; padding:2px; border-radius:8px; background:var(--line); }
@@ -614,9 +606,18 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    claiming the conversation is empty. */
 .rail-chat-loading { height:100%; display:flex; align-items:center;
   justify-content:center; font-size:12.5px; color:var(--dim); }
-.rail-newagent { display:flex; height:100%; align-items:center; justify-content:center; }
-.rail-newagent .chooser { width:100%; }
-.rail-newagent .chooser-cards { flex-direction:column; }
+.rail-newagent { display:flex; height:100%; flex-direction:column; align-items:center; justify-content:flex-end;
+  gap:10px; padding-bottom:8px; }
+.rail-newagent p { margin:0; color:var(--dim); font-size:12.5px; }
+.rail-harness-picker { display:flex; align-items:stretch; justify-content:center; gap:7px; width:100%; }
+.rail-harness-choice { display:flex; flex:1 1 0; min-width:0; align-items:center; justify-content:center; gap:7px;
+  border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--ink2);
+  padding:8px 10px; font:inherit; font-size:12px; cursor:pointer;
+  transition:border-color 120ms ease, background-color 120ms ease, color 120ms ease; }
+.rail-harness-choice:hover { border-color:var(--line2); color:var(--ink); }
+.rail-harness-choice.chosen { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+.rail-harness-choice .rail-harness-icon { width:16px; height:16px; }
+@media (prefers-reduced-motion: reduce) { .rail-harness-choice { transition:none; } }
 
 /* The pinned box. Out of the scroll entirely, so its bottom edge is the
    panel's. */
@@ -891,7 +892,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 #toolbar:empty, #console-region:empty, #agent-rail:empty { display:none; }
 
 /* ---- the gate owns the whole frame ---- */
-body.gated #global-brand,
+body.gated #global-controls,
 body.gated #inbox-open,
 body.gated #inbox-scrim,
 body.gated #toolbar,

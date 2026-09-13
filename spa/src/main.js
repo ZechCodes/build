@@ -49,7 +49,6 @@ initDevicePicker();
 // Load captures saved by earlier builds so they can flush after connection.
 initCompose();
 
-$(".logo").onclick = () => go({ name: "inbox" });
 $("#nav-account").onclick = () => go({ name: "account", page: "settings" });
 $("#scrim").onclick = (e) => {
   if (e.target === $("#scrim")) requestSheetDismiss();

@@ -55,15 +55,12 @@ async fn stray_revise_report_with_no_revision_in_flight_is_rejected() {
     assert!(matches!(err, OrchestratorError::Gate(_)), "{err}");
     assert_eq!(plan.plan.state, PlanState::PlanReview);
 }
-pub(super) fn done_build_with_report(report: crate::thread::CompletionReport) -> DoneReport {
+pub(super) fn done_build_saying(summary: &str) -> DoneReport {
     DoneReport {
         phase: DonePhase::Build,
         status: DoneStatus::Completed,
-        summary: "built it".into(),
-        outputs: DoneOutputs {
-            completion_report: Some(report),
-            ..DoneOutputs::default()
-        },
+        summary: summary.into(),
+        outputs: DoneOutputs::default(),
     }
 }
 pub(super) fn done_triage(based_on: &str, hunks: Vec<TriageHunk>) -> DoneReport {
@@ -91,11 +88,8 @@ async fn a_completed_build_with_a_diff_asks_for_a_triage_pass() {
     let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
 
     std::fs::write(run.worktree.path.join("crypto.rs"), "fn derive() {}\n").unwrap();
-    let build_report = done_build_with_report(crate::thread::CompletionReport {
-        critical_files: vec!["crypto.rs — key derivation".into()],
-        risk_notes: vec!["untested on rotation".into()],
-        ..Default::default()
-    });
+    let account = "Reworked crypto.rs — key derivation.\n\nRisks: untested on rotation.";
+    let build_report = done_build_saying(account);
     let consumed = orch
         .on_run_done(&mut run, &[], build_report.clone())
         .unwrap();
@@ -106,13 +100,8 @@ async fn a_completed_build_with_a_diff_asks_for_a_triage_pass() {
     );
 
     let patch = orch.run_diff(&run).unwrap().patch().to_string();
-    let seed = crate::thread::CompletionReport {
-        critical_files: vec!["crypto.rs — key derivation".into()],
-        risk_notes: vec!["untested on rotation".into()],
-        ..Default::default()
-    };
     let turn = orch
-        .triage_turn(&run, &patch, "revision-sha-1", Some(&seed))
+        .triage_turn(&run, &patch, "revision-sha-1", account)
         .expect("a diff with hunks gets a triage turn");
     assert_eq!(turn.phase, "triage");
     let prompt = dispatch_turn_halves(&turn, "triage");
@@ -134,7 +123,7 @@ async fn an_empty_diff_gets_no_triage_turn() {
     let orch = orchestrator(&dir, &repo);
     let store = split_store(&dir);
     let run = dispatch_single_stage_run(&orch, &store, "run-1", "fix typo");
-    assert!(orch.triage_turn(&run, "", "revision-sha-1", None).is_none());
+    assert!(orch.triage_turn(&run, "", "revision-sha-1", "").is_none());
 }
 /// The agent hears one thing at a time: a stage that has just been asked to
 /// validate itself is not also asked to triage. The verdict is when the

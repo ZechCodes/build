@@ -420,17 +420,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-none { font-size:12px; padding:2px 8px 6px; }
 .tbmenu-foot { flex:none; border-top:1px solid var(--line); padding-top:4px; margin-top:4px; }
 
-/* ---- the completion report ----
-   The agent's handoff, on its done event: the densest thing in the timeline, so
-   it is boxed away from the event lines around it and reads as a document
-   rather than as another sentence. */
-.completion-report { margin-top:6px; border:1px solid var(--line); border-radius:8px;
-  background:var(--panel2); padding:8px 10px; display:flex; flex-direction:column; gap:8px; }
-.completion-title { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
-  color:var(--dim); }
-.completion-section ul { margin:3px 0 0; padding-left:16px; }
-.completion-section li { color:var(--ink2); font-size:12px; line-height:1.5;
-  overflow-wrap:anywhere; }
 
 /* ---- agent rail (right edge of the view body) ----
    The strip is always there and the panel expands to its left, so the rail is

@@ -590,26 +590,21 @@ fn on_agent_done_routes_by_owner_lookup() {
 }
 
 /// The record of a reported completion is the agent's own message: the
-/// summary it wrote, the outcome it reported, and the structured report
-/// riding the message that carries them.
+/// report it wrote as the summary, and the outcome it reported. Nothing
+/// structured rides beside it any more — the summary is the whole account.
 #[test]
-fn a_completed_build_report_is_one_agent_message_carrying_the_completion_report() {
+fn a_completed_build_report_is_one_agent_message_carrying_the_whole_report() {
     let mut thread = crate::thread::Thread::new("run-completion");
+    let account = "Fixed and deployed the renderer.\n\n\
+        **Changed:** src/render.rs — the new draw path.\n\
+        **Risks:** untested on the legacy screen.";
     record_report_in_thread(
         &mut thread,
         &DoneReport {
             phase: DonePhase::Build,
             status: DoneStatus::Completed,
-            summary: "Fixed and deployed the renderer.".into(),
-            outputs: DoneOutputs {
-                completion_report: Some(crate::thread::CompletionReport {
-                    critical_files: vec!["src/render.rs — the new draw path".into()],
-                    risk_notes: vec!["untested on the legacy screen".into()],
-                    decisions: vec!["kept the old entry point".into()],
-                    skips: vec!["no perf pass".into()],
-                }),
-                ..DoneOutputs::default()
-            },
+            summary: account.into(),
+            outputs: DoneOutputs::default(),
         },
         None,
     );
@@ -627,20 +622,14 @@ fn a_completed_build_report_is_one_agent_message_carrying_the_completion_report(
         completion.done,
         "the flag an older client reads keeps its meaning"
     );
-    assert_eq!(completion.body, "Fixed and deployed the renderer.");
-    let carried = completion
-        .completion_report
-        .as_deref()
-        .expect("the report rides the message");
-    assert_eq!(
-        carried.critical_files,
-        vec!["src/render.rs — the new draw path"]
+    assert_eq!(completion.body, account, "the whole report is the message");
+    assert!(
+        completion.completion_report.is_none(),
+        "nothing structured rides beside it"
     );
-    assert_eq!(carried.skips, vec!["no perf pass"]);
-    assert_eq!(
-        thread.last_completion.as_ref(),
-        Some(carried),
-        "a cold session still finds the newest report on the thread"
+    assert!(
+        thread.last_completion.is_none(),
+        "and nothing is remembered apart from the conversation itself"
     );
     assert_eq!(thread.items[0].attention_reason(), Some("done"));
 }
@@ -706,10 +695,6 @@ fn conversation_records_every_reported_outcome_on_the_agents_message() {
                     findings: "The migration is not reversible".into(),
                     notes_for_next_stage: String::new(),
                 }),
-                completion_report: Some(crate::thread::CompletionReport {
-                    critical_files: vec!["src/app.rs".into()],
-                    ..crate::thread::CompletionReport::default()
-                }),
                 ..DoneOutputs::default()
             },
         },
@@ -724,10 +709,6 @@ fn conversation_records_every_reported_outcome_on_the_agents_message() {
         )),
         "Build's own reading of a validation report stays an event: {:?}",
         thread.items
-    );
-    assert_eq!(
-        thread.last_completion.as_ref().unwrap().critical_files,
-        vec!["src/app.rs"]
     );
 
     record_report_in_thread(

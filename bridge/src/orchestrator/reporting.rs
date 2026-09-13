@@ -130,36 +130,16 @@ pub fn triage_is_due(report: &DoneReport, already_speaking: bool) -> bool {
     }
 }
 
-/// The completion report as the triage prompt reads it: the agent's own account
-/// of what it just did, in markdown. Empty lists are left out; a report with
-/// nothing in it says so, because "(none)" is information and a blank is not.
-fn render_completion_report(report: Option<&crate::thread::CompletionReport>) -> String {
-    let Some(report) = report else {
-        return "(the agent reported nothing)".to_string();
-    };
-    let sections = [
-        ("Critical files", &report.critical_files),
-        ("Risks", &report.risk_notes),
-        ("Decisions", &report.decisions),
-        ("Deliberately skipped", &report.skips),
-    ];
-    let rendered = sections
-        .iter()
-        .filter(|(_, lines)| !lines.is_empty())
-        .map(|(title, lines)| {
-            let body = lines
-                .iter()
-                .map(|line| format!("- {line}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("{title}:\n{body}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if rendered.is_empty() {
-        return "(the agent reported nothing)".to_string();
+/// The builder's account as the triage prompt reads it: its `done` summary,
+/// which is the whole report. An empty one says so, because "(nothing)" is
+/// information and a blank is not.
+fn agent_report_for_triage(summary: &str) -> &str {
+    let trimmed = summary.trim();
+    if trimmed.is_empty() {
+        "(the agent reported nothing)"
+    } else {
+        trimmed
     }
-    rendered
 }
 
 /// What a lifecycle move wants said to the worktree's agent.
@@ -435,7 +415,7 @@ impl Orchestrator {
         active: &ActiveRun,
         patch: &str,
         revision_sha: &str,
-        seed: Option<&crate::thread::CompletionReport>,
+        agent_report: &str,
     ) -> Option<AgentTurn> {
         let hunks = crate::diff::patch_hunks(patch);
         if hunks.is_empty() {
@@ -456,7 +436,7 @@ impl Orchestrator {
                 goal: &active.run.goal,
                 base_branch: &active.worktree.base_branch,
                 diff_summary: &diff_summary,
-                completion_report: &render_completion_report(seed),
+                agent_report: agent_report_for_triage(agent_report),
                 diff_ref: &diff_ref,
                 revision_sha,
                 ..crate::templates::Vars::default()

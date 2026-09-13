@@ -308,17 +308,15 @@ pub(in crate::app) fn record_report_in_thread(
             report.summary.clone(),
         ),
     };
-    let completion = report.outputs.completion_report.as_ref();
     match recorded {
         ReportRecord::Outcome(outcome, summary) => {
-            thread.post_outcome(outcome, summary, completion, &now);
+            // The summary is the whole report now; nothing structured rides
+            // beside it. The slot stays for threads written when it did.
+            thread.post_outcome(outcome, summary, None, &now);
         }
         ReportRecord::Event(event, summary) => {
             thread.push_event(event, Some(summary), None, None, &now);
         }
-    }
-    if let Some(completion) = completion {
-        thread.remember_completion(completion);
     }
 }
 
@@ -564,12 +562,7 @@ impl AppState {
             {
                 let turn = self.project_of(run_id).ok().and_then(|project_id| {
                     self.orch_for(&project_id).ok().and_then(|orch| {
-                        orch.triage_turn(
-                            &active,
-                            patch,
-                            revision_sha,
-                            report_for_thread.outputs.completion_report.as_ref(),
-                        )
+                        orch.triage_turn(&active, patch, revision_sha, &report_for_thread.summary)
                     })
                 });
                 if let Some(turn) = turn {

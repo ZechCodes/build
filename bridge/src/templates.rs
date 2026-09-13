@@ -213,7 +213,7 @@ reviewer's attention and gates nothing.
 
 What the agent that wrote these changes reported:
 
-{completion_report}
+{agent_report}
 
 Read the diff with `git diff {diff_ref}`. Build has already split it into hunks
 and named each one. These are the names you classify, verbatim:
@@ -299,28 +299,31 @@ where the capture went and why. If nothing lets you decide, call `done` with
 status=\"failed\" and one concise sentence saying what stopped you — the capture
 goes back to the user with a retry.";
 
-/// What every code-changing phase adds to its `done` call. Appended rather
+/// What every code-changing phase adds about its `done` call. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
 /// a project overriding one template still overrides only that one.
-const COMPLETION_REPORT_ASK: &str = "\
-Whenever you report status=\"completed\", set outputs.completion_report on that
-same `done` call. It is what the reviewer reads before the diff, and the only
-context an agent replacing you inherits.
-Four lists of short lines — leave a list out rather than padding it:
-`critical_files` (the few files that carry this change, each with why it
-matters), `risk_notes` (what could break and where it would show, including
-anything you could not verify), `decisions` (choices a reviewer would otherwise
-have to reverse-engineer, each with its reason), and `skips` (what you
-deliberately did not do, and why).";
+///
+/// The summary IS the report. There used to be a structured
+/// `completion_report` beside a one-sentence summary; the reviewer got a
+/// sentence and a card of lists, and the account that actually explained the
+/// work sat in the activity log. Now the one field carries the whole account.
+const DONE_SUMMARY_ASK: &str = "\
+When you call `done` with status=\"completed\", `summary` is the whole report:
+it is what the reviewer reads, and they will not open the activity log to fill
+it in. Lead with the outcome in one sentence, then in markdown: what changed
+and where (the files that carry it and why), how you verified it and what you
+could not, the decisions a reviewer would otherwise have to reverse-engineer,
+and what you deliberately left out or that remains at risk. Leave a heading out
+rather than pad it.";
 
 fn phase_template(base: &str) -> String {
     base.to_string()
 }
 
-/// A template whose phase ends in changed code, so its `done` carries the
-/// completion report.
+/// A template whose phase ends in changed code, so its `done` summary is the
+/// full report of it.
 fn reporting_template(base: &str) -> String {
-    format!("{base}\n\n{COMPLETION_REPORT_ASK}")
+    format!("{base}\n\n{DONE_SUMMARY_ASK}")
 }
 
 /// The phase templates. Clone-and-edit to override per project.
@@ -409,8 +412,9 @@ pub struct Vars<'a> {
     pub user_answer: &'a str,
     /// The `triage` template's hunk list: one line per hunk, `id  path  header`.
     pub diff_summary: &'a str,
-    /// The completion report that seeds triage, rendered as markdown.
-    pub completion_report: &'a str,
+    /// What the builder's `done` said, seeding triage: the summary is the
+    /// whole report, so the pass reads the same account the reviewer does.
+    pub agent_report: &'a str,
     /// What the reviewed diff is taken against — the run's `base_sha`, or its
     /// base branch when there is none.
     pub diff_ref: &'a str,
@@ -438,7 +442,7 @@ pub fn render(template: &str, vars: &Vars) -> String {
         .replace("{capture_text}", vars.capture_text)
         .replace("{user_answer}", vars.user_answer)
         .replace("{diff_summary}", vars.diff_summary)
-        .replace("{completion_report}", vars.completion_report)
+        .replace("{agent_report}", vars.agent_report)
         .replace("{diff_ref}", vars.diff_ref)
         .replace("{revision_sha}", vars.revision_sha)
 }
@@ -500,25 +504,30 @@ mod tests {
         assert!(t.review_changes.contains("phase=\"revise\""));
     }
 
+    /// The summary is the report, so every code-changing phase is told what a
+    /// whole one holds — and nothing asks for the structured report that used
+    /// to ride beside it.
     #[test]
-    fn every_code_changing_template_asks_for_the_completion_report() {
+    fn every_code_changing_template_asks_for_the_full_report_in_the_done_summary() {
         let t = Templates::default();
         for template in [&t.build, &t.build_stage, &t.fix_stage, &t.review_changes] {
-            assert!(template.contains("outputs.completion_report"), "{template}");
-            for field in ["critical_files", "risk_notes", "decisions", "skips"] {
-                assert!(template.contains(field), "{field} missing from {template}");
+            assert!(
+                template.contains("`summary` is the whole report"),
+                "{template}"
+            );
+            for asked in ["what changed", "verified", "reverse-engineer", "left out"] {
+                assert!(template.contains(asked), "{asked} missing from {template}");
             }
+            assert!(!template.contains("completion_report"), "{template}");
         }
     }
 
     #[test]
-    fn the_plan_document_templates_ask_for_no_completion_report() {
+    fn the_plan_document_templates_ask_for_no_report() {
         let t = Templates::default();
         for template in [&t.plan, &t.revise, &t.revise_stage, &t.validate] {
-            assert!(
-                !template.contains("outputs.completion_report"),
-                "{template}"
-            );
+            assert!(!template.contains("whole report"), "{template}");
+            assert!(!template.contains("completion_report"), "{template}");
         }
     }
 
@@ -658,7 +667,7 @@ mod tests {
     fn triage_template_teaches_the_levels_the_groups_and_the_typed_done() {
         let t = Templates::default();
         for placeholder in [
-            "{completion_report}",
+            "{agent_report}",
             "{diff_summary}",
             "{diff_ref}",
             "{revision_sha}",
@@ -727,16 +736,12 @@ mod tests {
         );
     }
 
-    /// Triage writes no code, so it is asked for no completion report — the
-    /// report is what it READS.
+    /// Triage writes no code, so it is asked for no report of its own — the
+    /// builder's report is what it READS.
     #[test]
-    fn triage_reports_no_completion_report_of_its_own() {
+    fn triage_reports_no_full_report_of_its_own() {
         let t = Templates::default();
-        assert!(
-            !t.triage.contains("outputs.completion_report"),
-            "{}",
-            t.triage
-        );
+        assert!(!t.triage.contains("whole report"), "{}", t.triage);
     }
 
     #[test]
@@ -744,7 +749,7 @@ mod tests {
         let out = render(
             &Templates::default().triage,
             &Vars {
-                completion_report: "- critical: crypto.rs",
+                agent_report: "- critical: crypto.rs",
                 diff_summary: "habc123def456  crypto.rs  @@ -1,2 +1,3 @@",
                 diff_ref: "abc123",
                 revision_sha: "deadbeef",
@@ -756,7 +761,7 @@ mod tests {
         assert!(out.contains("git diff abc123"));
         assert!(out.contains("\"based_on\": \"deadbeef\""));
         for placeholder in [
-            "{completion_report}",
+            "{agent_report}",
             "{diff_summary}",
             "{diff_ref}",
             "{revision_sha}",

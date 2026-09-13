@@ -1204,9 +1204,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-outcome.success .thread-outcome-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
 .thread-outcome.blocked .thread-outcome-icon { background:color-mix(in srgb, var(--red) 15%, var(--panel)); color:var(--red); }
 .thread-outcome.blocked strong { color:var(--red); }
-/* The handoff on an outcome message sits inside the card the agent posted, so
-   it keeps the body's gutter instead of the margin it takes under an event. */
-.thread-comment-card .completion-report { margin:0 12px 12px; }
 .thread-status, .thread-anchor { color:var(--dim); font-size:11px; }
 .thread-anchor { padding:7px 12px 0; font-family:var(--mono); overflow-wrap:anywhere; }
 .thread-body { padding:12px; color:var(--ink2); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }

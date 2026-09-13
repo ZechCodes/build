@@ -4,7 +4,7 @@ import { RENDERED_FOLD_ATTRIBUTE, patchElement, patchInnerHtml } from "./domPatc
 import { patchList } from "./patchList.js";
 import { followConversation, paintKeepingPlace } from "./paintKeepingPlace.js";
 import { paintRunsShowingLatest } from "./activityRunScroll.js";
-import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
+import { EVENT_META, eventLabel, isStartupEvent } from "./threadEvents.js";
 import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "./activityDigest.js";
 import {
   INTERRUPT_SEND_OPTION,
@@ -742,8 +742,9 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
-  // What marks a message is `outcome` — the whole record of a reported outcome,
-  // carrying the structured handoff the done event used to.
+  // What marks a message is `outcome` — the whole record of a reported outcome.
+  // The body IS the report: the agent's `done` summary, in markdown, which is
+  // why no card of lists sits under it any more.
   // renderMarkdown escapes all input before adding its fixed safe tag set.
   // The sequence rides the row: it is how the timeline says which message a
   // row stands for, and how the panel reports what the reader's viewport has
@@ -756,7 +757,6 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
-      ${completionReportHtml(message.completion_report)}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, liveOptions, offer, threadState)}
@@ -764,25 +764,6 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   </article>`;
 }
 
-/// The agent's handoff, as a card.
-///
-/// `done` is asked for a completion report, and the report renders wherever the
-/// record of that completion is: on the outcome message that reports it, and on
-/// the `Done` event of a thread written before outcomes were message statuses.
-/// Either way it is the same card — the critical files, the decisions a
-/// reviewer would otherwise reverse-engineer, the risks, and what was
-/// deliberately left alone. Every line is the agent's words — escaped.
-function completionReportHtml(report) {
-  const sections = completionReportSections(report);
-  if (!sections.length) return "";
-  return `<div class="completion-report">${sections
-    .map(
-      (section) =>
-        `<div class="completion-section"><div class="completion-title">${esc(section.title)}</div>
-        <ul>${section.items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>`,
-    )
-    .join("")}</div>`;
-}
 
 /// What a tool call's answer reported, as a mark on the call's own row.
 ///
@@ -1083,7 +1064,7 @@ function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
     : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
-    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${completionReportHtml(event.completion_report)}${linksHtml(event.links)}</div>
+    <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>
   </div>`;
 }
 

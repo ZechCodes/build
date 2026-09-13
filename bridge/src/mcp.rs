@@ -90,9 +90,6 @@ pub struct DoneOutputs {
     /// Optional on phase=revise/completed: per-comment resolutions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_resolutions: Option<Vec<CommentResolution>>,
-    /// Durable handoff context for reviewers and cold replacement sessions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completion_report: Option<crate::thread::CompletionReport>,
 }
 
 /// The raw `done` arguments as they arrive over the wire, before validation.
@@ -564,7 +561,7 @@ impl DoneServer {
             "properties": {
                 "phase": { "type": "string", "enum": ["plan", "build", "revise", "validate", "triage", "recover"] },
                 "status": { "type": "string", "enum": ["completed", "blocked", "failed"] },
-                "summary": { "type": "string", "description": "One concise sentence stating what was completed. If blocked or failed, state what is needed instead. No file list, changelog, test log, links, or process narration." },
+                "summary": { "type": "string", "description": SUMMARY_DESCRIPTION },
                 "outputs": {
                     "type": "object",
                     "properties": {
@@ -638,16 +635,6 @@ impl DoneServer {
                                 "required": ["comment_id", "response"]
                             }
                         },
-                        "completion_report": {
-                            "type": "object",
-                            "description": "Expected when phase=build or phase=revise and status=completed: the handoff a reviewer reads before the diff, and the only durable context a replacement session gets. One short line per entry; leave a list out rather than padding it.",
-                            "properties": {
-                                "critical_files": { "type": "array", "items": { "type": "string" }, "description": "The few files that carry this change, each with why it matters — \"path — what it now does\"." },
-                                "risk_notes": { "type": "array", "items": { "type": "string" }, "description": "What could break and where it would show, including anything you could not verify." },
-                                "decisions": { "type": "array", "items": { "type": "string" }, "description": "Choices a reviewer would otherwise have to reverse-engineer, each with its reason." },
-                                "skips": { "type": "array", "items": { "type": "string" }, "description": "What you deliberately did not do, and why." }
-                            }
-                        }
                     }
                 }
             },
@@ -1205,6 +1192,13 @@ fn error(id: Value, code: i64, message: &str) -> String {
 }
 
 /// An MCP tool result reporting success (`isError: false`).
+/// What `done` asks for in `summary`: the whole report, because it is the
+/// one thing the reviewer reads. There used to be a structured
+/// `completion_report` beside a one-sentence summary; the card it drew was
+/// noise under a sentence too short to stand alone, and the detail lived in
+/// the activity log nobody should have to open. Now the summary carries it.
+const SUMMARY_DESCRIPTION: &str = "The full report of this phase, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.";
+
 /// What `set_topic` says about itself on every `tools/list`. The cold prompt
 /// asks for the call; this is what is still in context when the agent makes
 /// it, so it carries the shape rule itself.
@@ -1377,17 +1371,49 @@ mod tests {
         }
     }
 
+    /// The summary IS the report: the one thing the reviewer reads, so the
+    /// schema asks for the whole of it rather than a sentence with a card
+    /// of lists under it. And it is the only place a report is asked for.
     #[test]
-    fn summary_schema_asks_for_one_concise_outcome() {
+    fn summary_schema_asks_for_the_full_report_and_nothing_else_does() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
-        let desc = v["result"]["tools"][2]["inputSchema"]["properties"]["summary"]["description"]
+        let schema = &v["result"]["tools"][2]["inputSchema"];
+        let desc = schema["properties"]["summary"]["description"]
             .as_str()
             .unwrap()
             .to_lowercase();
-        assert!(desc.contains("one concise sentence"), "{desc}");
-        assert!(desc.contains("no file list"), "{desc}");
-        assert!(!desc.contains("bullet"), "{desc}");
+        assert!(desc.contains("full report"), "{desc}");
+        assert!(desc.contains("markdown"), "{desc}");
+        for asked in [
+            "what changed and where",
+            "verified",
+            "reverse-engineer",
+            "left out",
+        ] {
+            assert!(desc.contains(asked), "{asked}: {desc}");
+        }
+        assert!(desc.contains("activity log"), "{desc}");
+        assert!(
+            schema["properties"]["outputs"]["properties"]["completion_report"].is_null(),
+            "no structured report beside the summary: {schema}"
+        );
+    }
+
+    /// An agent on an older prompt still sends the structured report. It is
+    /// ignored rather than refused: the `done` it rides is a real outcome.
+    #[test]
+    fn a_done_still_carrying_a_completion_report_is_accepted_without_it() {
+        let h = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"done","arguments":{"phase":"revise","status":"completed","summary":"addressed the notes","outputs":{"completion_report":{"decisions":["kept the old name"]}}}}}"#,
+        );
+        let report = h.report.expect("the outcome is kept");
+        assert_eq!(report.summary, "addressed the notes");
+        assert_eq!(
+            serde_json::to_value(&report.outputs).unwrap(),
+            serde_json::json!({}),
+            "nothing of the old report survives onto the record"
+        );
     }
 
     #[test]
@@ -1477,56 +1503,6 @@ mod tests {
             triage["required"].as_array().unwrap(),
             &vec!["based_on", "hunks"]
         );
-    }
-
-    #[test]
-    fn tools_list_schema_asks_for_the_completion_report_on_build_and_revise() {
-        let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
-        let v = parse(&h.reply.unwrap());
-        let completion = &v["result"]["tools"][2]["inputSchema"]["properties"]["outputs"]
-            ["properties"]["completion_report"];
-
-        assert_eq!(completion["type"], "object");
-        let described = completion["description"].as_str().unwrap();
-        assert!(described.contains("build"), "{described}");
-        assert!(described.contains("revise"), "{described}");
-        for field in ["critical_files", "risk_notes", "decisions", "skips"] {
-            assert_eq!(completion["properties"][field]["type"], "array", "{field}");
-            assert_eq!(
-                completion["properties"][field]["items"]["type"], "string",
-                "{field}"
-            );
-            assert!(
-                completion["properties"][field]["description"].is_string(),
-                "{field} says what belongs in it"
-            );
-        }
-    }
-
-    #[test]
-    fn a_partial_completion_report_leaves_the_other_lists_empty() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"done","arguments":{"phase":"revise","status":"completed","summary":"addressed the notes","outputs":{"completion_report":{"decisions":["kept the old name"]}}}}}"#,
-        );
-        let report = h.report.unwrap().outputs.completion_report.unwrap();
-        assert_eq!(report.decisions, vec!["kept the old name"]);
-        assert!(report.critical_files.is_empty());
-        assert!(report.risk_notes.is_empty());
-        assert!(report.skips.is_empty());
-    }
-
-    #[test]
-    fn a_malformed_completion_report_is_a_tool_error_not_a_silent_drop() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"done","outputs":{"completion_report":{"critical_files":"src/main.rs"}}}}}"#,
-        );
-        let v = parse(&h.reply.unwrap());
-        assert_eq!(v["result"]["isError"], true);
-        assert!(v["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("invalid done arguments"));
-        assert!(h.report.is_none());
     }
 
     #[test]
@@ -1704,16 +1680,6 @@ mod tests {
             assert!(post.action.is_none(), "{arguments}");
             assert!(post.reply.is_some(), "{arguments}");
         }
-    }
-
-    #[test]
-    fn done_carries_the_structured_completion_report() {
-        let h = server().handle_message(
-            r#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build","status":"completed","summary":"done","outputs":{"completion_report":{"critical_files":["src/main.rs"],"risk_notes":["migration"],"decisions":["kept API"],"skips":["load test"]}}}}}"#,
-        );
-        let report = h.report.unwrap().outputs.completion_report.unwrap();
-        assert_eq!(report.critical_files, vec!["src/main.rs"]);
-        assert_eq!(report.skips, vec!["load test"]);
     }
 
     #[test]

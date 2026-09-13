@@ -236,15 +236,12 @@ pub(crate) fn conversation_prompt(prompt: &str) -> String {
 }
 
 /// Close a cold prompt with the durable conversation: the catch-up packet the
-/// caller assembled, and the structured report the last session ended on.
+/// caller assembled. The last session's report is its outcome message, which
+/// is conversation and so already inside the packet.
 ///
 /// Kept newest-first inside the byte bound — a packet clipped from the front
 /// loses the oldest lines rather than the ones that just happened.
-pub(crate) fn append_durable_conversation(
-    mut out: String,
-    catch_up: &str,
-    thread: &crate::thread::Thread,
-) -> String {
+pub(crate) fn append_durable_conversation(mut out: String, catch_up: &str) -> String {
     if !catch_up.is_empty() {
         out.push_str("\nCatch-up packet from the durable conversation (oldest to newest):\n");
         if catch_up.len() <= 12_000 {
@@ -258,11 +255,8 @@ pub(crate) fn append_durable_conversation(
         }
         out.push('\n');
     }
-    if let Some(report) = &thread.last_completion {
-        out.push_str("\nPrevious structured completion report:\n");
-        out.push_str(&serde_json::to_string(report).unwrap_or_default());
-        out.push('\n');
-    }
+    // The previous session's report is its outcome message, and that is
+    // conversation: the packet above already carries it.
     out
 }
 

@@ -64,14 +64,8 @@ fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
         DoneReport {
             phase: DonePhase::Build,
             status: DoneStatus::Completed,
-            summary: "added the key derivation".into(),
-            outputs: DoneOutputs {
-                completion_report: Some(crate::thread::CompletionReport {
-                    critical_files: vec!["crypto.rs — key derivation".into()],
-                    ..Default::default()
-                }),
-                ..DoneOutputs::default()
-            },
+            summary: "Added the key derivation in crypto.rs — key derivation.".into(),
+            outputs: DoneOutputs::default(),
         },
     );
 
@@ -97,7 +91,7 @@ fn a_completed_build_queues_a_triage_pass_for_the_worktrees_agent() {
     );
     assert!(
         queued.said().warm.contains("crypto.rs — key derivation"),
-        "the completion report seeds the pass: {}",
+        "the builder's report seeds the pass: {}",
         queued.said().warm
     );
 }

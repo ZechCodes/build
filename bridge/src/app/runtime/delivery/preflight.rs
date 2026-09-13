@@ -352,7 +352,6 @@ impl AppState {
         crate::orchestrator::append_durable_conversation(
             cold.to_string(),
             &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
-            thread,
         )
     }
 }

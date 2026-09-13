@@ -1,3 +1,4 @@
+use crate::api::API_VERSION;
 use crate::app::{
     agent_attach, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello, stream_start,
     term_ack, term_attach, term_create, term_input, term_resize, AppState, DeliveryRunner,
@@ -58,6 +59,7 @@ pub(in crate::app) fn dispatch_frame(
             app.changes()
         };
         changes.unsubscribe(sender.session_id());
+        timer.clock().clients().forget(sender.session_id());
         return json!({ "ok": true });
     }
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
@@ -78,7 +80,7 @@ pub(in crate::app) fn dispatch_frame(
         // capabilities that need somewhere to send to — the subscription
         // itself. Needs the caller's own `SessionSender`, which is why it is
         // here and not in `route`.
-        "session.hello" => session_hello(state, &sender, &timer),
+        "session.hello" => session_hello(state, &sender, &params, &timer),
         // Answered from the frame clock alone, never from `AppState`: the frame
         // that asks what is wedging the daemon must not queue behind the wedge.
         "bridge.stats" => Ok(timer.clock().stats()),
@@ -312,6 +314,7 @@ impl AppState {
             // invalidate for it, and an old client ignores the extra field.
             "ping" => Ok(json!({
                 "pong": true,
+                "api_version": API_VERSION,
                 "push_events": true,
                 "message_context": { "version": 1 },
             })),

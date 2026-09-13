@@ -36,7 +36,16 @@ import { pageVisible, whenVisible } from "./visibility.js";
  *  on. */
 export const SAFETY_POLL_MS = 60000;
 
+/** The wire API majors this build of the SPA speaks, declared in every
+ *  greeting so `bridge.stats` can count who is still on which. */
+export const SPA_API_RANGE = ">=1.0.0 <2.0.0";
+
+/** What a bridge that reports no `api_version` is taken to speak: pre-alpha,
+ *  handled by method-refusal probing. */
+const PRE_ALPHA_API_VERSION = "0.0.0";
+
 let armed = false;
+let lastApiVersion = PRE_ALPHA_API_VERSION;
 const watchers = new Set();
 let visibilityWired = false;
 
@@ -57,6 +66,12 @@ export function changeEventsArmed() {
   return armed;
 }
 
+/** The `api_version` the last greeting reported — `0.0.0` for a bridge that
+ *  reported none, or refused the greeting altogether. */
+export function bridgeApiVersion() {
+  return lastApiVersion;
+}
+
 /** The interval a surface polling every `fastMs` should actually run at. Event
  *  mode stands a fast poll down to the safety poll and leaves a slow one alone —
  *  standing down must never mean speeding up. */
@@ -69,6 +84,7 @@ export function resetChangeEvents() {
   watchers.forEach((watcher) => clearInterval(watcher.timer));
   watchers.clear();
   armed = false;
+  lastApiVersion = PRE_ALPHA_API_VERSION;
 }
 
 /** The ids a watcher stands for right now. Read at delivery, never at mount:
@@ -197,16 +213,28 @@ export function refetchEverything() {
  * feature detection, and it is the whole of it — the client goes back to
  * polling with nothing to configure.
  */
+/** Who is greeting: this SPA, the build it was stamped as (the git SHA in a
+ *  CI build, `dev` otherwise — the same value the version watcher compares),
+ *  and the API range it speaks. */
+function clientDeclaration() {
+  return {
+    name: "spa",
+    version: import.meta.env.VITE_BUILD_VERSION || "dev",
+    api_range: SPA_API_RANGE,
+  };
+}
+
 export async function greetBridge(call, { isCurrent = () => true, onGreeting = () => {} } = {}) {
   let greeting = null;
   try {
-    greeting = await call("session.hello");
+    greeting = await call("session.hello", { client: clientDeclaration() });
   } catch {
     greeting = null; // an old bridge, or one that dropped mid-greeting
   }
   // A slower old device can answer after another session has been adopted.
   // Its features and gap belong to that old session, not the current app.
   if (!isCurrent()) return changeEventsArmed();
+  lastApiVersion = String(greeting?.api_version || PRE_ALPHA_API_VERSION);
   onGreeting(greeting);
   armChangeEvents(greeting);
   refetchEverything();

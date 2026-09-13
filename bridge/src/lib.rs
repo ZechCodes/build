@@ -44,6 +44,7 @@
 
 pub mod agent;
 pub mod agent_modes;
+pub mod api;
 pub mod app;
 pub mod attention;
 pub mod backoff;

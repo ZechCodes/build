@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::API_VERSION;
 
 // ==== Push invalidation ====================================================
 
@@ -83,6 +84,79 @@ async fn the_greeting_announces_push_events() {
     assert_eq!(ping["result"]["pong"], true, "{ping:?}");
     assert_eq!(ping["result"]["push_events"], true, "{ping:?}");
     assert_eq!(ping["result"]["message_context"]["version"], 1, "{ping:?}");
+}
+
+/// Step 2.0 of the wire spec: the greeting and the probe both say which API
+/// this bridge speaks, so a client can pick an adapter without guessing.
+#[tokio::test]
+async fn the_greeting_and_the_probe_report_the_api_version() {
+    let (dir, repo) = init_repo();
+    let (_state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+
+    let hello = call(&handler, "session.hello", json!({}));
+    assert_eq!(hello["result"]["api_version"], API_VERSION, "{hello:?}");
+
+    let ping = call(&handler, "ping", json!({}));
+    assert_eq!(ping["result"]["api_version"], API_VERSION, "{ping:?}");
+}
+
+/// What a client declares about itself is counted per live session, by the
+/// range it asked for, so dropping a major is a decision made from numbers.
+/// A session that declared nothing — or nonsense — is a live client too, and
+/// counts as `unknown` rather than being refused.
+#[tokio::test]
+async fn bridge_stats_counts_live_clients_by_declared_range() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+    let greet = |session: &str, params: Value| {
+        let reply = handler.call(
+            SessionSender::detached(session),
+            req("session.hello", params),
+        );
+        assert_eq!(reply["ok"], true, "{reply:?}");
+    };
+
+    greet(
+        "spa-1",
+        json!({ "client": { "name": "spa", "version": "abc123", "api_range": ">=1.0.0 <2.0.0" } }),
+    );
+    greet(
+        "spa-2",
+        json!({ "client": { "api_range": ">=1.0.0 <2.0.0" } }),
+    );
+    greet("old", json!({}));
+    greet("odd", json!({ "client": "not an object" }));
+    greet("odder", json!({ "client": { "api_range": 7 } }));
+    // A reconnect greets again on the same session: still one client.
+    greet(
+        "spa-1",
+        json!({ "client": { "api_range": ">=1.0.0 <2.0.0" } }),
+    );
+
+    let stats = call(&handler, "bridge.stats", json!({}));
+    assert_eq!(
+        stats["result"]["clients"],
+        json!({ ">=1.0.0 <2.0.0": 2, "unknown": 3 }),
+        "{stats:?}"
+    );
+
+    let close = Frame {
+        session_id: "spa-1".into(),
+        message_id: String::new(),
+        frame_type: transport::CLOSE_FRAME_TYPE.into(),
+        sender: transport::SENDER_DEVICE.into(),
+        created_at: String::new(),
+        payload: Value::Null,
+    };
+    handler.call(SessionSender::detached("spa-1"), close);
+    drop(state);
+
+    let stats = call(&handler, "bridge.stats", json!({}));
+    assert_eq!(
+        stats["result"]["clients"],
+        json!({ ">=1.0.0 <2.0.0": 1, "unknown": 3 }),
+        "{stats:?}"
+    );
 }
 
 /// Greeting twice — a browser that reconnected — leaves one subscription,

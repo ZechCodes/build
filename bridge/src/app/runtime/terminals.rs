@@ -1,3 +1,5 @@
+use crate::api::clients::DeclaredClient;
+use crate::api::API_VERSION;
 use crate::app::{
     capture_conversation_names, err, record_idle_in_thread, require_str, spawn_tab_pumps, AppState,
     HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
@@ -202,14 +204,20 @@ pub(in crate::app) fn terminal_size(cols: u16, rows: u16) -> PtySize {
 pub(in crate::app) fn session_hello(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
+    params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    // The subscribe happens with the app mutex released — it takes the bus's
-    // own leaf lock, and nothing in this daemon may nest one lock inside
-    // another it did not have to.
+    // The subscribe and the client record both happen with the app mutex
+    // released — each takes its own leaf lock, and nothing in this daemon may
+    // nest one lock inside another it did not have to.
     let changes = timer.lock(state).changes();
     changes.subscribe(sender);
+    timer.clock().clients().record(
+        sender.session_id(),
+        DeclaredClient::from_hello_params(params),
+    );
     Ok(json!({
+        "api_version": API_VERSION,
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,

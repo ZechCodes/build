@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::api::clients::ClientRegistry;
+
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
 /// above it a human is already waiting and wants to know which of the four
@@ -79,6 +81,9 @@ pub struct FrameClock {
     served: AtomicU64,
     slow: AtomicU64,
     sink: SlowFrameSink,
+    /// What each live session declared in its greeting — its own leaf, read
+    /// by `bridge.stats` beside the counters.
+    clients: ClientRegistry,
 }
 
 impl FrameClock {
@@ -96,6 +101,7 @@ impl FrameClock {
             served: AtomicU64::new(0),
             slow: AtomicU64::new(0),
             sink,
+            clients: ClientRegistry::new(),
         })
     }
 
@@ -117,6 +123,13 @@ impl FrameClock {
         self.queued().start(method)
     }
 
+    /// The live sessions' declared clients. Lives here because this is the
+    /// one thing every frame can reach without the app mutex, and the stats
+    /// that count them must stay reachable while that mutex is wedged.
+    pub fn clients(&self) -> &ClientRegistry {
+        &self.clients
+    }
+
     /// The counters `bridge.stats` answers with.
     pub fn stats(&self) -> Value {
         let methods = self.methods.read().unwrap();
@@ -135,6 +148,7 @@ impl FrameClock {
                 None => Value::Null,
             },
             "methods": per_method,
+            "clients": self.clients.counts(),
         })
     }
 

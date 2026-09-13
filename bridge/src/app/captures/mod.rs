@@ -61,7 +61,7 @@ impl AppState {
     /// never starts, never answers, or dies mid-decision costs a routing
     /// decision and never the text: the only part of a capture the user cannot
     /// produce again.
-    pub(in crate::app) fn capture_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_create(&mut self, params: &Value) -> Result<Value, String> {
         let said = require_str(params, "text")?;
         let text = said.trim();
         if text.is_empty() {
@@ -92,7 +92,7 @@ impl AppState {
     /// router offered (`option_id`, or `option_index` counting from the first
     /// one offered). A tapped option reaches the router as words too: the label
     /// the user saw and the destination it stood for.
-    pub(in crate::app) fn capture_answer(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_answer(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         let capture = self
             .captures
@@ -127,7 +127,7 @@ impl AppState {
     /// Only while the capture is still its own presence. Once it became an
     /// issue or a branch, that work is what there is to cancel, and it is
     /// cancelled where it lives.
-    pub(in crate::app) fn capture_cancel(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_cancel(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         let capture = self
             .captures
@@ -157,7 +157,7 @@ impl AppState {
     /// router's own tools use: one path to a destination, so a manual route and
     /// a routed one are the same kind of thing afterwards. With none it re-fires
     /// the router, which is what the one-tap retry on a failed route is.
-    pub(in crate::app) fn capture_reroute(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_reroute(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         if !self.captures.contains_key(&capture_id) {
             return Err(format!("unknown capture_id: {capture_id}"));
@@ -216,7 +216,7 @@ impl AppState {
         }
     }
 
-    pub(in crate::app) fn capture_list(&self) -> Value {
+    pub(crate) fn capture_list(&self) -> Value {
         let captures: Vec<Value> = self
             .captures_oldest_first()
             .into_iter()
@@ -225,7 +225,7 @@ impl AppState {
         json!({ "captures": captures })
     }
 
-    pub(in crate::app) fn capture_get(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn capture_get(&self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         let capture = self
             .captures

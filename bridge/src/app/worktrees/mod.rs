@@ -22,7 +22,7 @@ impl AppState {
     /// names a branch that already exists — here or on a remote — and Build
     /// borrows it a directory, cutting nothing. `name` is words to cut a new
     /// branch after, and no branch of that spelling is consulted.
-    pub(in crate::app) fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let (title, existing_branch, branch) = match (
             params.get("branch").and_then(Value::as_str),
@@ -79,7 +79,7 @@ impl AppState {
     /// (which is both stale-id protection and the execution-time status
     /// recheck), the checkpoint, and the destructive git. Client paths are
     /// ignored and never become an authority in either half.
-    pub(in crate::app) fn worktree_finish(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn worktree_finish(&mut self, params: &Value) -> Result<Value, String> {
         match self.plan_worktree_finish(params)? {
             PlannedFinish::Settled(value) => Ok(value),
             PlannedFinish::Deferred(job) => {
@@ -152,7 +152,7 @@ impl AppState {
     /// `branch.get` — resolve `(project_id, branch)` to the work item behind
     /// it, with the full underlying run view (`run_view`) when a run owns the
     /// branch and `run: null` when the checkout is bare.
-    pub(in crate::app) fn branch_get(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn branch_get(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let branch = require_str(params, "branch")?;
         if !self.projects.iter().any(|p| p.id == project_id) {
@@ -224,7 +224,7 @@ impl AppState {
     /// a merge finishes the issue too, and any other ending hands the issue
     /// back to the inbox with an event naming the branch it lost.
     /// `unlink: true` leaves the issue alone either way.
-    pub(in crate::app) fn branch_finish(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn branch_finish(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let branch = require_str(params, "branch")?;
         let action_name = params

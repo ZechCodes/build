@@ -1,0 +1,73 @@
+{
+  "method": "thread.page",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "run-7",
+    "agent_id": "agent-1",
+    "before_sequence": 41,
+    "limit": 20
+  },
+  "result": {
+    "id": "conversation-3",
+    "agent": {
+      "id": "agent-1"
+    },
+    "sessions": [
+      {
+        "id": "session-2",
+        "entity_id": "run-7",
+        "agent_id": "agent-1",
+        "conversation_id": "conversation-3",
+        "provider": "claude",
+        "model": "sonnet",
+        "phase": "build",
+        "started_at": "2026-09-13T10:02:11Z"
+      }
+    ],
+    "items": [
+      {
+        "type": "message",
+        "data": {
+          "id": "message-14",
+          "sequence": 38,
+          "updated_sequence": 0,
+          "role": "user",
+          "body": "the retry path still double-posts",
+          "created_at": "2026-09-13T10:03:04Z"
+        }
+      }
+    ],
+    "activity_digests": [
+      {
+        "from_sequence": 30,
+        "through_sequence": 37,
+        "tool_calls": 6,
+        "rows": 8,
+        "last_tool_call": {
+          "sequence": 37,
+          "created_at": "2026-09-13T10:02:58Z",
+          "summary": "read src/app/conversations/post.rs",
+          "outcome": "ok"
+        }
+      }
+    ],
+    "revisions": [
+      {
+        "id": "revision-2",
+        "artifact": "diff",
+        "content_hash": "9f3c1a0b7e2d4c55",
+        "created_at": "2026-09-13T09:58:00Z",
+        "snapshot_available": true
+      }
+    ],
+    "thread_total": 41,
+    "thread_last_sequence": 38,
+    "oldest_sequence": 30,
+    "has_more": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

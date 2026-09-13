@@ -1,0 +1,66 @@
+{
+  "method": "thread.post",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "run-7",
+    "agent_id": "agent-1",
+    "conversation_id": "conversation-3",
+    "operation_id": "operation-91",
+    "choice_revision": 4,
+    "body": "the retry path still double-posts",
+    "attachments": [
+      { "path": ".build/attachments/3d2a1f0b9c8e-screenshot.png", "name": "screenshot.png" }
+    ],
+    "viewing_context": {
+      "version": 1,
+      "items": [{ "kind": "file", "path": "src/app/conversations/post.rs" }]
+    },
+    "interrupt": false,
+    "thread_limit": 20
+  },
+  "result": {
+    "operation_id": "operation-91",
+    "operation_status": "queued",
+    "method": "thread.post",
+    "entity_id": "run-7",
+    "agent_id": "agent-1",
+    "conversation_id": "conversation-3",
+    "choice_revision": 4,
+    "posted_sequence": 39,
+    "message_start_sequence": 39,
+    "run_id": "run-7",
+    "state": "building"
+  },
+  "errors": ["not_found", "invalid_params", "conflict", "internal"],
+  "operations": {
+    "version": 1,
+    "post_method": "thread.post",
+    "status_method": "thread.operation",
+    "operation_id": {
+      "required_for_idempotency": true,
+      "legacy_omission_allowed": true,
+      "max_bytes": 128
+    },
+    "post_receipt_fields": [
+      "operation_id",
+      "operation_status",
+      "entity_id",
+      "agent_id",
+      "conversation_id",
+      "choice_revision",
+      "message_start_sequence",
+      "posted_sequence"
+    ],
+    "status_receipt_fields": [
+      "operation_id",
+      "status",
+      "entity_id",
+      "agent_id",
+      "conversation_id",
+      "choice_revision",
+      "message_start_sequence",
+      "posted_sequence"
+    ],
+    "statuses": ["queued", "claimed", "delivered", "uncertain"]
+  }
+}

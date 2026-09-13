@@ -1,0 +1,33 @@
+{
+  "method": "worktree.finish",
+  "since": "1.0.0",
+  "params": {
+    "project_id": "proj-1",
+    "worktree_id": "wt-9f3c1a0b",
+    "action": "delete"
+  },
+  "result": {
+    "worktree_id": "wt-9f3c1a0b",
+    "name": "wire",
+    "path": "/home/dev/.build-worktrees/proj/wire",
+    "branch": "build/wire",
+    "head_sha": "1f0c9a7b5e2d4c5566778899aabbccddeeff0011",
+    "upstream": "origin/build/wire",
+    "unpushed": 0,
+    "dirty_files": 0,
+    "uncommitted": {
+      "files_changed": 0,
+      "insertions": 0,
+      "deletions": 0
+    },
+    "action": "delete",
+    "archived_at": "2026-09-13T10:12:44Z"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

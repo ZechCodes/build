@@ -46,7 +46,7 @@ pub(in crate::app) fn scheduler_request(issue_id: &str, params: &Value) -> Value
 }
 
 impl AppState {
-    pub(in crate::app) fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         self.arm_issue_scheduler(&issue_id, ImplementationIntent::All)?;
         self.implement_issue(&issue_id, params, None)
@@ -93,10 +93,7 @@ impl AppState {
         }
     }
 
-    pub(in crate::app) fn issue_implement_stage(
-        &mut self,
-        params: &Value,
-    ) -> Result<Value, String> {
+    pub(crate) fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let issue = self.plans.get(&issue_id).ok_or("unknown issue_id")?;
@@ -512,10 +509,7 @@ impl AppState {
         self.set_issue_scheduler_activity(issue_id, intent, activity)
     }
 
-    pub(in crate::app) fn issue_set_auto_advance(
-        &mut self,
-        params: &Value,
-    ) -> Result<Value, String> {
+    pub(crate) fn issue_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let run_id = self
             .current_issue_implementation_id(&issue_id)

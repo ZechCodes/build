@@ -109,7 +109,7 @@ impl AppState {
     /// A run always has a plan behind it: the goal-only dispatch is gone, and an
     /// unplanned coding session is now an agent tab (`term.create` with `kind`),
     /// driven by the human who opened it.
-    pub(in crate::app) fn run_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_create(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let job = self.open_implementation(
             &plan_id,
@@ -492,7 +492,7 @@ impl AppState {
 
     /// A freeform message to the run's agent — redirects a live session or
     /// resumes a parked one.
-    pub(in crate::app) fn run_message(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_message(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let message = require_str(params, "message")?;
         let viewing_context = parse_viewing_context(params.get("viewing_context"))?;
@@ -535,7 +535,7 @@ impl AppState {
     /// drain runs is git that cannot fail the verb: the stage publications the
     /// removal is about to make unreadable, the wait for the agents to die, and
     /// the removal itself.
-    pub(in crate::app) fn run_abandon(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_abandon(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let project_id = self.project_of(&run_id)?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
@@ -726,7 +726,7 @@ impl AppState {
     /// Delete a terminal run from the board: prune any leftover worktree,
     /// remove the durable record, drop the bookkeeping. Terminal runs only
     /// (merged/abandoned/archived/failed) — a live run must be abandoned first.
-    pub(in crate::app) fn run_delete(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_delete(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         let state = active.run.state;
@@ -804,7 +804,7 @@ impl AppState {
     /// card is adopted from one place; the repo root is reachable from every
     /// reload and every second browser, and they must all converge on the run
     /// that already owns it.
-    pub(in crate::app) fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let model_choice = model_choice_from(params, self.default_harness)?;
         let base = self.base_for(&project_id)?;
@@ -892,7 +892,7 @@ impl AppState {
     /// a bare worktree's Done control. The run is removed from the active map
     /// only while the server resolves and executes the id-only finish request;
     /// a pre-mutation failure restores it for retry.
-    pub(in crate::app) fn run_finish(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_finish(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let action_name = require_str(params, "action")?;
         match self.plan_finish_run(&run_id, &action_name, FinishRequirement::CompletedWork)? {
@@ -1049,7 +1049,7 @@ impl AppState {
 
     /// Un-adopt: drop the run record and its binding, leaving every file
     /// untouched. Legal on adopted runs in any non-terminal state.
-    pub(in crate::app) fn run_release(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_release(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         if !active.adopted {

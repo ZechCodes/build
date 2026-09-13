@@ -12,7 +12,7 @@ impl AppState {
     /// Register a project from a host path. Validates it is a git repo with the
     /// requested base branch before adding, so a bad path fails loudly here rather
     /// than at first dispatch.
-    pub(in crate::app) fn project_add(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn project_add(&mut self, params: &Value) -> Result<Value, String> {
         let path = require_str(params, "path")?;
         let path = expand_tilde(&path);
         self.defer_project(
@@ -27,7 +27,7 @@ impl AppState {
         )
     }
 
-    pub(in crate::app) fn project_init_git(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn project_init_git(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project = self
             .projects
@@ -78,7 +78,7 @@ impl AppState {
 
     /// Clone a remote into the projects folder and register it as a project. The
     /// base branch defaults to the clone's checked-out branch.
-    pub(in crate::app) fn project_clone(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn project_clone(&mut self, params: &Value) -> Result<Value, String> {
         let url = require_str(params, "url")?;
         let name = match params
             .get("name")
@@ -110,7 +110,7 @@ impl AppState {
     /// resolves and tasks can dispatch) inside `parent` — a browsed-to directory,
     /// or the projects folder by default — and register it. An optional `remote`
     /// is wired as `origin` at creation.
-    pub(in crate::app) fn project_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn project_create(&mut self, params: &Value) -> Result<Value, String> {
         let name = usable_project_name(require_str(params, "name")?)?;
         let base_branch = params
             .get("base_branch")
@@ -149,7 +149,7 @@ impl AppState {
     }
 
     /// Set (or clear, with an empty url) a project's `origin` remote.
-    pub(in crate::app) fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
         let project = self
@@ -182,10 +182,7 @@ impl AppState {
     /// account's isolation. The choice is put to this project's volume before
     /// it is stored, so a client only ever repaints from a row the bridge would
     /// honour; naming no isolation at all is a missing param, not a clear.
-    pub(in crate::app) fn project_set_isolation(
-        &mut self,
-        params: &Value,
-    ) -> Result<Value, String> {
+    pub(crate) fn project_set_isolation(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project = self
             .projects

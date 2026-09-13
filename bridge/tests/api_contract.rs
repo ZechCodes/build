@@ -13,97 +13,32 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Methods still answered by the legacy `route` table rather than `api::v1`.
-/// Each may have a fixture without a v1 registration; the list shrinks as the
-/// families convert and the integration stage empties it.
+/// Methods answered outside `api::v1`, on purpose. Each may have a fixture
+/// without a v1 registration, and none may ever gain one: the test below
+/// fails the moment a family registers a name listed here.
+///
+/// Why each stays: `session.hello`, `term.attach`, `term.ack`, `rtc.*` and
+/// `agent.attach` need the caller's own `SessionSender` (somewhere to push
+/// to); `term.create`, `term.input`, `term.resize`, `agent.start` and
+/// `stream.start` need the shared `Arc` (a producer, pump or delivery runner
+/// to spawn); `bridge.stats` is answered from the frame clock so it can never
+/// queue behind a wedged lock; `ping` is the probe an old client sends before
+/// it knows what version it is talking to; `term.list` and `term.close` are
+/// the terminal family's session-free reads, kept beside the rest of `term.*`
+/// so the whole family moves together; `stream.events` and `stream.state`
+/// are QA fixtures behind `BRIDGE_QA_AGENT=1`, not part of the wire.
 const LEGACY_METHODS: &[&str] = &[
-    "agent.add",
     "agent.attach",
-    "agent.choose",
-    "agent.list",
-    "agent.remove",
     "agent.start",
-    "archive.list",
-    "archived.list",
-    "board.list",
-    "branch.dispatch",
-    "branch.finish",
-    "branch.get",
     "bridge.stats",
-    "capture.answer",
-    "capture.cancel",
-    "capture.create",
-    "capture.get",
-    "capture.list",
-    "capture.reroute",
-    "entity.dismiss",
-    "entity.mute",
-    "entity.seen",
-    "issue.approve",
-    "issue.archive",
-    "issue.comment_add",
-    "issue.comment_delete",
-    "issue.create",
-    "issue.delete",
-    "issue.doc",
-    "issue.get",
-    "issue.git_action",
-    "issue.implement_all",
-    "issue.implement_stage",
-    "issue.list",
-    "issue.request_changes",
-    "issue.send_notes",
-    "issue.set_auto_advance",
-    "issue.stage_approve",
-    "issue.stage_doc",
-    "issue.stage_fix",
-    "issue.stage_revise",
-    "issue.stages",
-    "models.list",
     "ping",
-    "plan.abandon",
-    "plan.approve",
-    "plan.archive",
-    "plan.comment_add",
-    "plan.comment_delete",
-    "plan.create",
-    "plan.delete",
-    "plan.doc",
-    "plan.get",
-    "plan.list",
-    "plan.message",
-    "plan.send_notes",
-    "plan.stage_approve",
-    "plan.stage_doc",
-    "plan.stage_send_notes",
-    "plan.stages",
-    "project.add",
-    "project.clone",
-    "project.create",
-    "project.init_git",
-    "project.list",
-    "project.set_isolation",
-    "project.set_remote",
     "rtc.close",
     "rtc.ice",
     "rtc.offer",
-    "run.abandon",
-    "run.adopt",
-    "run.create",
-    "run.delete",
-    "run.finish",
-    "run.get",
-    "run.git_action",
-    "run.message",
-    "run.release",
-    "run.request_changes",
-    "run.set_auto_advance",
-    "run.stage_dispatch",
-    "run.stage_fix",
-    "run.stage_send_notes",
     "session.hello",
-    "settings.get",
-    "settings.set",
+    "stream.events",
+    "stream.start",
+    "stream.state",
     "term.ack",
     "term.attach",
     "term.close",
@@ -111,16 +46,6 @@ const LEGACY_METHODS: &[&str] = &[
     "term.input",
     "term.list",
     "term.resize",
-    "thread.activity",
-    "thread.attach",
-    "thread.attachment",
-    "thread.operation",
-    "thread.page",
-    "thread.post",
-    "thread.revision",
-    "triage.override",
-    "worktree.create",
-    "worktree.finish",
 ];
 
 fn fixtures_root() -> PathBuf {

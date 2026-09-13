@@ -4,11 +4,10 @@ use crate::app::{
     term_ack, term_attach, term_create, term_input, term_resize, AppState, DeliveryRunner,
 };
 use crate::carrier::{FrameHandler, SessionSender};
-use crate::harness::harness_for;
 use crate::orchestrator::OrchestratorError;
 use crate::timing::FrameTimer;
+use crate::transport;
 use crate::transport::Frame;
-use crate::{models, transport};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -167,7 +166,7 @@ fn routed(
             timer
                 .lock(state)
                 .apply_deferred(method, params, done)
-                .map_err(ApiError::from)
+                .map_err(ApiError::classify)
         }
         None => dispatched,
     };
@@ -179,21 +178,6 @@ fn routed(
         DeliveryRunner::drain(state, timer);
     }
     dispatched
-}
-
-/// Copy a canonical opaque id into the legacy parameter name consumed by the
-/// compatibility implementation. If an old client already sent the legacy
-/// name it remains untouched.
-pub(in crate::app) fn alias_param(params: &Value, canonical: &str, legacy: &str) -> Value {
-    let mut aliased = params.clone();
-    if aliased.get(legacy).is_none() {
-        if let Some(value) = aliased.get(canonical).cloned() {
-            if let Some(object) = aliased.as_object_mut() {
-                object.insert(legacy.to_string(), value);
-            }
-        }
-    }
-    aliased
 }
 
 /// The entity ids a frame names — in the params it was called with, and in the
@@ -342,7 +326,7 @@ impl AppState {
             Some(deferred) => {
                 let done = deferred.run();
                 self.apply_deferred(method, params, done)
-                    .map_err(ApiError::from)
+                    .map_err(ApiError::classify)
             }
             None => outcome,
         }
@@ -368,9 +352,13 @@ impl AppState {
         }
     }
 
-    /// The verbs still answered by hand, ahead of their family's conversion.
-    /// `None` is "no such verb here", which [`AppState::route`] turns into
-    /// `unknown_method`.
+    /// The verbs answered by hand rather than through [`api::v1`]: the probe,
+    /// the QA stream fixtures, and the two terminal reads that need no
+    /// session. Every verb family has converted; what is left here is not a
+    /// family. `None` is "no such verb here", which [`AppState::route`] turns
+    /// into `unknown_method`.
+    ///
+    /// [`api::v1`]: crate::api::v1
     pub(in crate::app) fn route_legacy(
         &mut self,
         method: &str,
@@ -386,121 +374,6 @@ impl AppState {
                 "push_events": true,
                 "message_context": { "version": 1 },
             })),
-            // What a start leads with is the account's answer, so the default
-            // provider is the account's default harness. `models`/`efforts` are
-            // that harness's catalog, repeated at the top level for clients
-            // that predate `providers`.
-            "models.list" => Ok(json!({
-                "models": harness_for(self.default_harness).models(),
-                "efforts": harness_for(self.default_harness).effort_levels(),
-                "default_provider": self.default_harness,
-                "agent_modes": self.agent_modes,
-                "providers": models::provider_catalogs(),
-            })),
-            "thread.revision" => self.thread_revision(params),
-            "thread.page" => self.thread_page(params),
-            "thread.activity" => self.thread_activity(params),
-            "thread.post" => self.thread_post(params),
-            "thread.operation" => self.thread_operation(params),
-            "thread.attach" => self.thread_attach(params),
-            "thread.attachment" => self.thread_attachment(params),
-            "settings.get" => Ok(self.settings_get()),
-            "settings.set" => self.settings_set(params),
-            "project.list" => Ok(self.defer_project_list()),
-            "project.add" => self.project_add(params),
-            "project.init_git" => self.project_init_git(params),
-            "project.create" => self.project_create(params),
-            "project.clone" => self.project_clone(params),
-            "project.set_remote" => self.project_set_remote(params),
-            "project.set_isolation" => self.project_set_isolation(params),
-            "board.list" => Ok(self.board_list()),
-            // Capture surface: what the user said, kept before anything routes it.
-            "capture.create" => self.capture_create(params),
-            "capture.list" => Ok(self.capture_list()),
-            "capture.get" => self.capture_get(params),
-            "capture.answer" => self.capture_answer(params),
-            "capture.reroute" => self.capture_reroute(params),
-            "capture.cancel" => self.capture_cancel(params),
-            "archive.list" => self.archive_list(params),
-            "archived.list" => Ok(self.archived_list()),
-            // Canonical Issue surface. The existing plan id and plan-store path
-            // remain the durable identity/location; plan.* below is the
-            // deprecated wire adapter for existing clients.
-            "issue.create" => self.plan_create(params),
-            "issue.get" => self.plan_get(&alias_param(params, "issue_id", "plan_id")),
-            "issue.list" => Ok(self.issue_list()),
-            "issue.doc" => self.plan_doc(&alias_param(params, "issue_id", "plan_id")),
-            "issue.stages" => self.issue_stages(params),
-            "issue.stage_doc" => self.plan_stage_doc(&alias_param(params, "issue_id", "plan_id")),
-            "issue.approve" => self.plan_approve(&alias_param(params, "issue_id", "plan_id")),
-            "issue.send_notes" => self.plan_send_notes(&alias_param(params, "issue_id", "plan_id")),
-            "issue.stage_approve" => {
-                self.plan_stage_approve(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.stage_revise" => {
-                self.plan_stage_send_notes(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.implement_stage" => self.issue_implement_stage(params),
-            "issue.implement_all" => self.issue_implement_all(params),
-            "issue.set_auto_advance" => self.issue_set_auto_advance(params),
-            "issue.stage_fix" => self.issue_run_action(params, "fix"),
-            "issue.request_changes" => self.issue_run_action(params, "request_changes"),
-            "issue.git_action" => self.issue_run_action(params, "git_action"),
-            "issue.comment_add" => {
-                self.plan_comment_add(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.comment_delete" => {
-                self.plan_comment_delete(&alias_param(params, "issue_id", "plan_id"))
-            }
-            "issue.archive" => self.plan_archive(&alias_param(params, "issue_id", "plan_id")),
-            "issue.delete" => self.plan_delete(&alias_param(params, "issue_id", "plan_id")),
-            // Plan surface (project-scoped): keyed by plan_id, docs from store.
-            "plan.create" => self.plan_create(params),
-            "plan.get" => self.plan_get(params),
-            "plan.list" => Ok(self.plan_list()),
-            "plan.doc" => self.plan_doc(params),
-            "plan.stages" => self.plan_stages(params),
-            "plan.stage_doc" => self.plan_stage_doc(params),
-            "plan.approve" => self.plan_approve(params),
-            "plan.send_notes" => self.plan_send_notes(params),
-            "plan.stage_approve" => self.plan_stage_approve(params),
-            "plan.stage_send_notes" => self.plan_stage_send_notes(params),
-            "plan.comment_add" => self.plan_comment_add(params),
-            "plan.comment_delete" => self.plan_comment_delete(params),
-            "plan.message" => self.plan_message(params),
-            "plan.abandon" => self.plan_abandon(params),
-            "plan.delete" => self.plan_delete(params),
-            "plan.archive" => self.plan_archive(params),
-            // Run surface (worktree-scoped): keyed by run_id.
-            "run.create" => self.run_create(&alias_param(params, "issue_id", "plan_id")),
-            "run.get" => self.run_get(params),
-            "run.request_changes" => self.run_request_changes(params),
-            "run.stage_dispatch" => self.run_stage_dispatch(params),
-            "run.stage_fix" => self.run_stage_fix(params),
-            "run.stage_send_notes" => self.run_stage_send_notes(params),
-            "run.set_auto_advance" => self.run_set_auto_advance(params),
-            "run.git_action" => self.run_git_action(params),
-            "run.message" => self.run_message(params),
-            "run.abandon" => self.run_abandon(params),
-            "run.delete" => self.run_delete(params),
-            "run.adopt" => self.run_adopt(params),
-            "run.release" => self.run_release(params),
-            "run.finish" => self.run_finish(params),
-            // Branch surface: the work item the feed and the URLs speak, over
-            // whichever of run / worktree / primary checkout stores it.
-            "branch.get" => self.branch_get(params),
-            "branch.dispatch" => self.branch_dispatch(params),
-            "branch.finish" => self.branch_finish(params),
-            "worktree.create" => self.worktree_create(params),
-            "worktree.finish" => self.worktree_finish(params),
-            "entity.seen" => self.entity_seen(params),
-            "entity.mute" => self.entity_mute(params),
-            "entity.dismiss" => self.entity_dismiss(params),
-            "triage.override" => self.triage_override(params),
-            "agent.add" => self.agent_add(params),
-            "agent.choose" => self.agent_choose(params),
-            "agent.remove" => self.agent_remove(params),
-            "agent.list" => self.agent_list(params),
             // QA-only (`BRIDGE_QA_AGENT=1`), and unknown to everyone else: the
             // scripted stream is a test fixture, not part of `api/v1`.
             "stream.events" if self.qa_agent => self.stream_events(params),

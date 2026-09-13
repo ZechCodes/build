@@ -242,11 +242,17 @@ fn delta_path(delta: &git2::DiffDelta) -> String {
 /// The options both dirty-workdir paths share. `with_untracked_content` is the
 /// one difference: the review surface loads new files so it can print them, the
 /// stat surface never does — it counts their lines off disk instead.
+///
+/// The `a/` and `b/` prefixes are pinned: libgit2 otherwise honours the
+/// machine's own `diff.mnemonicPrefix`, and a hunk id hashed over `i/` and
+/// `w/` would not be the id every other device computes.
 fn dirty_workdir_options(with_untracked_content: bool) -> git2::DiffOptions {
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(with_untracked_content)
+        .old_prefix("a")
+        .new_prefix("b")
         .max_size(LARGE_FILE_BYTES as i64);
     opts
 }

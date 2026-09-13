@@ -1,0 +1,102 @@
+{
+  "method": "models.list",
+  "since": "1.0.0",
+  "params": {},
+  "result": {
+    "models": [
+      {
+        "id": "claude-opus-5",
+        "label": "Claude Opus 5",
+        "supports_effort": true,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      {
+        "id": "claude-haiku-4-5",
+        "label": "Claude Haiku 4.5",
+        "supports_effort": false,
+        "efforts": []
+      }
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "default_provider": "claude_adk",
+    "agent_modes": {
+      "claude": "headless",
+      "codex": "tui"
+    },
+    "providers": [
+      {
+        "id": "claude_adk",
+        "label": "Claude Code",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "models": [
+          {
+            "id": "claude-opus-5",
+            "label": "Claude Opus 5",
+            "supports_effort": true,
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          {
+            "id": "claude-haiku-4-5",
+            "label": "Claude Haiku 4.5",
+            "supports_effort": false,
+            "efforts": []
+          }
+        ]
+      },
+      {
+        "id": "codex_app_server",
+        "label": "Codex",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "models": [
+          {
+            "id": "gpt-6-astra",
+            "label": "GPT-6-Astra",
+            "supports_effort": true,
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "errors": [
+    "internal"
+  ]
+}

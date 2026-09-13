@@ -209,7 +209,7 @@ impl AppState {
     /// Writing is deliberately separate from posting: the bytes are on disk and
     /// verified before the message that references them exists, so a message can
     /// never point at an upload that failed halfway.
-    pub(in crate::app) fn thread_attach(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn thread_attach(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let filename = require_str(params, "filename")?;
         let content = b64decode(&require_str(params, "content_b64")?)?;
@@ -258,7 +258,7 @@ impl AppState {
     /// Hand an attachment's bytes back to the surface that sent it. The browser
     /// cannot reach the disk, and routing the read through the entity means no
     /// caller has to know (or can get wrong) which checkout the file landed in.
-    pub(in crate::app) fn thread_attachment(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn thread_attachment(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let path = require_str(params, "path")?;
         let target = self.resolve_attachment(&entity_id, &path)?;

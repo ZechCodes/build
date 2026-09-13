@@ -1,0 +1,28 @@
+{
+  "method": "project.init_git",
+  "since": "1.0.0",
+  "params": {
+    "project_id": "proj-3"
+  },
+  "result": {
+    "project_id": "proj-3",
+    "name": "notes",
+    "path": "/home/ada/code/notes",
+    "base_branch": "main",
+    "is_git": true,
+    "remote": null,
+    "isolation": null,
+    "isolation_default": "worktree",
+    "isolation_effective": "worktree",
+    "isolation_available": {
+      "cow": false,
+      "reason": "this volume does not support copy-on-write cloning (Operation not supported (os error 95))"
+    }
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
+}

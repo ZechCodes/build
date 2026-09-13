@@ -34,7 +34,7 @@ pub mod thread;
 use crate::api::ApiError;
 use crate::app::AppState;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -163,6 +163,12 @@ pub trait WireParams: Serialize {
 
 impl<T: Serialize> WireParams for T {}
 
+/// A verb that names nothing but itself — a read of what the account holds
+/// (`board.list`, `issue.list`, `settings.get`, ...). One type for every
+/// family, so "takes nothing" is spelled once.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct NoParams {}
+
 /// Parse `params` into `P`, naming a missing field the way every bridge verb
 /// always has (`missing required param: <field>`).
 pub fn parse_params<P: DeserializeOwned>(params: &Value) -> Result<P, ApiError> {
@@ -253,6 +259,46 @@ pub fn dispatch(
 ) -> Option<Result<Value, ApiError>> {
     let handler = registry().get(method)?;
     Some((handler.call)(app, params))
+}
+
+/// What every family's unit tests hold their fixtures to. The contract test
+/// in `tests/api_contract.rs` sweeps every family at once; a family's own
+/// tests call these per verb, so a shape that drifts names the verb that
+/// drifted.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::Handler;
+    use serde_json::Value;
+    use std::path::Path;
+
+    /// `fixtures/api/v1/<method>.json`, parsed.
+    pub(crate) fn fixture(method: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/api/v1")
+            .join(format!("{method}.json"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        serde_json::from_str(&text).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+    }
+
+    /// The fixture for `method`, held to the types `family` registers for it:
+    /// its params parse, and its result comes back out of the typed result
+    /// exactly as it went in.
+    pub(crate) fn fixture_round_trips(family: &[(&str, Handler)], method: &str) {
+        let fixture = fixture(method);
+        assert_eq!(fixture["method"], method, "the fixture names its method");
+        let (_, handler) = family
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap_or_else(|| panic!("{method} is not registered"));
+        handler
+            .parse_params(&fixture["params"])
+            .unwrap_or_else(|error| panic!("{method}: params do not parse: {error}"));
+        let round_tripped = handler
+            .round_trip_result(&fixture["result"])
+            .unwrap_or_else(|error| panic!("{method}: result does not parse: {error}"));
+        assert_eq!(round_tripped, fixture["result"], "{method}");
+    }
 }
 
 #[cfg(test)]

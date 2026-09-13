@@ -200,17 +200,32 @@ impl ApiError {
     /// <thing>`), and `internal` for everything else — which a test counts,
     /// so the list shrinks over time.
     pub fn classify(message: String) -> ApiError {
-        if message.starts_with("missing required param")
-            || message.starts_with("missing scope")
-            || message.contains(" must ")
-            || message.contains(" cannot be ")
+        let sentence = Self::unlabelled(&message);
+        if sentence.starts_with("missing required param")
+            || sentence.starts_with("missing scope")
+            || sentence.starts_with("provide exactly one of")
+            || sentence.contains(" must ")
+            || sentence.contains(" cannot be ")
         {
             return ApiError::invalid_params(message);
         }
-        if message.starts_with("unknown ") && !message.starts_with("unknown method") {
+        if sentence.starts_with("unknown ") && !sentence.starts_with("unknown method") {
             return ApiError::not_found(message);
         }
         ApiError::internal(message)
+    }
+
+    /// The sentence behind a verb's own label: some handlers write
+    /// `entity.mute: unknown entity run-7`, and the label is not the refusal.
+    fn unlabelled(message: &str) -> &str {
+        match message.split_once(": ") {
+            Some((label, rest))
+                if label.contains('.') && !label.contains(' ') && !rest.is_empty() =>
+            {
+                rest
+            }
+            _ => message,
+        }
     }
 }
 
@@ -278,6 +293,27 @@ mod tests {
         let bare = ApiError::internal("boom").into_reply(json!(1));
         assert!(bare.get("details").is_none());
         assert_eq!(bare["error_code"], "internal");
+    }
+
+    #[test]
+    fn classify_reads_past_a_verb_label_and_names_a_scope_complaint() {
+        assert_eq!(
+            ApiError::classify("entity.mute: unknown entity run-7".into()).code(),
+            "not_found"
+        );
+        assert_eq!(
+            ApiError::classify(
+                "provide exactly one of project_id, run_id, or project_id + worktree_id".into()
+            )
+            .code(),
+            "invalid_params"
+        );
+        // A label is a verb name, not any prefix: a sentence with a colon in it
+        // is still read whole.
+        assert_eq!(
+            ApiError::classify("git switch failed: unknown ref".into()).code(),
+            "internal"
+        );
     }
 
     #[test]

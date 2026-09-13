@@ -58,19 +58,34 @@ fn a_success_reply_carries_no_error_fields() {
 }
 
 #[test]
-fn v1_serves_the_git_family_and_the_legacy_route_no_longer_does() {
+fn v1_serves_every_family_and_the_legacy_route_answers_none_of_them() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = project_id_of(&mut state);
     let params = json!({ "project_id": project_id });
-    assert!(crate::api::v1::dispatch(&mut state, "git.status", &params).is_some());
-    assert!(crate::api::v1::dispatch(&mut state, "fs.list", &json!({})).is_some());
-    assert!(crate::api::v1::dispatch(&mut state, "board.list", &json!({})).is_none());
-    // ... and the legacy table has no arm left for it, so nothing can answer
-    // a git verb twice or drift between the two answers.
-    assert!(state.route_legacy("git.status", &params).is_none());
-    assert!(state.route_legacy("fs.list", &json!({})).is_none());
-    assert!(state.route_legacy("board.list", &json!({})).is_some());
+    for (method, params) in [
+        ("git.status", &params),
+        ("fs.list", &json!({})),
+        ("board.list", &json!({})),
+        ("thread.page", &json!({})),
+        ("issue.list", &json!({})),
+        ("run.get", &json!({})),
+    ] {
+        assert!(
+            crate::api::v1::dispatch(&mut state, method, params).is_some(),
+            "{method}: v1 serves it"
+        );
+        // ... and the legacy table has no arm left for it, so nothing can
+        // answer a verb twice or drift between the two answers.
+        assert!(
+            state.route_legacy(method, params).is_none(),
+            "{method}: the legacy route still has an arm"
+        );
+    }
+    // The probe is the one verb an old client sends before it knows what it
+    // is talking to, so it stays where it always was.
+    assert!(crate::api::v1::dispatch(&mut state, "ping", &json!({})).is_none());
+    assert!(state.route_legacy("ping", &json!({})).is_some());
 }
 
 #[test]
@@ -95,4 +110,69 @@ fn the_qa_stream_verbs_are_unknown_unless_the_qa_agent_is_on() {
     let refused = qa.handle(req("stream.state", json!({ "stream_id": "stream-1" })));
     assert_eq!(refused["error"], "unknown stream_id", "{refused}");
     assert_eq!(refused["error_code"], "internal");
+}
+
+/// The verbs whose refusal still reads `internal` on at least one of the two
+/// probes below, with how many of the probes it did — the census wire spec
+/// step 2.4 asks for. A refusal reads `internal` when neither
+/// `ApiError::classify` nor the family's own `refine` could name it, so an
+/// entry here is a sentence the facade does not yet understand. The list may
+/// only shrink: naming a code for one of these removes its line; a new verb
+/// or a reworded refusal that lands here fails the test.
+const INTERNAL_REFUSALS: &[(&str, usize)] = &[
+    ("git.checkout", 1),
+    ("git.branch_delete", 1),
+    ("issue.diff", 1),
+    ("issue.stage_diff", 1),
+    ("issue.send_notes", 1),
+    ("plan.send_notes", 1),
+    ("issue.set_auto_advance", 1),
+    ("issue.stage_fix", 1),
+    ("issue.request_changes", 1),
+    ("issue.git_action", 1),
+    ("entity.dismiss", 1),
+    ("triage.override", 1),
+];
+
+/// Verbs whose fixture params reach outside the state under test — a path
+/// under `~`, a remote to clone, a settings write — so only the empty probe
+/// is sent to them.
+const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
+    "project.add",
+    "project.clone",
+    "project.create",
+    "settings.set",
+];
+
+fn fixture_params(method: &str) -> Value {
+    crate::api::v1::testing::fixture(method)["params"].clone()
+}
+
+#[test]
+fn the_internal_refusal_census_can_only_shrink() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let mut census: Vec<(&str, usize)> = Vec::new();
+    let mut sentences: Vec<String> = Vec::new();
+    for (method, _) in crate::api::v1::methods() {
+        let mut probes = vec![json!({})];
+        if !FIXTURE_PROBE_REACHES_OUTSIDE.contains(method) {
+            probes.push(fixture_params(method));
+        }
+        let internal = probes
+            .into_iter()
+            .filter_map(|params| state.dispatch_api(method, &params).err())
+            .filter(|refusal| refusal.code() == "internal")
+            .inspect(|refusal| sentences.push(format!("{method}: {}", refusal.message())))
+            .count();
+        if internal > 0 {
+            census.push((method, internal));
+        }
+    }
+    assert_eq!(
+        census,
+        INTERNAL_REFUSALS,
+        "the internal refusals the facade cannot name:\n{}",
+        sentences.join("\n")
+    );
 }

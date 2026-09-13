@@ -361,7 +361,7 @@ impl AppState {
     /// The board: plans + runs (each run carries a live diffstat), plus the
     /// ride-along external-worktree and primary-changes summaries. Sweeps runs
     /// whose worktree was deleted out of band into `archived` first.
-    pub(in crate::app) fn board_list(&mut self) -> Value {
+    pub(crate) fn board_list(&mut self) -> Value {
         self.sweep_vanished_runs();
         let plans: Vec<Value> = {
             let ids: Vec<String> = self.plans.keys().cloned().collect();

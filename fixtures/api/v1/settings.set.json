@@ -1,0 +1,32 @@
+{
+  "method": "settings.set",
+  "since": "1.0.0",
+  "params": {
+    "projects_dir": "~/.build/projects",
+    "agent_modes": {
+      "codex": "tui"
+    },
+    "triage_enabled": true
+  },
+  "result": {
+    "projects_dir": "/home/ada/.build/projects",
+    "default_harness": "claude_adk",
+    "agent_modes": {
+      "claude": "headless",
+      "codex": "tui"
+    },
+    "claude_mode": "headless",
+    "codex_mode": "tui",
+    "isolation": "worktree",
+    "triage_enabled": true,
+    "isolation_available": {
+      "cow": false,
+      "reason": "this volume does not support copy-on-write cloning (Operation not supported (os error 95))"
+    }
+  },
+  "errors": [
+    "invalid_params",
+    "unavailable",
+    "internal"
+  ]
+}

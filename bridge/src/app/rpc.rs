@@ -401,9 +401,8 @@ impl AppState {
     }
 
     /// The verbs answered by hand rather than through [`api::v1`]: the probe,
-    /// the QA stream fixtures, the two terminal reads that need no session,
-    /// and the `workspace.*` family, which landed upstream after the facade
-    /// was written. `None` is "no such verb here", which [`AppState::route`]
+    /// the QA stream fixtures, and the two terminal reads that need no
+    /// session. `None` is "no such verb here", which [`AppState::route`]
     /// turns into `unknown_method`.
     ///
     /// Every name here is also named in `tests/api_contract.rs`'s
@@ -430,18 +429,6 @@ impl AppState {
             // scripted stream is a test fixture, not part of `api/v1`.
             "stream.events" if self.qa_agent => self.stream_events(params),
             "stream.state" if self.qa_agent => self.stream_state(params),
-            // Added upstream after the facade; convert in a follow-up. The
-            // `workspace.*` family is a whole new surface (multi-source
-            // workspaces, retiring issue planning) and typing it is its own
-            // change, not a merge resolution.
-            "workspace.list" => self.workspace_list(params),
-            "workspace.create" => self.workspace_create(params),
-            "workspace.retry" => self.workspace_retry(params),
-            "workspace.get" => self.workspace_get(params),
-            "workspace.ensure_conversation" => self.workspace_ensure_conversation(params),
-            "workspace.git_init_options" => self.workspace_git_init_options(params),
-            "workspace.init_git" => self.workspace_init_git(params),
-            "workspace.finish" => self.workspace_finish(params),
             "term.list" => self.term_list(params),
             "term.close" => self.term_close(params),
             _ => return None,

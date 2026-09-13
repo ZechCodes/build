@@ -20,10 +20,6 @@
 //! `Arc` (a producer or pump to spawn), which `dispatch` deliberately has no
 //! access to; they stay on the legacy route in `app/rpc.rs::dispatch_frame`.
 //!
-//! NOT here, for now: the `workspace.*` family, which landed upstream after
-//! this facade was written. `tests/api_contract.rs`'s `LEGACY_METHODS` names
-//! every one of them so the omission stays a decision.
-//!
 //! Also note the retirement guard at the top of `AppState::route`: planning
 //! was retired upstream by keeping its verbs served and making the mutating
 //! ones refuse, so `issue.approve` and friends never reach the handlers
@@ -34,13 +30,15 @@
 //! (`thread.*`, `agent.add/choose/remove/list`), [`changes`]
 //! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
 //! and the diff reads), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
-//! `branch.*`, `worktree.create/finish`, `entity.*`, `triage.override`).
+//! `branch.*`, `worktree.create/finish`, `entity.*`, `triage.override`),
+//! [`workspace`] (`workspace.*`).
 
 pub mod board;
 pub mod changes;
 pub mod git;
 pub mod lifecycle;
 pub mod thread;
+pub mod workspace;
 
 use crate::api::ApiError;
 use crate::app::AppState;
@@ -263,13 +261,14 @@ pub fn call_typed<P: DeserializeOwned, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 5] {
+fn families() -> [&'static [(&'static str, Handler)]; 6] {
     [
         board::methods(),
         changes::methods(),
         thread::methods(),
         git::methods(),
         lifecycle::methods(),
+        workspace::methods(),
     ]
 }
 

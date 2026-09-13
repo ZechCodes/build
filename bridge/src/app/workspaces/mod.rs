@@ -98,7 +98,7 @@ impl AppState {
     /// agents. Unlike `run.adopt`, this never chooses a source checkout or
     /// writes Git metadata; multi-source and ordinary-directory workspaces are
     /// represented by their container root.
-    pub(in crate::app) fn workspace_ensure_conversation(
+    pub(crate) fn workspace_ensure_conversation(
         &mut self,
         params: &Value,
     ) -> Result<Value, String> {
@@ -145,7 +145,7 @@ impl AppState {
         }))
     }
 
-    pub(in crate::app) fn workspace_list(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn workspace_list(&mut self, params: &Value) -> Result<Value, String> {
         self.adopt_legacy_workspaces();
         self.workspaces.refresh_local_capabilities();
         self.workspaces.refresh_finished_local();
@@ -155,7 +155,7 @@ impl AppState {
         }))
     }
 
-    pub(in crate::app) fn workspace_get(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn workspace_get(&mut self, params: &Value) -> Result<Value, String> {
         self.adopt_legacy_workspaces();
         self.workspaces.refresh_local_capabilities();
         self.workspaces.refresh_finished_local();
@@ -210,7 +210,7 @@ impl AppState {
             .map(|(run_id, _)| run_id.clone())
     }
 
-    pub(in crate::app) fn workspace_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn workspace_create(&mut self, params: &Value) -> Result<Value, String> {
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());
         }
@@ -271,7 +271,7 @@ impl AppState {
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 
-    pub(in crate::app) fn workspace_finish(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn workspace_finish(&mut self, params: &Value) -> Result<Value, String> {
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());
         }
@@ -313,7 +313,7 @@ impl AppState {
         Ok(json!({ "workspace_id": workspace_id, "pending": true }))
     }
 
-    pub(in crate::app) fn workspace_retry(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn workspace_retry(&mut self, params: &Value) -> Result<Value, String> {
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());
         }

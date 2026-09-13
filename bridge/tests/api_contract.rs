@@ -30,9 +30,8 @@ use std::path::{Path, PathBuf};
 /// `stream.events` and `stream.state` are QA fixtures behind
 /// `BRIDGE_QA_AGENT=1`, not part of the wire.
 ///
-/// The `workspace.*` family is the one entry here with an expiry date: it was
-/// added upstream after the facade; convert in a follow-up. Typing eight
-/// verbs of a brand-new surface is its own change, not a merge resolution.
+/// Nothing here has an expiry date any more: the `workspace.*` family, the
+/// last entry that did, is served by `api::v1::workspace`.
 const LEGACY_METHODS: &[&str] = &[
     "agent.attach",
     "agent.interrupt",
@@ -53,15 +52,6 @@ const LEGACY_METHODS: &[&str] = &[
     "term.input",
     "term.list",
     "term.resize",
-    // Added upstream after the facade; convert in a follow-up.
-    "workspace.create",
-    "workspace.ensure_conversation",
-    "workspace.finish",
-    "workspace.get",
-    "workspace.git_init_options",
-    "workspace.init_git",
-    "workspace.list",
-    "workspace.retry",
 ];
 
 fn fixtures_root() -> PathBuf {

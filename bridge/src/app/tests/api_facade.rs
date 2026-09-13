@@ -137,6 +137,10 @@ const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
     "project.clone",
     "project.create",
     "settings.set",
+    // Both provision on disk: a create copies every source of the project it
+    // names, and an init writes a repository into a directory it resolved.
+    "workspace.create",
+    "workspace.init_git",
 ];
 
 fn fixture_params(method: &str) -> Value {

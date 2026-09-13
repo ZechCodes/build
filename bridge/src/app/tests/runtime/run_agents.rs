@@ -573,11 +573,10 @@ async fn agent_start_with_a_provider_switches_and_persists_the_choice() {
     );
 }
 
-/// A plan already owns its sole agent, so starting it cannot move that
-/// agent onto another provider. Provider selection belongs to creation;
-/// model and effort remain editable afterward through `agent.choose`.
+/// Legacy plan records remain readable, but cannot start agents now that
+/// planning is retired. The refusal happens before changing the stored choice.
 #[tokio::test]
-async fn agent_start_refuses_switching_an_existing_plans_provider() {
+async fn agent_start_refuses_retired_plan_entities_without_mutating_them() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
     insert_plan_without_agent(&state, &repo, dir.path().join("side"), "plan-switch");
@@ -588,7 +587,7 @@ async fn agent_start_refuses_switching_an_existing_plans_provider() {
         json!({ "id": "plan-switch", "provider": "codex" }),
     );
     assert_eq!(started["ok"], false, "{started:?}");
-    assert!(started["error"].as_str().unwrap().contains("locked to"));
+    assert_eq!(started["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
     assert_eq!(
         state.lock().unwrap().plans["plan-switch"]
             .agents
@@ -1044,9 +1043,8 @@ async fn agent_start_naming_the_live_agents_own_provider_is_idempotent() {
 /// Attaching to an entity's agent finds the tab of the WORKTREE it works
 /// in, streams it, and — when that agent's process ends — retains the last
 /// screen with `live: false` rather than erroring or going blank.
-/// The QA suite's last check, in-process: an Issue is planned, its first
-/// stage implemented by the QA agent, and its run merged. Attaching to the
-/// merged run must answer `live: false` — the agent's session is over with
+/// A recovered legacy run may still have a retained agent screen. Attaching to
+/// that merged run must answer `live: false` — the agent's session is over with
 /// its work, whatever the harness process is still doing.
 #[tokio::test]
 async fn agent_attach_on_a_merged_run_answers_live_false() {
@@ -1054,64 +1052,30 @@ async fn agent_attach_on_a_merged_run_answers_live_false() {
     let canonical_dir = dir.path().canonicalize().unwrap();
     let repo = repo.canonicalize().unwrap();
     let (state, handler) = shared_qa_state_and_handler(&repo, &canonical_dir);
-    let created = call(
-        &handler,
-        "issue.create",
-        json!({ "goal": "Add a greeting banner", "provider": "claude" }),
-    );
-    assert_eq!(created["ok"], true, "{created:?}");
-    let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
+    let (_, run_id) = planned_run_in_review_delivered(&state, &handler, "legacy merged run");
     wait_for_deliveries(&state).await;
-    let approved = call(&handler, "issue.approve", json!({ "issue_id": issue_id }));
-    assert_eq!(approved["ok"], true, "{approved:?}");
-    let stages = call(&handler, "issue.stages", json!({ "issue_id": issue_id }));
-    let first = stages["result"]["stages"][0]["id"]
-        .as_str()
+    state
+        .lock()
         .unwrap()
-        .to_string();
-    let gate = call(
-        &handler,
-        "issue.stage_approve",
-        json!({ "issue_id": issue_id, "stage_id": first }),
-    );
-    assert_eq!(gate["ok"], true, "{gate:?}");
-    let implemented = call(
-        &handler,
-        "issue.implement_stage",
-        json!({ "issue_id": issue_id, "stage_id": first }),
-    );
-    assert_eq!(implemented["ok"], true, "{implemented:?}");
-    let run_id = implemented["result"]["current_implementation_id"]
-        .as_str()
+        .runs
+        .get_mut(&run_id)
         .unwrap()
-        .to_string();
-    wait_for_deliveries(&state).await;
-    let second = stages["result"]["stages"][1]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let gate = call(
-        &handler,
-        "issue.stage_approve",
-        json!({ "issue_id": issue_id, "stage_id": second }),
-    );
-    assert_eq!(gate["ok"], true, "{gate:?}");
-    let implemented = call(
-        &handler,
-        "issue.implement_stage",
-        json!({ "issue_id": issue_id, "stage_id": second }),
-    );
-    assert_eq!(implemented["ok"], true, "{implemented:?}");
-    let merged = call(
-        &handler,
-        "issue.git_action",
-        json!({ "issue_id": issue_id, "action": "merge" }),
-    );
-    assert_eq!(merged["ok"], true, "{merged:?}");
-    assert_eq!(
-        merged["result"]["current_implementation"]["state"], "merged",
-        "{merged:?}"
-    );
+        .run
+        .state = RunState::Merged;
+    {
+        let mut state = state.lock().unwrap();
+        let root = state
+            .entity_agent_root(&run_id)
+            .expect("the recovered run retains its checkout");
+        let agent_id = primary_agent_id(&state, &run_id);
+        let key = TabKey::agent(&root, &agent_id);
+        let tab = state
+            .session_registry
+            .test_tab_mut(&key)
+            .expect("the recovered run retains its agent screen");
+        tab.session.end();
+        tab.live = false;
+    }
     let attached = handler.call(
         SessionSender::detached("s-merged"),
         req("agent.attach", json!({ "id": run_id })),

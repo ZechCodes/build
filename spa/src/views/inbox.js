@@ -12,6 +12,6 @@ export function renderInbox() {
   root.innerHTML = `
     <div class="shell-stub">
       <h2>Nothing open</h2>
-      <p>Pick a branch or an issue from the inbox to see its changes, or start something new.</p>
+      <p>Pick a workspace from the inbox to see its files and changes, or start something new.</p>
     </div>`;
 }

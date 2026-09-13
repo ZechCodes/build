@@ -14,7 +14,7 @@ These checks cover Build's integration, not an audit of Rift's implementation.
 | Missing or unreadable Rift state does not prevent ordinary worktrees. | `missing_cli_keeps_optional_walks_working_and_refuses_live_removal` and `an_unreadable_private_record_never_blocks_worktree_record_walks`. |
 | Hooks are disabled and cleanup uses only Build's private registry. | Exact `--database`, `--no-hooks`, create/remove/GC coverage in the fake CLI lifecycle. |
 | Provider timeouts stop child helpers and report failures. | `a_timed_out_provider_cannot_leave_a_helper_modifying_the_checkout`, bounded Git-process tests, and CLI stderr regression. |
-| Concurrent task creation cannot race first-time initialization or branch preparation. | `cloned_managers_serialize_first_rift_initialization`; the shared lock covers branch preparation through materialization. |
+| Creation through clones of one `WorktreeManager` serializes first-time initialization and branch preparation. | `cloned_managers_serialize_first_rift_initialization`; the shared lock covers branch preparation through materialization. |
 | Task branch identity, ignored caches, publishing, and base synchronization survive the provider change. | Fake CLI lifecycle plus real Rift create/restore/finish/discovery/removal tests. |
 
 ## Validation environment

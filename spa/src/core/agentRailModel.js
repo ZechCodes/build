@@ -155,7 +155,10 @@ export function bubbleTip(agent) {
  * will. Nothing can be added beside an agent that is not there yet, so the `+`
  * waits for it.
  */
-export function railBubbles({ agents = [], selectedId = null, kind = "branch" } = {}) {
+const supportsMultipleAgents = (kind) => kind === "branch" || kind === "workspace";
+const addAgentTitle = (kind) => `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
+
+export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false } = {}) {
   if (!agents.length) {
     return [
       {
@@ -163,7 +166,7 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
         id: "",
         label: "",
         pattern: agentPattern(1),
-        title: "Send a message to start an agent here",
+        title: chatCapable ? "Send a message to start an agent here" : "No agent conversation is attached to this workspace",
         active: true,
         unread: 0,
         working: false,
@@ -176,7 +179,7 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
     label: "",
     pattern: agentPattern(agent.ordinal),
     title: bubbleTip(agent),
-    active: agent.id === selectedId,
+    active: !addingAgent && agent.id === selectedId,
     unread: agent.unread_count || 0,
     working: !!agent.working,
     live: agentSessionIsLive(agent),
@@ -184,14 +187,14 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
   }));
   // Issues carry exactly one agent session: implementing one hands the work to
   // a new agent on a branch, which is a different work item entirely.
-  if (kind === "branch") {
+  if (supportsMultipleAgents(kind)) {
     bubbles.push({
       type: "add",
       id: "",
       label: "+",
       pattern: null,
-      title: "Add another agent to this branch",
-      active: false,
+      title: addAgentTitle(kind),
+      active: addingAgent,
       unread: 0,
       working: false,
     });
@@ -210,21 +213,22 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
  * working branch whose chat tab asks which agent to start one on.
  */
 export function canRemoveAgent({ agents = [], agentId = null, kind = "branch" } = {}) {
-  if (kind !== "branch" || !agentId) return false;
+  if ((kind !== "branch" && kind !== "workspace") || !agentId) return false;
   return agents.some((agent) => agent.id === agentId);
 }
 
 /** The confirmation plan for `agent.remove` — the outline core/confirm.js asks
  *  with. Removal kills the agent's session and takes its conversation with it,
  *  so it says both, and says what it does NOT touch. */
-export function removeAgentConfirm(agent) {
+export function removeAgentConfirm(agent, kind = "branch") {
   const who = agentTitle(agent);
+  const owner = kind === "workspace" ? "workspace" : "branch";
   return {
-    title: `Remove ${who} from this branch?`,
+    title: `Remove ${who} from this ${owner}?`,
     actions: [
       "End the agent's session, if one is running",
-      `Remove ${who} and its conversation from the branch`,
-      "Leave the branch and its files untouched",
+      `Remove ${who} and its conversation from the ${owner}`,
+      `Leave the ${owner} and its files untouched`,
     ],
     confirmLabel: "Remove agent",
     danger: true,
@@ -345,6 +349,23 @@ export function railEntity(payload, kind = "branch") {
     };
   }
   const agents = row.agents || (row.run && row.run.agents) || [];
+  if (kind === "workspace") {
+    const entityId = row.entity_id || row.run_id || (row.run && row.run.id) || null;
+    return {
+      entityId,
+      kind: "workspace",
+      projectId: row.project_id || null,
+      branch: row.branch || (row.directories || []).find((directory) => directory.branch)?.branch || null,
+      worktreeId: null,
+      primary: false,
+      adoptable: false,
+      canAdd: !!entityId && agents.length > 0,
+      chatCapable: true,
+      executionContext: row.execution_context || null,
+      agents,
+      thread: (row.run && row.run.thread) || row.thread || null,
+    };
+  }
   return {
     entityId: entityIdOf(payload ? { ...row, kind: "branch" } : null),
     kind: "branch",
@@ -356,6 +377,7 @@ export function railEntity(payload, kind = "branch") {
     // the first message adopts the checkout on its way to being sent.
     adoptable: !row.run_id,
     canAdd: !!row.run_id && agents.length > 0,
+    chatCapable: true,
     executionContext: row.execution_context || null,
     agents,
     thread: (row.run && row.run.thread) || null,

@@ -1,18 +1,108 @@
-use super::{repo_name_from_url, requested_base_branch, usable_project_name};
+use super::{
+    canonical_source_path, repo_name_from_url, requested_base_branch, safe_mount_name,
+    usable_project_name, ProjectSource,
+};
 use crate::app::config::accept_isolation;
 use crate::app::{expand_tilde, require_str, AppState};
 use crate::lifecycle::{
-    CloneRepo, CreateRepo, InitializeRepo, OpenRepo, PendingRow, PendingState, SetRemote,
-    WorktreeMutation,
+    CloneRepo, CreateRepo, InitializeRepo, OpenRepo, PendingRow, PendingState, Performed,
+    SetRemote, WorktreeChange, WorktreeMutation,
 };
 use crate::worktree::git_remote_origin;
 use serde_json::Value;
+
+struct SourceRequest {
+    path: Option<std::path::PathBuf>,
+    remote: Option<String>,
+    name: String,
+    mount: String,
+    base_branch: Option<String>,
+}
+
+struct PreparedSources {
+    opened: crate::lifecycle::OpenedRepository,
+    sources: Vec<ProjectSource>,
+    created_checkouts: Vec<std::path::PathBuf>,
+}
+
+struct OpenProjectSources {
+    requests: Vec<SourceRequest>,
+    managed_root: std::path::PathBuf,
+}
+
+impl WorktreeMutation for OpenProjectSources {
+    type Output = PreparedSources;
+
+    fn perform(self) -> Result<Performed<Self::Output>, String> {
+        let mut sources = Vec::with_capacity(self.requests.len());
+        let mut primary = None;
+        let mut created_checkouts = Vec::new();
+        for (index, request) in self.requests.into_iter().enumerate() {
+            let result = if let Some(path) = request.path {
+                canonical_source_path(&path).and_then(|path| {
+                    OpenRepo {
+                        path,
+                        requested_base: request.base_branch,
+                    }
+                    .perform()
+                })
+            } else {
+                let remote = request.remote.clone().expect("validated source remote");
+                let dest = self.managed_root.join(&request.mount);
+                CloneRepo {
+                    url: remote,
+                    name: request.mount.clone(),
+                    dest,
+                    projects_dir: self.managed_root.clone(),
+                    requested_base: request.base_branch,
+                }
+                .perform()
+            };
+            let performed = match result {
+                Ok(performed) => performed,
+                Err(error) => {
+                    for path in created_checkouts {
+                        let _ = std::fs::remove_dir_all(path);
+                    }
+                    return Err(error);
+                }
+            };
+            let opened = performed.output;
+            if let Some(path) = &opened.created_checkout {
+                created_checkouts.push(path.clone());
+            }
+            sources.push(ProjectSource {
+                id: format!("source-{}", index + 1),
+                name: request.name,
+                mount: request.mount,
+                path: opened.path.clone(),
+                is_git: opened.is_git,
+                base_branch: opened.base.clone(),
+                remote: opened.remote.clone().or(request.remote),
+            });
+            if primary.is_none() {
+                primary = Some(opened);
+            }
+        }
+        Ok(Performed {
+            change: WorktreeChange::nothing(),
+            output: PreparedSources {
+                opened: primary.expect("non-empty sources"),
+                sources,
+                created_checkouts,
+            },
+        })
+    }
+}
 
 impl AppState {
     /// Register a project from a host path. Validates it is a git repo with the
     /// requested base branch before adding, so a bad path fails loudly here rather
     /// than at first dispatch.
     pub(in crate::app) fn project_add(&mut self, params: &Value) -> Result<Value, String> {
+        if params.get("sources").is_some() {
+            return self.project_from_sources(params, None);
+        }
         let path = require_str(params, "path")?;
         let path = expand_tilde(&path);
         self.defer_project(
@@ -112,6 +202,9 @@ impl AppState {
     /// is wired as `origin` at creation.
     pub(in crate::app) fn project_create(&mut self, params: &Value) -> Result<Value, String> {
         let name = usable_project_name(require_str(params, "name")?)?;
+        if params.get("sources").is_some() {
+            return self.project_from_sources(params, Some(name));
+        }
         let base_branch = params
             .get("base_branch")
             .and_then(Value::as_str)
@@ -145,6 +238,160 @@ impl AppState {
                     .map(str::to_string),
             },
             crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
+        )
+    }
+
+    fn project_from_sources(
+        &mut self,
+        params: &Value,
+        explicit_name: Option<String>,
+    ) -> Result<Value, String> {
+        let entries = params
+            .get("sources")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "sources must be an array".to_string())?;
+        if entries.is_empty() {
+            return Err("a project must have at least one source".to_string());
+        }
+        let mut requests = Vec::with_capacity(entries.len());
+        let mut paths = Vec::new();
+        let mut remotes = std::collections::HashSet::new();
+        let mut mounts = std::collections::HashSet::new();
+        for entry in entries {
+            let path_text = entry
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let remote = entry
+                .get("remote")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if path_text.is_some() == remote.is_some() {
+                return Err("each source must specify exactly one of path or remote".to_string());
+            }
+            let path = path_text.map(expand_tilde);
+            let canonical = path.as_deref().map(canonical_source_path).transpose()?;
+            if let Some(candidate) = &canonical {
+                if self
+                    .projects
+                    .iter()
+                    .flat_map(|project| &project.sources)
+                    .any(|existing| {
+                        candidate.starts_with(&existing.path)
+                            || existing.path.starts_with(candidate)
+                    })
+                {
+                    return Err(format!(
+                        "source overlaps a registered project source: {}",
+                        candidate.display()
+                    ));
+                }
+                if paths.iter().any(|existing: &std::path::PathBuf| {
+                    candidate.starts_with(existing) || existing.starts_with(candidate)
+                }) {
+                    return Err(format!(
+                        "source overlaps another source: {}",
+                        candidate.display()
+                    ));
+                }
+                paths.push(candidate.clone());
+            }
+            if let Some(remote) = remote {
+                if self
+                    .projects
+                    .iter()
+                    .flat_map(|project| &project.sources)
+                    .any(|source| source.remote.as_deref() == Some(remote))
+                {
+                    return Err(format!("source remote is already registered: {remote}"));
+                }
+                if !remotes.insert(remote.to_string()) {
+                    return Err(format!("duplicate source remote: {remote}"));
+                }
+            }
+            let inferred = canonical
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+                .or_else(|| remote.map(repo_name_from_url))
+                .unwrap_or_else(|| "source".to_string());
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&inferred)
+                .to_string();
+            let base_mount = safe_mount_name(&name);
+            let mut mount = base_mount.clone();
+            let mut suffix = 2;
+            while !mounts.insert(mount.clone()) {
+                mount = format!("{base_mount}-{suffix}");
+                suffix += 1;
+            }
+            requests.push(SourceRequest {
+                path: canonical,
+                remote: remote.map(str::to_string),
+                name,
+                mount,
+                base_branch: entry
+                    .get("base_branch")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            });
+        }
+        let project_name = explicit_name
+            .or_else(|| {
+                params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| requests[0].name.clone());
+        let project_name = usable_project_name(safe_mount_name(&project_name))?;
+        let managed_root = self.projects_dir.join(format!("{project_name}-sources"));
+        let canonical_projects_dir =
+            std::fs::canonicalize(&self.projects_dir).unwrap_or_else(|_| self.projects_dir.clone());
+        let planned_managed_root = canonical_projects_dir.join(format!("{project_name}-sources"));
+        for request in &requests {
+            if request.remote.is_none() {
+                continue;
+            }
+            let destination = planned_managed_root.join(&request.mount);
+            if paths
+                .iter()
+                .any(|source| destination.starts_with(source) || source.starts_with(&destination))
+            {
+                return Err(format!(
+                    "managed source destination overlaps a local source: {}",
+                    destination.display()
+                ));
+            }
+        }
+        let title = project_name;
+        self.defer_project(
+            managed_root.clone(),
+            title,
+            PendingState::Creating,
+            OpenProjectSources {
+                requests,
+                managed_root,
+            },
+            |state: &mut AppState, result: Result<PreparedSources, String>| {
+                let prepared = result?;
+                state.register_opened_project_sources(
+                    prepared.opened,
+                    prepared.sources,
+                    prepared.created_checkouts,
+                )
+            },
         )
     }
 

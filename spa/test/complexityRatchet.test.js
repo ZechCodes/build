@@ -21,7 +21,8 @@ import { describe, it, expect } from "vitest";
 // Main's toolbar/composer extraction and chat state ownership together retire
 // four counted functions, with no new exemption added.
 // The editable file viewer splits file-selection setup from its async read.
-const RATCHETED_FUNCTIONS = 70;
+// Capture routing is branch-only now, so its manual form no longer exceeds the cap.
+const RATCHETED_FUNCTIONS = 69;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

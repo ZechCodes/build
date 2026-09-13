@@ -1,0 +1,306 @@
+// A workspace is a durable root containing one or more registered source
+// directories. Directory selection scopes Files and Changes; the console stays
+// scoped to the workspace, so navigating between directories or refs never
+// replaces its server sessions.
+
+import { $ } from "../dom.js";
+import { App, go, markRoute } from "../app.js";
+import { esc } from "../core/text.js";
+import { tabShellHtml } from "../core/tabshell.js";
+import { mountGitPane } from "../core/gitPane.js";
+import { mountConsole } from "../core/console.js";
+import { mountAgentRail } from "../core/agentRail.js";
+import { createAgentSelection } from "../core/agentSelection.js";
+import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
+import { renderFilesTab } from "./files.js";
+import { directoryId, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
+import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
+import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
+import "../styles/surfaces.css";
+
+const TABS = [
+  { id: "changes", label: "Changes" },
+  { id: "files", label: "Files" },
+];
+
+function mountChanges(body, { scope, callRpc, projectId, navigate, viewingContext }) {
+  body.innerHTML = `<div class="workspace-gitpane"></div>`;
+  const refbar = document.createElement("div");
+  refbar.className = "workspace-refbar";
+  const gitHost = body.querySelector(".workspace-gitpane");
+  let gitPane = mountGitPane(gitHost, { scope, callRpc, projectId, navigate, viewingContext });
+  let disposed = false;
+  const attachRefbar = () => {
+    const rail = gitHost.querySelector(".crail-host");
+    if (!rail) return false;
+    if (refbar.parentElement === rail && rail.firstElementChild === refbar) return true;
+    rail.prepend(refbar);
+    return true;
+  };
+  const attachObserver = new MutationObserver(attachRefbar);
+  attachRefbar();
+  attachObserver.observe(gitHost, { childList: true, subtree: true });
+  const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, onCheckout: async () => {
+      if (disposed) return;
+      gitPane.dispose();
+      gitPane = mountGitPane(gitHost, { scope, callRpc, projectId, navigate, viewingContext });
+    } });
+  return { dispose: () => {
+    disposed = true;
+    attachObserver.disconnect();
+    refPicker.dispose();
+    gitPane.dispose();
+  } };
+}
+
+function errorHtml(message) {
+  return `<div class="empty"><h2>Workspace unavailable</h2><p>${esc(message)}</p></div>`;
+}
+
+function applyRetry(answer, state, previous) {
+  const selectedNeedsRefresh = selectedDirectory(previous, state.route.sourceId)?.status !== "ready";
+  const current = answer.workspace || answer;
+  if (selectedNeedsRefresh) state.refreshPane?.(current);
+  return current;
+}
+
+function installWorkspaceAction(state, workspace) {
+  if (workspace?.status !== "failed") return;
+  let current = workspace;
+  let pending = false;
+  let message = "";
+  let failed = false;
+  const render = (host) => {
+    if (current?.status !== "failed") {
+      host.innerHTML = `<span class="workspace-action-status" role="status">${esc(message)}</span>`;
+      return;
+    }
+    host.innerHTML = `<span class="workspace-action-status ${failed ? "error" : ""}" role="status">${esc(message)}</span>
+      <button class="btn mini" type="button" data-workspace-action${pending ? " disabled" : ""}>Retry</button>`;
+    host.querySelector("[data-workspace-action]").onclick = async () => {
+      pending = true;
+      message = "";
+      failed = false;
+      render(host);
+      try {
+        const answer = await state.callRpc("workspace.retry", { workspace_id: state.route.workspaceId });
+        if (state.disposed) return;
+        current = applyRetry(answer, state, current);
+        message = "Workspace ready.";
+      } catch (error) {
+        if (state.disposed) return;
+        failed = true;
+        message = error.message || String(error);
+      } finally {
+        pending = false;
+        if (!state.disposed) render(host);
+      }
+    };
+  };
+  state.toolbarAction = render;
+  setToolbarVerb(render);
+}
+
+function mountDirectoryPane(body, { directory, canonical, scope, callRpc }) {
+  const navigate = { openFile: ({ path, line }) => go({ ...canonical, tab: "files", file: path, line }) };
+  if (canonical.tab !== "files") {
+    return mountChanges(body, {
+      scope,
+      callRpc,
+      projectId: canonical.projectId,
+      navigate,
+      viewingContext: App.viewingContext,
+    });
+  }
+  const openAt = canonical.file ? { path: canonical.file, line: canonical.line || null } : null;
+  return renderFilesTab(body, {
+    scope,
+    callRpc,
+    openAt,
+    onFileOpen: (path) => markRoute({ ...canonical, file: path }),
+    viewingContext: App.viewingContext,
+  });
+}
+
+function paintGitInitialization(rail, state, sourceId, directory) {
+  if (directory.is_git !== false && state.sourceGit == null) {
+    probeSourceGit(state, sourceId);
+    return;
+  }
+  const canInitialize = directory.is_git === false || state.workspaceNeedsReconciliation || state.sourceGit === false || state.sourceNeedsReconciliation;
+  let initHost = rail.querySelector(".workspace-init-host");
+  if (!canInitialize) {
+    initHost?.remove();
+    return;
+  }
+  if (!initHost) {
+    initHost = document.createElement("div");
+    initHost.className = "workspace-init-host";
+    rail.appendChild(initHost);
+    const controller = mountWorkspaceGitInitialization({
+      host: initHost, workspaceId: state.route.workspaceId, sourceId, callRpc: state.callRpc,
+      isActive: () => workspaceSourceIsActive(state, sourceId),
+      onUpdate: (answer) => {
+        if (answer.workspace) state.workspace = answer.workspace;
+        if (answer.source && typeof answer.source.is_git === "boolean") state.sourceGit = answer.source.is_git;
+        clearReconciledTargets(state, answer.results || answer.outcomes || []);
+        state.paintTabs?.();
+      },
+    });
+    state.gitInitialization.push(controller);
+  }
+  const initButton = initHost.querySelector("[data-init-git]");
+  initButton.textContent = gitInitializationLabel(state, directory);
+}
+
+function gitInitializationLabel(state, directory) {
+  if (state.workspaceNeedsReconciliation) return "Finish Git initialization…";
+  return directory.is_git === false ? "Initialize Git…" : "Initialize original source…";
+}
+
+function clearReconciledTargets(state, results) {
+  const completed = new Set(results.filter((result) => result.status !== "failed").map((result) => result.target));
+  if (completed.has("workspace") || completed.has("both")) state.workspaceNeedsReconciliation = false;
+  if (completed.has("source") || completed.has("both")) state.sourceNeedsReconciliation = false;
+}
+
+function workspaceSourceIsActive(state, sourceId) {
+  if (state.disposed || App.call !== state.callRpc) return false;
+  if (App.route.name !== "workspace" || App.route.workspaceId !== state.route.workspaceId || App.route.sourceId !== sourceId) return false;
+  return (state.workspace?.directories || []).some((directory) => directoryId(directory) === sourceId);
+}
+
+async function probeSourceGit(state, sourceId) {
+  if (state.sourceProbePending) return;
+  state.sourceProbePending = true;
+  try {
+    const options = await state.callRpc("workspace.git_init_options", { workspace_id: state.route.workspaceId, source_id: sourceId });
+    if (state.disposed || App.call !== state.callRpc) return;
+    state.sourceGit = options.source?.is_git !== false;
+    state.sourceNeedsReconciliation = options.source?.needs_reconciliation === true;
+    state.workspaceNeedsReconciliation = options.workspace?.needs_reconciliation === true;
+    state.paintTabs?.();
+  } catch {
+    if (workspaceSourceIsActive(state, sourceId)) state.sourceGit = false;
+  } finally {
+    state.sourceProbePending = false;
+  }
+}
+
+function directoryTabsPainter(body, state, sourceId) {
+  return () => {
+    const directory = selectedDirectory(state.workspace, sourceId);
+    if (!directory) return false;
+    const rail = body.querySelector(".crail-host, .ftree");
+    if (!rail) return false;
+    let host = rail.querySelector(".railtabs");
+    if (!host) {
+      host = document.createElement("div");
+      host.className = "railtabs";
+      rail.appendChild(host);
+    }
+    const tabs = directory.is_git === false ? TABS.filter((entry) => entry.id === "files") : TABS;
+    host.innerHTML = tabShellHtml({ tabs, active: App.route.tab });
+    host.querySelectorAll("[data-tab]").forEach((control) => {
+      control.onclick = () => go({ ...App.route, tab: control.dataset.tab });
+    });
+    paintGitInitialization(rail, state, sourceId, directory);
+    return true;
+  };
+}
+
+function observeTabs(body, paintTabs, dispose) {
+  const observer = new MutationObserver(() => {
+    const rail = body.querySelector(".crail-host, .ftree");
+    if (rail && !rail.querySelector(".railtabs")) paintTabs();
+  });
+  paintTabs();
+  observer.observe(body, { childList: true, subtree: true });
+  return () => {
+    observer.disconnect();
+    dispose();
+  };
+}
+
+function refreshWorkspacePane(state, workspace) {
+  const directory = selectedDirectory(workspace, state.route.sourceId);
+  const sourceId = directoryId(directory);
+  if (!sourceId) return null;
+  const tab = directory.is_git === false ? "files" : state.route.tab || "changes";
+  const canonical = { ...state.route, sourceId, tab };
+  const body = $("#tabbody");
+  const previousGuard = state.pane?.canLeave;
+  if (App.routeLeaveGuard === previousGuard) App.routeLeaveGuard = null;
+  state.pane?.dispose?.();
+  body.innerHTML = '<div class="empty">loading…</div>';
+  state.pane = mountDirectoryPane(body, {
+    directory,
+    canonical,
+    scope: workspaceScope(state.route.workspaceId, sourceId),
+    callRpc: state.callRpc,
+  });
+  App.routeLeaveGuard = state.pane?.canLeave || null;
+  return { directory, canonical, body };
+}
+
+function mountWorkspaceAgentRail(workspace, route, sourceId) {
+  return mountAgentRail($("#agent-rail"), {
+    kind: "workspace",
+    workspaceId: route.workspaceId,
+    sourceId,
+    projectId: workspace.project_id || route.projectId,
+    selection: createAgentSelection(),
+  });
+}
+
+function mountWorkspace(workspace, state) {
+  if (state.disposed) return;
+  const { route, callRpc } = state;
+  state.workspace = workspace;
+  installWorkspaceAction(state, workspace);
+  const directory = selectedDirectory(workspace, route.sourceId);
+  const sourceId = directoryId(directory);
+  state.agentRail = mountWorkspaceAgentRail(workspace, route, sourceId);
+  if (!sourceId) {
+    $("#tabbody").innerHTML = errorHtml("This workspace has no source directories.");
+    state.consolePanel = mountConsole($("#console-region"), { kind: "workspace", workspaceId: route.workspaceId });
+    return;
+  }
+
+  const tab = directory.is_git === false ? "files" : route.tab || "changes";
+  const canonical = { ...route, sourceId, tab };
+  if (route.sourceId !== sourceId || route.tab !== tab) markRoute(canonical);
+
+  state.refreshPane = (nextWorkspace) => refreshWorkspacePane(state, nextWorkspace);
+  const mounted = state.refreshPane(workspace);
+  if (state.disposed) {
+    state.pane?.dispose?.();
+    return;
+  }
+
+  state.paintTabs = directoryTabsPainter(mounted.body, state, sourceId);
+  App.viewDispose = observeTabs(mounted.body, state.paintTabs, App.viewDispose);
+  state.consolePanel = mountConsole($("#console-region"), { kind: "workspace", workspaceId: route.workspaceId });
+}
+
+export async function renderWorkspace() {
+  const root = $("#root");
+  const state = { route: App.route, callRpc: App.call, disposed: false, pane: null, consolePanel: null, agentRail: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, gitInitialization: [] };
+  root.className = "surface";
+  root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
+  App.viewDispose = () => {
+    state.disposed = true;
+    if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
+    state.pane?.dispose?.();
+    state.consolePanel?.dispose?.();
+    state.agentRail?.dispose?.();
+    state.gitInitialization.forEach((controller) => controller.dispose());
+    clearToolbarVerb(state.toolbarAction);
+  };
+  try {
+    const response = await state.callRpc("workspace.get", { workspace_id: state.route.workspaceId });
+    mountWorkspace(response.workspace || response, state);
+  } catch (error) {
+    if (!state.disposed) $("#tabbody").innerHTML = errorHtml(error.message || String(error));
+  }
+}

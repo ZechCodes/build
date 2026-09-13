@@ -37,7 +37,7 @@ describe("an outcome carried by the agent's message", () => {
 
     const message = document.querySelector(".thread-message");
     expect(message.classList.contains("agent")).toBe(true);
-    expect(message.querySelector(".thread-message-head").textContent).toContain("Agent commented");
+    expect(message.querySelector(".thread-message-head")).toBeNull();
     expect(message.textContent).toContain("Wired the outcome onto the message.");
 
     const marker = message.querySelector(".thread-outcome");

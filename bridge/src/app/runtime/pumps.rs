@@ -483,6 +483,7 @@ pub(in crate::app) fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
         session: Arc<dyn AgentSession>,
         recorded: Option<String>,
         recorded_model: Option<String>,
+        recorded_effort: Option<String>,
     }
 
     let live: Vec<LiveAgent> = {
@@ -499,6 +500,8 @@ pub(in crate::app) fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
                     recorded: s.recorded_resume_id(&instance.entity_id, &instance.agent_id),
                     recorded_model: s
                         .recorded_active_model(&instance.entity_id, &instance.agent_id),
+                    recorded_effort: s
+                        .recorded_active_effort(&instance.entity_id, &instance.agent_id),
                 })
             })
             .collect()
@@ -509,7 +512,13 @@ pub(in crate::app) fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
             let said = SelfReport::read(&agent.session);
             let name_moved = said.named.is_some() && agent.recorded != said.named;
             let model_moved = said.model.is_some() && agent.recorded_model != said.model;
-            (name_moved || model_moved).then_some((agent.key, agent.instance, agent.session, said))
+            let effort_moved = said.model.is_some() && agent.recorded_effort != said.effort;
+            (name_moved || model_moved || effort_moved).then_some((
+                agent.key,
+                agent.instance,
+                agent.session,
+                said,
+            ))
         })
         .collect();
     if moved.is_empty() {

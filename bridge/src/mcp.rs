@@ -474,8 +474,8 @@ impl DoneServer {
         })
     }
 
-    /// The router's tools. Read broadly, write in exactly two places (an inert
-    /// issue, a branch dispatch), and one way to ask the user something.
+    /// The router's tools. Read broadly, dispatch branch work, or ask the user
+    /// for the missing routing choice.
     fn router_tools() -> Value {
         json!([{
             "name": "list_projects",
@@ -498,18 +498,6 @@ impl DoneServer {
                 "required": ["entity_id"]
             }
         }, {
-            "name": "create_issue",
-            "description": "File an issue on a project: the capture becomes its goal and a planning agent starts on the primary checkout to work out how it should be done. No branch, no worktree, no code touched. This is the default destination — a wrong guess costs the user one tap, and rerouting takes the issue and its agent back.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project_id": { "type": "string" },
-                    "goal": { "type": "string", "description": "What the user wants done, in their terms. Keep their words; do not turn a sentence into a specification." },
-                    "rationale": { "type": "string", "description": "One line on why this project and why an issue. The user reads it when deciding whether you got it right." }
-                },
-                "required": ["project_id", "goal"]
-            }
-        }, {
             "name": "dispatch_branch",
             "description": "Put an agent on a branch with this instruction, creating or adopting the checkout as needed. Use ONLY when the capture names an existing branch or worktree, or unambiguously continues work already in flight on one — this starts an agent that changes code.",
             "inputSchema": {
@@ -524,7 +512,7 @@ impl DoneServer {
             }
         }, {
             "name": "ask_user",
-            "description": "Ask the user the ONE question that would let you decide, and stop. Reserved for a capture whose project is ambiguous — asking is the friction capture exists to remove, so a best-guess inert issue is nearly always better. The question reaches them as the capture's own inbox entry. Offer up to 3 options when you can name the destinations you are choosing between: each is one tap for the user, and the answer comes back naming the one they picked. They can always type an answer instead, so options are a shortcut and never the whole answer.",
+            "description": "Ask the user the ONE question that would let you decide, and stop. Reserved for a capture whose project is ambiguous — asking is the friction capture exists to remove, so dispatch to the best-guess project when the choice is clear enough. The question reaches them as the capture's own inbox entry. Offer up to 3 options when you can name the destinations you are choosing between: each is one tap for the user, and the answer comes back naming the one they picked. They can always type an answer instead, so options are a shortcut and never the whole answer.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -536,9 +524,9 @@ impl DoneServer {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "label": { "type": "string", "description": "What the user taps, in a few words: the destination, not the question again. e.g. \"File as an issue on Build\"." },
+                                "label": { "type": "string", "description": "What the user taps, in a few words: the destination, not the question again. e.g. \"Continue on Build\"." },
                                 "project_id": { "type": "string", "description": "The project this choice routes to, from list_projects." },
-                                "kind": { "type": "string", "enum": ["issue", "branch"], "description": "What this choice would create: an inert issue, or a branch with an agent on it." },
+                                "kind": { "type": "string", "enum": ["branch"], "description": "The branch destination this choice represents." },
                                 "branch": { "type": "string", "description": "The existing branch this choice continues, spelled exactly as it is. Naming one makes the choice a branch." }
                             },
                             "required": ["label"]
@@ -549,7 +537,7 @@ impl DoneServer {
             }
         }, {
             "name": "done",
-            "description": "Report the routing outcome and end the session. Call it after create_issue, dispatch_branch or ask_user — or with status=failed when nothing let you decide.",
+            "description": "Report the routing outcome and end the session. Call it after dispatch_branch or ask_user — or with status=failed when nothing let you decide.",
             "inputSchema": Self::router_done_input_schema()
         }])
     }
@@ -1048,13 +1036,6 @@ impl DoneServer {
                         .clamp(1, MAX_CONVERSATION_LIMIT),
                 })
             }
-            "create_issue" => required("project_id").and_then(|project_id| {
-                Ok(BridgeAction::CreateIssue {
-                    project_id,
-                    goal: required("goal")?,
-                    rationale: text("rationale"),
-                })
-            }),
             "dispatch_branch" => required("project_id").and_then(|project_id| {
                 Ok(BridgeAction::DispatchBranch {
                     project_id,
@@ -1064,10 +1045,14 @@ impl DoneServer {
                 })
             }),
             "ask_user" => required("question").and_then(|question| {
-                Ok(BridgeAction::AskUser {
-                    question,
-                    options: ask_options(&arguments)?,
-                })
+                let options = ask_options(&arguments)?;
+                if options
+                    .iter()
+                    .any(|option| option.kind == Some(crate::capture::CaptureTarget::Issue))
+                {
+                    return Err("router issue destinations have been retired".to_string());
+                }
+                Ok(BridgeAction::AskUser { question, options })
             }),
             "done" => {
                 return match serde_json::from_value::<DoneArgs>(arguments)
@@ -2045,7 +2030,6 @@ mod tests {
                 "list_projects",
                 "list_work",
                 "read_conversation",
-                "create_issue",
                 "dispatch_branch",
                 "ask_user",
                 "done",
@@ -2070,7 +2054,7 @@ mod tests {
     fn the_routers_done_reports_only_routing() {
         let h = router().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
-        let schema = &v["result"]["tools"][6]["inputSchema"];
+        let schema = &v["result"]["tools"][5]["inputSchema"];
         assert_eq!(schema["properties"]["phase"]["enum"], json!(["route"]));
         assert_eq!(
             schema["properties"]["status"]["enum"],
@@ -2119,12 +2103,6 @@ mod tests {
                 if entity_id == "run-1" && agent_id.as_deref() == Some("agent-2") && limit == 5
         ));
         assert!(matches!(
-            call("create_issue", r#"{"project_id":"proj-1","goal":"fix the redirect","rationale":"no branch names it"}"#).action,
-            Some(BridgeAction::CreateIssue { ref project_id, ref goal, ref rationale })
-                if project_id == "proj-1" && goal == "fix the redirect"
-                    && rationale.as_deref() == Some("no branch names it")
-        ));
-        assert!(matches!(
             call("dispatch_branch", r#"{"project_id":"proj-1","branch":"build/login","instruction":"finish the toast"}"#).action,
             Some(BridgeAction::DispatchBranch { ref project_id, ref branch, ref instruction, rationale: None })
                 if project_id == "proj-1" && branch.as_deref() == Some("build/login")
@@ -2135,6 +2113,12 @@ mod tests {
             Some(BridgeAction::AskUser { ref question, ref options })
                 if question == "which project?" && options.is_empty()
         ));
+        let retired = call(
+            "create_issue",
+            r#"{"project_id":"proj-1","goal":"fix the redirect"}"#,
+        );
+        assert!(retired.action.is_none());
+        assert_eq!(parse(&retired.reply.unwrap())["result"]["isError"], true);
     }
 
     /// The options a router offers beside its question reach the daemon whole:
@@ -2145,7 +2129,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"ask_user","arguments":{
                 "question":"which project?",
                 "options":[
-                    {"label":"File as an issue on Build","project_id":"proj-1","kind":"issue"},
+                    {"label":"New branch on Build","project_id":"proj-1","kind":"branch"},
                     {"label":"New branch on Do","project_id":"proj-2","kind":"branch","branch":"do/login"}
                 ]}}}"#,
         );
@@ -2157,9 +2141,9 @@ mod tests {
             options,
             vec![
                 crate::capture::CaptureOptionDraft {
-                    label: "File as an issue on Build".to_string(),
+                    label: "New branch on Build".to_string(),
                     project_id: Some("proj-1".to_string()),
-                    kind: Some(crate::capture::CaptureTarget::Issue),
+                    kind: Some(crate::capture::CaptureTarget::Branch),
                     branch: None,
                 },
                 crate::capture::CaptureOptionDraft {
@@ -2178,6 +2162,7 @@ mod tests {
     fn an_option_the_parser_cannot_read_is_a_tool_error() {
         for arguments in [
             r#"{"question":"which?","options":[{"kind":"issue"}]}"#,
+            r#"{"question":"which?","options":[{"label":"file it","kind":"issue"}]}"#,
             r#"{"question":"which?","options":[{"label":"go","kind":"pull_request"}]}"#,
             r#"{"question":"which?","options":"the first one"}"#,
         ] {
@@ -2226,7 +2211,7 @@ mod tests {
         assert_eq!(options["items"]["required"], json!(["label"]));
         assert_eq!(
             options["items"]["properties"]["kind"]["enum"],
-            json!(["issue", "branch"])
+            json!(["branch"])
         );
         assert_eq!(
             ask["inputSchema"]["required"],
@@ -2239,7 +2224,6 @@ mod tests {
     fn a_router_tool_call_missing_what_it_needs_is_a_tool_error() {
         for (name, arguments, wanted) in [
             ("read_conversation", "{}", "entity_id"),
-            ("create_issue", r#"{"project_id":"proj-1"}"#, "goal"),
             ("dispatch_branch", r#"{"instruction":"go"}"#, "project_id"),
             ("ask_user", r#"{"question":"   "}"#, "question"),
         ] {

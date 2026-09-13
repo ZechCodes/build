@@ -24,15 +24,34 @@ pub(in crate::app::tests) fn attention_of(state: &mut AppState, id: &str) -> Val
     board_entry(state, id)["attention"].clone()
 }
 
-/// Append one item to the conversation an Issue and its implementation
-/// share, the way an agent or a lifecycle step would.
+fn assert_entry_is_read(entry: &Value) {
+    assert_eq!(entry["unread"], false, "{entry:?}");
+    assert_eq!(entry["unread_count"], 0, "{entry:?}");
+    assert!(entry["unread_reason"].is_null(), "{entry:?}");
+    assert_eq!(entry["needs_attention"], false, "{entry:?}");
+}
+
+/// Append one item to the active run conversation owned by a legacy plan.
 pub(in crate::app::tests) fn push_to_issue_conversation(
     state: &mut AppState,
     issue_id: &str,
     write: impl FnOnce(&mut crate::thread::Thread),
 ) {
-    let issue = state.plans.get_mut(issue_id).expect("the issue exists");
-    write(issue.agents.sole_thread_mut());
+    let run_id = state
+        .current_issue_implementation(issue_id)
+        .expect("the legacy plan has an active run")
+        .run
+        .id
+        .0
+        .clone();
+    write(
+        state
+            .runs
+            .get_mut(&run_id)
+            .expect("the active run exists")
+            .agents
+            .sole_thread_mut(),
+    );
 }
 
 /// The whole unread rule in one pass: an agent handing back makes the entry
@@ -44,19 +63,20 @@ fn unread_follows_attention_events_and_entity_seen_clears_it() {
     let mut state = qa_state(&repo, dir.path());
     let (issue_id, run_id) = planned_run_in_review(&mut state, "unread");
 
-    // An agent that reported done has handed back, and nobody has looked.
+    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+        thread.post_agent("which name did you want?", None, now_rfc3339());
+    });
+    // An agent asked for input, and nobody has looked.
     let entry = board_entry(&mut state, &run_id);
     assert_eq!(entry["unread"], true, "{entry:?}");
     assert_eq!(entry["needs_attention"], true, "{entry:?}");
-    assert!(entry["unread_count"].as_u64().unwrap() >= 1, "{entry:?}");
+    assert_eq!(entry["unread_count"], 1, "{entry:?}");
+    assert_eq!(entry["unread_reason"], "agent_message", "{entry:?}");
 
     let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
     assert_eq!(seen["ok"], true, "{seen:?}");
     let entry = board_entry(&mut state, &run_id);
-    assert_eq!(entry["unread"], false, "{entry:?}");
-    assert_eq!(entry["unread_count"], 0, "{entry:?}");
-    assert!(entry["unread_reason"].is_null(), "{entry:?}");
-    assert_eq!(entry["needs_attention"], false, "{entry:?}");
+    assert_entry_is_read(&entry);
 
     // The work carrying on is not news.
     push_to_issue_conversation(&mut state, &issue_id, |thread| {
@@ -109,9 +129,8 @@ fn unread_follows_attention_events_and_entity_seen_clears_it() {
 /// name one message by the sequence it landed on.
 fn issue_thread_last_sequence(state: &AppState, issue_id: &str) -> u64 {
     state
-        .plans
-        .get(issue_id)
-        .expect("the issue exists")
+        .current_issue_implementation(issue_id)
+        .expect("the legacy plan has an active run")
         .agents
         .sole_thread()
         .last_sequence()
@@ -266,14 +285,12 @@ fn only_a_runs_attention_outcomes_reach_the_issue_that_owns_it() {
     }
 }
 
-/// The Issue is where a planned implementation's outcomes have always
-/// landed, and they still land there — as the agent's own message now,
-/// needing the human exactly once and saying which outcome it was.
+/// A reported run outcome remains conversation news that needs attention.
 #[test]
-fn a_reported_outcome_is_news_on_the_issue_that_owns_the_implementation() {
+fn a_reported_outcome_is_news_on_the_run() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "outcome on the issue");
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "outcome-on-run");
     let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
     assert_eq!(seen["ok"], true, "{seen:?}");
 
@@ -287,8 +304,8 @@ fn a_reported_outcome_is_news_on_the_issue_that_owns_the_implementation() {
         },
     );
 
-    let issue_thread = &state.plans[&issue_id].agents.sole_thread();
-    let outcomes: Vec<&crate::thread::ThreadMessage> = issue_thread
+    let run_thread = &state.runs[&run_id].agents.sole_thread();
+    let outcomes: Vec<&crate::thread::ThreadMessage> = run_thread
         .items
         .iter()
         .filter_map(|item| match item {
@@ -302,14 +319,14 @@ fn a_reported_outcome_is_news_on_the_issue_that_owns_the_implementation() {
         outcomes.len(),
         1,
         "one report, one record: {:?}",
-        issue_thread.items
+        run_thread.items
     );
     assert_eq!(
         outcomes[0].outcome,
         Some(crate::thread::MessageOutcome::Blocked)
     );
     assert_eq!(outcomes[0].body, "Needs production credentials");
-    let packet = issue_thread.catch_up_markdown(40);
+    let packet = run_thread.catch_up_markdown(40);
     assert!(
         packet.contains("- agent [blocked]: Needs production credentials"),
         "the packet says why the predecessor stopped: {packet}"
@@ -324,14 +341,17 @@ fn a_reported_outcome_is_news_on_the_issue_that_owns_the_implementation() {
 /// activity, booted again: the tail the daemon reads holds nothing but
 /// tool calls, so the packet has to come from the store or the replacement
 /// agent is handed nothing at all.
-fn issue_buried_in_activity(state: &mut AppState, goal: &str, said: &str) -> String {
-    let issue_id = plan_id_of(&state.handle(req(
-        "issue.create",
-        json!({ "goal": goal, "dispatch": false }),
-    )));
-    let agent_id = primary_agent_id(state, &issue_id);
+fn run_buried_in_activity(
+    state: &mut AppState,
+    repo: &std::path::Path,
+    dir: &std::path::Path,
+    branch: &str,
+    said: &str,
+) -> String {
+    let run_id = adopted_run(state, repo, dir, branch);
+    let agent_id = primary_agent_id(state, &run_id);
     state
-        .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+        .edit_agent_conversation(&run_id, &agent_id, |thread, _| {
             thread.post_user(said, None, "2026-08-29T09:00:00Z");
             for index in 0..crate::store::RESIDENT_CONVERSATION_TAIL + 40 {
                 thread.push_event(
@@ -345,7 +365,7 @@ fn issue_buried_in_activity(state: &mut AppState, goal: &str, said: &str) -> Str
             Ok(())
         })
         .expect("the conversation is written");
-    issue_id
+    run_id
 }
 
 /// The page a reviewer OPENS on is cut by the same gate a scroll is. An
@@ -356,19 +376,21 @@ fn issue_buried_in_activity(state: &mut AppState, goal: &str, said: &str) -> Str
 #[test]
 fn a_detail_polls_page_reaches_the_words_under_a_starved_tail() {
     let (dir, repo) = init_repo();
-    let issue_id = {
+    let run_id = {
         let mut state = qa_state(&repo, dir.path());
-        issue_buried_in_activity(
+        run_buried_in_activity(
             &mut state,
-            "fix the login redirect",
+            &repo,
+            dir.path(),
+            "fix-login-redirect",
             "the redirect drops the query string",
         )
     };
 
     let mut state = qa_state(&repo, dir.path());
     let answer = state.handle(req(
-        "issue.get",
-        json!({ "issue_id": issue_id, "thread_limit": 20 }),
+        "run.get",
+        json!({ "run_id": run_id, "thread_limit": 20 }),
     ));
     let thread = &answer["result"]["thread"];
     let said: Vec<&str> = thread["items"]
@@ -378,14 +400,7 @@ fn a_detail_polls_page_reaches_the_words_under_a_starved_tail() {
         .filter(|item| item["type"] == "message")
         .map(|item| item["data"]["body"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        said,
-        vec![
-            "fix the login redirect",
-            "the redirect drops the query string"
-        ],
-        "the page a reviewer opens on says nothing"
-    );
+    assert_eq!(said, vec!["the redirect drops the query string"]);
     assert_eq!(
         thread["items"].as_array().unwrap().len(),
         said.len() + crate::thread::PAGE_ACTIVITY_RUN_CAP,
@@ -410,19 +425,21 @@ fn a_detail_polls_page_reaches_the_words_under_a_starved_tail() {
 #[test]
 fn a_starved_tail_hands_a_resumed_agent_the_words_from_the_store() {
     let (dir, repo) = init_repo();
-    let issue_id = {
+    let run_id = {
         let mut state = qa_state(&repo, dir.path());
-        issue_buried_in_activity(
+        run_buried_in_activity(
             &mut state,
-            "fix the login redirect",
+            &repo,
+            dir.path(),
+            "resume-login-redirect",
             "the redirect drops the query string",
         )
     };
 
     let state = qa_state(&repo, dir.path());
     let thread = state
-        .agent_conversation(&issue_id, None)
-        .expect("the issue's conversation");
+        .agent_conversation(&run_id, None)
+        .expect("the run's conversation");
     assert!(
         thread
             .items
@@ -439,7 +456,7 @@ fn a_starved_tail_hands_a_resumed_agent_the_words_from_the_store() {
 
     let packet = state.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES);
     assert_eq!(
-        packet, "- user: fix the login redirect\n- user: the redirect drops the query string",
+        packet, "- user: the redirect drops the query string",
         "the packet reads the store when the tail holds no conversation"
     );
 }
@@ -451,15 +468,21 @@ fn a_starved_tail_hands_a_resumed_agent_the_words_from_the_store() {
 #[test]
 fn the_catch_up_packet_is_composed_when_the_turn_is_delivered() {
     let (dir, repo) = init_repo();
-    let issue_id = {
+    let run_id = {
         let mut state = qa_state(&repo, dir.path());
-        issue_buried_in_activity(&mut state, "fix the redirect", "keep the query string")
+        run_buried_in_activity(
+            &mut state,
+            &repo,
+            dir.path(),
+            "fix-redirect",
+            "keep the query string",
+        )
     };
     let mut state = qa_state(&repo, dir.path());
 
     let posted = state.handle(req(
         "thread.post",
-        json!({ "entity_id": issue_id, "body": "start with the router" }),
+        json!({ "entity_id": run_id, "body": "start with the router" }),
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
     let queued = state
@@ -507,10 +530,13 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
     let (dir, repo) = init_repo();
     let issue_id = {
         let mut state = qa_state(&repo, dir.path());
-        let issue_id = plan_id_of(&state.handle(req(
-            "issue.create",
-            json!({ "goal": "trim the retry loop", "dispatch": false }),
-        )));
+        let issue = state
+            .plan_create(&json!({
+                "goal": "trim the retry loop",
+                "dispatch": false,
+            }))
+            .expect("create a stored legacy plan below the retired RPC boundary");
+        let issue_id = issue["plan_id"].as_str().unwrap().to_string();
         let agent_id = primary_agent_id(&state, &issue_id);
         state
             .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
@@ -616,10 +642,13 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
 fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let issue_id = plan_id_of(&state.handle(req(
-        "issue.create",
-        json!({ "goal": "trim the retry loop", "dispatch": false }),
-    )));
+    let issue = state
+        .plan_create(&json!({
+            "goal": "trim the retry loop",
+            "dispatch": false,
+        }))
+        .expect("create a stored legacy plan below the retired RPC boundary");
+    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
     let agent_id = primary_agent_id(&state, &issue_id);
     state
         .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
@@ -665,70 +694,6 @@ fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
     );
 }
 
-/// The Issue's conversation is where the human follows the work they asked
-/// for, so its implementation being abandoned is news there — and the
-/// mirrored event says which implementation it came from.
-#[test]
-fn abandoning_an_implementation_is_news_on_its_issue() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "mirror the outcome");
-    state.handle(req("entity.seen", json!({ "entity_id": issue_id })));
-
-    // The dedup rule: while the implementation is live the Issue has no row
-    // of its own, so nothing mirrored onto it can ask a second time.
-    let live = work_item_rows(&mut state);
-    assert!(
-        !live
-            .iter()
-            .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id)),
-        "{live:?}"
-    );
-
-    let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
-    assert_eq!(abandoned["ok"], true, "{abandoned:?}");
-
-    let issue_thread = &state.plans[&issue_id].agents.sole_thread();
-    let mirrored = issue_thread
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::Abandoned =>
-            {
-                Some(event)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        mirrored.len(),
-        1,
-        "one abandon, one mirrored event: {:?}",
-        issue_thread.items
-    );
-    assert!(
-        mirrored[0]
-            .links
-            .contains(&crate::thread::ThreadLink::Implementation {
-                issue_id: issue_id.clone(),
-                implementation_id: run_id.clone(),
-            }),
-        "the mirror names the implementation it came from: {:?}",
-        mirrored[0]
-    );
-
-    // The finished implementation stops speaking for the issue, whose own
-    // row now says why it needs reading.
-    let rows = work_item_rows(&mut state);
-    let issue = rows
-        .iter()
-        .find(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id))
-        .unwrap_or_else(|| panic!("the issue has its row back: {rows:?}"));
-    assert_eq!(issue["unread"], true, "{issue:?}");
-    assert_eq!(issue["unread_reason"], "abandoned", "{issue:?}");
-}
-
 /// A branch nobody planned has no Issue to tell. Its own conversation still
 /// records the outcome.
 #[test]
@@ -752,16 +717,14 @@ fn abandoning_a_run_with_no_issue_mirrors_nowhere() {
     );
 }
 
-/// Reading a stage doc IS engaging with an issue — they are a queue you
-/// triage by reading — so it stamps. A run needs an action.
+/// Reading a run is passive and does not move its interaction marker.
 #[test]
-fn opening_a_stage_counts_as_touching_an_issue_but_reading_a_run_does_not() {
+fn reading_a_run_does_not_count_as_touching_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (plan_id, run_id) = planned_run_in_review(&mut state, "attention");
+    let (_, run_id) = planned_run_in_review(&mut state, "attention");
 
-    // A fresh run made by implementing: the implement stamped it.
-    assert_eq!(attention_of(&mut state, &run_id)["interacted"], true);
+    assert_eq!(attention_of(&mut state, &run_id)["interacted"], false);
 
     // Reading the run changes nothing about interaction.
     let before = attention_of(&mut state, &run_id);
@@ -772,33 +735,6 @@ fn opening_a_stage_counts_as_touching_an_issue_but_reading_a_run_does_not() {
         before,
         "reading is not acting"
     );
-
-    // Opening a stage doc stamps the issue.
-    let mut fresh = qa_state(&repo, dir.path());
-    let plan = fresh.handle(req("plan.create", json!({ "goal": "queue item" })));
-    let queued = plan_id_of(&plan);
-    assert_eq!(attention_of(&mut fresh, &queued)["interacted"], false);
-    fresh.handle(req(
-        "plan.stage_doc",
-        json!({ "plan_id": queued, "stage_id": "first-half" }),
-    ));
-    assert_eq!(attention_of(&mut fresh, &queued)["interacted"], true);
-    let _ = plan_id;
-}
-
-/// A rejected verb never happened, so it cannot count as touching anything.
-#[test]
-fn a_refused_action_does_not_stamp() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let plan = state.handle(req("plan.create", json!({ "goal": "never approved" })));
-    let plan_id = plan_id_of(&plan);
-    let refused = state.handle(req(
-        "plan.stage_approve",
-        json!({ "plan_id": plan_id, "stage_id": "no-such-stage" }),
-    ));
-    assert_eq!(refused["ok"], false, "{refused:?}");
-    assert_eq!(attention_of(&mut state, &plan_id)["interacted"], false);
 }
 
 /// A worktree Build cut is something you asked for, so it arrives already

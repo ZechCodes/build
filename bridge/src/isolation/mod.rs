@@ -9,6 +9,7 @@
 //! whether its prerequisites are available, and [`IsolationBackend`] is what
 //! a backend does. `WorktreeManager` is the only caller.
 
+mod directory;
 pub mod probe;
 pub mod rift;
 pub mod worktree;
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::git_process::GitError;
 
+pub use directory::{copy_directory, copy_directory_with_rift_root};
 pub use rift::RiftBackend;
 pub use worktree::WorktreeBackend;
 
@@ -59,6 +61,7 @@ pub enum Isolation {
     #[default]
     Worktree,
     /// A copy-on-write workspace made and registered by the Rift CLI.
+    #[serde(alias = "cow")]
     Rift,
 }
 

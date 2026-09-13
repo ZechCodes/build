@@ -4,6 +4,7 @@ import { $ } from "./dom.js";
 import { routeFromHash, hashFromRoute } from "./core/router.js";
 import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
+import { renderWorkspace } from "./views/workspaceView.js";
 import { renderIssue } from "./views/issueView.js";
 import { renderDeviceSettings } from "./views/deviceSettings.js";
 import { renderAccount } from "./views/account.js";
@@ -218,6 +219,7 @@ export function initRouter() {
 const VIEWS = {
   inbox: renderInbox,
   branch: renderBranch,
+  workspace: renderWorkspace,
   issue: renderIssue,
   capture: renderCaptureDecision,
   account: renderAccount,

@@ -314,11 +314,9 @@ async fn a_headless_agent_mid_turn(
 
 /// The steering flow, end to end: a message that stops the turn it lands in.
 ///
-/// The wire is `thread.post` with `interrupt: true` and there is no
-/// `agent.interrupt` verb — Build never interrupts without a turn to follow,
-/// so a verb of its own would always be followed by this post a moment
-/// later, with a window between them in which the child starts a fresh turn
-/// or the agent calls `done`.
+/// This steering wire is `thread.post` with `interrupt: true`: unlike the
+/// composer's standalone `agent.interrupt`, it makes the replacement message
+/// durable before asking the current turn to stop.
 ///
 /// And status moves by exactly one step: the human's message. Nothing else
 /// is minted — an interrupted turn's `error_during_execution` result is a
@@ -584,6 +582,7 @@ fn seed_exact_resumable_session(
         SelfReport {
             named: Some(resume_id.to_string()),
             model: None,
+            effort: None,
         },
     );
     app.record_agent_session_end(owner, &agent_id, &instance);

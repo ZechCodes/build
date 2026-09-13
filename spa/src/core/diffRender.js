@@ -198,8 +198,8 @@ function selectBoxHtml(file, { selectable, selected }) {
 /** One file's header: its path, its status, its weights, and every affordance
  *  the surface offers on it. */
 export function fileHeadHtml(file, options) {
-  return `<div class="fhead">${selectBoxHtml(file, options)}<span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
-        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${editedTimeHtml(file.editedAt)}${changedChipHtml(file, options.changedSince)}${approveToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</div>`;
+  return `<div class="fhead"><span class="fidentity">${selectBoxHtml(file, options)}<span class="fpath">${esc(file.path)}</span></span><span class="fmeta"><span class="fb ${file.status}">${file.status}</span>
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${editedTimeHtml(file.editedAt)}${changedChipHtml(file, options.changedSince)}</span><span class="factions">${approveToggleHtml(file, options)}${openFileButtonHtml(file, options.openable)}${commentButtonHtml(options.commentable)}${fileMenuHtml(file, options.fileMenu)}</span></div>`;
 }
 
 // The two boxes a file's body can sit in: the scrolling one the collapse rule

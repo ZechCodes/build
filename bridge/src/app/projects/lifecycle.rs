@@ -1,3 +1,4 @@
+use super::ProjectSource;
 use crate::app::{AppState, OffLockJob};
 use serde_json::Value;
 
@@ -23,6 +24,41 @@ impl OffLockJob for RemoveUnregisteredProject {
 }
 
 impl AppState {
+    pub(in crate::app) fn register_opened_project_sources(
+        &mut self,
+        opened: crate::lifecycle::OpenedRepository,
+        sources: Vec<ProjectSource>,
+        created_checkouts: Vec<std::path::PathBuf>,
+    ) -> Result<Value, String> {
+        if let Some(existing_name) = self
+            .projects
+            .find_by_canonical_path(&opened.path)
+            .map(|existing| existing.name.clone())
+        {
+            for path in created_checkouts {
+                self.run_off_lock(RemoveUnregisteredProject { path });
+            }
+            return Err(format!("project already registered: {existing_name}"));
+        }
+        let project =
+            self.project_candidate_with_sources(opened.path, opened.base, opened.is_git, sources);
+        let config = self.config_value_with_project(
+            &self.projects_dir,
+            self.default_harness,
+            self.isolation,
+            Some(project.project()),
+        );
+        if let Err(error) = self.persist_config(&config) {
+            for path in created_checkouts {
+                self.run_off_lock(RemoveUnregisteredProject { path });
+            }
+            return Err(error);
+        }
+        let reply = self.project_json(project.project(), opened.remote);
+        self.insert_project(project);
+        Ok(reply)
+    }
+
     /// Register the repository opened by any project-creation door.
     pub(in crate::app) fn register_opened_repository(
         &mut self,

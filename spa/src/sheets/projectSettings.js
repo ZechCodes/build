@@ -14,6 +14,11 @@ const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
     <input id="${id}" style="width:100%" value="${esc(value || "")}" readonly /></div>`;
 
+const sourcesHtml = (project) => !project.sources?.length ? "" : `<fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend>
+  ${project.sources.map((source, index) => `<div class="field"><label for="pssource-${index}">${esc(source.mount || source.name || `Folder ${index + 1}`)}</label>
+    <input id="pssource-${index}" style="width:100%" value="${esc(source.path || source.remote || "")}" readonly>
+    <div class="dim">${source.is_git === false ? "Folder" : `Git repository${source.base_branch ? ` · ${esc(source.base_branch)}` : ""}`}</div></div>`).join("")}</fieldset>`;
+
 export function openProjectSettings(projectId, { callRpc = (method, params) => App.call(method, params) } = {}) {
   const sheet = $("#sheet");
   sheet.innerHTML = `<h3>Project settings</h3><div class="sub">Loading…</div>`;
@@ -35,6 +40,7 @@ export function openProjectSettings(projectId, { callRpc = (method, params) => A
       ${field("Name", "psname", project.name)}
       ${field("Repository path", "pspath", project.path)}
       ${field("Base branch", "psbranch", project.base_branch)}
+      ${sourcesHtml(project)}
       ${isolationFieldHtml()}
       <div class="field"><label>Origin remote</label>
         <input id="psremote" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(project.remote || "")}" /></div>

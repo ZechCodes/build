@@ -22,14 +22,20 @@ shift
 case "$command" in
   init)
     project=$1
+    if [ -f "$project/.rift" ] && [ "$(cat "$project/.rift")" != "$database" ]; then
+      printf 'workspace belongs to a different registry\n' >&2
+      exit 73
+    fi
     if ! mkdir "${database}.initializing" 2>/dev/null; then
       printf 'overlapping Rift init\n' >&2
       exit 72
     fi
     sleep 0.1
-    printf 'fake Rift source marker\n' > "$project/.rift"
-    mkdir -p "$project/.git/info"
-    printf '/.rift\n' >> "$project/.git/info/exclude"
+    printf '%s\n' "$database" > "$project/.rift"
+    if [ -d "$project/.git" ]; then
+      mkdir -p "$project/.git/info"
+      printf '/.rift\n' >> "$project/.git/info/exclude"
+    fi
     touch "$database"
     rmdir "${database}.initializing"
     ;;
@@ -47,8 +53,10 @@ case "$command" in
     done
     checkout="$parent/$name"
     cp -a "$project" "$checkout"
-    git -C "$checkout" checkout --detach --quiet
-    touch "$checkout/.git/index.lock"
+    if [ -d "$checkout/.git" ]; then
+      git -C "$checkout" checkout --detach --quiet
+      touch "$checkout/.git/index.lock"
+    fi
     printf 'fake Rift marker\n' > "$checkout/.rift"
     printf '%s\n' "$checkout" >> "$database"
     printf '%s\n' "$checkout"
@@ -163,6 +171,86 @@ fn fake_cli_covers_the_rift_checkout_lifecycle() {
     assert!(!checkout.exists());
     assert!(!backend.holds_record(&project, "feature-checkout").unwrap());
     assert_cli_lifecycle(&backend, &project, &root, &checkout);
+}
+
+#[test]
+fn configured_cli_materializes_an_ordinary_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let root = dir.path().join("workspaces");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("notes.txt"), "preserved\n").unwrap();
+    let backend = RiftBackend::with_executable(&root, fake_rift(dir.path()));
+    let destination = root.join("notes");
+
+    backend
+        .materialize_directory(&source, &destination)
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(destination.join("notes.txt")).unwrap(),
+        "preserved\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("notes.txt")).unwrap(),
+        "preserved\n"
+    );
+    let log =
+        std::fs::read_to_string(backend.database_path().with_extension("sqlite.log")).unwrap();
+    assert!(
+        log.lines().any(|line| line
+            == format!(
+                "create\t{}\t--into\t{}\t--name\tnotes\t--copy-all\t--no-hooks",
+                source.display(),
+                root.display()
+            )),
+        "the configured CLI did not receive the directory create: {log}"
+    );
+}
+
+#[test]
+fn stable_registry_reuses_a_plain_source_across_workspace_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let registry_root = dir.path().join("project-worktrees");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("notes.txt"), "preserved\n").unwrap();
+    let executable = fake_rift(dir.path());
+
+    for name in ["first", "second"] {
+        let workspace_root = dir.path().join(name);
+        std::fs::create_dir(&workspace_root).unwrap();
+        let backend = RiftBackend::with_registry_root(&workspace_root, &registry_root, &executable);
+        backend
+            .materialize_directory(&source, &workspace_root.join("notes"))
+            .unwrap();
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("second/notes/notes.txt")).unwrap(),
+        "preserved\n"
+    );
+}
+
+#[test]
+fn stable_registry_reuses_a_git_source_across_workspace_roots() {
+    let (dir, project) = init_repo();
+    let registry_root = dir.path().join("project-worktrees");
+    let executable = fake_rift(dir.path());
+
+    for name in ["first", "second"] {
+        let workspace_root = dir.path().join(name);
+        std::fs::create_dir(&workspace_root).unwrap();
+        let backend = RiftBackend::with_registry_root(&workspace_root, &registry_root, &executable);
+        backend
+            .materialize(&project, "main", &workspace_root.join("repository"))
+            .unwrap();
+    }
+
+    assert_eq!(
+        Isolation::of(&dir.path().join("second/repository")),
+        Some(Isolation::Rift)
+    );
 }
 
 fn assert_cli_lifecycle(backend: &RiftBackend, project: &Path, root: &Path, checkout: &Path) {

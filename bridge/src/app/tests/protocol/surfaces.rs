@@ -117,41 +117,10 @@ fn every_detail_verb_carries_the_open_agents_surfaces() {
         DictatedSession::reporting(AgentStatus::Working)
             .showing_surfaces(recorded_workflow_surfaces()),
     );
-    let issue_id = plan_id_of(&state.handle(req(
-        "plan.create",
-        json!({ "goal": "an issue with a surfaced agent" }),
-    )));
-    let started = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": issue_id, "body": "start" }),
-    ));
-    assert_eq!(started["ok"], true, "{started:?}");
-    let issue_agent = primary_agent_id(&state, &issue_id);
-    let issue_root = state
-        .entity_agent_root(&issue_id)
-        .expect("the issue's agent works in the primary checkout");
-    insert_agent_tab(
-        &mut state,
-        &issue_root,
-        &issue_id,
-        &issue_agent,
-        DictatedSession::reporting(AgentStatus::Working)
-            .showing_surfaces(recorded_workflow_surfaces()),
-    );
-
-    for (verb, params) in [
-        ("run.get", json!({ "run_id": run_id })),
-        ("issue.get", json!({ "issue_id": issue_id })),
-        ("plan.get", json!({ "plan_id": issue_id })),
-    ] {
-        let answered = state.handle(req(verb, params));
-        assert_eq!(answered["ok"], true, "{verb}: {answered:?}");
-        let surfaces = the_only_digest_carrying_surfaces(verb, &answered["result"]);
-        assert_eq!(
-            surfaces["workflows"][0]["id"], WORKFLOW_TASK_ID,
-            "{verb}: {surfaces:?}"
-        );
-    }
+    let answered = state.handle(req("run.get", json!({ "run_id": run_id })));
+    assert_eq!(answered["ok"], true, "run.get: {answered:?}");
+    let surfaces = the_only_digest_carrying_surfaces("run.get", &answered["result"]);
+    assert_eq!(surfaces["workflows"][0]["id"], WORKFLOW_TASK_ID);
     drop(dir);
 }
 
@@ -173,40 +142,8 @@ fn no_list_shaped_answer_carries_surfaces() {
         DictatedSession::reporting(AgentStatus::Working)
             .showing_surfaces(recorded_workflow_surfaces()),
     );
-    let issue_id = plan_id_of(&state.handle(req(
-        "plan.create",
-        json!({ "goal": "an issue with a surfaced agent" }),
-    )));
-    let started = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": issue_id, "body": "start" }),
-    ));
-    assert_eq!(started["ok"], true, "{started:?}");
-    let issue_agent = primary_agent_id(&state, &issue_id);
-    let issue_root = state
-        .entity_agent_root(&issue_id)
-        .expect("the issue's agent works in the primary checkout");
-    insert_agent_tab(
-        &mut state,
-        &issue_root,
-        &issue_id,
-        &issue_agent,
-        DictatedSession::reporting(AgentStatus::Working)
-            .showing_surfaces(recorded_workflow_surfaces()),
-    );
-    state
-        .plans
-        .get_mut(&issue_id)
-        .expect("the issue is on the board")
-        .plan
-        .archived_at = Some(now_rfc3339());
-    let project_id = state.project_at(0).id.clone();
-
     for (verb, params) in [
         ("board.list", json!({})),
-        ("plan.list", json!({})),
-        ("issue.list", json!({})),
-        ("archive.list", json!({ "project_id": project_id })),
         ("agent.list", json!({ "entity_id": run_id })),
     ] {
         let answered = state.handle(req(verb, params));

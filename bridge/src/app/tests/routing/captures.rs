@@ -1,5 +1,24 @@
 use super::*;
 
+#[test]
+fn capture_reroute_refuses_the_retired_issue_destination_without_mutating_the_capture() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let (capture_id, _) = captured(&mut state, "keep this capture intact");
+    let before = capture_record(&mut state, &capture_id);
+
+    let refused = state.handle(req(
+        "capture.reroute",
+        json!({ "capture_id": capture_id, "project_id": project_id, "kind": "issue" }),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
+    assert!(state.plans.is_empty());
+    assert_eq!(capture_record(&mut state, &capture_id), before);
+}
+
 // ==== captures: durable before anything routes them ======================
 
 pub(in crate::app::tests) fn capture_rows(state: &mut AppState) -> Vec<Value> {

@@ -13,6 +13,7 @@ import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { onlineStickyDeviceId } from "./core/devicePolicy.js";
+import { openFirstReachableDevice } from "./core/deviceBootstrap.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, adoptApplicationScope, render, rememberSelectedDevice } from "./app.js";
 import {
@@ -59,6 +60,14 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
       if (!isSignaling(payload.type)) dispatchChangeEvent(payload);
     },
   });
+}
+
+/** Boot from the API's presence hint without letting a stale or stalled device
+ * strand every other known device. Each strict attempt gets a fresh relay
+ * presence snapshot. Explicit settings/device switches keep using their own
+ * single requested target. */
+export async function openBootSession(devices) {
+  return openFirstReachableDevice({ devices, selectedDeviceId: App.selectedDeviceId, open: openAppSession });
 }
 
 /** A settings page owns its connection: it never changes the active workspace,

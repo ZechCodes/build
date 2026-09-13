@@ -391,63 +391,6 @@ fn a_capture_continuing_work_in_flight_is_dispatched_to_the_branch_carrying_it()
     assert_router_session_settled(&state, &router.capture_id);
 }
 
-/// Rule 2, the default. Nothing in flight is doing this, so it becomes an
-/// issue on the best-guess project with its planning agent reading the
-/// capture: no branch, no worktree, nothing cut, and one tap from being
-/// somewhere else.
-#[test]
-fn a_vague_idea_becomes_a_planned_issue_on_the_best_guess_project() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (_, invoice_run) = branch_in_flight(&mut state, "widen the invoice pdf footer");
-    let invoice_agents = state.runs[&invoice_run].agents.len();
-    let runs_before = state.runs.len();
-
-    let mut router = ScriptedRouter::on(&mut state, "onboarding could feel quicker");
-    let decision = router.route(&mut state);
-
-    assert_eq!(decision, RoutingDecision::FileIssue { project_id });
-    let record = capture_record(&mut state, &router.capture_id);
-    assert_eq!(record["state"], "routed");
-    assert_eq!(record["routing"]["kind"], "issue");
-    assert_eq!(
-        record["question"],
-        Value::Null,
-        "the project was guessable, so nothing was asked"
-    );
-
-    let issue_id = record["routing"]["target_id"].as_str().unwrap().to_string();
-    let issue = &state.plans[&issue_id];
-    assert_eq!(
-        AppState::canonical_root(
-            &issue
-                .workspace
-                .as_ref()
-                .expect("a planning session")
-                .checkout
-        ),
-        AppState::canonical_root(&repo),
-        "an issue plans on main, in the primary checkout"
-    );
-    assert_eq!(
-        state
-            .delivery_queue
-            .queued()
-            .filter(|turn| turn.owner == issue_id)
-            .count(),
-        1,
-        "the capture is a sent message, and one agent is reading it"
-    );
-    assert_eq!(state.runs.len(), runs_before, "nothing was cut for it");
-    assert_eq!(
-        state.runs[&invoice_run].agents.len(),
-        invoice_agents,
-        "and the branch in flight was not made to take it"
-    );
-    assert_router_session_settled(&state, &router.capture_id);
-}
-
 /// Rule 3. Two projects, and neither the capture nor the work in flight
 /// says which — the one case where a question beats a guess. Nothing is
 /// created, and the capture goes back to the user saying what it needs.
@@ -473,40 +416,5 @@ fn a_capture_whose_project_is_ambiguous_is_asked_about_rather_than_guessed() {
         .expect("an unanswered question keeps the capture on the feed");
     assert_eq!(row["unread"], true);
     assert_eq!(row["unread_reason"], "router_question");
-    assert_router_session_settled(&state, &router.capture_id);
-}
-
-/// The other half of rule 3, and the half that keeps it honest: a project
-/// the capture names is a project the router does not get to ask about.
-/// Asking here is the friction capture exists to remove.
-#[test]
-fn a_guessable_project_is_filed_on_rather_than_asked_about() {
-    let dir = tempfile::tempdir().unwrap();
-    let (mut state, _storefront, billing) = two_project_state(&dir);
-
-    let mut router = ScriptedRouter::on(&mut state, "the billing export drops the last row");
-    let decision = router.route(&mut state);
-
-    assert_eq!(
-        decision,
-        RoutingDecision::FileIssue {
-            project_id: billing.clone()
-        }
-    );
-    let record = capture_record(&mut state, &router.capture_id);
-    assert_eq!(record["state"], "routed");
-    assert_eq!(record["routing"]["kind"], "issue");
-    assert_eq!(record["routing"]["project_id"], billing.as_str());
-    assert_eq!(
-        record["question"],
-        Value::Null,
-        "a guessable project is never asked about"
-    );
-    assert!(
-        capture_rows(&mut state)
-            .iter()
-            .all(|row| row["capture_id"] != router.capture_id.as_str()),
-        "a routed, quiet capture leaves the feed to what it became"
-    );
     assert_router_session_settled(&state, &router.capture_id);
 }

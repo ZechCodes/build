@@ -59,7 +59,11 @@ export function changesRailEntries({ status, log, selected, review = null, nowSe
       <span class="rtitle">${title}</span><span class="rsub mono">${sub}</span></div>`;
   const commits = (log && log.commits) || [];
   const entries = [];
-  if (review) entries.push({ key: "review", html: rrow("review", "All changes", `vs ${esc(review.base || "main")}`) });
+  if (review)
+    entries.push({
+      key: "review",
+      html: rrow("review", "All changes", review.subtitle ? esc(review.subtitle) : `vs ${esc(review.base || "main")}`),
+    });
   entries.push({
     key: "uncommitted",
     html: rrow("uncommitted", "Uncommitted", hasUncommittedChanges(status) ? plusMinusHtml(uncommittedTotals(status)) : "clean"),

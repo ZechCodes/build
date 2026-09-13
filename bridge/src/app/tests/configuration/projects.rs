@@ -777,6 +777,46 @@ fn fs_list_browses_dirs_and_flags_git_repos() {
 }
 
 #[test]
+fn fs_mkdir_creates_one_plain_directory_and_rejects_unsafe_names() {
+    let (dir_a, repo_a) = init_repo();
+    let mut state = AppState::new(
+        repo_a,
+        dir_a.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let root = dir_a.path().join("browse");
+    std::fs::create_dir(&root).unwrap();
+
+    let created = state.handle(req(
+        "fs.mkdir",
+        json!({ "parent": root.to_str().unwrap(), "name": "new source" }),
+    ));
+    assert_eq!(created["ok"], true, "{created:?}");
+    assert_eq!(
+        created["result"]["path"],
+        root.join("new source").to_str().unwrap()
+    );
+    assert!(root.join("new source").is_dir());
+    assert!(!root.join("new source/.git").exists());
+
+    for name in ["", ".", "..", "nested/child", "nested\\child"] {
+        let rejected = state.handle(req(
+            "fs.mkdir",
+            json!({ "parent": root.to_str().unwrap(), "name": name }),
+        ));
+        assert_eq!(rejected["ok"], false, "name {name:?}: {rejected:?}");
+    }
+
+    let duplicate = state.handle(req(
+        "fs.mkdir",
+        json!({ "parent": root.to_str().unwrap(), "name": "new source" }),
+    ));
+    assert_eq!(duplicate["ok"], false, "{duplicate:?}");
+}
+
+#[test]
 fn settings_set_then_clone_registers_project() {
     let (dir_src, repo_src) = init_repo();
     let (dir_a, repo_a) = init_repo();

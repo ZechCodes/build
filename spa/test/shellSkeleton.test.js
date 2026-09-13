@@ -64,6 +64,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  App.viewDispose?.();
   if (App.poll) clearInterval(App.poll);
   App.poll = null;
   App.viewDispose = null;
@@ -100,7 +101,7 @@ describe("the shell's markup", () => {
 describe("the shell's grid", () => {
   it("lays the rail beside the view column, and the view column in three rows", () => {
     expect(shellCss).toMatch(/#shell \{[^}]*display:grid/);
-    expect(shellCss).toMatch(/#shell \{[^}]*grid-template-columns:auto minmax\(0, 1fr\)/);
+    expect(shellCss).toMatch(/#shell \{[^}]*grid-template-columns:var\(--inbox-space\) minmax\(0, 1fr\)/);
     expect(shellCss).toMatch(/#view \{[^}]*grid-template-rows:auto minmax\(0, 1fr\) auto/);
     expect(shellCss).toMatch(/#view-body \{[^}]*grid-template-columns:auto minmax\(0, 1fr\) auto/);
   });
@@ -125,20 +126,19 @@ describe("the shell's grid", () => {
     expect(shellCss).toMatch(/#view \{[^}]*grid-template-columns:minmax\(0, 1fr\)/);
   });
 
-  it("gives the gate the whole frame, keeping only the compose box", () => {
+  it("gives the gate the whole frame", () => {
     const hidden = shellCss.match(/body\.gated[^{]*\{[^}]*display:none[^}]*\}/g).join("\n");
-    for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region", "#inbox-list", ".inbox-foot"]) {
+    for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region"]) {
       expect([region, hidden.includes(region)]).toEqual([region, true]);
     }
-    // Capture works before a device does, so the rail survives the gate as the
-    // carrier for that one control — and takes up no room doing it.
-    expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*width:0/);
-    expect(shellCss).toMatch(/body\.gated #compose \{[^}]*position:fixed/);
+    expect(shellCss).toMatch(/body\.gated \{[^}]*--inbox-space:0px/);
+    expect(shellCss).toMatch(/body\.gated #inbox-rail \{[^}]*display:none/);
   });
 
   it("overlays the inbox on a narrow viewport, the way the rail it replaces did", () => {
     const narrow = shellCss.match(/@media \(max-width: 900px\) \{[\s\S]*?\n\}/)[0];
-    expect(narrow).toMatch(/#inbox-rail \{[^}]*position:fixed/);
+    expect(narrow).toMatch(/#inbox-rail \{[^}]*position:absolute/);
+    expect(narrow).toMatch(/body \{[^}]*--inbox-space:0px/);
     expect(narrow).toMatch(/#inbox-scrim/);
   });
 
@@ -160,7 +160,8 @@ describe("the inbox rail's docked state", () => {
     expect(railStartsCollapsed(null, 1400)).toBe(false);
     expect(railStartsCollapsed(null, 700)).toBe(true);
     expect(railStartsCollapsed("1", 1400)).toBe(true);
-    expect(railStartsCollapsed("", 700)).toBe(false);
+    expect(railStartsCollapsed("", 700)).toBe(true);
+    expect(railStartsCollapsed("", 900)).toBe(true);
   });
 });
 
@@ -172,12 +173,13 @@ describe("render dispatch", () => {
     expect(root().querySelector(".shell-stub")).toBeTruthy();
   });
 
-  it("mounts the branch surface with its two tabs and the console slot", async () => {
+  it("keeps a legacy branch conversation reachable", async () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
     const tabs = [...document.querySelectorAll("#branch-tabs [data-tab]")].map((cell) => cell.dataset.tab);
     expect(tabs).toEqual(["files", "changes"]);
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().classList.contains("surface")).toBe(true);
     // The console is reserved and shut.
     const bar = document.querySelector("#console-region .console-bar");
@@ -190,7 +192,7 @@ describe("render dispatch", () => {
     expect(root().querySelector(".tback")).toBeNull();
   });
 
-  it("navigates between the branch tabs by URL", async () => {
+  it("restores work tabs on a legacy branch URL", async () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
@@ -198,10 +200,11 @@ describe("render dispatch", () => {
     expect(location.hash).toBe("#/project/p-1/branch/build%2Flogin/files");
   });
 
-  it("mounts the issue surface as two columns, no tabs", async () => {
+  it("keeps a legacy issue transcript reachable", async () => {
     App.route = { name: "issue", projectId: "p-1", id: "i-1" };
     render();
     await flush();
+    expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().querySelector(".ivsplit")).toBeTruthy();
     expect(document.querySelector("#branch-tabs").children).toHaveLength(0);
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
@@ -229,14 +232,13 @@ describe("render dispatch", () => {
     expect(location.hash).toBe("#/inbox");
   });
 
-  it("hands each view a clean #root and runs the outgoing view's teardown", async () => {
+  it("hands each view a clean #root", async () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    expect(document.querySelector("#console-region .console-bar")).toBeTruthy();
+    expect(document.querySelector("#branch-tabs").children.length).toBeGreaterThan(0);
     App.route = { name: "account", page: "settings" };
     render();
-    // The branch view's teardown clears the console region it mounted.
     expect(document.getElementById("console-region").innerHTML).toBe("");
     expect(App.poll).toBeNull();
   });

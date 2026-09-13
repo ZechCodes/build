@@ -5,6 +5,17 @@ use crate::orchestrator::{ActiveRun, Orchestrator};
 use crate::templates::Templates;
 use serde_json::Value;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::app) struct ProjectSource {
+    pub(in crate::app) id: String,
+    pub(in crate::app) name: String,
+    pub(in crate::app) mount: String,
+    pub(in crate::app) path: std::path::PathBuf,
+    pub(in crate::app) is_git: bool,
+    pub(in crate::app) base_branch: String,
+    pub(in crate::app) remote: Option<String>,
+}
+
 mod lifecycle;
 mod list;
 mod project_registry;
@@ -24,6 +35,7 @@ pub(in crate::app) struct Project {
     pub(in crate::app) repo_path: std::path::PathBuf,
     pub(in crate::app) base_branch: String,
     pub(in crate::app) is_git: bool,
+    pub(in crate::app) sources: Vec<ProjectSource>,
     pub(in crate::app) orch: Orchestrator,
     /// Which isolation this project's new checkouts are made with, when the
     /// account's answer is not the one wanted here. `None` inherits it.
@@ -43,6 +55,44 @@ pub(in crate::app) fn usable_project_name(name: impl AsRef<str>) -> Result<Strin
         return Err(format!("invalid project name: {name:?}"));
     }
     Ok(name.to_string())
+}
+
+pub(in crate::app) fn safe_mount_name(name: &str) -> String {
+    let mount = name
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let mount = mount.trim_matches(['.', '-']).to_string();
+    if mount.is_empty() || mount == ".." {
+        "source".to_string()
+    } else {
+        mount
+    }
+}
+
+/// Resolve the exact directory selected as a source. Git classification is
+/// intentionally left to the repository opener, which recognizes a `.git`
+/// directory or indirection file at this path. A plain directory nested inside
+/// some unrelated parent checkout remains its own source boundary.
+pub(in crate::app) fn canonical_source_path(
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("cannot open source {}: {error}", path.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "source is not a directory: {}",
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
 }
 
 /// The base branch a project verb was told to use, if it was told one. With
@@ -83,7 +133,12 @@ impl AppState {
             .into_iter()
             .flatten();
         for project in projects {
-            let Some(repo) = project.get("path").and_then(Value::as_str) else {
+            let stored_sources = project.get("sources").and_then(Value::as_array);
+            let primary_path = project
+                .get("path")
+                .and_then(Value::as_str)
+                .or_else(|| stored_sources?.first()?.get("path")?.as_str());
+            let Some(repo) = primary_path else {
                 continue;
             };
             let base = project
@@ -96,6 +151,51 @@ impl AppState {
                 continue;
             }
             let id = self.add_project(repo, base);
+            if let Some(entries) = stored_sources {
+                let sources = entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, source)| {
+                        let path = source.get("path")?.as_str()?;
+                        let path = canonical_source_path(&expand_tilde(path)).ok()?;
+                        let fallback_name = path.file_name()?.to_string_lossy().into_owned();
+                        let name = source
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&fallback_name)
+                            .to_string();
+                        let mount = source
+                            .get("mount")
+                            .and_then(Value::as_str)
+                            .map(safe_mount_name)
+                            .unwrap_or_else(|| safe_mount_name(&name));
+                        let is_git = path.join(".git").exists();
+                        Some(ProjectSource {
+                            id: source
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("source-{}", index + 1)),
+                            name,
+                            mount,
+                            path,
+                            is_git,
+                            base_branch: source
+                                .get("base_branch")
+                                .and_then(Value::as_str)
+                                .unwrap_or("main")
+                                .to_string(),
+                            remote: source
+                                .get("remote")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if !sources.is_empty() {
+                    self.projects.set_sources(&id, sources);
+                }
+            }
             let isolation = configured_isolation(project, "project isolation");
             self.projects.set_isolation(&id, isolation);
         }
@@ -139,6 +239,30 @@ impl AppState {
         base_branch: String,
         is_git: bool,
     ) -> ProjectCandidate {
+        let name = repo_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("project")
+            .to_string();
+        let sources = vec![ProjectSource {
+            id: "source-1".to_string(),
+            name: name.clone(),
+            mount: safe_mount_name(&name),
+            path: repo_path.clone(),
+            is_git,
+            base_branch: base_branch.clone(),
+            remote: None,
+        }];
+        self.project_candidate_with_sources(repo_path, base_branch, is_git, sources)
+    }
+
+    fn project_candidate_with_sources(
+        &self,
+        repo_path: std::path::PathBuf,
+        base_branch: String,
+        is_git: bool,
+        sources: Vec<ProjectSource>,
+    ) -> ProjectCandidate {
         let worktrees_root = self.worktrees_root.clone();
         let agent = self.agent.clone();
         let bridge_exe = self.bridge_exe.clone();
@@ -163,6 +287,7 @@ impl AppState {
                     repo_path: repo_path.to_path_buf(),
                     base_branch: base_branch.to_string(),
                     is_git,
+                    sources,
                     orch,
                     isolation: None,
                 }
@@ -217,6 +342,13 @@ impl AppState {
     /// resolves it through here.
     pub(in crate::app) fn project(&self, project_id: &str) -> Option<&Project> {
         self.projects.get(project_id)
+    }
+
+    pub(in crate::app) fn sources_for(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProjectSource>, String> {
+        Ok(self.project_for(project_id)?.sources.clone())
     }
 
     /// The registered project a client names by id, or the one refusal every

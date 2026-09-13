@@ -20,8 +20,8 @@ const snapshot = () => surfacesSnapshot();
 const conversationColumn = () => {
   document.body.innerHTML = `<div class="rail-panel">
     <div class="rail-body" id="rail-body"></div>
-    <div class="rail-surfaces-viewer" id="rail-surfaces-viewer" hidden></div>
     <div class="rail-composer">
+      <div class="rail-surfaces-viewer" id="rail-surfaces-viewer" hidden></div>
       <div class="rail-status" id="rail-status">
         <span class="rail-status-lead" id="rail-status-lead"></span>
         <div class="rail-status-pills" id="rail-status-pills"></div>
@@ -93,6 +93,20 @@ describe("the surface pills", () => {
     expect(document.querySelector(".surface-shells")).toBe(null);
     expect(document.querySelector(".surface-checklist")).not.toBe(null);
 
+    surfaces.dispose();
+  });
+
+  it("dismisses the selected kind with Escape and returns focus to its footer control", async () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    await pressPill(SHELL_ENTRY_KIND);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await motionSettled();
+
+    expect(pressed(SHELL_ENTRY_KIND)).toBe("false");
+    expect(document.querySelector(".surface-viewer")).toBe(null);
+    expect(document.activeElement).toBe(pill(SHELL_ENTRY_KIND));
     surfaces.dispose();
   });
 

@@ -112,6 +112,9 @@ pub struct Agent {
     pub resume_session_id: Option<String>,
     #[serde(default)]
     pub active_model: Option<String>,
+    /// The reasoning effort last reported by the running session.
+    #[serde(default)]
+    pub active_effort: Option<String>,
     /// When the agent's current working interval began, if it is working now.
     #[serde(default)]
     pub working_since: Option<String>,
@@ -158,6 +161,7 @@ impl Agent {
             state: AgentLifecycle::Idle,
             resume_session_id: None,
             active_model: None,
+            active_effort: None,
             working_since: None,
             start_error: None,
             topic: None,

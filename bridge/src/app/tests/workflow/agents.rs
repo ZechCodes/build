@@ -227,24 +227,19 @@ fn agent_add_gives_a_branch_a_second_conversation() {
     assert_eq!(mailbox.id, format!("thread:{second_agent}"));
 }
 
-/// An issue carries exactly one agent session: implementation is a handoff
-/// to a new agent on a branch, never a second agent on the issue.
+/// Legacy issue records stay intact, but their agent roster cannot be changed.
 #[test]
-fn agent_add_is_refused_on_an_issue() {
+fn agent_add_is_refused_on_a_retired_issue() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let plan = state.handle(req("plan.create", json!({ "goal": "one agent only" })));
-    let plan_id = plan_id_of(&plan);
+    let plan = state
+        .plan_create(&json!({ "goal": "one agent only", "dispatch": false }))
+        .expect("legacy fixture is created below the retired RPC boundary");
+    let plan_id = plan["plan_id"].as_str().unwrap().to_string();
 
     let refused = state.handle(req("agent.add", json!({ "entity_id": plan_id })));
     assert_eq!(refused["ok"], false, "{refused:?}");
-    assert!(
-        refused["error"]
-            .as_str()
-            .unwrap()
-            .contains("exactly one agent"),
-        "{refused:?}"
-    );
+    assert_eq!(refused["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
     assert_eq!(state.plans[&plan_id].agents.len(), 1);
 }
 
@@ -571,20 +566,18 @@ fn agent_remove_refuses_an_issue_and_an_unknown_agent_but_never_the_primary() {
     ));
     assert_eq!(unknown_entity["ok"], false, "{unknown_entity:?}");
 
-    // An issue's one agent IS the issue's conversation: there is nothing to
-    // remove there, only an issue to abandon.
-    let plan = state.handle(req("plan.create", json!({ "goal": "one agent only" })));
-    let plan_id = plan_id_of(&plan);
+    // A legacy issue is readable, but its roster is frozen.
+    let plan = state
+        .plan_create(&json!({ "goal": "one agent only", "dispatch": false }))
+        .expect("legacy fixture is created below the retired RPC boundary");
+    let plan_id = plan["plan_id"].as_str().unwrap().to_string();
     let issue_agent = primary_agent_id(&state, &plan_id);
     let issue = state.handle(req(
         "agent.remove",
         json!({ "entity_id": plan_id, "agent_id": issue_agent }),
     ));
     assert_eq!(issue["ok"], false, "{issue:?}");
-    assert!(
-        issue["error"].as_str().unwrap().contains("issue"),
-        "{issue:?}"
-    );
+    assert_eq!(issue["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
     assert_eq!(state.plans[&plan_id].agents.len(), 1);
 
     // The branch's PRIMARY goes first, and the agent beside it takes its
@@ -636,53 +629,6 @@ fn agent_remove_refuses_an_issue_and_an_unknown_agent_but_never_the_primary() {
         ),
         "the message that created it is the first thing on its conversation: {:?}",
         minted.thread.items
-    );
-}
-
-#[test]
-fn removing_an_implementation_alias_never_rebinds_its_secondary_to_the_issue() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "stable conversation binding");
-    let issue_agent = state.plans[&issue_id].agents.sole().id.clone();
-    let primary = primary_agent_id(&state, &run_id);
-    assert_eq!(
-        state.runs[&run_id]
-            .agents
-            .by_id(&primary)
-            .unwrap()
-            .conversation_id(),
-        issue_agent
-    );
-    let second = state
-        .runs
-        .get_mut(&run_id)
-        .unwrap()
-        .agents
-        .add(&run_id, ModelChoice::default(), "2026-09-08T12:00:00Z")
-        .id
-        .clone();
-
-    let removed = state.handle(req(
-        "agent.remove",
-        json!({ "entity_id": run_id, "agent_id": primary }),
-    ));
-    assert_eq!(removed["ok"], true, "{removed:?}");
-    let remaining = state.runs[&run_id].agents.primary().unwrap();
-    assert_eq!(remaining.id, second);
-    assert_eq!(remaining.conversation_id(), second);
-    assert_eq!(
-        state
-            .agent_conversation(&run_id, None)
-            .expect("the remaining agent's conversation")
-            .agent
-            .id,
-        second,
-        "becoming the rail's first item did not inherit the removed alias"
-    );
-    assert_ne!(
-        state.agent_conversation(&run_id, None).unwrap().agent.id,
-        state.plans[&issue_id].agents.sole().id
     );
 }
 
@@ -1139,6 +1085,76 @@ fn branch_get_ships_the_page_the_branch_surface_asked_for() {
     }
 }
 
+/// A workspace adopted from a run is another route to the same conversation,
+/// so it must preserve the rail's selected-agent and bounded-page contract.
+#[test]
+fn workspace_get_carries_the_owned_runs_selected_conversation() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (run_id, _, second_agent) =
+        branch_with_two_conversations(&mut state, &repo, dir.path(), "feature-workspace-thread");
+
+    let selected = state.handle(req(
+        "workspace.get",
+        json!({
+            "workspace_id": run_id,
+            "agent_id": second_agent,
+            "thread_limit": 1,
+        }),
+    ));
+    assert_eq!(selected["ok"], true, "{selected:?}");
+    assert_eq!(selected["result"]["entity_id"], run_id, "{selected:?}");
+    assert_eq!(selected["result"]["run_id"], run_id, "{selected:?}");
+    assert_eq!(
+        thread_bodies(&selected["result"]["thread"]),
+        vec!["second-agent-marker".to_string()],
+        "{selected:?}"
+    );
+    assert_eq!(
+        selected["result"]["run"]["thread"], selected["result"]["thread"],
+        "the top-level rail contract and nested run detail stay identical"
+    );
+
+    let unknown = state.handle(req(
+        "workspace.get",
+        json!({ "workspace_id": run_id, "agent_id": "agent-NOSUCHTHING" }),
+    ));
+    assert_eq!(unknown["ok"], false, "{unknown:?}");
+    assert!(unknown["error"]
+        .as_str()
+        .unwrap()
+        .contains("unknown agent_id"));
+}
+
+/// An external checkout keeps its workspace identity when a later run adopts
+/// it. Root ownership reconnects that stable workspace route to the live run;
+/// callers must use the returned run id for every conversation mutation.
+#[test]
+fn workspace_get_resolves_an_external_workspace_to_its_run_by_exact_root() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-workspace-owner");
+    let root = state.runs[&run_id].worktree.path.clone();
+    state.workspaces.adopt_root(
+        &project_id,
+        "stable-workspace-id".to_string(),
+        "feature-workspace-owner".to_string(),
+        root,
+        "root".to_string(),
+        true,
+    );
+
+    let detail = state.handle(req(
+        "workspace.get",
+        json!({"workspace_id": "stable-workspace-id"}),
+    ));
+    assert_eq!(detail["ok"], true, "{detail:?}");
+    assert_eq!(detail["result"]["workspace_id"], "stable-workspace-id");
+    assert_eq!(detail["result"]["entity_id"], run_id, "{detail:?}");
+    assert_eq!(detail["result"]["run_id"], run_id, "{detail:?}");
+}
+
 /// The delta cursor is per conversation: a sequence held for one agent's
 /// thread must be applied to THAT thread, and the totals it is checked
 /// against must be that thread's too. Cursoring one agent can never drain
@@ -1236,8 +1252,10 @@ fn per_message_read_reports_preserve_explicit_agent_isolation() {
 fn issue_get_honors_the_agent_it_was_addressed_to() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let issue = state.handle(req("plan.create", json!({ "goal": "one conversation" })));
-    let issue_id = plan_id_of(&issue);
+    let issue = state
+        .plan_create(&json!({ "goal": "one conversation", "dispatch": false }))
+        .expect("legacy fixture is created below the retired RPC boundary");
+    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
     let agent_id = primary_agent_id(&state, &issue_id);
 
     let named = state.handle(req(
@@ -1273,7 +1291,7 @@ fn issue_get_honors_the_agent_it_was_addressed_to() {
 fn request_changes_lands_on_the_named_agents_conversation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "review with two agents");
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "review-with-two-agents");
     let primary_agent = primary_agent_id(&state, &run_id);
     let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
     let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
@@ -1289,8 +1307,7 @@ fn request_changes_lands_on_the_named_agents_conversation() {
     assert_eq!(addressed["ok"], true, "{addressed:?}");
 
     // The comments are on the addressed agent's own thread, and nowhere
-    // else: not on the branch's first agent, not on the Issue the first
-    // agent speaks in.
+    // else on the branch.
     let second_thread = &state.runs[&run_id]
         .agents
         .by_id(&second_agent)
@@ -1300,13 +1317,14 @@ fn request_changes_lands_on_the_named_agents_conversation() {
         thread_holds(second_thread, "second-agent-comment"),
         "{second_thread:?}"
     );
-    assert!(
-        !thread_holds(
-            state.plans[&issue_id].agents.sole_thread(),
-            "second-agent-comment"
-        ),
-        "the Issue's conversation belongs to the first agent"
-    );
+    assert!(!thread_holds(
+        &state.runs[&run_id]
+            .agents
+            .by_id(&primary_agent)
+            .unwrap()
+            .thread,
+        "second-agent-comment"
+    ));
 
     let queued = state
         .delivery_queue
@@ -1321,9 +1339,7 @@ fn request_changes_lands_on_the_named_agents_conversation() {
         "a cold spawn catches up on ITS conversation: {delivered}"
     );
 
-    // Named nothing, the comments still land where every surface before the
-    // rail put them: the first agent's conversation, which for a planned
-    // implementation is the Issue's.
+    // Named nothing, the comments land on the branch's first agent.
     let defaulted = state.handle(req(
         "run.request_changes",
         json!({
@@ -1334,11 +1350,11 @@ fn request_changes_lands_on_the_named_agents_conversation() {
     assert_eq!(defaulted["ok"], true, "{defaulted:?}");
     assert!(
         thread_holds(
-            state.plans[&issue_id].agents.sole_thread(),
+            &state.runs[&run_id].agents.primary().unwrap().thread,
             "first-agent-comment"
         ),
         "{:?}",
-        primary_thread(&state.plans[&issue_id].agents).items
+        primary_thread(&state.runs[&run_id].agents).items
     );
     assert_eq!(
         state.delivery_queue.queued_last().unwrap().agent_id,

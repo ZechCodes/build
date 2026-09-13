@@ -1,5 +1,31 @@
 use super::*;
 
+/// The retired Issue destination refuses before routing the capture or creating a plan.
+#[test]
+fn a_router_cannot_create_an_issue_from_a_capture() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let (capture_id, _) = captured(&mut state, "keep this as captured work");
+
+    let refused = state.router_action(
+        &capture_id,
+        BridgeAction::CreateIssue {
+            project_id,
+            goal: "must not become a plan".to_string(),
+            rationale: Some("legacy router choice".to_string()),
+        },
+    );
+
+    assert_eq!(
+        refused.unwrap_err(),
+        crate::app::issues::ISSUES_RETIRED_ERROR
+    );
+    assert!(state.plans.is_empty());
+    let capture = capture_record(&mut state, &capture_id);
+    assert!(capture["routing"].is_null(), "{capture:?}");
+}
+
 // ==== the router: what decides where a capture goes ======================
 
 /// Take a capture and hand back its id and the router session deciding it —
@@ -95,244 +121,6 @@ fn a_capture_being_routed_is_never_given_a_second_router() {
         state.delivery_queue.queued_is_empty(),
         "the router already deciding this capture is the one deciding it"
     );
-}
-
-/// The default destination. `create_issue` files the issue AND starts its
-/// planning agent: the capture text arrives on the issue's conversation as
-/// a message the user sent, and a sent message nobody hears is the bug this
-/// closes. The capture's record still says where it went and why.
-#[test]
-fn routing_a_capture_to_an_issue_starts_its_planning_agent_on_the_primary_checkout() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "fix the login redirect");
-
-    let filed = state
-        .router_action(
-            &capture_id,
-            BridgeAction::CreateIssue {
-                project_id: project_id.clone(),
-                goal: "fix the login redirect".to_string(),
-                rationale: Some("no branch names this work".to_string()),
-            },
-        )
-        .unwrap();
-    let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-
-    assert_eq!(filed["planning"], true, "{filed:?}");
-    assert_ne!(
-        state.plans[&issue_id].plan.state,
-        PlanState::Created,
-        "the routed issue is being planned, not sitting inert"
-    );
-    assert_eq!(
-        AppState::canonical_root(
-            &state.plans[&issue_id]
-                .workspace
-                .as_ref()
-                .expect("the planning agent has a workspace")
-                .checkout
-        ),
-        AppState::canonical_root(&repo),
-        "an issue's agent works in the primary checkout"
-    );
-
-    let turns: Vec<&PendingAgentTurn> = state
-        .delivery_queue
-        .queued()
-        .filter(|turn| turn.owner == issue_id)
-        .collect();
-    assert_eq!(turns.len(), 1, "exactly one first turn: {}", turns.len());
-    assert_eq!(turns[0].root, AppState::canonical_root(&repo));
-    assert_eq!(
-        turns[0].agent_id,
-        state.plans[&issue_id].agents.primary().unwrap().id
-    );
-    assert_eq!(turns[0].phase, "plan");
-    assert!(
-        turns[0].said().cold.contains("fix the login redirect"),
-        "the turn carries what the user said: {}",
-        turns[0].said().cold
-    );
-
-    let record = capture_record(&mut state, &capture_id);
-    assert_eq!(record["state"], "routed");
-    assert_eq!(record["routing"]["kind"], "issue");
-    assert_eq!(record["routing"]["target_id"], issue_id.as_str());
-    assert_eq!(record["routing"]["project_id"], project_id.as_str());
-    assert_eq!(record["routing"]["rationale"], "no branch names this work");
-
-    // On disk, not just in this process.
-    let on_disk = Store::new(dir.path().join("store"))
-        .expect("store opens")
-        .load_all_captures()
-        .unwrap();
-    assert_eq!(
-        on_disk[0].routing.as_ref().unwrap().target_id,
-        issue_id,
-        "the route survives the daemon that made it"
-    );
-}
-
-/// One route, one agent. A turn already queued for this issue's agent — or
-/// a spawn already on its way to a harness — is the session that reads the
-/// capture; a second would report `done` for the same issue twice.
-#[test]
-fn a_routed_issue_whose_agent_is_already_coming_is_not_started_twice() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "fix the login redirect");
-
-    let filed = state
-        .router_action(
-            &capture_id,
-            BridgeAction::CreateIssue {
-                project_id: project_id.clone(),
-                goal: "fix the login redirect".to_string(),
-                rationale: None,
-            },
-        )
-        .unwrap();
-    let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-
-    // The turn from the route is still queued.
-    assert!(
-        routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
-        "the issue already has its session"
-    );
-    assert_eq!(
-        state
-            .delivery_queue
-            .queued()
-            .filter(|turn| turn.owner == issue_id)
-            .count(),
-        1,
-        "the turn already queued is the one that reads the capture"
-    );
-
-    // The queue drained and the turn is mid-delivery, its harness coming.
-    let mut delivering = state.take_pending_turns();
-    assert!(
-        routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
-        "a harness already coming up is the one that reads the capture"
-    );
-    assert!(
-        state.delivery_queue.queued_is_empty(),
-        "a harness already coming up is the one that reads the capture"
-    );
-
-    // And once nothing is coming, the issue that already has its session
-    // is still not restarted: starting is a first turn, not a nudge.
-    while let Some((_, mark)) = delivering.next_turn() {
-        mark.settle(&mut state);
-    }
-    assert!(
-        routed_planning_start(&mut state, &issue_id, &capture_id).is_none(),
-        "an issue with a planning session already open is not dispatched again"
-    );
-    assert!(
-        state.delivery_queue.queued_is_empty(),
-        "an issue with a planning session already open is not dispatched again"
-    );
-}
-
-/// A planning workspace that cannot be written never fails the route: the
-/// capture is recorded and the Issue holds the text, so the route answers
-/// with an inert Issue that says no agent is reading it — and once the
-/// disk is fixed, the same Issue starts. The refusal travels the whole way
-/// through `PlanWorkspaceRefused` and `RoutedIssueDrafting::refused`,
-/// which is the one override of the trait's `Err`.
-#[test]
-fn routing_to_an_issue_whose_workspace_cannot_be_written_keeps_the_route() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "fix the login redirect");
-    // Every Issue's scratch docs dir is cut under this root; a plain file
-    // standing there fails `create_dir_all` for any Issue.
-    let docs_root = dir.path().join("wt").join(&project_id).join(".issue-docs");
-    std::fs::create_dir_all(docs_root.parent().unwrap()).unwrap();
-    std::fs::write(&docs_root, "not a directory").unwrap();
-
-    let filed = state
-        .router_action(
-            &capture_id,
-            BridgeAction::CreateIssue {
-                project_id: project_id.clone(),
-                goal: "fix the login redirect".to_string(),
-                rationale: None,
-            },
-        )
-        .expect("an unwritable workspace never fails the route");
-    let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-
-    assert_eq!(filed["planning"], false, "{filed:?}");
-    assert_eq!(
-        state.plans[&issue_id].plan.state,
-        PlanState::Created,
-        "the Issue is inert, not half-started"
-    );
-    assert!(
-        state.plans[&issue_id].workspace.is_none(),
-        "no workspace was written"
-    );
-    assert!(
-        !state
-            .delivery_queue
-            .queued()
-            .any(|turn| turn.owner == issue_id),
-        "no turn was queued for an agent that has nowhere to work"
-    );
-    assert!(
-        state.pending_rows.is_empty(),
-        "the refused workspace left its row on the board"
-    );
-    let record = capture_record(&mut state, &capture_id);
-    assert_eq!(record["state"], "routed");
-    assert_eq!(record["routing"]["kind"], "issue");
-    assert_eq!(record["routing"]["target_id"], issue_id.as_str());
-
-    // Re-startable: with the disk fixed, the same Issue's session opens.
-    std::fs::remove_file(&docs_root).unwrap();
-    let job = routed_planning_start(&mut state, &issue_id, &capture_id)
-        .expect("an inert Issue has a session to start");
-    state
-        .run_lifecycle_here(job)
-        .expect("the session opens once the disk is fixed");
-    assert_ne!(state.plans[&issue_id].plan.state, PlanState::Created);
-    assert!(state.plans[&issue_id].workspace.is_some());
-    assert_eq!(
-        state
-            .delivery_queue
-            .queued()
-            .filter(|turn| turn.owner == issue_id)
-            .count(),
-        1
-    );
-}
-
-/// What a route finds when it asks for a planning session a second time.
-/// `None` is "nothing to start", which is the whole answer this is asked
-/// for: a job would mean a second harness on the same issue.
-fn routed_planning_start(
-    state: &mut AppState,
-    issue_id: &str,
-    capture_id: &str,
-) -> Option<WorktreeLifecycleJob> {
-    let project_id = state.project_of(issue_id).expect("the issue has a project");
-    state
-        .reserve_plan_drafting(
-            issue_id,
-            Box::new(RoutedIssueDrafting {
-                issue_id: issue_id.to_string(),
-                project_id,
-                capture_id: capture_id.to_string(),
-                answer: capture_after_routing,
-            }),
-        )
-        .expect("the issue is on the board")
 }
 
 /// The confident destination. `dispatch_branch` is the one-call handoff, so
@@ -664,31 +452,6 @@ fn cancelling_a_capture_ends_the_routing_and_removes_it() {
     assert_eq!(again["ok"], false, "{again:?}");
 }
 
-/// Once a capture became work, that work is what there is to cancel. A
-/// cancel here would drop the record that says where it went and leave the
-/// issue behind it unexplained.
-#[test]
-fn a_capture_that_became_work_is_not_cancelled_from_here() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let (capture_id, _) = captured(&mut state, "ship it");
-    let project_id = state.project_at(0).id.clone();
-    state
-        .router_action(
-            &capture_id,
-            BridgeAction::CreateIssue {
-                project_id,
-                goal: "ship it".to_string(),
-                rationale: None,
-            },
-        )
-        .unwrap();
-
-    let refused = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
-    assert_eq!(refused["ok"], false, "{refused:?}");
-    assert!(state.captures.contains_key(&capture_id));
-}
-
 /// The answer comes back and the router looks again — with the answer in
 /// the prompt, because that is the whole reason it asked.
 #[test]
@@ -900,46 +663,6 @@ fn a_router_that_reports_without_routing_marks_the_capture_failed() {
     assert_eq!(row["unread_reason"], "routing_failed");
 }
 
-/// A router that reported a route is a router that finished: the same
-/// settle leaves the decision alone and only tidies up after the process.
-#[test]
-fn a_router_that_routed_keeps_its_route_when_it_reports() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "fix the login redirect");
-    let scratch = state.router_sessions[&capture_id]
-        .scratch_dir()
-        .to_path_buf();
-    state
-        .router_action(
-            &capture_id,
-            BridgeAction::CreateIssue {
-                project_id,
-                goal: "fix the login redirect".to_string(),
-                rationale: None,
-            },
-        )
-        .unwrap();
-
-    state.on_router_done(
-        &capture_id,
-        DoneReport {
-            phase: DonePhase::Route,
-            status: DoneStatus::Completed,
-            summary: "filed an issue".to_string(),
-            outputs: crate::mcp::DoneOutputs::default(),
-        },
-    );
-
-    assert_eq!(capture_record(&mut state, &capture_id)["state"], "routed");
-    assert!(!scratch.exists());
-    assert!(
-        capture_rows(&mut state).is_empty(),
-        "what it became is the presence"
-    );
-}
-
 /// A router process that died mid-decision told nobody, so the sweep is
 /// what turns "no process" into a capture the user can act on. A session
 /// still on its way to a harness has no process to have lost.
@@ -967,151 +690,6 @@ fn the_sweep_fails_a_capture_whose_router_died_and_spares_one_still_starting() {
         "a spawn in flight is not a dead router"
     );
     assert!(state.router_sessions.contains_key(&starting));
-}
-
-/// The user moves a misroute off an issue whose planning agent the route
-/// itself started. The route made the issue AND the session, so the reroute
-/// takes both back: the agent is retired and the issue archived. Leaving it
-/// would put a second row on the feed for one piece of work — and, worse,
-/// leave a planning agent working an issue nobody is going to read.
-#[test]
-fn rerouting_off_an_issue_only_its_own_agent_touched_stops_the_agent_and_archives_it() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "fix the login redirect");
-    let filed = state
-        .router_action(
-            &capture_id,
-            BridgeAction::CreateIssue {
-                project_id: project_id.clone(),
-                goal: "fix the login redirect".to_string(),
-                rationale: None,
-            },
-        )
-        .unwrap();
-    let guessed = filed["issue_id"].as_str().unwrap().to_string();
-    let agent_id = primary_agent_id(&state, &guessed);
-    assert!(
-        state
-            .delivery_queue
-            .queued()
-            .any(|turn| turn.owner == guessed),
-        "the route started the planning agent"
-    );
-
-    let rerouted = state.handle(req(
-        "capture.reroute",
-        json!({ "capture_id": capture_id, "project_id": project_id, "kind": "branch" }),
-    ));
-    assert_eq!(rerouted["ok"], true, "{rerouted:?}");
-    assert_eq!(rerouted["result"]["routing"]["kind"], "branch");
-    assert_eq!(
-        rerouted["result"]["rerouted_from"][0]["target_id"],
-        guessed.as_str(),
-        "where it has been stays on the record"
-    );
-    assert!(
-        state.plans[&guessed].plan.archived_at.is_some(),
-        "a guess only Build's own agent touched is taken back"
-    );
-    assert!(
-        !state
-            .delivery_queue
-            .queued()
-            .any(|turn| turn.agent_id == agent_id),
-        "the planning agent goes with the issue it was planning"
-    );
-    assert!(
-        !state
-            .session_registry
-            .contains(&TabKey::agent(&AppState::canonical_root(&repo), &agent_id)),
-        "and its session in the primary checkout is closed"
-    );
-}
-
-/// An issue somebody has already spoken to is not a guess any more, and a
-/// branch an agent worked is work. Both are kept, and stay reachable from
-/// the capture rather than orphaned beside it.
-#[test]
-fn rerouting_keeps_a_destination_that_has_been_worked() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let (touched_capture, _) = captured(&mut state, "fix the login redirect");
-    let filed = state
-        .router_action(
-            &touched_capture,
-            BridgeAction::CreateIssue {
-                project_id: project_id.clone(),
-                goal: "fix the login redirect".to_string(),
-                rationale: None,
-            },
-        )
-        .unwrap();
-    let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-    let agent_id = primary_agent_id(&state, &issue_id);
-    // The user opened it and said something: no longer a guess nobody read.
-    let spoken_to = state.handle(req(
-        "thread.post",
-        json!({ "entity_id": issue_id, "body": "start with the redirect loop" }),
-    ));
-    assert_eq!(spoken_to["ok"], true, "{spoken_to:?}");
-
-    let rerouted = state.handle(req(
-        "capture.reroute",
-        json!({ "capture_id": touched_capture, "project_id": project_id, "kind": "issue" }),
-    ));
-    assert_eq!(rerouted["ok"], true, "{rerouted:?}");
-    assert!(
-        state.plans[&issue_id].plan.archived_at.is_none(),
-        "an issue with something said to it is nobody's to archive"
-    );
-    assert!(
-        state
-            .delivery_queue
-            .queued()
-            .any(|turn| turn.agent_id == agent_id),
-        "and its agent is nobody's to stop either"
-    );
-    assert_eq!(
-        rerouted["result"]["rerouted_from"][0]["target_id"],
-        issue_id.as_str()
-    );
-
-    let (branch_capture, _) = captured(&mut state, "finish the toast");
-    state
-        .router_action(
-            &branch_capture,
-            BridgeAction::DispatchBranch {
-                project_id: project_id.clone(),
-                branch: None,
-                instruction: "finish the toast".to_string(),
-                rationale: None,
-            },
-        )
-        .unwrap();
-    let dispatched_branch = capture_record(&mut state, &branch_capture)["routing"]["target_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let runs_before = state.runs.len();
-
-    let moved = state.handle(req(
-        "capture.reroute",
-        json!({ "capture_id": branch_capture, "project_id": project_id, "kind": "issue" }),
-    ));
-    assert_eq!(moved["ok"], true, "{moved:?}");
-    assert_eq!(
-        state.runs.len(),
-        runs_before,
-        "the branch's work is untouched"
-    );
-    assert_eq!(
-        moved["result"]["rerouted_from"][0]["target_id"],
-        dispatched_branch.as_str()
-    );
 }
 
 /// Rerouting to a branch takes the branch's name. The user moving a
@@ -1305,29 +883,6 @@ fn a_reroute_with_no_destination_re_fires_the_router() {
         .any(|turn| turn.owner == capture_id));
 }
 
-/// One capture, one destination. A router that already routed cannot route
-/// again — that would leave two artifacts and a record naming one.
-#[test]
-fn a_routed_capture_refuses_a_second_route_from_the_router() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "ship it");
-    let file = |state: &mut AppState| {
-        state.router_action(
-            &capture_id,
-            BridgeAction::CreateIssue {
-                project_id: project_id.clone(),
-                goal: "ship it".to_string(),
-                rationale: None,
-            },
-        )
-    };
-    file(&mut state).unwrap();
-    let again = file(&mut state).unwrap_err();
-    assert!(again.contains("already has a destination"), "{again}");
-}
-
 /// The two surfaces are enforced where the frames arrive, not only in the
 /// tool list a session is shown: a harness that writes its own frames still
 /// only reaches the surface it was spawned on.
@@ -1336,12 +891,14 @@ fn neither_session_kind_can_call_the_others_tools() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let goal = "add a greeting";
-    let plan = state.handle(req("plan.create", json!({ "goal": goal })));
-    let plan_id = plan["result"]["issue_id"].as_str().unwrap().to_string();
+    let issue = state
+        .plan_create(&json!({ "goal": goal, "dispatch": false }))
+        .expect("the stored issue fixture is filed through the domain seam");
+    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
     let (capture_id, _) = captured(&mut state, "ship it");
 
     let coding_reaching_out = state
-        .on_mcp_action(&plan_id, BridgeAction::ListProjects)
+        .on_mcp_action(&issue_id, BridgeAction::ListProjects)
         .unwrap_err();
     assert!(
         coding_reaching_out.contains("list_projects")
@@ -1365,8 +922,12 @@ fn neither_session_kind_can_call_the_others_tools() {
 fn the_router_reads_across_every_project_and_writes_to_none_of_them() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let plan = state.handle(req("plan.create", json!({ "goal": "add a greeting" })));
-    let issue_id = plan["result"]["issue_id"].as_str().unwrap().to_string();
+    let run_id = adopted_run(&mut state, &repo, dir.path(), "add-a-greeting");
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": run_id, "body": "add a greeting" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
     let (capture_id, _) = captured(&mut state, "ship it");
 
     let projects = state
@@ -1379,8 +940,8 @@ fn the_router_reads_across_every_project_and_writes_to_none_of_them() {
         .unwrap();
     let rows = work["work"].as_array().unwrap();
     assert!(
-        rows.iter().any(|row| row["entity_id"] == issue_id.as_str()),
-        "the issue in flight is what the router checks a capture against: {rows:?}"
+        rows.iter().any(|row| row["entity_id"] == run_id.as_str()),
+        "the adopted run in flight is what the router checks a capture against: {rows:?}"
     );
     assert!(
         rows.iter().all(|row| row["kind"] != "capture"),
@@ -1391,13 +952,13 @@ fn the_router_reads_across_every_project_and_writes_to_none_of_them() {
         .router_action(
             &capture_id,
             BridgeAction::ReadConversation {
-                entity_id: issue_id.clone(),
+                entity_id: run_id.clone(),
                 agent_id: None,
                 limit: 10,
             },
         )
         .unwrap();
-    assert_eq!(conversation["entity_id"], issue_id.as_str());
+    assert_eq!(conversation["entity_id"], run_id.as_str());
     assert!(conversation["transcript"]
         .as_str()
         .unwrap()

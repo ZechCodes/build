@@ -1,11 +1,7 @@
-// The view-area toolbar's pure model: what the two selectors say, what each
-// one's menu offers, and what the right side reports.
-//
-// The toolbar names where you are standing — project, then branch or issue —
-// and each name opens the menu of its own kind: the project half lists projects,
-// the item half lists the scoped project's branches and issues. Two questions,
-// two lists; a menu that answered both at once made the same list appear behind
-// both names. Everything here is pure; core/toolbar.js renders and wires it.
+// Pure identities and menu rows for the view-area toolbar. Workspace routes
+// show one workspace switcher and directory tabs; its popup moves between the
+// scoped project's workspaces and the project list. Legacy work routes keep
+// their project selector and static item identity. core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
 
@@ -83,32 +79,80 @@ export function workMenuModel({ items = [], projectId = null, query = "" } = {})
   return fuzzyRank(work, query, (entry) => `${entry.label} ${entry.detail}`);
 }
 
+/** Workspaces registered for one project, filtered by their human name. The
+ * bridge may send `workspace_id` while persisted records use `id`; normalize
+ * that wire detail here so toolbar DOM and routes have one vocabulary. */
+export function workspaceMenuModel({ workspaces = [], projectId = null, workspaceId = null, query = "" } = {}) {
+  const entries = workspaces
+    .filter((workspace) => !projectId || workspace.project_id === projectId)
+    .map((workspace) => {
+      const id = workspace.workspace_id || workspace.id;
+      return {
+        ...workspace,
+        id,
+        name: workspace.name || id,
+        current: id === workspaceId,
+      };
+    });
+  return fuzzyRank(entries, query, (entry) => entry.name);
+}
+
+/** The source directories mounted into the selected workspace. `source_id` is
+ * the stable route identity; `id` is the concrete workspace-directory record
+ * and remains available for RPCs that need it. */
+export function workspaceDirectoryModel(workspace, sourceId = null) {
+  return ((workspace && workspace.directories) || []).map((directory) => ({
+    ...directory,
+    sourceId: directory.source_id || directory.id,
+    label: directory.name || directory.mount || directory.source_id || directory.id,
+    current: (directory.source_id || directory.id) === sourceId,
+  }));
+}
+
 /** Where the toolbar says you are standing: the project, and the branch or
  *  issue inside it. The route is the authority on identity (it is what a deep
  *  link carries); the feed only supplies the names it knows. */
-export function toolbarIdentity(route = {}, { items = [], projects = [] } = {}) {
-  const rowOf = (predicate) => items.find(predicate) || null;
-  if (route.name === "branch") {
-    const row = rowOf((item) => item.kind === "branch" && item.project_id === route.projectId && item.branch === route.branch);
-    return {
-      projectId: route.projectId,
-      project: projectName(route.projectId, projects, row),
-      kind: "branch",
-      label: route.branch || "",
-      row,
-    };
-  }
-  if (route.name === "issue") {
-    const row = rowOf((item) => item.kind === "issue" && item.issue_id === route.id);
-    return {
-      projectId: route.projectId,
-      project: projectName(route.projectId, projects, row),
-      kind: "issue",
-      label: (row && row.title) || "Issue",
-      row,
-    };
-  }
+export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [] } = {}) {
+  if (route.name === "workspace") return workspaceIdentity(route, projects, workspaces);
+  if (route.name === "branch") return branchIdentity(route, projects, items);
+  if (route.name === "issue") return issueIdentity(route, projects, items);
   return { projectId: null, project: "", kind: null, label: "", row: null };
+}
+
+function workspaceIdentity(route, projects, workspaces) {
+  const workspace = workspaces.find((candidate) => (candidate.workspace_id || candidate.id) === route.workspaceId) || null;
+  return {
+    projectId: route.projectId,
+    project: projectName(route.projectId, projects, null),
+    kind: "workspace",
+    label: workspace?.name || route.workspaceId || "Workspace",
+    workspaceId: route.workspaceId,
+    workspace,
+    directories: workspaceDirectoryModel(workspace, route.sourceId),
+    row: null,
+  };
+}
+
+function branchIdentity(route, projects, items) {
+  const row = items.find((item) => item.kind === "branch" && item.project_id === route.projectId && item.branch === route.branch) || null;
+  return {
+    projectId: route.projectId,
+    project: projectName(route.projectId, projects, row),
+    kind: "branch",
+    label: route.branch || "",
+    row,
+  };
+}
+
+function issueIdentity(route, projects, items) {
+  const row = items.find((item) => item.kind === "issue" && item.issue_id === route.id) || null;
+  return {
+    projectId: route.projectId,
+    project: projectName(route.projectId, projects, row),
+    kind: "issue",
+    label: (row && row.title) || "Issue",
+    row,
+  };
 }
 
 function projectName(projectId, projects, row) {

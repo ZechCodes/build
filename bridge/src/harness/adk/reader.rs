@@ -1,11 +1,10 @@
 use super::activity::{spawn_shell_tail_poller, ActivitySlot};
 use super::protocol::{
     publish_status, ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
-    TOOL_SUMMARY_LIMIT,
 };
 use super::translation::{
-    ended_summary, one_line, result_error_text, spoken, task_description, task_status_is_terminal,
-    tool_call_summary, tool_result_text, unix_millis_now, Voice,
+    bounded_activity_text, ended_summary, result_error_text, spoken, task_description,
+    task_status_is_terminal, tool_call_summary, tool_result_text, unix_millis_now, Voice,
 };
 use crate::harness::surfaces::SurfaceRevision;
 use crate::harness::{
@@ -517,7 +516,7 @@ impl ProtocolReader {
             AgentActivity::ToolResult {
                 call_id,
                 outcome,
-                summary: one_line(&answered_text, TOOL_SUMMARY_LIMIT),
+                summary: bounded_activity_text(&answered_text),
             },
             parent_call_id,
         );

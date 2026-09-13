@@ -29,6 +29,7 @@ import {
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
+  workspaceEntries,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
@@ -43,8 +44,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { projectRoute } from "./projectModel.js";
-import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
+import { blockIsFolded, projectBlockHtml, projectHeadHtml, workspaceProjectBlocks } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
@@ -58,6 +58,7 @@ let items = [];
 // checkout being cut is on the list while its git runs.
 let pendingLifecycle = [];
 let projects = [];
+let workspaces = [];
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
 let openMenuKey = null;
@@ -137,13 +138,8 @@ function drawFromFeed() {
 }
 
 function publishAttentionCount() {
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const partition = inboxEntries({ items: shown, nowMs: Date.now() });
-  publishInboxAttentionCount(
-    [...partition.entries, ...partition.recent]
-      .filter((entry) => !entry.muted && !entry.dismissed)
-      .reduce((total, entry) => total + entry.unreadCount, 0),
-  );
+  const unread = workspaceEntries(workspaces, projects, items).filter((entry) => entry.state === "unread");
+  publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
 }
 
 /** The one name a row has, which is what the reconciler matches rows by. */
@@ -168,8 +164,7 @@ function draw() {
   publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
-  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const nowMs = Date.now();
+  const shown = workspaceEntries(workspaces, projects, items);
   list.onclick = onListClick;
   list.onkeydown = onListKeydown;
   // A different face is a different list: the one is emptied for the other,
@@ -179,10 +174,21 @@ function draw() {
     list.replaceChildren();
   }
   const scroll = list.scrollTop;
-  if (view === "projects") drawProjects(list, shown, nowMs);
-  else drawInbox(list, shown, nowMs);
+  if (view === "projects") drawProjects(list, shown);
+  else drawWorkspaceList(list, shown);
   list.scrollTop = scroll;
   paintErrors(list);
+}
+
+/** The inbox face's flat durable workspace list. */
+function drawWorkspaceList(list, shown) {
+  entries = shown;
+  const ui = rowUi(true);
+  paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
+  list.querySelector(":scope > .inbox-recent")?.remove();
+  list.querySelector(":scope > .inbox-unsorted")?.remove();
+  list.querySelector(":scope > .inbox-projects")?.remove();
+  patchList(list, entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
 }
 
 /** What every row is painted with. `showProject` is whether a row names its
@@ -217,10 +223,10 @@ function drawInbox(list, shown, nowMs) {
   paintRecent(list, partition, ui, "inbox");
 }
 
-/** The projects face: the new-project control, the unrouted captures on their
- *  own, then a block per project with its rows and its own Recent. */
-function drawProjects(list, shown, nowMs) {
-  const face = projectBlocks({ items: shown, projects, nowMs });
+/** The projects face: the new-project control, any workspaces without a
+ * project, then one durable workspace block per project. */
+function drawProjects(list, shown) {
+  const face = workspaceProjectBlocks(shown, projects, App.route.workspaceId);
   entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(face.blocks.map((block) => [block.id, block]));
   const ui = { ...rowUi(false), folded: new Set(face.blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.id)) };
@@ -235,7 +241,7 @@ function projectsFrame(list) {
   let unsorted = list.querySelector(":scope > .inbox-unsorted");
   if (!unsorted) {
     unsorted = el('<div class="inbox-unsorted"></div>');
-    list.append(el(newProjectButtonHtml()), unsorted, el('<div class="inbox-projects"></div>'));
+    list.append(unsorted, el('<div class="inbox-projects"></div>'));
   }
   return { unsorted, blocks: list.querySelector(":scope > .inbox-projects") };
 }
@@ -419,18 +425,18 @@ function projectClicked(target) {
     const block = blocksPainted.get(create.dataset.projectCreate);
     expandFold(create.dataset.projectCreate);
     closeMenu();
-    openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", kind: "branch", navigate: goFromInbox });
-    return true;
-  }
-  if (target.closest("[data-new-project]")) {
-    openNewRepo((project) => {
-      const route = projectRoute(project);
-      if (route) goFromInbox(route);
-      refreshFeed();
-    });
+    openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", navigate: goFromInbox });
     return true;
   }
   return false;
+}
+
+/** Open the project flow exposed by the header in either rail face. */
+export function openNewProject() {
+  openNewRepo((project) => {
+    if (project?.project_id) openCreateWork({ projectId: project.project_id, projectName: project.name, navigate: goFromInbox });
+    refreshFeed();
+  });
 }
 
 /** A fold is the user's, and it holds: across the feed, and across reloads. */
@@ -666,6 +672,7 @@ export function mountInboxList() {
     items = feed.items || [];
     pendingLifecycle = feed.pending || [];
     projects = feed.projects || [];
+    workspaces = feed.workspaces || [];
     const live = new Set(items.map(entryKeyOf));
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
     reconcileOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });

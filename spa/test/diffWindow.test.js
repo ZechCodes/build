@@ -121,6 +121,71 @@ describe("the diff viewport controller", () => {
     }
   });
 
+  it("seeds the new stack when the same scroller switches changesets", () => {
+    const { scroller, flush, restore } = mountedViewport();
+    const fresh = { ...file, path: "fresh.js", rows: rows.slice(0, 2), add: 2 };
+    const repaint = vi.fn(() => {
+      scroller.innerHTML = diffFileHtml(fresh, { viewport: viewport.renderOptions().viewport });
+      viewport.attach(scroller);
+    });
+    const viewport = createDiffViewport({ repaint });
+    try {
+      viewport.attach(scroller);
+      expect(viewport.renderOptions().viewport.fileVisible("EDIT:huge.js")).toBe(true);
+
+      scroller.innerHTML = diffFileHtml(fresh, { viewport: viewport.renderOptions().viewport });
+      expect(scroller.querySelector(".dvirtual")).not.toBeNull();
+      viewport.attach(scroller);
+      flush();
+
+      expect(viewport.renderOptions().viewport.fileVisible("EDIT:fresh.js")).toBe(true);
+      expect(viewport.renderOptions().viewport.fileVisible("EDIT:huge.js")).toBe(false);
+      expect(repaint).toHaveBeenCalledTimes(1);
+      expect(scroller.querySelector(".dvirtual")).toBeNull();
+      expect(scroller.querySelector("tr.add")).not.toBeNull();
+    } finally {
+      viewport.dispose();
+      restore();
+    }
+  });
+
+  it("repaints when an attached empty stack gains its first file", () => {
+    const { scroller, flush, restore } = mountedViewport();
+    scroller.innerHTML = "";
+    const repaint = vi.fn();
+    const viewport = createDiffViewport({ repaint });
+    try {
+      viewport.attach(scroller);
+      scroller.innerHTML = '<div class="file" data-key="EDIT:fresh.js"><div class="dscroll" data-row-count="2"></div></div>';
+      viewport.attach(scroller);
+      flush();
+
+      expect(viewport.renderOptions().viewport.fileVisible("EDIT:fresh.js")).toBe(true);
+      expect(repaint).toHaveBeenCalledTimes(1);
+    } finally {
+      viewport.dispose();
+      restore();
+    }
+  });
+
+  it("repaints when a replacement scroller starts with seeded files", () => {
+    const { scroller, flush, restore } = mountedViewport();
+    const replacement = scroller.cloneNode(true);
+    const repaint = vi.fn();
+    const viewport = createDiffViewport({ repaint });
+    try {
+      viewport.attach(scroller);
+      viewport.attach(replacement);
+      flush();
+
+      expect(viewport.renderOptions().viewport.fileVisible("EDIT:huge.js")).toBe(true);
+      expect(repaint).toHaveBeenCalledTimes(1);
+    } finally {
+      viewport.dispose();
+      restore();
+    }
+  });
+
   it("does not repaint a diff for unrelated document interactions while idle", () => {
     const { scroller, flush, restore } = mountedViewport();
     const repaint = vi.fn();

@@ -51,6 +51,17 @@ describe("applyTheme", () => {
     expect(document.querySelector('meta[name="theme-color"]').content).not.toBe(dark);
   });
 
+  it("keeps every media-specific browser chrome meta in sync with an explicit choice", () => {
+    document.head.innerHTML = `
+      <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fff" />
+      <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000" />`;
+    applyTheme("dark");
+    expect([...document.querySelectorAll('meta[name="theme-color"]')].map((meta) => meta.content)).toEqual([
+      "#07151b",
+      "#07151b",
+    ]);
+  });
+
   it("works on a document with no theme-color meta", () => {
     expect(() => applyTheme("dark", document)).not.toThrow();
   });

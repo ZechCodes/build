@@ -54,6 +54,7 @@ impl BoardIndex {
         &mut self.diff
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn archived(&self, worktree_id: &str) -> Option<&PersistedArchivedWorktree> {
         self.archived_worktrees.get(worktree_id)
     }
@@ -62,14 +63,6 @@ impl BoardIndex {
         &self,
     ) -> impl Iterator<Item = &PersistedArchivedWorktree> {
         self.archived_worktrees.values()
-    }
-
-    pub(in crate::app) fn insert_archived(
-        &mut self,
-        record: PersistedArchivedWorktree,
-    ) -> Option<PersistedArchivedWorktree> {
-        self.archived_worktrees
-            .insert(record.worktree_id.clone(), record)
     }
 
     /// Boot hydration replaces only the durable archive index, after Store has

@@ -8,7 +8,6 @@ pub(in crate::app::tests) use super::board::attention::{
 };
 pub(in crate::app::tests) use super::board::mute_dismiss::{commit_in, work_item_row_for};
 pub(in crate::app::tests) use super::conversations::attachments::ONE_PIXEL_PNG;
-pub(in crate::app::tests) use super::conversations::pagination::run_with_long_conversation;
 pub(in crate::app::tests) use super::filesystem::{add_external_worktree, local_branch_exists};
 pub(in crate::app::tests) use super::git::repository::{
     init_repo_with_origin, origin_with_pushed_branch,
@@ -34,7 +33,7 @@ pub(in crate::app::tests) use super::runtime::delivery::{
 };
 pub(in crate::app::tests) use super::runtime::frame_locks::{
     gated_agent_role, gated_tab, on_the_terminal_provider, shared_state_and_handler,
-    slow_frame_millis, spawns_parked_at, GatedHarness,
+    spawns_parked_at, GatedHarness,
 };
 pub(in crate::app::tests) use super::runtime::idle_sessions::{
     approved_side_plan, dispatch_side_run, fake_run_record, insert_run, insert_run_with_agent_tab,
@@ -50,11 +49,8 @@ pub(in crate::app::tests) use super::runtime::terminal_lifecycle::{
 pub(in crate::app::tests) use super::runtime::terminals::{
     output_text, process_reaped, settles, wait_for_push, wait_for_pushes,
 };
-pub(in crate::app::tests) use super::workflow::branch_feed::{
-    branch_row, warning_codes, work_item_rows,
-};
+pub(in crate::app::tests) use super::workflow::branch_feed::{branch_row, work_item_rows};
 pub(in crate::app::tests) use super::workflow::finish::external_id;
 pub(in crate::app::tests) use super::workflow::lifecycle_offlock::{
-    approved_issue, frame_on_a_thread, pending_on_the_board,
+    frame_on_a_thread, pending_on_the_board,
 };
-pub(in crate::app::tests) use super::workflow::review::run_awaiting_a_real_stage_build;

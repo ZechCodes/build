@@ -1,5 +1,5 @@
 use crate::app::{
-    plan_state_str, run_state_str, DigestScope, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL,
+    run_state_str, DigestScope, ExternalWorktreeRows, PRIMARY_SUMMARY_TTL, WORKSPACE_SUMMARY_TTL,
 };
 use crate::run::RunState;
 use crate::store::now_rfc3339;
@@ -356,23 +356,50 @@ impl AppState {
             .map(|(_, summary)| summary.clone())
     }
 
+    /// Workspace-wide publication-aware summaries, served stale while every
+    /// repository walk runs through the existing off-lock cache worker.
+    fn workspace_summaries_json(&mut self) -> Vec<Value> {
+        let workspaces = self
+            .workspaces
+            .list(None)
+            .into_iter()
+            .map(|workspace| {
+                let repositories = workspace
+                    .directories
+                    .iter()
+                    .filter(|directory| directory.is_git)
+                    .map(|directory| directory.path.clone())
+                    .collect::<Vec<_>>();
+                (workspace.id.clone(), repositories)
+            })
+            .collect::<Vec<_>>();
+        self.sync_workspace_summaries(&workspaces);
+        workspaces
+            .into_iter()
+            .map(|(workspace_id, repositories)| {
+                let computed_at = self
+                    .workspace_summary_of(&workspace_id, &repositories)
+                    .map(|(at, _)| at);
+                let refresh = self.workspace_summary_refresh(&workspace_id, repositories.clone());
+                self.refresh_if_stale(computed_at, WORKSPACE_SUMMARY_TTL, refresh);
+                json!({
+                    "workspace_id": workspace_id,
+                    "work_summary": self.workspace_summary_of(&workspace_id, &repositories)
+                        .map(|(_, summary)| summary.clone())
+                        .unwrap_or(Value::Null),
+                })
+            })
+            .collect()
+    }
+
     // ---- Board + views --------------------------------------------------------
 
-    /// The board: plans + runs (each run carries a live diffstat), plus the
-    /// ride-along external-worktree and primary-changes summaries. Sweeps runs
-    /// whose worktree was deleted out of band into `archived` first.
+    /// The board: workspace branches and runs (each run carries a live
+    /// diffstat), plus the ride-along external-worktree and primary-changes
+    /// summaries. Legacy issues remain available through their direct read
+    /// APIs, but no longer participate in this active-work surface.
     pub(in crate::app) fn board_list(&mut self) -> Value {
         self.sweep_vanished_runs();
-        let plans: Vec<Value> = {
-            let ids: Vec<String> = self.plans.keys().cloned().collect();
-            ids.into_iter()
-                .filter(|id| self.plans[id].plan.archived_at.is_none())
-                .map(|id| {
-                    let active = self.plans.get(&id).expect("listed above");
-                    self.plan_view(&id, active, ThreadDetail::Digest, DigestScope::List)
-                })
-                .collect()
-        };
         let runs: Vec<Value> = {
             let ids: Vec<String> = self
                 .runs
@@ -395,6 +422,7 @@ impl AppState {
         };
         let checkouts = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
+        let workspace_summaries = self.workspace_summaries_json();
         let projects = self
             .projects
             .iter()
@@ -427,13 +455,11 @@ impl AppState {
             })
             .collect();
         json!({
-            // The feed: one row per work item, branches and issues (Decisions
-            // §Entity model). The keys below it are the same state told the way
-            // the pre-redesign SPA reads it, and keep shipping until it stops.
+            // The active feed contains workspace-backed work only. Legacy
+            // issue records are intentionally absent from both the folded
+            // items and the compatibility collections.
             "items": items,
             "projects": projects,
-            "issues": plans,
-            "plans": plans,
             "runs": runs,
             "external_worktrees": checkouts.rows,
             // Lifecycle verbs whose git is running right now. A checkout being
@@ -446,6 +472,7 @@ impl AppState {
             // again.
             "scanning": checkouts.scanning,
             "primary_changes": primary_changes,
+            "workspace_summaries": workspace_summaries,
         })
     }
 
@@ -501,17 +528,6 @@ impl AppState {
             external_worktrees
                 .iter()
                 .map(|entry| self.branch_candidate_from_external(entry)),
-        );
-        let issue_ids: Vec<String> = self
-            .plans
-            .iter()
-            .filter(|(_, active)| active.plan.archived_at.is_none())
-            .map(|(id, _)| id.clone())
-            .collect();
-        candidates.extend(
-            issue_ids
-                .iter()
-                .map(|issue_id| self.issue_candidate(issue_id)),
         );
         candidates.extend(self.capture_candidates());
         let mut items = crate::branch::fold_work_items(candidates);
@@ -798,78 +814,6 @@ impl AppState {
             },
             source: Some(crate::branch::BranchSource::ExternalWorktree),
             issue_id: None,
-            implementation_active: false,
-            row,
-        }
-    }
-
-    /// The row for an issue: a project-level work item, with no branch and no
-    /// checkout of its own until it is implemented.
-    pub(in crate::app) fn issue_candidate(
-        &self,
-        issue_id: &str,
-    ) -> crate::branch::WorkItemCandidate {
-        let active = self.plans.get(issue_id).expect("caller listed this issue");
-        let conversation = &active.agents.sole_thread();
-        let unread = self.unread_for(issue_id, Some(conversation));
-        let working = self.entity_agents_working(issue_id);
-        let working_since = working
-            .then(|| self.working_since_for(issue_id, Some(conversation)))
-            .flatten();
-        let implementation = self.current_issue_implementation(issue_id);
-        // The implementation still in flight, which is narrower than the newest
-        // one: a merged or abandoned branch has stopped speaking for its issue,
-        // and the issue is back in the inbox on its own.
-        let live_implementation = implementation.filter(|run| !run.run.state.is_terminal());
-        let execution_context = self.issue_execution_context(issue_id);
-        let row = json!({
-            "kind": crate::branch::WorkItemKind::Issue.as_str(),
-            "project_id": self.projects.project_id_of(issue_id).unwrap_or_default(),
-            "project": self.project_name_of(issue_id),
-            "branch": Value::Null,
-            "title": active.plan.goal,
-            "state": plan_state_str(&active.plan.state),
-            "unread": unread.is_unread(),
-            "unread_count": unread.count,
-            "unread_reason": unread.reason,
-            "working": working,
-            "working_time": working_time_json(working_since.as_deref()),
-            "agents": self.agent_digests(issue_id, DigestScope::List),
-            "execution_context": execution_context,
-            "stat": Value::Null,
-            "resume_at": self.attention_json(issue_id)["resume_at"],
-            "anchor": self.anchor_of(issue_id),
-            // An issue has no checkout and no commits of its own: its
-            // conversation is the whole of its activity.
-            "last_activity": self.last_activity_of(Some(issue_id), Some(active.agents.sole_thread())),
-            // Done on an issue archives it, and archiving is never refused.
-            // What it costs — an issue nothing was ever built for — is a
-            // warning the client confirms through.
-            "can_finish": true,
-            "finish": { "warnings": crate::branch::warnings_json(
-                &crate::branch::issue_finish_warnings(implementation.is_some()),
-            ) },
-            "muted": self.is_muted(issue_id),
-            // See the branch row: dismissed until its conversation asks again.
-            "dismissed": self.is_dismissed(issue_id),
-            "worktree_path": Value::Null,
-            "worktree_id": Value::Null,
-            "run_id": implementation.map(|run| run.run.id.0.clone()),
-            "issue_id": issue_id,
-            // Whether a branch is implementing this issue RIGHT NOW — the same
-            // fact that hides the issue's row behind that branch's, said out
-            // loud so a surface holding an issue can explain where it went.
-            "implementing_branch": live_implementation.map(|run| run.worktree.branch()),
-            "implementation_active": live_implementation.is_some(),
-            "primary": false,
-        });
-        crate::branch::WorkItemCandidate {
-            kind: crate::branch::WorkItemKind::Issue,
-            key: crate::branch::WorkItemKey::Issue {
-                issue_id: issue_id.to_string(),
-            },
-            source: None,
-            issue_id: Some(issue_id.to_string()),
             implementation_active: false,
             row,
         }

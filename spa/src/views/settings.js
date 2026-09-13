@@ -9,7 +9,6 @@ import { refreshDevices } from "../devices.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
-import { openBrowser } from "../sheets/browser.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
 import { openAddDevice } from "../sheets/addDevice.js";
@@ -17,11 +16,8 @@ import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
 import { chosenProviderId } from "../core/agentChoice.js";
-import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
-import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
-import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
-import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
-import { loadModelCatalog, refreshModelCatalog } from "../app.js";
+import { isolationLabel } from "../core/isolation.js";
+import { loadModelCatalog } from "../app.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -41,9 +37,7 @@ export async function renderSettings() {
       <div class="addproj">
         <button class="btn primary" id="newrepo">Add project…</button>
       </div>
-      <div class="projfolder">Projects folder: <code id="pdir">…</code>
-        <button class="btn mini" id="changedir">Change…</button>
-        <span class="dim">clones land here</span></div>
+      <div class="dim" style="font-size:12px">Project folders and bridge defaults are configured from each device's gear menu.</div>
       <div class="adderr" id="adderr"></div>
     </div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -55,8 +49,8 @@ export async function renderSettings() {
       <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
     </div>
     <div class="panel">
-      <h3>🤖 Agent defaults</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">What a new issue starts with. You can still change any of it per issue, under the harness button in the New issue sheet.</div>
+      <h3>🤖 Browser agent defaults</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">What a new issue created in this browser starts with. You can still change any of it per issue, under the harness button in the New issue sheet.</div>
       <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">
         <div class="field" style="flex:1;min-width:150px"><label>Agent</label><select id="defprovider"><option>loading…</option></select></div>
         <div class="field" style="flex:1;min-width:150px"><label>Model</label><select id="defmodel"><option value="">Harness default</option></select></div>
@@ -64,10 +58,6 @@ export async function renderSettings() {
       </div>
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
-    ${agentModesPanelHtml()}
-    ${defaultHarnessPanelHtml()}
-    ${isolationPanelHtml()}
-    ${triageSettingPanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -108,8 +98,6 @@ export async function renderSettings() {
           ${p.is_git === false ? "" : `<button class="btn mini setremote" data-id="${esc(p.project_id)}">Set remote…</button>`}</div>`,
           )
           .join("") || '<div class="dim" style="font-size:13px">No projects yet.</div>';
-      const { projects_dir } = await App.call("settings.get");
-      $("#pdir").textContent = projects_dir;
       $("#projlist").querySelectorAll(".setremote").forEach(
         (btn) =>
           (btn.onclick = () => {
@@ -122,27 +110,6 @@ export async function renderSettings() {
     }
   };
   await refresh();
-  const callRpc = (method, params) => App.call(method, params);
-  const syncModelCatalog = async (settings) => {
-    if (App.modelCatalog) {
-      App.modelCatalog = {
-        ...App.modelCatalog,
-        default_provider: settings.default_harness ?? App.modelCatalog.default_provider,
-        agent_modes: settings.agent_modes ?? App.modelCatalog.agent_modes,
-      };
-      await mountAgentDefaults();
-    }
-    try {
-      await refreshModelCatalog();
-      await mountAgentDefaults();
-    } catch {
-      // Confirmed settings already keep this page's creation defaults current.
-    }
-  };
-  await mountAgentModes($("#root"), { callRpc, onSaved: syncModelCatalog });
-  await mountDefaultHarness($("#root"), { callRpc, onSaved: syncModelCatalog });
-  await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION });
-  await mountTriageSetting($("#root"), { callRpc });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(async (project) => {
@@ -193,22 +160,6 @@ export async function renderSettings() {
     $("#defeffort").onchange = () => store({ ...current, effort: $("#defeffort").value }, "Saved.");
   }
 
-  // Pick a different projects folder (any directory).
-  $("#changedir").onclick = () =>
-    openBrowser({
-      title: "Choose a projects folder",
-      gitOnly: false,
-      onChoose: async (path) => {
-        try {
-          await App.call("settings.set", { projects_dir: path });
-          $("#scrim").classList.remove("show");
-          await refresh();
-        } catch (e) {
-          const err = $("#berr");
-          if (err) err.textContent = e.message;
-        }
-      },
-    });
   // Notifications: a single toggle backed by the browser's push subscription.
   const refreshPushToggle = async () => {
     const toggle = $("#pushtoggle");

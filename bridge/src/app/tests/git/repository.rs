@@ -313,7 +313,7 @@ fn git_branches_carries_each_branchs_own_diffstat_against_base() {
 #[test]
 fn git_branches_weighs_a_clones_branch_after_publishing_it() {
     let (dir, repo) = init_repo();
-    if !crate::isolation::probe::cow_or_skip(dir.path()) {
+    if !crate::isolation::probe::rift_or_skip(dir.path()) {
         return;
     }
     let mut state = git_gui_state(&dir, &repo);
@@ -322,7 +322,7 @@ fn git_branches_weighs_a_clones_branch_after_publishing_it() {
         .orch_for(&project_id)
         .unwrap()
         .worktrees()
-        .create("cloned", "main", Isolation::Cow)
+        .create("cloned", "main", Isolation::Rift)
         .unwrap()
         .worktree;
     std::fs::write(clone.path.join("cloned.rs"), "one\ntwo\nthree\n").unwrap();

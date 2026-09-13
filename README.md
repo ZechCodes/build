@@ -84,6 +84,32 @@ the repository inside the configured projects folder using `main` as its initial
 branch. The optional remote is configured as `origin`; creation does not clone
 or push it.
 
+## Work isolation
+
+Build uses Git worktrees by default. For copy-on-write checkouts, install the
+[Rift CLI](https://github.com/anomalyco/rift#install) on the machine running the
+bridge and make `rift` available on the bridge's `PATH`. Select **Rift
+(copy-on-write)** in Work isolation settings, either as the account default or
+as a project override. The choice applies to new checkouts.
+
+Rift owns filesystem cloning and snapshot creation. Build requests full copies
+to retain ignored build caches, skips Rift hooks, and checks out the task's
+branch. Review, merge, and task completion use the same lifecycle as Git
+worktrees. Build does not install or update Rift for you.
+
+The first Rift task initializes its source project. On Btrfs, Rift may convert
+the source directory into a subvolume; on other supported filesystems it
+registers the directory in place. The source must have its own `.git` directory,
+and the checkouts folder must be outside the source. Filesystem support and
+initialization errors are reported by Rift when creating the checkout.
+
+Build keeps a private Rift registry under each project's checkouts folder at
+`.rift/registry.sqlite`, so its garbage collection does not touch workspaces
+registered by other Rift users. A project already registered in a different
+Rift registry cannot be initialized in Build's registry; Build leaves its
+marker untouched and reports the conflict. Keep the Rift CLI installed while
+Build has Rift checkouts to manage.
+
 ## Develop
 
 ```bash

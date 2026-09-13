@@ -1,8 +1,8 @@
-use crate::isolation::cow::CowBackend;
 use crate::isolation::{
-    Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend, WorktreeError,
+    Isolation, IsolationAvailability, IsolationBackend, RiftBackend, WorktreeBackend, WorktreeError,
 };
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 /// The one seam the orchestrator and the app talk to about materializing,
 /// verifying, removing or enumerating a checkout of a single project.
 ///
@@ -16,7 +16,8 @@ pub struct WorktreeManager {
     pub(super) repo_path: PathBuf,
     pub(super) worktrees_root: PathBuf,
     worktree: WorktreeBackend,
-    cow: CowBackend,
+    rift: RiftBackend,
+    creation_lock: Arc<Mutex<()>>,
 }
 
 impl WorktreeManager {
@@ -24,12 +25,32 @@ impl WorktreeManager {
     /// worktrees are materialized (one subdirectory per task slug). Branches
     /// are cut in the `build/` namespace.
     pub fn new(repo_path: impl Into<PathBuf>, worktrees_root: impl Into<PathBuf>) -> Self {
+        let worktrees_root = worktrees_root.into();
         WorktreeManager {
             repo_path: repo_path.into(),
-            worktrees_root: worktrees_root.into(),
+            rift: RiftBackend::new(&worktrees_root),
+            worktrees_root,
             worktree: WorktreeBackend,
-            cow: CowBackend,
+            creation_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_rift_executable(
+        mut self,
+        executable: impl Into<std::ffi::OsString>,
+    ) -> Self {
+        self.rift = RiftBackend::with_executable(&self.worktrees_root, executable);
+        self
+    }
+
+    pub(super) fn lock_creation(&self) -> Result<MutexGuard<'_, ()>, WorktreeError> {
+        self.creation_lock.lock().map_err(|_| {
+            WorktreeError::Refused(
+                "checkout creation is unavailable because its coordination lock is poisoned"
+                    .to_string(),
+            )
+        })
     }
     /// The project repository every checkout here is cut from — what a caller
     /// reading the project's own refs, or naming the project a record belongs
@@ -47,7 +68,7 @@ impl WorktreeManager {
     /// Keyed to the enum by length, so it is the one list of backends and a new
     /// isolation cannot be added without filling in its slot here.
     pub(super) fn backends(&self) -> [Option<&dyn IsolationBackend>; Isolation::ALL.len()] {
-        [Some(&self.worktree), Some(&self.cow)]
+        [Some(&self.worktree), Some(&self.rift)]
     }
     /// Every backend this build has, in the order above — what the three walks
     /// that have no isolation to key on iterate.

@@ -79,7 +79,7 @@ describe("the fallback-agent panel", () => {
     await flush();
 
     expect(host.textContent).toContain(
-      "This account fallback is used only when a coding-agent creation request does not name a provider.",
+      "This device fallback is used only when a coding-agent creation request does not name a provider.",
     );
     expect(host.textContent).toContain(
       "Creation pickers send the displayed Claude Code or Codex provider and override this fallback.",
@@ -225,7 +225,8 @@ describe("the fallback-agent panel", () => {
   });
 });
 
-// The account fallback lives in Settings beside the other agent preferences.
+// Bridge-owned defaults live on a device. Account settings retain only the
+// browser's issue-composer preference.
 describe("the Settings page", () => {
   const renderWith = async (call) => {
     vi.resetModules();
@@ -247,7 +248,7 @@ describe("the Settings page", () => {
   // transform alone can outrun the default deadline on a loaded machine.
   const SLOW_IMPORT_MS = 30000;
 
-  it("carries the default-agent panel and asks the bridge what the account holds", async () => {
+  it("keeps bridge-owned controls out and labels the browser default", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return {
@@ -259,9 +260,10 @@ describe("the Settings page", () => {
       return {};
     });
 
-    expect(document.getElementById("defaultharness").value).toBe("claude");
-    expect(document.getElementById("agentmode-claude").value).toBe("tui");
-    expect(document.getElementById("agentmode-codex").value).toBe("headless");
+    expect(document.getElementById("defaultharness")).toBe(null);
+    expect(document.getElementById("agentmode-claude")).toBe(null);
+    expect(document.querySelector("#root").textContent).toContain("Browser agent defaults");
+    expect(document.querySelector("#root").textContent).toContain("configured from each device's gear menu");
   }, SLOW_IMPORT_MS);
 
   // Visible creation pickers send Claude Code or Codex and therefore override
@@ -277,62 +279,6 @@ describe("the Settings page", () => {
     const defaults = document.getElementById("defprovider");
     expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
     expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
-    // The account fallback still exposes every provider from the catalog.
-    expect([...document.getElementById("defaultharness").options].map((option) => option.textContent)).toEqual([
-      "Claude Code",
-      "Claude Code TUI",
-      "Codex",
-      "Codex TUI",
-      "Pi",
-    ]);
-  }, SLOW_IMPORT_MS);
-
-  it("puts the fallback agent beside the other agent preferences", async () => {
-    await renderWith(async (method) => {
-      if (method === "project.list") return { projects: [] };
-      if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude_adk" };
-      if (method === "models.list") return CATALOG;
-      return {};
-    });
-
-    const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
-    const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Agent defaults")).toBeGreaterThan(-1);
-    expect(at("Agent modes")).toBe(at("Agent defaults") + 1);
-    expect(at("Fallback agent")).toBe(at("Agent modes") + 1);
-    expect(at("Work isolation")).toBe(at("Fallback agent") + 1);
-    expect(at("Diff triage")).toBe(at("Work isolation") + 1);
-    expect(at("Appearance")).toBe(at("Diff triage") + 1);
-  }, SLOW_IMPORT_MS);
-
-  it("updates same-page creation defaults after a mode save even when catalog refresh fails", async () => {
-    let current = {
-      projects_dir: "/p",
-      default_harness: "claude_adk",
-      agent_modes: { claude: "headless", codex: "tui" },
-    };
-    let catalogReads = 0;
-    const App = await renderWith(async (method, params) => {
-      if (method === "project.list") return { projects: [] };
-      if (method === "settings.get") return current;
-      if (method === "settings.set") {
-        current = { ...current, agent_modes: { ...current.agent_modes, ...params.agent_modes } };
-        return current;
-      }
-      if (method === "models.list" && catalogReads++ < 2) return CATALOG;
-      if (method === "models.list") throw new Error("catalog refresh failed");
-      return {};
-    });
-
-    const claudeMode = document.getElementById("agentmode-claude");
-    claudeMode.value = "tui";
-    claudeMode.dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
-
-    expect(App.modelCatalog.agent_modes).toEqual({ claude: "tui", codex: "tui" });
-    expect([...document.getElementById("defprovider").options].map(({ value }) => value)).toEqual(["claude", "codex"]);
-    expect(claudeMode.disabled).toBe(false);
-    expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved.");
+    expect(document.getElementById("defaultharness")).toBe(null);
   }, SLOW_IMPORT_MS);
 });

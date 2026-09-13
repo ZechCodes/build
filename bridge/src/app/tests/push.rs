@@ -86,6 +86,15 @@ async fn the_greeting_announces_push_events() {
         "{hello:?}"
     );
     assert_eq!(
+        hello["result"]["thread_post_operations"],
+        json!({
+            "version": 1,
+            "status_method": "thread.operation",
+            "states": ["queued", "claimed", "delivered", "uncertain"],
+        }),
+        "{hello:?}"
+    );
+    assert_eq!(
         hello["result"]["events"],
         json!(["board.changed", "entity.changed", "changes"]),
         "{hello:?}"
@@ -554,5 +563,90 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
             "attention": row["unread_reason"].as_str().unwrap_or("none"),
         }),
         "{item:?} against {row:?}"
+    );
+}
+
+/// Step 1.5, the legacy default: a client that greets with NO `changes`
+/// param is subscribed to today's events and to nothing else. A real
+/// mutation over the wire reaches it as `{"type":"board.changed"}` and
+/// `{"type":"entity.changed","id":…}` — those keys and no others, the bytes
+/// a pre-subscriptions client parses — and never as a `changes` frame. The
+/// session beside it that greeted with `"changes": "subscriptions"` hears
+/// nothing at all from the same mutation until it subscribes, and then hears
+/// only its own subscription's frame.
+#[tokio::test]
+async fn a_legacy_greeting_hears_only_the_legacy_frames_for_a_real_mutation() {
+    let (dir, repo) = init_repo();
+    let (state, handler, _sender, mut legacy_rx, legacy_key) =
+        greeted_push_session(&repo, dir.path());
+    let (opted_in, mut opted_in_rx, opted_in_key) = SessionSender::observable("opted-in");
+    let greeting = handler.call(
+        opted_in.clone(),
+        req("session.hello", json!({ "changes": "subscriptions" })),
+    );
+    assert_eq!(greeting["result"]["changes"]["mode"], "subscriptions");
+    let run_id = {
+        let mut app = state.lock().unwrap();
+        planned_run_in_review(&mut app, "legacy hears this").1
+    };
+    settled_pushes(&mut legacy_rx, &legacy_key).await;
+    settled_pushes(&mut opted_in_rx, &opted_in_key).await;
+
+    // A real mutation over the wire, not a hand-published note.
+    let posted = call(
+        &handler,
+        "thread.post",
+        json!({ "entity_id": run_id, "body": "a real mutation" }),
+    );
+    assert_eq!(posted["ok"], true, "{posted:?}");
+
+    let legacy = settled_pushes(&mut legacy_rx, &legacy_key).await;
+    let board = json!({ "type": "board.changed" });
+    let entity = json!({ "type": "entity.changed", "id": run_id });
+    for frame in &legacy {
+        assert!(
+            *frame == board || *frame == entity,
+            "a legacy session hears the two legacy frames and nothing else, \
+             with no key beyond the ones it always carried: {frame:?}"
+        );
+    }
+    assert!(legacy.contains(&board), "{legacy:?}");
+    assert!(legacy.contains(&entity), "{legacy:?}");
+    assert_eq!(
+        settled_pushes(&mut opted_in_rx, &opted_in_key).await,
+        Vec::<Value>::new(),
+        "a session that opted into subscriptions hears nothing until it subscribes"
+    );
+
+    // ... and once it subscribes it hears its own frame, which is the one a
+    // legacy session never sees.
+    let subscribed = handler.call(
+        opted_in.clone(),
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id": "s-run",
+                "scope": { "kind": "entity", "id": run_id },
+                "kinds": ["state"],
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed:?}");
+    settled_pushes(&mut opted_in_rx, &opted_in_key).await;
+    state.lock().unwrap().note_entity_changed(&run_id);
+
+    assert!(
+        settled_pushes(&mut opted_in_rx, &opted_in_key)
+            .await
+            .iter()
+            .any(|push| push["type"] == "changes"),
+        "the subscribed session hears the new frame"
+    );
+    assert!(
+        settled_pushes(&mut legacy_rx, &legacy_key)
+            .await
+            .iter()
+            .all(|push| push["type"] != "changes"),
+        "the legacy session never hears one"
     );
 }

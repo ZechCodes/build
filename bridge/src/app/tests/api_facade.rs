@@ -231,3 +231,82 @@ fn a_deferred_git_verb_answering_its_declared_shape_is_published() {
         .expect("the implementation's own shape passes its declared type");
     assert_eq!(published["branch"], "main", "{published}");
 }
+
+/// Wire spec step 2.4: structured errors are ADDITIVE in 1.x, so `error`
+/// stays the free-text string it always was and `error_code`, `retryable`
+/// and the optional `details` sit beside it. A 1.0 client reads `error` and
+/// nothing else, so a refusal that answered the code alone — or answered an
+/// object there — would break it silently.
+///
+/// Walked over every road a refusal can take out of the facade, because the
+/// shape is a property of the reply and not of any one verb: the unknown
+/// method, a typed v1 param check, a legacy-route `Err(String)` with no code
+/// of its own, a refusal decided off the lock and applied on the way back,
+/// and the retirement guard that runs before either route.
+#[test]
+fn every_refusal_carries_the_string_error_beside_its_code() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = project_id_of(&mut state);
+    let refusals = [
+        (
+            "unknown method",
+            "no.such_verb",
+            json!({}),
+            "unknown_method",
+        ),
+        (
+            "a v1 typed-params failure",
+            "git.diff",
+            json!({ "project_id": project_id }),
+            "invalid_params",
+        ),
+        (
+            "a legacy-route refusal",
+            "stream.state",
+            json!({ "stream_id": "stream-1" }),
+            "internal",
+        ),
+        (
+            "a refusal decided off the lock",
+            "git.checkout",
+            json!({ "project_id": project_id, "branch": "no-such-branch" }),
+            "internal",
+        ),
+        (
+            "the retirement guard",
+            "run.create",
+            json!({ "goal": "retired" }),
+            "unavailable",
+        ),
+    ];
+    for (road, method, params, code) in refusals {
+        let refused = state.handle(req(method, params));
+        assert_eq!(refused["ok"], false, "{road}: {refused}");
+        assert!(
+            refused["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "{road}: `error` is the message, as a string: {refused}"
+        );
+        assert_eq!(refused["error_code"], code, "{road}: {refused}");
+        assert_eq!(refused["retryable"], false, "{road}: {refused}");
+        assert!(
+            refused
+                .get("details")
+                .is_none_or(serde_json::Value::is_object),
+            "{road}: `details` is optional, and an object when it is there: {refused}"
+        );
+    }
+
+    // The off-lock road above is only that road if the verb does defer: a
+    // `git.checkout` that had quietly become synchronous would still have
+    // passed the walk. Run the job to its end rather than dropping a claim.
+    let params = json!({ "project_id": project_id, "branch": "no-such-branch" });
+    let (_, deferred) = state.dispatch_deferring("git.checkout", &params);
+    let done = deferred
+        .expect("git.checkout decides its git off the lock")
+        .run();
+    assert!(
+        state.apply_deferred("git.checkout", &params, done).is_err(),
+        "the refusal walked above is the one the write-back half carries"
+    );
+}

@@ -311,6 +311,94 @@ describe("the changes event", () => {
   });
 });
 
+describe("the board revision", () => {
+  const armed = async () => {
+    await changeEvents.greetBridge(subscribingBridge());
+    await settle();
+  };
+
+  const boardItem = (state) => ({
+    type: "changes",
+    subscription_id: "s-board",
+    items: [{ entity_id: "board", ...(state ? { state } : {}) }],
+  });
+
+  const feedWatcher = () => {
+    const refresh = vi.fn();
+    changeEvents.watchChanges({ refresh, intervalMs: 2000, kinds: ["state"] });
+    return refresh;
+  };
+
+  it("refreshes the feed once for a revision it has not seen", async () => {
+    const refresh = feedWatcher();
+    await armed();
+    refresh.mockClear();
+
+    changeEvents.dispatchChangeEvent(boardItem({ revision: 1183 }));
+    changeEvents.dispatchChangeEvent(boardItem({ revision: 1183 }));
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes again as soon as the revision moves", async () => {
+    const refresh = feedWatcher();
+    await armed();
+    changeEvents.dispatchChangeEvent(boardItem({ revision: 1183 }));
+    refresh.mockClear();
+
+    changeEvents.dispatchChangeEvent(boardItem({ revision: 1184 }));
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes on a board item that carries no revision at all", async () => {
+    const refresh = feedWatcher();
+    await armed();
+    changeEvents.dispatchChangeEvent(boardItem({ revision: 1183 }));
+    refresh.mockClear();
+
+    changeEvents.dispatchChangeEvent(boardItem(null));
+    changeEvents.dispatchChangeEvent(boardItem({}));
+
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves an entity watcher's own items alone", async () => {
+    const seen = [];
+    changeEvents.watchChanges({
+      refresh: () => {},
+      intervalMs: 1600,
+      entity: "run-7",
+      kinds: ["state"],
+      onChanges: (items) => seen.push(...items),
+    });
+    await armed();
+    const flush = {
+      type: "changes",
+      subscription_id: "s-bg",
+      items: [{ entity_id: "run-7", state: {} }, { entity_id: "board", state: { revision: 5 } }],
+    };
+    changeEvents.dispatchChangeEvent(flush);
+    changeEvents.dispatchChangeEvent(flush);
+
+    expect(seen).toEqual([{ entity_id: "run-7", state: {} }, { entity_id: "run-7", state: {} }]);
+  });
+
+  it("refreshes on the first item after a reconnect, whatever the revision says", async () => {
+    const refresh = feedWatcher();
+    await armed();
+    changeEvents.dispatchChangeEvent(boardItem({ revision: 1183 }));
+
+    // A new session: the gap behind it announced nothing, and the bridge on
+    // the other end may not be the one that counted to 1183.
+    await armed();
+    refresh.mockClear();
+    changeEvents.dispatchChangeEvent(boardItem({ revision: 1183 }));
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("telling the cache layer which contract is live", () => {
   it("announces the flip into subscriptions and back", async () => {
     const flips = [];

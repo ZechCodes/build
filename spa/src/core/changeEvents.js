@@ -44,6 +44,12 @@
 // comparison; one that did not gets its poll callback run, exactly as a legacy
 // `entity.changed` ran it. Either way the safety poll stays behind it.
 //
+// The board item carries the one key this file compares itself: `state.revision`,
+// the counter the bridge bumps on every `note_board`. A flush repeating the
+// revision the feed already read for is not delivered to the board-scoped
+// surfaces — and a reconnect forgets it, because the session that follows a
+// gap has to read once whatever the counter says.
+//
 // # The adapter (wire spec step 2.5)
 //
 // Every greeting also selects the API adapter for the bridge that answered it
@@ -92,6 +98,9 @@ let wantSubscriptions = false;
 /** subscription_id → the spec the bridge is holding for it, serialised. */
 const liveSubscriptions = new Map();
 const modeListeners = new Set();
+/** The newest board revision the feed has been refreshed for, or null before
+ *  one has arrived and after every greeting. See `boardItemIsNews`. */
+let lastBoardRevision = null;
 let watcherSeq = 0;
 let syncChain = Promise.resolve();
 let syncQueued = false;
@@ -147,6 +156,7 @@ export function resetChangeEvents() {
   installedAdapter = null;
   sessionCall = null;
   wantSubscriptions = false;
+  lastBoardRevision = null;
   liveSubscriptions.clear();
   setSubscriptionsMode(false);
 }
@@ -411,12 +421,35 @@ function deliverChanges(watcher, items) {
   watcher.onChanges(items);
 }
 
+/** The revision the board item of this flush carries, or null for a flush
+ *  that carries no board item — or one from a bridge that names no revision. */
+function boardRevisionOf(items) {
+  const board = items.find((item) => String(item.entity_id) === "board");
+  const revision = board && board.state ? board.state.revision : undefined;
+  return typeof revision === "number" ? revision : null;
+}
+
+/** Whether this flush's board item is news to the feed. The bridge bumps the
+ *  revision on every `note_board`, so an item repeating the one already seen
+ *  is a flush the feed has nothing to read for. A board item that names no
+ *  revision always is news: that is a bridge from before the counter, and
+ *  guessing on its behalf would drop a real change. */
+function boardItemIsNews(items) {
+  const revision = boardRevisionOf(items);
+  if (revision === null) return true;
+  if (lastBoardRevision !== null && revision <= lastBoardRevision) return false;
+  lastBoardRevision = revision;
+  return true;
+}
+
 function dispatchItems(items) {
   const list = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!list.length) return false;
+  const boardIsNews = boardItemIsNews(list);
   for (const watcher of [...watchers]) {
     const mine = itemsFor(watcher, list);
-    if (mine.length) deliverChanges(watcher, mine);
+    if (!mine.length || (watcher.boardScoped && !boardIsNews)) continue;
+    deliverChanges(watcher, mine);
   }
   scheduleSync();
   return true;
@@ -521,6 +554,10 @@ async function negotiate(call, isCurrent) {
  *  whatever it had — so the whole map is replayed. */
 function adoptGreetedSession(call) {
   sessionCall = call;
+  // The gap behind this session announced nothing and the bridge answering it
+  // may not be the one that counted to the revision last seen, so the first
+  // board item of the new session always refreshes.
+  lastBoardRevision = null;
   liveSubscriptions.clear();
   wantSubscriptions = bridgeCapabilities().changes.subscriptions;
   setSubscriptionsMode(wantSubscriptions);

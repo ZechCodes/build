@@ -100,7 +100,12 @@ impl Harness for CodexAppServerHarness {
         for override_arg in CodexMcpConfig::new(options, context).overrides() {
             spec = spec.arg("--config").arg(override_arg);
         }
-        Ok(spec)
+        // The same trust grant the terminal carrier passes: the worktree is
+        // one Build minted moments ago, and codex's project trust is keyed by
+        // path whichever front end opens it.
+        Ok(spec
+            .arg("--config")
+            .arg(codex::trust_override(&options.cwd)))
     }
 
     fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
@@ -122,8 +127,20 @@ impl Harness for CodexAppServerHarness {
         false
     }
 
-    fn has_transcript(&self, _home: &Path, _cwd: &Path) -> bool {
-        false
+    /// The app-server writes the same dated rollouts under `~/.codex/sessions`
+    /// the TUI does (its header says `originator: build_bridge`), so the two
+    /// codex carriers answer the transcript questions off one tree — the
+    /// same dividend the two claude carriers get from `~/.claude/projects`.
+    fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
+        CodexHarness.has_transcript(home, cwd)
+    }
+
+    /// A recorded thread id is spent only while its rollout is still on disk.
+    /// Before this the trait default said "always", and a stale id cost a
+    /// failed `thread/resume` and a dead session instead of the fresh start
+    /// the claude carriers get from the same situation.
+    fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
+        CodexHarness.holds_conversation(home, cwd, id)
     }
 }
 

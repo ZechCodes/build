@@ -122,11 +122,7 @@ impl Harness for CodexHarness {
             spec = spec.arg("--config").arg(override_arg);
         }
         for override_arg in [
-            format!(
-                "projects.{}.trust_level=\"trusted\"",
-                serde_json::to_string(&options.cwd.to_string_lossy())
-                    .expect("worktree path serializes")
-            ),
+            trust_override(&options.cwd),
             // Build writes prompt bytes and Enter back-to-back. Codex's
             // fallback detector otherwise classifies that stream as a paste
             // burst and turns Enter into a newline, so the prompt remains
@@ -175,6 +171,16 @@ impl Harness for CodexHarness {
         });
         held
     }
+}
+
+/// The `--config` override that marks `cwd` trusted in codex's project
+/// registry, so neither front end stops to ask about a worktree Build itself
+/// created.
+pub(super) fn trust_override(cwd: &Path) -> String {
+    format!(
+        "projects.{}.trust_level=\"trusted\"",
+        serde_json::to_string(&cwd.to_string_lossy()).expect("worktree path serializes")
+    )
 }
 
 pub(super) struct CodexMcpConfig {

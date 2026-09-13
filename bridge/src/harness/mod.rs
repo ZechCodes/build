@@ -512,23 +512,30 @@ mod tests {
     fn an_id_no_provider_holds_is_not_spent_by_any_of_them() {
         let home = tempfile::tempdir().expect("temp home");
         let cwd = tempfile::tempdir().expect("temp worktree");
-        for provider in AgentProvider::ALL
-            .into_iter()
-            .filter(|provider| *provider != AgentProvider::CodexAppServer)
-        {
+        for provider in AgentProvider::ALL {
             assert!(
                 !harness_for(provider).holds_conversation(home.path(), cwd.path(), "sess-1"),
                 "{provider:?}"
             );
         }
-        assert!(
-            harness_for(AgentProvider::CodexAppServer).holds_conversation(
-                home.path(),
-                cwd.path(),
-                "sess-1"
-            ),
-            "app-server conversation ids are verified by exact resume, not a transcript guess"
-        );
+
+        // Both codex carriers read the ONE rollout tree, so a thread id the
+        // app-server recorded verifies under both — and a stale one starts
+        // fresh instead of failing `thread/resume`.
+        let id = "99999999-9999-9999-9999-999999999999";
+        let dated = home.path().join(".codex/sessions/2026/09/13");
+        std::fs::create_dir_all(&dated).expect("the rollout directory");
+        std::fs::write(
+            dated.join(format!("rollout-2026-09-13T10-00-00-{id}.jsonl")),
+            "{}\n",
+        )
+        .expect("the rollout");
+        for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
+            assert!(
+                harness_for(provider).holds_conversation(home.path(), cwd.path(), id),
+                "{provider:?}"
+            );
+        }
 
         // Both claude providers write and read the ONE tree, so an id captured
         // under either verifies under both.

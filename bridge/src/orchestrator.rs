@@ -14,7 +14,7 @@ pub(crate) use workspace::{
 pub use workspace::{
     gate_plan_message, gate_plan_stage_notes, mcp_config_path, AdoptableCheckout, AdoptionScope,
     Agent, Orchestrator, ResumeIdProbe, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
-    WarmBuilder, CATCH_UP_MESSAGES,
+    WarmBuilder, CATCH_UP_MESSAGES, NEW_THREAD_MESSAGES_PROMPT,
 };
 
 #[cfg(test)]

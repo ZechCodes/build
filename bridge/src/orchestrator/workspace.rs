@@ -156,7 +156,12 @@ pub type SessionLocatorFactory = std::sync::Arc<
 /// reason.
 pub type ResumeIdProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider, &str) -> bool + Send + Sync>;
 
-pub(super) const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `read_unread_messages` now and act on every unread message.";
+/// The one sentence Build says when a reviewer has written: every carrier,
+/// every phase, every path. The plan-side revise turns used to carry a
+/// shorter cousin of this line, so one agent heard two wordings of the
+/// same instruction depending on which door the message came through.
+pub const NEW_THREAD_MESSAGES_PROMPT: &str =
+    "New reviewer messages are available. Call `read_unread_messages` now, then act on every unread message. Reply with `post_thread_message` only when the conversation policy requires a written response.";
 
 /// How long a failed prompt write waits for the harness's exit status to
 /// become reapable before the failure is treated as fatal. Long enough to
@@ -211,7 +216,7 @@ pub(crate) fn conversation_prompt(prompt: &str) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
     // This block is the canonical reply policy. The `post_thread_message` tool
-    // description in mcp.rs and NEW_THREAD_MESSAGES_PROMPT in app.rs defer to
+    // description in mcp.rs and NEW_THREAD_MESSAGES_PROMPT above defer to
     // it by reference — never restate these bullets elsewhere, restated copies
     // drift. The ambiguity rule stays above the silent-directive allowance so
     // an in-order reader hits the carve-out before committing to silence.

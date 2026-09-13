@@ -896,8 +896,8 @@ fn real_adk_session_steers_mid_turn() {
         .arg("--model")
         .arg("haiku");
 
-    let (session, mut activity) =
-        AdkSession::spawn(&spec, Some(workspace.clone())).expect("claude should spawn");
+    let (session, mut activity) = AdkSession::spawn(&spec, Some(workspace.clone()), &adk_choice())
+        .expect("claude should spawn");
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     {
         let seen = std::sync::Arc::clone(&seen);
@@ -1049,8 +1049,8 @@ fn real_adk_session_interrupts_mid_tool() {
         .arg("--model")
         .arg("haiku");
 
-    let (session, mut activity) =
-        AdkSession::spawn(&spec, Some(workspace.clone())).expect("claude should spawn");
+    let (session, mut activity) = AdkSession::spawn(&spec, Some(workspace.clone()), &adk_choice())
+        .expect("claude should spawn");
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     {
         let seen = std::sync::Arc::clone(&seen);
@@ -1199,5 +1199,286 @@ fn real_adk_session_interrupts_mid_tool() {
                 || line.starts_with("tool_result[Unanswered]")),
         "the interrupted call's completion is terminal, never a fabricated success: {lines:?}"
     );
+    session.end();
+}
+
+/// A child that records what it is told and acks every control request
+/// with a success naming the request it was asked — and emits no result
+/// for it, because a `set_model` ends no turn. Announces itself only once
+/// the first line arrives, the way the live CLI does.
+fn recording_child(capture: &Path, init: &str) -> HarnessSpec {
+    HarnessSpec::new("sh").arg("-c").arg(format!(
+        "announced=0\nwhile IFS= read -r line; do\n\
+         printf '%s\\n' \"$line\" >> {capture}\n\
+         case \"$line\" in\n\
+         *control_request*)\n\
+         asked=$(printf '%s' \"$line\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+         printf '{{\"type\":\"control_response\",\"response\":{{\"subtype\":\"success\",\"request_id\":\"%s\"}}}}\\n' \"$asked\"\n\
+         ;;\n\
+         *)\n\
+         if [ \"$announced\" = 0 ]; then announced=1; printf '%s\\n' '{init}'; fi\n\
+         printf '%s\\n' '{RESULT}'\n\
+         ;;\n\
+         esac\n\
+         done\n",
+        capture = capture.display(),
+    ))
+}
+
+fn lines_written(capture: &Path, at_least: usize) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut written = Vec::new();
+    while Instant::now() < deadline && written.len() < at_least {
+        written = std::fs::read_to_string(capture)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("a protocol line"))
+            .collect();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    written
+}
+
+fn choosing(model: Option<&str>, effort: Option<&str>) -> ModelChoice {
+    ModelChoice {
+        provider: AgentProvider::ClaudeAdk,
+        model: model.map(str::to_string),
+        effort: effort.map(str::to_string),
+    }
+}
+
+/// The codex carrier's per-turn choice, in this protocol's shape: a turn
+/// frozen to a model the child is not running writes one `set_model`
+/// control request ahead of the turn, on the same pipe, and the child's
+/// ack is what moves the model the session reports. A turn frozen to the
+/// model already running writes nothing extra.
+#[test]
+fn a_turn_choosing_another_model_asks_for_it_ahead_of_the_turn() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let capture = dir.path().join("stdin.jsonl");
+    let session = open_with(
+        &recording_child(&capture, INIT),
+        &choosing(Some("claude-fable-5-1"), Some("high")),
+    );
+    assert_eq!(
+        session.turn_choice_support(&choosing(Some("claude-opus-5"), Some("high"))),
+        TurnChoiceSupport::Native,
+        "a model change is taken in place"
+    );
+
+    session
+        .send_turn(&Turn::with_choice(
+            "first",
+            choosing(Some("claude-fable-5-1"), Some("high")),
+            1,
+        ))
+        .expect("the spawn's own choice needs no change");
+    wait_for_status(&session, AgentStatus::Waiting);
+    session
+        .send_turn(&Turn::with_choice(
+            "second",
+            choosing(Some("claude-opus-5"), Some("high")),
+            2,
+        ))
+        .expect("a model change is applied in place");
+    wait_for_status(&session, AgentStatus::Waiting);
+    session
+        .send_turn(&Turn::with_choice(
+            "third",
+            choosing(Some("claude-opus-5"), Some("high")),
+            3,
+        ))
+        .expect("the model already running needs no change");
+
+    let written = lines_written(&capture, 4);
+    let kinds: Vec<(String, String)> = written
+        .iter()
+        .map(|line| {
+            (
+                line["type"].as_str().unwrap_or_default().to_string(),
+                line["request"]["subtype"]
+                    .as_str()
+                    .or_else(|| line["message"]["content"][0]["text"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ("user".to_string(), "first".to_string()),
+            ("control_request".to_string(), "set_model".to_string()),
+            ("user".to_string(), "second".to_string()),
+            ("user".to_string(), "third".to_string()),
+        ],
+        "one ask, ahead of the turn that needs it, and none for a model already running: {written:?}"
+    );
+    assert_eq!(written[1]["request"]["model"], "claude-opus-5");
+    assert!(
+        becomes_true_within(Duration::from_secs(5), || session.active_model().as_deref()
+            == Some("claude-opus-5")),
+        "the ack moves the model the session reports: {:?}",
+        session.active_model()
+    );
+    session.end();
+}
+
+/// What this child cannot take in place is refused with the sentence that
+/// says where it lives — never dropped, because a turn that silently ran
+/// on other settings would report itself as the settings the human chose.
+/// Effort has no control request (probed: `update_settings` refuses a
+/// session source), a model cannot be cleared back to the default once one
+/// was named, and another provider's choice is another provider's session.
+#[test]
+fn a_choice_this_child_cannot_take_in_place_is_refused_and_says_so() {
+    let session = open_with(
+        &stream_json_harness(&[RESULT]),
+        &choosing(Some("claude-fable-5-1"), Some("high")),
+    );
+    assert!(session.accepts_turn_choice());
+
+    for (choice, what) in [
+        (
+            choosing(Some("claude-fable-5-1"), Some("low")),
+            "an effort change",
+        ),
+        (
+            choosing(None, Some("high")),
+            "a model cleared to the default",
+        ),
+    ] {
+        assert_eq!(
+            session.turn_choice_support(&choice),
+            TurnChoiceSupport::RestartRequired,
+            "{what}"
+        );
+        let refused = session
+            .send_turn(&Turn::with_choice("go", choice, 1))
+            .expect_err(what);
+        assert!(
+            matches!(&refused, HarnessError::Unsupported(text) if text.contains("fresh session")),
+            "{what}: {refused}"
+        );
+    }
+    let foreign = ModelChoice {
+        provider: AgentProvider::CodexAppServer,
+        model: Some("gpt-6-astra".to_string()),
+        effort: Some("high".to_string()),
+    };
+    assert_eq!(
+        session.turn_choice_support(&foreign),
+        TurnChoiceSupport::RestartRequired
+    );
+    let refused = session
+        .send_turn(&Turn::with_choice("go", foreign, 1))
+        .expect_err("another provider's choice");
+    assert!(
+        matches!(&refused, HarnessError::Unsupported(text) if text.contains("Codex")),
+        "{refused}"
+    );
+    assert_eq!(
+        session.status(),
+        AgentStatus::Starting,
+        "a refused turn was never written, so the child was never spoken to"
+    );
+    session.end();
+}
+
+/// The codex carrier's `verify_thread_settings`, for claude: the `init` line
+/// says what model the child is running, and one running something other
+/// than what Build asked for is ended with that as its last words — the
+/// agent would otherwise report every turn as the model the human chose.
+#[test]
+fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() {
+    let session = open_with(
+        &stream_json_harness(&[RESULT]),
+        &choosing(Some("claude-opus-5"), None),
+    );
+    session
+        .send_turn(&Turn::new("go"))
+        .expect("the turn is written");
+    assert!(
+        becomes_true_within(Duration::from_secs(5), || matches!(
+            session.status(),
+            AgentStatus::Ended { .. }
+        )),
+        "the child announced claude-fable-5-1 and was asked for claude-opus-5: {:?}",
+        session.status()
+    );
+    let epitaph = session.epitaph().expect("the mismatch is the epitaph");
+    assert!(
+        epitaph.contains("claude-fable-5-1") && epitaph.contains("claude-opus-5"),
+        "{epitaph}"
+    );
+
+    // And the model it WAS asked for is announced without incident.
+    let session = open_with(
+        &stream_json_harness(&[RESULT]),
+        &choosing(Some("claude-fable-5-1"), None),
+    );
+    session
+        .send_turn(&Turn::new("go"))
+        .expect("the turn is written");
+    wait_for_status(&session, AgentStatus::Waiting);
+    assert_eq!(session.epitaph(), None);
+    session.end();
+}
+
+/// The codex carrier's reconciliation timeout, for claude: a child handed a
+/// turn that never announces itself is ended at the deadline with that as
+/// its last words, instead of holding `Starting` until the idle sweep
+/// explains the silence as nothing. The deadline counts from the first
+/// turn, because the CLI says nothing until it has read one — a session
+/// nobody has spoken to is `Starting` for as long as it likes.
+#[test]
+fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_turn() {
+    let silent = HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null");
+    let deadline = Duration::from_millis(200);
+    let (session, _activity) =
+        AdkSession::spawn_with_startup_deadline(&silent, None, &adk_choice(), deadline)
+            .expect("the silent child spawns");
+    std::thread::sleep(deadline * 2);
+    assert_eq!(
+        session.status(),
+        AgentStatus::Starting,
+        "no turn yet, so no silence to hold against it"
+    );
+    assert_eq!(session.epitaph(), None);
+
+    session
+        .send_turn(&Turn::new("go"))
+        .expect("the turn is written");
+    assert!(
+        becomes_true_within(Duration::from_secs(5), || matches!(
+            session.status(),
+            AgentStatus::Ended { .. }
+        )),
+        "{:?}",
+        session.status()
+    );
+    assert!(
+        session
+            .epitaph()
+            .is_some_and(|epitaph| epitaph.contains("did not announce itself")),
+        "{:?}",
+        session.epitaph()
+    );
+
+    // A child that DOES announce itself in time is left alone past the deadline.
+    let (session, _activity) = AdkSession::spawn_with_startup_deadline(
+        &stream_json_harness(&[RESULT]),
+        None,
+        &adk_choice(),
+        Duration::from_secs(2),
+    )
+    .expect("the fake spawns");
+    session
+        .send_turn(&Turn::new("go"))
+        .expect("the turn is written");
+    wait_for_status(&session, AgentStatus::Waiting);
+    std::thread::sleep(Duration::from_millis(2300));
+    assert_eq!(session.status(), AgentStatus::Waiting);
+    assert_eq!(session.epitaph(), None);
     session.end();
 }

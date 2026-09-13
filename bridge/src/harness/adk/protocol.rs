@@ -1,6 +1,7 @@
 use crate::harness::surfaces::SurfaceLedger;
-use crate::harness::{AgentStatus, SessionStatusSnapshot};
-use std::collections::BTreeMap;
+use crate::harness::{AgentStatus, SessionStatusSnapshot, TurnChoiceSupport};
+use crate::models::{AgentProvider, ModelChoice};
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 use tokio::sync::watch;
 
@@ -66,6 +67,26 @@ pub(super) struct ProtocolState {
     /// The id the child gave this conversation, for `--resume`.
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
+    /// What Build asked this child to run — the spawn's `--model`, moved on
+    /// by every `set_model` written since. What the `init` line is checked
+    /// against, so a child running something else is ended rather than
+    /// trusted, the way the codex carrier checks its opened thread.
+    pub(super) requested_model: Option<String>,
+    /// The spawn's `--effort`. There is no control request that moves it, so
+    /// a turn choosing another effort needs a fresh child.
+    pub(super) requested_effort: Option<String>,
+    /// The `set_model` requests still unanswered, by request id, against the
+    /// model each asked for. Answered by the reader: a success moves
+    /// [`model`](ProtocolState::model), an error is the session's last words.
+    pub(super) pending_model_changes: HashMap<String, String>,
+    /// When the first turn was written. The child announces itself only
+    /// once it has read a turn (verified against 2.1.236 and 2.1.2xx: no
+    /// `init` before the first user line), so the startup deadline counts
+    /// from here rather than from the fork.
+    pub(super) first_turn_at: Option<Instant>,
+    /// Set once Build has ended the session, so the startup watchdog stops
+    /// looking at a child that is already being reaped.
+    pub(super) closed: bool,
     /// What the child announced it can do, verbatim from its `init` line.
     pub(super) capabilities: Vec<String>,
     /// The interrupt Build is waiting on, if any. At most one: asking twice to
@@ -88,13 +109,18 @@ pub(super) struct ProtocolState {
 }
 
 impl ProtocolState {
-    pub(super) fn new() -> ProtocolState {
+    pub(super) fn new(choice: &ModelChoice) -> ProtocolState {
         ProtocolState {
             announced: false,
             turn_open: false,
             last_line: Instant::now(),
             session_id: None,
             model: None,
+            requested_model: choice.model.clone(),
+            requested_effort: choice.effort.clone(),
+            pending_model_changes: HashMap::new(),
+            first_turn_at: None,
+            closed: false,
             capabilities: Vec::new(),
             pending_interrupt: None,
             reported_error: None,
@@ -133,6 +159,25 @@ impl ProtocolState {
         self.capabilities
             .iter()
             .any(|announced| announced == INTERRUPT_CAPABILITY)
+    }
+
+    /// Whether a frozen choice can be applied to this child in place.
+    ///
+    /// The codex rule, in claude's shape: the provider has to be this one,
+    /// the model can move (`set_model` is a control request the child
+    /// takes on the same pipe) but cannot be CLEARED back to the CLI's
+    /// default once one was named, and the effort cannot move at all — the
+    /// CLI takes it on argv and answers no control request for it (probed
+    /// against `update_settings`: refused for a session source).
+    pub(super) fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
+        let native_provider = choice.provider == AgentProvider::ClaudeAdk;
+        let model_supported = choice.model.is_some() || self.requested_model.is_none();
+        let effort_supported = choice.effort == self.requested_effort;
+        if native_provider && model_supported && effort_supported {
+            TurnChoiceSupport::Native
+        } else {
+            TurnChoiceSupport::RestartRequired
+        }
     }
 }
 

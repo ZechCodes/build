@@ -1513,6 +1513,86 @@ fn steers_are_serialized_and_success_releases_input_in_order() {
     );
 }
 
+/// Delivery freezes the agent's settings onto every turn, so a message that
+/// arrives mid-turn is a CHOSEN turn — and one choosing exactly what the
+/// running turn runs is steer input, the way a claude child absorbs a message
+/// into its running turn. Only a message that chooses differently waits for a
+/// `turn/start` of its own.
+#[test]
+fn a_chosen_turn_matching_the_running_choice_steers_like_an_unchosen_one() {
+    let same = chosen_turn("more", Some(SELECTED_MODEL), Some(SELECTED_EFFORT), 10);
+    let steered = working_state()
+        .transition(
+            SessionEvent::SendChosenTurn(same),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        matches!(steered.effects.as_slice(), [SessionEffect::Request(PendingOperation::SteerTurn { input, .. })] if input == "more"),
+        "{:?}",
+        steered.effects
+    );
+
+    // A second one behind it queues, and is released as the next steer once
+    // the first is acknowledged — the unchosen flow, for a chosen turn.
+    let again = chosen_turn("again", Some(SELECTED_MODEL), Some(SELECTED_EFFORT), 11);
+    let queued = steered
+        .state
+        .transition(
+            SessionEvent::SendChosenTurn(again),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(queued.effects.is_empty());
+    let released = queued
+        .state
+        .transition(
+            correlated(steer_turn("more"), Ok(json!({"turnId":TURN_ID}))),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        matches!(released.effects.as_slice(), [SessionEffect::Request(PendingOperation::SteerTurn { input, .. })] if input == "again"),
+        "{:?}",
+        released.effects
+    );
+}
+
+/// The other half: a chosen turn that changes the effort is held back until
+/// the running turn completes, and then starts a turn of its own carrying it.
+#[test]
+fn a_chosen_turn_changing_the_choice_waits_for_its_own_turn_start() {
+    let different = chosen_turn("later", Some(SELECTED_MODEL), Some("low"), 10);
+    let queued = working_state()
+        .transition(
+            SessionEvent::SendChosenTurn(different),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(queued.effects.is_empty(), "{:?}", queued.effects);
+    let completed = queued
+        .state
+        .transition(
+            turn_completed(TURN_ID, None),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        completed.effects.iter().any(|effect| matches!(
+            effect,
+            SessionEffect::Request(PendingOperation::StartTurn { input, effort: Some(effort), .. })
+                if input == "later" && effort == "low"
+        )),
+        "{:?}",
+        completed.effects
+    );
+}
+
 #[test]
 fn queued_frozen_turns_keep_the_choice_snapshot_they_arrived_with() {
     let first = chosen_turn("one", Some("gpt-5.6-terra"), Some("low"), 10);
@@ -1524,7 +1604,10 @@ fn queued_frozen_turns_keep_the_choice_snapshot_they_arrived_with() {
             limits().state(),
         )
         .unwrap();
-    assert!(queued.effects.is_empty(), "a chosen turn is never a steer");
+    assert!(
+        queued.effects.is_empty(),
+        "a turn choosing differently from the running one is never a steer"
+    );
     let queued = queued
         .state
         .transition(
@@ -3144,6 +3227,17 @@ fn app_server_spec_reuses_codex_mcp_config_without_experimental_flags() {
         .args
         .iter()
         .any(|arg| arg.contains("experimental") || arg.contains("multi_agent")));
+    let trust = |args: &[String]| {
+        args.iter()
+            .find(|arg| arg.starts_with("projects.") && arg.ends_with(".trust_level=\"trusted\""))
+            .cloned()
+    };
+    assert_eq!(
+        trust(&app.args),
+        trust(&tui.args),
+        "the worktree is trusted the same way on either codex front end"
+    );
+    assert!(trust(&app.args).is_some());
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-use super::super::workspace::THREAD_NOTIFICATION;
+use super::super::workspace::NEW_THREAD_MESSAGES_PROMPT;
 use super::reporting::{done, done_validate};
 use super::runs::{
     comment_by_id, comment_on, dispatch_turn_halves, last_commit_subject, manifest_entry,
@@ -959,10 +959,10 @@ async fn send_plan_stage_notes_revises_a_stage_and_round_trips_through_done() {
     let turn = send_plan_stage_notes(&orch, &mut plan, &store, "first").unwrap();
     assert_eq!(plan.plan.state, PlanState::Drafting);
     assert_eq!(plan.revising_stage_id.as_deref(), Some("first"));
-    let prompt = posted_turn_halves(&turn, "revise", THREAD_NOTIFICATION);
+    let prompt = posted_turn_halves(&turn, "revise", NEW_THREAD_MESSAGES_PROMPT);
     assert!(prompt.contains("read_unread_messages"), "{prompt}");
     assert_eq!(
-        turn.warm, THREAD_NOTIFICATION,
+        turn.warm, NEW_THREAD_MESSAGES_PROMPT,
         "the comments travel through MCP; the instruction only points at them"
     );
     assert!(
@@ -1195,7 +1195,7 @@ async fn mid_run_stage_revision_writes_back_to_the_plan_store() {
     assert_eq!(run.revising_stage_id.as_deref(), Some("second"));
     // The revision is a turn for the run worktree's agent — the comments
     // themselves travel through MCP, so the turn only points at them.
-    let cold = posted_turn_halves(&turn, "revise", THREAD_NOTIFICATION);
+    let cold = posted_turn_halves(&turn, "revise", NEW_THREAD_MESSAGES_PROMPT);
     assert!(
         cold.contains(".build/plan/02-second.md"),
         "a cold agent is pointed at the stage doc: {cold}"

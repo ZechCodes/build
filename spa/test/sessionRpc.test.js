@@ -68,6 +68,18 @@ describe("createSessionRpc", () => {
     await expect(reply).resolves.toEqual({ projects: [] });
   });
 
+  it("stamps a background read's priority on the request envelope, and nothing on a foreground one", async () => {
+    const carrier = fakeCarrier();
+    const rpc = rpcOn(carrier);
+
+    rpc.call("git.status", { run_id: "run-7" }, { priority: "background" }).catch(() => {});
+    rpc.call("board.list", {}).catch(() => {});
+    await tick();
+
+    expect(carrier.sent[0].frameFields.payload.priority).toBe("background");
+    expect(carrier.sent[1].frameFields.payload).not.toHaveProperty("priority");
+  });
+
   it("rejects with the bridge's own error", async () => {
     const carrier = fakeCarrier();
     const rpc = rpcOn(carrier);
@@ -77,6 +89,29 @@ describe("createSessionRpc", () => {
 
     carrier.deliver({ id: carrier.sent[0].frameFields.payload.id, ok: false, error: "unknown id" });
     await expect(reply).rejects.toThrow("unknown id");
+  });
+
+  it("carries a coded refusal's error_code, retryable and details on the rejection", async () => {
+    const carrier = fakeCarrier();
+    const rpc = rpcOn(carrier);
+    const reply = rpc.call("run.get", {});
+    reply.catch(() => {});
+    await tick();
+
+    carrier.deliver({
+      id: carrier.sent[0].frameFields.payload.id,
+      ok: false,
+      error: "run-7 is busy",
+      error_code: "busy",
+      retryable: true,
+      details: { run_id: "run-7" },
+    });
+    await expect(reply).rejects.toMatchObject({
+      message: "run-7 is busy",
+      error_code: "busy",
+      retryable: true,
+      details: { run_id: "run-7" },
+    });
   });
 
   it("gives up on a call nobody answers", async () => {

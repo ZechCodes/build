@@ -559,6 +559,10 @@ export async function renderBranch() {
     refresh,
     intervalMs: ROW_POLL_MS,
     entity: () => [row && row.run_id, row && row.worktree_id],
+    // Focus tier: the mounted work surface reads all four kinds of this
+    // checkout, and wants them as they happen.
+    kinds: ["state", "thread", "git", "files"],
+    mode: "realtime",
   });
   App.poll = watcher;
 }

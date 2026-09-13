@@ -6,8 +6,9 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { onlineStickyDeviceId } from "../core/devicePolicy.js";
 import { App, render } from "../app.js";
-import { openAppSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
-import { refreshDevices, paintDevicePicker } from "../devices.js";
+import { openAppSession, adoptSession, greetLiveBridge, onBridgeSelected, setConn } from "../connection.js";
+import { deviceName, refreshDevices, paintDevicePicker } from "../devices.js";
+import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
@@ -202,6 +203,67 @@ function renderWaiting(devices) {
   $("#retrybtn").onclick = () => boot();
   $("#addmore").onclick = () => openAddDevice(boot);
 }
+
+// ---- the version gates (wire spec step 2.5) ----------------------------------
+//
+// Every greeting selects an adapter for the bridge that answered it, or names
+// the side that is out of date. The two screens below own #root for as long
+// as that is the answer; the greeting of a reconnect onto a bridge an adapter
+// claims — the user updated it, or switched device — lets the app back in.
+
+let versionGated = false;
+
+const gatedDeviceName = () => deviceName(App.session?.deviceId);
+
+/** The bridge speaks a newer major than this bundle. The reload is offered
+ *  only once the served-version watcher has found something newer to land on. */
+function showAppBehindGate(bridgeVersion) {
+  renderAppBehindBridgeGate($("#root"), {
+    deviceName: gatedDeviceName(),
+    bridgeVersion,
+    onReload: App.updateAvailable ? () => location.reload() : null,
+  });
+}
+
+/** The bridge speaks an older major than any adapter here. The screen stands
+ *  before the install line is minted, and carries it once it is. */
+async function showBridgeBehindGate(bridgeVersion) {
+  const root = $("#root");
+  const shown = { deviceName: gatedDeviceName(), bridgeVersion };
+  renderBridgeBehindAppGate(root, shown);
+  let minted;
+  try {
+    minted = await mintInstallCommand();
+  } catch {
+    return; // the instruction stands without the line
+  }
+  if (versionGated && root === $("#root")) {
+    renderBridgeBehindAppGate(root, { ...shown, installCommand: minted.install_command });
+  }
+}
+
+/** The surfaces were mounted before the greeting gated them; the feed is the
+ *  one thing the gate stopped, and the route is still where it pointed. */
+function leaveVersionGate() {
+  versionGated = false;
+  setGate(false);
+  paintDevicePicker();
+  startFeed();
+  render();
+}
+
+function onAdapterSelected(selection) {
+  if (!selection.unsupported) {
+    if (versionGated) leaveVersionGate();
+    return;
+  }
+  versionGated = true;
+  setGate(true);
+  if (selection.unsupported === "app") showAppBehindGate(selection.version);
+  else showBridgeBehindGate(selection.version);
+}
+
+onBridgeSelected(onAdapterSelected);
 
 export async function boot() {
   setGate(true);

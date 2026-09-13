@@ -1559,6 +1559,11 @@ export function mountGitPane(
     refresh: poll,
     intervalMs: GIT_PANE_POLL_MS,
     entity: scope.run_id || scope.worktree_id || null,
+    // Focus tier. A project's own checkout is no entity the bridge names, so
+    // that scope watches the board — where `state` is all there is, and the
+    // manager trims the ask to it.
+    kinds: ["state", "git", "files"],
+    mode: "realtime",
   });
   const editedTimeWatcher = watchEditedTimes(container);
 

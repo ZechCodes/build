@@ -8,10 +8,21 @@
 //
 // Everything here is fire-and-forget against the cache: a failed write is a
 // cold revisit, never an error the user sees.
+//
+// # Two tiers behind one job (wire spec step 1.6)
+//
+// Against a bridge that serves subscriptions this layer stops looping. It is
+// the background tier's `onChanges` handler: two all-scope subscriptions —
+// state, thread and git every 30 s, files every 3 minutes, both background —
+// say which entity moved and to which key, and a pull happens only where the
+// pushed key disagrees with the record held. Behind them sits one full pass
+// every ten minutes and one when the tab comes back, which is the whole of the
+// safety net. Against a bridge without subscriptions nothing here changes: the
+// per-entity 60 s watcher is exactly the loop it has always been.
 
 import { App } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
-import { watchChanges } from "./changeEvents.js";
+import { onSubscriptionsChange, subscriptionsActive, watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
 import { railEntity } from "./agentRailModel.js";
@@ -19,7 +30,8 @@ import { FIRST_PAGE_ITEMS, THREAD_RECORD_KIND, windowFromThreadPayload } from ".
 import { cachedEntityIds, cachedSubKeys, evictEntity, readCached, writeCached } from "./localCache.js";
 import { createFileDiffs } from "./fileDiffs.js";
 import { surfacesCacheAddress, surfacesFingerprint, surfacesFromRecord, surfacesRecord } from "./surfacesCache.js";
-import { coordinatedRead, rpcReadKey } from "./readRequests.js";
+import { coordinatedRead, requestPriorityFields, rpcReadKey } from "./readRequests.js";
+import { pageVisible } from "./visibility.js";
 
 const SYNC_LOCK = "build.cacheSync";
 const INITIAL_FILE_WARM_BUDGET = 3;
@@ -29,7 +41,21 @@ const INITIAL_FILE_WARM_BUDGET = 3;
  *  much faster read. */
 const ENTITY_REFRESH_MS = 60000;
 
+/** The background tier's two cadences, and the safety pass behind them. The
+ *  bridge clamps a batch to [1000, 600000]; these sit inside it. */
+const STATE_BATCH_MS = 30000;
+const FILES_BATCH_MS = 180000;
+const BACKGROUND_SWEEP_MS = 600000;
+
+/** Every read this layer makes is a warm-up, so every one of them rides the
+ *  wire behind the focused surface's. */
+const BACKGROUND = requestPriorityFields("background");
+
 let unsubscribe = null;
+let backgroundWatchers = [];
+let stopModeWatch = null;
+let visibilityWired = false;
+const warmed = new Set(); // entity ids this active set has already read once
 let holdingLock = false;
 let releaseLock = null;
 const entityWatchers = new Map(); // entityId → { dispose }
@@ -79,11 +105,11 @@ async function refreshThreads(context, entityId, row) {
   for (const agentSub of await cachedSubKeys(context.deviceId, entityId, THREAD_RECORD_KIND)) {
     if (!context.active()) return;
     try {
-      const payload = await context.call(isIssue ? "issue.get" : "branch.get", {
-        ...detailParams,
-        ...(agentSub ? { agent_id: agentSub } : {}),
-        thread_limit: FIRST_PAGE_ITEMS,
-      });
+      const payload = await context.call(
+        isIssue ? "issue.get" : "branch.get",
+        { ...detailParams, ...(agentSub ? { agent_id: agentSub } : {}), thread_limit: FIRST_PAGE_ITEMS },
+        BACKGROUND,
+      );
       const detail = railEntity(payload, isIssue ? "issue" : "branch");
       agentsOnEntity = detail.agents;
       const shaped = windowFromThreadPayload(detail.thread);
@@ -102,10 +128,16 @@ async function refreshThreads(context, entityId, row) {
  *  into, which are the tree records the cache already holds. */
 async function refreshTrees(context, entityId, scope) {
   const visited = await cachedSubKeys(context.deviceId, entityId, "tree");
-  for (const path of new Set(["", ...visited])) {
+  await listTrees(context, entityId, scope, new Set(["", ...visited]));
+}
+
+/** Re-list exactly these directories. The top level is always among them: it is
+ *  the Files tab's first paint. */
+async function listTrees(context, entityId, scope, paths) {
+  for (const path of paths) {
     if (!context.active()) return;
     try {
-      const listing = await context.call("fs.tree", { ...scope, path });
+      const listing = await context.call("fs.tree", { ...scope, path }, BACKGROUND);
       if (context.active()) {
         await writeCached(
           { deviceId: context.deviceId, entityId, kind: "tree", sub: path },
@@ -150,7 +182,7 @@ async function refreshDiff(context, entityId, row) {
         params,
       }),
       priority: "background",
-      load: () => context.call(method, params),
+      load: (envelope) => context.call(method, params, envelope),
     });
     if (context.active() && !diff.unchanged) {
       await writeCached(
@@ -182,7 +214,10 @@ async function refreshGitState(context, entityId, scope) {
     const cached = await readCached(address);
     if (!context.active()) return null;
     const held = cached && cached.value;
-    const [answer, log] = await Promise.all([context.call("git.status", statusParams(scope, held)), context.call("git.log", scope)]);
+    const [answer, log] = await Promise.all([
+      context.call("git.status", statusParams(scope, held), BACKGROUND),
+      context.call("git.log", scope, BACKGROUND),
+    ]);
     if (!context.active()) return null;
     return persistGitState(context, entityId, address, held, answer, log);
   } catch {
@@ -235,38 +270,174 @@ async function refreshEntity(entityId) {
   }
 }
 
-// eslint-disable-next-line complexity -- ratchet: onSnapshot is at 14, cap 10 — reduce it, then drop this line
-async function onSnapshot(snapshot) {
-  const context = syncContext();
-  // The feed's boot paint is this cache talking; only live answers are news.
-  if (!context.deviceId || !holdingLock || snapshot.cached) return;
-  await writeCached({ deviceId: context.deviceId, entityId: "", kind: "feed" }, snapshot);
-  if (!context.active()) return;
-
+/** The feed's active set, as rows: what this layer keeps warm and everything
+ *  else is evicted. */
+function takeActiveRows(snapshot) {
   const active = new Set(cacheableEntityIds({ items: snapshot.items }));
   activeRows = new Map();
   for (const item of snapshot.items || []) {
     const id = entityIdOf(item);
     if (id && active.has(id)) activeRows.set(id, item);
   }
+  for (const id of [...warmed]) if (!activeRows.has(id)) warmed.delete(id);
+  return active;
+}
 
-  // Immediate eviction: whatever holds records but is no longer named.
+/** Immediate eviction: whatever holds records but is no longer named. */
+async function evictLeavers(context, active) {
   for (const cachedId of await cachedEntityIds(context.deviceId)) {
     if (!context.active()) return;
     if (!active.has(cachedId)) await evictEntity(context.deviceId, cachedId);
   }
+}
 
-  // The watcher set follows the active set; a branch entering it syncs now.
+/** The per-entity watcher set, which exists only on the legacy path: a bridge
+ *  serving subscriptions covers every active entity through the background
+ *  tier, and a 60 s poll beside it would be the loop this design removes. */
+function syncEntityWatchers() {
+  const wanted = subscriptionsActive() ? new Map() : activeRows;
   for (const [id, watcher] of entityWatchers) {
-    if (active.has(id)) continue;
+    if (wanted.has(id)) continue;
     watcher.dispose();
     entityWatchers.delete(id);
   }
-  for (const id of activeRows.keys()) {
+  for (const id of wanted.keys()) {
     if (entityWatchers.has(id)) continue;
     entityWatchers.set(id, watchChanges({ refresh: () => refreshEntity(id), intervalMs: ENTITY_REFRESH_MS, entity: id }));
-    refreshEntity(id);
   }
+}
+
+/** An entity entering the active set is read once, whichever contract is live:
+ *  a subscription only says what moved after it was taken out. */
+function warmNewcomers() {
+  for (const id of activeRows.keys()) {
+    if (warmed.has(id)) continue;
+    warmed.add(id);
+    void refreshEntity(id);
+  }
+}
+
+async function onSnapshot(snapshot) {
+  const context = syncContext();
+  // The feed's boot paint is this cache talking; only live answers are news.
+  if (!context.deviceId || !holdingLock || snapshot.cached) return;
+  await writeCached({ deviceId: context.deviceId, entityId: "", kind: "feed" }, snapshot);
+  if (!context.active()) return;
+  const active = takeActiveRows(snapshot);
+  await evictLeavers(context, active);
+  if (!context.active()) return;
+  syncEntityWatchers();
+  warmNewcomers();
+}
+
+
+// ---------------------------------------------------------------------------
+// The background tier: what one flush of the `changes` event does here.
+// ---------------------------------------------------------------------------
+
+/** Every directory a changed path sits under, deepest last: `src/app/x.js`
+ *  stales the listings of `src` and `src/app`. */
+function dirsOf(paths) {
+  const dirs = new Set();
+  for (const path of paths || []) {
+    const parts = String(path).split("/").slice(0, -1);
+    for (let depth = 1; depth <= parts.length; depth++) dirs.add(parts.slice(0, depth).join("/"));
+  }
+  return [...dirs];
+}
+
+/** `files`: the listings the reader walked into are stale where a changed path
+ *  sits in them, and all of them when the list was truncated — a truncated list
+ *  means "refetch the tree", not "these paths". The bodies follow the `git`
+ *  item, which the same write always raises. */
+async function applyFiles(context, entityId, row, files) {
+  const scope = gitScopeOf(row);
+  if (!scope) return;
+  const held = await cachedSubKeys(context.deviceId, entityId, "tree");
+  const stale = files.truncated ? held : dirsOf(files.paths).filter((dir) => held.includes(dir));
+  await listTrees(context, entityId, scope, new Set(["", ...stale]));
+}
+
+/** `git`: the pushed `status_key` is the same FNV key `git.status` answers
+ *  with, so holding it is proof there is nothing to fetch. */
+async function applyGit(context, entityId, row, git) {
+  const scope = gitScopeOf(row);
+  if (!scope) return;
+  const cached = await readCached({ deviceId: context.deviceId, entityId, kind: "status" });
+  if (git.status_key && cached?.value?.status_key === git.status_key) return;
+  const status = await refreshGitState(context, entityId, scope);
+  await refreshDiff(context, entityId, row);
+  if (status && context.active()) void warmFileDiffs(context, entityId, scope, status);
+}
+
+/** Whether any agent's pushed tip is past the window this cache holds. An
+ *  agent whose conversation was never warmed has no record and no claim on a
+ *  read. */
+async function threadBehind(context, entityId, tips) {
+  for (const tip of tips || []) {
+    const address = { deviceId: context.deviceId, entityId, kind: THREAD_RECORD_KIND, sub: tip.agent_id || "" };
+    const record = await readCached(address);
+    if (!record) continue;
+    if (Number(tip.last_sequence || 0) > Number(record.value?.deliveredSequence || 0)) return true;
+  }
+  return false;
+}
+
+/** `state` is a refetch marker — the bridge sends `{}` and the detail read is
+ *  the comparison — while `thread` carries tips this cache can answer from. */
+async function applyDetail(context, entityId, row, item) {
+  if (!item.state && !(await threadBehind(context, entityId, item.thread))) return;
+  await refreshThreads(context, entityId, row);
+}
+
+async function applyItem(context, item) {
+  const entityId = String(item.entity_id || "");
+  const row = activeRows.get(entityId);
+  if (!row || refreshing.has(entityId)) return;
+  refreshing.add(entityId);
+  try {
+    if (item.files) await applyFiles(context, entityId, row, item.files);
+    if (item.git) await applyGit(context, entityId, row, item.git);
+    if (item.state || item.thread) await applyDetail(context, entityId, row, item);
+  } finally {
+    refreshing.delete(entityId);
+  }
+}
+
+/** One flush of the background tier. Items for entities the active set no
+ *  longer names are nothing to this cache: their records left with them. */
+async function applyChanges(items) {
+  const context = syncContext();
+  if (!context.deviceId || !holdingLock) return;
+  for (const item of items) {
+    if (!context.active()) return;
+    await applyItem(context, item);
+  }
+}
+
+/** The safety pass: every active entity, whatever the bridge did or did not
+ *  say. Ten minutes, and once when the tab comes back — only where
+ *  subscriptions are carrying, because the legacy path already has its 60 s
+ *  loop and must not read twice. */
+function sweep() {
+  if (!subscriptionsActive()) return;
+  for (const id of activeRows.keys()) void refreshEntity(id);
+}
+
+function onVisibilityChange() {
+  if (pageVisible()) sweep();
+}
+
+/** The background tier itself: the whole board, at the two cadences the spec
+ *  names, both behind the foreground. The files subscription shares the state
+ *  one's sweep rather than running a second. */
+function watchBackground() {
+  const onChanges = (items) => void applyChanges(items);
+  const shared = { scope: "all", priority: "background", onChanges, catchUpOnVisible: false, intervalMs: BACKGROUND_SWEEP_MS };
+  backgroundWatchers = [
+    watchChanges({ ...shared, refresh: sweep, kinds: ["state", "thread", "git"], mode: { batch_ms: STATE_BATCH_MS } }),
+    watchChanges({ ...shared, refresh: () => {}, kinds: ["files"], mode: { batch_ms: FILES_BATCH_MS } }),
+  ];
 }
 
 /** Take the browser-wide sync lock, or queue for it. The holder does the whole
@@ -295,14 +466,31 @@ export function startCacheSync() {
   stopCacheSync();
   acquireLock();
   unsubscribe = subscribeFeed(onSnapshot);
+  watchBackground();
+  // A reconnect onto an older bridge takes the subscriptions away; the 60 s
+  // per-entity poll comes back with it, and vice versa.
+  stopModeWatch = onSubscriptionsChange(syncEntityWatchers);
+  if (typeof document !== "undefined" && !visibilityWired) {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    visibilityWired = true;
+  }
 }
 
 export function stopCacheSync() {
   if (unsubscribe) unsubscribe();
   unsubscribe = null;
+  for (const watcher of backgroundWatchers) watcher.dispose();
+  backgroundWatchers = [];
+  if (stopModeWatch) stopModeWatch();
+  stopModeWatch = null;
+  if (visibilityWired && typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    visibilityWired = false;
+  }
   for (const watcher of entityWatchers.values()) watcher.dispose();
   entityWatchers.clear();
   refreshing.clear();
+  warmed.clear();
   activeRows = new Map();
   holdingLock = false;
   if (releaseLock) releaseLock();

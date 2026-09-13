@@ -53,6 +53,23 @@ pub(in crate::app::tests) fn change_events(pushes: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Install a readable legacy Issue without exercising its retired mutation
+/// surface, then publish the same invalidations a completed mutation tail
+/// would publish. These tests cover the push fanout, not Issue creation.
+fn publish_legacy_issue(state: &Arc<Mutex<AppState>>, goal: &str) -> String {
+    let mut state = state.lock().unwrap();
+    let issue = state
+        .plan_create(&json!({ "goal": goal, "dispatch": false }))
+        .expect("the legacy issue fixture is filed through the domain seam");
+    let issue_id = issue["plan_id"]
+        .as_str()
+        .expect("the legacy issue has an id")
+        .to_string();
+    state.note_board_changed();
+    state.note_entity_changed(&issue_id);
+    issue_id
+}
+
 /// The capability announcement, in both places a client can find it: the
 /// greeting it opens with, and the probe it already sends. An old bridge has
 /// neither, so absence is the answer for a new client too.
@@ -192,12 +209,10 @@ async fn greeting_twice_leaves_one_subscription() {
 #[tokio::test]
 async fn a_state_change_reaches_the_browser_unasked() {
     let (dir, repo) = init_repo();
-    let (_state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
     settled_pushes(&mut rx, &key).await; // boot noise
 
-    let plan = call(&handler, "plan.create", json!({ "goal": "push me" }));
-    assert_eq!(plan["ok"], true, "{plan:?}");
-    let plan_id = plan_id_of(&plan);
+    let plan_id = publish_legacy_issue(&state, "push me");
 
     let events = change_events(&settled_pushes(&mut rx, &key).await);
     assert!(
@@ -309,9 +324,8 @@ async fn a_terminal_byte_storm_is_not_a_change_event() {
 #[tokio::test]
 async fn rapid_mutations_cost_one_event_per_window() {
     let (dir, repo) = init_repo();
-    let (_state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let plan = call(&handler, "plan.create", json!({ "goal": "coalesce me" }));
-    let plan_id = plan_id_of(&plan);
+    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let plan_id = publish_legacy_issue(&state, "coalesce me");
     settled_pushes(&mut rx, &key).await;
 
     let mutations = 60;
@@ -338,7 +352,7 @@ async fn rapid_mutations_cost_one_event_per_window() {
 #[tokio::test]
 async fn a_closed_session_hears_no_more_changes() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
     settled_pushes(&mut rx, &key).await;
 
     let close = Frame {
@@ -360,12 +374,7 @@ async fn a_closed_session_hears_no_more_changes() {
     );
     assert_eq!(state.lock().unwrap().changes().subscriber_count(), 0);
 
-    let plan = call(
-        &handler,
-        "plan.create",
-        json!({ "goal": "nobody hears this" }),
-    );
-    assert_eq!(plan["ok"], true, "{plan:?}");
+    publish_legacy_issue(&state, "nobody hears this");
     assert_eq!(
         change_events(&settled_pushes(&mut rx, &key).await),
         Vec::<Value>::new()
@@ -377,9 +386,8 @@ async fn a_closed_session_hears_no_more_changes() {
 #[tokio::test]
 async fn an_entity_change_names_the_entity_that_moved() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let plan = call(&handler, "plan.create", json!({ "goal": "agent moved me" }));
-    let plan_id = plan_id_of(&plan);
+    let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let plan_id = publish_legacy_issue(&state, "agent moved me");
     settled_pushes(&mut rx, &key).await;
 
     state.lock().unwrap().note_entity_changed(&plan_id);
@@ -497,12 +505,17 @@ async fn a_write_in_a_watched_worktree_is_pushed_with_its_path() {
 async fn a_state_item_carries_the_row_the_board_would_paint() {
     let (dir, repo) = init_repo();
     let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let plan = call(
-        &handler,
-        "plan.create",
-        json!({ "goal": "state rides the item" }),
-    );
-    let plan_id = plan_id_of(&plan);
+    // A run, not an issue: legacy issues no longer appear on the board, and
+    // the point of this test is that the pushed `state` says what the board
+    // row says. Minted through the domain seam because the workflow RPCs that
+    // used to mint one are retired.
+    let plan_id = {
+        let mut app = state.lock().unwrap();
+        let (_, run_id) = planned_run_in_review(&mut app, "state rides the item");
+        app.note_board_changed();
+        app.note_entity_changed(&run_id);
+        run_id
+    };
     let subscribed = handler.call(
         sender.clone(),
         req(
@@ -531,8 +544,8 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
         .as_array()
         .expect("the board lists items")
         .iter()
-        .find(|row| row["issue_id"] == plan_id.as_str())
-        .unwrap_or_else(|| panic!("no board row for the issue: {board:?}"));
+        .find(|row| row["run_id"] == plan_id.as_str())
+        .unwrap_or_else(|| panic!("no board row for the run: {board:?}"));
     assert_eq!(
         item["state"],
         json!({

@@ -94,4 +94,5 @@ pub mod transport;
 pub mod transport_ledger;
 pub mod transport_report;
 pub mod watch;
+pub mod workspace;
 pub mod worktree;

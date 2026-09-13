@@ -67,6 +67,18 @@ describe("arming", () => {
 });
 
 describe("the poll cadence", () => {
+  it("keeps polling directories whose external edits have no push watcher", () => {
+    const refresh = vi.fn();
+    const watcher = watchChanges({ refresh, intervalMs: 1600, entity: "workspace-1", keepPolling: true });
+    armChangeEvents({ push_events: true });
+    vi.advanceTimersByTime(3200);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    dispatchChangeEvent({ type: "entity.changed", id: "workspace-1" });
+    expect(refresh).toHaveBeenCalledTimes(3);
+    watcher.dispose();
+    vi.advanceTimersByTime(1600);
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
   it("keeps a surface's own interval while unarmed", () => {
     expect(pollIntervalMs(1600)).toBe(1600);
   });

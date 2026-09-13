@@ -19,6 +19,107 @@ fn git_status_and_commit_scope_to_a_run() {
     assert_eq!(both["ok"], false, "{both:?}");
 }
 
+#[test]
+fn git_scope_selects_one_workspace_source_and_names_its_cache() {
+    let (dir, repo) = init_repo();
+    let (other_dir, other_repo) = init_repo();
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+    state.workspaces.adopt_root(
+        &project_id,
+        "workspace-a".to_string(),
+        "A".to_string(),
+        repo.clone(),
+        "source-1".to_string(),
+        true,
+    );
+    state.workspaces.adopt_root(
+        &project_id,
+        "workspace-b".to_string(),
+        "B".to_string(),
+        other_repo.clone(),
+        "source-1".to_string(),
+        true,
+    );
+    std::fs::write(repo.join("same.txt"), "same contents\n").unwrap();
+    std::fs::write(other_repo.join("same.txt"), "same contents\n").unwrap();
+
+    let first_scope = json!({ "workspace_id": "workspace-a", "source_id": "source-1" });
+    let second_scope = json!({ "workspace_id": "workspace-b", "source_id": "source-1" });
+    let first = state.handle(req("git.status", first_scope.clone()));
+    let second = state.handle(req("git.status", second_scope.clone()));
+    assert_eq!(first["ok"], true, "{first:?}");
+    assert_eq!(second["ok"], true, "{second:?}");
+    assert_eq!(first["result"]["path"], repo.display().to_string());
+    assert_eq!(second["result"]["path"], other_repo.display().to_string());
+    assert_ne!(
+        first["result"]["status_key"], second["result"]["status_key"],
+        "two selected directories must never share a browser cache key"
+    );
+    let unchanged = state.handle(req(
+        "git.status",
+        json!({
+            "workspace_id": "workspace-a",
+            "source_id": "source-1",
+            "if_status_key": first["result"]["status_key"],
+        }),
+    ));
+    assert_eq!(unchanged["result"]["unchanged"], true, "{unchanged:?}");
+    let first_diff = state.handle(req(
+        "git.diff",
+        json!({ "workspace_id": "workspace-a", "source_id": "source-1", "paths": ["same.txt"] }),
+    ));
+    let second_diff = state.handle(req(
+        "git.diff",
+        json!({ "workspace_id": "workspace-b", "source_id": "source-1", "paths": ["same.txt"] }),
+    ));
+    assert_ne!(
+        first_diff["result"]["files"][0]["content_key"],
+        second_diff["result"]["files"][0]["content_key"],
+        "identical relative files in separate directories need separate patch cache keys"
+    );
+
+    drop(other_dir);
+}
+
+#[test]
+fn workspace_git_scope_requires_an_exact_git_source() {
+    let (dir, repo) = init_repo();
+    let mut state = git_gui_state(&dir, &repo);
+    let project_id = state.project_at(0).id.clone();
+    let source_path = dir.path().join("ordinary-source");
+    std::fs::create_dir(&source_path).unwrap();
+    let workspace = state
+        .workspaces
+        .begin(
+            &project_id,
+            "ordinary-workspace",
+            &[crate::workspace::WorkspaceSource {
+                id: "ordinary".to_string(),
+                name: "Ordinary".to_string(),
+                mount: "ordinary".to_string(),
+                path: source_path,
+                is_git: false,
+                base_branch: "main".to_string(),
+            }],
+        )
+        .unwrap();
+
+    for params in [
+        json!({ "workspace_id": workspace.id, "source_id": "ordinary" }),
+        json!({ "workspace_id": "workspace-a" }),
+        json!({ "source_id": "source-1" }),
+        json!({
+            "workspace_id": "workspace-a",
+            "source_id": "source-1",
+            "project_id": project_id,
+        }),
+    ] {
+        let response = state.handle(req("git.status", params));
+        assert_eq!(response["ok"], false, "{response:?}");
+    }
+}
+
 // ---- git scope keyed on an external worktree ------------------------------
 
 /// Mint an unbound worktree and hand back (project_id, worktree_id, path).
@@ -381,136 +482,6 @@ fn worktree_create_takes_exactly_one_of_branch_and_name() {
         message.contains("branch") && message.contains("name"),
         "the refusal names both slots: {message}"
     );
-}
-
-/// The whole point of not cutting: finishing the checkout hands the branch
-/// back. A worktree Build cut its own branch for is finished the way it
-/// always was, and the branch goes with it.
-#[test]
-fn finishing_a_borrowed_checkout_keeps_its_branch_and_a_cut_one_does_not() {
-    let (dir, repo) = init_repo();
-    git_in(&repo, &["branch", "theirs"]);
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let borrowed = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "branch": "theirs" }),
-    ));
-    assert_eq!(borrowed["ok"], true, "{borrowed:?}");
-    let cut = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "ours" }),
-    ));
-    assert_eq!(cut["ok"], true, "{cut:?}");
-
-    for created in [&borrowed, &cut] {
-        let finished = state.handle(req(
-            "worktree.finish",
-            json!({
-                "project_id": project_id,
-                "worktree_id": created["result"]["worktree_id"],
-                "action": "delete",
-            }),
-        ));
-        assert_eq!(finished["ok"], true, "{finished:?}");
-    }
-
-    let r = git2::Repository::open(&repo).unwrap();
-    assert!(
-        r.find_branch("theirs", git2::BranchType::Local).is_ok(),
-        "a branch Build only borrowed survives the checkout it lent"
-    );
-    assert!(
-        r.find_branch("build/ours", git2::BranchType::Local)
-            .is_err(),
-        "a branch Build cut goes with it"
-    );
-}
-
-/// Merge still merges: withholding the deletion is the whole difference a
-/// borrowed branch makes, so the work lands on the base and the branch is
-/// left exactly where it was.
-#[test]
-fn finishing_a_borrowed_checkout_with_merge_merges_and_keeps_the_branch() {
-    let (dir, repo) = init_repo();
-    git_in(&repo, &["checkout", "-b", "theirs"]);
-    std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
-    git_in(&repo, &["add", "."]);
-    git_in(&repo, &["commit", "-m", "their work"]);
-    git_in(&repo, &["checkout", "main"]);
-    let r = git2::Repository::open(&repo).unwrap();
-    let tip = r
-        .find_branch("theirs", git2::BranchType::Local)
-        .unwrap()
-        .get()
-        .target()
-        .unwrap();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let borrowed = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "branch": "theirs" }),
-    ));
-    assert_eq!(borrowed["ok"], true, "{borrowed:?}");
-
-    let finished = state.handle(req(
-        "worktree.finish",
-        json!({
-            "project_id": project_id,
-            "worktree_id": borrowed["result"]["worktree_id"],
-            "action": "merge",
-        }),
-    ));
-
-    assert_eq!(finished["ok"], true, "{finished:?}");
-    assert!(
-        repo.join("theirs.txt").is_file(),
-        "the work merged into the base"
-    );
-    assert_eq!(
-        r.find_branch("theirs", git2::BranchType::Local)
-            .expect("the branch Build only borrowed is still here")
-            .get()
-            .target()
-            .unwrap(),
-        tip,
-        "and still where its owner left it"
-    );
-}
-
-/// The finish reads whose branch it is from the checkout, and a checkout
-/// that cannot answer stops the finish. Guessing there deletes a ref
-/// nobody asked Build to touch, so nothing is removed and nothing is
-/// deleted.
-#[test]
-fn finishing_a_checkout_that_cannot_say_whose_branch_it_is_aborts() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "unreadable" }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    let path = std::path::PathBuf::from(created["result"]["path"].as_str().unwrap());
-    std::fs::write(path.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
-
-    let finished = state.handle(req(
-        "worktree.finish",
-        json!({
-            "project_id": project_id,
-            "worktree_id": created["result"]["worktree_id"],
-            "action": "delete",
-        }),
-    ));
-
-    assert_eq!(finished["ok"], false, "{finished:?}");
-    assert!(path.exists(), "nothing was removed");
-    assert!(git2::Repository::open(&repo)
-        .unwrap()
-        .find_branch("build/unreadable", git2::BranchType::Local)
-        .is_ok());
 }
 
 /// With a checkout's registration pruned, nothing on disk says whether

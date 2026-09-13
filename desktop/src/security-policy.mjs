@@ -38,7 +38,7 @@ export function createWindowOptions({ development }) {
     height: 800,
     minWidth: 600,
     minHeight: 500,
-    backgroundColor: "#15171c",
+    backgroundColor: "#07151b",
     show: false,
     webPreferences: {
       allowRunningInsecureContent: false,

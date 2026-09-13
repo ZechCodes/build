@@ -1,7 +1,8 @@
 use crate::api::{self, ApiError, API_VERSION};
 use crate::app::{
-    agent_attach, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello, stream_start,
-    term_ack, term_attach, term_create, term_input, term_resize, AppState, DeliveryRunner,
+    agent_attach, agent_interrupt, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello,
+    stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
+    DeliveryRunner,
 };
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::orchestrator::OrchestratorError;
@@ -35,6 +36,7 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("run.abandon", "run_id"),
     ("run.release", "run_id"),
     ("run.adopt", "worktree_id"),
+    ("workspace.ensure_conversation", "workspace_id"),
     ("thread.post", "entity_id"),
 ];
 
@@ -122,7 +124,8 @@ fn session_scoped(
             let created = term_create(state, params, timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
-                    .get("run_id")
+                    .get("workspace_id")
+                    .or_else(|| params.get("run_id"))
                     .or_else(|| params.get("worktree_id"))
                     .and_then(Value::as_str)
                 {
@@ -145,6 +148,10 @@ fn session_scoped(
         // `DeliveryRunner`, which needs the shared handle `dispatch` does not
         // have.
         "agent.start" => agent_start(state, params, timer),
+        // Upstream's stop control, on the same footing as `agent.start`: it
+        // reaches the harness through the shared handle, which `dispatch`
+        // does not hold.
+        "agent.interrupt" => agent_interrupt(state, params, timer),
         _ => return None,
     })
 }
@@ -196,13 +203,14 @@ fn routed(
 /// the call is what minted it. `project_id` is deliberately absent: a project
 /// is not an entity a browser holds a detail view of.
 pub(in crate::app) fn entity_ids_of(params: &Value, result: &Value) -> Vec<String> {
-    const ENTITY_KEYS: [&str; 6] = [
+    const ENTITY_KEYS: [&str; 7] = [
         "id",
         "entity_id",
         "issue_id",
         "plan_id",
         "run_id",
         "worktree_id",
+        "workspace_id",
     ];
     let mut ids: Vec<String> = Vec::new();
     for source in [params, result] {
@@ -227,6 +235,26 @@ pub(in crate::app) fn err(e: OrchestratorError) -> String {
 /// once, so every required param reads the same to the client.
 pub(in crate::app) fn missing_param(key: &str) -> String {
     format!("missing required param: {key}")
+}
+
+/// Legacy documents remain readable, but workspaces no longer launch or
+/// mutate the retired issue/planning workflow.
+fn retired_planning_operation(method: &str) -> bool {
+    if method.starts_with("issue.") || method.starts_with("plan.") {
+        let action = method.split_once('.').map(|(_, action)| action);
+        return !matches!(
+            action,
+            Some("get" | "list" | "doc" | "stages" | "stage_doc" | "stage_diff" | "diff")
+        );
+    }
+    matches!(
+        method,
+        "run.create"
+            | "run.stage_dispatch"
+            | "run.stage_fix"
+            | "run.stage_send_notes"
+            | "run.set_auto_advance"
+    )
 }
 
 pub(in crate::app) fn optional_nonempty_string<'a>(
@@ -343,12 +371,26 @@ impl AppState {
     /// else falls through to [`AppState::route_legacy`], whose bare
     /// `Err(String)` has no code of its own and so reads as `internal`.
     ///
+    /// The retirement guard runs before BOTH. Planning was retired upstream by
+    /// keeping its verbs served and making the mutating ones refuse, so the
+    /// check has to precede the facade that would otherwise run them: a
+    /// retired verb answers [`crate::app::issues::ISSUES_RETIRED_ERROR`], not
+    /// `unknown_method`, and its reads (`get`, `list`, `doc`, the stage and
+    /// diff reads) go on through v1 untouched.
+    ///
     /// [`api::v1`]: crate::api::v1
     pub(in crate::app) fn route(
         &mut self,
         method: &str,
         params: &Value,
     ) -> Result<Value, ApiError> {
+        if retired_planning_operation(method) {
+            // `unavailable`, not `internal`: the verb is served and its
+            // refusal is understood — the capability behind it is gone.
+            return Err(ApiError::unavailable(
+                crate::app::issues::ISSUES_RETIRED_ERROR,
+            ));
+        }
         if let Some(answered) = crate::api::v1::dispatch(self, method, params) {
             return answered;
         }
@@ -359,10 +401,14 @@ impl AppState {
     }
 
     /// The verbs answered by hand rather than through [`api::v1`]: the probe,
-    /// the QA stream fixtures, and the two terminal reads that need no
-    /// session. Every verb family has converted; what is left here is not a
-    /// family. `None` is "no such verb here", which [`AppState::route`] turns
-    /// into `unknown_method`.
+    /// the QA stream fixtures, the two terminal reads that need no session,
+    /// and the `workspace.*` family, which landed upstream after the facade
+    /// was written. `None` is "no such verb here", which [`AppState::route`]
+    /// turns into `unknown_method`.
+    ///
+    /// Every name here is also named in `tests/api_contract.rs`'s
+    /// `LEGACY_METHODS`, which is what keeps "answered outside v1" a decision
+    /// rather than an oversight.
     ///
     /// [`api::v1`]: crate::api::v1
     pub(in crate::app) fn route_legacy(
@@ -384,6 +430,18 @@ impl AppState {
             // scripted stream is a test fixture, not part of `api/v1`.
             "stream.events" if self.qa_agent => self.stream_events(params),
             "stream.state" if self.qa_agent => self.stream_state(params),
+            // Added upstream after the facade; convert in a follow-up. The
+            // `workspace.*` family is a whole new surface (multi-source
+            // workspaces, retiring issue planning) and typing it is its own
+            // change, not a merge resolution.
+            "workspace.list" => self.workspace_list(params),
+            "workspace.create" => self.workspace_create(params),
+            "workspace.retry" => self.workspace_retry(params),
+            "workspace.get" => self.workspace_get(params),
+            "workspace.ensure_conversation" => self.workspace_ensure_conversation(params),
+            "workspace.git_init_options" => self.workspace_git_init_options(params),
+            "workspace.init_git" => self.workspace_init_git(params),
+            "workspace.finish" => self.workspace_finish(params),
             "term.list" => self.term_list(params),
             "term.close" => self.term_close(params),
             _ => return None,

@@ -1,396 +1,173 @@
 // @vitest-environment jsdom
-// The view-area toolbar's wiring: the sentence it prints, the menu each half
-// opens, the two creates behind the work half, and the ⋯ on its right.
-
-import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
-const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
-
-const NOW = Date.now();
-const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
-
-let savedFeed = null;
-let feed = {
-  items: [
-    {
-      kind: "branch",
-      project_id: "p1",
-      project: "relaydb",
-      branch: "build/login",
-      title: "Fix the login flow",
-      state: "building",
-      working: true,
-      working_time: { since: ago(750), seconds: 750 },
-      stat: { files_changed: 3, insertions: 42, deletions: 7 },
-      resume_at: ago(60),
-    },
-    {
-      kind: "issue",
-      project_id: "p1",
-      project: "relaydb",
-      branch: null,
-      issue_id: "plan-1",
-      title: "Add a health endpoint",
-      state: "created",
-      working: false,
-      working_time: null,
-      stat: null,
-      resume_at: ago(30),
-    },
-  ],
-  projects: [
-    { id: "p1", name: "relaydb" },
-    { id: "p2", name: "mascot" },
-  ],
-};
-// A Set, matching the real module (core/taskFeed.js): this file's own
-// navigation can land the router on a route it has already rendered (the
-// hash unchanged), which calls render() straight through rather than via a
-// hashchange listener this test never wires up — and that can mount the
-// agent rail, which subscribes to the feed too. A single-slot stub would let
-// that second subscriber silently steal the toolbar's own.
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+let feed = { items: [{ kind: "branch", project_id: "p1", project: "relaydb", branch: "build/login" }], projects: [{ id: "p1", name: "relaydb" }, { id: "p2", name: "mascot" }] };
+const workspace = { id: "ws-1", project_id: "p1", name: "payment-work", status: "ready", directories: [
+  { source_id: "frontend", name: "Frontend", is_git: true }, { source_id: "assets", name: "Design assets", is_git: false },
+] };
 const subscribers = new Set();
-const refreshFeed = vi.fn(async () => subscribers.forEach((fn) => fn(feed)));
 vi.mock("../src/core/taskFeed.js", () => ({
-  subscribeFeed: (fn) => {
-    subscribers.add(fn);
-    fn(feed);
-    return () => subscribers.delete(fn);
-  },
-  startFeed: () => {},
-  stopFeed: () => {},
-  refreshFeed: (...args) => refreshFeed(...args),
-  primaryRunIdFor: () => null,
+  subscribeFeed: (fn) => { subscribers.add(fn); fn(feed); return () => subscribers.delete(fn); },
+  startFeed() {}, stopFeed() {}, refreshFeed: async () => subscribers.forEach((fn) => fn(feed)), primaryRunIdFor: () => null,
 }));
-const openProjectSettings = vi.fn();
-vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
-const notifyError = vi.fn();
-vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
-const openCreateWork = vi.fn();
-vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
-
 const { App } = await import("../src/app.js");
 const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
-
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const bar = () => document.querySelector("#toolbar .toolbar");
 const menu = () => document.querySelector(".tbmenu");
-const names = () => [...bar().querySelectorAll(".tb-name")].map((name) => name.textContent);
-const openJump = (which = "project") => {
-  bar().querySelector(`[data-select="${which}"]`).click();
-  return menu();
-};
+const open = (selector) => { bar().querySelector(`[data-select="${selector}"]`).click(); return menu(); };
 
 beforeEach(() => {
-  if (!savedFeed) savedFeed = feed;
-  if (!document.getElementById("shell")) document.body.innerHTML = bodyHtml;
-  localStorage.clear();
-  App.gated = false;
+  stopToolbar();
+  document.body.innerHTML = '<div id="toolbar"></div><div id="root"></div><div id="console-region"></div><div id="agent-rail"></div>';
+  App.gated = true;
   App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
-  App.focusComposerOnMount = false;
-  openCreateWork.mockClear();
-  notifyError.mockClear();
-  App.call = vi.fn(async (method) => {
-    if (method === "worktree.create") return { project_id: "p1", branch: "build/mascot-model-spike", worktree_id: "wt-9" };
-    if (method === "issue.create") return { project_id: "p1", issue_id: "plan-9", plan_id: "plan-9" };
-    return {};
-  });
+  App.call = vi.fn(async (method) => method === "workspace.list" ? { workspaces: [workspace] } : method === "workspace.get" ? { workspace } : {});
   initToolbar();
   toolbarRouteChanged();
 });
+afterAll(stopToolbar);
 
-afterAll(() => stopToolbar());
-
-describe("the sentence the toolbar prints", () => {
-  it("names the project, then the branch — the working time and diffstat pin above the agent rail's composer instead", () => {
-    expect(names()).toEqual(["relaydb", "build/login"]);
-    expect(document.getElementById("tb-status")).toBeNull();
-  });
-
-  it("names an issue by its title", () => {
-    App.route = { name: "issue", projectId: "p1", id: "plan-1" };
-    toolbarRouteChanged();
-    expect(names()).toEqual(["relaydb", "Add a health endpoint"]);
-  });
-
-  it("keeps the project selector on a route that is no work item", () => {
-    App.route = { name: "inbox" };
-    toolbarRouteChanged();
-    expect(names()).toEqual(["relaydb"]);
+describe("workspace toolbar", () => {
+  it("keeps legacy deep-link identities readable without an active work menu", () => {
+    expect([...bar().querySelectorAll(".tb-name")].map((node) => node.textContent)).toEqual(["relaydb", "build/login"]);
     expect(bar().querySelector('[data-select="item"]')).toBeNull();
   });
-});
-
-describe("the two menus, one per half", () => {
-  it("offers no branch or issue creation for a plain folder", async () => {
-    feed = { items: [], projects: [{ id: "p1", name: "notes", is_git: false }] };
-    await refreshFeed();
-    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "files" };
+  it("keeps the legacy project selector functional and opens it projects-first", () => {
+    const projects = open("project");
+    expect(projects.dataset.list).toBe("projects");
+    expect([...projects.querySelectorAll("[data-project]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["relaydb", "mascot"]);
+  });
+  it("shows only the workspace switcher before its directory tabs", async () => {
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
     toolbarRouteChanged();
-    expect(openJump("item").querySelectorAll("[data-create]")).toHaveLength(0);
-    feed = savedFeed;
-    await refreshFeed();
+    await flush();
+    expect(bar().querySelector('[data-select="project"]')).toBeNull();
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
+    expect([...bar().children].indexOf(bar().querySelector('[data-select="workspace"]')))
+      .toBeLessThan([...bar().children].indexOf(bar().querySelector(".tb-directories")));
   });
-
-  it("opens Files when a plain folder is picked from the project menu", async () => {
-    feed = { items: [], projects: [{ id: "p1", name: "notes", is_git: false, base_branch: "main" }] };
-    await refreshFeed();
-    openJump("project").querySelector('[data-project="p1"]').click();
-    expect(App.route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "files" });
-    feed = savedFeed;
-    await refreshFeed();
-  });
-  it("lists projects and only projects on the project half", () => {
-    const popup = openJump("project");
-    expect([...popup.querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);
-    expect(popup.querySelectorAll("[data-work]").length).toBe(0);
-    expect(popup.querySelectorAll("[data-create]").length).toBe(0);
-  });
-
-  it("lists the scoped project's work and only its work on the item half, with both creates", () => {
-    const popup = openJump("item");
-    expect([...popup.querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual([
-      "Add a health endpoint",
-      "build/login",
-    ]);
-    expect(popup.querySelectorAll("[data-project]").length).toBe(0);
-    expect([...popup.querySelectorAll("[data-create]")].map((row) => row.dataset.create)).toEqual(["branch", "issue"]);
-  });
-
-  it("filters each menu against its own list", () => {
-    const projectFilter = openJump("project").querySelector(".tb-filter");
-    projectFilter.value = "masc";
-    projectFilter.dispatchEvent(new Event("input"));
-    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["mascot"]);
-
-    const workFilter = openJump("item").querySelector(".tb-filter");
-    workFilter.value = "login";
-    workFilter.dispatchEvent(new Event("input"));
-    expect([...menu().querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["build/login"]);
-  });
-
-  it("hands a picked project to its work list, without leaving the page", () => {
-    const popup = openJump("project");
-    popup.querySelector('[data-project="p2"]').click();
-    expect(menu()).toBeTruthy();
-    expect(menu().querySelectorAll("[data-project]").length).toBe(0);
-    expect(menu().querySelectorAll("[data-work]").length).toBe(0);
-    expect(menu().textContent).toContain("Nothing here yet.");
-    expect(location.hash).not.toContain("p2/branch");
-  });
-
-  it("goes back to the projects from the work list", () => {
-    openJump("item").querySelector("[data-projects]").click();
-    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);
-  });
-
-  it("goes to the work you pick", () => {
-    openJump("item").querySelector('[data-work="issue:plan-1"]').click();
-    expect(menu()).toBeNull();
-    expect(location.hash).toBe("#/project/p1/issue/plan-1");
-  });
-
-  it("reaches the creates from the project half too, through the project you pick", () => {
-    App.route = { name: "inbox" };
+  it("lists the current project's workspaces, then switches project in the same popup", async () => {
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
     toolbarRouteChanged();
-    const popup = openJump("project");
-    popup.querySelector('[data-project="p1"]').click();
-    expect([...menu().querySelectorAll("[data-create]")].map((row) => row.dataset.create)).toEqual(["branch", "issue"]);
+    await flush();
+    const workspaces = open("workspace");
+    expect([...workspaces.querySelectorAll("[data-workspace]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["payment-work"]);
+    expect(workspaces.querySelector("[data-projects]").textContent).toBe("Switch project");
+    workspaces.querySelector("[data-projects]").click();
+    const projects = menu();
+    expect([...projects.querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);
+    projects.querySelector('[data-project="p1"]').click();
+    await flush();
+    expect([...menu().querySelectorAll("[data-workspace]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["payment-work"]);
+    expect(menu().querySelector("[data-work]")).toBeNull();
+    expect(menu().querySelector('[data-create="workspace"]')).toBeTruthy();
   });
-
-  it("shuts on Escape", () => {
-    openJump("project");
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    expect(menu()).toBeNull();
-  });
-
-  it("still toggles shut after the feed repaints the button it hangs off", async () => {
-    openJump("project");
-    await refreshFeed(); // a poll lands under the open menu
-    expect(menu()).toBeTruthy();
-    bar().querySelector('[data-select="project"]').click();
-    expect(menu()).toBeNull();
-  });
-});
-
-// An open menu is reconciled row by row, not rewritten: a feed tick that says
-// what the last one said touches nothing, and one that changes a single row
-// touches only that row — so the box being typed into, and the caret in it,
-// outlive every poll under the menu.
-describe("the jump menu's paint", () => {
-  /** Everything the DOM under `target` did while `act` ran. */
-  const churn = async (target, act) => {
-    const seen = [];
-    const observer = new MutationObserver((records) => seen.push(...records));
-    observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
-    await act();
-    seen.push(...observer.takeRecords());
-    observer.disconnect();
-    return seen;
-  };
-
-  const quiet = feed;
-  afterAll(() => {
-    feed = quiet;
-  });
-
-  it("touches nothing when the feed repeats what it already said", async () => {
-    const popup = openJump("item");
-    expect(await churn(popup, () => refreshFeed())).toEqual([]);
-  });
-
-  it("redraws only the row that changed, and never the box being typed into", async () => {
-    const popup = openJump("item");
-    const filter = popup.querySelector(".tb-filter");
-    const rows = [...popup.querySelectorAll("[data-work]")];
-    const moved = { ...quiet.items[0], unread_count: 3 };
-    const records = await churn(popup, () => {
-      feed = { ...quiet, items: [quiet.items[1], moved] };
-      return refreshFeed();
+  it("keeps the active workspace visible while browsing another project and resets scope when reopened", async () => {
+    const sandbox = { id: "ws-2", project_id: "p2", name: "prototype", status: "ready", directories: [] };
+    App.call = vi.fn(async (method, params) => {
+      if (method === "workspace.list") return { workspaces: params.project_id === "p2" ? [sandbox] : [workspace] };
+      if (method === "workspace.get") return { workspace };
+      return {};
     });
-    const branchRow = popup.querySelector('[data-work="branch:p1:build/login"]');
-    expect(popup.querySelector(".tb-filter")).toBe(filter); // never replaced
-    expect([...popup.querySelectorAll("[data-work]")]).toEqual(rows);
-    expect(records.length).toBeGreaterThan(0);
-    expect(records.every((record) => branchRow.contains(record.target))).toBe(true);
-    feed = quiet;
-    await refreshFeed();
-  });
-});
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
+    toolbarRouteChanged();
+    await flush();
 
-describe("the project you pick, against a feed that keeps ticking", () => {
-  const quiet = feed;
+    open("workspace").querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="p2"]').click();
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
+    expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
+    await flush();
+    expect([...menu().querySelectorAll("[data-workspace]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["prototype"]);
 
-  beforeEach(async () => {
-    feed = {
-      ...quiet,
-      items: [
-        ...quiet.items,
-        { kind: "branch", project_id: "p2", project: "mascot", branch: "build/spike", title: "Mascot spike", resume_at: ago(10) },
-      ],
-    };
-    await refreshFeed();
-  });
-
-  afterAll(() => {
-    feed = quiet;
-  });
-
-  it("holds the pick while you stand on another project's branch and the feed ticks", async () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
-    expect(menu().querySelector(".tb-scope span").textContent).toBe("mascot");
-    await refreshFeed(); // two seconds later…
-    await refreshFeed(); // …and two more
-    expect(menu().querySelector(".tb-scope span").textContent).toBe("mascot");
-    expect([...menu().querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["build/spike"]);
-  });
-
-  it("still marks the picked project as the current one on the way back", async () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
-    await refreshFeed();
-    menu().querySelector("[data-projects]").click();
-    expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot");
-  });
-
-  it("re-scopes to the project you navigate into", () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    App.route = { name: "issue", projectId: "p1", id: "plan-1" };
+    const reopened = open("workspace");
+    expect(reopened.querySelector(".tb-scope > span").textContent).toBe("relaydb");
+    expect([...reopened.querySelectorAll("[data-workspace]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["payment-work"]);
+  });
+  it("rehydrates the active workspace when its project is selected from the popup", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "workspace.list") return { workspaces: [{ id: "ws-1", project_id: "p1", name: "payment-work", status: "ready" }] };
+      if (method === "workspace.get") return { workspace };
+      return {};
+    });
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
     toolbarRouteChanged();
-    expect([...openJump("item").querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual([
-      "Add a health endpoint",
-      "build/login",
+    await flush();
+
+    open("workspace").querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="p1"]').click();
+    await flush();
+
+    expect(App.call).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1" });
+    expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
+  });
+  it("ignores a workspace list response overtaken by a newer project choice", async () => {
+    let resolveSandbox;
+    const sandboxAnswer = new Promise((resolve) => { resolveSandbox = resolve; });
+    App.call = vi.fn(async (method, params) => {
+      if (method === "workspace.list" && params.project_id === "p2") return sandboxAnswer;
+      if (method === "workspace.list") return { workspaces: [workspace] };
+      if (method === "workspace.get") return { workspace };
+      return {};
+    });
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
+    toolbarRouteChanged();
+    await flush();
+
+    open("workspace").querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="p2"]').click();
+    menu().querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="p1"]').click();
+    await flush();
+    resolveSandbox({ workspaces: [{ id: "ws-2", project_id: "p2", name: "prototype" }] });
+    await flush();
+
+    expect(menu().querySelector(".tb-scope > span").textContent).toBe("relaydb");
+    expect([...menu().querySelectorAll("[data-workspace]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["payment-work"]);
+  });
+  it("offers workspace creation even when the project has no workspaces", async () => {
+    App.call = vi.fn(async (method) => method === "workspace.list" ? { workspaces: [] } : {});
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
+    toolbarRouteChanged();
+    await flush();
+    const workspaces = open("workspace");
+    workspaces.querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="p1"]').click();
+    await flush();
+    expect(menu().querySelector('[data-create="workspace"]')).toBeTruthy();
+    menu().querySelector('[data-create="workspace"]').click();
+    expect(document.querySelector("#create-scrim h3").textContent).toBe("New workspace in relaydb");
+  });
+  it("shows directory tabs and opens ordinary directories in Files", async () => {
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
+    toolbarRouteChanged();
+    await flush();
+    expect([...bar().querySelectorAll("[data-directory]")].map((node) => [node.textContent, node.getAttribute("aria-selected")])).toEqual([
+      ["Frontend", "true"], ["Design assets", "false"],
     ]);
+    bar().querySelector('[data-directory="assets"]').click();
+    expect(App.route).toEqual({ name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "assets", tab: "files" });
   });
-});
-
-describe("creating from the menu", () => {
-  // Both creates open the one create surface (core/createWork.js), on the
-  // scoped project, on the tab that was picked; the menu is gone by then.
-  it("opens the create modal on the Branch tab, scoped to the project the menu is on", () => {
-    openJump("item").querySelector('[data-create="branch"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", projectName: "relaydb", kind: "branch" });
-    expect(menu()).toBeNull();
-  });
-
-  it("opens it on the Issue tab for the issue create", () => {
-    openJump("item").querySelector('[data-create="issue"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", projectName: "relaydb", kind: "issue" });
-  });
-
-  it("creates in the project you picked, not the one you are standing on", () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
-    menu().querySelector('[data-create="branch"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p2", projectName: "mascot", kind: "branch" });
-  });
-
-  it("says so instead of opening anything when the device has no project", async () => {
-    feed = { items: [], projects: [] };
-    await refreshFeed();
+  it("collapses directories into a phone menu without changing directory routing", async () => {
+    App.route = { name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
     toolbarRouteChanged();
-    openJump("item").querySelector('[data-create="branch"]').click();
-    expect(openCreateWork).not.toHaveBeenCalled();
-    expect(notifyError).toHaveBeenCalledWith("No project to create in.", expect.any(String));
-    feed = savedFeed;
-    await refreshFeed();
+    await flush();
+    const picker = bar().querySelector('[data-select="directory"]');
+    expect(picker.textContent.trim()).toBe("Frontend▾");
+    picker.click();
+    expect(picker.getAttribute("aria-expanded")).toBe("true");
+    expect([...menu().querySelectorAll("[data-menu-directory]")].map((node) => [node.textContent.trim(), node.classList.contains("current")])).toEqual([
+      ["Frontend", true], ["Design assets", false],
+    ]);
+    expect(document.activeElement).toBe(menu().querySelector('[data-menu-directory="frontend"]'));
+    expect(menu().querySelector('[data-menu-directory="frontend"]').getAttribute("aria-checked")).toBe("true");
+    expect(menu().querySelector('[data-menu-directory="assets"]').getAttribute("aria-checked")).toBe("false");
+    menu().querySelector('[data-menu-directory="assets"]').click();
+    expect(App.route).toEqual({ name: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "assets", tab: "files" });
   });
-});
-
-describe("the unread counters on the two menus", () => {
-  const quiet = feed;
-  const badges = (selector) => [...menu().querySelectorAll(selector)].map((row) => (row.querySelector(".badge") || {}).textContent || "");
-
-  beforeEach(async () => {
-    feed = {
-      ...quiet,
-      items: [
-        { ...quiet.items[0], unread: true, unread_count: 2 },
-        { ...quiet.items[1], unread: true, unread_count: 3 },
-        { kind: "branch", project_id: "p2", project: "mascot", branch: "build/spike", title: "", unread: true, unread_count: 4, resume_at: ago(10) },
-      ],
-    };
-    await refreshFeed();
-  });
-
-  afterAll(() => {
-    feed = quiet;
-  });
-
-  it("counts each project by the unread of the work inside it", () => {
-    openJump("project");
-    expect(badges("[data-project]")).toEqual(["5", "4"]);
-  });
-
-  it("counts each branch and issue by its own unread, and leaves a read one bare", async () => {
-    feed = { ...feed, items: [{ ...feed.items[0], unread: false, unread_count: 0 }, feed.items[1], feed.items[2]] };
-    await refreshFeed();
-    openJump("item");
-    expect(badges("[data-work]")).toEqual(["3", ""]);
-  });
-
-  it("wears no counter anywhere once everything has been read", async () => {
-    feed = quiet;
-    await refreshFeed();
-    openJump("project");
-    expect(badges("[data-project]")).toEqual(["", ""]);
-    openJump("item");
-    expect(badges("[data-work]")).toEqual(["", ""]);
-  });
-});
-
-describe("the ⋯", () => {
-  it("carries what the tab row's right cluster used to", () => {
-    bar().querySelector('[data-select="more"]').click();
-    expect([...menu().querySelectorAll("[data-action]")].map((row) => row.dataset.action)).toEqual(["archive", "settings"]);
-    menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings).toHaveBeenCalledWith("p1");
-  });
-
-  it("sends Archive to the account page that owns it", () => {
-    bar().querySelector('[data-select="more"]').click();
-    menu().querySelector('[data-action="archive"]').click();
-    expect(location.hash).toBe("#/account/archive");
+  it("leaves finish and contextual actions out of the navigation toolbar", () => {
+    expect(bar().querySelector("#tb-verb").children).toHaveLength(0);
+    expect(bar().querySelector('[data-select="more"]')).toBeNull();
   });
 });

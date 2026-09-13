@@ -2606,7 +2606,7 @@ fn completed_speech_and_tools_translate_with_bounded_readable_details() {
         AgentActivity::ToolResult {
             call_id: "c".to_string(),
             outcome: ToolOutcome::Ok,
-            summary: "exit 0: test result: ok 4 passed".to_string(),
+            summary: "exit 0: test result: ok\n4 passed".to_string(),
         }
     );
 }
@@ -2691,10 +2691,10 @@ fn tool_results_report_errors_exit_codes_and_text_without_dumping_objects() {
 }
 
 #[test]
-fn long_tool_call_and_result_summaries_remain_bounded() {
+fn expanded_tool_rows_keep_text_until_the_activity_bound() {
     let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
-    let long = "λ\n".repeat(400);
-    translator
+    let long = "λ\n".repeat(2_000);
+    let started = translator
         .translate(
             "item/started",
             &item_envelope(
@@ -2702,14 +2702,20 @@ fn long_tool_call_and_result_summaries_remain_bounded() {
             ),
         )
         .unwrap();
+    let AgentActivity::ToolUse { summary, .. } = &started[0].activity else {
+        panic!("expected tool use");
+    };
+    assert!(summary.chars().count() > crate::harness::adk::TOOL_SUMMARY_LIMIT);
+    assert!(summary.chars().count() <= crate::harness::adk::ACTIVITY_TEXT_LIMIT + 1);
     let reports = translator
         .translate("item/completed", &item_envelope(json!({"id":"long","type":"commandExecution","status":"completed","exitCode":0,"aggregatedOutput":long})))
         .unwrap();
     let AgentActivity::ToolResult { summary, .. } = &reports[0].activity else {
         panic!("expected tool result");
     };
-    assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT + 1);
-    assert_eq!(summary.lines().count(), 1);
+    assert!(summary.chars().count() > crate::harness::adk::TOOL_SUMMARY_LIMIT);
+    assert!(summary.chars().count() <= crate::harness::adk::ACTIVITY_TEXT_LIMIT + 1);
+    assert!(summary.lines().count() > 1);
 }
 
 #[test]
@@ -2979,7 +2985,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
 }
 
 #[test]
-fn speech_summaries_share_the_activity_summary_bound() {
+fn speech_keeps_full_text_until_its_separate_large_bound() {
     let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
     for item in [
         json!({"id":"r","type":"reasoning","summary":["x".repeat(1000)]}),
@@ -2992,8 +2998,39 @@ fn speech_summaries_share_the_activity_summary_bound() {
             AgentActivity::Reasoning { summary } | AgentActivity::Narration { summary } => summary,
             other => panic!("expected speech report, got {other:?}"),
         };
-        assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT + 1);
+        assert_eq!(summary.chars().count(), 1000);
     }
+
+    let exact = "e".repeat(crate::harness::adk::ACTIVITY_TEXT_LIMIT);
+    let reports = translator
+        .translate(
+            "item/completed",
+            &item_envelope(json!({"id":"exact","type":"agentMessage","text":exact})),
+        )
+        .unwrap();
+    let AgentActivity::Narration { summary } = &reports[0].activity else {
+        panic!("expected narration report");
+    };
+    assert_eq!(summary, &exact, "the exact boundary remains unchanged");
+
+    let reports = translator
+        .translate(
+            "item/completed",
+            &item_envelope(json!({
+                "id":"large",
+                "type":"agentMessage",
+                "text":"z".repeat(crate::harness::adk::ACTIVITY_TEXT_LIMIT + 100)
+            })),
+        )
+        .unwrap();
+    let AgentActivity::Narration { summary } = &reports[0].activity else {
+        panic!("expected narration report");
+    };
+    assert_eq!(
+        summary.chars().count(),
+        crate::harness::adk::ACTIVITY_TEXT_LIMIT + 1
+    );
+    assert!(summary.ends_with('…'));
 }
 
 #[test]
@@ -3538,11 +3575,11 @@ fn a_hostile_error_message_reports_within_the_activity_bound() {
         };
         assert_eq!(
             summary.chars().count(),
-            crate::harness::adk::TOOL_SUMMARY_LIMIT + 1,
+            crate::harness::adk::ACTIVITY_TEXT_LIMIT + 1,
             "{summary}"
         );
         assert!(summary.ends_with('…'), "{summary}");
-        assert!(!summary.contains('\n'), "{summary}");
+        assert!(summary.contains('\n'), "{summary}");
     }
 }
 

@@ -80,84 +80,6 @@
         "is_git": true
       }
     ],
-    "issues": [
-      {
-        "issue_id": "plan-6f1c",
-        "plan_id": "plan-6f1c",
-        "goal": "Fix the flaky login test",
-        "state": "created",
-        "project_id": "proj-1",
-        "project": "build",
-        "muted": false,
-        "dismissed": false,
-        "unread": true,
-        "needs_attention": true,
-        "unread_count": 2,
-        "unread_reason": "agent_message",
-        "base_branch": "main",
-        "archived_at": null,
-        "attention": {
-          "anchor": "2026-09-13T09:12:44.108Z",
-          "resume_at": "2026-09-13T09:12:44.108Z",
-          "interacted": true,
-          "seen": false
-        },
-        "created_at": "2026-09-13T09:12:44.108Z",
-        "updated_at": "2026-09-13T09:31:02.774Z",
-        "state_changed_at": "2026-09-13T09:12:44.108Z",
-        "harness": "Claude Code",
-        "provider": "claude_adk",
-        "model": null,
-        "effort": null,
-        "summary": null,
-        "last_error": null,
-        "stages": [],
-        "implementation_lineage": [],
-        "implementation_complete": false,
-        "plan_path": ".build/plan.md",
-        "docs_available": true,
-        "can_archive": true
-      }
-    ],
-    "plans": [
-      {
-        "issue_id": "plan-6f1c",
-        "plan_id": "plan-6f1c",
-        "goal": "Fix the flaky login test",
-        "state": "created",
-        "project_id": "proj-1",
-        "project": "build",
-        "muted": false,
-        "dismissed": false,
-        "unread": true,
-        "needs_attention": true,
-        "unread_count": 2,
-        "unread_reason": "agent_message",
-        "base_branch": "main",
-        "archived_at": null,
-        "attention": {
-          "anchor": "2026-09-13T09:12:44.108Z",
-          "resume_at": "2026-09-13T09:12:44.108Z",
-          "interacted": true,
-          "seen": false
-        },
-        "created_at": "2026-09-13T09:12:44.108Z",
-        "updated_at": "2026-09-13T09:31:02.774Z",
-        "state_changed_at": "2026-09-13T09:12:44.108Z",
-        "harness": "Claude Code",
-        "provider": "claude_adk",
-        "model": null,
-        "effort": null,
-        "summary": null,
-        "last_error": null,
-        "stages": [],
-        "implementation_lineage": [],
-        "implementation_complete": false,
-        "plan_path": ".build/plan.md",
-        "docs_available": true,
-        "can_archive": true
-      }
-    ],
     "runs": [
       {
         "run_id": "run-31a4",
@@ -278,7 +200,21 @@
         "run_id": null
       }
     ],
-    "scanning": false
+    "scanning": false,
+    "workspace_summaries": [
+      {
+        "workspace_id": "ws-1",
+        "work_summary": {
+          "pushes": 3,
+          "additions": 214,
+          "deletions": 61
+        }
+      },
+      {
+        "workspace_id": "ws-2",
+        "work_summary": null
+      }
+    ]
   },
   "errors": [
     "internal"

@@ -60,7 +60,21 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             GitBranchDeleteParams,
             BranchListResult
         ),
+        v1_method!("git.refs", git_refs, ScopeParams, RefListResult),
+        v1_method!(
+            "git.checkout_ref",
+            git_checkout_ref,
+            GitCheckoutRefParams,
+            StatusPayload
+        ),
+        v1_method!(
+            "git.unpushed",
+            git_unpushed,
+            GitUnpushedParams,
+            GitUnpushedResult
+        ),
         v1_method!("fs.list", fs_list, FsListParams, FsListResult),
+        v1_method!("fs.mkdir", fs_mkdir, FsMkdirParams, FsMkdirResult),
         v1_method!("fs.tree", fs_tree, FsTreeParams, FsTreeResult),
         v1_method!("fs.read", fs_read, FsReadParams, FsFileResult),
         v1_method!("fs.write", fs_write, FsWriteParams, FsFileResult),
@@ -99,7 +113,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 /// may name one: by id. The repo path always comes from server state.
 /// `project_id` alone is the project's primary checkout, `run_id` is a run's
 /// worktree, `project_id` + `worktree_id` is one of the project's external
-/// worktrees.
+/// worktrees, and `workspace_id` + `source_id` is one directory of a
+/// multi-source workspace.
+///
+/// The workspace pair is exclusive with the three legacy ids — the
+/// implementation refuses a request naming both — and, for a `git.*` verb,
+/// the source it names has to be a git one.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ScopeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +127,12 @@ pub struct ScopeParams {
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
+    /// A multi-source workspace. Requires `source_id` beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// One directory of that workspace. Requires `workspace_id` beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// The scope of a verb that addresses the repository's branches rather than
@@ -217,6 +242,16 @@ pub struct FsListParams {
     pub path: Option<String>,
 }
 
+/// `fs.mkdir` makes one folder by name inside a parent the user picked in the
+/// directory browser, so it is scoped by host path like `fs.list`, not by id.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsMkdirParams {
+    /// Absolute or `~`-relative, and must already exist.
+    pub parent: String,
+    /// A single folder name: no separator, no `.` or `..`.
+    pub name: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsTreeParams {
     #[serde(flatten)]
@@ -241,6 +276,26 @@ pub struct FsWriteParams {
     /// The revision `fs.read` answered with; a stale one is refused.
     pub expected_revision: String,
     pub content_b64: String,
+}
+
+/// `git.checkout_ref` names one exact ref out of what `git.refs` listed —
+/// never a revspec the server would have to interpret.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitCheckoutRefParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// The `full_ref` of a row `git.refs` answered.
+    pub full_ref: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitUnpushedParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// The `diff_key` the caller already holds; the read answers
+    /// [`UnchangedDiff`] rather than the patch when it still matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_diff_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -522,6 +577,93 @@ pub struct ProjectDiffResult {
     pub patch: String,
 }
 
+/// HEAD as the refs picker names it: the branch it is on, or the commit a
+/// detached checkout sits at.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CurrentRef {
+    /// Named first: only this variant carries `full_ref`.
+    Branch(CurrentBranch),
+    Detached(DetachedHead),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CurrentBranch {
+    /// Always `branch`.
+    pub kind: String,
+    pub name: String,
+    pub full_ref: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DetachedHead {
+    /// Always `detached`.
+    pub kind: String,
+    pub commit: String,
+}
+
+/// One exact branch or tag `git.refs` offers, and where it stands against
+/// what it tracks.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RefRow {
+    /// `local`, `remote`, or `tag`.
+    pub kind: String,
+    pub name: String,
+    pub full_ref: String,
+    pub current: bool,
+    /// The remote a remote-only branch came from. `null` for a local branch
+    /// or a tag — the picker groups on the key being present.
+    pub remote: Option<String>,
+    /// The upstream a local branch tracks. `null` when it tracks nothing.
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+}
+
+/// What `git.refs` answers: every checkoutable ref, and which one HEAD is.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RefListResult {
+    pub current: CurrentRef,
+    pub refs: Vec<RefRow>,
+}
+
+/// The commit `git.unpushed` measured against: the branch's push target when
+/// it has one, the nearest published ancestor when it does not, or nothing at
+/// all in a repository with no published history.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UnpushedBase {
+    /// `push_target`, `published_ancestor`, or `empty`.
+    pub kind: String,
+    /// Named only by `push_target`; `null`, not absent, for the other two.
+    pub label: Option<String>,
+}
+
+/// Everything this checkout has that its remote does not.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UnpushedDiff {
+    pub patch: String,
+    pub stat: DiffStat,
+    pub files: Vec<DiffFileRow>,
+    pub file_edited_at: FileEditedAt,
+    pub diff_key: String,
+    /// Whether the branch has a push target at all.
+    pub published: bool,
+    pub base: UnpushedBase,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum GitUnpushedResult {
+    Unchanged(UnchangedDiff),
+    Fresh(Box<UnpushedDiff>),
+}
+
+/// The folder `fs.mkdir` made, named the way the server sees it.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsMkdirResult {
+    pub path: String,
+}
+
 /// What a conditional diff read answers a client that already holds it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UnchangedDiff {
@@ -717,8 +859,30 @@ fn git_branch_delete(
     answer(app.git_branch_delete(&params.wire()))
 }
 
+fn git_refs(app: &mut AppState, params: ScopeParams) -> Result<Answer<RefListResult>, ApiError> {
+    answer(app.git_refs(&params.wire()))
+}
+
+fn git_checkout_ref(
+    app: &mut AppState,
+    params: GitCheckoutRefParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_checkout_ref(&params.wire()))
+}
+
+fn git_unpushed(
+    app: &mut AppState,
+    params: GitUnpushedParams,
+) -> Result<Answer<GitUnpushedResult>, ApiError> {
+    answer(app.git_unpushed(&params.wire()))
+}
+
 fn fs_list(app: &mut AppState, params: FsListParams) -> Result<Answer<FsListResult>, ApiError> {
     answer(app.fs_list(&params.wire()))
+}
+
+fn fs_mkdir(app: &mut AppState, params: FsMkdirParams) -> Result<Answer<FsMkdirResult>, ApiError> {
+    answer(app.fs_mkdir(&params.wire()))
 }
 
 fn fs_tree(app: &mut AppState, params: FsTreeParams) -> Result<Answer<FsTreeResult>, ApiError> {

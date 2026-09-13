@@ -67,32 +67,27 @@ pub(in crate::app::tests) fn agent_pid(tab: &Tab) -> Option<u32> {
         .and_then(crate::harness::TerminalView::pid)
 }
 
-/// [`planned_run_in_review`] over the frame handler — the entry point that
-/// actually delivers the turn each verb queues. A conversation only gains
-/// its session lineage when a turn is delivered COLD (a new agent process),
-/// so a test about what the thread carries has to go this way.
+/// [`planned_run_in_review`] plus one supported post over the frame handler.
+/// A conversation only gains its session lineage when a turn is delivered
+/// COLD (a new agent process), so a test about what the thread carries has to
+/// go this way even though the legacy plan/run records are installed directly.
 pub(in crate::app::tests) fn planned_run_in_review_delivered(
+    state: &Arc<Mutex<AppState>>,
     handler: &FrameHandler,
     goal: &str,
 ) -> (String, String) {
-    let plan = call(handler, "plan.create", json!({ "goal": goal }));
-    let plan_id = plan_id_of(&plan);
-    for stage_id in ["first-half", "second-half"] {
-        call(
-            handler,
-            "plan.stage_approve",
-            json!({ "plan_id": plan_id, "stage_id": stage_id }),
-        );
-    }
-    call(handler, "plan.approve", json!({ "plan_id": plan_id }));
-    let run = call(handler, "run.create", json!({ "plan_id": plan_id }));
-    let run_id = run_id_of(&run);
-    let last_stage = call(
+    let (plan_id, run_id) = {
+        let mut state = state.lock().unwrap();
+        planned_run_in_review(&mut state, goal)
+    };
+    // A supported conversation post gives the fixture the live delivery
+    // lineage that its handler-only callers are specifically testing.
+    let delivered = call(
         handler,
-        "run.stage_dispatch",
-        json!({ "run_id": run_id, "stage_id": "second-half" }),
+        "thread.post",
+        json!({ "entity_id": run_id, "body": "review this implementation" }),
     );
-    assert_eq!(last_stage["result"]["state"], "review", "{last_stage:?}");
+    assert_eq!(delivered["ok"], true, "{delivered:?}");
     (plan_id, run_id)
 }
 
@@ -108,14 +103,14 @@ pub(in crate::app::tests) fn row_with<'a>(rows: &'a Value, key: &str, id: &str) 
 }
 
 pub(in crate::app::tests) fn plan_id_of(res: &Value) -> String {
-    res["result"]["plan_id"]
+    res.get("result").unwrap_or(res)["plan_id"]
         .as_str()
         .unwrap_or_else(|| panic!("no plan_id: {res:?}"))
         .to_string()
 }
 
 pub(in crate::app::tests) fn run_id_of(res: &Value) -> String {
-    res["result"]["run_id"]
+    res.get("result").unwrap_or(res)["run_id"]
         .as_str()
         .unwrap_or_else(|| panic!("no run_id: {res:?}"))
         .to_string()
@@ -130,25 +125,81 @@ pub(in crate::app::tests) fn planned_run_in_review(
     state: &mut AppState,
     goal: &str,
 ) -> (String, String) {
-    let plan = state.handle(req("plan.create", json!({ "goal": goal })));
-    let plan_id = plan_id_of(&plan);
+    // Issue workflow RPCs are intentionally retired, but many non-workflow
+    // tests still need the durable shape an old Issue and its implementation
+    // left behind. Build that shape through the domain seams so those tests do
+    // not accidentally keep the retired public surface alive.
+    let plan = state
+        .plan_create(&json!({ "goal": goal, "dispatch": false }))
+        .expect("the legacy plan fixture is filed");
+    let plan_id = plan["plan_id"]
+        .as_str()
+        .expect("the legacy plan fixture has an id")
+        .to_string();
+    let project_id = state.project_of(&plan_id).expect("the plan has a project");
+    let orch = state
+        .orch_for(&project_id)
+        .expect("the project has an orchestrator")
+        .clone();
+    let store = state
+        .require_store()
+        .expect("the fixture has a store")
+        .clone();
+    let workspace = orch
+        .prepare_plan_workspace(&plan_id, &store)
+        .expect("the legacy plan workspace is prepared");
+    let mut active = state.plans.remove(&plan_id).expect("the plan was filed");
+    orch.open_plan_drafting(&mut active, workspace)
+        .expect("the legacy plan starts drafting");
+    state
+        .qa_simulate_plan(&project_id, &mut active)
+        .expect("the scripted planner authors the legacy plan");
+    state
+        .finish_plan_mutation(plan_id.clone(), active)
+        .expect("the planned fixture is durable");
     for stage_id in ["first-half", "second-half"] {
-        let approved = state.handle(req(
-            "plan.stage_approve",
-            json!({ "plan_id": plan_id, "stage_id": stage_id }),
-        ));
-        assert_eq!(approved["ok"], true, "{approved:?}");
+        state
+            .plan_stage_approve(&json!({ "plan_id": plan_id, "stage_id": stage_id }))
+            .expect("the legacy stage is approved");
     }
-    let approved = state.handle(req("plan.approve", json!({ "plan_id": plan_id })));
-    assert_eq!(approved["ok"], true, "{approved:?}");
-    let run = state.handle(req("run.create", json!({ "plan_id": plan_id })));
-    assert_eq!(run["ok"], true, "{run:?}");
-    let run_id = run_id_of(&run);
-    let last_stage = state.handle(req(
-        "run.stage_dispatch",
-        json!({ "run_id": run_id, "stage_id": "second-half" }),
-    ));
-    assert_eq!(last_stage["result"]["state"], "review", "{last_stage:?}");
+    state
+        .plan_approve(&json!({ "plan_id": plan_id }))
+        .expect("the legacy plan is approved");
+
+    let plan = state.plans.get(&plan_id).expect("the plan remains live");
+    let issue = ImplementableIssue::judge(RunSource {
+        plan,
+        has_active_run: false,
+    })
+    .expect("the approved plan is implementable");
+    let run_id = format!("run-{}", uuid::Uuid::new_v4());
+    let prepared = orch
+        .prepare_run_checkout(&issue, &plan.base_branch, &run_id, state.isolation, &store)
+        .expect("the legacy implementation checkout is prepared");
+    let (mut run, _turn) = orch
+        .open_prepared_run(RunId::new(&run_id), plan, prepared, Default::default())
+        .expect("the legacy implementation opens");
+    let plan_docs = plan.stages.clone();
+    state
+        .qa_simulate_stage_build(&project_id, &mut run, &plan_docs)
+        .expect("the first legacy stage is built");
+    state
+        .projects
+        .bind_entity(run_id.clone(), project_id.clone());
+    state
+        .finish_run_mutation(run_id.clone(), run)
+        .expect("the legacy run is durable");
+    state
+        .run_stage_dispatch(&json!({ "run_id": run_id, "stage_id": "second-half" }))
+        .expect("the second legacy stage dispatches");
+    let mut run = state.runs.remove(&run_id).expect("the run remains live");
+    state
+        .qa_simulate_stage_build(&project_id, &mut run, &plan_docs)
+        .expect("the second legacy stage is built");
+    assert_eq!(run.run.state, RunState::Review);
+    state
+        .finish_run_mutation(run_id.clone(), run)
+        .expect("the reviewed legacy run is durable");
     (plan_id, run_id)
 }
 
@@ -225,10 +276,4 @@ pub(in crate::app::tests) fn spawned_provider(
         TabRole::Agent { provider, .. } => provider,
         TabRole::Shell => panic!("{agent_id} opened a shell, not an agent session"),
     }
-}
-
-pub(in crate::app::tests) fn worktree_id_of_run(state: &AppState, run_id: &str) -> String {
-    crate::worktree::external_worktree_id(&AppState::canonical_root(
-        &state.runs[run_id].worktree.path,
-    ))
 }

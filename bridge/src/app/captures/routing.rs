@@ -1,13 +1,10 @@
 use super::capture_json;
 #[cfg(test)]
 use crate::app::MCP_CONTROL_METHOD;
-use crate::app::{
-    issue_session, AppState, DeferredJob, PendingAgentTurn, PlanSessionOpening, TabKey, TurnText,
-};
+use crate::app::{issue_session, AppState, DeferredJob, PendingAgentTurn, TabKey, TurnText};
 use crate::mcp::{BridgeAction, DoneReport, DoneStatus};
 use crate::plan::PlanState;
 use crate::store::now_rfc3339;
-use crate::thread::ThreadDetail;
 use serde_json::{json, Value};
 
 /// The capture a dispatch is the destination of. Recorded once the branch it
@@ -40,59 +37,6 @@ impl RouteRecorded {
             Some(route) => (route.answered_with)(&route.capture, dispatched),
             None => dispatched,
         }
-    }
-}
-
-/// A router or a reroute asked, on its way to a destination it has already
-/// reached: the capture is routed and the Issue holds the text whatever happens
-/// here, so a session that could not start says so and never fails the route.
-#[derive(Clone)]
-pub(in crate::app) struct RoutedIssueDrafting {
-    pub(in crate::app) issue_id: String,
-    pub(in crate::app) project_id: String,
-    pub(in crate::app) capture_id: String,
-    pub(in crate::app) answer: fn(&crate::capture::Capture, Value) -> Value,
-}
-
-impl RoutedIssueDrafting {
-    /// What the route answers with: the capture as it now stands, or the
-    /// destination itself, and whether an agent is reading it.
-    fn reply(&self, state: &AppState, planning: bool) -> Result<Value, String> {
-        let capture = state
-            .captures
-            .get(&self.capture_id)
-            .ok_or("the capture went while its issue was being opened")?;
-        Ok((self.answer)(
-            capture,
-            json!({
-                "issue_id": self.issue_id,
-                "project_id": self.project_id,
-                // No branch was cut: that is what a router means by dispatched.
-                "dispatched": false,
-                // An agent IS reading the capture, on the primary checkout.
-                "planning": planning,
-            }),
-        ))
-    }
-}
-
-impl PlanSessionOpening for RoutedIssueDrafting {
-    fn open(
-        self: Box<Self>,
-        state: &mut AppState,
-        workspace: crate::orchestrator::PlanWorkspace,
-    ) -> Result<Value, String> {
-        let started =
-            state.open_inert_plan_drafting(&self.issue_id, workspace, ThreadDetail::Digest);
-        if let Err(error) = &started {
-            eprintln!("route: {} could not start planning: {error}", self.issue_id);
-        }
-        self.reply(state, started.is_ok())
-    }
-
-    fn refused(self: Box<Self>, state: &mut AppState, error: String) -> Result<Value, String> {
-        eprintln!("route: {} could not start planning: {error}", self.issue_id);
-        self.reply(state, false)
     }
 }
 
@@ -343,14 +287,9 @@ impl AppState {
         }))
     }
 
-    /// The default destination: an issue on the best-guess project, with its
-    /// planning agent started — no branch, no worktree, no code touched.
-    ///
-    /// The issue is filed inert and the route recorded first, so a capture the
-    /// record could not be written for never gets an agent. Then the session
-    /// starts, because what the user said IS a sent message: `create_plan`
-    /// seeds it onto the issue's conversation as one, and a sent message with
-    /// nobody listening is the whole bug this closes.
+    /// Compatibility boundary for callers that still request the retired
+    /// Issue destination. Captures remain unrouted and no planning record or
+    /// session is created.
     pub(in crate::app) fn route_to_issue(
         &mut self,
         capture_id: &str,
@@ -359,49 +298,8 @@ impl AppState {
         rationale: Option<String>,
         answer: fn(&crate::capture::Capture, Value) -> Value,
     ) -> Result<Value, String> {
-        let issue = self.plan_create(&json!({
-            "project_id": project_id,
-            "goal": goal,
-            "dispatch": false,
-        }))?;
-        let issue_id = issue["issue_id"]
-            .as_str()
-            .ok_or("the issue was filed under no id")?
-            .to_string();
-        self.record_routing(
-            capture_id,
-            crate::capture::CaptureRouting {
-                project_id: project_id.to_string(),
-                kind: crate::capture::CaptureTarget::Issue,
-                target_id: issue_id.clone(),
-                routed_at: now_rfc3339(),
-                rationale,
-            },
-            &issue_id,
-        )?;
-        // The planning agent works in the primary checkout — issues plan on
-        // main, they do not own a worktree — and the workspace it needs there
-        // is disk, so it goes to the drain like every other verb's.
-        //
-        // Never fatal to the route: the capture is recorded and the issue holds
-        // the text, so a session that could not start leaves an inert,
-        // re-startable issue rather than losing the destination.
-        let routed = RoutedIssueDrafting {
-            issue_id: issue_id.clone(),
-            project_id: project_id.to_string(),
-            capture_id: capture_id.to_string(),
-            answer,
-        };
-        match self.reserve_plan_drafting(&issue_id, Box::new(routed.clone())) {
-            Ok(Some(job)) => Ok(self.defer_job(job)),
-            // Nothing to start: a session is already open for this issue, or
-            // one is already on its way to the same checkout.
-            Ok(None) => routed.reply(self, true),
-            Err(error) => {
-                eprintln!("route: {issue_id} could not start planning: {error}");
-                routed.reply(self, false)
-            }
-        }
+        let _ = (capture_id, project_id, goal, rationale, answer);
+        Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string())
     }
 
     /// The confident destination: an agent on a branch, working. One call, and

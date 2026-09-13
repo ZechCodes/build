@@ -7,7 +7,6 @@ import { paintRunsShowingLatest } from "./activityRunScroll.js";
 import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
 import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "./activityDigest.js";
 import {
-  INTERRUPT_SEND_OPTION,
   autoGrow,
   composerHtml,
   composerPartIds,
@@ -20,6 +19,8 @@ import { mountSplitMenu } from "./splitButton.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
 import { viewingContextChipsHtml } from "./viewingContext.js";
+import { ICON_CHECK } from "./icons.js";
+import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -638,7 +639,9 @@ function attachmentsHtml(attachments, threadState) {
       if (isImageAttachment(attachment.mime)) {
         const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
         return `<figure class="thread-attachment-figure${refused}">
-          <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
+          <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
+            <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
+          </button>
           <figcaption>${name}</figcaption>
         </figure>`;
       }
@@ -734,11 +737,21 @@ function outcomeMarkerHtml(outcome, agentLabel) {
 const messageContextHtml = (message) => message.viewing_context?.items?.length
   ? `<div class="message-viewing-context">${viewingContextChipsHtml(message.viewing_context)}</div>` : "";
 
-function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
+function messageFooterHtml(message) {
   const user = message.role === "user";
   const status = user
-    ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
+    ? `<span class="thread-status" role="img" aria-label="${message.seen_at ? "Read" : "Sent"}">${ICON_CHECK}${message.seen_at ? ICON_CHECK : ""}</span>`
     : "";
+  const time = timeHtml(message.created_at);
+  return status || time ? `<div class="thread-message-footer">${status}${time}</div>` : "";
+}
+
+const resolvedRevisionHtml = (message) => message.resolved_by_revision
+  ? `<div class="thread-message-resolution"><button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button></div>`
+  : "";
+
+function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
+  const user = message.role === "user";
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
@@ -751,8 +764,8 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
-      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
       ${outcomeMarkerHtml(message.outcome, agentLabel)}
+      ${resolvedRevisionHtml(message)}
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
@@ -760,6 +773,7 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, liveOptions, offer, threadState)}
+      ${messageFooterHtml(message)}
     </div>
   </article>`;
 }
@@ -998,6 +1012,7 @@ function activityRunHtml(span, summary, children) {
   return `<details class="thread-activity-group" ${RENDERED_FOLD_ATTRIBUTE} ${ACTIVITY_RUN_ATTRIBUTE}="${esc(String(span.key))}" ${ACTIVITY_RUN_FROM_ATTRIBUTE}="${esc(String(span.from))}" ${ACTIVITY_RUN_THROUGH_ATTRIBUTE}="${esc(String(span.through))}"${children === null ? "" : " open"}>
     <summary class="thread-activity-head thread-activity-group-head">
       <span class="thread-event-icon" aria-hidden="true">${esc(summary.icon)}</span>
+      <span class="thread-activity-label">Actions</span>
       <span class="thread-activity-count">${summary.count}</span>
       <span class="thread-activity-preview">${esc(summary.meat)}</span>
       ${toolOutcomeHtml(summary.outcome)}
@@ -1679,6 +1694,21 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     );
   });
 
+  root.querySelectorAll("button.thread-attachment-preview").forEach((preview) => {
+    preview.onclick = async () => {
+      const image = preview.querySelector("img.thread-attachment-image");
+      const path = image?.dataset.attachmentPath;
+      if (!path) return;
+      try {
+        const dataUrl = image.getAttribute("src") || await dataUrlFor(path);
+        if (dataUrl) openThreadAttachmentLightbox(preview, { src: dataUrl, alt: image.alt });
+      } catch {
+        threadState.rememberAttachment(path, null);
+        image.closest(".thread-attachment-figure")?.classList.add("unavailable");
+      }
+    };
+  });
+
   root.querySelectorAll("button.thread-attachment").forEach((chip) => {
     chip.onclick = async () => {
       const path = chip.dataset.attachmentPath;
@@ -1723,20 +1753,14 @@ export function wireThreadLinks(root, openLink) {
 /// a wedged-looking box invites. Restoring the button here — before any
 /// repaint — keeps that true even when the caller's rebuild is frozen.
 ///
-/// `onSubmit(body, attachments, { interrupt })` does the transport —
-/// `interrupt` is true only where the send control offered the alternative and
-/// the writer chose it. `upload` (with the
+/// `onSubmit(body, attachments)` does the transport. `onInterrupt` stops the
+/// active turn when the empty composer is showing its stop control. `upload` (with the
 /// `readAttachments`/`writeAttachments` draft pair) turns the box into one that
 /// takes files; without it the composer is the plain text box it always was.
 ///
 /// Returns a controller: `setCanInterrupt(flag)` moves the send between its two
 /// shapes in place, for a surface whose poll can change the answer under a box
 /// somebody is typing in.
-/// The send button's word. It wraps its label so a busy state can rewrite the
-/// word without wiping the icon beside it; the split shape, which has no icon
-/// to protect, is driven directly.
-const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
-
 function mountViewingContext(root, inputId, viewingContext) {
   const tray = root.querySelector(`#${composerPartIds(inputId).context}`);
   const paint = (context = viewingContext?.snapshot?.()) => {
@@ -1755,6 +1779,7 @@ function mountViewingContext(root, inputId, viewingContext) {
 export function wireThreadComposer(root, {
   ids,
   onSubmit,
+  onInterrupt,
   readDraft,
   writeDraft,
   onError,
@@ -1776,36 +1801,43 @@ export function wireThreadComposer(root, {
   const say = (message) => {
     if (hint) hint.textContent = message;
   };
-  const tray = upload
+  let canInterrupt = !!send?.classList.contains("is-stop");
+  let submitting = false;
+  let blocked = false;
+  let tray = null;
+  const hasDraft = () => input.value.trim() !== "" || !!(tray && !tray.isEmpty());
+  const paintAction = () => {
+    if (!control || submitting) return;
+    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt, hasDraft: hasDraft() });
+    wireSendControl();
+    setPressable(true);
+  };
+  tray = upload
     ? mountComposerAttachments(root, {
         ids,
         upload,
         readAttachments,
         writeAttachments,
         onError: say,
+        onChange: () => queueMicrotask(paintAction),
       })
     : null;
 
   input.value = readDraft();
   input.oninput = () => {
     writeDraft(input.value);
-    say("");
+    if (!blocked) say("");
+    paintAction();
   };
   const fitToText = autoGrow(input);
 
-  /// The caret half of a split send, when the control is wearing that shape.
-  const caretOf = () => control && control.querySelector(".caret");
-  let blocked = false;
-  let submitting = false;
   const setPressable = (pressable) => {
     const disabled = !pressable || blocked;
     send.disabled = disabled;
-    const caret = caretOf();
-    if (caret) caret.disabled = disabled;
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
-  const submit = async ({ interrupt = false } = {}) => {
+  const submit = async () => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;
     if (tray && tray.busy()) {
@@ -1824,23 +1856,22 @@ export function wireThreadComposer(root, {
     }
     setPressable(false);
     submitting = true;
-    sendLabel(send).textContent = "sending…";
     try {
-      const result = await onSubmit(body, tray ? tray.attachments() : [], { interrupt });
+      const result = await onSubmit(body, tray ? tray.attachments() : []);
       if (!submissionOwnsDraft) writeDraft("");
       input.value = "";
       fitToText();
       if (tray) tray.clear();
       submitting = false;
       setPressable(true);
-      sendLabel(send).textContent = "Send";
+      paintAction();
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
       // The text and the files stay put: a failed send must never cost the user
       // their words, and re-picking the files would be worse.
       submitting = false;
       setPressable(true);
-      sendLabel(send).textContent = "Send";
+      paintAction();
       if (onError) onError(error);
     }
   };
@@ -1850,26 +1881,34 @@ export function wireThreadComposer(root, {
   const wireSendControl = () => {
     send = root.querySelector(`#${ids.send}`);
     if (!send) return;
-    send.onclick = () => submit();
-    if (control) {
-      mountSplitMenu(control, { onChoose: (action) => submit({ interrupt: action === INTERRUPT_SEND_OPTION.id }) });
-    }
+    send.onclick = async () => {
+      if (send.dataset.action !== "stop") return submit();
+      if (send.disabled || !onInterrupt) return;
+      setPressable(false);
+      submitting = true;
+      try {
+        await onInterrupt();
+      } catch (error) {
+        if (onError) onError(error);
+      } finally {
+        submitting = false;
+        paintAction();
+      }
+    };
   };
 
-  /// Move the send between its two shapes. Never mid-press: a send in flight
-  /// owns the button's word, and an open menu is a choice being made — the
-  /// poll comes round again a second later, and by then the press has landed.
-  let splitShown = !!(control && control.querySelector(".splitmenu"));
+  /// Record whether the active turn can be stopped. A request already in
+  /// flight keeps its disabled control until it settles, then paints the latest
+  /// turn and draft state.
   const setCanInterrupt = (wanted) => {
-    const split = !!wanted;
-    if (!control || split === splitShown) return;
-    if (send.disabled || control.querySelector(".splitmenu:not([hidden])")) return;
-    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt: split });
-    splitShown = split;
-    wireSendControl();
+    const next = !!wanted;
+    if (!control || next === canInterrupt) return;
+    canInterrupt = next;
+    paintAction();
   };
 
   wireSendControl();
+  paintAction();
   input.onkeydown = (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -1882,7 +1921,6 @@ export function wireThreadComposer(root, {
     setPressable(!submitting);
     if (!submitting) {
       say(blocked ? message : "");
-      sendLabel(send).textContent = blocked ? message : "Send";
     }
   };
 

@@ -20,23 +20,36 @@ const RIFT_MATERIALIZE_DEADLINE: Duration = Duration::from_secs(300);
 /// registry.
 #[derive(Clone, Debug)]
 pub struct RiftBackend {
+    worktrees_root: PathBuf,
     database_path: PathBuf,
     executable: OsString,
 }
 
 impl RiftBackend {
     pub fn new(worktrees_root: impl Into<PathBuf>) -> Self {
-        Self::with_executable(worktrees_root, OsString::from("rift"))
+        let worktrees_root = worktrees_root.into();
+        Self::with_registry_root(&worktrees_root, &worktrees_root, OsString::from("rift"))
     }
 
     /// Injecting the executable makes command behavior deterministic in unit
     /// tests without changing process-global PATH.
+    #[cfg(test)]
     pub(crate) fn with_executable(
         worktrees_root: impl Into<PathBuf>,
         executable: impl Into<OsString>,
     ) -> Self {
+        let worktrees_root = worktrees_root.into();
+        Self::with_registry_root(&worktrees_root, &worktrees_root, executable)
+    }
+
+    pub(crate) fn with_registry_root(
+        worktrees_root: impl Into<PathBuf>,
+        registry_root: impl Into<PathBuf>,
+        executable: impl Into<OsString>,
+    ) -> Self {
         Self {
-            database_path: worktrees_root.into().join(".rift").join("registry.sqlite"),
+            worktrees_root: worktrees_root.into(),
+            database_path: registry_root.into().join(".rift").join("registry.sqlite"),
             executable: executable.into(),
         }
     }
@@ -152,6 +165,107 @@ impl RiftBackend {
             )),
         }
     }
+
+    /// Check whether this configured Rift executable can copy an ordinary
+    /// directory into this backend's root.
+    pub(crate) fn directory_availability(&self, source: &Path) -> Result<(), String> {
+        super::probe::rift_directory_availability_with(
+            &self.executable,
+            source,
+            &self.worktrees_root,
+        )
+    }
+
+    /// Materialize an ordinary directory through the configured Rift CLI.
+    /// The source is not required to be a Git repository and the destination
+    /// must be one direct child of this backend's root.
+    pub(crate) fn materialize_directory(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> Result<(), WorktreeError> {
+        let marker = source.join(".rift");
+        let marker_existed = marker.exists();
+        self.materialize_directory_inner(source, destination)
+            .inspect_err(|_| {
+                if !marker_existed {
+                    let _ = std::fs::remove_file(&marker);
+                }
+            })
+    }
+
+    fn materialize_directory_inner(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> Result<(), WorktreeError> {
+        if destination.exists() {
+            return Err(WorktreeError::Refused(format!(
+                "{} already exists",
+                destination.display()
+            )));
+        }
+        let root = &self.worktrees_root;
+        super::probe::validate_storage_paths(source, root).map_err(WorktreeError::Refused)?;
+        if destination.parent() != Some(root) {
+            return Err(WorktreeError::Refused(format!(
+                "Rift directory {} is outside its configured workspaces root {}",
+                destination.display(),
+                root.display()
+            )));
+        }
+        super::probe::validate_database_path(source, &self.database_path)
+            .map_err(WorktreeError::Refused)?;
+        self.ensure_database_parent()?;
+        super::probe::validate_storage_paths(source, root).map_err(WorktreeError::Refused)?;
+        super::probe::validate_database_path(source, &self.database_path)
+            .map_err(WorktreeError::Refused)?;
+        self.run_with_deadline(
+            source,
+            &[OsStr::new("init"), source.as_os_str(), OsStr::new("--here")],
+            RIFT_MATERIALIZE_DEADLINE,
+        )?;
+        let name = checkout_name(destination).ok_or_else(|| {
+            WorktreeError::Refused(format!(
+                "directory path has no name: {}",
+                destination.display()
+            ))
+        })?;
+        let created = match self.run_with_deadline(
+            source,
+            &[
+                OsStr::new("create"),
+                source.as_os_str(),
+                OsStr::new("--into"),
+                root.as_os_str(),
+                OsStr::new("--name"),
+                OsStr::new(&name),
+                OsStr::new("--copy-all"),
+                OsStr::new("--no-hooks"),
+            ],
+            RIFT_MATERIALIZE_DEADLINE,
+        ) {
+            Ok(created) => created,
+            Err(error) => return Err(self.failed_create(source, destination, error)),
+        };
+        let reported = PathBuf::from(String::from_utf8_lossy(&created.stdout).trim());
+        let expected = std::fs::canonicalize(destination)
+            .map_err(|error| self.failed_create(source, destination, error.into()))?;
+        let reported = std::fs::canonicalize(&reported)
+            .map_err(|error| self.failed_create(source, destination, error.into()))?;
+        if reported != expected {
+            return Err(self.failed_create(
+                source,
+                destination,
+                WorktreeError::Refused(format!(
+                    "Rift created {} instead of {}",
+                    reported.display(),
+                    destination.display()
+                )),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl IsolationBackend for RiftBackend {
@@ -167,13 +281,7 @@ impl IsolationBackend for RiftBackend {
             )));
         }
         refuse_if_mid_operation(project)?;
-        let worktrees_root = self
-            .database_path
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| {
-                WorktreeError::Refused("Rift registry path has no worktrees root".to_string())
-            })?;
+        let worktrees_root = &self.worktrees_root;
         super::probe::validate_paths(project, worktrees_root).map_err(WorktreeError::Refused)?;
         if path.parent() != Some(worktrees_root) {
             return Err(WorktreeError::Refused(format!(

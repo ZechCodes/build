@@ -292,10 +292,13 @@ export async function subscriptionsSettled() {
 
 function startTimer(watcher) {
   clearInterval(watcher.timer);
+  // `keepPolling` holds a watcher at its own cadence instead of standing it
+  // down to the safety poll once a pushing bridge is armed.
+  const interval = watcher.keepPolling ? watcher.intervalMs : pollIntervalMs(watcher.intervalMs);
   watcher.timer = setInterval(() => {
     scheduleSync();
     watcher.tick();
-  }, pollIntervalMs(watcher.intervalMs));
+  }, interval);
 }
 
 /** Run a watcher's refresh for an event, under the same visibility gate its
@@ -326,6 +329,7 @@ const WATCHER_DEFAULTS = {
   entity: null,
   catchUpOnVisible: true,
   pausesWhileHidden: true,
+  keepPolling: false,
   kinds: [],
   mode: "realtime",
   priority: "foreground",
@@ -359,6 +363,9 @@ function withDefaults(registration, defaults) {
  * is the background tier's whole-board watch. `onChanges(items)` receives the
  * items for the entities this surface stands for; without one, an item runs
  * `refresh` instead, which is what a legacy event always did.
+ *
+ * `keepPolling: true` holds the surface at its own `intervalMs` even once an
+ * event-pushing bridge is armed, for a scope the bridge does not push for.
  *
  * `catchUpOnVisible: false` is for a surface that already refreshes itself on
  * visibilitychange (the feed does), so coming back does not read twice.

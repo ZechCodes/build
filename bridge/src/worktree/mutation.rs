@@ -153,6 +153,50 @@ use super::WorktreeManager;
 use crate::isolation::branch_teardown;
 
 impl WorktreeManager {
+    /// Materialize one repository at an exact path inside a multi-directory
+    /// workspace. The branch name is derived independently from the mount, so
+    /// changing a source's display path does not change its Git identity.
+    pub fn create_workspace_checkout(
+        &self,
+        workspace_slug: &str,
+        base_branch: &str,
+        destination: &Path,
+        isolation: Isolation,
+    ) -> Result<NamedBranchCheckout, WorktreeError> {
+        let _creation = self.lock_creation()?;
+        if destination.exists() {
+            return Err(WorktreeError::Refused(format!(
+                "{} already exists",
+                destination.display()
+            )));
+        }
+        let backend = self.backend(isolation)?;
+        let repo = git2::Repository::open(&self.repo_path)?;
+        let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
+        let name = self.unique_checkout_name(workspace_slug, |candidate| {
+            self.branch_taken(&repo, candidate)
+        })?;
+        let branch = self.branch_name(&name);
+        repo.branch(&branch, &base_commit, false)?;
+        if let Err(error) = backend.materialize(&self.repo_path, &branch, destination) {
+            if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
+                let _ = created.delete();
+            }
+            return Err(error);
+        }
+        let teardown = BranchTeardown::DeletesBranch;
+        record_branch_teardown(destination, teardown)?;
+        Ok(NamedBranchCheckout {
+            worktree: Worktree {
+                name,
+                path: destination.to_path_buf(),
+                recorded_branch: branch,
+                base_branch: base_branch.to_string(),
+            },
+            teardown,
+        })
+    }
+
     /// Create `<prefix>/<slug>` from `base_branch` and materialize a checkout of
     /// it. The name is made unique (`<slug>`, `<slug>-2`, …) so re-dispatching
     /// the same goal — or leftover branches/checkouts from prior tasks — never

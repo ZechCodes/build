@@ -15,7 +15,7 @@
 //! reading exactly what it always read, and the canonical `issue_id` is what
 //! the contract states.
 
-use super::{answer, Answer, Handler, NoParams, WireParams};
+use super::{answer, deferral_placeholder, Answer, Handler, NoParams, WireParams};
 use crate::api::ApiError;
 use crate::app::AppState;
 use crate::{v1_method, v1_methods};
@@ -236,7 +236,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("run.delete", run_delete, RunIdParams, RunAck),
         v1_method!("run.adopt", run_adopt, RunAdoptParams, RunAdoptResult),
         v1_method!("run.release", run_release, RunIdParams, RunAck),
-        v1_method!("run.finish", run_finish, RunFinishParams, FinishedCheckout),
+        v1_method!(
+            "run.finish",
+            run_finish,
+            RunFinishParams,
+            WorkspaceFinishResult
+        ),
         v1_method!("branch.get", branch_get, BranchGetParams, BranchWorkItem),
         v1_method!(
             "branch.dispatch",
@@ -248,7 +253,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             "branch.finish",
             branch_finish,
             BranchFinishParams,
-            BranchFinishResult
+            WorkspaceFinishResult
         ),
         v1_method!(
             "worktree.create",
@@ -260,7 +265,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             "worktree.finish",
             worktree_finish,
             WorktreeFinishParams,
-            ArchivedWorktreeResult
+            WorkspaceFinishResult
         ),
         // ---- end run/branch/worktree
     ]
@@ -1201,8 +1206,8 @@ mod issue_plan_tests {
 //
 // Every mutation here answers with the run view the pre-facade implementation
 // already built — [`RunView`] names its shape — except the ones that answer
-// about a checkout instead ([`ArchivedWorktreeResult`],
-// [`CreatedWorktreeResult`], [`BranchFinishResult`], [`DispatchedAgentResult`])
+// about a checkout instead ([`WorkspaceFinishResult`],
+// [`CreatedWorktreeResult`], [`DispatchedAgentResult`])
 // and the two that only acknowledge ([`RunAck`]). `run.create`, `run.abandon`,
 // `run.delete`, `run.finish`, `branch.dispatch`, `branch.finish`,
 // `worktree.create` and `worktree.finish` hand their git to the off-lock
@@ -1366,7 +1371,12 @@ pub struct RunAdoptParams {
 pub struct RunFinishParams {
     pub run_id: String,
     /// How the checkout is retired: `delete`, `cleanup`, `push`, or `merge`.
-    pub action: String,
+    ///
+    /// Optional since the finish became the workspace's: the workspace decides
+    /// what retiring it means, and callers that still send an action are
+    /// accepted unchanged rather than refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1421,8 +1431,10 @@ pub struct WorktreeCreateParams {
 pub struct WorktreeFinishParams {
     pub project_id: String,
     pub worktree_id: String,
-    /// `delete`, `cleanup`, `push`, or `merge`.
-    pub action: String,
+    /// `delete`, `cleanup`, `push`, or `merge`. Optional for the same reason
+    /// [`RunFinishParams::action`] is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 // --------------------------------------- run/branch/worktree: results ---
@@ -1554,31 +1566,6 @@ pub struct UncommittedStat {
     pub deletions: u64,
 }
 
-/// A checkout filed away: the durable record `worktree.finish`, `run.finish`
-/// and `branch.finish` all answer with.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ArchivedWorktreeResult {
-    pub worktree_id: String,
-    pub name: String,
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    pub head_sha: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upstream: Option<String>,
-    /// Commits the remote did not have. Absent when the branch tracked
-    /// nothing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unpushed: Option<u64>,
-    pub dirty_files: u64,
-    pub uncommitted: UncommittedStat,
-    /// `delete`, `cleanup`, `push`, or `merge`.
-    pub action: String,
-    /// Absent while the finish is still pending its destructive step.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub archived_at: Option<String>,
-}
-
 /// What a checkout carries, as the inbox counts it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkItemStatView {
@@ -1662,24 +1649,28 @@ pub struct BranchWorkItem {
     pub run: Option<Box<RunView>>,
 }
 
-/// A checkout that was already gone when its finish ran: there was nothing
-/// left to file away, so the run was retired from memory alone.
+/// One repository a finish tried to push, and whether it went.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct CheckoutAlreadyGone {
-    /// Always `true`.
-    pub archived: bool,
+pub struct FinishedRepository {
+    pub directory_id: String,
+    pub pushed: bool,
+    /// Why it did not push. Absent when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
-/// What Done answers: the durable record of the checkout it filed away, or —
-/// when the directory had already gone — the bare acknowledgement that the
-/// run was retired without one.
+/// What Done answers, for every one of its spellings.
+///
+/// `run.finish`, `branch.finish` and `worktree.finish` all resolve to the
+/// workspace behind the id they were given and run the same finish
+/// (`AppState::workspace_finish_legacy`), so all three answer this: whether
+/// the whole workspace came to rest, and what became of each repository in
+/// it. The old per-checkout archive record went with the per-checkout finish
+/// that produced it.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum FinishedCheckout {
-    /// Named first: only this variant carries `archived`, and only the other
-    /// carries `worktree_id`, so neither reads as the other.
-    Vanished(CheckoutAlreadyGone),
-    Archived(Box<ArchivedWorktreeResult>),
+pub struct WorkspaceFinishResult {
+    pub complete: bool,
+    pub repositories: Vec<FinishedRepository>,
 }
 
 /// Somebody else's adoption of this checkout is already in flight. The asker
@@ -1708,23 +1699,6 @@ pub struct DispatchedAgentResult {
     pub branch: String,
     pub run_id: String,
     pub agent_id: String,
-}
-
-/// Done on a branch: the checkout filed away, and what became of the issue it
-/// was implementing.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BranchFinishResult {
-    pub branch: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    /// The issue this branch landed, archived with it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_id: Option<String>,
-    pub issue_archived: bool,
-    /// An issue whose implementation this finish threw away: it is back in
-    /// the inbox, told which branch it lost.
-    pub issue_abandoned: bool,
-    pub worktree: FinishedCheckout,
 }
 
 /// A bare worktree, cut.
@@ -1793,7 +1767,11 @@ const CONFLICT: [&str; 8] = [
 
 /// The thing named does not exist here, though the message does not start
 /// with the word the generic classifier looks for.
-const NOT_FOUND: [&str; 1] = ["no checkout of this project is on branch"];
+const NOT_FOUND: [&str; 2] = [
+    "no checkout of this project is on branch",
+    // Done, given an id that resolves to no workspace.
+    "no matching workspace",
+];
 
 /// A word in the request is not one this bridge knows. `unknown <thing>`
 /// otherwise reads as a missing entity, which these are not.
@@ -1892,8 +1870,12 @@ fn run_release(app: &mut AppState, params: RunIdParams) -> Result<Answer<RunAck>
 fn run_finish(
     app: &mut AppState,
     params: RunFinishParams,
-) -> Result<Answer<FinishedCheckout>, ApiError> {
-    answer(app.run_finish(&params.wire())).map_err(refine)
+) -> Result<Answer<WorkspaceFinishResult>, ApiError> {
+    answer(
+        app.workspace_finish_legacy(&params.wire())
+            .map(deferral_placeholder),
+    )
+    .map_err(refine)
 }
 
 fn branch_get(
@@ -1913,8 +1895,12 @@ fn branch_dispatch(
 fn branch_finish(
     app: &mut AppState,
     params: BranchFinishParams,
-) -> Result<Answer<BranchFinishResult>, ApiError> {
-    answer(app.branch_finish(&params.wire())).map_err(refine)
+) -> Result<Answer<WorkspaceFinishResult>, ApiError> {
+    answer(
+        app.workspace_finish_legacy(&params.wire())
+            .map(deferral_placeholder),
+    )
+    .map_err(refine)
 }
 
 fn worktree_create(
@@ -1927,8 +1913,12 @@ fn worktree_create(
 fn worktree_finish(
     app: &mut AppState,
     params: WorktreeFinishParams,
-) -> Result<Answer<ArchivedWorktreeResult>, ApiError> {
-    answer(app.worktree_finish(&params.wire())).map_err(refine)
+) -> Result<Answer<WorkspaceFinishResult>, ApiError> {
+    answer(
+        app.workspace_finish_legacy(&params.wire())
+            .map(deferral_placeholder),
+    )
+    .map_err(refine)
 }
 
 // ----------------------------------------- run/branch/worktree: tests ---

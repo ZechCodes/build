@@ -146,6 +146,74 @@ fn late_project_publication_does_not_recreate_a_removed_slot() {
 }
 
 #[test]
+fn workspace_membership_change_rejects_late_old_publication() {
+    let mut cache = DiffCache::default();
+    let old_repositories = vec!["/old".into()];
+    let new_repositories = vec!["/new".into()];
+    cache.sync_workspace_summaries(&[("workspace-1".to_string(), old_repositories.clone())]);
+    let old_key =
+        DiffCacheKey::WorkspaceSummary("workspace-1".to_string(), old_repositories.clone());
+    let old_claim = cache.claim_refresh(old_key).unwrap();
+    cache.sync_workspace_summaries(&[("workspace-1".to_string(), new_repositories.clone())]);
+    let new_key =
+        DiffCacheKey::WorkspaceSummary("workspace-1".to_string(), new_repositories.clone());
+    let new_claim = cache.claim_refresh(new_key).unwrap();
+    cache.publish_refresh(
+        new_claim,
+        Some(DiffCacheEntry::WorkspaceSummary {
+            workspace_id: "workspace-1".to_string(),
+            repositories: new_repositories.clone(),
+            summary: json!({"pushes": 2}),
+        }),
+        Instant::now(),
+    );
+
+    assert!(cache
+        .publish_refresh(
+            old_claim,
+            Some(DiffCacheEntry::WorkspaceSummary {
+                workspace_id: "workspace-1".to_string(),
+                repositories: old_repositories,
+                summary: json!({"pushes": 1}),
+            }),
+            Instant::now(),
+        )
+        .is_empty());
+    assert_eq!(
+        cache
+            .workspace_summary("workspace-1", &new_repositories)
+            .unwrap()
+            .value,
+        &json!({"pushes": 2})
+    );
+}
+
+#[test]
+fn removed_workspace_rejects_late_summary_publication() {
+    let mut cache = DiffCache::default();
+    let repositories = vec!["/repo".into()];
+    cache.sync_workspace_summaries(&[("workspace-1".to_string(), repositories.clone())]);
+    let key = DiffCacheKey::WorkspaceSummary("workspace-1".to_string(), repositories.clone());
+    let claim = cache.claim_refresh(key).unwrap();
+    cache.sync_workspace_summaries(&[]);
+
+    assert!(cache
+        .publish_refresh(
+            claim,
+            Some(DiffCacheEntry::WorkspaceSummary {
+                workspace_id: "workspace-1".to_string(),
+                repositories: repositories.clone(),
+                summary: json!({"pushes": 1}),
+            }),
+            Instant::now(),
+        )
+        .is_empty());
+    assert!(cache
+        .workspace_summary("workspace-1", &repositories)
+        .is_none());
+}
+
+#[test]
 fn invalidated_run_repopulation_is_not_a_file_change() {
     let mut cache = DiffCache::default();
     let key = DiffCacheKey::RunStat("run-1".to_string());

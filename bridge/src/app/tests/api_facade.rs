@@ -124,12 +124,6 @@ const INTERNAL_REFUSALS: &[(&str, usize)] = &[
     ("git.branch_delete", 1),
     ("issue.diff", 1),
     ("issue.stage_diff", 1),
-    ("issue.send_notes", 1),
-    ("plan.send_notes", 1),
-    ("issue.set_auto_advance", 1),
-    ("issue.stage_fix", 1),
-    ("issue.request_changes", 1),
-    ("issue.git_action", 1),
     ("entity.dismiss", 1),
     ("triage.override", 1),
 ];
@@ -138,6 +132,7 @@ const INTERNAL_REFUSALS: &[(&str, usize)] = &[
 /// under `~`, a remote to clone, a settings write — so only the empty probe
 /// is sent to them.
 const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
+    "fs.mkdir",
     "project.add",
     "project.clone",
     "project.create",

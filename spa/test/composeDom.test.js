@@ -62,6 +62,9 @@ beforeEach(async () => {
   vi.resetModules();
   localStorage.clear();
   document.body.innerHTML = bodyHtml;
+  const composeHost = document.createElement("div");
+  composeHost.id = "compose";
+  document.getElementById("inbox-rail").insertBefore(composeHost, document.getElementById("inbox-list"));
   document.body.className = "";
   location.hash = "";
   feedItems = [{ kind: "branch", project_id: "p1", project: "relaydb", branch: "build/login", run_id: "run-1" }];
@@ -315,10 +318,10 @@ describe("the advanced panel", () => {
     $("#compose-advanced").click();
   };
 
-  it("offers the projects, the two things work can be, and the branches there are", () => {
+  it("offers projects and branches without an Issue destination", () => {
     openAdvanced();
     expect([...document.querySelectorAll("#compose-project option")].map((option) => option.value)).toEqual(["p1", "p2"]);
-    expect($('[data-compose-kind="issue"]')).toBeTruthy();
+    expect($('[data-compose-kind="issue"]')).toBeNull();
     expect($('[data-compose-kind="branch"]')).toBeTruthy();
     $('[data-compose-kind="branch"]').click();
     expect([...document.querySelectorAll("#compose-branches option")].map((option) => option.value)).toEqual(["build/login"]);
@@ -337,21 +340,20 @@ describe("the advanced panel", () => {
     expect($("#compose-choice-effort")).toBeTruthy();
   });
 
-  it("files an inert issue and opens it, without troubling the router", async () => {
+  it("dispatches the default branch destination without troubling the router", async () => {
     openAdvanced();
     type("#compose-text", "add a /health endpoint");
     $("#compose-project").value = "p2";
     $("#compose-project").dispatchEvent(new Event("change", { bubbles: true }));
     $("#compose-manual-go").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("issue.create", {
-      goal: "add a /health endpoint",
+    expect(App.call).toHaveBeenCalledWith("branch.dispatch", {
+      instruction: "add a /health endpoint",
       project_id: "p2",
-      dispatch: false,
       provider: "claude",
     });
     expect(App.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
-    expect(location.hash).toBe("#/project/p1/issue/iss-3");
+    expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
   });
 
   it("dispatches a branch, with the harness the panel names", async () => {

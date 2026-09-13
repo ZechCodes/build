@@ -13,9 +13,16 @@
 // the view's draft, not the DOM's.
 
 import { esc } from "./text.js";
-import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_X } from "./icons.js";
-import { menuButtonMarkup, mountSplitMenu, splitButtonMarkup } from "./splitButton.js";
-import { modelMenuLabel, modelMenuOptions, modelMenuSelection, modelMenuTitle } from "./agentChoice.js";
+import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_SQUARE, ICON_X } from "./icons.js";
+import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
+import {
+  modelMenuLabel,
+  modelMenuSelection,
+  modelMenuTitle,
+  modelSelectorOptions,
+  reasoningSelectorLabel,
+  reasoningSelectorOptions,
+} from "./agentChoice.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -119,37 +126,16 @@ export const composerPartIds = (inputId) => ({
   file: `${inputId}file`,
   sendControl: `${inputId}sendcontrol`,
   modelMenu: `${inputId}model`,
+  reasoningMenu: `${inputId}reasoning`,
   context: `${inputId}context`,
 });
 
-/// The two ways one message can reach an agent that is already working.
-///
-/// The default is the send it has always been: the message is queued and the
-/// agent takes it at the next step of the turn it is running — which, for a
-/// carrier that can be steered mid-turn, usually decides that turn's outcome.
-/// The alternative stops the turn first. It is never the default press: the
-/// queued send costs nothing and mostly gets there anyway, so the human reaches
-/// for the interrupt deliberately or not at all.
-export const SEND_OPTION = {
-  id: "send",
-  label: "Send",
-  description: "Hand this message to the agent at its next step",
-  busyLabel: "sending…",
-};
-export const INTERRUPT_SEND_OPTION = {
-  id: "interrupt_send",
-  menuLabel: "Interrupt & send",
-  description: "Stop what the agent is doing now and hand it this message",
-  busyLabel: "sending…",
-};
-
-/// The send control in its two shapes, keyed by whether there is a turn to
-/// stop. The button is named `sendId` in both, so one lookup wires either.
-export function sendControlHtml({ sendId, canInterrupt = false }) {
-  if (!canInterrupt) {
-    return `<button class="btn primary composer-send" id="${esc(sendId)}"><span class="composer-send-label">Send</span>${ICON_ARROW_RIGHT}</button>`;
-  }
-  return splitButtonMarkup([SEND_OPTION, INTERRUPT_SEND_OPTION], { variant: "primary", primaryId: sendId });
+/// The right-hand action is an arrow while there is something to send. When a
+/// turn is active and the draft is empty, the same stable button becomes Stop.
+export function sendControlHtml({ sendId, canInterrupt = false, hasDraft = false }) {
+  const stopping = canInterrupt && !hasDraft;
+  const label = stopping ? "Stop agent" : "Send message";
+  return `<button type="button" class="btn primary composer-send${stopping ? " is-stop" : ""}" id="${esc(sendId)}" data-action="${stopping ? "stop" : "send"}" aria-label="${label}" title="${label}">${stopping ? ICON_SQUARE : ICON_ARROW_RIGHT}</button>`;
 }
 
 /// The composer's markup. `attachable` adds the paperclip and the tray; a
@@ -178,7 +164,10 @@ export function composerHtml({
       ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
       <textarea id="${esc(inputId)}" rows="1" placeholder="${esc(placeholder)}"></textarea>
       <div class="composer-bar">
-        ${modelMenu ? `<div class="composer-model" id="${esc(parts.modelMenu)}"></div>` : ""}
+        ${modelMenu ? `<div class="composer-choice-controls">
+          <div class="composer-model" id="${esc(parts.modelMenu)}"></div>
+          <div class="composer-reasoning" id="${esc(parts.reasoningMenu)}"></div>
+        </div>` : ""}
         <span class="hint" id="${esc(hintId)}"></span>
         <span class="composer-shortcut" aria-hidden="true">⌘↵</span>
         <div class="composer-actions">
@@ -195,8 +184,8 @@ export function composerHtml({
 
 /// What one painting of the menu says, as one string to compare the next
 /// against.
-const choiceKey = (provider, choice, activeModel) =>
-  [provider, choice.model || "", choice.effort || "", activeModel || ""].join("/");
+const choiceKey = (provider, choice, activeModel, activeEffort) =>
+  [provider, choice.model || "", choice.effort || "", activeModel || "", activeEffort || ""].join("/");
 
 /// Wire the menu on the composer's left: what the NEXT turn will run on.
 ///
@@ -206,36 +195,49 @@ const choiceKey = (provider, choice, activeModel) =>
 /// provider, choice)` paints it; a call that would change nothing repaints
 /// nothing, because a poll must not shut a menu the human just opened.
 export function mountComposerModelMenu(root, { ids, onChoose }) {
-  const slot = root.querySelector(`#${composerPartIds(ids.input).modelMenu}`);
-  if (!slot) return null;
+  const parts = composerPartIds(ids.input);
+  const modelSlot = root.querySelector(`#${parts.modelMenu}`);
+  const reasoningSlot = root.querySelector(`#${parts.reasoningMenu}`);
+  if (!modelSlot || !reasoningSlot) return null;
 
   // What the menu on screen was painted from: the choice, in words, and the
   // catalog it was read out of — which lands after the first paint and brings
   // the models with it.
   let painted = null;
   let paintedCatalog = null;
+  let closeModelMenu = null;
+  let closeReasoningMenu = null;
 
-  const render = (catalog, provider, choice, activeModel) => {
-    painted = choiceKey(provider, choice, activeModel);
+  const render = (catalog, provider, choice, activeModel, activeEffort) => {
+    closeModelMenu?.();
+    closeReasoningMenu?.();
+    painted = choiceKey(provider, choice, activeModel, activeEffort);
     paintedCatalog = catalog;
-    slot.innerHTML = menuButtonMarkup(
-      modelMenuLabel(catalog, provider, choice, activeModel),
-      modelMenuOptions(catalog, provider, choice),
+    const choose = (action) => {
+      const next = modelMenuSelection(action, choice);
+      render(catalog, provider, next, activeModel, activeEffort);
+      onChoose(next);
+    };
+    modelSlot.innerHTML = menuButtonMarkup(
+      modelMenuLabel(catalog, provider, { ...choice, effort: "" }, activeModel),
+      modelSelectorOptions(catalog, provider, choice),
       { title: modelMenuTitle(catalog, provider, choice, activeModel) },
     );
-    mountSplitMenu(slot, {
-      onChoose: (action) => {
-        const next = modelMenuSelection(action, choice);
-        render(catalog, provider, next, activeModel);
-        onChoose(next);
-      },
-    });
+    closeModelMenu = mountSplitMenu(modelSlot, { onChoose: choose }).closeMenu;
+    const reasoningOptions = reasoningSelectorOptions(catalog, provider, choice, activeModel, activeEffort);
+    reasoningSlot.hidden = reasoningOptions.length === 0;
+    reasoningSlot.innerHTML = reasoningOptions.length
+      ? menuButtonMarkup(reasoningSelectorLabel(catalog, provider, choice, activeModel, activeEffort), reasoningOptions, { title: "Reasoning level for the next turn" })
+      : "";
+    closeReasoningMenu = reasoningOptions.length
+      ? mountSplitMenu(reasoningSlot, { onChoose: choose }).closeMenu
+      : null;
   };
 
   return {
-    set(catalog, provider, choice, activeModel = "") {
-      if (choiceKey(provider, choice, activeModel) === painted && catalog === paintedCatalog) return;
-      render(catalog, provider, choice, activeModel);
+    set(catalog, provider, choice, activeModel = "", activeEffort = "") {
+      if (choiceKey(provider, choice, activeModel, activeEffort) === painted && catalog === paintedCatalog) return;
+      render(catalog, provider, choice, activeModel, activeEffort);
     },
   };
 }

@@ -15,10 +15,19 @@
 //! under `fixtures/api/v1/`, which is a version bump.
 //!
 //! NOT here, by design: `session.hello`, `ping`, `bridge.stats`, `term.*`,
-//! `rtc.*`, `agent.attach` and `agent.start`. Each needs the caller's own
-//! `SessionSender` (somewhere to push to) or the shared `Arc` (a producer or
-//! pump to spawn), which `dispatch` deliberately has no access to; they stay
-//! on the legacy route in `app/rpc.rs::dispatch_frame`.
+//! `rtc.*`, `agent.attach`, `agent.start` and `agent.interrupt`. Each needs
+//! the caller's own `SessionSender` (somewhere to push to) or the shared
+//! `Arc` (a producer or pump to spawn), which `dispatch` deliberately has no
+//! access to; they stay on the legacy route in `app/rpc.rs::dispatch_frame`.
+//!
+//! NOT here, for now: the `workspace.*` family, which landed upstream after
+//! this facade was written. `tests/api_contract.rs`'s `LEGACY_METHODS` names
+//! every one of them so the omission stays a decision.
+//!
+//! Also note the retirement guard at the top of `AppState::route`: planning
+//! was retired upstream by keeping its verbs served and making the mutating
+//! ones refuse, so `issue.approve` and friends never reach the handlers
+//! registered for them here. Their reads still do.
 //!
 //! Families: [`board`] (`board.list`, `archive.list`, `archived.list`,
 //! `project.*`, `capture.*`, `settings.*`, `models.list`), [`thread`]
@@ -165,6 +174,23 @@ pub fn answer<R: DeserializeOwned>(outcome: Result<Value, String>) -> Result<Ans
         value,
         shape: PhantomData,
     })
+}
+
+/// Read a deferring verb's lock-held acknowledgement as the placeholder it is.
+///
+/// Most deferring verbs answer `Value::Null` under the lock and let the drain
+/// produce the real value; the workspace finish answers
+/// `{"workspace_id": ..., "pending": true}` instead. Neither is what a client
+/// sees — `AppState::apply_deferred` replaces both — so a handler over that
+/// second spelling maps it here, and [`answer`] gets the same "nothing to
+/// check yet" it gets from every other deferring verb. The declared result
+/// type is unchanged, and [`Handler::check_result`] still holds the value the
+/// drain publishes to it.
+pub fn deferral_placeholder(value: Value) -> Value {
+    match value.get("pending") {
+        Some(Value::Bool(true)) => Value::Null,
+        _ => value,
+    }
 }
 
 /// The params of a v1 verb, as the pre-facade implementation still reads

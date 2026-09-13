@@ -12,6 +12,7 @@
 // tests; mountGitPane is the only DOM-touching entry point.
 
 import { esc } from "./text.js";
+import { directoryCacheId } from "./directoryScope.js";
 import { gitToolbarHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
 import {
   changesRailEntries,
@@ -53,8 +54,40 @@ import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
+import { createReviewPlug } from "./changesReview.js";
 
 export const GIT_PANE_POLL_MS = 1600;
+
+/** Workspace directories review everything not represented by their push
+ * destination. The plug is created here so every workspace Git pane gets the
+ * aggregate without each hosting view having to remember special wiring. */
+export function createWorkspaceReview({ scope, callRpc, navigate = null, viewingContext = null, onBaseChange = () => {} }) {
+  let base = { kind: "empty", label: null };
+  const plug = createReviewPlug({
+    navigate,
+    viewingContext,
+    entity: scope.workspace_id,
+    cacheEntity: directoryCacheId(scope),
+    fetchDiff: async (ifDiffKey) => {
+      const payload = await callRpc("git.unpushed", {
+        ...scope,
+        ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}),
+      });
+      if (!payload.unchanged && payload.base) {
+        const changed = payload.base.kind !== base.kind || payload.base.label !== base.label;
+        base = payload.base;
+        if (changed) onBaseChange();
+      }
+      return { ...payload, commentable: false };
+    },
+  });
+  return {
+    ...plug,
+    getBase: () => base.label || (base.kind === "published_ancestor" ? "published history" : "Not pushed yet"),
+    getRailSubtitle: () =>
+      base.label ? `vs ${base.label}` : base.kind === "published_ancestor" ? "since published history" : "Not pushed yet",
+  };
+}
 
 // ---- repo-management decision helpers (v2) -----------------------------
 // Pure, exported, and load-bearing in the controller below. Every one tolerates
@@ -256,6 +289,7 @@ export function statusAfterPoll(answer, held) {
  *  scope carries — a worktree scope names its project too, and keying on that
  *  would pool every worktree's draft with the project's own. */
 export function gitDraftKey(scope) {
+  if (scope.workspace_id) return directoryCacheId(scope);
   if (scope.run_id) return `run:${scope.run_id}`;
   if (scope.worktree_id) return `worktree:${scope.worktree_id}`;
   return `project:${scope.project_id || ""}`;
@@ -383,6 +417,9 @@ export function mountGitPane(
     viewingContext = null,
   } = {},
 ) {
+  if (!review && scope?.workspace_id && scope?.source_id) {
+    review = createWorkspaceReview({ scope, callRpc, navigate, viewingContext, onBaseChange: () => render() });
+  }
   const parsedDiffs = createParsedDiffCache();
   const viewport = createDiffViewport({ repaint: () => renderAndFetch() });
   const openFile = (navigate && navigate.openFile) || null;
@@ -404,7 +441,7 @@ export function mountGitPane(
   const showCache = new Map(); // hash → git.show payload (commits are immutable)
   // The local cache's address for this checkout. A primary checkout names no
   // entity, so it takes no part — nothing to key by, nothing evicted with it.
-  const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
+  const cacheEntityId = directoryCacheId(scope);
   const cacheAddress = (kind, sub) =>
     cacheEntityId ? cacheScope?.address({ entityId: cacheEntityId, kind, sub }) || null : null;
   const readThroughCache = async (kind, sub) => {
@@ -891,7 +928,7 @@ export function mountGitPane(
       more: pagedMore ?? lastLog.more,
     };
     paintRail({
-      review: review ? { base: review.getBase() } : null,
+      review: review ? { base: review.getBase(), subtitle: review.getRailSubtitle?.() } : null,
       status: lastStatus,
       log: mergedLog,
       selected,
@@ -1558,7 +1595,11 @@ export function mountGitPane(
   const watcher = watchChanges({
     refresh: poll,
     intervalMs: GIT_PANE_POLL_MS,
-    entity: scope.run_id || scope.worktree_id || null,
+    entity: scope.workspace_id || scope.run_id || scope.worktree_id || null,
+    // A workspace source is watched at its own cadence rather than standing
+    // down to the safety poll: the bridge does not push for every source in a
+    // multi-source workspace, so the interval stays where it has always been.
+    keepPolling: Boolean(scope.workspace_id),
     // Focus tier. A project's own checkout is no entity the bridge names, so
     // that scope watches the board — where `state` is all there is, and the
     // manager trims the ask to it.

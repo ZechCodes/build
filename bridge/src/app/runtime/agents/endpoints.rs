@@ -8,7 +8,6 @@ use crate::app::{
 use crate::app::{Tab, TabRole};
 use crate::carrier::SessionSender;
 use crate::harness::harness_for;
-#[cfg(test)]
 use crate::harness::AgentStatus;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::reaper::Retirement;
@@ -188,6 +187,14 @@ pub(in crate::app) fn agent_start(
 ) -> Result<Value, String> {
     let agent = {
         let mut s = timer.lock(state);
+        let requested_entity = params
+            .get("id")
+            .or_else(|| params.get("run_id"))
+            .or_else(|| params.get("plan_id"))
+            .and_then(Value::as_str);
+        if requested_entity.is_some_and(|entity_id| s.plans.contains_key(entity_id)) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         let agent = s.addressed_agent(params)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
@@ -224,6 +231,67 @@ pub(in crate::app) fn agent_start(
         "term_id": agent_tab_id(&agent.agent_id),
         "agent_id": agent.agent_id,
         "notified": agent.has_unread,
+    }))
+}
+
+/// Stop the turn running in one exact agent session without ending that
+/// session or posting anything to its conversation.
+pub(in crate::app) fn agent_interrupt(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let entity_id = require_str(params, "entity_id")?;
+    let agent_id = require_str(params, "agent_id")?;
+    let conversation_id = require_str(params, "conversation_id")?;
+    let session = {
+        let s = timer.lock(state);
+        if s.plans.contains_key(&entity_id) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
+        let address = s.resolve_conversation_address(&entity_id, Some(&agent_id))?;
+        if address.conversation_id != conversation_id {
+            return Err(format!(
+                "agent.interrupt: stale conversation_id {conversation_id}; agent {agent_id} is bound to {}",
+                address.conversation_id
+            ));
+        }
+        let root = s.entity_agent_root(&entity_id)?;
+        let tab = s
+            .session_registry
+            .agent_snapshot(&TabKey::agent(&root, &agent_id))
+            .ok_or_else(|| "agent.interrupt: this agent has no running session".to_string())?;
+        let exact = tab.role.agent() == Some((entity_id.as_str(), agent_id.as_str()))
+            && tab.instance.as_ref().is_some_and(|instance| {
+                instance.entity_id == entity_id
+                    && instance.agent_id == agent_id
+                    && instance.conversation_id == conversation_id
+                    && instance.checkout == root.display().to_string()
+            });
+        if !exact {
+            return Err(
+                "agent.interrupt: the running session does not match this conversation".to_string(),
+            );
+        }
+        if !tab.live || matches!(tab.session.status(), AgentStatus::Ended { .. }) {
+            return Err("agent.interrupt: this agent has no running session".to_string());
+        }
+        if !matches!(tab.session.status(), AgentStatus::Working) {
+            return Err("agent.interrupt: this agent is not running a turn".to_string());
+        }
+        if !tab.session.can_interrupt() {
+            return Err("agent.interrupt: this running turn cannot be interrupted".to_string());
+        }
+        Arc::clone(&tab.session)
+    };
+    session
+        .interrupt()
+        .map_err(|error| format!("agent.interrupt: {error}"))?;
+    Ok(json!({
+        "entity_id": entity_id,
+        "agent_id": agent_id,
+        "conversation_id": conversation_id,
+        "interrupted": true,
     }))
 }
 
@@ -733,10 +801,7 @@ impl AppState {
             return Err("agent.add: creation_id is too long".to_string());
         }
         if self.plans.contains_key(&entity_id) {
-            return Err(format!(
-                "agent.add: {entity_id} is an issue, and an issue carries exactly one agent \
-                 session — implement it to hand the work to a new agent on a branch"
-            ));
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
         }
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.add: unknown entity {entity_id}"));
@@ -828,6 +893,9 @@ impl AppState {
     /// menu offers.
     pub(crate) fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        if self.plans.contains_key(&entity_id) {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         let requested_agent = named_agent_id(params)?;
         let agent = self
             .entity_agents(&entity_id)?
@@ -952,10 +1020,7 @@ impl AppState {
         let entity_id = require_str(params, "entity_id")?;
         let agent_id = require_str(params, "agent_id")?;
         if self.plans.contains_key(&entity_id) {
-            return Err(format!(
-                "agent.remove: {entity_id} is an issue, and its one agent is the issue's own \
-                 conversation — abandon the issue instead"
-            ));
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
         }
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.remove: unknown entity {entity_id}"));
@@ -1111,6 +1176,10 @@ impl AppState {
                 .clone()
                 .or(next_start.model)
                 .unwrap_or_default(),
+            "active_effort": agent
+                .active_effort
+                .clone()
+                .unwrap_or_default(),
             "state": if live {
                 crate::agent::AgentLifecycle::Live.as_str()
             } else {
@@ -1190,8 +1259,8 @@ impl AppState {
                 self.record_agent_resume_id(owner, agent_id, Some(named));
             }
         }
-        if let Some(running) = report.model {
-            self.record_agent_active_model(owner, agent_id, Some(running));
+        if report.model.is_some() {
+            self.record_agent_runtime_choice(owner, agent_id, report.model, report.effort);
         }
     }
 }

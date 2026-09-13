@@ -2,8 +2,7 @@ use crate::api::ApiError;
 use crate::app::runtime::lifecycle::{LifecycleOutcome, WorktreeLifecycleJob};
 use crate::app::{
     diff_file_edited_at, diff_file_rows, diff_json, entity_ids_of, sha256_hex, worktree_diff_json,
-    AppState, DeferredGit, DiffCacheEntry, FinishEpilogue, FinishKind, WorktreeFinishJob,
-    WorktreeFinishOutcome,
+    AppState, DeferredGit,
 };
 use crate::isolation::{Isolation, IsolationAvailability};
 use crate::lifecycle::{PendingRow, WorktreeChange};
@@ -34,11 +33,6 @@ pub(in crate::app) enum DeferredWork {
     /// One lifecycle verb's git — `git worktree add`, a checkpoint, a scan —
     /// and the row reserved on the board until it returns.
     Lifecycle(Box<WorktreeLifecycleJob>),
-    /// A claimed finish and the bookkeeping still owed once its git returns.
-    Finish {
-        job: Box<WorktreeFinishJob>,
-        epilogue: FinishEpilogue,
-    },
     /// One `git.*` verb against one resolved checkout.
     Git(Box<DeferredGit>),
     /// One diff to render for a review surface.
@@ -91,7 +85,7 @@ impl DeferredDone {
                 *result = Ok(value);
             }
             DeferredOutcome::Watch(reply) => *reply = value,
-            DeferredOutcome::Lifecycle(_) | DeferredOutcome::Finish { .. } => {
+            DeferredOutcome::Lifecycle(_) => {
                 panic!("only a git verb, a read or a watch answers a value of its own")
             }
         }
@@ -103,10 +97,6 @@ impl DeferredWork {
     pub(in crate::app) fn run(self) -> DeferredOutcome {
         match self {
             Self::Lifecycle(job) => DeferredOutcome::Lifecycle(Box::new(job.run())),
-            Self::Finish { job, epilogue } => DeferredOutcome::Finish {
-                epilogue: Box::new(epilogue),
-                finished: Box::new(job.run()),
-            },
             Self::Git(git) => {
                 #[cfg(test)]
                 if let Some(gate) = &git.gate {
@@ -162,10 +152,6 @@ impl DeferredWatch {
 /// What the lock-free phase brought back, for the app mutex to write down.
 pub(in crate::app) enum DeferredOutcome {
     Lifecycle(Box<LifecycleOutcome>),
-    Finish {
-        epilogue: Box<FinishEpilogue>,
-        finished: Box<WorktreeFinishOutcome>,
-    },
     Git {
         git: Box<DeferredGit>,
         result: Result<Value, String>,
@@ -390,6 +376,7 @@ pub(in crate::app) struct ProjectListRow {
     pub(in crate::app) worktrees_root: std::path::PathBuf,
     pub(in crate::app) base_branch: String,
     pub(in crate::app) is_git: bool,
+    pub(in crate::app) sources: Vec<crate::app::projects::ProjectSource>,
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) isolation_default: Isolation,
 }
@@ -410,6 +397,15 @@ impl ProjectListRow {
             "base_branch": self.base_branch,
             "is_git": self.is_git,
             "remote": self.is_git.then(|| git_remote_origin(&self.repo_path)).flatten(),
+            "sources": self.sources.iter().enumerate().map(|(index, source)| json!({
+                "id": source.id,
+                "name": source.name,
+                "mount": source.mount,
+                "path": source.path.display().to_string(),
+                "is_git": source.is_git,
+                "base_branch": source.base_branch,
+                "remote": source.remote.clone().or_else(|| (index == 0 && source.is_git).then(|| git_remote_origin(&source.path)).flatten()),
+            })).collect::<Vec<_>>(),
             "isolation": self.isolation,
             "isolation_default": self.isolation_default,
             "isolation_effective": effective,
@@ -524,7 +520,6 @@ impl AppState {
         // moved the tree every diff surface is showing.
         let mutating = match &done {
             DeferredOutcome::Lifecycle(_) => true,
-            DeferredOutcome::Finish { .. } => true,
             DeferredOutcome::Git { git, .. } => git.invalidates,
             DeferredOutcome::Read(_) => false,
             DeferredOutcome::Watch(_) => false,
@@ -532,9 +527,6 @@ impl AppState {
         let queued_before = self.delivery_queue.checkpoint();
         let applied = match done {
             DeferredOutcome::Lifecycle(outcome) => self.apply_lifecycle(*outcome),
-            DeferredOutcome::Finish { epilogue, finished } => {
-                self.apply_finish(*epilogue, *finished)
-            }
             DeferredOutcome::Git { git, result } => self.apply_git(&git, result),
             // A read writes nothing back: its answer is the whole result.
             DeferredOutcome::Read(result) => result,
@@ -669,18 +661,6 @@ impl AppState {
         Value::Null
     }
 
-    /// Hand a claimed finish to the drain. The `Ok` returned here is the
-    /// placeholder [`AppState::deferred_work`] documents: whichever drain runs
-    /// the job replaces it with what [`AppState::apply_finish`] answers.
-    pub(in crate::app) fn defer_finish(
-        &mut self,
-        job: Box<WorktreeFinishJob>,
-        epilogue: FinishEpilogue,
-    ) -> Value {
-        self.deferred_work = Some(DeferredWork::Finish { job, epilogue });
-        Value::Null
-    }
-
     /// Put a placeholder on the board for a verb that is about to run git, and
     /// refuse a second verb claiming the same thing while it stands. The row is
     /// visible to every reader from this acquisition until the epilogue
@@ -792,48 +772,6 @@ impl AppState {
         }
         if change.rescan {
             self.rescan_external_worktrees(project_id);
-        }
-    }
-
-    /// Write back what the lock-free git work found: release the claim, take
-    /// the scan it paid for and the record it left, and then run whatever
-    /// bookkeeping the verb that deferred it still owes.
-    pub(in crate::app) fn apply_finish(
-        &mut self,
-        epilogue: FinishEpilogue,
-        outcome: WorktreeFinishOutcome,
-    ) -> Result<Value, String> {
-        self.finishing_worktrees.remove(&epilogue.worktree_id);
-        // The scan the preflight paid for, whichever way the preflight went.
-        // `store_diff_entry` drops it if the project has since gone.
-        if let Some(worktrees) = outcome.scan {
-            self.store_diff_entry(DiffCacheEntry::ExternalScan {
-                project_id: epilogue.project_id.clone(),
-                worktrees,
-            });
-        }
-        // Memory mirrors the store: Archived after a completed finish, Pending
-        // after a failed destructive step (which is the resume point).
-        let finished_path = outcome
-            .record
-            .as_ref()
-            .map(|record| std::path::PathBuf::from(&record.worktree_path));
-        if let Some(record) = outcome.record {
-            self.board.insert_archived(record);
-        }
-        let archived = outcome.result.inspect(|_| {
-            self.reap_orphaned_terminals();
-            // The checkout is archived, so it leaves the scan the preflight
-            // above just stored — which was taken while it still stood.
-            if let Some(path) = &finished_path {
-                self.note_worktree_gone(&epilogue.project_id, path);
-            }
-            self.persist_attention();
-        });
-        match epilogue.kind {
-            FinishKind::Worktree => archived,
-            FinishKind::Run(run) => self.apply_run_finish(run, archived),
-            FinishKind::Branch(branch) => self.apply_branch_finish(branch, archived),
         }
     }
 

@@ -598,6 +598,7 @@ fn default_after_a_native_override_restarts_fresh_before_delivery() {
         SelfReport {
             named: Some("sticky-session".to_string()),
             model: Some("model-a".to_string()),
+            effort: None,
         },
     );
     app.resume_id_probe = Arc::new(|_, _, _| true);
@@ -711,6 +712,7 @@ fn ended_native_session_with_a_changed_choice_restarts_fresh() {
         SelfReport {
             named: Some("ended-session".to_string()),
             model: old_choice.model.clone(),
+            effort: None,
         },
     );
     app.set_agent_model_choice(&run_id, &agent_id, new_choice.clone())

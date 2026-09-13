@@ -21,18 +21,12 @@ describe("the composer action row", () => {
     expect(actions[0]).toContain('id="s"');
   });
 
-  it("keeps the send label addressable so a busy state cannot wipe its icon", () => {
-    expect(markup()).toContain('class="composer-send-label"');
-  });
-
-  it("trails the word with the arrow, the direction a send travels", () => {
+  it("renders send as an icon-only arrow", () => {
     const html = markup();
     const button = html.slice(html.indexOf('class="btn primary composer-send"'));
-    const label = button.indexOf("composer-send-label");
-    const icon = button.indexOf("<svg");
-    expect(label).toBeGreaterThan(-1);
-    expect(icon).toBeGreaterThan(label);
-    expect(button.slice(icon, icon + 200)).toContain("lucide-arrow-right");
+    expect(button.slice(0, 400)).toContain("lucide-arrow-right");
+    expect(button.slice(0, 400)).toContain('aria-label="Send message"');
+    expect(button.slice(0, 400)).not.toContain(">Send<");
   });
 
   it("still renders a plain box where there is no upload path", () => {
@@ -47,34 +41,29 @@ describe("the composer action row", () => {
   });
 });
 
-// A message to a working agent can be handed over two ways — queued for its
-// next step, or after stopping the turn it is running — so where both are
-// possible the send is a split button. Where only one is, it is the button it
-// has always been: a menu of one is not a choice.
+// The action changes with the turn and draft: stop for an interruptible active
+// turn with no draft, otherwise send.
 describe("the send control", () => {
   it("is the plain button, unchanged, where there is nothing to interrupt", () => {
     const html = markup();
-    expect(html).toContain('<button class="btn primary composer-send" id="s">');
+    expect(html).toContain('class="btn primary composer-send" id="s"');
     expect(html).not.toContain("splitbtn");
     expect(html).not.toContain("splitmenu");
   });
 
-  it("is a split button offering the interrupting send where the turn can be stopped", () => {
+  it("is a stop square when a turn can be stopped and the draft is empty", () => {
     const html = markup({ canInterrupt: true });
-    expect(html).toContain('class="splitbtn"');
-    expect(html).toContain('<span class="mt">Interrupt &amp; send</span>');
-    expect(html).toContain("Stop what the agent is doing now and hand it this message");
+    expect(html).toContain('data-action="stop"');
+    expect(html).toContain('aria-label="Stop agent"');
+    expect(html).toContain("lucide-square");
   });
 
   // The default press is the one it always was: queued, and delivered at the
   // agent's next step. Stopping the turn is the alternative you reach for.
-  it("keeps the ordinary send as the default press, still addressable by id", () => {
-    const html = markup({ canInterrupt: true });
-    const primary = html.slice(html.indexOf('class="splitbtn"'), html.indexOf('class="btn primary caret"'));
-    expect(primary).toContain('id="s"');
-    expect(primary).toContain('data-action="send"');
-    expect(primary).toContain(">Send<");
-    expect(primary).not.toContain("interrupt");
+  it("shows send while a working agent has a draft", () => {
+    const html = sendControlHtml({ sendId: "s", canInterrupt: true, hasDraft: true });
+    expect(html).toContain('data-action="send"');
+    expect(html).toContain("lucide-arrow-right");
   });
 
   // The poll swaps the control in place — the composer around it is never
@@ -84,6 +73,6 @@ describe("the send control", () => {
     const parts = composerPartIds("i");
     expect(markup()).toContain(`id="${parts.sendControl}"`);
     expect(sendControlHtml({ sendId: "s", canInterrupt: false })).toContain('id="s"');
-    expect(sendControlHtml({ sendId: "s", canInterrupt: true })).toContain("splitmenu");
+    expect(sendControlHtml({ sendId: "s", canInterrupt: true })).toContain('data-action="stop"');
   });
 });

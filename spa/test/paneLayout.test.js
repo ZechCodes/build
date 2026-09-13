@@ -480,7 +480,7 @@ describe("tab layout primitives", () => {
     // The inbox rail leaves the flow under the same query the panes stack
     // under. Were they different numbers, one of the two transitions would
     // land in a frame sized for the other.
-    const overlay = rulesFor("#inbox-rail").find((rule) => declaration(rule.body, "position") === "fixed");
+    const overlay = rulesFor("#inbox-rail").find((rule) => declaration(rule.body, "position") === "absolute");
     expect(overlay).toBeTruthy();
     expect(enclosingAtRule(overlay.at)).toBe(STACK_QUERY);
     expect(shellWidth(STACK_WIDTH)).toBe(STACK_WIDTH);
@@ -510,17 +510,12 @@ describe("tab layout primitives", () => {
     expect(declaration(rulesFor(".pane-split")[0].body, "position")).toBe("relative");
   });
 
-  it("splits the rail's floor evenly between Changes and Files", () => {
-    // The bar at the bottom of the rail is the rail's own two-way switch, not a
-    // row of pills at the top of a surface: each tab takes half the column and
-    // centres its label in it.
-    const [cell] = cssRules().filter((rule) => rule.selector === ".railtabs .tabs .t");
+  it("gives every branch navigation control the full narrow rail", () => {
+    const [cell] = cssRules().filter((rule) => rule.selector === ".branch-tab");
     expect(cell).toBeTruthy();
-    expect(declaration(cell.body, "flex")).toBe("1 1 0");
+    expect(declaration(cell.body, "width")).toBe("100%");
     expect(declaration(cell.body, "justify-content")).toBe("center");
-    // Half a squeezed rail is narrower than a label: the cell has to give
-    // ground rather than push the bar past the column.
-    expect(declaration(cell.body, "min-width")).toBe("0");
+    expect(declaration(cell.body, "flex-direction")).toBe("column");
   });
 
   it("drawers both panes from one rule, so neither can drift", () => {
@@ -867,7 +862,6 @@ describe("the surface's text column", () => {
   const inRail = (row) => [FLUSH_BODY, ".pane-split", LIST_COLUMN, row];
   const CHAIN = {
     "the toolbar's project name": [".toolbar", ".tb-sel"],
-    "a tab label": [...inRail(".railtabs"), ".tabs .t"],
     "a one-column pane": [".surface #tabbody"],
     "a section heading in the Changes rail": inRail(".crail .rhead"),
     "a changeset in the Changes rail": inRail(".crail .rrow"),
@@ -980,10 +974,10 @@ describe("the view column's seam with the agent rail", () => {
       .filter(([, value]) => value)
       .map(([property, value]) => `${property}:${value}`);
 
-  it("puts the two columns side by side with nothing between them", () => {
+  it("puts branch navigation, the view, and the agent rail side by side with nothing between them", () => {
     const body = baseRule("#view-body");
     expect(body).toBeTruthy();
-    expect(declaration(body.body, "grid-template-columns")).toBe("minmax(0, 1fr) auto");
+    expect(declaration(body.body, "grid-template-columns")).toBe("auto minmax(0, 1fr) auto");
     // A gutter between the tracks would be a strip of page the seam's border
     // could not cover — the columns meet, and the border is the whole divide.
     for (const rule of rulesFor("#view-body")) {
@@ -1065,15 +1059,12 @@ describe("the view column's seam with the agent rail", () => {
 });
 
 describe("the collapsed toolbar's clearance", () => {
-  // The reviewer's screenshots: docked, "Build" sits 8px from the toggle;
-  // collapsed, the project name sat far from the same toggle. One token for
-  // the toggle's width and a clearance derived from it keep the two gaps the
-  // same — whatever is right of the toggle always starts one head-gap away.
-  it("derives the clearance from the toggle, so both states share one gap", () => {
+  // The clearance accounts for the toggle's left offset, width, and the gap
+  // before toolbar content without reserving room for removed branding.
+  it("derives a compact clearance from the toggle", () => {
     expect(strippedSource).toMatch(/--inbox-toggle:28px/);
-    expect(strippedSource).toMatch(
-      /--inbox-open-clear:calc\(10px \+ var\(--inbox-toggle\) \+ 8px - var\(--tbsel-inset\)\)/,
-    );
+    expect(strippedSource).toMatch(/--inbox-open-clear:calc\(48px \+ env\(safe-area-inset-left, 0px\)\)/);
+    expect(strippedSource).toMatch(/\.toolbar \{[^}]*transition:padding-left 240ms cubic-bezier\(\.2,\.8,\.2,1\)/);
     // Both toggles wear the width the clearance is derived from…
     const toggles = cssRules().find((rule) => rule.selector.includes("#inbox-open") && rule.selector.includes("#inbox-collapse"));
     expect(toggles).toBeTruthy();

@@ -6,14 +6,17 @@ use tokio::sync::watch;
 
 pub(super) const BUILD_MCP_TOOL_PREFIX: &str = "mcp__build__";
 
-/// How much of a tool call's input, or of a tool's answer, one summary carries.
+/// How much text a compact machinery preview carries.
 ///
 /// A tool call is machinery, not something the agent said: a `Write` input is an
 /// entire file and a `Read` result can be thousands of lines, and neither
-/// belongs in a conversation row whole. Reasoning and narration are NOT capped
-/// here — those are the agent's own words, and the conversation carries what an
-/// agent says whole.
+/// belongs in a compact status surface whole. Expandable conversation rows use
+/// [`ACTIVITY_TEXT_LIMIT`] instead.
 pub(crate) const TOOL_SUMMARY_LIMIT: usize = 240;
+
+/// Maximum text stored in one expandable conversation activity event.
+/// Whitespace is preserved so opening a row reveals the provider's full shape.
+pub(crate) const ACTIVITY_TEXT_LIMIT: usize = 5_000;
 
 /// How large the activity backlog may grow before a slow subscriber loses the
 /// oldest events. Matches the byte pump's window: a turn that calls forty tools

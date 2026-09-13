@@ -1,4 +1,4 @@
-use super::protocol::TOOL_SUMMARY_LIMIT;
+use super::protocol::{ACTIVITY_TEXT_LIMIT, TOOL_SUMMARY_LIMIT};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,8 +14,20 @@ pub(super) fn spoken(text: Option<&str>) -> Option<String> {
     let text = text.unwrap_or_default().trim();
     match text.is_empty() {
         true => None,
-        false => Some(text.to_string()),
+        false => Some(bounded_activity_text(text)),
     }
+}
+
+/// Expandable activity text, preserving whitespace and clipping only unusually
+/// large provider events. Compact status surfaces use [`one_line`] separately.
+pub(crate) fn bounded_activity_text(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= ACTIVITY_TEXT_LIMIT {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(ACTIVITY_TEXT_LIMIT).collect();
+    clipped.push('…');
+    clipped
 }
 
 /// The one argument each tool is worth reading by — its meat key, matched on
@@ -44,11 +56,12 @@ const TOOL_MEAT_KEYS: &[(&str, &str)] = &[
 /// The name still leads, because the row's icon says only "a tool call" and
 /// `Edit foo.rs` against `Read foo.rs` is a distinction worth five characters.
 pub(super) fn tool_call_summary(tool: &str, input: &Value) -> String {
-    let meat = one_line(&tool_call_meat(tool, input), TOOL_SUMMARY_LIMIT);
-    match meat.is_empty() {
+    let meat = tool_call_meat(tool, input);
+    let summary = match meat.trim().is_empty() {
         true => tool.to_string(),
         false => format!("{tool} {meat}"),
-    }
+    };
+    bounded_activity_text(&summary)
 }
 
 /// What a call is worth reading: its tool's meat key when [`TOOL_MEAT_KEYS`]

@@ -169,11 +169,6 @@ impl DeliveryQueue {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn queued_first(&self) -> Option<&PendingAgentTurn> {
-        self.queued.first()
-    }
-
-    #[cfg(test)]
     pub(in crate::app) fn queued_last(&self) -> Option<&PendingAgentTurn> {
         self.queued.last()
     }

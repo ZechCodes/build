@@ -16,8 +16,8 @@
     "isolation_default": "worktree",
     "isolation_effective": "worktree",
     "isolation_available": {
-      "cow": false,
-      "reason": "this volume does not support copy-on-write cloning (Operation not supported (os error 95))"
+      "rift": false,
+      "reason": "rift is not installed on this device"
     }
   },
   "errors": [

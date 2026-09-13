@@ -41,6 +41,34 @@ const countingCall = () => {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("the shared feed", () => {
+  it("joins board work summaries onto their workspace rows", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "project.list") return { projects: [] };
+      if (method === "workspace.list") {
+        return { workspaces: [{ id: "ws-1" }, { workspace_id: "ws-2" }, { id: "ws-3" }] };
+      }
+      return {
+        items: [],
+        workspace_summaries: [
+          { workspace_id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 3 } },
+          { workspace_id: "ws-2", work_summary: null },
+        ],
+      };
+    });
+    let snapshot = null;
+    subscribeFeed((feed) => {
+      snapshot = feed;
+    });
+
+    await refreshFeed();
+
+    expect(snapshot.workspaces).toEqual([
+      { id: "ws-1", work_summary: { pushes: 2, additions: 8, deletions: 3 } },
+      { workspace_id: "ws-2", work_summary: null },
+      { id: "ws-3" },
+    ]);
+  });
+
   it("gives every project row the id consumers read, from the wire's project_id", async () => {
     App.call = vi.fn(async (method) =>
       method === "project.list"

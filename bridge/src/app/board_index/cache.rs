@@ -12,6 +12,7 @@ pub(in crate::app) enum DiffCacheKey {
     RunStat(String),
     ExternalScan(String),
     PrimarySummary(String),
+    WorkspaceSummary(String, Vec<std::path::PathBuf>),
 }
 
 pub(in crate::app) enum DiffCacheEntry {
@@ -28,6 +29,11 @@ pub(in crate::app) enum DiffCacheEntry {
     },
     PrimarySummary {
         project_id: String,
+        summary: Value,
+    },
+    WorkspaceSummary {
+        workspace_id: String,
+        repositories: Vec<std::path::PathBuf>,
         summary: Value,
     },
 }
@@ -115,6 +121,8 @@ pub(in crate::app) struct DiffCache {
     run_stat_cache: HashMap<String, (Instant, Value)>,
     run_files_changed_at: HashMap<String, String>,
     project_cache: HashMap<String, ProjectCache>,
+    workspace_summary_membership: HashMap<String, Vec<std::path::PathBuf>>,
+    workspace_summary_cache: HashMap<String, (Instant, Vec<std::path::PathBuf>, Value)>,
     diff_refreshes_in_flight: HashSet<DiffCacheKey>,
     diff_refreshes_superseded: HashSet<DiffCacheKey>,
 }
@@ -154,6 +162,46 @@ impl DiffCache {
                 computed_at: *computed_at,
                 value,
             })
+    }
+
+    pub(in crate::app) fn workspace_summary(
+        &self,
+        workspace_id: &str,
+        repositories: &[std::path::PathBuf],
+    ) -> Option<CachedValue<'_>> {
+        self.workspace_summary_cache
+            .get(workspace_id)
+            .filter(|(_, cached_repositories, _)| cached_repositories == repositories)
+            .map(|(computed_at, _, value)| CachedValue {
+                computed_at: *computed_at,
+                value,
+            })
+    }
+
+    pub(in crate::app) fn sync_workspace_summaries(
+        &mut self,
+        memberships: &[(String, Vec<std::path::PathBuf>)],
+    ) {
+        let current = memberships.iter().cloned().collect::<HashMap<_, _>>();
+        self.workspace_summary_cache
+            .retain(|workspace_id, (_, repositories, _)| {
+                current.get(workspace_id) == Some(repositories)
+            });
+        let obsolete = self
+            .diff_refreshes_in_flight
+            .iter()
+            .filter(|key| match key {
+                DiffCacheKey::WorkspaceSummary(workspace_id, repositories) => {
+                    current.get(workspace_id) != Some(repositories)
+                }
+                _ => false,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in obsolete {
+            self.supersede(&key);
+        }
+        self.workspace_summary_membership = current;
     }
 
     pub(in crate::app) fn external_scan(&self, project_id: &str) -> ExternalScanRead<'_> {
@@ -324,6 +372,27 @@ impl DiffCache {
                 project_id,
                 summary,
             } => self.store_primary_summary(&project_id, summary, now),
+            DiffCacheEntry::WorkspaceSummary {
+                workspace_id,
+                repositories,
+                summary,
+            } => {
+                if self.workspace_summary_membership.get(&workspace_id) != Some(&repositories) {
+                    return Vec::new();
+                }
+                let changed = self.workspace_summary_cache.get(&workspace_id).is_none_or(
+                    |(_, previous_repositories, previous)| {
+                        previous_repositories != &repositories || previous != &summary
+                    },
+                );
+                self.workspace_summary_cache
+                    .insert(workspace_id, (now, repositories, summary));
+                if changed {
+                    vec![CacheEffect::BoardChanged]
+                } else {
+                    Vec::new()
+                }
+            }
         }
     }
 

@@ -18,7 +18,7 @@ const THEME_LABEL = { light: "Light", dark: "Dark", system: "System" };
 
 // The page background of each theme, mirrored from styles.css's --bg so the
 // browser's own chrome (iOS status bar, Android toolbar) matches the page.
-const CHROME_COLOR = { light: "#fafafa", dark: "#15171c" };
+const CHROME_COLOR = { light: "#f3f7f8", dark: "#07151b" };
 
 const normalize = (choice) => (THEME_CHOICES.includes(choice) ? choice : "system");
 
@@ -66,8 +66,9 @@ export function prefersDarkQuery() {
 export function applyTheme(theme, doc = document) {
   const resolved = theme === "dark" ? "dark" : "light";
   doc.documentElement.setAttribute("data-theme", resolved);
-  const meta = doc.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", CHROME_COLOR[resolved]);
+  doc.querySelectorAll('meta[name="theme-color"]').forEach((meta) =>
+    meta.setAttribute("content", CHROME_COLOR[resolved]),
+  );
   return resolved;
 }
 
@@ -102,9 +103,9 @@ export function terminalTheme(doc = document) {
  *  "this one is the answer" control in the client. */
 export function themeControlHtml(preference) {
   const current = normalize(preference);
-  return `<div class="segmented" id="themepick">${THEME_CHOICES.map(
+  return `<div class="segmented" id="themepick" role="group" aria-label="Appearance">${THEME_CHOICES.map(
     (choice) =>
-      `<button class="btn seg${choice === current ? " primary" : ""}" data-theme-choice="${choice}">${THEME_LABEL[choice]}</button>`,
+      `<button type="button" class="btn seg${choice === current ? " primary" : ""}" data-theme-choice="${choice}" aria-pressed="${choice === current}">${THEME_LABEL[choice]}</button>`,
   ).join("")}</div>`;
 }
 
@@ -114,10 +115,12 @@ export function bindThemeControl(host, { doc = document, storage = localStorage,
   host.querySelectorAll("[data-theme-choice]").forEach((button) => {
     button.onclick = () => {
       const chosen = saveThemePreference(button.dataset.themeChoice, storage);
-      applyStoredTheme({ doc, storage, media });
-      host.querySelectorAll("[data-theme-choice]").forEach((other) =>
-        other.classList.toggle("primary", other.dataset.themeChoice === chosen),
-      );
+      applyTheme(resolveTheme(chosen, Boolean(media && media.matches)), doc);
+      host.querySelectorAll("[data-theme-choice]").forEach((other) => {
+        const selected = other.dataset.themeChoice === chosen;
+        other.classList.toggle("primary", selected);
+        other.setAttribute("aria-pressed", String(selected));
+      });
     };
   });
 }

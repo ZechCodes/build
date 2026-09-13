@@ -5,8 +5,18 @@
 // (project, issue id), so the ids that survived need a lookup: the feed's
 // items[] rows carry both halves. Pure — the caller supplies the rows.
 
-const branchRouteFor = (row, tab) =>
-  row && row.branch ? { name: "branch", projectId: row.project_id, branch: row.branch, tab: tab || "changes" } : null;
+const branchRouteFor = (row, tab) => {
+  if (row?.workspace_id) {
+    return {
+      name: "workspace",
+      projectId: row.project_id,
+      workspaceId: row.workspace_id,
+      ...(row.source_id ? { sourceId: row.source_id } : null),
+      tab: tab || "changes",
+    };
+  }
+  return row?.branch ? { name: "branch", projectId: row.project_id, branch: row.branch, tab: tab || "changes" } : null;
+};
 
 /** The rows that could be what the URL meant, most likely first: a row in the
  *  project the URL named beats one in any other project. */

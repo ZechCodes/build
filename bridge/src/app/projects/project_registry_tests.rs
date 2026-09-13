@@ -7,6 +7,31 @@ use crate::pty::HarnessSpec;
 use crate::templates::Templates;
 use std::path::{Path, PathBuf};
 
+#[test]
+fn source_path_preserves_exact_checkout_root_for_git_directory_and_file_markers() {
+    for marker_is_file in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let checkout = root
+            .path()
+            .join(if marker_is_file { "worktree" } else { "repo" });
+        let nested = checkout.join("packages/app");
+        std::fs::create_dir_all(&nested).unwrap();
+        if marker_is_file {
+            std::fs::write(checkout.join(".git"), "gitdir: ../metadata\n").unwrap();
+        } else {
+            std::fs::create_dir(checkout.join(".git")).unwrap();
+        }
+        assert_eq!(super::canonical_source_path(&checkout).unwrap(), checkout);
+        assert_eq!(super::canonical_source_path(&nested).unwrap(), nested);
+    }
+}
+
+#[test]
+fn mount_names_are_safe_segments() {
+    assert_eq!(super::safe_mount_name("API service"), "API-service");
+    assert_eq!(super::safe_mount_name("../"), "source");
+}
+
 fn candidate(
     registry: &ProjectRegistry,
     path: PathBuf,
@@ -113,6 +138,7 @@ fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
         repo_path: path.to_path_buf(),
         base_branch: base.to_string(),
         is_git: true,
+        sources: vec![],
         orch: Orchestrator::new(
             path,
             path.join(".registry-test-worktrees").join(&id),

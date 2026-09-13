@@ -50,12 +50,6 @@ impl AppState {
         self.deferred_work = Some(DeferredWork::Lifecycle(Box::new(job)));
         Ok(Value::Null)
     }
-    pub(crate) fn run_lifecycle_here(
-        &mut self,
-        job: WorktreeLifecycleJob,
-    ) -> Result<Value, String> {
-        job.run().apply(self)
-    }
     pub(crate) fn apply_lifecycle(&mut self, outcome: LifecycleOutcome) -> Result<Value, String> {
         outcome.apply(self)
     }

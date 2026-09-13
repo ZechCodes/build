@@ -23,7 +23,9 @@ import { describe, it, expect } from "vitest";
 // The editable file viewer splits file-selection setup from its async read.
 // 69 since cacheSync's snapshot handler became four named steps: the active
 // rows, the eviction, the watcher set, and the entities entering it.
-const RATCHETED_FUNCTIONS = 69;
+// 68 since capture routing is branch-only, so its manual form no longer
+// exceeds the cap.
+const RATCHETED_FUNCTIONS = 68;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

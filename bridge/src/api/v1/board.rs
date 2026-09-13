@@ -114,18 +114,57 @@ pub struct ProjectParams {
     pub project_id: String,
 }
 
+/// One directory a multi-source project is opened over: a host path already
+/// on this device, or a remote to clone into the project's own folder —
+/// exactly one of the two.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectAddParams {
-    /// A host path, absolute or `~`-relative; it must already be a git repo.
-    pub path: String,
-    /// The repository's own checked-out branch when absent.
+pub struct ProjectSourceParams {
+    /// Absolute or `~`-relative. Mutually exclusive with `remote`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A clone url. Mutually exclusive with `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The directory's own last segment (or the url's repo name) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The source's own checked-out branch when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
 }
 
+/// Register a project over what is already on the device.
+///
+/// Two forms. `path` alone is the original one-repository project. `sources`
+/// is the multi-source form: one project over several directories, which the
+/// implementation takes instead of `path` when it is present — which is why
+/// `path` is optional HERE and required THERE. Sending neither is refused by
+/// the implementation with the `missing required param: path` it always sent.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectAddParams {
+    /// A host path, absolute or `~`-relative; it must already be a git repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The repository's own checked-out branch when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+    /// The multi-source form. Takes precedence over `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<ProjectSourceParams>>,
+    /// Names the multi-source project; the first source's name when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Make a project's repository, or open one over several directories the way
+/// [`ProjectAddParams`] describes. `sources`, when present, is what is used
+/// and the rest of these are ignored.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectCreateParams {
     pub name: String,
+    /// The multi-source form. Takes precedence over `parent`/`remote`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<ProjectSourceParams>>,
     /// `main` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
@@ -321,9 +360,12 @@ pub struct AgentModesPatch {
 
 /// What this volume can make, and the sentence a control shows when it
 /// cannot. Always both keys: `reason` is `null` when nothing is locked.
+///
+/// One isolation is named, and it is `rift`: the copy-on-write checkout the
+/// `cow` key stood for was replaced by Rift, so the key was too.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IsolationAvailabilityView {
-    pub cow: bool,
+    pub rift: bool,
     pub reason: Option<String>,
 }
 
@@ -491,9 +533,6 @@ pub struct PrimaryChangesRow {
 pub struct BoardListResult {
     pub items: Vec<FeedItemRow>,
     pub projects: Vec<BoardProjectRow>,
-    pub issues: Vec<IssueRow>,
-    /// The same rows as `issues`, under the name the pre-redesign SPA reads.
-    pub plans: Vec<IssueRow>,
     pub runs: Vec<RunRow>,
     pub external_worktrees: Vec<ExternalWorktreeRow>,
     pub pending: Vec<PendingRow>,
@@ -501,6 +540,24 @@ pub struct BoardListResult {
     /// The rail has not finished looking: an empty list under this flag is a
     /// board still working, not a project with no checkouts.
     pub scanning: bool,
+    /// One entry per workspace, whatever project it belongs to.
+    pub workspace_summaries: Vec<WorkspaceSummaryRow>,
+}
+
+/// What a workspace has done, across every git directory in it. `null` while
+/// the off-lock walk has not answered yet, and for a workspace holding no
+/// repository at all.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceSummaryRow {
+    pub workspace_id: String,
+    pub work_summary: Option<WorkSummaryView>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkSummaryView {
+    pub pushes: u64,
+    pub additions: u64,
+    pub deletions: u64,
 }
 
 /// The line census an archived checkout was carrying when it went.

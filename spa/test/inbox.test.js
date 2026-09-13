@@ -972,8 +972,7 @@ describe("capture rows", () => {
       { id: "p2", name: "dotfiles" },
     ];
     const html = inboxRowHtml(entry, { rerouteKey: entry.key, projects });
-    expect(html).toContain('data-reroute-project="p2"');
-    expect(html).toContain('data-reroute-kind="issue"');
+    expect(html).not.toContain('data-reroute-kind="issue"');
     expect(html).toContain('data-reroute-branch-open="p2"');
     expect(inboxRowHtml(entry, { projects })).not.toContain("data-reroute-project");
   });

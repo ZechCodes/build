@@ -22,6 +22,25 @@ const libsodiumShim = {
 // bundle, and the version.json the plugin below emits beside it.
 const buildVersion = process.env.VITE_BUILD_VERSION || "dev";
 
+/** A versioned bundle is deployable, so it must never inherit the browser-only
+ * local relay fallback. Development builds keep the zero-config localhost
+ * path used by `npm run dev` and local previews. */
+export function validateDeployRelay({ buildVersion, relayUrl }) {
+  if (buildVersion === "dev") return;
+  if (!relayUrl) {
+    throw new Error("VITE_RELAY_URL is required when VITE_BUILD_VERSION stamps a deployable SPA build");
+  }
+  const relay = new URL(relayUrl);
+  if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(relay.hostname)) {
+    throw new Error("VITE_RELAY_URL must not target localhost in a deployable SPA build");
+  }
+}
+
+validateDeployRelay({
+  buildVersion,
+  relayUrl: process.env.VITE_RELAY_URL,
+});
+
 /** Emit static/version.json naming the version this output was built as, so
  *  a running client can ask the server what it is currently serving. */
 export function versionStampPlugin(version) {

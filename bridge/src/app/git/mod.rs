@@ -14,6 +14,11 @@ use super::{require_str, AppState, ReadSubject};
 /// and `git.commit` needs to invalidate afterwards.
 pub(in crate::app) struct GitScope {
     pub(in crate::app) repo_path: std::path::PathBuf,
+    /// Names browser cache entries for a source within a workspace. Legacy
+    /// scopes keep their established keys; workspace directories need the
+    /// enclosing id because different directories can contain identical Git
+    /// state and identical relative paths.
+    cache_namespace: Option<String>,
     /// Set for project scope: the project whose primary checkout this is,
     /// so mutations can invalidate its cached `primary_changes` summary.
     pub(in crate::app) project_id: Option<String>,
@@ -110,6 +115,59 @@ impl GitScope {
             .map(|run| run.base_branch.as_str())
             .or_else(|| self.worktree.as_ref().map(|wt| wt.base_branch.as_str()))
     }
+
+    fn namespace_key(&self, key: &str) -> String {
+        self.cache_namespace.as_ref().map_or_else(
+            || key.to_string(),
+            |namespace| crate::diff::fnv1a64_hex(&format!("{namespace}\0{key}")),
+        )
+    }
+
+    fn namespace_payload_keys(&self, mut payload: Value) -> Value {
+        if self.cache_namespace.is_none() {
+            return payload;
+        }
+        if let Some(key) = payload
+            .get("status_key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        {
+            payload["status_key"] = json!(self.namespace_key(&key));
+        }
+        for file in payload["files"].as_array_mut().into_iter().flatten() {
+            if let Some(key) = file
+                .get("content_key")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            {
+                file["content_key"] = json!(self.namespace_key(&key));
+            }
+        }
+        payload
+    }
+
+    fn status_payload(&self) -> Result<Value, String> {
+        crate::gitgui::status_payload(&self.repo_path)
+            .map(|payload| self.namespace_payload_keys(payload))
+    }
+
+    fn status_payload_unless(&self, held_key: Option<&str>) -> Result<Value, String> {
+        if self.cache_namespace.is_none() {
+            return crate::gitgui::status_payload_unless(&self.repo_path, held_key);
+        }
+        let payload = self.status_payload()?;
+        let current_key = payload["status_key"].as_str().unwrap_or_default();
+        if held_key == Some(current_key) {
+            Ok(json!({ "unchanged": true, "status_key": current_key }))
+        } else {
+            Ok(payload)
+        }
+    }
+
+    fn file_patches(&self, paths: &[String]) -> Result<Value, String> {
+        crate::gitgui::file_patches(&self.repo_path, paths)
+            .map(|payload| self.namespace_payload_keys(payload))
+    }
 }
 
 impl AppState {
@@ -157,12 +215,49 @@ impl AppState {
         ))
     }
 
-    /// Resolve the shared `git.*` scope: the project's primary checkout
+    fn resolve_workspace_git_scope(&mut self, params: &Value) -> Result<Option<GitScope>, String> {
+        let workspace_id = optional_scope_id(params, "workspace_id")?;
+        let source_id = optional_scope_id(params, "source_id")?;
+        if workspace_id.is_none() && source_id.is_none() {
+            return Ok(None);
+        }
+        let workspace_id =
+            workspace_id.ok_or_else(|| "missing required param: workspace_id".to_string())?;
+        let source_id = source_id.ok_or_else(|| "missing required param: source_id".to_string())?;
+        if ["project_id", "run_id", "worktree_id", "task_id"]
+            .iter()
+            .any(|field| params.get(field).is_some())
+        {
+            return Err(
+                "workspace source scope cannot be combined with a legacy git scope".to_string(),
+            );
+        }
+        let directory = self.resolve_workspace_directory(&workspace_id, &source_id)?;
+        if !directory.is_git {
+            return Err("workspace source is not a git repository".to_string());
+        }
+        Ok(Some(GitScope {
+            repo_path: directory.path,
+            cache_namespace: Some(format!(
+                "workspace:{workspace_id}:directory:{}",
+                directory.id
+            )),
+            project_id: None,
+            run: None,
+            worktree: None,
+        }))
+    }
+
+    /// Resolve the shared `git.*` scope: one source in a workspace
+    /// (`workspace_id` + `source_id`), the project's primary checkout
     /// (`project_id` alone), a run's worktree (`run_id`), or one of the
     /// project's external worktrees (`project_id` + `worktree_id`). The repo
     /// path always comes from server state — a client can never name a
     /// filesystem path directly.
     pub(in crate::app) fn resolve_git_scope(&mut self, params: &Value) -> Result<GitScope, String> {
+        if let Some(scope) = self.resolve_workspace_git_scope(params)? {
+            return Ok(scope);
+        }
         let project_id = params
             .get("project_id")
             .and_then(Value::as_str)
@@ -184,6 +279,7 @@ impl AppState {
                 let base_branch = self.base_for(&project_id)?;
                 Ok(GitScope {
                     repo_path: external.path,
+                    cache_namespace: None,
                     project_id: None,
                     run: None,
                     worktree: Some(GitScopeWorktree {
@@ -203,6 +299,7 @@ impl AppState {
                 }
                 Ok(GitScope {
                     repo_path: project.repo_path.clone(),
+                    cache_namespace: None,
                     project_id: Some(project.id.clone()),
                     run: None,
                     worktree: None,
@@ -215,6 +312,7 @@ impl AppState {
                     .ok_or_else(|| "unknown run_id".to_string())?;
                 Ok(GitScope {
                     repo_path: active.worktree.path.clone(),
+                    cache_namespace: None,
                     project_id: None,
                     run: Some(GitScopeRun {
                         run_id,
@@ -304,8 +402,14 @@ impl AppState {
         git: &DeferredGit,
         result: Result<Value, String>,
     ) -> Result<Value, String> {
-        if !git.invalidates || result.is_err() {
+        let result = result.and_then(|value| git.call.settle(self, value));
+        if !git.invalidates || (result.is_err() && !git.call.invalidates_on_error()) {
             return result;
+        }
+        if result.is_ok() && git.params.get("source_id").is_some() {
+            if let Some(workspace_id) = git.params.get("workspace_id").and_then(Value::as_str) {
+                self.reopen_workspace(workspace_id)?;
+            }
         }
         git.call.invalidate(self);
         result
@@ -334,6 +438,26 @@ impl AppState {
             .as_deref()
             .or(scope.worktree.as_ref().map(|w| w.project_id.as_str()));
         project_id.is_some_and(|project_id| self.projects.iter().any(|p| p.id == project_id))
+    }
+
+    /// `git.refs` — every exact local branch, cached remote branch, and tag offered
+    /// by a workspace directory, including its current branch or detached commit.
+    /// The shared resolver keeps this available to the legacy scopes too.
+    pub(crate) fn git_refs(&mut self, params: &Value) -> Result<Value, String> {
+        self.defer_git(params, false, |scope, _| {
+            Ok(crate::gitgui::ref_list(&scope.repo_path)?.into_json())
+        })
+    }
+
+    /// `git.checkout_ref` — check out one exact listed branch or tag. Git's
+    /// overwrite refusal is returned unchanged, leaving the checkout and its
+    /// local changes in place.
+    pub(crate) fn git_checkout_ref(&mut self, params: &Value) -> Result<Value, String> {
+        self.defer_git(params, true, |scope, params| {
+            let full_ref = require_str(params, "full_ref")?;
+            crate::gitgui::checkout_ref(&scope.repo_path, &full_ref)?;
+            scope.status_payload()
+        })
     }
 
     /// `git.log` — one page of commit history for the scoped checkout. Task
@@ -369,7 +493,17 @@ impl AppState {
     pub(crate) fn git_status(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let if_status_key = params.get("if_status_key").and_then(Value::as_str);
-            crate::gitgui::status_payload_unless(&scope.repo_path, if_status_key)
+            scope.status_payload_unless(if_status_key)
+        })
+    }
+
+    /// Every local change not represented by the checkout's push destination.
+    pub(crate) fn git_unpushed(&mut self, params: &Value) -> Result<Value, String> {
+        self.defer_git(params, false, |scope, params| {
+            crate::gitgui::unpushed_payload(
+                &scope.repo_path,
+                params.get("if_diff_key").and_then(Value::as_str),
+            )
         })
     }
 
@@ -378,26 +512,26 @@ impl AppState {
     pub(crate) fn git_diff(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let paths = require_path_list(params)?;
-            crate::gitgui::file_patches(&scope.repo_path, &paths)
+            scope.file_patches(&paths)
         })
     }
 
     /// `git.stage` — stage the given repo-relative paths, answering with the
     /// fresh status payload so the UI repaints without waiting for a poll.
     pub(crate) fn git_stage(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, params| {
+        self.defer_git(params, true, |scope, params| {
             let paths = require_path_list(params)?;
             crate::gitgui::stage_paths(&scope.repo_path, &paths)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
     /// `git.unstage` — the inverse of `git.stage`, same response shape.
     pub(crate) fn git_unstage(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, false, |scope, params| {
+        self.defer_git(params, true, |scope, params| {
             let paths = require_path_list(params)?;
             crate::gitgui::unstage_paths(&scope.repo_path, &paths)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
@@ -410,7 +544,7 @@ impl AppState {
         self.defer_git(params, true, |scope, params| {
             let message = require_str(params, "message")?;
             let commit = crate::gitgui::commit_staged(&scope.repo_path, &message)?;
-            let status = crate::gitgui::status_payload(&scope.repo_path)?;
+            let status = scope.status_payload()?;
             Ok(json!({
                 "hash": commit["hash"],
                 "short": commit["short"],
@@ -478,7 +612,7 @@ impl AppState {
     pub(crate) fn git_fetch(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::fetch(&scope.repo_path)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
@@ -488,7 +622,7 @@ impl AppState {
         self.defer_git(params, true, |scope, params| {
             let mode = params.get("mode").and_then(Value::as_str).unwrap_or("ff");
             crate::gitgui::pull(&scope.repo_path, mode)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
@@ -501,7 +635,7 @@ impl AppState {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             crate::gitgui::push(&scope.repo_path, force)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
@@ -543,7 +677,7 @@ impl AppState {
     pub(crate) fn git_stash(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::stash_push(&scope.repo_path)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
@@ -551,7 +685,7 @@ impl AppState {
     pub(crate) fn git_stash_pop(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::stash_pop(&scope.repo_path)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
@@ -561,7 +695,7 @@ impl AppState {
         self.defer_git(params, true, |scope, params| {
             let paths = require_path_list(params)?;
             crate::gitgui::discard_paths(&scope.repo_path, &paths)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
     }
 
@@ -570,7 +704,18 @@ impl AppState {
     pub(crate) fn git_merge_abort(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::merge_abort(&scope.repo_path)?;
-            crate::gitgui::status_payload(&scope.repo_path)
+            scope.status_payload()
         })
+    }
+}
+
+/// Parse an optional scope id without letting malformed workspace fields fall
+/// through to one of the legacy scope shapes.
+fn optional_scope_id(params: &Value, name: &str) -> Result<Option<String>, String> {
+    match params.get(name) {
+        None => Ok(None),
+        Some(Value::String(value)) if value.is_empty() => Err(format!("{name} cannot be empty")),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("{name} must be a string")),
     }
 }

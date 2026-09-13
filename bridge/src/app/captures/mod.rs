@@ -5,8 +5,6 @@ use serde_json::{json, Value};
 mod routing;
 
 pub use routing::RoutedCapture;
-#[cfg(test)]
-pub(in crate::app) use routing::RoutedIssueDrafting;
 pub(in crate::app) use routing::{capture_after_routing, RouteRecorded};
 
 /// A capture as it ships: the stored record itself, so the wire and the store
@@ -176,6 +174,9 @@ impl AppState {
             .and_then(Value::as_str)
             .unwrap_or(crate::capture::CaptureTarget::Issue.as_str())
             .to_string();
+        if kind == crate::capture::CaptureTarget::Issue.as_str() {
+            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        }
         // A router still deciding this capture would route it a second time on
         // top of the user's own choice.
         self.abandon_router_session(&capture_id);
@@ -189,16 +190,6 @@ impl AppState {
         let text = self.captures[&capture_id].text.clone();
         let rationale = Some("rerouted by the user".to_string());
         match kind.as_str() {
-            // The planning session's disk runs through the drain, so the
-            // capture this answers with is read once the session is real — in
-            // the apply phase, which is where the route is written down.
-            "issue" => self.route_to_issue(
-                &capture_id,
-                &project_id,
-                &text,
-                rationale,
-                capture_after_routing,
-            ),
             // The dispatch's git runs through the drain, so the row this answers
             // with is read once the branch is real — in the apply phase, which
             // is where the route is written down.
@@ -211,7 +202,7 @@ impl AppState {
                 capture_after_routing,
             ),
             other => Err(format!(
-                "capture.reroute: {other:?} is not a destination — branch and issue are the work"
+                "capture.reroute: {other:?} is not a destination — branch is the supported work"
             )),
         }
     }

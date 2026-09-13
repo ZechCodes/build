@@ -163,6 +163,14 @@ afterEach(() => {
 });
 
 describe("panelHeadHtml's surface menu", () => {
+  it("keeps the title as text beside the selected harness icon", () => {
+    const html = panelHeadHtml("My agent", "chat", { provider: "codex_app_server" });
+    document.body.innerHTML = html;
+
+    expect(document.querySelector(".rail-who").textContent).toBe("My agent");
+    expect(document.querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
+  });
+
   it("writes no menu at all when the agent has nothing to show", () => {
     const html = panelHeadHtml("Claude Code", "chat", { surfaceOptions: [] });
     expect(html).toContain("rail-surface-menu");
@@ -463,7 +471,8 @@ describe("the overlay's own height", () => {
     menuItem(SHELL_ENTRY_KIND).click();
 
     expect(overlay().closest(".rail-surfaces-viewer")).toBe(null);
-    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:34vh/);
+    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:min\(46vh, 420px\)/);
+    expect(shellCss).toMatch(/\.surface-popover-body\s*\{[^}]*overflow-y:auto/);
     expect(shellCss).not.toContain(".modal-surface");
     expect(appCss).toMatch(/\.modal\.modal-surface\s*\{[^}]*max-height/);
     expect(appCss).toMatch(/\.modal-surface\s+\.surface-overlay-body\s*\{[^}]*overflow-y:auto/);

@@ -41,6 +41,15 @@ impl AppState {
                 let mut entry = json!({
                     "path": p.repo_path.display().to_string(),
                     "base_branch": p.base_branch,
+                    "sources": p.sources.iter().map(|source| json!({
+                        "id": source.id,
+                        "name": source.name,
+                        "mount": source.mount,
+                        "path": source.path.display().to_string(),
+                        "is_git": source.is_git,
+                        "base_branch": source.base_branch,
+                        "remote": source.remote,
+                    })).collect::<Vec<_>>(),
                 });
                 if let Some(isolation) = p.isolation {
                     entry["isolation"] = json!(isolation);

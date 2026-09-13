@@ -20,16 +20,22 @@ use std::path::{Path, PathBuf};
 ///
 /// Why each stays: `session.hello`, `term.attach`, `term.ack`, `rtc.*` and
 /// `agent.attach` need the caller's own `SessionSender` (somewhere to push
-/// to); `term.create`, `term.input`, `term.resize`, `agent.start` and
-/// `stream.start` need the shared `Arc` (a producer, pump or delivery runner
-/// to spawn); `bridge.stats` is answered from the frame clock so it can never
-/// queue behind a wedged lock; `ping` is the probe an old client sends before
-/// it knows what version it is talking to; `term.list` and `term.close` are
-/// the terminal family's session-free reads, kept beside the rest of `term.*`
-/// so the whole family moves together; `stream.events` and `stream.state`
-/// are QA fixtures behind `BRIDGE_QA_AGENT=1`, not part of the wire.
+/// to); `term.create`, `term.input`, `term.resize`, `agent.start`,
+/// `agent.interrupt` and `stream.start` need the shared `Arc` (a producer,
+/// pump or delivery runner to spawn); `bridge.stats` is answered from the
+/// frame clock so it can never queue behind a wedged lock; `ping` is the
+/// probe an old client sends before it knows what version it is talking to;
+/// `term.list` and `term.close` are the terminal family's session-free reads,
+/// kept beside the rest of `term.*` so the whole family moves together;
+/// `stream.events` and `stream.state` are QA fixtures behind
+/// `BRIDGE_QA_AGENT=1`, not part of the wire.
+///
+/// The `workspace.*` family is the one entry here with an expiry date: it was
+/// added upstream after the facade; convert in a follow-up. Typing eight
+/// verbs of a brand-new surface is its own change, not a merge resolution.
 const LEGACY_METHODS: &[&str] = &[
     "agent.attach",
+    "agent.interrupt",
     "agent.start",
     "bridge.stats",
     "ping",
@@ -47,6 +53,15 @@ const LEGACY_METHODS: &[&str] = &[
     "term.input",
     "term.list",
     "term.resize",
+    // Added upstream after the facade; convert in a follow-up.
+    "workspace.create",
+    "workspace.ensure_conversation",
+    "workspace.finish",
+    "workspace.get",
+    "workspace.git_init_options",
+    "workspace.init_git",
+    "workspace.list",
+    "workspace.retry",
 ];
 
 fn fixtures_root() -> PathBuf {

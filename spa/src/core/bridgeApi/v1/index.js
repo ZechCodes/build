@@ -35,9 +35,19 @@ export const ERROR_CODES = Object.freeze([
   UNKNOWN_CODE,
 ]);
 
-/** The event types a 1.x bridge sends. An event of any other type is a no-op,
- *  never a throw — a later minor may add one. */
-export const EVENT_TYPES = Object.freeze(["board.changed", "entity.changed", "changes"]);
+/** Every push a 1.x bridge sends on a session: the change events, the terminal
+ *  frames and the signalling one. An event of any other type is a no-op, never
+ *  a throw — a later minor may add one. `fixtures/api/v1/events.json` carries
+ *  one example of each, and both ends are held to it. */
+export const EVENT_TYPES = Object.freeze([
+  "board.changed",
+  "entity.changed",
+  "changes",
+  "term.output",
+  "term.reset",
+  "term.closed",
+  "rtc.ice",
+]);
 
 /** What a bridge that pushes but names no event list sends: the legacy pair. */
 const LEGACY_EVENTS = Object.freeze(["board.changed", "entity.changed"]);

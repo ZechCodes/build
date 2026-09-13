@@ -9,6 +9,7 @@
 
 use build_bridge::api::v1;
 use build_bridge::api::API_VERSION;
+use build_bridge::changes;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -166,5 +167,152 @@ fn every_fixture_parses_and_its_result_round_trips_through_the_typed_result() {
             serde_json::to_string(&fixture["result"]).unwrap(),
             "{method}: result changes shape through the typed result"
         );
+    }
+}
+
+// ------------------------------------------------------------- the pushes ---
+
+/// Every push the bridge sends on a session, as `fixtures/api/v1/events.json`
+/// states them. The SPA reads the same list through `v1.parseEvent`.
+fn event_examples() -> Vec<Value> {
+    let path = fixtures_root().join("v1/events.json");
+    let fixture = read_json(&path);
+    assert!(fixture["since"].is_string(), "events.json: since");
+    fixture["events"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}: events is a list", path.display()))
+        .clone()
+}
+
+fn typed<T: serde::de::DeserializeOwned>(value: &Value, what: &str) -> T {
+    serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{what}: {e}"))
+}
+
+/// The `git` facts an item carries — the two `git_payload` writes.
+fn check_git_facts(entity_id: &str, git: &Value) {
+    for (key, value) in git.as_object().expect("git is an object") {
+        assert!(
+            matches!(key.as_str(), "status_key" | "head"),
+            "{entity_id}: git.{key} is not a git fact"
+        );
+        assert!(value.is_string(), "{entity_id}: git.{key} is a string");
+    }
+}
+
+/// The `files` item: paths under the cap, and the flag that says the list
+/// stopped naming them.
+fn check_files(entity_id: &str, files: &Value) {
+    let paths = files["paths"].as_array().expect("files.paths is a list");
+    assert!(
+        paths.iter().all(Value::is_string),
+        "{entity_id}: files.paths are strings"
+    );
+    assert!(
+        paths.len() <= changes::FILES_PER_FLUSH,
+        "{entity_id}: files.paths is capped"
+    );
+    assert!(
+        files["truncated"].is_boolean(),
+        "{entity_id}: files.truncated is a bool"
+    );
+}
+
+/// The `state` item: an object always, and the board's own row carries the
+/// revision a client compares against.
+fn check_state(entity_id: &str, state: &Value) {
+    assert!(state.is_object(), "{entity_id}: state is an object");
+    if entity_id == changes::BOARD_ITEM_ID {
+        assert!(state["revision"].is_u64(), "board: state.revision");
+    }
+}
+
+/// Every key beside `entity_id` is named after a [`changes::Kind`].
+fn check_item_keys(entity_id: &str, item: &serde_json::Map<String, Value>) {
+    let kinds: Vec<&str> = changes::KindSet::all()
+        .iter()
+        .map(changes::Kind::as_str)
+        .collect();
+    for key in item.keys() {
+        assert!(
+            key == "entity_id" || kinds.contains(&key.as_str()),
+            "{entity_id}: {key} is not a kind"
+        );
+    }
+}
+
+/// One item of a `changes` frame: `entity_id`, and beside it only the kinds
+/// that moved, each carrying what that kind serialises as.
+fn check_changes_item(item: &Value) {
+    let object = item.as_object().expect("an item is an object");
+    let entity_id = object["entity_id"].as_str().expect("entity_id is a string");
+    check_item_keys(entity_id, object);
+    if let Some(state) = object.get("state") {
+        check_state(entity_id, state);
+    }
+    if let Some(thread) = object.get("thread") {
+        let _: Vec<changes::ThreadTip> = typed(thread, "thread");
+    }
+    if let Some(git) = object.get("git") {
+        check_git_facts(entity_id, git);
+    }
+    if let Some(files) = object.get("files") {
+        check_files(entity_id, files);
+    }
+}
+
+/// The terminal and signalling frames, which are `json!` literals rather than
+/// typed structs (`screen.rs`, `rtc.rs`): their required keys are the contract.
+fn check_untyped_push(event: &Value, keys: &[&str]) {
+    for key in keys {
+        assert!(
+            event.get(*key).is_some_and(|value| !value.is_null()),
+            "{}: {key}",
+            event["type"]
+        );
+    }
+}
+
+#[test]
+fn every_event_example_is_what_the_bridge_serialises() {
+    let examples = event_examples();
+    assert!(!examples.is_empty(), "events.json states no examples");
+    for event in &examples {
+        match event["type"].as_str().expect("an event names its type") {
+            "board.changed" => assert_eq!(*event, changes::ChangeKey::Board.payload()),
+            "entity.changed" => {
+                let id = event["id"].as_str().expect("entity.changed names an id");
+                assert_eq!(*event, changes::ChangeKey::Entity(id.to_string()).payload());
+            }
+            changes::CHANGES_EVENT => {
+                assert!(event["subscription_id"].is_string(), "changes: id");
+                let items = event["items"].as_array().expect("changes: items");
+                assert!(!items.is_empty(), "changes: items is never empty");
+                items.iter().for_each(check_changes_item);
+            }
+            "term.output" => check_untyped_push(event, &["term_id", "data", "cursor"]),
+            "term.reset" => check_untyped_push(event, &["term_id", "data", "cursor"]),
+            "term.closed" => check_untyped_push(event, &["term_id", "reason"]),
+            "rtc.ice" => check_untyped_push(event, &["candidate"]),
+            other => panic!("{other}: the bridge sends no such push"),
+        }
+    }
+}
+
+/// Every push the bridge sends has an example. The announced change events are
+/// the list the greeting carries; the rest are the session's own frames.
+#[test]
+fn every_push_the_bridge_sends_has_an_example() {
+    let seen: BTreeSet<String> = event_examples()
+        .iter()
+        .map(|event| event["type"].as_str().unwrap().to_string())
+        .collect();
+    let sent = changes::ANNOUNCED_EVENTS.iter().copied().chain([
+        "term.output",
+        "term.reset",
+        "term.closed",
+        "rtc.ice",
+    ]);
+    for kind in sent {
+        assert!(seen.contains(kind), "{kind}: no example in events.json");
     }
 }

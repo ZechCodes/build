@@ -19,9 +19,8 @@ const fixtureNames = readdirSync(fixtureDirectory)
 const fixtures = fixtureNames.map((name) => ({ name, body: readJson(fixtureDirectory + name) }));
 const methodFixtures = fixtures.filter(({ body }) => typeof body.method === "string");
 
-// The events fixture is the one file in the directory that names no method.
-// It is not there yet (the bridge stage owns it); when it lands, its examples
-// are checked here without this file changing.
+// The events fixture is the one file in the directory that names no method:
+// one example per push the bridge sends on a session.
 const eventExamples = fixtures
   .filter(({ body }) => Array.isArray(body.events))
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
@@ -65,6 +64,8 @@ describe("the v1 adapter against fixtures/api/v1", () => {
   });
 
   it("parses every event example the fixtures carry", () => {
+    // Never vacuous: the examples exist, and every one of them parses.
+    expect(eventExamples.length).toBeGreaterThan(0);
     for (const { where, event } of eventExamples) {
       expect(v1.parseEvent(event), where).not.toBe(null);
     }

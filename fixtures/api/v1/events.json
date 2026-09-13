@@ -1,0 +1,60 @@
+{
+  "since": "1.0.0",
+  "events": [
+    {
+      "type": "changes",
+      "subscription_id": "s-focus",
+      "items": [
+        {
+          "entity_id": "run-7",
+          "state": { "run": "working", "agents": 1, "attention": "none" },
+          "thread": [{ "agent_id": "agent-3", "last_sequence": 412 }],
+          "git": { "status_key": "9f3c1a0b7e2d4c55", "head": "a1b2c3d" },
+          "files": { "paths": ["src/lib.rs", "src/app/rpc.rs"], "truncated": false }
+        }
+      ]
+    },
+    {
+      "type": "changes",
+      "subscription_id": "s-bg",
+      "items": [
+        {
+          "entity_id": "run-9",
+          "git": { "status_key": "1c4e77aa90b3f012", "head": "0d9e4f1" }
+        },
+        {
+          "entity_id": "worktree-2",
+          "files": { "paths": ["docs/index.md"], "truncated": true }
+        }
+      ]
+    },
+    {
+      "type": "changes",
+      "subscription_id": "s-board",
+      "items": [{ "entity_id": "board", "state": { "revision": 1183 } }]
+    },
+    { "type": "board.changed" },
+    { "type": "entity.changed", "id": "run-7" },
+    {
+      "type": "term.output",
+      "term_id": "term-1",
+      "data": "aGVsbG8gd29ybGQK",
+      "cursor": 4211
+    },
+    {
+      "type": "term.reset",
+      "term_id": "term-1",
+      "data": "G1s3MjsxSGJ1aWxk",
+      "cursor": 4260
+    },
+    { "type": "term.closed", "term_id": "term-1", "reason": "closed" },
+    {
+      "type": "rtc.ice",
+      "candidate": {
+        "candidate": "candidate:2 1 udp 2122260223 192.168.1.9 54321 typ host",
+        "sdpMid": "0",
+        "sdpMLineIndex": 0
+      }
+    }
+  ]
+}

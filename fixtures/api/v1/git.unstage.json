@@ -1,0 +1,45 @@
+{
+  "method": "git.unstage",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7",
+    "paths": [
+      "src/main.rs"
+    ]
+  },
+  "result": {
+    "branch": "build/wire",
+    "path": "/home/dev/proj",
+    "head": "1f0c9a7b5e2d4c5566778899aabbccddeeff0011",
+    "repo_state": "clean",
+    "upstream": "origin/build/wire",
+    "ahead": 2,
+    "behind": 0,
+    "stash_count": 1,
+    "files": [
+      {
+        "path": "src/main.rs",
+        "staged": "partial",
+        "index_status": "M",
+        "worktree_status": "M",
+        "content_key": "8b1a9953c4611296",
+        "edited_at": "2026-09-13T10:04:11Z",
+        "added": 12,
+        "deleted": 3,
+        "binary": false
+      }
+    ],
+    "files_truncated": false,
+    "stat": {
+      "files_changed": 2,
+      "insertions": 14,
+      "deletions": 3
+    },
+    "status_key": "9f3c1a0b7e2d4c55"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

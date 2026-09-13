@@ -1,4 +1,4 @@
-use crate::api::API_VERSION;
+use crate::api::{self, ApiError, API_VERSION};
 use crate::app::{
     agent_attach, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello, stream_start,
     term_ack, term_attach, term_create, term_input, term_resize, AppState, DeliveryRunner,
@@ -39,10 +39,13 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("thread.post", "entity_id"),
 ];
 
-/// Dispatch one decrypted request frame. `stream.start` and `term.attach` are
-/// handled here because they need the shared `Arc` (background producer/pump) and
-/// the `SessionSender` (to push live output to this client); everything else runs
-/// under a short-held lock.
+/// Dispatch one decrypted request frame. [`session_scoped`] answers the verbs
+/// that need the shared `Arc` (background producer/pump) or the caller's own
+/// `SessionSender` (somewhere to push live output to); [`routed`] answers
+/// everything else, under a short-held lock, through `api::v1` first and the
+/// legacy table second. Both outcomes leave here as one reply envelope
+/// ([`crate::api::reply`]), so the success shape and the refusal shape — code,
+/// retryability, details — are written in exactly one place.
 pub(in crate::app) fn dispatch_frame(
     state: &Arc<Mutex<AppState>>,
     sender: SessionSender,
@@ -75,24 +78,43 @@ pub(in crate::app) fn dispatch_frame(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    let result = match method.as_str() {
+    let result = match session_scoped(state, &sender, &method, &params, &timer) {
+        Some(outcome) => outcome.map_err(ApiError::from),
+        None => routed(state, &method, &params, &timer),
+    };
+    api::reply(id, result)
+}
+
+/// The verbs that cannot go through [`AppState::route`]: each needs the
+/// caller's own [`SessionSender`] (somewhere to push to) or the shared `Arc`
+/// (a background producer or pump to spawn). `None` means "not one of mine",
+/// which is every verb `route` — and so `api::v1` — answers.
+fn session_scoped(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    method: &str,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Option<Result<Value, String>> {
+    Some(match method {
         // The greeting: what this bridge can do for the session, and — for the
         // capabilities that need somewhere to send to — the subscription
         // itself. Needs the caller's own `SessionSender`, which is why it is
         // here and not in `route`.
-        "session.hello" => session_hello(state, &sender, &params, &timer),
+        "session.hello" => session_hello(state, sender, params, timer),
         // Answered from the frame clock alone, never from `AppState`: the frame
         // that asks what is wedging the daemon must not queue behind the wedge.
         "bridge.stats" => Ok(timer.clock().stats()),
-        "stream.start" => stream_start(state, &params, &timer),
-        "rtc.offer" => rtc_offer(state, &sender, &params, &timer),
-        "rtc.ice" => rtc_ice(state, sender.session_id(), &params, &timer),
-        "rtc.close" => rtc_close(state, sender.session_id(), &timer),
+        // QA-only (`BRIDGE_QA_AGENT=1`); unknown to everyone else.
+        "stream.start" if timer.lock(state).qa_agent => stream_start(state, params, timer),
+        "rtc.offer" => rtc_offer(state, sender, params, timer),
+        "rtc.ice" => rtc_ice(state, sender.session_id(), params, timer),
+        "rtc.close" => rtc_close(state, sender.session_id(), timer),
         // Opening a terminal or an agent in a worktree IS interacting with it in
         // Build — it is the reason a hand-made worktree graduates out of the
         // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
-            let created = term_create(state, &params, &timer);
+            let created = term_create(state, params, timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
                     .get("run_id")
@@ -104,51 +126,59 @@ pub(in crate::app) fn dispatch_frame(
             }
             created
         }
-        "term.attach" => term_attach(state, &sender, &params, &timer),
+        "term.attach" => term_attach(state, sender, params, timer),
         // A write to a child's pty blocks while the child is not draining, so
         // both of these take the handle under the lock and write with it
         // released.
-        "term.input" => term_input(state, &params, &timer),
-        "term.resize" => term_resize(state, &params, &timer),
+        "term.input" => term_input(state, params, timer),
+        "term.resize" => term_resize(state, params, timer),
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
-        "term.ack" => term_ack(state, &sender, &params, &timer),
-        "agent.attach" => agent_attach(state, &sender, &params, &timer),
+        "term.ack" => term_ack(state, sender, params, timer),
+        "agent.attach" => agent_attach(state, sender, params, timer),
         // Bypasses `dispatch` because it hands its queued turn to
         // `DeliveryRunner`, which needs the shared handle `dispatch` does not
         // have.
-        "agent.start" => agent_start(state, &params, &timer),
-        _ => {
-            // A verb whose git work must not run under the lock hands that
-            // work back rather than doing it here; the drain below runs it with
-            // the mutex released. See `AppState::deferred_work`.
-            let (dispatched, deferred) = timer.lock(state).dispatch_deferring(&method, &params);
-            let dispatched = match deferred {
-                Some(deferred) => {
-                    // THE POINT OF ALL THIS: seconds to minutes of git — a
-                    // status walk, a fetch, a merge, a `git worktree remove` of
-                    // a six-gigabyte checkout — with every other frame, every
-                    // terminal pump and the relay's own read loop free to make
-                    // progress meanwhile.
-                    let done = deferred.run();
-                    timer.lock(state).apply_deferred(&method, &params, done)
-                }
-                None => dispatched,
-            };
-            // A verb speaks to a worktree's agent by queuing a turn, and the
-            // frame's own answer never waits for it to arrive: the mutation is
-            // durable, and a cold spawn blocks for seconds on the harness's
-            // readiness wait while the browser gives up at twelve.
-            if dispatched.is_ok() {
-                DeliveryRunner::drain(state, &timer);
-            }
-            dispatched
+        "agent.start" => agent_start(state, params, timer),
+        _ => return None,
+    })
+}
+
+/// Everything else: `route` (v1 first, legacy second) under a short-held lock,
+/// with the git work it defers run with the mutex released.
+fn routed(
+    state: &Arc<Mutex<AppState>>,
+    method: &str,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, ApiError> {
+    // A verb whose git work must not run under the lock hands that work back
+    // rather than doing it here; the drain below runs it with the mutex
+    // released. See `AppState::deferred_work`.
+    let (dispatched, deferred) = timer.lock(state).dispatch_deferring(method, params);
+    let dispatched = match deferred {
+        Some(deferred) => {
+            // THE POINT OF ALL THIS: seconds to minutes of git — a status
+            // walk, a fetch, a merge, a `git worktree remove` of a
+            // six-gigabyte checkout — with every other frame, every terminal
+            // pump and the relay's own read loop free to make progress
+            // meanwhile.
+            let done = deferred.run();
+            timer
+                .lock(state)
+                .apply_deferred(method, params, done)
+                .map_err(ApiError::from)
         }
+        None => dispatched,
     };
-    match result {
-        Ok(result) => json!({ "id": id, "ok": true, "result": result }),
-        Err(message) => json!({ "id": id, "ok": false, "error": message }),
+    // A verb speaks to a worktree's agent by queuing a turn, and the frame's
+    // own answer never waits for it to arrive: the mutation is durable, and a
+    // cold spawn blocks for seconds on the harness's readiness wait while the
+    // browser gives up at twelve.
+    if dispatched.is_ok() {
+        DeliveryRunner::drain(state, timer);
     }
+    dispatched
 }
 
 /// Copy a canonical opaque id into the legacy parameter name consumed by the
@@ -277,10 +307,7 @@ impl AppState {
             .cloned()
             .unwrap_or_else(|| json!({}));
 
-        match self.dispatch(&method, &params) {
-            Ok(result) => json!({ "id": id, "ok": true, "result": result }),
-            Err(message) => json!({ "id": id, "ok": false, "error": message }),
-        }
+        api::reply(id, self.dispatch_api(&method, &params))
     }
 
     /// Route a verb, record it if it counts as the human touching something,
@@ -294,6 +321,19 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<Value, String> {
+        self.dispatch_api(method, params)
+            .map_err(|error| error.message().to_string())
+    }
+
+    /// [`AppState::dispatch`] with the refusal's code kept — what
+    /// [`AppState::handle`] answers from, and what the tests that assert on
+    /// `error_code` read.
+    #[cfg(test)]
+    pub(in crate::app) fn dispatch_api(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, ApiError> {
         let (outcome, deferred) = self.dispatch_deferring(method, params);
         // No `Arc` to release the mutex through — the synchronous entry point.
         // The git work runs right here, exactly as it did before the split;
@@ -302,13 +342,41 @@ impl AppState {
             Some(deferred) => {
                 let done = deferred.run();
                 self.apply_deferred(method, params, done)
+                    .map_err(ApiError::from)
             }
             None => outcome,
         }
     }
 
-    pub(in crate::app) fn route(&mut self, method: &str, params: &Value) -> Result<Value, String> {
-        match method {
+    /// v1 first, legacy second (wire spec Part 2, step 2.2). A verb
+    /// [`api::v1`] registers is answered from its typed handler; everything
+    /// else falls through to [`AppState::route_legacy`], whose bare
+    /// `Err(String)` has no code of its own and so reads as `internal`.
+    ///
+    /// [`api::v1`]: crate::api::v1
+    pub(in crate::app) fn route(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, ApiError> {
+        if let Some(answered) = crate::api::v1::dispatch(self, method, params) {
+            return answered;
+        }
+        match self.route_legacy(method, params) {
+            Some(outcome) => outcome.map_err(ApiError::from),
+            None => Err(ApiError::unknown_method(method)),
+        }
+    }
+
+    /// The verbs still answered by hand, ahead of their family's conversion.
+    /// `None` is "no such verb here", which [`AppState::route`] turns into
+    /// `unknown_method`.
+    pub(in crate::app) fn route_legacy(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Option<Result<Value, String>> {
+        Some(match method {
             // `push_events` rides the probe as well as the greeting: a client
             // that only ever pings can still tell whether this bridge will
             // invalidate for it, and an old client ignores the extra field.
@@ -336,28 +404,6 @@ impl AppState {
             "thread.operation" => self.thread_operation(params),
             "thread.attach" => self.thread_attach(params),
             "thread.attachment" => self.thread_attachment(params),
-            "fs.list" => self.fs_list(params),
-            "fs.tree" => self.fs_tree(params),
-            "fs.read" => self.fs_read(params),
-            "fs.write" => self.fs_write(params),
-            "project.diff" => self.project_diff(params),
-            "git.log" => self.git_log(params),
-            "git.show" => self.git_show(params),
-            "git.status" => self.git_status(params),
-            "git.diff" => self.git_diff(params),
-            "git.stage" => self.git_stage(params),
-            "git.unstage" => self.git_unstage(params),
-            "git.commit" => self.git_commit(params),
-            "git.fetch" => self.git_fetch(params),
-            "git.pull" => self.git_pull(params),
-            "git.push" => self.git_push(params),
-            "git.branches" => self.git_branches(params),
-            "git.checkout" => self.git_checkout(params),
-            "git.branch_delete" => self.git_branch_delete(params),
-            "git.stash" => self.git_stash(params),
-            "git.stash_pop" => self.git_stash_pop(params),
-            "git.discard" => self.git_discard(params),
-            "git.merge_abort" => self.git_merge_abort(params),
             "settings.get" => Ok(self.settings_get()),
             "settings.set" => self.settings_set(params),
             "project.list" => Ok(self.defer_project_list()),
@@ -398,8 +444,6 @@ impl AppState {
             "issue.implement_all" => self.issue_implement_all(params),
             "issue.set_auto_advance" => self.issue_set_auto_advance(params),
             "issue.stage_fix" => self.issue_run_action(params, "fix"),
-            "issue.stage_diff" => self.issue_stage_diff(params),
-            "issue.diff" => self.issue_run_action(params, "diff"),
             "issue.request_changes" => self.issue_run_action(params, "request_changes"),
             "issue.git_action" => self.issue_run_action(params, "git_action"),
             "issue.comment_add" => {
@@ -430,8 +474,6 @@ impl AppState {
             // Run surface (worktree-scoped): keyed by run_id.
             "run.create" => self.run_create(&alias_param(params, "issue_id", "plan_id")),
             "run.get" => self.run_get(params),
-            "run.diff" => self.run_diff(params),
-            "run.stage_diff" => self.run_stage_diff(params),
             "run.request_changes" => self.run_request_changes(params),
             "run.stage_dispatch" => self.run_stage_dispatch(params),
             "run.stage_fix" => self.run_stage_fix(params),
@@ -459,13 +501,14 @@ impl AppState {
             "agent.choose" => self.agent_choose(params),
             "agent.remove" => self.agent_remove(params),
             "agent.list" => self.agent_list(params),
-            "worktree.diff" => self.worktree_diff(params),
-            "stream.events" => self.stream_events(params),
-            "stream.state" => self.stream_state(params),
+            // QA-only (`BRIDGE_QA_AGENT=1`), and unknown to everyone else: the
+            // scripted stream is a test fixture, not part of `api/v1`.
+            "stream.events" if self.qa_agent => self.stream_events(params),
+            "stream.state" if self.qa_agent => self.stream_state(params),
             "term.list" => self.term_list(params),
             "term.close" => self.term_close(params),
-            other => Err(format!("unknown method: {other}")),
-        }
+            _ => return None,
+        })
     }
 
     /// Stamp the entity a successful verb acted on, if that verb counts as an

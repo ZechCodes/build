@@ -116,7 +116,7 @@ impl AppState {
     /// The primary checkout's uncommitted-changes review surface (spec §5.2):
     /// same shape as `worktree.diff` so `parseDiff`/`diffFilesHtml` reuse is
     /// mechanical.
-    pub(in crate::app) fn project_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn project_diff(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let repo_path = self
             .projects
@@ -142,7 +142,7 @@ impl AppState {
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
     /// never adopts.
-    pub(in crate::app) fn worktree_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn worktree_diff(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let worktree_id = require_str(params, "worktree_id")?;
         let external = self.resolve_external_worktree(&project_id, &worktree_id)?;
@@ -339,7 +339,7 @@ impl AppState {
     /// `git.log` — one page of commit history for the scoped checkout. Task
     /// scope additionally marks each commit as ahead of (unreachable from)
     /// the base branch.
-    pub(in crate::app) fn git_log(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_log(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let limit = params
                 .get("limit")
@@ -353,7 +353,7 @@ impl AppState {
 
     /// `git.show` — one commit's metadata, stat, and capped patch. The hash
     /// param is a strict object-id prefix, never a general revspec.
-    pub(in crate::app) fn git_show(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_show(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let hash = require_str(params, "hash")?;
             crate::gitgui::show_commit(&scope.repo_path, &hash)
@@ -366,7 +366,7 @@ impl AppState {
     ///
     /// `if_status_key` is what the browser is already painting; when it still
     /// names the working tree the answer is `{"unchanged": true}` and its key.
-    pub(in crate::app) fn git_status(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_status(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let if_status_key = params.get("if_status_key").and_then(Value::as_str);
             crate::gitgui::status_payload_unless(&scope.repo_path, if_status_key)
@@ -375,7 +375,7 @@ impl AppState {
 
     /// `git.diff` — the uncommitted patch of the named paths, one entry each,
     /// keyed by content so a browser caches a body until that file moves.
-    pub(in crate::app) fn git_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_diff(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let paths = require_path_list(params)?;
             crate::gitgui::file_patches(&scope.repo_path, &paths)
@@ -384,7 +384,7 @@ impl AppState {
 
     /// `git.stage` — stage the given repo-relative paths, answering with the
     /// fresh status payload so the UI repaints without waiting for a poll.
-    pub(in crate::app) fn git_stage(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_stage(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let paths = require_path_list(params)?;
             crate::gitgui::stage_paths(&scope.repo_path, &paths)?;
@@ -393,7 +393,7 @@ impl AppState {
     }
 
     /// `git.unstage` — the inverse of `git.stage`, same response shape.
-    pub(in crate::app) fn git_unstage(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_unstage(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let paths = require_path_list(params)?;
             crate::gitgui::unstage_paths(&scope.repo_path, &paths)?;
@@ -406,7 +406,7 @@ impl AppState {
     /// the cached diffstat is dropped and the task's updated-at stamped; the
     /// task record itself is untouched (no lifecycle transition — a commit
     /// never advances a task past any gate).
-    pub(in crate::app) fn git_commit(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_commit(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, params| {
             let message = require_str(params, "message")?;
             let commit = crate::gitgui::commit_staged(&scope.repo_path, &message)?;
@@ -475,7 +475,7 @@ impl AppState {
     }
 
     /// `git.fetch` — `git fetch --prune`, then the fresh status payload.
-    pub(in crate::app) fn git_fetch(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_fetch(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::fetch(&scope.repo_path)?;
             crate::gitgui::status_payload(&scope.repo_path)
@@ -484,7 +484,7 @@ impl AppState {
 
     /// `git.pull` — integrate the upstream in the requested mode (ff/merge/
     /// rebase), then the fresh status payload. Git's own errors pass through.
-    pub(in crate::app) fn git_pull(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_pull(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, params| {
             let mode = params.get("mode").and_then(Value::as_str).unwrap_or("ff");
             crate::gitgui::pull(&scope.repo_path, mode)?;
@@ -494,7 +494,7 @@ impl AppState {
 
     /// `git.push` — push the current branch (setting the upstream on first
     /// push), then the fresh status payload. `force` uses `--force-with-lease`.
-    pub(in crate::app) fn git_push(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_push(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, params| {
             let force = params
                 .get("force")
@@ -508,13 +508,13 @@ impl AppState {
     /// `git.branches` — every branch the project can offer, once each (the same
     /// list whichever checkout is scoped: branches are the repository's, not
     /// one checkout's), each stamped with the checkout that holds it.
-    pub(in crate::app) fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_branch_listing(params, false, |scope, _| stamped_branch_list(scope))
     }
 
     /// `git.checkout` — switch the scoped checkout to (or create) a branch,
     /// then the fresh status payload.
-    pub(in crate::app) fn git_checkout(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_checkout(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_branch_git(params, true, |scope, params| {
             let branch = require_str(params, "branch")?;
             let create = params
@@ -527,7 +527,7 @@ impl AppState {
     }
 
     /// `git.branch_delete` — delete a local branch, then the fresh branch list.
-    pub(in crate::app) fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_branch_listing(params, false, |scope, params| {
             let branch = require_str(params, "branch")?;
             let force = params
@@ -540,7 +540,7 @@ impl AppState {
     }
 
     /// `git.stash` — `git stash push -u`, then the fresh status payload.
-    pub(in crate::app) fn git_stash(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_stash(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::stash_push(&scope.repo_path)?;
             crate::gitgui::status_payload(&scope.repo_path)
@@ -548,7 +548,7 @@ impl AppState {
     }
 
     /// `git.stash_pop` — `git stash pop`, then the fresh status payload.
-    pub(in crate::app) fn git_stash_pop(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_stash_pop(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::stash_pop(&scope.repo_path)?;
             crate::gitgui::status_payload(&scope.repo_path)
@@ -557,7 +557,7 @@ impl AppState {
 
     /// `git.discard` (**destructive**) — revert the given paths to HEAD
     /// (untracked ones are deleted), then the fresh status payload.
-    pub(in crate::app) fn git_discard(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_discard(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, params| {
             let paths = require_path_list(params)?;
             crate::gitgui::discard_paths(&scope.repo_path, &paths)?;
@@ -567,7 +567,7 @@ impl AppState {
 
     /// `git.merge_abort` — abort whatever operation is in progress (merge,
     /// rebase, cherry-pick, revert, or bisect), then the fresh status payload.
-    pub(in crate::app) fn git_merge_abort(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn git_merge_abort(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
             crate::gitgui::merge_abort(&scope.repo_path)?;
             crate::gitgui::status_payload(&scope.repo_path)

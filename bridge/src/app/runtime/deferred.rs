@@ -1,3 +1,4 @@
+use crate::api::ApiError;
 use crate::app::runtime::lifecycle::{LifecycleOutcome, WorktreeLifecycleJob};
 use crate::app::{
     diff_file_edited_at, diff_file_rows, diff_json, entity_ids_of, sha256_hex, worktree_diff_json,
@@ -397,7 +398,7 @@ impl AppState {
         &mut self,
         method: &str,
         params: &Value,
-    ) -> (Result<Value, String>, Option<DeferredWork>) {
+    ) -> (Result<Value, ApiError>, Option<DeferredWork>) {
         let queued_before = self.delivery_queue.checkpoint();
         let outcome = self.route(method, params);
         if outcome.is_err() {

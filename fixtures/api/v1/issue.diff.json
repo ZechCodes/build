@@ -1,0 +1,32 @@
+{
+  "method": "issue.diff",
+  "since": "1.0.0",
+  "params": {
+    "issue_id": "issue-4",
+    "if_diff_key": "c1d2e3f405162738"
+  },
+  "result": {
+    "stat": {
+      "files_changed": 2,
+      "insertions": 14,
+      "deletions": 3
+    },
+    "files": [
+      {
+        "path": "src/main.rs",
+        "status": "Modified"
+      }
+    ],
+    "patch": "diff --git a/src/main.rs b/src/main.rs\n@@ -1,2 +1,3 @@\n+use std::io;\n",
+    "file_edited_at": {
+      "src/main.rs": "2026-09-13T10:04:11Z"
+    },
+    "diff_key": "c1d2e3f405162738",
+    "issue_id": "issue-4"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

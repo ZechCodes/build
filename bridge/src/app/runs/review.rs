@@ -80,7 +80,7 @@ pub(in crate::app) fn triage_override_summary(
 }
 
 impl AppState {
-    pub(in crate::app) fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
         self.plan_run_diff(params, None)
     }
 
@@ -108,7 +108,7 @@ impl AppState {
     /// Immutable stage review surface. Unlike `run.diff`, this never reads the
     /// working directory or current HEAD: it resolves only the two object ids
     /// persisted when the stage was dispatched and successfully validated.
-    pub(in crate::app) fn run_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
         self.plan_run_stage_diff(params, None)
     }
 

@@ -1,0 +1,764 @@
+//! The git family: every `git.*` verb, the `fs.*` reads and the one write,
+//! and the diff reads that render a checkout's uncommitted work
+//! (`worktree.diff`, `project.diff`, `run.diff`, `run.stage_diff`,
+//! `issue.diff`, `issue.stage_diff`).
+//!
+//! This is the converted family — the pattern the other four follow. The git
+//! itself is untouched: each handler resolves its typed params, hands them to
+//! the implementation that already exists under `app/`, and names the shape
+//! that implementation answers in. Every `git.*` verb and every diff read
+//! defers its work to the off-lock drain, so what the handler returns is the
+//! placeholder [`Answer`] documents; the `fs.*` verbs answer inline.
+//!
+//! Optionals: `skip_serializing_if` throughout, so a field's absence and its
+//! `null` mean the same to every client, exactly as step 2.2 requires.
+
+use super::{answer, Answer, Handler, WireParams};
+use crate::api::ApiError;
+use crate::app::AppState;
+use crate::{v1_method, v1_methods};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// The verbs this family serves.
+pub fn methods() -> &'static [(&'static str, Handler)] {
+    v1_methods![
+        v1_method!("git.log", git_log, GitLogParams, GitLogResult),
+        v1_method!("git.show", git_show, GitShowParams, CommitDetail),
+        v1_method!("git.status", git_status, GitStatusParams, GitStatusResult),
+        v1_method!("git.diff", git_diff, GitDiffParams, GitDiffResult),
+        v1_method!("git.stage", git_stage, GitPathsParams, StatusPayload),
+        v1_method!("git.unstage", git_unstage, GitPathsParams, StatusPayload),
+        v1_method!("git.discard", git_discard, GitPathsParams, StatusPayload),
+        v1_method!("git.commit", git_commit, GitCommitParams, GitCommitResult),
+        v1_method!("git.fetch", git_fetch, ScopeParams, StatusPayload),
+        v1_method!("git.pull", git_pull, GitPullParams, StatusPayload),
+        v1_method!("git.push", git_push, GitPushParams, StatusPayload),
+        v1_method!("git.stash", git_stash, ScopeParams, StatusPayload),
+        v1_method!("git.stash_pop", git_stash_pop, ScopeParams, StatusPayload),
+        v1_method!(
+            "git.merge_abort",
+            git_merge_abort,
+            ScopeParams,
+            StatusPayload
+        ),
+        v1_method!(
+            "git.branches",
+            git_branches,
+            BranchScopeParams,
+            BranchListResult
+        ),
+        v1_method!(
+            "git.checkout",
+            git_checkout,
+            GitCheckoutParams,
+            StatusPayload
+        ),
+        v1_method!(
+            "git.branch_delete",
+            git_branch_delete,
+            GitBranchDeleteParams,
+            BranchListResult
+        ),
+        v1_method!("fs.list", fs_list, FsListParams, FsListResult),
+        v1_method!("fs.tree", fs_tree, FsTreeParams, FsTreeResult),
+        v1_method!("fs.read", fs_read, FsReadParams, FsFileResult),
+        v1_method!("fs.write", fs_write, FsWriteParams, FsFileResult),
+        v1_method!(
+            "project.diff",
+            project_diff,
+            ProjectDiffParams,
+            ProjectDiffResult
+        ),
+        v1_method!(
+            "worktree.diff",
+            worktree_diff,
+            WorktreeDiffParams,
+            WorktreeDiffResult
+        ),
+        v1_method!("run.diff", run_diff, RunDiffParams, RunDiffResult),
+        v1_method!(
+            "run.stage_diff",
+            run_stage_diff,
+            RunStageDiffParams,
+            StageDiffResult
+        ),
+        v1_method!("issue.diff", issue_diff, IssueDiffParams, RunDiffResult),
+        v1_method!(
+            "issue.stage_diff",
+            issue_stage_diff,
+            IssueStageDiffParams,
+            StageDiffResult
+        ),
+    ]
+}
+
+// ---------------------------------------------------------------- params ---
+
+/// The checkout a `git.*` or `fs.*` verb acts on, named the only way a client
+/// may name one: by id. The repo path always comes from server state.
+/// `project_id` alone is the project's primary checkout, `run_id` is a run's
+/// worktree, `project_id` + `worktree_id` is one of the project's external
+/// worktrees.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct ScopeParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+}
+
+/// The scope of a verb that addresses the repository's branches rather than
+/// one checkout's working tree: project, optionally narrowed to an external
+/// worktree. A run's branch belongs to the run lifecycle, so no `run_id`.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchScopeParams {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitLogParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// Clamped to 1..=200 server-side; 30 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitShowParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// A 4–40 character lowercase hex object-id prefix, never a revspec.
+    pub hash: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitStatusParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// The `status_key` the client is already painting; when it still names
+    /// the working tree the answer is [`UnchangedStatus`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_status_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitDiffParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// 1 to 50 repo-relative paths, answered in request order.
+    pub paths: Vec<String>,
+}
+
+/// `git.stage`, `git.unstage`, `git.discard` — the same required path list.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitPathsParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitCommitParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitPullParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// `ff` (the default), `merge`, or `rebase`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitPushParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// `--force-with-lease`, never a bare force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitCheckoutParams {
+    #[serde(flatten)]
+    pub scope: BranchScopeParams,
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitBranchDeleteParams {
+    #[serde(flatten)]
+    pub scope: BranchScopeParams,
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force: Option<bool>,
+}
+
+/// `fs.list` browses the host's directories, before any project exists — the
+/// one verb here with no scope at all.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsListParams {
+    /// Absolute or `~`-relative; the user's home when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsTreeParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// Scope-relative; the scope root when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsReadParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsWriteParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    pub path: String,
+    /// The revision `fs.read` answered with; a stale one is refused.
+    pub expected_revision: String,
+    pub content_b64: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectDiffParams {
+    pub project_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorktreeDiffParams {
+    pub project_id: String,
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_diff_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RunDiffParams {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_diff_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RunStageDiffParams {
+    pub run_id: String,
+    pub stage_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueDiffParams {
+    pub issue_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_diff_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueStageDiffParams {
+    pub issue_id: String,
+    pub stage_id: String,
+}
+
+// --------------------------------------------------------------- results ---
+
+/// The line census a diff or a status sums to.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DiffStat {
+    pub files_changed: u64,
+    pub insertions: u64,
+    pub deletions: u64,
+}
+
+/// One changed path in a diff listing: what it is, not what it says.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DiffFileRow {
+    pub path: String,
+    /// `Added`, `Modified`, `Deleted`, `Renamed`, `Typechange`.
+    pub status: String,
+}
+
+/// One changed path in a status walk: its staging tri-state, the key its body
+/// caches under, and its line counts.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StatusFile {
+    pub path: String,
+    /// `all`, `partial`, or `none`.
+    pub staged: String,
+    pub index_status: String,
+    pub worktree_status: String,
+    pub content_key: String,
+    /// Absent for a path that no longer exists in the checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    pub added: u64,
+    pub deleted: u64,
+    pub binary: bool,
+}
+
+/// The full `git.status` answer — also what every mutating `git.*` verb
+/// answers with, so the surface repaints from the mutation's own reply.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StatusPayload {
+    pub branch: String,
+    pub path: String,
+    /// HEAD's commit id; absent on an unborn HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// `clean`, `merging`, `rebasing`, `cherry-picking`, `reverting`,
+    /// `bisecting`, `conflicted`, or `other`. Documented as open.
+    pub repo_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+    pub stash_count: u64,
+    pub files: Vec<StatusFile>,
+    pub files_truncated: bool,
+    pub stat: DiffStat,
+    pub status_key: String,
+}
+
+/// What `git.status` answers a client that already holds the working tree.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UnchangedStatus {
+    pub unchanged: bool,
+    pub status_key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum GitStatusResult {
+    /// `if_status_key` still named the working tree.
+    Unchanged(UnchangedStatus),
+    Fresh(Box<StatusPayload>),
+}
+
+/// One commit as `git.log` lists it and `git.show` leads with.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CommitSummary {
+    pub short: String,
+    pub hash: String,
+    pub subject: String,
+    pub author: String,
+    pub email: String,
+    /// Author time, seconds since the epoch.
+    pub time: i64,
+    /// Reachable from this checkout's HEAD but not from its base branch.
+    /// Present on a run or worktree scope only; a project's history IS the
+    /// base, so the field is omitted there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead_of_base: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitLogResult {
+    pub branch: String,
+    pub commits: Vec<CommitSummary>,
+    /// Another page follows.
+    pub more: bool,
+}
+
+/// `git.show` — one commit's metadata, exact stat, and capped patch.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CommitDetail {
+    #[serde(flatten)]
+    pub summary: CommitSummary,
+    pub body: String,
+    pub stat: DiffStat,
+    pub patch: String,
+    /// The patch was cut at the 1 MiB cap.
+    pub truncated: bool,
+}
+
+/// One path's uncommitted patch, keyed so a client caches the body until the
+/// file moves.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PatchFile {
+    pub path: String,
+    pub content_key: String,
+    pub patch: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitDiffResult {
+    pub files: Vec<PatchFile>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GitCommitResult {
+    pub hash: String,
+    pub short: String,
+    pub subject: String,
+    pub status: StatusPayload,
+}
+
+/// The checkout holding a branch, when one does.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchHolder {
+    /// `run`, `primary_checkout`, or `external_worktree`.
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchRow {
+    pub name: String,
+    pub is_current: bool,
+    /// The remote a remote-only branch came from; absent for a local branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+    pub head_subject: String,
+    pub head_time: i64,
+    pub stat: DiffStat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<BranchHolder>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BranchListResult {
+    pub current: String,
+    pub branches: Vec<BranchRow>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsListEntry {
+    pub name: String,
+    pub path: String,
+    pub is_git: bool,
+    pub is_hidden: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsListResult {
+    pub path: String,
+    /// The directory to go up into; absent at the filesystem root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    pub is_git: bool,
+    pub entries: Vec<FsListEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsTreeEntry {
+    pub name: String,
+    /// `dir`, `file`, or `symlink`.
+    pub kind: String,
+    /// Files only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsTreeResult {
+    pub path: String,
+    pub entries: Vec<FsTreeEntry>,
+}
+
+/// One file's bytes, as `fs.read` answers and `fs.write` answers back.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsFileResult {
+    pub path: String,
+    pub size: u64,
+    pub truncated: bool,
+    pub mime: String,
+    pub content_b64: String,
+    /// Complete UTF-8 text a client may send back through `fs.write`.
+    pub editable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    /// The exact bytes read, named — `fs.write` refuses a stale one. Absent
+    /// when the read was truncated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+/// A modification time per changed path that still exists in the checkout.
+pub type FileEditedAt = BTreeMap<String, String>;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectDiffResult {
+    pub project_id: String,
+    pub branch: String,
+    pub path: String,
+    pub stat: DiffStat,
+    pub files: Vec<DiffFileRow>,
+    pub patch: String,
+}
+
+/// What a conditional diff read answers a client that already holds it.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UnchangedDiff {
+    pub unchanged: bool,
+    pub diff_key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorktreeDiff {
+    pub worktree_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The branch this diff is anchored on.
+    pub base_branch: String,
+    pub head_subject: String,
+    pub dirty_files: u64,
+    pub path: String,
+    /// The branch is the worktree's own, so Build could take it over.
+    pub adoptable: bool,
+    pub stat: DiffStat,
+    pub files: Vec<DiffFileRow>,
+    pub file_edited_at: FileEditedAt,
+    pub patch: String,
+    pub diff_key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum WorktreeDiffResult {
+    Unchanged(UnchangedDiff),
+    Fresh(Box<WorktreeDiff>),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RunDiff {
+    pub stat: DiffStat,
+    pub files: Vec<DiffFileRow>,
+    pub patch: String,
+    pub file_edited_at: FileEditedAt,
+    pub diff_key: String,
+    /// The issue that asked, when an issue surface did (`issue.diff`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RunDiffResult {
+    Unchanged(UnchangedDiff),
+    Fresh(Box<RunDiff>),
+}
+
+/// A stage boundary that cannot be rendered: the two commits were never
+/// pinned, or the stage has not completed.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StageDiffUnavailable {
+    pub run_id: String,
+    pub stage_id: String,
+    /// Always `unavailable`.
+    pub status: String,
+    /// `legacy_unpinned` or `stage_not_complete`.
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_id: Option<String>,
+}
+
+/// One immutable stage boundary, sha to sha.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StageDiff {
+    pub run_id: String,
+    pub stage_id: String,
+    /// Always `available`.
+    pub status: String,
+    pub start_sha: String,
+    pub completion_sha: String,
+    pub stat: DiffStat,
+    pub files: Vec<DiffFileRow>,
+    pub patch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum StageDiffResult {
+    /// Named first: only this variant carries `reason`, and only the other
+    /// carries `stat`, so neither can be read as the other.
+    Unavailable(Box<StageDiffUnavailable>),
+    Available(Box<StageDiff>),
+}
+
+// -------------------------------------------------------------- handlers ---
+
+fn git_log(app: &mut AppState, params: GitLogParams) -> Result<Answer<GitLogResult>, ApiError> {
+    answer(app.git_log(&params.wire()))
+}
+
+fn git_show(app: &mut AppState, params: GitShowParams) -> Result<Answer<CommitDetail>, ApiError> {
+    answer(app.git_show(&params.wire()))
+}
+
+fn git_status(
+    app: &mut AppState,
+    params: GitStatusParams,
+) -> Result<Answer<GitStatusResult>, ApiError> {
+    answer(app.git_status(&params.wire()))
+}
+
+fn git_diff(app: &mut AppState, params: GitDiffParams) -> Result<Answer<GitDiffResult>, ApiError> {
+    answer(app.git_diff(&params.wire()))
+}
+
+fn git_stage(
+    app: &mut AppState,
+    params: GitPathsParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_stage(&params.wire()))
+}
+
+fn git_unstage(
+    app: &mut AppState,
+    params: GitPathsParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_unstage(&params.wire()))
+}
+
+fn git_discard(
+    app: &mut AppState,
+    params: GitPathsParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_discard(&params.wire()))
+}
+
+fn git_commit(
+    app: &mut AppState,
+    params: GitCommitParams,
+) -> Result<Answer<GitCommitResult>, ApiError> {
+    answer(app.git_commit(&params.wire()))
+}
+
+fn git_fetch(app: &mut AppState, params: ScopeParams) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_fetch(&params.wire()))
+}
+
+fn git_pull(app: &mut AppState, params: GitPullParams) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_pull(&params.wire()))
+}
+
+fn git_push(app: &mut AppState, params: GitPushParams) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_push(&params.wire()))
+}
+
+fn git_stash(app: &mut AppState, params: ScopeParams) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_stash(&params.wire()))
+}
+
+fn git_stash_pop(
+    app: &mut AppState,
+    params: ScopeParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_stash_pop(&params.wire()))
+}
+
+fn git_merge_abort(
+    app: &mut AppState,
+    params: ScopeParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_merge_abort(&params.wire()))
+}
+
+fn git_branches(
+    app: &mut AppState,
+    params: BranchScopeParams,
+) -> Result<Answer<BranchListResult>, ApiError> {
+    answer(app.git_branches(&params.wire()))
+}
+
+fn git_checkout(
+    app: &mut AppState,
+    params: GitCheckoutParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
+    answer(app.git_checkout(&params.wire()))
+}
+
+fn git_branch_delete(
+    app: &mut AppState,
+    params: GitBranchDeleteParams,
+) -> Result<Answer<BranchListResult>, ApiError> {
+    answer(app.git_branch_delete(&params.wire()))
+}
+
+fn fs_list(app: &mut AppState, params: FsListParams) -> Result<Answer<FsListResult>, ApiError> {
+    answer(app.fs_list(&params.wire()))
+}
+
+fn fs_tree(app: &mut AppState, params: FsTreeParams) -> Result<Answer<FsTreeResult>, ApiError> {
+    answer(app.fs_tree(&params.wire()))
+}
+
+fn fs_read(app: &mut AppState, params: FsReadParams) -> Result<Answer<FsFileResult>, ApiError> {
+    answer(app.fs_read(&params.wire()))
+}
+
+fn fs_write(app: &mut AppState, params: FsWriteParams) -> Result<Answer<FsFileResult>, ApiError> {
+    answer(app.fs_write(&params.wire()))
+}
+
+fn project_diff(
+    app: &mut AppState,
+    params: ProjectDiffParams,
+) -> Result<Answer<ProjectDiffResult>, ApiError> {
+    answer(app.project_diff(&params.wire()))
+}
+
+fn worktree_diff(
+    app: &mut AppState,
+    params: WorktreeDiffParams,
+) -> Result<Answer<WorktreeDiffResult>, ApiError> {
+    answer(app.worktree_diff(&params.wire()))
+}
+
+fn run_diff(app: &mut AppState, params: RunDiffParams) -> Result<Answer<RunDiffResult>, ApiError> {
+    answer(app.run_diff(&params.wire()))
+}
+
+fn run_stage_diff(
+    app: &mut AppState,
+    params: RunStageDiffParams,
+) -> Result<Answer<StageDiffResult>, ApiError> {
+    answer(app.run_stage_diff(&params.wire()))
+}
+
+fn issue_diff(
+    app: &mut AppState,
+    params: IssueDiffParams,
+) -> Result<Answer<RunDiffResult>, ApiError> {
+    answer(app.issue_run_action(&params.wire(), "diff"))
+}
+
+fn issue_stage_diff(
+    app: &mut AppState,
+    params: IssueStageDiffParams,
+) -> Result<Answer<StageDiffResult>, ApiError> {
+    answer(app.issue_stage_diff(&params.wire()))
+}

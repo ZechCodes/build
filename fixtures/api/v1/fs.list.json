@@ -1,0 +1,24 @@
+{
+  "method": "fs.list",
+  "since": "1.0.0",
+  "params": {
+    "path": "~/Projects"
+  },
+  "result": {
+    "path": "/home/dev/Projects",
+    "parent": "/home/dev",
+    "is_git": false,
+    "entries": [
+      {
+        "name": "proj",
+        "path": "/home/dev/Projects/proj",
+        "is_git": true,
+        "is_hidden": false
+      }
+    ]
+  },
+  "errors": [
+    "invalid_params",
+    "internal"
+  ]
+}

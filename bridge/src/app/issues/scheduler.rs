@@ -529,7 +529,7 @@ impl AppState {
         self.issue_view_full(&issue_id, thread_detail(params))
     }
 
-    pub(in crate::app) fn issue_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn issue_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let stage_id = require_str(params, "stage_id")?;
         // Resolve the lineage that actually owns this immutable boundary, not
@@ -568,7 +568,7 @@ impl AppState {
         self.plan_run_stage_diff(&run_params, Some(issue_id))
     }
 
-    pub(in crate::app) fn issue_run_action(
+    pub(crate) fn issue_run_action(
         &mut self,
         params: &Value,
         action: &str,

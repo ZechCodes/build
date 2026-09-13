@@ -9,8 +9,12 @@
 // stay findable.
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { threadHtml } from "../src/core/thread.js";
 import { patchElement } from "../src/core/domPatch.js";
+
+const ACTIVITY_STYLES = readFileSync(resolve("src/styles.css"), "utf8");
 
 // A run draws what it stands for only when the reader has it open — a shut one
 // is a head (core/thread.js `activityRunHtml`), and which runs are open is the
@@ -486,6 +490,29 @@ describe("an open run", () => {
       "Background task",
     ]);
     expect(rows[1].querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
+  });
+
+  it("keeps every child row's one-line preview visible when the run and row are open", () => {
+    document.body.innerHTML = openActivity();
+    const group = document.querySelector(".thread-activity-group");
+    const row = group.querySelector(".thread-activity");
+    row.open = true;
+
+    expect(row.querySelector(".thread-activity-preview").textContent).toBe(ACTIVITY_ITEMS[0].data.summary);
+    expect(ACTIVITY_STYLES).not.toMatch(/\.thread-activity\[open\][^{]*\.thread-activity-preview/);
+    expect(ACTIVITY_STYLES).not.toMatch(/\.thread-activity-group\[open\]\s+\.thread-activity-preview/);
+  });
+
+  it("renders the full available expanded text through 5000 characters", () => {
+    const fullEntry = `Inspect output\n\n${"x".repeat(4984)}`;
+    document.body.innerHTML = openThreadHtml({
+      items: [{ type: "event", data: { event: "reasoning", summary: fullEntry } }],
+    });
+
+    const detail = document.querySelector(".thread-event-detail").textContent;
+    expect(detail).toContain("Inspect output");
+    expect(detail).toContain("x".repeat(4984));
+    expect(detail).not.toContain("…");
   });
 
   // The head is a `<summary>`, so the press that shuts a run is the browser's

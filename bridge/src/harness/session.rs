@@ -18,7 +18,9 @@ use std::time::Duration;
 use portable_pty::PtySize;
 use tokio::sync::{broadcast, watch};
 
-use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
+use crate::harness::adk::bounded_activity_text;
+#[cfg(test)]
+use crate::harness::adk::ACTIVITY_TEXT_LIMIT;
 use crate::harness::surfaces::AgentSurfaces;
 use crate::models::ModelChoice;
 
@@ -430,14 +432,14 @@ impl ActivityReport {
         }
     }
 
-    /// Operational text about the work, collapsed onto one line and clipped to
-    /// the activity summary bound. Every carrier that narrates its own
+    /// Operational text about the work, preserving its shape and clipped to
+    /// the expanded activity bound. Every carrier that narrates its own
     /// machinery — a declined approval, an error the session survived, a
     /// review-mode transition — builds its row here, so the bound and the
     /// report kind have one owner.
     pub fn bounded_task_update(summary: &str) -> ActivityReport {
         ActivityReport::own_work(AgentActivity::TaskUpdate {
-            summary: one_line(summary, TOOL_SUMMARY_LIMIT),
+            summary: bounded_activity_text(summary),
         })
     }
 }
@@ -632,16 +634,17 @@ mod tests {
     /// Every carrier that reports operational text builds the same bounded row
     /// through one constructor, so the clip rule has one owner.
     #[test]
-    fn a_bounded_task_update_collapses_and_clips_its_summary() {
-        let sprawling = format!("operational\n text {}", "x".repeat(TOOL_SUMMARY_LIMIT));
+    fn a_bounded_task_update_preserves_shape_and_clips_at_the_expanded_bound() {
+        let sprawling = format!("operational\n text {}", "x".repeat(ACTIVITY_TEXT_LIMIT));
         let report = ActivityReport::bounded_task_update(&sprawling);
         assert_eq!(report.parent_call_id, None);
         assert!(matches!(report.activity, AgentActivity::TaskUpdate { .. }));
         assert_eq!(
             report.activity.summary().chars().count(),
-            TOOL_SUMMARY_LIMIT + 1,
+            ACTIVITY_TEXT_LIMIT + 1,
             "the clipped summary keeps the ellipsis the bound adds"
         );
+        assert!(report.activity.summary().contains('\n'));
     }
 
     /// The capability defaults to absent, so a harness that is not opaque gets

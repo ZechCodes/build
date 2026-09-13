@@ -49,11 +49,34 @@ import {
 } from "./agentSurfacesRender.js";
 
 const ROW_CLOCK_TICK_MS = 1000;
+const SURFACE_CLEARANCE_PROPERTY = "--surface-popover-clearance";
 
 const PILL_MOTION = motionHooks({ axis: "width" });
 const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
 const nothingToRender = () => "";
+
+export function mountSurfaceClearance(viewerHost) {
+  const scroller = viewerHost.closest(".rail-panel")?.querySelector("#rail-body");
+  if (!scroller || typeof ResizeObserver === "undefined") return () => {};
+
+  const sync = () => {
+    const distanceFromBottom = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+    const wasAtBottom = distanceFromBottom <= 2;
+    const margin = Number.parseFloat(getComputedStyle(viewerHost).marginBottom) || 0;
+    const height = viewerHost.hidden ? 0 : viewerHost.getBoundingClientRect().height + margin;
+    scroller.style.setProperty(SURFACE_CLEARANCE_PROPERTY, `${height}px`);
+    if (wasAtBottom) scroller.scrollTop = scroller.scrollHeight;
+  };
+
+  const observer = new ResizeObserver(sync);
+  observer.observe(viewerHost);
+  sync();
+  return () => {
+    observer.disconnect();
+    scroller.style.removeProperty(SURFACE_CLEARANCE_PROPERTY);
+  };
+}
 
 const oneListOfKind = (kind, renderRow) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], nothingToRender),
@@ -292,6 +315,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
   let closingFrame = null;
   let visibility = emptySurfaceVisibility();
   let hidingTimer = null;
+  const disposeClearance = mountSurfaceClearance(viewerHost);
 
   const openKind = () => visibility.openKind;
 
@@ -437,6 +461,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
       pillHost.removeEventListener("click", onPillPress);
       document.removeEventListener("keydown", onEscape);
       paintedSurfaces = null;
+      disposeClearance();
       pillHost.innerHTML = "";
       notifyPillsChanged();
     },

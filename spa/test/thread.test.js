@@ -5,6 +5,24 @@ import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
 describe("conversation thread rendering", () => {
+  it("puts only delivery status and time in the message footer", () => {
+    document.body.innerHTML = threadHtml({ items: [
+      { type: "message", data: { role: "user", body: "sent", created_at: "2026-07-24T12:00:00Z" } },
+      { type: "message", data: { role: "user", body: "read", created_at: "2026-07-24T12:01:00Z", seen_at: "now" } },
+      { type: "message", data: { role: "agent", body: "reply", created_at: "2026-07-24T12:02:00Z" } },
+    ] });
+    const messages = [...document.querySelectorAll(".thread-message")];
+
+    expect(document.querySelector(".thread-message-head")).toBeNull();
+    expect(messages[0].querySelector(".thread-status").ariaLabel).toBe("Sent");
+    expect(messages[0].querySelectorAll(".thread-status svg")).toHaveLength(1);
+    expect(messages[1].querySelector(".thread-status").ariaLabel).toBe("Read");
+    expect(messages[1].querySelectorAll(".thread-status svg")).toHaveLength(2);
+    expect(messages[2].querySelector(".thread-status")).toBeNull();
+    expect([...messages[0].querySelector(".thread-message-footer").children].map((node) => node.tagName))
+      .toEqual(["SPAN", "TIME"]);
+  });
+
   it("renders messages, zero-token events, seen state, and revision resolution", async () => {
     const thread = {
       revisions: [{ id: "diff-revision-2-abcd", artifact: "diff" }],
@@ -16,7 +34,7 @@ describe("conversation thread rendering", () => {
     };
     const html = threadHtml(thread);
     expect(html).toContain("rename this");
-    expect(html).toContain("Seen");
+    expect(html).toContain('aria-label="Read"');
     expect(html).toContain("Resolved in diff-revision-2-abcd");
     expect(html).toContain("Which name?");
     expect(html).toContain("Revision created");
@@ -168,7 +186,7 @@ describe("conversation thread rendering", () => {
     expect(timeline.at(-2).textContent).toContain("Agent reported done");
     expect(timeline.at(-1).classList.contains("thread-message")).toBe(true);
     expect(timeline.at(-1).classList.contains("thread-completion")).toBe(false);
-    expect(timeline.at(-1).querySelector(".thread-message-head").textContent).toContain("Agent commented");
+    expect(timeline.at(-1).querySelector(".thread-message-head")).toBeNull();
     expect(timeline.at(-1).textContent).toContain("Implemented persistent review conversations.");
     expect(timeline.at(-1).textContent).not.toContain("Critical files");
     expect(timeline.at(-1).textContent).not.toContain("src/plan.js");
@@ -250,9 +268,7 @@ describe("conversation thread rendering", () => {
         { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
       ],
     }, { initialMessage: "Do the task" });
-    const completionHead = [...document.querySelectorAll(".thread-message-head")].at(-1).textContent;
-    expect(completionHead).toContain("Codex TUI commented");
-    expect(completionHead).not.toContain("Agent commented");
+    expect(document.querySelector(".thread-message-head")).toBeNull();
     expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI session ended");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI reported done");
   });
@@ -375,10 +391,10 @@ describe("thread cache (cursor merge for the detail polls)", () => {
     // The next cursor moves past the mutation bump so the bridge stops
     // re-shipping the same item on every poll.
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
-    // End-to-end regression guard: the re-rendered thread shows Seen.
+    // End-to-end regression guard: the re-rendered thread shows the read mark.
     const html = threadHtml(merged);
-    expect(html).toContain("Seen");
-    expect(html).not.toContain("Unread");
+    expect(html).toContain('aria-label="Read"');
+    expect(html).not.toContain('aria-label="Sent"');
   });
 
   // An EVENT mutates too, since a tool call's answer lands on the call's own
@@ -1022,6 +1038,28 @@ describe("attachments on the record", () => {
     expect(html).toContain("thread-attachment-image");
     expect(html).toContain("trace.txt");
     expect(html).toContain("2 KB");
+  });
+
+  it("opens an image in a dismissible lightbox and returns focus", async () => {
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+    ]), { threadState });
+    const preview = document.querySelector(".thread-attachment-preview");
+    wireThreadAttachments(document.body, async () => ({ mime: "image/png", content_b64: "AAAA" }), threadState);
+    preview.focus();
+    preview.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const lightbox = document.querySelector(".thread-lightbox");
+    expect(lightbox.querySelector("img").src).toBe("data:image/png;base64,AAAA");
+    expect(lightbox.querySelector("img").alt).toBe("shot.png");
+    lightbox.querySelector("button").focus();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector(".thread-lightbox")).toBeNull();
+    expect(document.activeElement).toBe(preview);
   });
 
   it("escapes an attachment name rather than rendering it", () => {

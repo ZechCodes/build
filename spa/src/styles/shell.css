@@ -581,7 +581,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    nothing on a tick that says nothing; this is the belt beside it. (Chrome and
    Android honour it; Safari ignores the property and loses nothing.) */
 .rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-anchor:none;
-  padding:14px 16px 18px; }
+  padding:14px 16px calc(18px + var(--surface-popover-clearance, 0px));
+  scroll-padding-bottom:var(--surface-popover-clearance, 0px); }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the
    terminal is its own viewport, and the pane sizes it to this box. The
    composer is gone in TUI mode, so this row is the whole column below the
@@ -595,7 +596,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-body .thread-title { display:none; }
 .rail-body .thread-revision-view { margin-left:0; }
 .rail-body .thread-timeline { gap:22px; padding:4px 0 16px; }
-.rail-body .thread-message.agent .thread-message-head { opacity:.82; }
 .rail-body .thread-message.agent .thread-body { padding-right:8px; }
 /* Where the conversation would be, on a branch that has no agent yet: which
    agent to start one on. Only the layout is said here — the cards stack,
@@ -635,7 +635,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .message-viewing-context{margin:0 0 7px}
 .viewing-context-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--ink2);font-size:11px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .viewing-context-chip.selection{color:var(--green);border-color:color-mix(in srgb,var(--green) 55%,var(--line))}
-.viewing-context-chip button{border:0;background:none;color:inherit;padding:0;cursor:pointer;font:inherit}
+.viewing-context-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.viewing-context-chip button{flex:none;border:0;background:none;color:inherit;padding:0;cursor:pointer;font:inherit}
 .viewing-context-detail{position:relative;max-width:100%}
 .viewing-context-detail summary{cursor:pointer;list-style:none}
 .viewing-context-detail pre{max-width:320px;max-height:160px;overflow:auto;margin:5px 0 0;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);white-space:pre-wrap;font-size:11px}

@@ -23,11 +23,15 @@ mod translation;
 
 #[cfg(test)]
 pub(crate) use activity::reports_minted_by;
+#[cfg(test)]
+pub(crate) use protocol::ACTIVITY_TEXT_LIMIT;
 pub(crate) use protocol::TOOL_SUMMARY_LIMIT;
 pub use session::AdkSession;
 #[cfg(test)]
 pub(crate) use translation::tool_result_text;
-pub(crate) use translation::{one_line, task_status_failed, task_status_is_terminal};
+pub(crate) use translation::{
+    bounded_activity_text, one_line, task_status_failed, task_status_is_terminal,
+};
 
 pub struct AdkHarness;
 

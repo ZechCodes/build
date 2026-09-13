@@ -19,6 +19,8 @@ import { mountSplitMenu } from "./splitButton.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
 import { viewingContextChipsHtml } from "./viewingContext.js";
+import { ICON_CHECK } from "./icons.js";
+import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -637,7 +639,9 @@ function attachmentsHtml(attachments, threadState) {
       if (isImageAttachment(attachment.mime)) {
         const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
         return `<figure class="thread-attachment-figure${refused}">
-          <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
+          <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
+            <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
+          </button>
           <figcaption>${name}</figcaption>
         </figure>`;
       }
@@ -733,11 +737,21 @@ function outcomeMarkerHtml(outcome, agentLabel) {
 const messageContextHtml = (message) => message.viewing_context?.items?.length
   ? `<div class="message-viewing-context">${viewingContextChipsHtml(message.viewing_context)}</div>` : "";
 
-function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
+function messageFooterHtml(message) {
   const user = message.role === "user";
   const status = user
-    ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
+    ? `<span class="thread-status" role="img" aria-label="${message.seen_at ? "Read" : "Sent"}">${ICON_CHECK}${message.seen_at ? ICON_CHECK : ""}</span>`
     : "";
+  const time = timeHtml(message.created_at);
+  return status || time ? `<div class="thread-message-footer">${status}${time}</div>` : "";
+}
+
+const resolvedRevisionHtml = (message) => message.resolved_by_revision
+  ? `<div class="thread-message-resolution"><button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button></div>`
+  : "";
+
+function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
+  const user = message.role === "user";
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
@@ -750,8 +764,8 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
-      <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
       ${outcomeMarkerHtml(message.outcome, agentLabel)}
+      ${resolvedRevisionHtml(message)}
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
@@ -759,6 +773,7 @@ function messageHtml(message, agentLabel, liveOptions, offer, threadState) {
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, liveOptions, offer, threadState)}
+      ${messageFooterHtml(message)}
     </div>
   </article>`;
 }
@@ -1677,6 +1692,21 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
         image.closest(".thread-attachment-figure")?.classList.add("unavailable");
       },
     );
+  });
+
+  root.querySelectorAll("button.thread-attachment-preview").forEach((preview) => {
+    preview.onclick = async () => {
+      const image = preview.querySelector("img.thread-attachment-image");
+      const path = image?.dataset.attachmentPath;
+      if (!path) return;
+      try {
+        const dataUrl = image.getAttribute("src") || await dataUrlFor(path);
+        if (dataUrl) openThreadAttachmentLightbox(preview, { src: dataUrl, alt: image.alt });
+      } catch {
+        threadState.rememberAttachment(path, null);
+        image.closest(".thread-attachment-figure")?.classList.add("unavailable");
+      }
+    };
   });
 
   root.querySelectorAll("button.thread-attachment").forEach((chip) => {

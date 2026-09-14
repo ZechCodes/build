@@ -81,7 +81,13 @@ describe("the size a work item is remembered at", () => {
   it("keys the memory by the branch or the issue, so each is its own console", () => {
     expect(consoleKey({ kind: "branch", projectId: "p1", branch: "build/login" })).toBe("branch:p1:build/login");
     expect(consoleKey({ kind: "issue", projectId: "p1", issueId: "i-7" })).toBe("issue:i-7");
-    expect(consoleKey({ kind: "workspace", workspaceId: "ws-7", sourceId: "src-2" })).toBe("workspace:ws-7");
+    // A workspace lives on a machine, and two machines can hand out the same
+    // workspace id, so the key carries the device the way every other
+    // workspace key does (core/deviceKey.js mints it).
+    expect(consoleKey({ kind: "workspace", deviceId: "dev-1", workspaceId: "ws-7", sourceId: "src-2" })).toBe(
+      "workspace:dev-1/ws-7",
+    );
+    expect(consoleKey({ kind: "workspace", deviceId: "dev-2", workspaceId: "ws-7" })).toBe("workspace:dev-2/ws-7");
   });
 
   it("round-trips through the device's storage, shut until something is chosen", () => {

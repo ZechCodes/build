@@ -6,7 +6,8 @@
 // clear nothing. So every verb asks this module for its call, and a device that
 // cannot answer right now hands back one that refuses in the same words the row
 // is greyed with — the verb sites are written once, for every row, whichever
-// machine it came from.
+// machine it came from. A surface that is about one machine rather than one row
+// — the create dialog — asks the same way, by device id.
 
 import { contextFor, homeContext } from "./deviceContexts.js";
 
@@ -15,24 +16,30 @@ import { contextFor, homeContext } from "./deviceContexts.js";
 const NO_DEVICE = Object.freeze({ call: null, disabled: "Device offline" });
 
 /**
- * The device a row's verbs run against: `{ call, disabled }`.
+ * What one machine offers right now: `{ call, disabled }`.
  *
- * A row this client is holding itself — a capture taken while no device could
- * take it — names no device, and belongs where creation goes: home.
+ * Naming no machine means the one where creation goes: home. A row this client
+ * is holding itself — a capture taken while no device could take it — names
+ * none, and so does a surface that is about nowhere in particular.
  */
-export function verbTarget(row) {
-  const context = row && row.deviceId ? contextFor(row.deviceId) : homeContext();
+export function deviceTarget(deviceId) {
+  const context = deviceId ? contextFor(deviceId) : homeContext();
   if (!context || context.offline || !context.call) return NO_DEVICE;
   return { call: context.call, disabled: false };
 }
 
-/** The call a row's verbs make. A row whose device cannot answer gets one that
- *  refuses, saying what the row itself says, so no verb site asks whose row it
- *  is or whether the machine is there. */
-export function verbCall(row) {
-  const { call, disabled } = verbTarget(row);
+/** The call a surface about one machine makes: that machine's, or one that
+ *  refuses in the words its rows are greyed with — so no call site asks whether
+ *  the machine is there. */
+export function deviceCall(deviceId) {
+  const { call, disabled } = deviceTarget(deviceId);
   return call || (() => Promise.reject(new Error(disabled)));
 }
+
+/** The device a row's verbs run against, and the call they make: the row says
+ *  which machine answered for it, so no verb site asks whose row it is. */
+export const verbTarget = (row) => deviceTarget(row && row.deviceId);
+export const verbCall = (row) => deviceCall(row && row.deviceId);
 
 /**
  * After the paint: grey what no device can answer for right now, and shut the

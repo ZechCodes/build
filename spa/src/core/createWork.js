@@ -23,7 +23,7 @@
 
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
-import { verbCall } from "./inboxDevices.js";
+import { deviceCall } from "./inboxDevices.js";
 import { refreshFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -95,9 +95,9 @@ function branchPickerHtml(state) {
 /** The project's branches, and the reason there are none to show. A listing
  *  that could not be read still leaves the field able to cut a branch by name,
  *  so the failure is an answer here and not a throw. */
-async function readBranches({ callRpc, projectId }) {
+async function readBranches({ askDevice, projectId }) {
   try {
-    const listing = await callRpc("git.branches", { project_id: projectId });
+    const listing = await askDevice("git.branches", { project_id: projectId });
     return { rows: (listing && listing.branches) || [], error: "" };
   } catch (error) {
     return { rows: [], error: error.message || String(error) };
@@ -129,7 +129,8 @@ const issueAction = (projectId, goal, choice) => ({
  * answers the whole pressable thing — a call and where its answer lands — or
  * null while the tab is asking for nothing. `onTyped` answers the highlight
  * the typed text asks for, or null where the tab has no highlight to move.
- * `load` answers what the tab preloads as { rows, error }, or is null where it
+ * `load` answers what the tab preloads as { rows, error } — asked with
+ * { askDevice, projectId }, the dialog's own machine — or is null where it
  * preloads nothing. `handleKey` answers whether the key was the tab's, and
  * `controls` is what a tab's keys can do: move its highlight, or submit.
  */
@@ -222,7 +223,7 @@ export function openCreateWork({ projectId, deviceId, projectName, kind = "branc
   // Asked once, at the open: one bridge answers this dialog for its whole life,
   // and a machine that cannot answer refuses in the words the rail greys its
   // rows with (core/inboxDevices.js).
-  const callRpc = verbCall({ deviceId });
+  const askDevice = deviceCall(deviceId);
   const state = {
     projectId,
     projectName: projectName || projectId,
@@ -252,7 +253,7 @@ export function openCreateWork({ projectId, deviceId, projectName, kind = "branc
     const slot = state.loaded[state.kind];
     if (slot.requested) return;
     slot.requested = true;
-    const { rows, error } = await load({ callRpc, projectId: state.projectId });
+    const { rows, error } = await load({ askDevice, projectId: state.projectId });
     slot.rows = rows;
     slot.error = error;
     slot.done = true;
@@ -346,7 +347,7 @@ export function openCreateWork({ projectId, deviceId, projectName, kind = "branc
     paint();
     let answer = null;
     try {
-      answer = action.call ? await replyOrNothing(callRpc(action.call.method, action.call.params)) : null;
+      answer = action.call ? await replyOrNothing(askDevice(action.call.method, action.call.params)) : null;
     } catch (error) {
       state.busy = false;
       state.error = error.message || String(error);

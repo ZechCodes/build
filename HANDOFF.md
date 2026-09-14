@@ -587,7 +587,7 @@ dropped in silence.
 The complexity ratchet reads **65** — both sides retired counted functions, the
 integration added no new `eslint-disable-next-line complexity`, and the rail's
 projects face retired one when it stopped painting checkout blocks. The jsdom
-suite is 246 files / 4225 tests, green with lint and build.
+suite is 246 files / 4247 tests, green with lint and build.
 
 After the packages landed, a review pass over the merged tree found and fixed
 these, each with its case first:
@@ -649,13 +649,110 @@ A third review pass, over the tree the second one left:
 
 ### Verified
 
-Automated only: `npm run lint`, the full vitest run, `npm run build`, semgrep
-and gitleaks, on every commit of this integration.
+Automated on every commit of this integration: `npm run lint`, the full vitest
+run, `npm run build`, semgrep and gitleaks.
 
-**The two-bridge browser pass is not claimed here.** The multi-device note above
-records a pass run on 2026-09-14 at `4b2e84e8`, before this merge; workspaces,
-the directory tabs, the per-device version gate and main's chrome have not been
-driven in a browser on two bridges since. That pass is the orchestrator's to run
-after this workflow, with
-[`deploy/compose.two-bridges.yml`](deploy/compose.two-bridges.yml) and
-[`web/pair-another.mjs`](web/pair-another.mjs), which are still the recipe.
+### Verified in the browser
+
+The two-bridge pass **was** run on the integrated tree, on 2026-09-14, with the
+build at `1b522a64` — two bridges, **Laptop** and **Desktop**, paired to one
+account, driven with Playwright. The recipe is the same one the multi-device
+note above records and is still checked in:
+[`deploy/compose.two-bridges.yml`](deploy/compose.two-bridges.yml) stands the
+second bridge up and [`web/pair-another.mjs`](web/pair-another.mjs) pairs it.
+
+What passed:
+
+- Both machines' workspaces in one rail, with the device tag on the names the
+  two machines shared, and the project blocks device-qualified.
+- A workspace created from a block landing on that block's machine, checked in
+  that bridge's own filesystem rather than in the SPA.
+- Desktop's workspace opening on Desktop — its device-only commit and file shown
+  in Changes and Files — the switcher listing only that machine's workspaces, the
+  directory tabs routing, and the console attaching to the right container and
+  moving with the route.
+- Device-less workspace URLs rewriting themselves to the creation device, both
+  in-app and on reload.
+- One bridge stopped: its rows greyed and wearing the offline word within a
+  second, its block `+` and its Done shut, the open surface stripped with its
+  last state held, the other machine usable throughout, and recovery without a
+  reload.
+- Both stopped: the waiting screen. One back: the app rendered once, without a
+  reload.
+- The picker filtering the rail, the projects face and the toolbar's project
+  menu without touching the route, and surviving a reload.
+- **New project** landing on the creation device (checked in that bridge's
+  filesystem), and the capture decision page offering only that machine's
+  projects.
+- Per-device relay sockets, with the envelopes partitioned per bridge, and a
+  commit on one machine refreshing only that machine's surface.
+- The archive merging both machines newest-first, and each row opening on its
+  own machine.
+- Both waiting-screen sentences: every machine gone, and machines the account
+  reports online that this client has not reached yet.
+- The phone viewport (390x844): the rail popover and its scrim, the collapsed
+  directory menu routing, the picker in the rail foot, Done tappable, and no
+  horizontal scroll.
+
+What could not be run:
+
+- **The version gate live.** There is no knob to make a bridge report another
+  API major, so both gates could only be driven in jsdom
+  (`gateVersionDom.test.js`).
+- **The shell compose box.** Main removed it; the captures this pass needed were
+  seeded into the bridges directly.
+
+Defects the pass turned up, each fixed in a commit of its own above this note,
+each with its case first:
+
+- **New project navigated to the wrong machine.** The route was minted on the
+  raw `project.create` answer, which carries no device, so a device-less link
+  was resolved by asking every machine and handed back another machine's project
+  of the same number (created on Laptop, opened Desktop's `proj-3`). Creation
+  already knows the machine it asked, and the route says it now.
+- **The Add project sheet could not be scrolled.** With two sources added it was
+  taller than a 1440x950 frame and neither it nor the scrim scrolled, so Create
+  sat below the fold. The bound the phone block already put on the sheet is at
+  every width now.
+- **A failed workspace said its work summary was unavailable** on its rail row,
+  while the toolbar's switcher said it had failed. Both lists ask one wording,
+  which gives the failure and the first line of its reason.
+- **The console could not be opened on a phone.** The conversation panel was
+  laid over the view column to the bottom of `#view`, and the console is a row
+  of `#view`: the composer bar landed exactly on `#console-toggle`. The panel
+  stops above whatever the console is showing.
+- **A phone opened on the conversation rather than on the work.** The panel is
+  an overlay at that width, and it came out by default, so a workspace showed
+  its conversation and nothing else. It starts out only where the conversation
+  and the work both fit; a reader's own choice still holds at either width.
+- **Archived rows never named their machine**, so two archived workspaces called
+  `repo` from different devices read as one. A row says its machine after the
+  title by the rule the rail says it after a project name, and says nothing
+  where one machine holds the title.
+- **"WebSocket is already in CLOSING or CLOSED state" on every reconnect.** A
+  relay write resuming after the socket had gone. `sendOverSocket` refuses a
+  socket that is not open, in the words a lost channel is refused in, so the
+  call that frame belonged to fails at once.
+- **The waiting screen's foot was not a row at all** — nothing styles a bare
+  `.row` — so the ⟳ was clipped at the frame and the buttons crowded the
+  sentence.
+
+### Found on main, not fixed here
+
+Bridge-side, or a product call main has to make. All of these were reproduced in
+this pass; none is the SPA's to fix.
+
+- **A second workspace in a project always fails.** The git worktree is named
+  after the source mount (`bridge/src`'s worktree naming), so every workspace
+  after the first collides: `failed to make directory
+  '<source>/.git/worktrees/<mount>': directory exists`.
+- **A project's user-given name is discarded.** `bridge/src/app/projects/mod.rs`
+  `add_project` names the project after its first source's basename, so two
+  same-named projects on one machine are indistinguishable.
+- **The bridge never creates its `projects_dir`.** On a fresh bridge the folder
+  browser shows `cannot open …: No such file or directory (os error 2)` for
+  `~/.build/projects`.
+- **The toolbar shows a project scope on `#/inbox` with nothing open**:
+  `scopedProject` falls back to the first project.
+- **There is no knob to make a bridge report another API major**, which is why
+  the version gate above could only be verified in jsdom.

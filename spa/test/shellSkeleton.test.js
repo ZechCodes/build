@@ -185,8 +185,11 @@ describe("the shell's grid", () => {
     // phone cannot afford to lose.
     expect(panel).toMatch(/position:absolute/);
     expect(panel).toMatch(/top:calc\(var\(--toolbar-h\) \+ 1px\)/);
-    expect(panel).toMatch(/right:var\(--agent-strip\)/);
     expect(panel).not.toMatch(/top:0/);
+    // The strip has left the right edge for the column's foot, so the panel
+    // takes the whole width and stops on the strip along its bottom instead.
+    expect(panel).toMatch(/right:0/);
+    expect(panel).toMatch(/bottom:calc\(var\(--console-space\) \+ var\(--agent-strip\)\)/);
   });
 });
 
@@ -295,7 +298,11 @@ describe("the console", () => {
   it("takes the bottom row of the view column, and overlays it at full size", () => {
     expect(shellCss).toMatch(/#console-region \{[^}]*height:var\(--console-bar\)/);
     expect(shellCss).toMatch(/#console-region\[data-size="half"\] \{[^}]*height:var\(--console-half\)/);
-    const full = shellCss.match(/#console-region\[data-size="full"\] \{[^}]*\}/)[0];
+    // The base rule, not the phone's narrowing of it: at that width the strip
+    // is a row at the column's foot and the overlay stops on it from below.
+    const full = shellCss
+      .match(/#console-region\[data-size="full"\] \{[^}]*\}/g)
+      .find((rule) => rule.includes("position:absolute"));
     expect(full).toMatch(/position:absolute/);
     // …and never over the toolbar or the bubble strip: where you are standing
     // and what every agent is doing stay legible under an open console.

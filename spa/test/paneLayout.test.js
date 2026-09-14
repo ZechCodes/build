@@ -1033,22 +1033,25 @@ describe("the view column's seam with the agent rail", () => {
   it("holds the seam where the phone lays the panel over the view", () => {
     const overlay = rulesFor(".rail-panel").find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
     expect(overlay).toBeTruthy();
-    // The overlay's leading edge is the same border the docked panel states, and
-    // its trailing edge stops ON the strip's — so the panel covers the work
-    // beside it without painting a second line over the strip's own.
+    // The overlay draws no side rule of its own. On a phone the strip has left
+    // the right edge for the column's foot (below), so the panel takes the
+    // whole width and meets the strip along its bottom instead.
     expect(sideBorders(overlay)).toEqual([]);
-    expect(declaration(overlay.body, "right")).toBe("var(--agent-strip)");
+    expect(declaration(overlay.body, "right")).toBe("0");
   });
 
   it("stops the full console on the same line, so the seam runs unbroken", () => {
     // The console at full is an overlay over the view column. It clears the
     // strip by the strip's own width, which is where the strip's border is —
     // one pixel further and the overlay would paint out the divide it stops at.
-    const full = cssRules().find((rule) => rule.selector === '#console-region[data-size="full"]');
+    // The base rule — where the strip is a column at the view's right edge. A
+    // phone turns the strip into a row at the foot and moves the same stop to
+    // the overlay's bottom edge (see "the bubble strip on a phone" below).
+    const full = baseRule('#console-region[data-size="full"]');
     expect(full).toBeTruthy();
     expect(declaration(full.body, "right")).toBe("var(--agent-strip)");
     for (const size of ["collapsed", "half", "full"]) {
-      const rule = cssRules().find((r) => r.selector === `#console-region[data-size="${size}"]`);
+      const rule = baseRule(`#console-region[data-size="${size}"]`);
       if (rule) expect(sideBorders(rule)).toEqual([]);
     }
   });
@@ -1286,28 +1289,81 @@ describe("the creation sheet", () => {
   });
 });
 
-describe("the console toggle on a phone", () => {
+// ---- the bubble strip on a phone --------------------------------------------
+// A column of bubbles down the right edge costs a phone the width the work is
+// read in, and puts the one row that says what every agent is doing where a
+// thumb cannot reach it. The strip runs across the foot of the view column
+// instead — above the console bar, which keeps the very bottom — and the
+// conversation opens above the strip rather than beside it.
+describe("the bubble strip on a phone", () => {
   const phoneRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
 
-  // At 390x844 with a workspace open the conversation panel was laid over the
-  // view column to the bottom of #view at z-index 30 — and the console is a row
-  // of #view, not of the body the panel covers. The composer bar landed exactly
-  // on #console-toggle, so the console could not be opened at all; with it open
-  // the New agent picker, which sits at the foot of the panel, sat on it
-  // instead. The panel stops above whatever the console is showing.
-  it("leaves the console's row uncovered by the conversation panel", () => {
-    const collapsed = phoneRule("#view:has(#console-region[data-size]) .rail-panel");
-    const half = phoneRule('#view:has(#console-region[data-size="half"]) .rail-panel');
-    expect(declaration(collapsed.body, "bottom")).toBe("var(--console-bar)");
-    expect(declaration(half.body, "bottom")).toBe("var(--console-half)");
+  it("runs across the column's foot instead of down its edge", () => {
+    const strip = phoneRule(".rail-strip");
+    expect(strip).toBeTruthy();
+    expect(declaration(strip.body, "position")).toBe("absolute");
+    expect(declaration(strip.body, "flex-direction")).toBe("row");
+    expect(declaration(strip.body, "left")).toBe("0");
+    expect(declaration(strip.body, "right")).toBe("0");
+    expect(declaration(strip.body, "height")).toBe("var(--agent-strip)");
+    // More agents than fit scroll sideways rather than squeezing to nothing.
+    expect(declaration(strip.body, "overflow-x")).toBe("auto");
+    expect(declaration(baseRule(".rail-bubble").body, "flex")).toBe("none");
+    // Each divide is still stated by the surface that begins at it — and the
+    // strip's leading edge is its top now, not its left.
+    expect(declaration(strip.body, "border-left")).toBe("0");
+    expect(declaration(strip.body, "border-top")).toBe("1px solid var(--line)");
+    // The strip leaves the rail's box out of the flow, so the work keeps the
+    // whole width — and the rail's desktop column is untouched.
+    expect(declaration(phoneRule("#agent-rail").body, "position")).toBe("static");
+    expect(declaration(baseRule("#agent-rail").body, "grid-column")).toBe("3");
+  });
+
+  // At 390x844 the conversation panel was laid over the view column to the
+  // bottom of #view — and the console is a row of #view, not of the body the
+  // panel covers. The composer bar landed exactly on #console-toggle, so the
+  // console could not be opened at all. Now two things have to stand above the
+  // console, so how much of the foot it is taking is stated once and both read
+  // it: two rules working it out separately are two rules that drift.
+  it("clears the console from one statement of what the console is taking", () => {
+    const space = (selector) => declaration(phoneRule(selector).body, "--console-space");
+    expect(space("#view")).toBe("0px");
+    expect(space("#view:has(#console-region[data-size])")).toBe("var(--console-bar)");
+    expect(space('#view:has(#console-region[data-size="half"])')).toBe("var(--console-half)");
+    // At full the console leaves the grid and overlays the column, stopping on
+    // the strip — so it takes none of the column's foot, and the strip and the
+    // console toggle on it stay reachable.
+    expect(space('#view:has(#console-region[data-size="full"])')).toBe("0px");
+    const full = phoneRule('#console-region[data-size="full"]');
+    expect(declaration(full.body, "bottom")).toBe("var(--agent-strip)");
+    expect(declaration(full.body, "right")).toBe("0");
 
     // The room reserved is the room the console takes, stated once each.
     expect(declaration(baseRule("#console-region").body, "height")).toBe("var(--console-bar)");
     expect(declaration(baseRule('#console-region[data-size="half"]').body, "height")).toBe("var(--console-half)");
 
-    // A surface with no console mounted at all keeps the whole column: the
-    // reservation hangs off the console region being there.
-    expect(declaration(phoneRule(".rail-panel").body, "bottom")).toBe("0");
+    // The strip stands on the console; the panel stands on the strip. So the
+    // composer at the panel's foot and the Done control in its head are clear
+    // of the strip, and the strip is clear of the console bar.
+    expect(declaration(phoneRule(".rail-strip").body, "bottom")).toBe("var(--console-space)");
+    expect(declaration(phoneRule(".rail-panel").body, "bottom"))
+      .toBe("calc(var(--console-space) + var(--agent-strip))");
+  });
+
+  it("opens the unpinned card above the strip, pointing down at its bubble", () => {
+    const card = phoneRule("#agent-rail.rail-popover .rail-panel");
+    expect(card).toBeTruthy();
+    expect(declaration(card.body, "top")).toBe("auto");
+    expect(declaration(card.body, "bottom"))
+      .toBe("calc(var(--console-space) + var(--agent-strip) + 8px)");
+    expect(declaration(card.body, "width")).toBe("auto");
+    // The notch turns with the strip: on the card's bottom edge, at the open
+    // bubble's place along it.
+    const notch = phoneRule("#agent-rail.rail-popover .rail-panel::before");
+    expect(declaration(notch.body, "top")).toBe("auto");
+    expect(declaration(notch.body, "right")).toBe("auto");
+    expect(declaration(notch.body, "bottom")).toBe("-6px");
+    expect(declaration(notch.body, "left")).toBe("clamp(14px, var(--rail-anchor, 50%), calc(100% - 14px))");
   });
 });
 

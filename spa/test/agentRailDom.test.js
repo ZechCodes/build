@@ -3420,7 +3420,10 @@ describe("the one status row", () => {
     const phoneRule = shellCss.match(/@media \(max-width: 760px\) \{[\s\S]*?\.rail-panel \{([^}]*)\}/);
     expect(phoneRule).not.toBe(null);
     expect(phoneRule[1]).toContain("left:0");
-    expect(phoneRule[1]).toContain("right:var(--agent-strip)");
+    // The strip runs across the column's foot at this width, not down its
+    // edge, so the panel takes the whole width and stops on it from above.
+    expect(phoneRule[1]).toContain("right:0");
+    expect(phoneRule[1]).toContain("bottom:calc(var(--console-space) + var(--agent-strip))");
     expect(phoneRule[1]).toContain("width:auto");
     expect(phoneRule[1]).not.toContain("100vw");
   });

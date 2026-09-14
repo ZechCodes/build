@@ -10,6 +10,10 @@ export const esc = (value) =>
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** What a refusal says on the surface that asked. A thrown Error carries the
+ *  words; anything else a call rejected with is shown as it reads. */
+export const messageOf = (error) => (error instanceof Error ? error.message : String(error));
+
 /** The offline banner sentence: honest about WHEN the device went unreachable
  *  (a moving "reconnecting…" claim reads as a lie while nothing is happening)
  *  and calm about what resumes automatically. */

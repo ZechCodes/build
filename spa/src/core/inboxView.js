@@ -56,6 +56,7 @@ import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 import { publishInboxAttentionCount } from "./inboxAttention.js";
+import { messageOf } from "./text.js";
 
 let items = [];
 // The board's rows for lifecycle verbs in flight (board.list's `pending`): a
@@ -78,8 +79,6 @@ let folds = new Map();
 // project id every RPC still wants.
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
-
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
 /**
  * Tell the bridge this entry has been read. No agent id means the whole entry —

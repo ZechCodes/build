@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { allDevicesOfflineText, esc, humanAge, offlineBannerText } from "../src/core/text.js";
+import { allDevicesOfflineText, esc, humanAge, messageOf, offlineBannerText } from "../src/core/text.js";
 
 describe("esc", () => {
   it("escapes the HTML-significant characters and stringifies nullish", () => {
@@ -14,6 +14,16 @@ describe("esc", () => {
     // an unescaped quote would let a hostile filename inject live attributes.
     expect(esc('x" onmouseover="alert(1)')).toBe("x&quot; onmouseover=&quot;alert(1)");
     expect(esc("x' onmouseover='alert(1)")).toBe("x&#39; onmouseover=&#39;alert(1)");
+  });
+});
+
+describe("messageOf", () => {
+  it("shows the words a refusal carried, whatever it was thrown as", () => {
+    // Every surface that prints a failed call goes through this, so a rejection
+    // that is not an Error still has to read as something.
+    expect(messageOf(new Error("unknown project_id: p2"))).toBe("unknown project_id: p2");
+    expect(messageOf("the relay is offline")).toBe("the relay is offline");
+    expect(messageOf({ code: 7 })).toBe("[object Object]");
   });
 });
 

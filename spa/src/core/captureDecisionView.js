@@ -17,7 +17,7 @@ import { homeFeedView } from "./deviceContexts.js";
 import { confirmAction, isConfirmOpen } from "./confirm.js";
 import { notifyError } from "./notify.js";
 import { branchOptions } from "./compose.js";
-import { esc } from "./text.js";
+import { esc, messageOf } from "./text.js";
 import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { forgetCaptureRecord } from "./composeView.js";
@@ -31,8 +31,6 @@ import {
   manualRouteParams,
 } from "./captureDecision.js";
 import "../styles/shell.css";
-
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
 const EDITABLE = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 

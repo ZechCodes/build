@@ -16,6 +16,7 @@ import { $ } from "../dom.js";
 import { adoptCaptureRecord } from "./composeView.js";
 import { refreshFeed } from "./taskFeed.js";
 import { verbCall } from "./inboxDevices.js";
+import { messageOf } from "./text.js";
 
 let repaint = () => {};
 let entryFor = () => null;
@@ -32,8 +33,6 @@ let rerouteKey = null; // the capture row whose destination picker is open
 let rerouteBranchProject = null; // the project in that picker whose branch field is open
 const capturesBeingRerouted = new Set();
 const errors = new Map(); // capture id → the message its row is showing
-
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
 /** The destination picker as the row painter needs it. */
 export const reroutePicker = () => ({ rerouteKey, rerouteBranchProject });

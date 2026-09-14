@@ -34,7 +34,7 @@ import {
   withoutQueued,
 } from "./compose.js";
 import { replyOrNothing } from "./session.js";
-import { esc } from "./text.js";
+import { esc, messageOf } from "./text.js";
 import "../styles/shell.css";
 
 const CHOICE_PREFIX = "compose-choice";
@@ -45,8 +45,6 @@ const listeners = new Set(); // who repaints when the held captures change
 let feed = { items: [], projects: [] };
 let box = null; // the open box's state, or null while it is shut
 let mounted = false;
-
-const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 const canSend = () => !!App.call && !App.offline;
 const projectNameOf = (projectId) =>
   (feed.projects.find((project) => project.id === projectId) || {}).name || projectId || "";

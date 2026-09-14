@@ -63,7 +63,9 @@ itself never leaves the api Secret.
 
 Every device you have paired shows up at once. The client opens a session to
 each one, so the inbox and the projects rail list all of your machines' work
-together and each row says which machine it is on. The device dropdown at the
+together. Where two machines hold projects with the same name, that name
+carries the machine beside it — in the rail's project headings and in the
+toolbar's project menu — so the two are never confused. The device dropdown at the
 top of the rail **filters** that list — **All devices**, or one machine — and
 nothing else: it does not move where anything runs, and a branch or issue you
 have open stays open whichever way the filter is set.

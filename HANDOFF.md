@@ -269,8 +269,10 @@ to ask about.
 ### Shipped
 
 - **A context per paired device** (`spa/src/core/deviceContexts.js`). One
-  object per machine — its session and `call`, its cache scope, its chat
-  repository (drafts and controllers), its harness catalog, its offline mark —
+  object per machine — its session and `rpc` (the one caller everything
+  outside the registry holds, which reads whichever session that device is on
+  now), its cache scope, its chat repository (drafts and controllers), its
+  harness catalog, its offline mark —
   created when that device first answers and kept through reconnects, which
   only replace the transport. Three questions replace "which device is
   current": `homeContext()` (creation), `routeContext(App.route)` (a surface),
@@ -347,7 +349,7 @@ Node 22 (CI, `spa/.nvmrc`) and on Node 26, with or without
    device; stop one bridge — its rows grey and the other keeps working; stop
    both — the waiting screen; start one — the app returns without a reload.
    Everything claimed above is verified by the jsdom suite only
-   (230 files / 4066 tests) plus lint, build, semgrep and gitleaks.
+   (232 files / 4087 tests) plus lint, build, semgrep and gitleaks.
 2. **Two real bridges of different releases.** The harness catalog is read per
    device precisely so two machines can offer different agents, but no test
    run has had two bridges built from different releases on one account.
@@ -355,8 +357,9 @@ Node 22 (CI, `spa/.nvmrc`) and on Node 26, with or without
 ### Follow-ons not done
 
 1. **Bridge-minted globally unique project ids.** The client mints a
-   `device:project` key for its own lists and keys; the wire still carries the
-   bare id each bridge minted, so a project id is only unique per machine.
+   `${deviceId}/${projectId}` key (`spa/src/core/deviceKey.js`) for its own
+   lists and keys; the wire still carries the bare id each bridge minted, so a
+   project id is only unique per machine.
 2. **Account-wide capture routing.** A capture goes to the creation device and
    that machine's router answers it. Fan-in across machines is still a
    follow-on, as `UX Redesign Decisions.md` says.
@@ -368,6 +371,6 @@ Node 22 (CI, `spa/.nvmrc`) and on Node 26, with or without
    for an *arrival* at a machine that cannot answer, and to name the machine
    over a surface that was already open when its device went. Inside such a
    frozen surface the buttons are still live and refuse through the context's
-   `call` rejecting; disabling each verb in place was not built.
+   `rpc` rejecting; disabling each verb in place was not built.
 5. **`spa/src/sheets/clone.js` was deleted** rather than migrated — nothing in
    the SPA opened it (the bridge's `project.clone` RPC is untouched).

@@ -33,14 +33,16 @@ export function pickDevice(candidates, { homeDeviceId, deviceOrder } = {}) {
   return atHome || firstListed(rows, deviceOrder) || rows[0] || null;
 }
 
-const branchRouteFor = (row, tab) =>
-  row && row.branch ? { name: "branch", projectId: row.project_id, branch: row.branch, tab: tab || "changes" } : null;
+/** The branch surface a row opens, on the tab the URL named. Null when the row
+ *  has no branch name: an entity no URL can address belongs on the inbox. */
+const branchRouteFor = (row, ref) =>
+  row.branch ? { name: "branch", projectId: row.project_id, branch: row.branch, tab: ref.tab || "changes" } : null;
 
 /** An issue whose implementation is in flight has no row of its own — the
  *  branch row carries its id, and the branch is the nearest surface the URL can
  *  open. */
 function issueRouteFor(row, ref) {
-  if (row.kind === "branch") return branchRouteFor(row, ref.tab);
+  if (row.kind === "branch") return branchRouteFor(row, ref);
   const route = { name: "issue", projectId: row.project_id, id: ref.id };
   if (ref.stage) route.stage = ref.stage;
   return route;
@@ -49,24 +51,23 @@ function issueRouteFor(row, ref) {
 const byId = (field) => (ref, feed) => feed.items.filter((row) => row[field] === ref.id);
 
 /**
- * What each kind of unresolved reference is looked up as: the candidates a feed
- * offers for it, and the route the chosen one opens.
+ * What each kind of unresolved reference is looked up as: the rows a feed
+ * offers as candidates for it, and the route the chosen one opens.
  *
  * A `project` ref is a work URL that named no device; the rest are legacy ids.
- * Adding the fifth case to an if-chain is what took this past the complexity
- * cap, and each kind reads as its own two lines here.
  */
-const CANDIDATES = Object.freeze({
-  run: { rows: byId("run_id"), route: (row, ref) => branchRouteFor(row, ref.tab) },
-  worktree: { rows: byId("worktree_id"), route: (row, ref) => branchRouteFor(row, ref.tab) },
+const REFERENCE_KINDS = Object.freeze({
+  run: { rows: byId("run_id"), route: branchRouteFor },
+  worktree: { rows: byId("worktree_id"), route: branchRouteFor },
   // A primary checkout is named by its project alone, so the project has to
   // match — the primary row of some other project is not what the URL meant.
   primary: {
     rows: (ref, feed) => feed.items.filter((row) => row.primary && row.project_id === ref.projectId),
-    route: (row, ref) => branchRouteFor(row, ref.tab),
+    route: branchRouteFor,
   },
   issue: { rows: byId("issue_id"), route: issueRouteFor },
-  // A plain folder has no work row at all, so the projects answer for it.
+  // A plain folder has no work row at all, so the projects answer for it: the
+  // row is only asked which device it is on, and the URL already said the rest.
   project: {
     rows: (ref, feed) => [
       ...feed.items.filter((row) => row.project_id === ref.projectId),
@@ -91,11 +92,11 @@ const inNamedProjectFirst = (rows, projectId) =>
  * @param policy {homeDeviceId, deviceOrder} — which device wins a collision
  */
 export function resolveLegacyRoute(ref, feed, policy) {
-  const rule = ref ? CANDIDATES[ref.kind] : null;
-  if (!rule) return null;
-  const rows = rule.rows(ref, { items: feed?.items || [], projects: feed?.projects || [] });
+  const kind = ref ? REFERENCE_KINDS[ref.kind] : null;
+  if (!kind) return null;
+  const rows = kind.rows(ref, { items: feed?.items || [], projects: feed?.projects || [] });
   const chosen = pickDevice(inNamedProjectFirst(rows, ref.projectId), policy);
-  const route = chosen ? rule.route(chosen, ref) : null;
+  const route = chosen ? kind.route(chosen, ref) : null;
   // The device rides on the answer; a row that names none (a fixture, a feed
   // from before rows were stamped) leaves the route as it found it.
   return route && chosen.deviceId ? { ...route, deviceId: chosen.deviceId } : route;

@@ -96,6 +96,11 @@ final for this build unless the reviewer overrides them in the thread.
   Entries are branches and issues with three states: unread (attention event
   pending, shows why), working (agent read the message, not yet done),
   inactive. Status events update metadata silently.
+  - 2026-09-14: account-wide as of the multi-device stages. The client holds a
+    session per paired device and merges their feeds, so the inbox and the
+    projects rail list every machine's work at once, each row naming the
+    machine it is on. The device picker filters that list ("All devices" or
+    one machine) and nothing else — it does not move where anything runs.
 - **Done button** on an entry when its branch is committed+pushed or its
   issue is marked implemented. Done archives the entry. For issue
   implementations it marks worktree + issue together, with a disclosure
@@ -152,6 +157,11 @@ final for this build unless the reviewer overrides them in the thread.
   follow-on once multi-device aggregation exists). It runs on the connected
   bridge as a new session-owner kind (`router`), spawned reactively per
   capture in a bridge-owned scratch cwd, never a repo checkout.
+  - 2026-09-14: the reading side is account-wide now, the capture side is not.
+    A capture goes to one machine — the **Creation device** on account Settings
+    ("New projects and captures go to"), which is also where new projects are
+    made — and that machine's router answers it. Account-wide fan-in is still
+    a follow-on.
 - **Router MCP surface** (separate server identity; coding agents never see
   these tools): `list_projects`, `list_work`, `read_conversation`,
   `create_issue` (inert), `dispatch_branch`, `ask_user`. Write scope is

@@ -59,12 +59,34 @@ short-lived — their lifetime is `TTL_SECONDS` in `skriftapp/buildapp/ice_serve
 per authenticated user by the api, and reach the bridge inside the sealed session; the TURN key
 itself never leaves the api Secret.
 
+## Devices
+
+Every device you have paired shows up at once. The client opens a session to
+each one, so the inbox and the projects rail list all of your machines' work
+together and each row says which machine it is on. The device dropdown at the
+top of the rail **filters** that list — **All devices**, or one machine — and
+nothing else: it does not move where anything runs, and a branch or issue you
+have open stays open whichever way the filter is set.
+
+A machine that goes offline keeps its place: its rows stay in the rail, greyed
+and marked offline, and its verbs come back the moment it reconnects. When no
+machine can answer at all, Build waits for one rather than showing an empty
+app.
+
+Each device has its own settings page — the settings cog beside a device in the
+dropdown opens it. That page is everything that belongs to that machine: its
+projects folder, its projects list, **Add project**, agent modes, the default
+harness and its isolation and triage settings. The device must be online to
+open its page.
+
+**Settings** (the account page) holds what is not any one machine's: the
+**Creation device** — "New projects and captures go to" — plus agent defaults,
+appearance, notifications, downloads, and your devices and keys.
+
 ## Device project folders
 
-Open the device dropdown and select the settings cog beside a device to open
-its settings page. Use **Choose folder…** to browse that device's filesystem
-and select the folder where new projects should be kept. The device must be
-online to browse or save its folder.
+On a device's settings page, use **Choose folder…** to browse that device's
+filesystem and select the folder where its new projects should be kept.
 
 The choice is saved on that device and survives bridge restarts. It applies to
 new repositories and clones; existing repositories and task worktrees stay
@@ -73,16 +95,21 @@ projects folder has been saved in the bridge configuration.
 
 ## Adding projects
 
-**Add project** offers two choices. **Use existing folder** starts the directory
-browser in the selected device's configured projects folder and opens the folder
-you choose. A folder without Git opens in **Files**; it stays an ordinary folder
-until you select **Initialize Git** on **Changes**. Initializing Git leaves your
-existing files untracked so you can review them before committing.
+**Add project** on a device's settings page offers two choices, and adds the
+project to that device. **Use existing folder** starts the directory browser in
+that device's configured projects folder and opens the folder you choose. A
+folder without Git opens in **Files**; it stays an ordinary folder until you
+select **Initialize Git** on **Changes**. Initializing Git leaves your existing
+files untracked so you can review them before committing.
 
 **Create new project** asks for a name and an optional Git remote. Build creates
-the repository inside the configured projects folder using `main` as its initial
-branch. The optional remote is configured as `origin`; creation does not clone
-or push it.
+the repository inside that device's configured projects folder using `main` as
+its initial branch. The optional remote is configured as `origin`; creation does
+not clone or push it.
+
+**New project** in the projects rail, and anything you capture with the compose
+box, goes to the **Creation device** on Settings instead — those two are the
+only places that pick a machine for you.
 
 ## Develop
 

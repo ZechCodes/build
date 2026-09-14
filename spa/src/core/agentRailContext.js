@@ -87,8 +87,9 @@ class IssueRailContext {
 }
 
 class WorkspaceRailContext {
-  constructor({ workspaceId, projectId }) {
+  constructor({ deviceId = null, workspaceId, projectId }) {
     this.kind = "workspace";
+    this.deviceId = deviceId;
     this.workspaceId = workspaceId;
     this.projectId = projectId;
     this.key = `workspace:${workspaceId}`;
@@ -115,7 +116,12 @@ class WorkspaceRailContext {
   }
 
   feedRoute() {
-    return { name: "workspace", projectId: this.projectId, workspaceId: this.workspaceId };
+    return {
+      name: "workspace",
+      deviceId: this.deviceId,
+      projectId: this.projectId,
+      workspaceId: this.workspaceId,
+    };
   }
 }
 

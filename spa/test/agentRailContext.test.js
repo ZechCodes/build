@@ -35,11 +35,18 @@ describe("agent rail context adapters", () => {
   it("reads workspace chat from workspace.get when the bridge supplies ownership", async () => {
     const owned = { entity_id: "run-1", agents: [{ id: "agent-1" }] };
     const call = vi.fn(async () => owned);
-    const context = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "run-1" });
+    const context = createAgentRailContext({
+      kind: "workspace", deviceId: "dev-2", projectId: "p1", workspaceId: "run-1",
+    });
 
     expect(await context.detail(call, { agent_id: "agent-1", after_sequence: 4 })).toBe(owned);
     expect(context.key).toBe("workspace:run-1");
-    expect(context.feedRoute()).toEqual({ name: "workspace", projectId: "p1", workspaceId: "run-1" });
+    // A workspace is named across the account by its machine and its id
+    // together: the route this rail looks itself up by carries the machine, the
+    // way the branch and issue routes beside it do.
+    expect(context.feedRoute()).toEqual({
+      name: "workspace", deviceId: "dev-2", projectId: "p1", workspaceId: "run-1",
+    });
     expect(call).toHaveBeenCalledWith("workspace.get", {
       workspace_id: "run-1", agent_id: "agent-1", after_sequence: 4,
     });

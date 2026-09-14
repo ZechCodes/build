@@ -46,6 +46,7 @@ const { claimHomeContext, goOffline, openDeviceSessions, resume, setHomeDevice }
 const { markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
+const { mountInboxList } = await import("../src/core/inboxView.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
@@ -87,7 +88,7 @@ beforeEach(() => {
   disposeApplicationScope();
   stopFeed();
   document.body.innerHTML =
-    '<div id="root"></div><div id="devpick"></div><div id="offbar" hidden><span id="offbar-text"></span></div><div id="conn"></div>';
+    '<div id="root"></div><div id="devpick"></div><div id="offbar" hidden><span id="offbar-text"></span></div><div id="conn"></div><div id="inbox-list"></div>';
   document.body.className = "";
   opened = [];
   unreachable = new Set();
@@ -155,6 +156,27 @@ describe("per-device connections", () => {
     // say so — the banner's silence is about the account, not about them.
     expect(App.offline).toBe(true);
     expect(App.offlineSince).toBe(contextFor("dev-a").offlineSince);
+  });
+
+  // The banner's silence is only half the answer: the rail has to keep showing
+  // the lost device's work, greyed, or its rows would simply vanish. The grey
+  // arrives with the next paint, which is the next tick of a device that can
+  // still answer — the rows themselves do not change when a device goes.
+  it("keeps painting a lost device's rows, greyed", async () => {
+    await connectEveryDevice();
+    mountInboxList();
+    startFeed(1000);
+    await flush();
+    const rowOn = (deviceId) =>
+      [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key.includes(deviceId));
+    expect(rowOn("dev-a")).toBeTruthy();
+
+    unreachable.add("dev-a");
+    goOffline("dev-a");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(rowOn("dev-a").classList.contains("inbox-offline")).toBe(true);
+    expect(rowOn("dev-b").classList.contains("inbox-offline")).toBe(false);
   });
 
   it("says every device is offline once the last one goes", async () => {

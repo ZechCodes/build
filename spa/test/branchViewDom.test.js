@@ -211,6 +211,41 @@ describe("the branch surface", () => {
     stopFeed();
   });
 
+  // The rail merges every device's rows and every machine mints a `p1`. The
+  // branch a route names is on the home device, so the row the surface stands
+  // up from has to be that device's: another machine's `p1` would hand this one
+  // a checkout it has never heard of.
+  it("stands the surface up from the home device's row, not another machine's", async () => {
+    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    App.devices = [
+      { id: "dev-2", name: "Desktop", status: "online" },
+      { id: "dev-1", name: "This device", status: "online" },
+    ];
+    // The desktop sorts first in the merge, so a bare-id lookup finds its row.
+    adoptDeviceSession({
+      deviceId: "dev-2",
+      call: async (method) => {
+        if (method === "board.list") return { items: [{ ...row, branch: "main", primary: true, worktree_id: null }] };
+        if (method === "project.list") return { projects: [{ project_id: "p1", name: "their notes", is_git: true }] };
+        return {};
+      },
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
+    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    App.call = vi.fn(async (method) => {
+      if (method === "board.list") return { items: [] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: false }] };
+      return {};
+    });
+    await refreshFeed();
+    await renderBranch();
+    expect(document.querySelector("#init-git")).toBeTruthy();
+    stopFeed();
+  });
+
   it("polls the row once mounted", async () => {
     App.call = vi.fn(async () => row);
     await renderBranch();

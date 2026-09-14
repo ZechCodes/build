@@ -13,6 +13,7 @@
 import { $ } from "../dom.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { homeFeedView } from "./deviceContexts.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { isConfirmOpen } from "./confirm.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -42,6 +43,9 @@ const CHOICE_PREFIX = "compose-choice";
 let queue = []; // captures this client is holding for an absent device
 const tracked = new Map(); // capture id → { row, settledAt, settling }
 const listeners = new Set(); // who repaints when the held captures change
+// The home device's slice of the feed, never the merge: a capture goes to the
+// device creation goes to, so the destinations this box offers and the project
+// names it prints are that device's. Every device mints a `proj-1`.
 let feed = { items: [], projects: [] };
 let box = null; // the open box's state, or null while it is shut
 let mounted = false;
@@ -440,7 +444,7 @@ export function initCompose() {
   queue = loadCaptureQueue();
   paintPrompt();
   subscribeFeed((next) => {
-    feed = { items: next.items || [], projects: next.projects || [] };
+    feed = homeFeedView(next);
     syncTracked();
   });
   document.addEventListener("keydown", (event) => {

@@ -36,7 +36,7 @@ import { createWorktreeReview } from "./worktreeReview.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
-import { homeContext, homeProjectKey } from "../core/deviceContexts.js";
+import { homeContext, homeFeedView, homeProjectKey } from "../core/deviceContexts.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
@@ -91,10 +91,14 @@ export function shouldRetainDirtyFilesPane(tab, pane) {
 
 const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
 
+/** The row this surface stands up from, off the shared snapshot without
+ *  subscribing. A route names one machine's project — the home device's, until
+ *  routes carry a device — so the home view is what it is looked up in: every
+ *  machine mints a `proj-1`, and the merge holds all of them. */
 function seedBranchState(projectId, branch) {
   let snapshot = null;
   const unsubscribe = subscribeFeed((feed) => {
-    snapshot = feed;
+    snapshot = homeFeedView(feed);
   });
   unsubscribe();
   if (!snapshot) return { row: null, defaultTab: "changes" };

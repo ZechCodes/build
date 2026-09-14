@@ -31,6 +31,7 @@ import { patchList } from "./patchList.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
 import { currentCacheScope } from "./cacheScope.js";
+import { homeFeedView } from "./deviceContexts.js";
 import { entityIdOf } from "./entityId.js";
 import { readCached, writeCached } from "./localCache.js";
 import { subscribeFeed } from "./taskFeed.js";
@@ -205,12 +206,14 @@ export function mountConsole(host, context) {
   };
 
   /** The feed's row for this branch, read off the shared snapshot without
-   *  subscribing — the replay-to-late-subscribers path, used synchronously. */
+   *  subscribing — the replay-to-late-subscribers path, used synchronously.
+   *  The home device's rows, not the merge: the checkout this console stands in
+   *  is on one machine, and every machine mints a `proj-1`. */
   const feedRowNow = () => {
     let row = null;
     const unsubscribe = subscribeFeed((feed) => {
       row =
-        (feed.items || []).find(
+        homeFeedView(feed).items.find(
           (item) => item.kind === "branch" && item.project_id === context.projectId && item.branch === context.branch,
         ) || null;
     });

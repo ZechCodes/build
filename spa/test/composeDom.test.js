@@ -3,7 +3,7 @@
 // by `c`, capture-first on submit, queued while the device is away — and the
 // advanced panel for the times the destination is already known.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -11,18 +11,24 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 
 let feedItems = [];
 let feedProjects = [];
+// The per-device slices of the snapshot, for the cases that have more than one
+// device; null means a fixture with one device, which is what a snapshot with
+// no `devices` is.
+let feedDevices = null;
 let subscriber = null;
-const refreshFeed = vi.fn(async () => subscriber && subscriber({ items: feedItems, projects: feedProjects }));
+const feedSnapshot = () => ({ items: feedItems, projects: feedProjects, ...(feedDevices ? { devices: feedDevices } : {}) });
+const refreshFeed = vi.fn(async () => subscriber && subscriber(feedSnapshot()));
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
     subscriber = fn;
-    fn({ items: feedItems, projects: feedProjects });
+    fn(feedSnapshot());
     return () => {};
   },
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 
 let App;
@@ -69,6 +75,7 @@ beforeEach(async () => {
     { id: "p1", name: "relaydb" },
     { id: "p2", name: "dotfiles" },
   ];
+  feedDevices = null;
   refreshFeed.mockClear();
   ({ App } = await import("../src/app.js"));
   ({ initCompose, flushCaptures, pendingCaptureRows, adoptCaptureRecord, forgetCaptureRecord, subscribePendingCaptures } =
@@ -427,5 +434,70 @@ describe("the advanced panel", () => {
     await flush();
     expect($(".compose-error").textContent).toContain("unknown project_id");
     expect($("#compose-text").value).toBe("add a /health endpoint");
+  });
+});
+
+// Compose is about one machine: a capture goes to the device creation goes to,
+// so the destinations it offers and the names it prints are that device's. The
+// rail's feed carries every device — both of them mint a `p1` — so the box
+// reads the home device's slice out of it rather than the merge.
+describe("an account with more than one device", () => {
+  let resetDeviceContexts;
+
+  const twoDevices = async () => {
+    let adoptDeviceSession;
+    let setHomeContext;
+    ({ adoptDeviceSession, resetDeviceContexts, setHomeContext } = await import("../src/core/deviceContexts.js"));
+    App.devices = [
+      { id: "dev-2", name: "Desktop", status: "online" },
+      { id: "dev-1", name: "Laptop", status: "online" },
+    ];
+    const theirs = {
+      items: [{ kind: "branch", project_id: "p1", project: "their notes", branch: "their/branch", deviceId: "dev-2" }],
+      projects: [{ id: "p1", name: "their notes", deviceId: "dev-2", projectKey: "dev-2/p1" }],
+    };
+    const mine = {
+      items: [{ kind: "branch", project_id: "p1", project: "relaydb", branch: "build/login", deviceId: "dev-1" }],
+      projects: [{ id: "p1", name: "relaydb", deviceId: "dev-1", projectKey: "dev-1/p1" }],
+    };
+    // The desktop sorts first in the merge, so a bare-id lookup finds its rows.
+    feedItems = [...theirs.items, ...mine.items];
+    feedProjects = [...theirs.projects, ...mine.projects];
+    feedDevices = { "dev-2": theirs, "dev-1": mine };
+    setHomeContext(
+      adoptDeviceSession({
+        deviceId: "dev-1",
+        call: (...args) => App.call(...args),
+        close: () => {},
+        peer: () => {},
+        onCarrier: () => {},
+      }),
+    );
+    await refreshFeed();
+  };
+
+  afterEach(() => {
+    if (resetDeviceContexts) resetDeviceContexts();
+    resetDeviceContexts = null;
+    App.devices = [];
+  });
+
+  it("offers the home device's projects and branches, not every device's", async () => {
+    await twoDevices();
+    press("c");
+    $("#compose-advanced").click();
+    expect([...document.querySelectorAll("#compose-project option")].map((option) => option.textContent)).toEqual(["relaydb"]);
+    $('[data-compose-kind="branch"]').click();
+    expect([...document.querySelectorAll("#compose-branches option")].map((option) => option.value)).toEqual(["build/login"]);
+  });
+
+  it("names a routed capture after the project on the device that took it", async () => {
+    await twoDevices();
+    press("c");
+    type("#compose-text", "fix the login redirect");
+    $("#compose-send").click();
+    await flush();
+    adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
+    expect(pendingCaptureRows()[0].project).toBe("relaydb");
   });
 });

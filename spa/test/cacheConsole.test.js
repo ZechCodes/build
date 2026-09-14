@@ -33,16 +33,18 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
-const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+const homeRow = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3", deviceId: "dev-1" };
+let feedSnapshot = { items: [homeRow], projects: [] };
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    fn({ items: feedItems, projects: [] });
+    fn(feedSnapshot);
     return () => {};
   },
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 
 const { App } = await import("../src/app.js");
@@ -71,6 +73,7 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetConsoleMemory();
+  feedSnapshot = { items: [homeRow], projects: [] };
   setCacheDevice("dev-1");
   await wipeCache();
   manager.listTerminals.mockReset().mockResolvedValue([]);
@@ -117,5 +120,53 @@ describe("the cached tab list", () => {
     await mountAndOpen();
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "tabs" });
     expect(record.value).toEqual({ scope: { run_id: "run-3" }, termIds: ["term-5"] });
+  });
+});
+
+// The rail merges every device's rows, and every machine mints a `p1`. The
+// console stands in one checkout on one machine — the home device's, until a
+// route can name its own — so the row it addresses the tab cache with is that
+// device's, not whichever `p1` the merge happens to list first.
+describe("an account with more than one device", () => {
+  let resetDeviceContexts;
+
+  afterEach(() => {
+    if (resetDeviceContexts) resetDeviceContexts();
+    resetDeviceContexts = null;
+    App.devices = [];
+  });
+
+  it("addresses the tab cache with the home device's row", async () => {
+    const contexts = await import("../src/core/deviceContexts.js");
+    resetDeviceContexts = contexts.resetDeviceContexts;
+    App.devices = [
+      { id: "dev-2", name: "Desktop", status: "online" },
+      { id: "dev-1", name: "This device", status: "online" },
+    ];
+    contexts.setHomeContext(
+      contexts.adoptDeviceSession({
+        deviceId: "dev-1",
+        call: (...args) => App.call(...args),
+        close: () => {},
+        peer: () => {},
+        onCarrier: () => {},
+      }),
+    );
+    // The desktop's own build/login sorts first in the merge.
+    const theirs = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-9", worktree_id: "wt-9", deviceId: "dev-2" };
+    feedSnapshot = {
+      items: [theirs, homeRow],
+      projects: [],
+      devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [homeRow], projects: [] } },
+    };
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
+      { scope: { run_id: "run-3" }, termIds: ["term-1"] },
+    );
+    App.call = vi.fn(() => new Promise(() => {}));
+    manager.listTerminals.mockImplementation(() => new Promise(() => {}));
+    await mountAndOpen();
+
+    expect(tabs()).toEqual(["Terminal 1"]);
   });
 });

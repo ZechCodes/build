@@ -33,6 +33,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 const markSeen = vi.fn(async () => {});
 vi.mock("../src/core/inboxView.js", () => ({
@@ -3338,5 +3339,55 @@ describe("a chat paint with nothing to say", () => {
 
     expect(markSurvived()).toBe(false);
     expect(railHost().querySelector(".thread-items").textContent).toContain("and the next");
+  });
+});
+
+// The rail merges every device's rows, and every machine mints a `p1`. The work
+// item the rail is standing on is on one machine — the home device's, until a
+// route can name its own — so the row it seeds and reports from is that
+// device's, not whichever `p1` the merge happens to list first.
+describe("an account with more than one device", () => {
+  let resetDeviceContexts;
+
+  afterEach(() => {
+    if (resetDeviceContexts) resetDeviceContexts();
+    resetDeviceContexts = null;
+    App.devices = [];
+  });
+
+  it("seeds its strip from the home device's row", async () => {
+    const contexts = await import("../src/core/deviceContexts.js");
+    resetDeviceContexts = contexts.resetDeviceContexts;
+    App.devices = [
+      { id: "dev-2", name: "Desktop", status: "online" },
+      { id: "dev-1", name: "This device", status: "online" },
+    ];
+    contexts.setHomeContext(
+      contexts.adoptDeviceSession({
+        deviceId: "dev-1",
+        call: (...args) => App.call(...args),
+        close: () => {},
+        peer: () => {},
+        onCarrier: () => {},
+      }),
+    );
+    // The desktop's own build/login sorts first in the merge.
+    const theirs = { ...branchRow({ agents: [agent({ id: "ag-9", ordinal: 9 })] }), deviceId: "dev-2" };
+    const mine = { ...branchRow(), deviceId: "dev-1" };
+    feedSnapshot = {
+      items: [theirs, mine],
+      projects: [],
+      devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [mine], projects: [] } },
+    };
+    // The first read never answers, so what is painted is the seed alone.
+    App.call = vi.fn(async (method) => {
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise(() => {});
+      return {};
+    });
+    await mount();
+
+    const strip = bubbles().filter((bubble) => bubble.dataset.bubble === "agent");
+    expect(strip.map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);
   });
 });

@@ -132,6 +132,9 @@ export function disposeApplicationScope() {
   App.viewingContext?.setEnabled?.(false);
   resetDeviceContexts();
   shimmedDeviceId = null;
+  // The terminals are on nobody now, so the next route that names a device is a
+  // move however familiar the name.
+  terminalRouteDeviceId = null;
   clearCacheScope();
   pointAliasesAt(null);
   App.modelCatalog = null;

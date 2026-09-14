@@ -31,7 +31,6 @@ import { openCreateWork } from "./createWork.js";
 import {
   projectMenuModel,
   toolbarIdentity,
-  workMenuModel,
   workspaceDirectoryModel,
   workspaceMenuModel,
 } from "./toolbarModel.js";
@@ -46,11 +45,7 @@ import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
 
-/** The surfaces a project's work items are still the answer for. Everywhere
- *  else a project's workspaces are what there is to go to. */
-const LEGACY_SURFACES = new Set(["branch", "issue"]);
-
-// Every machine's rows: where you are standing, and what the work half lists.
+// Every machine's rows: where you are standing, and what the project menu lists.
 let feed = { items: [], projects: [] };
 // The same snapshot narrowed to the machines the picker is showing. Only the
 // list of places to GO is narrowed — the bar names the project you are in
@@ -419,18 +414,14 @@ function paintMenuShell() {
 
 /** Every row the menu offers, answered in one place — a row that has just
  *  arrived is live without having been wired. */
-/** The project half's pick: the menu moves to what is inside that project. A
- *  legacy branch or issue route is standing among work items, so it keeps the
- *  work list; everywhere else a project's workspaces are what there is to go
- *  to, and they are read from that project's own machine. */
+/** The project half's pick: the menu moves to what is inside that project,
+ *  which is its workspaces — read from that project's own machine. A legacy
+ *  branch or issue route stays readable in the bar's sentence, but it is not a
+ *  place the menu offers to go any more. */
 function pickProject(element) {
   if (!element) return false;
   const project = projectFor(element.dataset.project);
   rememberScope(element.dataset.project);
-  if (LEGACY_SURFACES.has(App.route.name)) {
-    showList("work");
-    return true;
-  }
   showList("workspaces");
   void loadWorkspaces(project, standingWorkspaceIdIn(project));
   return true;
@@ -451,14 +442,6 @@ function pickWorkspace(element) {
   return true;
 }
 
-function pickWork(element) {
-  if (!element) return false;
-  const entry = scopedWork().find((candidate) => candidate.key === element.dataset.work);
-  closeMenu();
-  if (entry) go(entry.route);
-  return true;
-}
-
 function onMenuClick(event) {
   const { target } = event;
   if (target.closest("[data-projects]")) return showList("projects");
@@ -470,7 +453,6 @@ function onMenuClick(event) {
   }
   if (pickProject(target.closest("[data-project]"))) return;
   if (pickWorkspace(target.closest("[data-workspace]"))) return;
-  if (pickWork(target.closest("[data-work]"))) return;
   const create = target.closest("[data-create]");
   if (create) openCreate();
 }
@@ -535,39 +517,6 @@ function projectMenuShellHtml() {
     <div class="tbmenu-list"></div>`;
 }
 
-/** The scoped project's work, as the open menu lists it: what the rows are
- *  painted from, and what a clicked row is looked up in. Both ask here, so the
- *  row that was clicked is the row that was painted. */
-const scopedWork = () => workMenuModel({ items: feed.items, projectKey: scopedProject()?.projectKey, query: open.query });
-
-/** The item half's rows: the scoped project's branches and issues, for the
- *  legacy surfaces that still have them. */
-function workMenuEntries() {
-  const work = scopedWork();
-  if (!work.length) return [{ key: "none", html: `<div class="tb-none dim">Nothing here yet.</div>` }];
-  return work.map((entry) => ({
-    key: `work:${entry.key}`,
-    html: `<button class="mi" data-work="${esc(entry.key)}" type="button" role="menuitem">
-               <span class="mi-line"><span class="mt${entry.kind === "branch" ? " mono" : ""}">${esc(entry.label)}</span>${unreadBadgeHtml(
-                 entry.unreadCount,
-                 entry.label,
-               )}</span>
-               <span class="md">${esc(entry.detail)}</span></button>`,
-  }));
-}
-
-/** The item half's frame: the filter and the scope line above the rows. */
-function workMenuShellHtml() {
-  return `
-    <input class="tb-filter" type="text" placeholder="Jump to a branch or issue" value="${esc(open.query)}"
-      aria-label="Filter work items" autocomplete="off" />
-    <div class="tb-group tb-scope">
-      <span>${esc(scopedName())}</span>
-      <button class="tb-scope-switch" data-projects type="button">Switch project</button>
-    </div>
-    <div class="tbmenu-list"></div>`;
-}
-
 /** The scoped project's workspaces, as the open menu lists them, and what a
  *  clicked row is looked up in. */
 const scopedWorkspaces = () =>
@@ -616,14 +565,12 @@ function workspaceMenuShellHtml() {
 const MENU_LISTS = {
   projects: projectMenuEntries,
   directories: directoryMenuEntries,
-  work: workMenuEntries,
   workspaces: workspaceMenuEntries,
 };
 
 const MENU_SHELLS = {
   projects: projectMenuShellHtml,
   directories: directoryMenuShellHtml,
-  work: workMenuShellHtml,
   workspaces: workspaceMenuShellHtml,
 };
 
@@ -664,6 +611,8 @@ export function toolbarRouteChanged() {
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
   workspaceRequest += 1;
+  workspacesByProject.clear();
+  loadingProjectKey = null;
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
   closeMenu();

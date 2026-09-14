@@ -1,16 +1,12 @@
 // @vitest-environment jsdom
-// The view-area toolbar's wiring: the sentence it prints, the menu each half
-// opens, the two creates behind the work half, and the ⋯ on its right.
+// The view-area toolbar on main's workspace chrome: the sentence it prints, the
+// project menu behind its left half, the workspace switcher, and the directory
+// tabs of the workspace the route is standing in — every one of them read from
+// the machine the route names.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
-import { callerReaches } from "./deviceSessionFixture.js";
-
-/** The one bridge this file's device answers through: a test that hands over
- *  a new `call` is that bridge answering differently, not another machine. */
-const bridge = { call: null };
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -84,11 +80,11 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openC
 const { App } = await import("../src/app.js");
 const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
-const { adoptDeviceSession, retireDeviceContext, setContextOffline } = await import("../src/core/deviceContexts.js");
+const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
 const { rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
 
-/** What each machine answers. A sheet the toolbar opens is handed the caller of
- *  the machine the project it is about lives on, so the two are told apart. */
+/** What each machine answers. A workspace read the bar makes is made on the
+ *  machine the project it is about lives on, so the two are told apart. */
 const workshopCall = vi.fn(async () => ({}));
 const laptopCall = vi.fn(async () => ({}));
 const openSession = (deviceId, call) => adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
@@ -101,9 +97,41 @@ const openJump = (which = "project") => {
   bar().querySelector(`[data-select="${which}"]`).click();
   return menu();
 };
+const labels = (selector) => [...menu().querySelectorAll(selector)].map((row) => row.querySelector(".mt").textContent);
+
+/** The workspace the workshop is holding, with two directories in it. */
+const payments = {
+  id: "ws-1",
+  workspace_id: "ws-1",
+  project_id: "p1",
+  name: "payment-work",
+  status: "ready",
+  directories: [
+    { source_id: "frontend", name: "Frontend", is_git: true },
+    { source_id: "assets", name: "Design assets", is_git: false },
+  ],
+};
+
+/** The workshop answering workspace reads for whatever it has been given. */
+const workshopHolds = (byProject) => {
+  workshopCall.mockImplementation(async (method, params) => {
+    if (method === "workspace.list") return { workspaces: byProject[params.project_id] || [] };
+    if (method === "workspace.get") return { workspace: payments };
+    return {};
+  });
+};
+
+/** Stand on the workshop's payment-work, with its directory tabs hydrated. */
+const standOnWorkspace = async () => {
+  App.route = { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
+  toolbarRouteChanged();
+  await flush();
+  await flush();
+};
 
 beforeEach(() => {
   if (!savedFeed) savedFeed = feed;
+  stopToolbar();
   if (!document.getElementById("shell")) document.body.innerHTML = bodyHtml;
   localStorage.clear();
   App.gated = false;
@@ -116,13 +144,12 @@ beforeEach(() => {
   openCreateWork.mockClear();
   notifyError.mockClear();
   rememberDeviceFilter(null);
+  workshopCall.mockReset();
+  laptopCall.mockReset();
+  workshopHolds({ p1: [payments] });
+  laptopCall.mockImplementation(async () => ({}));
   openSession("dev-1", workshopCall);
   openSession("dev-2", laptopCall);
-  bridge.call = vi.fn(async (method) => {
-    if (method === "worktree.create") return { project_id: "p1", branch: "build/mascot-model-spike", worktree_id: "wt-9" };
-    if (method === "issue.create") return { project_id: "p1", issue_id: "plan-9", plan_id: "plan-9" };
-    return {};
-  });
   initToolbar();
   toolbarRouteChanged();
 });
@@ -149,90 +176,182 @@ describe("the sentence the toolbar prints", () => {
   });
 });
 
-describe("the two menus, one per half", () => {
-  it("offers no branch or issue creation for a plain folder", async () => {
-    feed = { items: [], projects: [{ id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "notes", is_git: false }] };
-    await refreshFeed();
-    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "files" };
-    toolbarRouteChanged();
-    expect(openJump("item").querySelectorAll("[data-create]")).toHaveLength(0);
-    feed = savedFeed;
-    await refreshFeed();
+// Main's workspace toolbar, on the per-device model: the workspaces of the
+// project the route is standing in are read from that project's own machine.
+describe("the workspace toolbar", () => {
+  it("keeps legacy deep-link identities readable without an active work menu", () => {
+    expect(names()).toEqual(["relaydb", "build/login"]);
+    expect(bar().querySelector('[data-select="item"]')).toBeNull();
   });
 
-  it("opens Files when a plain folder is picked from the project menu", async () => {
-    feed = {
-      items: [],
-      projects: [{ id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "notes", is_git: false, base_branch: "main" }],
-    };
-    await refreshFeed();
-    openJump("project").querySelector('[data-project="dev-1/p1"]').click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/main/files");
-    feed = savedFeed;
-    await refreshFeed();
+  it("keeps the legacy project selector functional and opens it projects-first", () => {
+    const projects = openJump("project");
+    expect(projects.dataset.list).toBe("projects");
+    expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
   });
-  it("lists projects and only projects on the project half", () => {
+
+  it("shows only the workspace switcher before its directory tabs", async () => {
+    await standOnWorkspace();
+    expect(bar().querySelector('[data-select="project"]')).toBeNull();
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
+    expect([...bar().children].indexOf(bar().querySelector('[data-select="workspace"]')))
+      .toBeLessThan([...bar().children].indexOf(bar().querySelector(".tb-directories")));
+  });
+
+  it("reads the workspaces from the machine the route names, not another device's", async () => {
+    await standOnWorkspace();
+    expect(workshopCall).toHaveBeenCalledWith("workspace.list", { project_id: "p1" });
+    expect(laptopCall).not.toHaveBeenCalledWith("workspace.list", expect.anything());
+  });
+
+  it("lists the current project's workspaces, then switches project in the same popup", async () => {
+    await standOnWorkspace();
+    const workspaces = openJump("workspace");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+    expect(workspaces.querySelector("[data-projects]").textContent).toBe("Switch project");
+
+    workspaces.querySelector("[data-projects]").click();
+    expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
+    menu().querySelector('[data-project="dev-1/p1"]').click();
+    await flush();
+
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+    expect(menu().querySelector("[data-work]")).toBeNull();
+    expect(menu().querySelector('[data-create="workspace"]')).toBeTruthy();
+  });
+
+  it("goes to the workspace you pick", async () => {
+    await standOnWorkspace();
+    const sandbox = { ...payments, id: "ws-2", workspace_id: "ws-2", name: "prototype", directories: [] };
+    workshopHolds({ p1: [payments, sandbox] });
+    toolbarRouteChanged();
+    await flush();
+    openJump("workspace").querySelector('[data-workspace="dev-1/ws-2"]').click();
+    expect(menu()).toBeNull();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-2/changes");
+  });
+
+  it("keeps the active workspace visible while browsing another project and resets scope when reopened", async () => {
+    const sandbox = { id: "ws-2", project_id: "p2", name: "prototype", status: "ready", directories: [] };
+    workshopHolds({ p1: [payments], p2: [sandbox] });
+    await standOnWorkspace();
+
+    openJump("workspace").querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="dev-1/p2"]').click();
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
+    expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
+    await flush();
+    expect(labels("[data-workspace]")).toEqual(["prototype"]);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    const reopened = openJump("workspace");
+    expect(reopened.querySelector(".tb-scope > span").textContent).toBe("relaydb");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+  });
+
+  it("rehydrates the active workspace when its project is selected from the popup", async () => {
+    workshopHolds({ p1: [{ id: "ws-1", project_id: "p1", name: "payment-work", status: "ready" }] });
+    await standOnWorkspace();
+
+    openJump("workspace").querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="dev-1/p1"]').click();
+    await flush();
+
+    expect(workshopCall).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1" });
+    expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
+  });
+
+  it("ignores a workspace list response overtaken by a newer project choice", async () => {
+    let answerSandbox;
+    const sandboxAnswer = new Promise((done) => {
+      answerSandbox = done;
+    });
+    workshopCall.mockImplementation(async (method, params) => {
+      if (method === "workspace.list" && params.project_id === "p2") return sandboxAnswer;
+      if (method === "workspace.list") return { workspaces: [payments] };
+      if (method === "workspace.get") return { workspace: payments };
+      return {};
+    });
+    await standOnWorkspace();
+
+    openJump("workspace").querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="dev-1/p2"]').click();
+    menu().querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="dev-1/p1"]').click();
+    await flush();
+    answerSandbox({ workspaces: [{ id: "ws-2", project_id: "p2", name: "prototype" }] });
+    await flush();
+
+    expect(menu().querySelector(".tb-scope > span").textContent).toBe("relaydb");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+  });
+
+  it("shows directory tabs and opens ordinary directories in Files", async () => {
+    await standOnWorkspace();
+    expect([...bar().querySelectorAll("[data-directory]")].map((node) => [node.textContent, node.getAttribute("aria-selected")])).toEqual([
+      ["Frontend", "true"],
+      ["Design assets", "false"],
+    ]);
+    bar().querySelector('[data-directory="assets"]').click();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files");
+  });
+
+  it("collapses directories into a phone menu without changing directory routing", async () => {
+    await standOnWorkspace();
+    const picker = bar().querySelector('[data-select="directory"]');
+    expect(picker.textContent.trim()).toBe("Frontend▾");
+    picker.click();
+    expect(picker.getAttribute("aria-expanded")).toBe("true");
+    expect([...menu().querySelectorAll("[data-menu-directory]")].map((node) => [node.textContent.trim(), node.classList.contains("current")]))
+      .toEqual([
+        ["Frontend", true],
+        ["Design assets", false],
+      ]);
+    expect(document.activeElement).toBe(menu().querySelector('[data-menu-directory="frontend"]'));
+    expect(menu().querySelector('[data-menu-directory="frontend"]').getAttribute("aria-checked")).toBe("true");
+    expect(menu().querySelector('[data-menu-directory="assets"]').getAttribute("aria-checked")).toBe("false");
+    menu().querySelector('[data-menu-directory="assets"]').click();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files");
+  });
+
+  it("leaves finish and contextual actions out of the navigation toolbar", () => {
+    expect(bar().querySelector("#tb-verb").children).toHaveLength(0);
+    expect(bar().querySelector('[data-select="more"]')).toBeNull();
+  });
+});
+
+// The project menu, on main's chrome. Three things this bar used to carry are
+// retired with main's workspace toolbar, so their cases are gone rather than
+// restated: the item half's work menu on a legacy branch or issue route, the
+// branch and issue creates (a workspace is the only thing the bar creates now),
+// and the ⋯ menu.
+describe("the project menu", () => {
+  it("lists projects and only projects, and shuts on Escape", () => {
     const popup = openJump("project");
-    expect([...popup.querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);
+    expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
     expect(popup.querySelectorAll("[data-work]").length).toBe(0);
     expect(popup.querySelectorAll("[data-create]").length).toBe(0);
-  });
 
-  it("lists the scoped project's work and only its work on the item half, with both creates", () => {
-    const popup = openJump("item");
-    expect([...popup.querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual([
-      "Add a health endpoint",
-      "build/login",
-    ]);
-    expect(popup.querySelectorAll("[data-project]").length).toBe(0);
-    expect([...popup.querySelectorAll("[data-create]")].map((row) => row.dataset.create)).toEqual(["branch", "issue"]);
-  });
-
-  it("filters each menu against its own list", () => {
-    const projectFilter = openJump("project").querySelector(".tb-filter");
-    projectFilter.value = "masc";
-    projectFilter.dispatchEvent(new Event("input"));
-    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["mascot"]);
-
-    const workFilter = openJump("item").querySelector(".tb-filter");
-    workFilter.value = "login";
-    workFilter.dispatchEvent(new Event("input"));
-    expect([...menu().querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["build/login"]);
-  });
-
-  it("hands a picked project to its work list, without leaving the page", () => {
-    const popup = openJump("project");
-    popup.querySelector('[data-project="dev-1/p2"]').click();
-    expect(menu()).toBeTruthy();
-    expect(menu().querySelectorAll("[data-project]").length).toBe(0);
-    expect(menu().querySelectorAll("[data-work]").length).toBe(0);
-    expect(menu().textContent).toContain("Nothing here yet.");
-    expect(location.hash).not.toContain("p2/branch");
-  });
-
-  it("goes back to the projects from the work list", () => {
-    openJump("item").querySelector("[data-projects]").click();
-    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);
-  });
-
-  it("goes to the work you pick", () => {
-    openJump("item").querySelector('[data-work="issue:plan-1"]').click();
-    expect(menu()).toBeNull();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/issue/plan-1");
-  });
-
-  it("reaches the creates from the project half too, through the project you pick", () => {
-    App.route = { name: "inbox" };
-    toolbarRouteChanged();
-    const popup = openJump("project");
-    popup.querySelector('[data-project="dev-1/p1"]').click();
-    expect([...menu().querySelectorAll("[data-create]")].map((row) => row.dataset.create)).toEqual(["branch", "issue"]);
-  });
-
-  it("shuts on Escape", () => {
-    openJump("project");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(menu()).toBeNull();
+  });
+
+  it("filters the list against what you type", () => {
+    const filter = openJump("project").querySelector(".tb-filter");
+    filter.value = "masc";
+    filter.dispatchEvent(new Event("input"));
+    expect(labels("[data-project]")).toEqual(["mascot"]);
+  });
+
+  it("hands a picked project to its workspaces, without leaving the page", async () => {
+    const popup = openJump("project");
+    popup.querySelector('[data-project="dev-1/p2"]').click();
+    await flush();
+    expect(menu()).toBeTruthy();
+    expect(menu().querySelectorAll("[data-project]").length).toBe(0);
+    expect(menu().querySelector(".tb-scope > span").textContent).toBe("mascot");
+    expect(menu().textContent).toContain("No workspace by that name.");
+    expect(location.hash).not.toContain("p2/branch");
   });
 
   it("still toggles shut after the feed repaints the button it hangs off", async () => {
@@ -266,24 +385,23 @@ describe("the jump menu's paint", () => {
   });
 
   it("touches nothing when the feed repeats what it already said", async () => {
-    const popup = openJump("item");
+    const popup = openJump("project");
     expect(await churn(popup, () => refreshFeed())).toEqual([]);
   });
 
   it("redraws only the row that changed, and never the box being typed into", async () => {
-    const popup = openJump("item");
+    const popup = openJump("project");
     const filter = popup.querySelector(".tb-filter");
-    const rows = [...popup.querySelectorAll("[data-work]")];
-    const moved = { ...quiet.items[0], unread_count: 3 };
+    const rows = [...popup.querySelectorAll("[data-project]")];
     const records = await churn(popup, () => {
-      feed = { ...quiet, items: [quiet.items[1], moved] };
+      feed = { ...quiet, items: [{ ...quiet.items[0], unread: true, unread_count: 3 }, quiet.items[1]] };
       return refreshFeed();
     });
-    const branchRow = popup.querySelector('[data-work="branch:dev-1/p1:build/login"]');
+    const relaydbRow = popup.querySelector('[data-project="dev-1/p1"]');
     expect(popup.querySelector(".tb-filter")).toBe(filter); // never replaced
-    expect([...popup.querySelectorAll("[data-work]")]).toEqual(rows);
+    expect([...popup.querySelectorAll("[data-project]")]).toEqual(rows);
     expect(records.length).toBeGreaterThan(0);
-    expect(records.every((record) => branchRow.contains(record.target))).toBe(true);
+    expect(records.every((record) => relaydbRow.contains(record.target))).toBe(true);
     feed = quiet;
     await refreshFeed();
   });
@@ -318,11 +436,10 @@ describe("the project you pick, against a feed that keeps ticking", () => {
 
   it("holds the pick while you stand on another project's branch and the feed ticks", async () => {
     openJump("project").querySelector('[data-project="dev-1/p2"]').click();
-    expect(menu().querySelector(".tb-scope span").textContent).toBe("mascot");
+    expect(menu().querySelector(".tb-scope > span").textContent).toBe("mascot");
     await refreshFeed(); // two seconds later…
     await refreshFeed(); // …and two more
-    expect(menu().querySelector(".tb-scope span").textContent).toBe("mascot");
-    expect([...menu().querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["build/spike"]);
+    expect(menu().querySelector(".tb-scope > span").textContent).toBe("mascot");
   });
 
   it("still marks the picked project as the current one on the way back", async () => {
@@ -337,35 +454,27 @@ describe("the project you pick, against a feed that keeps ticking", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
-    expect([...openJump("item").querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual([
-      "Add a health endpoint",
-      "build/login",
-    ]);
+    expect(openJump("project").querySelector(".mi.current .mt").textContent).toBe("relaydb");
   });
 });
 
 describe("creating from the menu", () => {
-  // Both creates open the one create surface (core/createWork.js), on the
-  // scoped project, on the tab that was picked; the menu is gone by then.
-  it("opens the create modal on the Branch tab, scoped to the project the menu is on", () => {
-    openJump("item").querySelector('[data-create="branch"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "branch" });
+  // A workspace is the only thing the bar creates, and it creates it on the
+  // machine the scoped project is on — the bare id it is given means nothing
+  // anywhere else.
+  it("creates in the project the menu is scoped to, even with no workspace in it", async () => {
+    workshopHolds({ p1: [] });
+    await standOnWorkspace();
+    openJump("workspace").querySelector('[data-create="workspace"]').click();
+    expect(openCreateWork).toHaveBeenCalledWith({
+      projectId: "p1",
+      deviceId: "dev-1",
+      projectName: "relaydb",
+      navigate: expect.any(Function),
+    });
     expect(menu()).toBeNull();
   });
 
-  it("opens it on the Issue tab for the issue create", () => {
-    openJump("item").querySelector('[data-create="issue"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue" });
-  });
-
-  it("creates in the project you picked, not the one you are standing on", () => {
-    openJump("project").querySelector('[data-project="dev-1/p2"]').click();
-    menu().querySelector('[data-create="branch"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p2", deviceId: "dev-1", projectName: "mascot", kind: "branch" });
-  });
-
-  // The create surface talks to one bridge, and it is the bridge of the project
-  // the menu is on — the bare id it is given means nothing anywhere else.
   it("creates in the picked project on its own device", async () => {
     feed = {
       items: [],
@@ -375,25 +484,27 @@ describe("creating from the menu", () => {
       ],
     };
     await refreshFeed();
-    App.route = { name: "inbox" };
-    toolbarRouteChanged();
-    openJump("project").querySelector('[data-project="dev-2/p1"]').click();
-    menu().querySelector('[data-create="issue"]').click();
+    await standOnWorkspace();
+    openJump("workspace").querySelector("[data-projects]").click();
+    menu().querySelector('[data-project="dev-2/p1"]').click();
+    await flush();
+    menu().querySelector('[data-create="workspace"]').click();
+    expect(laptopCall).toHaveBeenCalledWith("workspace.list", { project_id: "p1" });
     expect(openCreateWork).toHaveBeenCalledWith({
       projectId: "p1",
       deviceId: "dev-2",
       projectName: "their relaydb",
-      kind: "issue",
+      navigate: expect.any(Function),
     });
     feed = savedFeed;
     await refreshFeed();
   });
 
-  it("says so instead of opening anything when the device has no project", async () => {
+  it("says so instead of opening anything when the account has no project", async () => {
     feed = { items: [], projects: [] };
     await refreshFeed();
-    toolbarRouteChanged();
-    openJump("item").querySelector('[data-create="branch"]').click();
+    await standOnWorkspace();
+    openJump("workspace").querySelector('[data-create="workspace"]').click();
     expect(openCreateWork).not.toHaveBeenCalled();
     expect(notifyError).toHaveBeenCalledWith("No project to create in.", expect.any(String));
     feed = savedFeed;
@@ -401,7 +512,7 @@ describe("creating from the menu", () => {
   });
 });
 
-describe("the unread counters on the two menus", () => {
+describe("the unread counters on the project menu", () => {
   const quiet = feed;
   const badges = (selector) => [...menu().querySelectorAll(selector)].map((row) => (row.querySelector(".badge") || {}).textContent || "");
 
@@ -437,20 +548,11 @@ describe("the unread counters on the two menus", () => {
     expect(badges("[data-project]")).toEqual(["5", "4"]);
   });
 
-  it("counts each branch and issue by its own unread, and leaves a read one bare", async () => {
-    feed = { ...feed, items: [{ ...feed.items[0], unread: false, unread_count: 0 }, feed.items[1], feed.items[2]] };
-    await refreshFeed();
-    openJump("item");
-    expect(badges("[data-work]")).toEqual(["3", ""]);
-  });
-
   it("wears no counter anywhere once everything has been read", async () => {
     feed = quiet;
     await refreshFeed();
     openJump("project");
     expect(badges("[data-project]")).toEqual(["", ""]);
-    openJump("item");
-    expect(badges("[data-work]")).toEqual(["", ""]);
   });
 });
 
@@ -486,8 +588,8 @@ describe("an account with more than one device", () => {
   });
 
   // The picker narrows the list of places to GO. Where you are standing is not
-  // in that list: the bar goes on naming the project you are in and the ⋯ goes
-  // on opening its settings, whichever machine the filter is showing.
+  // in that list: the bar goes on naming the project you are in, whichever
+  // machine the filter is showing.
   it("the filter hides the other device's projects from the project menu and never changes the route", async () => {
     feed = {
       items: [...savedFeed.items],
@@ -504,7 +606,7 @@ describe("an account with more than one device", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 
     // …and the branch the reader is standing on is still a branch of relaydb on
-    // the workshop, named by the bar and settled by the workshop's own caller.
+    // the workshop, named by the bar.
     expect(App.route).toBe(standing);
     expect(names()).toEqual(["relaydb", "build/login"]);
 
@@ -527,57 +629,5 @@ describe("an account with more than one device", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     toolbarRouteChanged();
     expect(openJump("project").querySelector(".mi.current .mt").textContent).toBe("mascot");
-  });
-});
-
-// Main's workspace switcher and directory tabs, on the per-device model: the
-// workspaces of the project the route is standing in are read from that
-// project's own machine.
-describe("the workspace toolbar", () => {
-  const workspace = {
-    id: "ws-1",
-    workspace_id: "ws-1",
-    project_id: "p1",
-    name: "payment-work",
-    status: "ready",
-    directories: [
-      { source_id: "frontend", name: "Frontend", is_git: true },
-      { source_id: "assets", name: "Design assets", is_git: false },
-    ],
-  };
-
-  const standOnWorkspace = async () => {
-    workshopCall.mockImplementation(async (method) =>
-      method === "workspace.list" ? { workspaces: [workspace] } : method === "workspace.get" ? { workspace } : {},
-    );
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
-    toolbarRouteChanged();
-    await flush();
-    await flush();
-  };
-
-  it("keeps legacy deep-link identities readable without an active work menu", () => {
-    expect(names()).toEqual(["relaydb", "build/login"]);
-    expect(bar().querySelector('[data-select="item"]')).toBeNull();
-  });
-
-  it("shows only the workspace switcher before its directory tabs", async () => {
-    await standOnWorkspace();
-    expect(bar().querySelector('[data-select="project"]')).toBeNull();
-    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
-    expect([...bar().children].indexOf(bar().querySelector('[data-select="workspace"]')))
-      .toBeLessThan([...bar().children].indexOf(bar().querySelector(".tb-directories")));
-  });
-
-  it("reads the workspaces from the machine the route names, not another device's", async () => {
-    await standOnWorkspace();
-    expect(workshopCall).toHaveBeenCalledWith("workspace.list", { project_id: "p1" });
-    expect(laptopCall).not.toHaveBeenCalledWith("workspace.list", expect.anything());
-  });
-
-  it("opens a directory on the machine the route is standing on", async () => {
-    await standOnWorkspace();
-    bar().querySelector('[data-directory="assets"]').click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files");
   });
 });

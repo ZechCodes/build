@@ -756,3 +756,8 @@ this pass; none is the SPA's to fix.
   `scopedProject` falls back to the first project.
 - **There is no knob to make a bridge report another API major**, which is why
   the version gate above could only be verified in jsdom.
+- **A project made from more than one source gets no workspace row.** The
+  block renders empty and stays empty across reloads:
+  `bridge/src/app/workspaces/mod.rs` `adopt_legacy_workspaces` adopts only
+  projects with exactly one source (since `1f68c44e`), so a fresh multi-source
+  project has nothing to open until a workspace is created by hand.

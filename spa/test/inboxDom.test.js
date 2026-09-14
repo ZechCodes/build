@@ -90,6 +90,14 @@ describe("workspace inbox", () => {
     await vi.waitFor(() => expect(rows()).toHaveLength(0));
   });
 
+  it("finishes an already-open clean workspace without navigating", () => {
+    App.route = { name: "workspace", projectId: "project-1", workspaceId: "workspace-1", sourceId: "source-api", tab: "changes" };
+    feed([workspace({ work_summary: { pushes: 0, additions: 0, deletions: 0, clean: true } })]);
+    rows()[0].querySelector("[data-workspace-done]").click();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(App.call).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1", require_clean: true });
+  });
+
   it("restores a workspace and shows the bridge error when finishing fails", async () => {
     App.call = vi.fn(async (method) => {
       if (method === "workspace.finish") throw new Error("Workspace has local changes");

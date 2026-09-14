@@ -278,8 +278,8 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 @media (hover:none) {
   .inbox-entry:hover .inbox-actions { opacity:0; pointer-events:none; }
   .inbox-entry.active .inbox-actions, .inbox-entry:focus-within .inbox-actions,
-  .inbox-actions:has(.inbox-workspace-done),
-  .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+  .inbox-entry .inbox-actions:has(.inbox-workspace-done),
+  .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
 }
 /* The rail's rows are near the top of the viewport, so the menu drops rather
    than rises, and stays on the row's right edge at every width. */

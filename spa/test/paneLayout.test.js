@@ -1132,5 +1132,6 @@ describe("the inbox row's actions", () => {
         declaration(rule.body, "opacity") === "1",
     );
     expect(touch).toBeTruthy();
+    expect(touch.selector).toContain(".inbox-entry .inbox-actions:has(.inbox-workspace-done)");
   });
 });

@@ -87,7 +87,12 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
 /* One width for the toggle wherever it stands — it is what the collapsed
    toolbar's clearance is derived from. */
 #inbox-open, #inbox-collapse { width:var(--inbox-toggle); }
-#inbox-open svg, #inbox-collapse svg { display:block; width:17px; height:17px;
+/* One pin, in two heads (core/pinControl.js): the inbox rail's and the
+   conversation panel's. One rule dresses both, and the icon beside it is the
+   inbox toggle's — the three glyphs in the shell's chrome are drawn alike. */
+.pinbtn { flex:none; display:grid; place-items:center; }
+.pinbtn[aria-pressed="true"] { color:var(--ink2); }
+#inbox-open svg, .pinbtn svg { display:block; width:17px; height:17px;
   fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 /* The rail's two faces, one icon each at the head's right edge; the standing
    one is pressed. */
@@ -523,8 +528,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    The strip's border is INSIDE its stated width — the sheet is border-box — so
    --agent-strip is the single number the strip, the phone's panel and the full
    console all stop on, and the seam runs unbroken behind all three. */
-#agent-rail { display:flex; min-height:0; background:var(--bg); }
-.rail-strip { flex:none; width:var(--agent-strip); display:flex;
+/* position:relative — the rail is the frame its own popover is laid in (below):
+   the unpinned panel hangs off the strip's edge, and nothing else in the view
+   column is the right thing to measure that from. */
+#agent-rail { display:flex; min-height:0; position:relative; background:var(--bg); }
+/* position:relative — the strip has to be able to rise above the popover's
+   scrim (below): the card is anchored to a bubble, and pressing the bubble
+   beside it has to reach that agent rather than the way out. */
+.rail-strip { flex:none; width:var(--agent-strip); display:flex; position:relative;
   flex-direction:column; align-items:center; gap:8px; padding:10px 0;
   border-left:1px solid var(--line); overflow-y:auto; }
 /* A bubble is the agent: the face it wears, its unread count, and a pulse while
@@ -589,6 +600,34 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-panel { flex:none; width:min(420px, calc(100vw - 120px)); position:relative;
   display:flex; flex-direction:column; min-height:0;
   border-left:1px solid var(--line); }
+/* ---- the conversation, unpinned --------------------------------------------
+   The pin in the panel's head (core/pinControl.js, the inbox's own control)
+   says which of two things the conversation is. Pinned it is the column above:
+   half the frame, beside the work, costing the work its width.
+
+   Unpinned it is a card ON the strip — laid over the work, pointing with a
+   notch at the bubble it was opened from, over a scrim that is also the way out
+   of it. The shape the away inbox wears at the other edge of the frame
+   (body.inbox-collapsed #inbox-rail, above), turned round to face the strip. */
+.rail-scrim { position:fixed; inset:0; z-index:35; background:var(--scrim); }
+/* Over that scrim: the strip is what the card is anchored TO, so pressing the
+   agent beside the open one re-anchors the card instead of dismissing it. */
+#agent-rail.rail-popover .rail-strip { z-index:37; }
+#agent-rail.rail-popover .rail-panel { position:absolute; z-index:36;
+  top:10px; bottom:10px; right:var(--agent-strip); left:auto;
+  width:min(420px, calc(100vw - 120px));
+  border:1px solid var(--line3, var(--line)); border-radius:10px;
+  background:var(--panel); box-shadow:0 18px 48px var(--shadow); }
+/* The notch rides the bubble: core/agentRail.js measures whichever bubble is
+   open and writes --rail-anchor, the offset along the panel's edge that points
+   at it. Clamped, so a bubble at either end of a long strip still gets a notch
+   that is ON the card. */
+#agent-rail.rail-popover .rail-panel::before { content:""; position:absolute;
+  right:-6px; top:clamp(14px, var(--rail-anchor, 50%), calc(100% - 14px));
+  width:10px; height:10px; margin-top:-5px; transform:rotate(45deg);
+  border-top:1px solid var(--line3, var(--line)); border-right:1px solid var(--line3, var(--line));
+  background:var(--panel); }
+
 .rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 9px 8px 14px;
   min-height:var(--surface-head); border-bottom:1px solid var(--line); background:var(--panel); }
 .rail-harness-icon { flex:none; width:20px; height:20px; display:grid; place-items:center;
@@ -875,6 +914,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      leaves the grid and overlays the panel from above. */
   #view:has(#console-region[data-size]) .rail-panel { bottom:var(--console-bar); }
   #view:has(#console-region[data-size="half"]) .rail-panel { bottom:var(--console-half); }
+  /* No room for a 420px card beside the work: it takes the width the strip
+     leaves it, and the notch still points at the bubble. */
+  #agent-rail.rail-popover .rail-panel { left:6px; right:calc(var(--agent-strip) + 6px); width:auto; }
   .rail-surfaces-viewer { left:6px; right:6px; max-height:min(52vh, 420px); }
 }
 

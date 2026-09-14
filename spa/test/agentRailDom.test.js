@@ -274,10 +274,167 @@ describe("where the conversation panel starts", () => {
     await mount();
     bubbles()[0].click();
     await flush();
+    // A press on a bubble is a look at one conversation, not a change of mind
+    // about the layout: it opens the popover and leaves the choice alone. The
+    // pin in the panel's head is what the reader chooses with.
+    panel().querySelector(".pinbtn").click();
+    await flush();
     rail.dispose();
 
     await mount();
     expect(panel()).toBeTruthy();
+  });
+});
+
+// ---- the conversation panel's pin -------------------------------------------
+// The panel had one state with no name: a column beside the work, or nothing at
+// all, and which of the two you got depended on what was pressed last. It wears
+// the inbox's pin now — docked beside the work, or a card on the bubble strip
+// pointing at the conversation it belongs to.
+describe("the conversation panel's pin", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  const pin = () => panel().querySelector(".pinbtn");
+  const scrim = () => railHost().querySelector("#rail-scrim");
+
+  afterEach(() => atWidth(1024));
+
+  it("says what pressing it does, in the inbox's words", async () => {
+    atWidth(1024);
+    await mount();
+    expect(pin().getAttribute("aria-pressed")).toBe("true");
+    expect(pin().title).toBe("Unpin the conversation");
+    expect(pin().getAttribute("aria-label")).toBe("Unpin the conversation");
+    expect(pin().querySelector("svg")).toBeTruthy();
+  });
+
+  it("renders no scrim while the panel is pinned", async () => {
+    atWidth(1024);
+    await mount();
+    expect(panel()).toBeTruthy();
+    expect(scrim()).toBeNull();
+    expect(railHost().classList.contains("rail-popover")).toBe(false);
+    expect(panel().dataset.anchor).toBe("");
+  });
+
+  it("unpins to a popover on the strip, and remembers the choice", async () => {
+    atWidth(1024);
+    await mount();
+    pin().click();
+    await flush();
+    // The conversation stays on screen, as a card over the work rather than a
+    // column beside it — the same move the inbox's pin makes.
+    expect(railHost().classList.contains("rail-popover")).toBe(true);
+    expect(scrim()).toBeTruthy();
+    expect(pin().getAttribute("aria-pressed")).toBe("false");
+    expect(pin().title).toBe("Pin the conversation");
+    expect(localStorage.getItem("build.rail.expanded")).toBe("0");
+
+    rail.dispose();
+    await mount();
+    // Unpinned, a fresh mount is the strip alone until a bubble is pressed.
+    expect(panel()).toBeNull();
+    expect(scrim()).toBeNull();
+  });
+
+  it("pins a popover back into the column", async () => {
+    atWidth(390);
+    await mount();
+    bubbles()[0].click();
+    await flush();
+    pin().click();
+    await flush();
+    expect(railHost().classList.contains("rail-popover")).toBe(false);
+    expect(scrim()).toBeNull();
+    expect(localStorage.getItem("build.rail.expanded")).toBe("1");
+
+    rail.dispose();
+    await mount();
+    expect(panel()).toBeTruthy();
+  });
+});
+
+describe("the unpinned panel's popover", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  const scrim = () => railHost().querySelector("#rail-scrim");
+
+  beforeEach(() => {
+    atWidth(390);
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+  });
+  afterEach(() => atWidth(1024));
+
+  it("opens on the bubble it was pressed on, and says which one", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(panel().dataset.anchor).toBe("ag-2");
+    // Where the notch sits along the panel's edge. jsdom lays nothing out, so
+    // every box it measures is at the origin; the browser check is the
+    // orchestrator's.
+    expect(panel().style.getPropertyValue("--rail-anchor")).toBe("0px");
+    expect(scrim()).toBeTruthy();
+  });
+
+  it("re-anchors on the next bubble rather than closing", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    bubbles()[0].click();
+    await flush();
+    expect(panel()).toBeTruthy();
+    expect(panel().dataset.anchor).toBe("ag-1");
+  });
+
+  it("is dismissed by the scrim", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    scrim().click();
+    await flush();
+    expect(panel()).toBeNull();
+    expect(scrim()).toBeNull();
+    // Dismissing a popover is not unpinning anything: the choice stands.
+    expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+  });
+
+  it("is dismissed by Escape", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+    expect(panel()).toBeNull();
+  });
+
+  it("leaves Escape to a surface that already answered it", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+    await flush();
+    expect(panel()).toBeTruthy();
+  });
+
+  it("is dismissed by navigating", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    window.dispatchEvent(new window.HashChangeEvent("hashchange"));
+    await flush();
+    expect(panel()).toBeNull();
+  });
+
+  it("takes its listeners with it when the rail goes", async () => {
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    rail.dispose();
+    rail = null;
+    expect(() =>
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+    ).not.toThrow();
   });
 });
 

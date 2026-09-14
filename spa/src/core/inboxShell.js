@@ -9,6 +9,7 @@ import { inboxListRouteChanged, mountInboxList, openNewProject, setInboxView } f
 import { loadRailView, persistRailView, railViewSwitchHtml } from "./railMode.js";
 import { subscribeInboxAttentionCount } from "./inboxAttention.js";
 import { ICON_PIN, ICON_PLUS } from "./icons.js";
+import { syncPinButton } from "./pinControl.js";
 import "../styles/shell.css";
 
 const COLLAPSED_KEY = "build.inbox.collapsed";
@@ -137,10 +138,13 @@ function syncOpenControl(open, visible, collapsed) {
   open.title = label;
 }
 
+/** The thing this pin docks, as the reader would name it. The conversation
+ *  panel's pin names its own (core/agentRail.js); the words around both are
+ *  core/pinControl.js's. */
+const INBOX_SUBJECT = "inbox";
+
 function syncPinControl(pin, collapsed) {
-  pin.setAttribute("aria-pressed", String(!collapsed));
-  pin.setAttribute("aria-label", collapsed ? "Pin the inbox" : "Unpin the inbox");
-  pin.title = collapsed ? "Pin the inbox" : "Unpin the inbox";
+  syncPinButton(pin, { subject: INBOX_SUBJECT, pinned: !collapsed });
 }
 
 /* The hover peek: the pointer resting on the reopen toggle lays the collapsed

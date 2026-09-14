@@ -92,6 +92,12 @@ export const allDevicesOfflineText = () =>
 export const devicesNotReachedYetText = () =>
   "Your devices report online, but Build could not reach one yet. It will keep trying automatically — no need to refresh.";
 
+/** What a pin control says about the thing it docks. The words are the gesture,
+ *  never the state — "Unpin the inbox" is what pressing it does, not where the
+ *  inbox is — and the subject is the thing being pinned, in the reader's words:
+ *  the inbox, the conversation. */
+export const pinText = (pinned, subject) => `${pinned ? "Unpin" : "Pin"} the ${subject}`;
+
 /** Human-scale age: <60s "just now", <1h "Nm ago", <1d "Nh ago", else "Nd ago". */
 export function humanAge(seconds) {
   const s = Math.max(0, Math.floor(seconds || 0));

@@ -1063,6 +1063,67 @@ describe("the view column's seam with the agent rail", () => {
   });
 });
 
+// ---- the conversation panel's two shapes ------------------------------------
+// The pin in the panel's head says which of two things the conversation is.
+// Pinned it is the column the seam tests above measure — half the frame, beside
+// the work, costing the work its width. Unpinned it is a card ON the strip,
+// pointing with a notch at the bubble it was opened from, over a scrim that is
+// also the way out of it: the shape the away inbox wears at the other edge of
+// the frame, turned round to face the strip.
+describe("the conversation panel unpinned", () => {
+  const POPOVER = "#agent-rail.rail-popover .rail-panel";
+
+  it("floats as a card on the strip's edge, over a scrim", () => {
+    const card = baseRule(POPOVER);
+    expect(card).toBeTruthy();
+    expect(declaration(card.body, "position")).toBe("absolute");
+    // It stops on the strip's own edge, from the same token everything that
+    // stops there reads.
+    expect(declaration(card.body, "right")).toBe("var(--agent-strip)");
+    // The rail is the card's frame, so the card cannot land anywhere else.
+    const railBox = rulesFor("#agent-rail").find((rule) => declaration(rule.body, "position"));
+    expect(declaration(railBox.body, "position")).toBe("relative");
+    expect(enclosingAtRule(railBox.at)).toBeNull();
+
+    const scrim = baseRule(".rail-scrim");
+    expect(declaration(scrim.body, "position")).toBe("fixed");
+    expect(declaration(scrim.body, "inset")).toBe("0");
+    expect(declaration(scrim.body, "background")).toBe("var(--scrim)");
+    // …and it lies under the card it dismisses.
+    expect(Number(declaration(scrim.body, "z-index")))
+      .toBeLessThan(Number(declaration(card.body, "z-index")));
+  });
+
+  it("holds the strip over the scrim, so the next bubble re-anchors the card", () => {
+    // The scrim is what dismisses the card, and it lies over everything under
+    // it — including the row of bubbles the card is anchored to. Pressing
+    // another agent has to reach that agent, not the way out, so the strip
+    // rides above the scrim while the card is open.
+    const lifted = baseRule("#agent-rail.rail-popover .rail-strip");
+    expect(lifted).toBeTruthy();
+    expect(Number(declaration(lifted.body, "z-index")))
+      .toBeGreaterThan(Number(declaration(baseRule(".rail-scrim").body, "z-index")));
+    // …which it can only do from a position of its own.
+    expect(declaration(baseRule(".rail-strip").body, "position")).toBe("relative");
+  });
+
+  it("points its notch at the bubble it was opened from", () => {
+    const notch = baseRule(`${POPOVER}::before`);
+    expect(notch).toBeTruthy();
+    // core/agentRail.js measures the open bubble and writes the offset; the
+    // clamp keeps the notch on the card for a bubble at either end of a long
+    // strip.
+    expect(declaration(notch.body, "top")).toBe("clamp(14px, var(--rail-anchor, 50%), calc(100% - 14px))");
+    // The same notch the away inbox wears, so the two popovers read as one
+    // vocabulary rather than two.
+    const inbox = cssRules().find((rule) => rule.selector.includes("#inbox-rail::before"));
+    for (const property of ["transform", "width", "height", "background"]) {
+      expect([property, declaration(notch.body, property)])
+        .toEqual([property, declaration(inbox.body, property)]);
+    }
+  });
+});
+
 describe("the collapsed toolbar's clearance", () => {
   // The clearance accounts for the toggle's left offset, width, and the gap
   // before toolbar content without reserving room for removed branding.

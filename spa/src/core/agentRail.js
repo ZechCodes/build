@@ -104,6 +104,7 @@ import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js"
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
+import { PIN_CLASS, pinButtonHtml } from "./pinControl.js";
 import { providerInSameFamily } from "./providerCatalog.js";
 import "../styles/shell.css";
 
@@ -118,7 +119,16 @@ const RAIL_POLL_MS = 1600;
  *  than wait at. */
 const OLDER_ITEMS_TRIGGER_PX = 120;
 
-const EXPANDED_KEY = "build.rail.expanded";
+/** Where the reader's pin choice is kept. Named for what the flag used to mean
+ *  — the panel out or shut — and holding what it means now: docked beside the
+ *  work, or a popover on the bubble strip. One key, so a reader who had the
+ *  panel out keeps a pinned panel. */
+const PINNED_KEY = "build.rail.expanded";
+/** The thing this rail's pin docks, as the reader would name it. */
+const PANEL_SUBJECT = "conversation";
+const RAIL_SCRIM_ID = "rail-scrim";
+const POPOVER_CLASS = "rail-popover";
+const ANCHOR_PROPERTY = "--rail-anchor";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
 const RAIL_STATUS_ID = "rail-status";
 const RAIL_STATUS_LEAD_ID = "rail-status-lead";
@@ -328,15 +338,15 @@ export function resetAgentRailMemory() {
  *  instead (styles/shell.css, `@media (max-width: 760px)`). */
 const PANEL_OVERLAYS_BELOW = 761;
 
-/** Whether the panel is out before anyone has said. Beside the work it is: the
- *  conversation and the work are both on screen and neither costs the other
+/** Whether the panel is docked before anyone has said. Beside the work it is:
+ *  the conversation and the work are both on screen and neither costs the other
  *  anything. Laid over the work it is not, or a workspace opens showing its
  *  conversation and nothing else — no Files, no Changes, and nothing on screen
  *  saying the strip is the way back to them. A reader who has made the choice
  *  keeps it, at either width. */
-const readExpanded = () => {
+const readPinned = () => {
   try {
-    const remembered = localStorage.getItem(EXPANDED_KEY);
+    const remembered = localStorage.getItem(PINNED_KEY);
     if (remembered !== null) return remembered !== "0";
   } catch {
     /* private mode: the default below is the whole answer */
@@ -344,13 +354,17 @@ const readExpanded = () => {
   return window.innerWidth >= PANEL_OVERLAYS_BELOW;
 };
 
-const writeExpanded = (on) => {
+const writePinned = (on) => {
   try {
-    localStorage.setItem(EXPANDED_KEY, on ? "1" : "0");
+    localStorage.setItem(PINNED_KEY, on ? "1" : "0");
   } catch {
     /* private mode: the choice lasts the session */
   }
 };
+
+/** Which way the popover faces, which is which way the strip runs: down the
+ *  view's right edge on a desktop, across its foot on a phone. */
+const stripRunsAcross = () => window.innerWidth < PANEL_OVERLAYS_BELOW;
 
 export function bubbleHtml(bubble) {
   const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
@@ -458,13 +472,14 @@ function railTuiButtonHtml(mode, hasTerminal) {
         aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`;
 }
 
-export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null } = {}) {
+export function panelHeadHtml(who, mode, { provider = "", removable = false, hasTerminal = true, surfaceOptions = [], heading = null, pinned = true } = {}) {
   return `<div class="rail-head">
     ${harnessIconHtml(provider)}
     ${railWhoHtml(who, heading)}
     ${railTuiButtonHtml(mode, hasTerminal)}
     ${railRemoveButtonHtml(who, removable)}
     ${surfaceMenuRegionHtml(surfaceOptions)}
+    ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned })}
   </div>`;
 }
 
@@ -498,10 +513,15 @@ export function mountAgentRail(host, context) {
   let entity = railEntity(null, context.kind);
   let selectedId = railView.selectedAgentId();
   selection.set(selectedId);
-  // A collapsed rail has no composer to focus at all — the human just cut
-  // this branch and is about to type into it, so that intent outranks
-  // whatever they left the rail at on the last one.
-  let expanded = context.autofocusComposer === true || readExpanded();
+  // Docked beside the work, or a card on the strip. The pin is the reader's
+  // choice and is remembered; the popover is this visit's, and goes when the
+  // scrim, Escape or a navigation says so.
+  let pinned = readPinned();
+  // An unpinned rail has no composer to focus at all — the human just cut this
+  // branch and is about to type into it, so that intent outranks whatever they
+  // left the rail at on the last one.
+  let popoverOpen = !pinned && context.autofocusComposer === true;
+  const panelOut = () => pinned || popoverOpen;
   let mode = railView.panelMode();
   let poll = null;
   let disposed = false;
@@ -880,18 +900,89 @@ export function mountAgentRail(host, context) {
       addingAgent,
     }));
     let panel = host.querySelector("#rail-panel");
-    if (expanded && !panel) {
+    if (panelOut() && !panel) {
       panel = document.createElement("div");
       panel.className = "rail-panel";
       panel.id = "rail-panel";
       host.insertBefore(panel, strip);
-    } else if (!expanded && panel) {
+    } else if (!panelOut() && panel) {
       disposeTui();
       disposeSurfaces();
       closeSurfaceMenu?.();
       panel.remove();
     }
-    if (expanded) paintPanel();
+    if (panelOut()) paintPanel();
+    syncPopover();
+  };
+
+  // ---- docked, or a card on the strip ---------------------------------------
+
+  /** The layer the popover is read over, which is also what dismisses it. Only
+   *  a popover has one: docked, the panel is part of the frame and there is
+   *  nothing behind it to put away. */
+  const syncScrim = (showing) => {
+    const standing = host.querySelector(`#${RAIL_SCRIM_ID}`);
+    if (!showing) return standing?.remove();
+    if (standing) return;
+    const scrim = document.createElement("div");
+    scrim.className = "rail-scrim";
+    scrim.id = RAIL_SCRIM_ID;
+    scrim.onclick = () => dismissPopover();
+    host.insertBefore(scrim, host.firstChild);
+  };
+
+  /** Which bubble the popover points at, and where its notch sits along the
+   *  panel's edge to point there — down the panel on a desktop, across its foot
+   *  on a phone, because that is which way the strip runs. */
+  const anchorPopover = (panel, showing) => {
+    const bubble = showing ? host.querySelector(".rail-bubble.active") : null;
+    panel.dataset.anchor = bubble?.dataset.agent || "";
+    if (!bubble) return panel.style.removeProperty(ANCHOR_PROPERTY);
+    const box = bubble.getBoundingClientRect();
+    const frame = panel.getBoundingClientRect();
+    const offset = stripRunsAcross()
+      ? box.left + box.width / 2 - frame.left
+      : box.top + box.height / 2 - frame.top;
+    panel.style.setProperty(ANCHOR_PROPERTY, `${Math.round(offset)}px`);
+  };
+
+  const syncPopover = () => {
+    const showing = popoverOpen && !pinned;
+    host.classList.toggle(POPOVER_CLASS, showing);
+    syncScrim(showing);
+    const panel = host.querySelector("#rail-panel");
+    if (panel) anchorPopover(panel, showing);
+  };
+
+  /** Dock the panel, or let it go. Unpinning leaves the conversation on screen
+   *  as the popover it becomes — the same move the inbox's pin makes
+   *  (core/inboxShell.js) — unless the press was a way of shutting it. */
+  const setPinned = (on, { reveal = !on } = {}) => {
+    pinned = on;
+    writePinned(on);
+    popoverOpen = !on && reveal;
+  };
+
+  /** Off the screen, whichever way it was on it. A pinned panel is unpinned to
+   *  get it out of the column; an unpinned one just closes. */
+  const closePanel = () => {
+    if (pinned) setPinned(false, { reveal: false });
+    popoverOpen = false;
+    disposeTui();
+  };
+
+  /** The three ways out of a popover: the scrim under it, Escape, and going
+   *  somewhere else. None of them is a change of mind about the pin. */
+  const dismissPopover = () => {
+    if (pinned || !popoverOpen) return;
+    popoverOpen = false;
+    disposeTui();
+    paint();
+  };
+
+  const dismissOnEscape = (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    dismissPopover();
   };
 
   const shownPanelMode = () => (!agentInFocus() || !agentHasTerminal(agentInFocus()) ? "chat" : mode);
@@ -941,7 +1032,7 @@ export function mountAgentRail(host, context) {
     const shownMode = shownPanelMode();
     // The head is rewritten only when what it SAYS changed: the name, whether
     // this agent can be taken back off, and whether it has a basement.
-    const wantedHead = `${who}:${provider}:${heading.text}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
+    const wantedHead = `${who}:${provider}:${heading.text}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}:${pinned ? "pinned" : "loose"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
@@ -949,7 +1040,7 @@ export function mountAgentRail(host, context) {
       disposeTui();
       disposeSurfaces();
       closeSurfaceMenu?.();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
@@ -984,6 +1075,7 @@ export function mountAgentRail(host, context) {
         hasTerminal,
         surfaceOptions: surfaceMenuOptionsInFocus(),
         heading,
+        pinned,
       });
       panel.dataset.head = wantedHead;
       wireHead(panel);
@@ -1007,7 +1099,11 @@ export function mountAgentRail(host, context) {
     }
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent();
-
+    const pin = panel.querySelector(`.${PIN_CLASS}`);
+    if (pin) pin.onclick = () => {
+      setPinned(!pinned);
+      paint();
+    };
   };
 
   // ---- chat -----------------------------------------------------------------
@@ -1969,19 +2065,25 @@ export function mountAgentRail(host, context) {
       refresh();
       return;
     }
-    // The bubble already open is the way back out: press it again to collapse.
-    expanded = !expanded;
-    writeExpanded(expanded);
-    if (!expanded) disposeTui();
+    // The bubble already open is the way back out: press it again to put the
+    // panel away, whichever way it is on the screen.
+    if (panelOut()) closePanel();
+    else popoverOpen = true;
     paint();
+  };
+
+  /** Put the panel on screen without touching the pin: docked it is already
+   *  there, and unpinned this is the popover opening on the bubble that was
+   *  pressed. */
+  const showPanel = () => {
+    if (!pinned) popoverOpen = true;
   };
 
   /** Open this agent's conversation in the panel, with the panel out. */
   const openAgent = (agentId) => {
     addingAgent = false; // opening a real conversation ends the chooser
     openConversation(agentId);
-    expanded = true;
-    writeExpanded(true);
+    showPanel();
   };
 
   /** Another agent on this branch, beside the ones already here. It starts on
@@ -2000,8 +2102,7 @@ export function mountAgentRail(host, context) {
       // The human now sees the choice before anything is created; the send is
       // what creates, exactly as it does on a branch with no agents at all.
       seedNewAgentDefaults();
-      expanded = true;
-      writeExpanded(true);
+      showPanel();
       disposeTui();
     }
     paint();
@@ -2157,6 +2258,8 @@ export function mountAgentRail(host, context) {
   // The elapsed-time clock ticks between feed reads, same as the toolbar's
   // used to.
   statusTicker = setInterval(paintRailStatus, 1000);
+  document.addEventListener("keydown", dismissOnEscape);
+  window.addEventListener("hashchange", dismissPopover);
 
   return {
     dispose() {
@@ -2174,7 +2277,10 @@ export function mountAgentRail(host, context) {
       unsubscribeComposerController?.();
       unsubscribeComposerController = null;
       releaseFaces();
+      document.removeEventListener("keydown", dismissOnEscape);
+      window.removeEventListener("hashchange", dismissPopover);
       if (ownsChatRepository) chatRepository.dispose();
+      host.classList.remove(POPOVER_CLASS);
       host.innerHTML = "";
     },
   };

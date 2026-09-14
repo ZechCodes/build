@@ -33,16 +33,18 @@ vi.mock("../src/devices.js", () => ({
   paintDevicePicker: () => {},
 }));
 // The gate opens every online device at once and carries on the moment the
-// first one answers; the context it is handed is what the app calls home.
+// first one answers. It names no home: which device that is, the account list
+// and the user's pick already say, and connection.js takes each device in hand
+// as it lands.
 //
 // One owner of one fact: connection.js greets every device as it lands it, so
 // the gate greeting a bridge itself would put a second session.hello on the
 // wire at every boot. This mock names only what gate.js imports, and the
-// hand-over test below is what fails if a greeting creeps back in.
-const homeContext = { deviceId: "d1", session: {}, call: async () => ({}) };
+// hand-over test below is what fails if a greeting — or a claim on home —
+// creeps back in.
+const answering = { deviceId: "d1", session: {}, call: async () => ({}) };
 vi.mock("../src/connection.js", () => ({
-  openDeviceSessions: () => ({ first: Promise.resolve(homeContext), settled: Promise.resolve([homeContext]) }),
-  claimHomeContext: () => {},
+  openDeviceSessions: () => ({ first: Promise.resolve(answering), settled: Promise.resolve([answering]) }),
   setConn: () => {},
   CONNECTION_STATUS: { connected: "", connecting: "", deviceOffline: "", noDevices: "" },
 }));
@@ -111,7 +113,7 @@ describe("the first-run screen", () => {
   // boot() swallows what enterApp throws (a stale status is the ordinary
   // reason), so the hand-over itself is the assertion: the gate reaching for
   // anything connection.js does not hand it would leave the screen gated.
-  it("hands the app over as soon as a device answers", async () => {
+  it("the gate enters the app on the first device that answers and names no home itself", async () => {
     devices = [{ id: "d1", name: "studio", fingerprint: "AAAA", status: "online" }];
 
     await boot();

@@ -7,7 +7,7 @@ import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
-import { openDeviceSessions, setHomeDevice } from "./connection.js";
+import { openDeviceSessions, setHomeDevice, syncHome } from "./connection.js";
 
 export async function refreshDevices() {
   App.devices = await fetchDevices();
@@ -43,6 +43,10 @@ function markDevice(deviceId, status) {
   if (!device || device.status === status) return false;
   device.status = status;
   paintDevicePicker();
+  // Which device is home is what these statuses say: the picked device dropping
+  // hands home to the first that is still online, and its coming back takes it
+  // straight back.
+  syncHome();
   return true;
 }
 

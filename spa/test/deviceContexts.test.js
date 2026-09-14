@@ -17,6 +17,7 @@ import {
   liveContexts,
   resetDeviceContexts,
   retireDeviceContext,
+  routeContext,
   setContextOffline,
 } from "../src/core/deviceContexts.js";
 
@@ -31,9 +32,20 @@ const fakeSession = (deviceId) => ({
 
 const deviceIdsOf = (contexts) => contexts.map((context) => context.deviceId);
 
+const listed = (...devices) => devices.map(([id, status]) => ({ id, status }));
+
+/** Name a device home the way the running app does: the account lists it
+ *  online and the user's pick names it. */
+function adoptHome(deviceId) {
+  App.devices = listed([deviceId, "online"]);
+  App.selectedDeviceId = deviceId;
+  return adoptDeviceSession(fakeSession(deviceId));
+}
+
 beforeEach(() => {
   resetDeviceContexts();
   App.devices = [];
+  App.selectedDeviceId = null;
 });
 
 describe("the device context registry", () => {
@@ -116,27 +128,59 @@ describe("the device context registry", () => {
     expect(contextFor("dev-b").offlineSince).toBe(null);
   });
 
-  it("calls home the context the aliases were last pointed at", () => {
+  it("calls home the picked device while it is online, else the first online device, else nothing", () => {
+    App.devices = listed(["dev-a", "online"], ["dev-b", "online"]);
     const first = adoptDeviceSession(fakeSession("dev-a"));
+    const second = adoptDeviceSession(fakeSession("dev-b"));
+
+    App.selectedDeviceId = "dev-b";
+
+    expect(homeContext()).toBe(second);
+
+    App.selectedDeviceId = null;
+
+    expect(homeContext()).toBe(first);
+
+    App.devices = listed(["dev-a", "offline"], ["dev-b", "online"]);
+
+    expect(homeContext()).toBe(second);
+
+    App.devices = listed(["dev-a", "offline"], ["dev-b", "offline"]);
+
+    expect(homeContext()).toBe(null);
+  });
+
+  // Boot opens every online device at once, so the device the account lists
+  // first can still be handshaking when the second one lands. Home is that
+  // device's, and nobody else's, from the moment it answers.
+  it("names no home while the device it would name has no context yet", () => {
+    App.devices = listed(["dev-a", "online"], ["dev-b", "online"]);
     const second = adoptDeviceSession(fakeSession("dev-b"));
 
     expect(homeContext()).toBe(null);
 
-    pointAliasesAt(first);
+    const first = adoptDeviceSession(fakeSession("dev-a"));
 
     expect(homeContext()).toBe(first);
-    expect(App.call).toBe(first.call);
-    expect(App.cacheScope).toBe(first.cacheScope);
-    expect(App.chatRepository).toBe(first.chatRepository);
 
-    pointAliasesAt(second);
-
-    expect(homeContext()).toBe(second);
-    expect(App.session).toBe(second.session);
-
-    retireDeviceContext("dev-b");
+    retireDeviceContext("dev-a");
 
     expect(homeContext()).toBe(null);
+    expect(contextFor("dev-b")).toBe(second);
+  });
+
+  // A work surface is about the machine its link names, whoever is home.
+  it("reads the route's device, and nothing for a route without one or a device with no context", () => {
+    App.devices = listed(["dev-a", "online"], ["dev-b", "online"]);
+    App.selectedDeviceId = "dev-a";
+    const first = adoptDeviceSession(fakeSession("dev-a"));
+    const second = adoptDeviceSession(fakeSession("dev-b"));
+
+    expect(routeContext({ name: "branch", deviceId: "dev-b", projectId: "p1" })).toBe(second);
+    expect(routeContext({ name: "branch", deviceId: "dev-a", projectId: "p1" })).toBe(first);
+    expect(routeContext({ name: "inbox" })).toBe(null);
+    expect(routeContext({ name: "branch", deviceId: "dev-z" })).toBe(null);
+    expect(routeContext(null)).toBe(null);
   });
 
   it("points the ambient cache-scope alias at the home device too", () => {
@@ -165,7 +209,7 @@ describe("the device context registry", () => {
 // means, and until routes carry one that is the home device.
 describe("the home device's name for a project", () => {
   it("pairs the home device with the bare id the route names", () => {
-    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+    adoptHome("dev-a");
 
     expect(homeProjectKey("p1")).toBe("dev-a/p1");
   });
@@ -173,7 +217,7 @@ describe("the home device's name for a project", () => {
   it("names no project while no device is home, or with no project to name", () => {
     expect(homeProjectKey("p1")).toBe(null);
 
-    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+    adoptHome("dev-a");
 
     expect(homeProjectKey("")).toBe(null);
     expect(homeProjectKey(undefined)).toBe(null);
@@ -190,14 +234,14 @@ describe("one device's view of the feed", () => {
   const merged = { items: [...mine.items, ...theirs.items], devices: { "dev-a": mine, "dev-b": theirs } };
 
   it("reads the home device's rows and projects out of a merged snapshot", () => {
-    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+    adoptHome("dev-a");
     adoptDeviceSession(fakeSession("dev-b"));
 
     expect(deviceFeedView(merged)).toEqual({ items: mine.items, projects: mine.projects });
   });
 
   it("reads the device it is given, whoever is home", () => {
-    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+    adoptHome("dev-a");
     adoptDeviceSession(fakeSession("dev-b"));
 
     expect(deviceFeedView(merged, "dev-b")).toEqual({ items: theirs.items, projects: theirs.projects });

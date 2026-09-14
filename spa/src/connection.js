@@ -14,7 +14,6 @@ import { RELAY_URL } from "./config.js";
 import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
-import { onlineStickyDeviceId } from "./core/devicePolicy.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, pointAliasesAt, render, rememberSelectedDevice } from "./app.js";
 import {
@@ -33,7 +32,7 @@ import {
   paintDevicePicker,
   pinnedDeviceTransportKey,
 } from "./devices.js";
-import { retargetTerminals, terminalsRideOn } from "./terminal/manager.js";
+import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
@@ -157,7 +156,7 @@ function adoptPeerLink(context, session, link) {
     });
   }
   session.peer(link.app);
-  handTerminalsIfHome(context);
+  followTerminalsIfTheirs(context);
 }
 
 /** Idempotent, and the single point where both streams are handed back at once:
@@ -168,21 +167,15 @@ function dropPeerLink(context) {
   if (!link) return;
   context.peerLink = null;
   context.session?.peer(null);
-  handTerminalsIfHome(context);
+  followTerminalsIfTheirs(context);
   link.close();
 }
 
-/** The terminal socket rides the home device's peer channel and nobody else's —
- *  another device's channel carries the stream to the wrong machine. Asked
- *  whenever home moves. */
-function handTerminalsToHome() {
-  terminalsRideOn(homeContext()?.peerLink?.term || null);
-}
-
-/** One device's peer link opened or closed. The terminals move only when it was
- *  the home device's: nothing else they ride changed. */
-function handTerminalsIfHome(context) {
-  if (homeContext() === context) handTerminalsToHome();
+/** One device's peer link opened or closed. The terminals move only when they
+ *  are on that device — another device's channel carries the stream to the
+ *  wrong machine, and nothing about the wire theirs rides has changed. */
+function followTerminalsIfTheirs(context) {
+  if (context.deviceId === terminalDeviceId()) followTerminalDevice();
 }
 
 /** Greet a device that is live and unpaused: feature-detect push invalidation,
@@ -225,24 +218,29 @@ function landSession(session) {
   // A device the feed is not polling yet — the account's first session, one a
   // late device just opened — gets its own board watcher and reads at once.
   joinFeed(context);
-  settleHome(context);
+  syncHome(context);
   paintOfflineBanner();
   greetLiveBridge(context);
   upgradeToPeer(context); // in the background: the user is live already
   return context;
 }
 
-/** Where creation goes, which context the App.* aliases follow, and whose link
- *  carries the terminals. Re-asked whenever that context's offline state
- *  changes: the aliases are plain fields, and App.offline must never lie to the
- *  composer or to a frozen view. */
+// The device followHomeContext was last run for. Home itself is derived — the
+// account list and the pick say who it is — so this is not another answer to
+// that question, only the record of which one the side effects below were last
+// carried out for.
+let followedHomeId = null;
+
+/** Take the home device in hand: what the App.* aliases copy, whose link the
+ *  terminals ride, what the picker names, and who is offered the captures
+ *  nobody could send. Everything a home move touches happens here, once. */
 function followHomeContext(context) {
+  followedHomeId = context?.deviceId || null;
   pointAliasesAt(context);
-  handTerminalsToHome();
   // The terminal socket reads the device it wants only as it connects, and a
-  // healthy one never reconnects on its own: home moving is the one thing that
-  // makes it drop and re-point.
-  retargetTerminals();
+  // healthy one never reconnects on its own: home moving is one of the two
+  // things that makes it drop and re-point (a route change is the other).
+  followTerminalDevice();
   paintDevicePicker();
   // Every surface about "here" — the composer's destinations, the toolbar, the
   // capture decision page, the agent rail — keeps the home device's slice of
@@ -257,19 +255,18 @@ function followHomeContext(context) {
   });
 }
 
-/** Home belongs to the device the user picked, whenever that device is online:
- *  it takes home as it lands, however long it took and whoever answered first.
- *  Any other device takes nothing from whoever holds it; a landing by the home
- *  device itself is that device coming back, and re-points the aliases at it. */
-function settleHome(context) {
-  const picked = onlineStickyDeviceId(App.devices, App.selectedDeviceId) === context.deviceId;
-  if (picked || homeContext() === context) followHomeContext(context);
-}
-
-/** Name a context home when no device holds it yet — what the gate does with
- *  the first device that answers. */
-export function claimHomeContext(context) {
-  if (!homeContext()) followHomeContext(context);
+/**
+ * Catch the side effects up with whoever home is now.
+ *
+ * Nobody holds home: the account's device list and the user's pick say who it
+ * is, and this is asked whenever one of those, or the home device itself, has
+ * changed. `landed` is the context whose own state just changed — a device that
+ * just landed or just went — and is taken in hand again even when it was
+ * already home, because what the aliases copy off it is not what it was.
+ */
+export function syncHome(landed = null) {
+  const home = homeContext();
+  if (home && (home.deviceId !== followedHomeId || home === landed)) followHomeContext(home);
 }
 
 /** Move home to another device: where creation goes, which context the aliases
@@ -277,11 +274,11 @@ export function claimHomeContext(context) {
  *  other device stays live and keeps filling the inbox. */
 export async function setHomeDevice(deviceId) {
   rememberSelectedDevice(deviceId);
-  // The pick is remembered first, so a device opened here lands as the picked
-  // one and settleHome takes it home on the way in. Following it again would
-  // re-point what is already pointed and offer the capture queue twice.
-  const context = hasLiveSession(deviceId) ? contextFor(deviceId) : await connectDevice(deviceId);
-  if (homeContext() !== context) followHomeContext(context);
+  // The pick is remembered first, so a device opened here lands as the home one
+  // and syncHome takes it in hand on the way in; asking again then changes
+  // nothing, rather than offering the capture queue a second time.
+  if (!hasLiveSession(deviceId)) await connectDevice(deviceId);
+  syncHome();
   render();
 }
 
@@ -353,7 +350,7 @@ export function goOffline(deviceId) {
   setContextOffline(deviceId);
   dropPeerLink(context);
   closeQuietly(context.session);
-  if (homeContext() === context) followHomeContext(context);
+  syncHome(context); // home may have moved off it — and if it has not, the aliases still have to say it is offline
   paintOfflineBanner();
   resume(deviceId);
 }

@@ -3353,6 +3353,7 @@ describe("an account with more than one device", () => {
     if (resetDeviceContexts) resetDeviceContexts();
     resetDeviceContexts = null;
     App.devices = [];
+    App.selectedDeviceId = null;
   });
 
   it("seeds its strip from the home device's row", async () => {
@@ -3362,15 +3363,14 @@ describe("an account with more than one device", () => {
       { id: "dev-2", name: "Desktop", status: "online" },
       { id: "dev-1", name: "This device", status: "online" },
     ];
-    contexts.setHomeContext(
-      contexts.adoptDeviceSession({
-        deviceId: "dev-1",
-        call: (...args) => App.call(...args),
-        close: () => {},
-        peer: () => {},
-        onCarrier: () => {},
-      }),
-    );
+    App.selectedDeviceId = "dev-1"; // home is the device the pick names
+    contexts.adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => App.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
     // The desktop's own build/login sorts first in the merge.
     const theirs = { ...branchRow({ agents: [agent({ id: "ag-9", ordinal: 9 })] }), deviceId: "dev-2" };
     const mine = { ...branchRow(), deviceId: "dev-1" };

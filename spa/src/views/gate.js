@@ -5,7 +5,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, render } from "../app.js";
-import { CONNECTION_STATUS, claimHomeContext, openDeviceSessions, setConn } from "../connection.js";
+import { CONNECTION_STATUS, openDeviceSessions, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -30,18 +30,16 @@ function setGate(on) {
 
 async function enterApp() {
   if (App._connecting) return;
-  let home = null;
   App._connecting = true;
   try {
     // Every online device is opened at once; the app comes up on whichever
-    // answers first rather than waiting out the slowest one. That device holds
-    // home only until the user's picked device lands and takes it, so this
-    // names one only while nobody has.
-    home = await openDeviceSessions().first;
+    // answers first rather than waiting out the slowest one. The gate names no
+    // home: which device that is, the account list and the user's pick already
+    // say, and each device takes it in hand as it lands.
+    await openDeviceSessions().first;
   } finally {
     App._connecting = false;
   }
-  claimHomeContext(home);
   if (App._watch) {
     clearInterval(App._watch);
     App._watch = null;

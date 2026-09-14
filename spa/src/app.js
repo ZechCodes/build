@@ -13,15 +13,15 @@ import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
 import { normalizeModelCatalog } from "./core/modelPicker.js";
-import { clearCacheScope } from "./core/cacheScope.js";
+import { adoptCacheScope, clearCacheScope } from "./core/cacheScope.js";
 import {
   adoptDeviceSession,
-  homeContext,
+  contextFor,
   resetDeviceContexts,
   retireDeviceContext,
-  setHomeContext,
 } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
+import { followTerminalDevice } from "./terminal/manager.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 
@@ -65,10 +65,13 @@ const ALIAS_DEFAULTS = Object.freeze({
   offlineSince: null,
 });
 
-/** Say which context the App.* aliases — and creation — now follow. */
+/** Say which context the App.* aliases follow. That includes cacheScope's own
+ *  ambient alias, which surfaces still read as currentCacheScope() while they
+ *  mount. */
 export function pointAliasesAt(context) {
   for (const [field, empty] of Object.entries(ALIAS_DEFAULTS)) App[field] = context?.[field] ?? empty;
-  return setHomeContext(context);
+  adoptCacheScope(context?.deviceId || null);
+  return context || null;
 }
 
 /**
@@ -83,12 +86,19 @@ export function pointAliasesAt(context) {
  * what appScope.test.js pins. Stage 3 deletes both with that file.
  */
 export function adoptHomeSession(session) {
-  const previous = homeContext();
+  const previous = contextFor(shimmedDeviceId);
   const context = adoptDeviceSession(session);
+  shimmedDeviceId = context.deviceId;
   if (previous && previous !== context) retireSwitchedDevice(previous.deviceId);
   pointAliasesAt(context);
   return context;
 }
+
+// The device this shim last handed the app to. Home itself is derived from the
+// account list and the pick, so this is not a second answer to that question —
+// only what the shim needs to know which device it is leaving. Stage 3 deletes
+// it with the shim.
+let shimmedDeviceId = null;
 
 // A device the shim above handed home to somebody else: it goes, with the model
 // catalog and the reader's position it filled.
@@ -114,6 +124,7 @@ export function disposeApplicationScope() {
   App.routeLeaveGuard = null;
   App.viewingContext?.setEnabled?.(false);
   resetDeviceContexts();
+  shimmedDeviceId = null;
   clearCacheScope();
   pointAliasesAt(null);
   App.modelCatalog = null;
@@ -271,6 +282,19 @@ const VIEWS = {
   resolve: renderResolving,
 };
 
+// The device the terminals were last taken to for a route. A route change is
+// one of the two ways the machine the shells type at moves (a home move is the
+// other), and only a change: re-pointing a socket that is already on the right
+// device would drop every open tab for nothing.
+let terminalRouteDeviceId = null;
+
+function followRouteDevice() {
+  const deviceId = App.route.deviceId || null;
+  if (deviceId === terminalRouteDeviceId) return;
+  terminalRouteDeviceId = deviceId;
+  followTerminalDevice();
+}
+
 export function render() {
   if (App.poll) {
     App.poll.dispose();
@@ -289,6 +313,7 @@ export function render() {
   }
   inboxRouteChanged(); // keep the rail tracking the route
   toolbarRouteChanged(); // …and the toolbar naming where you are standing
+  followRouteDevice(); // …and the terminals typing at the machine it names
   // The shell's grid owns the columns; #root is one cell. A view states its own
   // chrome (`surface` for a full-height work surface, nothing for a reading
   // page), so the outgoing view's never leaks into the incoming one.

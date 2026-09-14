@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const relay = vi.hoisted(() => ({ openRelaySession: vi.fn() }));
-const terminals = vi.hoisted(() => ({ terminalsRideOn: vi.fn(), retargetTerminals: vi.fn() }));
+const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
 
 let devices = [];
 
@@ -20,8 +20,8 @@ vi.mock("../src/api.js", () => ({
   fetchDevices: async () => devices,
 }));
 vi.mock("../src/terminal/manager.js", () => ({
-  terminalsRideOn: (...args) => terminals.terminalsRideOn(...args),
-  retargetTerminals: (...args) => terminals.retargetTerminals(...args),
+  followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
+  terminalDeviceId: (...args) => terminals.terminalDeviceId(...args),
 }));
 vi.mock("../src/core/peerLink.js", () => ({
   openPeerLink: async () => {
@@ -42,9 +42,7 @@ const { App, disposeApplicationScope } = await import("../src/app.js");
 const { contextFor, deviceFeedView, knownContexts, liveContexts } = await import(
   "../src/core/deviceContexts.js"
 );
-const { claimHomeContext, goOffline, openDeviceSessions, resume, setHomeDevice } = await import(
-  "../src/connection.js"
-);
+const { goOffline, openDeviceSessions, resume, setHomeDevice } = await import("../src/connection.js");
 const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
@@ -102,8 +100,7 @@ beforeEach(() => {
   App.devices = devices;
   App.selectedDeviceId = null;
   App.route = { name: "inbox" };
-  terminals.terminalsRideOn.mockClear();
-  terminals.retargetTerminals.mockClear();
+  terminals.followTerminalDevice.mockClear();
   captures.flush.mockClear();
   relay.openRelaySession.mockReset();
   relay.openRelaySession.mockImplementation(async (options) => {
@@ -140,10 +137,11 @@ const bannerText = () => document.getElementById("offbar-text").textContent;
 const bannerShown = () => !document.getElementById("offbar").hidden;
 const liveIds = () => liveContexts().map((context) => context.deviceId);
 
-/** Boot: open every online device and name the first one home, as the gate does. */
+/** Boot: open every online device, as the gate does. It names no home — each
+ *  device takes it in hand as it lands, if the account calls it home. */
 async function connectEveryDevice() {
   const sessions = openDeviceSessions();
-  claimHomeContext(await sessions.first);
+  await sessions.first;
   const contexts = await sessions.settled;
   await flush();
   return contexts;
@@ -366,8 +364,8 @@ describe("per-device connections", () => {
     slowMs.set("dev-b", 20);
 
     const sessions = openDeviceSessions();
-    claimHomeContext(await sessions.first); // the gate names whoever landed first
-    expect(App.session).toBe(lastSession("dev-a"));
+    await sessions.first; // the quicker device landed, and it is not the picked one
+    expect(App.session).toBe(null); // nothing is home until the device the pick names answers
 
     await vi.advanceTimersByTimeAsync(20);
     await sessions.settled;
@@ -390,15 +388,35 @@ describe("per-device connections", () => {
     App.selectedDeviceId = "dev-b";
     slowMs.set("dev-b", 20);
     const sessions = openDeviceSessions();
-    claimHomeContext(await sessions.first); // the gate names whoever landed first
-    terminals.retargetTerminals.mockClear();
+    await sessions.first; // the quicker device landed, and it is not the picked one
+    terminals.followTerminalDevice.mockClear();
 
     await vi.advanceTimersByTimeAsync(20);
     await sessions.settled;
     await flush();
 
     expect(App.session).toBe(lastSession("dev-b"));
-    expect(terminals.retargetTerminals).toHaveBeenCalled();
+    expect(terminals.followTerminalDevice).toHaveBeenCalled();
+  });
+
+  // Home is not a pointer anybody holds: it is what the account list and the
+  // pick say. The relay saying the picked bridge went is news about home, so
+  // everything that follows home — the aliases, the terminals, the picker, the
+  // surfaces about here — moves to the device that can still answer.
+  it("home falls back to the first online device when the picked one is marked offline by the relay", async () => {
+    App.selectedDeviceId = "dev-b";
+    await connectEveryDevice();
+    expect(App.session).toBe(lastSession("dev-b"));
+    terminals.followTerminalDevice.mockClear();
+
+    unreachable.add("dev-b");
+    markDeviceOffline("dev-b"); // another live session hears that bridge go
+    await flush();
+
+    expect(App.session).toBe(lastSession("dev-a"));
+    expect(App.call).toBe(lastSession("dev-a").call);
+    expect(App.offline).toBe(false); // the device home moved to is answering
+    expect(terminals.followTerminalDevice).toHaveBeenCalled();
   });
 
   it("re-points the aliases and the terminals on a new home device, and closes nothing", async () => {
@@ -412,7 +430,7 @@ describe("per-device connections", () => {
     expect(App.session).toBe(home);
     expect(App.call).toBe(home.call);
     expect(App.cacheScope).toBe(contextFor("dev-b").cacheScope);
-    expect(terminals.retargetTerminals).toHaveBeenCalled();
+    expect(terminals.followTerminalDevice).toHaveBeenCalled();
     expect(captures.flush).toHaveBeenCalled(); // the new home takes what nobody could send
     expect(stayed.close).not.toHaveBeenCalled();
     expect(contextFor("dev-a").session).toBe(stayed);

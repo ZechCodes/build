@@ -134,6 +134,7 @@ describe("an account with more than one device", () => {
     if (resetDeviceContexts) resetDeviceContexts();
     resetDeviceContexts = null;
     App.devices = [];
+    App.selectedDeviceId = null;
   });
 
   it("addresses the tab cache with the home device's row", async () => {
@@ -143,15 +144,14 @@ describe("an account with more than one device", () => {
       { id: "dev-2", name: "Desktop", status: "online" },
       { id: "dev-1", name: "This device", status: "online" },
     ];
-    contexts.setHomeContext(
-      contexts.adoptDeviceSession({
-        deviceId: "dev-1",
-        call: (...args) => App.call(...args),
-        close: () => {},
-        peer: () => {},
-        onCarrier: () => {},
-      }),
-    );
+    App.selectedDeviceId = "dev-1"; // home is the device the pick names
+    contexts.adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => App.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
     // The desktop's own build/login sorts first in the merge.
     const theirs = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-9", worktree_id: "wt-9", deviceId: "dev-2" };
     feedSnapshot = {

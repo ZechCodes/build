@@ -446,12 +446,12 @@ describe("an account with more than one device", () => {
 
   const twoDevices = async () => {
     let adoptDeviceSession;
-    let setHomeContext;
-    ({ adoptDeviceSession, resetDeviceContexts, setHomeContext } = await import("../src/core/deviceContexts.js"));
+    ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
     App.devices = [
       { id: "dev-2", name: "Desktop", status: "online" },
       { id: "dev-1", name: "Laptop", status: "online" },
     ];
+    App.selectedDeviceId = "dev-1"; // the laptop is the device creation goes to
     const theirs = {
       items: [{ kind: "branch", project_id: "p1", project: "their notes", branch: "their/branch", deviceId: "dev-2" }],
       projects: [{ id: "p1", name: "their notes", deviceId: "dev-2", projectKey: "dev-2/p1" }],
@@ -464,15 +464,13 @@ describe("an account with more than one device", () => {
     feedItems = [...theirs.items, ...mine.items];
     feedProjects = [...theirs.projects, ...mine.projects];
     feedDevices = { "dev-2": theirs, "dev-1": mine };
-    setHomeContext(
-      adoptDeviceSession({
-        deviceId: "dev-1",
-        call: (...args) => App.call(...args),
-        close: () => {},
-        peer: () => {},
-        onCarrier: () => {},
-      }),
-    );
+    adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => App.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
     await refreshFeed();
   };
 
@@ -480,6 +478,7 @@ describe("an account with more than one device", () => {
     if (resetDeviceContexts) resetDeviceContexts();
     resetDeviceContexts = null;
     App.devices = [];
+    App.selectedDeviceId = null;
   });
 
   it("offers the home device's projects and branches, not every device's", async () => {

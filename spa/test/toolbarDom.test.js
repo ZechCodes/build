@@ -409,15 +409,18 @@ describe("the ⋯", () => {
 describe("an account with more than one device", () => {
   it("offers the home device's projects, not every device's", async () => {
     const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
-    const { pointAliasesAt } = await import("../src/app.js");
-    const home = adoptDeviceSession({
+    App.devices = [
+      { id: "dev-2", name: "Laptop", status: "online" },
+      { id: "dev-1", name: "Desktop", status: "online" },
+    ];
+    App.selectedDeviceId = "dev-1"; // home is the device the pick names
+    adoptDeviceSession({
       deviceId: "dev-1",
       call: async () => ({}),
       close: () => {},
       peer: () => {},
       onCarrier: () => {},
     });
-    pointAliasesAt(home);
     const mine = { items: [], projects: [{ id: "p1", name: "relaydb", deviceId: "dev-1", projectKey: "dev-1/p1" }] };
     const theirs = { items: [], projects: [{ id: "p9", name: "laptop notes", deviceId: "dev-2", projectKey: "dev-2/p9" }] };
     feed = {
@@ -433,6 +436,7 @@ describe("an account with more than one device", () => {
     expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb"]);
     feed = savedFeed;
     resetDeviceContexts();
-    pointAliasesAt(null);
+    App.devices = [];
+    App.selectedDeviceId = null;
   });
 });

@@ -94,7 +94,7 @@ export function terminalsRideOn(carrier) {
  * old device — so a move must drop it; the auto-reconnect then re-reads
  * preferDeviceId, attaches to the wanted device, and re-attaches every open tab.
  */
-export function retargetTerminals() {
+function retargetTerminals() {
   const wantedDeviceId = terminalDeviceId();
   if (socket && wantedDeviceId && socket.deviceId !== wantedDeviceId) socket.simulateDrop();
 }

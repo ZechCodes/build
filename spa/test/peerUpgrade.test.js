@@ -12,7 +12,7 @@ const peerLink = vi.hoisted(() => ({
   close: vi.fn(),
 }));
 const api = vi.hoisted(() => ({ fetchIceServers: vi.fn(async () => [{ urls: ["stun:stun.test"] }]) }));
-const terminals = vi.hoisted(() => ({ terminalsRideOn: vi.fn(), retargetTerminals: vi.fn() }));
+const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), deviceId: "dev-a" }));
 const relay = vi.hoisted(() => ({ openRelaySession: vi.fn() }));
 const greetings = vi.hoisted(() => ({ greet: vi.fn(async () => true) }));
 
@@ -24,9 +24,12 @@ vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",
   fetchDevices: async () => [],
 }));
+// Which device the terminals are on is the manager's own answer; here it is a
+// fixed one, so what this file reads is whether a link event on that device
+// moved them and a link event on another one left them alone.
 vi.mock("../src/terminal/manager.js", () => ({
-  terminalsRideOn: (...args) => terminals.terminalsRideOn(...args),
-  retargetTerminals: (...args) => terminals.retargetTerminals(...args),
+  followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
+  terminalDeviceId: () => terminals.deviceId,
 }));
 vi.mock("../src/core/session.js", () => ({
   openRelaySession: (options) => relay.openRelaySession(options),
@@ -47,7 +50,12 @@ vi.mock("../src/core/changeEvents.js", () => ({
 }));
 const changed = [];
 const { App, disposeApplicationScope } = await import("../src/app.js");
-const { claimHomeContext, goOffline, greetLiveBridge, openDeviceSessions, openDeviceSettingsSession } = await import(
+const { contextFor } = await import("../src/core/deviceContexts.js");
+
+// Every channel the terminals were sent to ride, in order: what the manager
+// reads off the context of the device it follows each time it is told to look.
+const handedOver = [];
+const { goOffline, greetLiveBridge, openDeviceSessions, openDeviceSettingsSession } = await import(
   "../src/connection.js"
 );
 
@@ -106,13 +114,13 @@ function relayAnswers(sessions) {
   });
 }
 
-/** Boot the account: every device online, opened at once, and the first one to
- *  answer is home — what the gate does. */
+/** Boot the account: every device online, opened at once — what the gate does.
+ *  The first device the list names is the one the account calls home. */
 async function connect(...sessions) {
   App.devices = sessions.map((session) => ({ id: session.deviceId, name: "Machine", status: "online" }));
   relayAnswers(sessions);
   const opening = openDeviceSessions();
-  claimHomeContext(await opening.first);
+  await opening.first;
   const contexts = await opening.settled;
   await settle();
   return contexts;
@@ -137,9 +145,14 @@ beforeEach(() => {
   App.devices = [];
   App.selectedDeviceId = null;
   globalThis.RTCPeerConnection = class {};
-  for (const spy of [peerLink.open, api.fetchIceServers, terminals.terminalsRideOn, relay.openRelaySession]) {
+  terminals.deviceId = "dev-a";
+  handedOver.length = 0;
+  for (const spy of [peerLink.open, api.fetchIceServers, terminals.followTerminalDevice, relay.openRelaySession]) {
     spy.mockReset();
   }
+  terminals.followTerminalDevice.mockImplementation(() =>
+    handedOver.push(contextFor(terminals.deviceId)?.peerLink?.term || null),
+  );
   api.fetchIceServers.mockResolvedValue([{ urls: ["stun:stun.test"] }]);
   greetings.greet.mockReset();
   greetings.greet.mockResolvedValue(true);
@@ -177,7 +190,9 @@ describe("the upgrade policy", () => {
     // The session routes `rtc.*` to the relay itself: this layer just calls it.
     expect(session.call).toHaveBeenCalledWith("rtc.offer", { sdp: "v=0" });
     expect(session.peer).toHaveBeenCalledWith(link.app);
-    expect(terminals.terminalsRideOn).toHaveBeenCalledWith(link.term);
+    // The terminal half is the manager's to take: it is told the device it
+    // follows has a new link, and reads the channel off that device's context.
+    expect(handedOver.at(-1)).toBe(link.term);
   });
 
   it("stays on the relay when the ICE servers cannot be minted, and does not try again", async () => {
@@ -191,9 +206,8 @@ describe("the upgrade policy", () => {
     await connect(session);
 
     expect(session.peer).not.toHaveBeenCalled();
-    // Nothing was handed a channel to ride — only the release of whatever the
-    // session before this one was riding.
-    expect(terminals.terminalsRideOn.mock.calls.flat().filter(Boolean)).toEqual([]);
+    // Nothing was handed a channel to ride: the device kept no link.
+    expect(handedOver.filter(Boolean)).toEqual([]);
     expect(peerLink.open).toHaveBeenCalledTimes(1); // one attempt per relay session
   });
 
@@ -203,12 +217,12 @@ describe("the upgrade policy", () => {
     const session = fakeSession();
     await connect(session);
     session.peer.mockClear();
-    terminals.terminalsRideOn.mockClear();
+    handedOver.length = 0;
 
     link.app.drop();
 
     expect(session.peer).toHaveBeenCalledWith(null);
-    expect(terminals.terminalsRideOn).toHaveBeenCalledWith(null);
+    expect(handedOver).toEqual([null]);
     expect(link.close).toHaveBeenCalledTimes(1);
   });
 
@@ -221,7 +235,7 @@ describe("the upgrade policy", () => {
     await loseAndReturn(fakeSession());
 
     expect(link.close).toHaveBeenCalledTimes(1);
-    expect(terminals.terminalsRideOn).toHaveBeenCalledWith(null);
+    expect(handedOver).toContain(null);
   });
 
   it("routes the bridge's trickled candidates to the upgrade, not to the surfaces", async () => {
@@ -258,12 +272,12 @@ describe("the upgrade policy", () => {
     const session = fakeSession();
     await connect(session);
     session.peer.mockClear();
-    terminals.terminalsRideOn.mockClear();
+    handedOver.length = 0;
 
     link.term.drop();
 
     expect(session.peer).toHaveBeenCalledWith(null);
-    expect(terminals.terminalsRideOn).toHaveBeenCalledWith(null);
+    expect(handedOver).toEqual([null]);
     expect(link.close).toHaveBeenCalledTimes(1);
   });
 
@@ -288,7 +302,7 @@ describe("the upgrade policy", () => {
     expect(delivered).toEqual([[1, { candidate: "candidate:9 1 udp" }]]);
   });
 
-  it("hands the terminal channel over only from the home device's link", async () => {
+  it("hands the terminal channel over only from the link of the device they follow", async () => {
     const links = { "dev-a": fakeLink(), "dev-b": fakeLink() };
     peerLink.open.mockImplementation(async ({ signal }) => links[(await signal("rtc.hello", {})).deviceId]);
     const home = fakeSession("dev-a");
@@ -297,12 +311,12 @@ describe("the upgrade policy", () => {
     await connect(home, other);
 
     // Both devices ride their own app channel; the terminal stream is one
-    // socket on one machine, so only home's term channel is handed over.
+    // socket on one machine, so only the link of the device it is on sends it
+    // looking for a channel. The other device's link is news about nothing it
+    // rides, and re-handing it would drop every open tab for nothing.
     expect(home.peer).toHaveBeenCalledWith(links["dev-a"].app);
     expect(other.peer).toHaveBeenCalledWith(links["dev-b"].app);
-    const handedOver = terminals.terminalsRideOn.mock.calls.flat().filter(Boolean);
-    expect(handedOver).toHaveLength(1);
-    expect(handedOver[0]).toBe(links["dev-a"].term);
+    expect(handedOver.filter(Boolean)).toEqual([links["dev-a"].term]);
   });
 });
 

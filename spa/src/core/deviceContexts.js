@@ -8,15 +8,15 @@
 // reading it at load time would read a half-built module.
 
 import { App } from "../app.js";
-import { adoptCacheScope, releaseScope, scopeFor } from "./cacheScope.js";
+import { releaseScope, scopeFor } from "./cacheScope.js";
 import { deviceKey } from "./deviceKey.js";
+import { homeDeviceId } from "./devicePolicy.js";
 import { createChatRepository } from "./chatRepository.js";
 import { deviceView } from "./feedMerge.js";
 import { disarmChangeEvents } from "./changeEvents.js";
 import { dropFeedDevice } from "./taskFeed.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
-let homeDevice = null; // the device the App.* aliases were last pointed at
 const stateListeners = new Set(); // told when a device's ability to answer changes
 
 /**
@@ -53,7 +53,7 @@ function createDeviceContext(deviceId) {
 }
 
 export function contextFor(deviceId) {
-  return contexts.get(deviceId) || null;
+  return (deviceId && contexts.get(deviceId)) || null;
 }
 
 /** Every registered device, offline ones included, in App.devices order —
@@ -105,7 +105,6 @@ export function retireDeviceContext(deviceId) {
   const context = contexts.get(deviceId);
   if (!context) return null;
   contexts.delete(deviceId);
-  if (homeDevice === deviceId) homeDevice = null;
   clearTimeout(context.reconnect.timer); // a retired device stops trying to come back
   context.chatRepository?.dispose();
   dropFeedDevice(deviceId);
@@ -144,11 +143,24 @@ function writeOfflineMark(context, { offline = true, sinceMs = null }) {
   context.offlineSince = context.offline ? sinceMs || Date.now() : null;
 }
 
-/** Where creation goes and what the App.* aliases point at. Stage 1's meaning
- *  is literal: the context pointAliasesAt was last handed. Stage 2 redefines it
- *  over homeDeviceId(App.devices, App.selectedDeviceId). */
+/**
+ * Where creation goes: the home device's context, or null.
+ *
+ * Home is not a pointer anyone writes — it is what the account list and the
+ * user's pick already say (core/devicePolicy.js), so nothing can hold home
+ * while the account calls another device the home one. A device the policy
+ * names before it has answered has no context yet, and home is nobody's until
+ * it does.
+ */
 export function homeContext() {
-  return homeDevice ? contextFor(homeDevice) : null;
+  return contextFor(homeDeviceId(App.devices, App.selectedDeviceId));
+}
+
+/** The context a route is about: work surfaces are about the machine their link
+ *  names. A route that names no device, or one this client has never opened, is
+ *  about nobody. */
+export function routeContext(route) {
+  return contextFor(route?.deviceId);
 }
 
 /** The account-wide name of a project a route names (core/deviceKey.js). A
@@ -175,18 +187,7 @@ export function deviceFeedView(snapshot, deviceId = null) {
   return { items: view.items || [], projects: view.projects || [] };
 }
 
-/** Called by pointAliasesAt (app.js) — pointing the aliases at a context and
- *  calling it home are one statement, made in one place. That includes
- *  cacheScope's own home alias, which surfaces still read as
- *  currentCacheScope() while they mount. */
-export function setHomeContext(context) {
-  homeDevice = context?.deviceId || null;
-  adoptCacheScope(homeDevice);
-  return context || null;
-}
-
 export function resetDeviceContexts() {
   for (const deviceId of [...contexts.keys()]) retireDeviceContext(deviceId);
   contexts.clear();
-  homeDevice = null;
 }

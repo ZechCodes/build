@@ -81,6 +81,8 @@ const openedFor = (deviceId) => opened.filter((options) => options.preferDeviceI
 
 let opened = [];
 let unreachable = new Set();
+// Machines the relay offers a key for that is not the key this account pinned.
+let impostors = new Set();
 let slowMs = new Map();
 const handedOut = new Map(); // deviceId → the sessions that device was given, newest last
 
@@ -129,6 +131,7 @@ beforeEach(() => {
   holdAppWhileNoDeviceAnswers();
   opened = [];
   unreachable = new Set();
+  impostors = new Set();
   slowMs = new Map();
   handedOut.clear();
   feed = null;
@@ -146,6 +149,10 @@ beforeEach(() => {
   relay.openRelaySession.mockImplementation(async (options) => {
     opened.push(options);
     const deviceId = options.preferDeviceId;
+    if (impostors.has(deviceId))
+      throw Object.assign(new Error("relay-supplied device key does not match the api-pinned key — possible tampering"), {
+        securityCritical: true,
+      });
     if (unreachable.has(deviceId)) throw new Error(`${deviceId} is unreachable`);
     const wait = slowMs.get(deviceId);
     if (wait) await new Promise((done) => setTimeout(done, wait));
@@ -516,6 +523,40 @@ describe("per-device connections", () => {
     await vi.advanceTimersByTimeAsync(5000);
 
     expect(openedFor("dev-c").length).toBe(attempts);
+  });
+
+  // The key the relay offered for this machine is not the key the account
+  // pinned, so the machine answering is not the one that was paired. Asking
+  // again every few seconds would offer the same pinned key to the same
+  // impostor and tell nobody: this one error stops the client dead.
+  it("stops for good on a device whose key is not the one this account pinned", async () => {
+    impostors.add("dev-b");
+
+    await connectEveryDevice();
+
+    expect(liveIds()).toEqual(["dev-a"]); // the account's other machine is untouched
+    // A stop is not an outage: nothing was stood up for it to be offline on.
+    expect(contextFor("dev-b")).toBeNull();
+    const dialled = openedFor("dev-b").length;
+    expect(dialled).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(60000); // no backoff was scheduled
+    await openDeviceSessions().settled; // and the waiting screen's poll does not re-dial it
+    expect(openedFor("dev-b")).toHaveLength(dialled);
+  });
+
+  it("stops asking for a device whose key stopped matching while it was open", async () => {
+    await connectEveryDevice();
+    impostors.add("dev-a");
+
+    goOffline("dev-a");
+    await flush();
+    const dialled = openedFor("dev-a").length;
+
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(openedFor("dev-a")).toHaveLength(dialled);
+    expect(contextFor("dev-a").offline).toBe(true);
   });
 
   it("reopens only the device resume names, waiting for it, and leaves the other session alone", async () => {

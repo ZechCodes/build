@@ -528,8 +528,11 @@ relay snapshot and there is nothing to rotate through: `core/deviceBootstrap.js`
 `connection.openBootSession` and `test/deviceBootstrap.test.js` are deleted. Two
 behaviours came over. First, a `securityCritical` error — a pinned-key mismatch
 — is a stop, never a reconnect loop: `connectDevice` rethrows it without marking
-the context offline or scheduling a resume, `resume()` stops on it, and the
-waiting screen shows the message. Second, main's "eventually tries devices whose
+the context offline or scheduling a resume, `resume()` stops on it, the machine
+is barred in `connection.js` so neither the relay's `device_key` push nor the
+waiting screen's three-second poll dials it again for the life of the tab, and
+`renderWaiting` prints what the refusal said in `#oerr`. The bar is let go when
+the account retires that machine, and at sign-out. Second, main's "eventually tries devices whose
 api status is stale offline" needed no rotation here: the relay's `device_key`
 push opens sessions the moment a machine says it is up, and the waiting screen
 re-reads the account's device list every three seconds. The creation device is

@@ -23,6 +23,8 @@ vi.mock("../src/connection.js", () => ({
   syncHome: () => {},
   goOffline: () => {},
   forgetHomeFollow: () => {},
+  forgetSecurityStops: () => {},
+  securityStopText: () => "",
 }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo }));

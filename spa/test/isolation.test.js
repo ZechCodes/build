@@ -23,6 +23,8 @@ vi.mock("../src/connection.js", () => ({
   syncHome: () => {},
   goOffline: () => {},
   forgetHomeFollow: () => {},
+  forgetSecurityStops: () => {},
+  securityStopText: () => "",
 }));
 import {
   ISOLATIONS,

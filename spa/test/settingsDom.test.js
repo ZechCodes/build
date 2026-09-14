@@ -41,6 +41,8 @@ vi.mock("../src/connection.js", () => ({
   syncHome: () => {},
   goOffline: () => {},
   forgetHomeFollow: () => {},
+  forgetSecurityStops: () => {},
+  securityStopText: () => "",
 }));
 vi.mock("../src/api.js", () => ({
   revokeDevice: (...args) => revokeDevice(...args),

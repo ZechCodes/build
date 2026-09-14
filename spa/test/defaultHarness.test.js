@@ -28,6 +28,8 @@ vi.mock("../src/connection.js", () => ({
   syncHome: () => {},
   goOffline: () => {},
   forgetHomeFollow: () => {},
+  forgetSecurityStops: () => {},
+  securityStopText: () => "",
 }));
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];

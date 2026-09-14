@@ -173,6 +173,7 @@ function followTerminalsIfTheirs(context) {
 export function retireDevice(deviceId) {
   dropPeerLink(contextFor(deviceId));
   forgetUnconnected(deviceId);
+  securityStops.delete(deviceId); // a machine the account no longer has is not barred, it is gone
   return retireDeviceContext(deviceId);
 }
 
@@ -314,11 +315,37 @@ async function connectDevice(deviceId) {
   try {
     return landSession(await openDeviceSession(deviceId));
   } catch (error) {
-    if (error?.securityCritical) throw error;
+    if (barredBySecurity(deviceId, error)) throw error;
     setContextOffline(deviceId);
     scheduleResume(deviceId);
     throw error;
   }
+}
+
+// A machine this client will not dial again for the life of the tab: the key
+// the relay offered for it was not the key this account pinned, so whatever
+// answered is not the machine that was paired. What it said is kept for the
+// screen that has room to say it.
+const securityStops = new Map(); // deviceId → what the refusal said
+
+/** Whether this failure is a stop rather than an outage — and if it is, the
+ *  machine is barred here, once, wherever the error was caught. */
+function barredBySecurity(deviceId, error) {
+  if (!error?.securityCritical) return false;
+  securityStops.set(deviceId, error.message);
+  return true;
+}
+
+/** What to say about a machine this client has stopped dialling, or "" while
+ *  every machine is merely unreachable. A stop is the one connection failure a
+ *  reader can act on and the only one that never resolves itself, so the
+ *  screen holding the app says it out loud. */
+export const securityStopText = () => [...securityStops.values()][0] || "";
+
+/** Let go of every bar (sign-out, teardown): they are this account's, and the
+ *  next account's machines have not been refused anything. */
+export function forgetSecurityStops() {
+  securityStops.clear();
 }
 
 /**
@@ -341,6 +368,7 @@ export function openDeviceSessions() {
  *  second handshake. */
 function wantsSession(device) {
   const context = contextFor(device.id);
+  if (securityStops.has(device.id)) return false; // barred: retrying offers the same key to the same impostor
   return device.status === "online" && !canAnswer(context) && !context?.reconnect.resuming;
 }
 

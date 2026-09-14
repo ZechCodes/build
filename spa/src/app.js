@@ -16,7 +16,7 @@ import { toolbarRouteChanged } from "./core/toolbar.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
-import { forgetHomeFollow } from "./connection.js";
+import { forgetHomeFollow, forgetSecurityStops } from "./connection.js";
 import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
@@ -75,6 +75,7 @@ export function resetApplication() {
   // move however familiar the name, and home has been followed for nobody.
   terminalRouteDeviceId = null;
   forgetHomeFollow();
+  forgetSecurityStops();
   clearCacheScope();
 }
 

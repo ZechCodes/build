@@ -16,6 +16,8 @@ vi.mock("../src/connection.js", () => ({
   syncHome: vi.fn(),
   goOffline: vi.fn(),
   forgetHomeFollow: vi.fn(),
+  forgetSecurityStops: vi.fn(),
+  securityStopText: () => "",
   openDeviceSettingsSession: vi.fn(),
 }));
 vi.mock("../src/core/inboxView.js", () => ({ inboxListRouteChanged: vi.fn(), mountInboxList: vi.fn(), setInboxView: vi.fn() }));

@@ -16,7 +16,7 @@ import {
   waitingForDeviceText,
 } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
-import { openDeviceSessions } from "../connection.js";
+import { openDeviceSessions, securityStopText } from "../connection.js";
 import { contextFor, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
@@ -312,6 +312,10 @@ function renderWaiting(devices) {
       <div class="adderr" id="oerr"></div>
     </div>`;
   paintWaiting(devices);
+  // A machine this client has stopped dialling — its key was not the key this
+  // account pinned — is the one thing on this screen that waiting will not fix,
+  // so it is said where the screen says what went wrong.
+  $("#oerr").textContent = securityStopText();
   $("#retrybtn").onclick = () => boot();
   $("#addmore").onclick = () => openAddDevice(boot);
 }

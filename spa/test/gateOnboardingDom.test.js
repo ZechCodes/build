@@ -22,6 +22,7 @@ const refreshDevices = vi.fn(() => refresh());
 // What connection.js hands the gate: every online device opened at once, and
 // the promise of the first one to answer. The fixture's `openSession` is the
 // one that answers.
+let securityStop = "";
 const openDeviceSessions = vi.fn(() => {
   const first = openSession({ preferDeviceId: null });
   return { first, settled: first.then((context) => [context], () => []) };
@@ -56,10 +57,12 @@ vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
   retireDevice: () => {},
   openDeviceSessions: (...args) => openDeviceSessions(...args),
+  securityStopText: () => securityStop,
   openDeviceSettingsSession: async () => ({}),
   syncHome: () => {},
   goOffline: () => {},
   forgetHomeFollow: () => {},
+  forgetSecurityStops: () => {},
 }));
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own
 // test, and this one is about what the gate does with the key it is handed.
@@ -82,6 +85,7 @@ let boot;
 beforeEach(async () => {
   vi.clearAllMocks();
   devices = [];
+  securityStop = "";
   downloads = async () => DOWNLOADS;
   openSession = async () => ({});
   refresh = async () => devices;
@@ -121,6 +125,25 @@ describe("the device connection gate", () => {
 
     expect(document.getElementById("waitintro").textContent).toContain("report online");
     expect(document.getElementById("waitintro").textContent).not.toContain("None of your devices");
+    clearInterval(App._watch);
+    App._watch = null;
+  });
+
+  // A machine whose key did not match the one this account pinned is the one
+  // connection failure nobody can wait out: the client has stopped dialling it,
+  // so the screen holding the app has to say why rather than watch forever.
+  it("says on the waiting screen that a device's key did not match the pinned one", async () => {
+    devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "online" }];
+    securityStop = "relay-supplied device key does not match the api-pinned key — possible tampering";
+    openSession = async () => {
+      throw Object.assign(new Error(securityStop), { securityCritical: true });
+    };
+    const { App } = await import("../src/app.js");
+    App.devices = devices;
+
+    await boot();
+
+    expect(document.getElementById("oerr").textContent).toBe(securityStop);
     clearInterval(App._watch);
     App._watch = null;
   });

@@ -292,9 +292,20 @@ async function syncDeviceSnapshot(deviceId, view) {
   retuneWatchers();
 }
 
+/** A device that left the feed — retired, signed out — stops being synced: the
+ *  rows it named go, and their watchers with them. */
+function forgetDevicesMissingFrom(devices) {
+  for (const [key, held] of activeRows) {
+    if (!(held.deviceId in devices)) activeRows.delete(key);
+  }
+  retuneWatchers();
+}
+
 async function onSnapshot(snapshot) {
   if (!holdingLock) return;
-  for (const [deviceId, view] of Object.entries(snapshot.devices || {})) {
+  const devices = snapshot.devices || {};
+  forgetDevicesMissingFrom(devices);
+  for (const [deviceId, view] of Object.entries(devices)) {
     await syncDeviceSnapshot(deviceId, view);
   }
 }

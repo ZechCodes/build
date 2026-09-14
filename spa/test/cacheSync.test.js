@@ -187,6 +187,21 @@ describe("following every device's feed", () => {
     expect(await cache.readCached({ deviceId: "dev-2", entityId: "run-2", kind: "status" })).toBeTruthy();
   });
 
+  it("lets a retired device's watchers go when it leaves the feed", async () => {
+    registerDevice("dev-2", vi.fn(async () => ({})));
+    const one = snapshot([branchItem()]);
+    const two = snapshot([branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2" })]);
+    sync.startCacheSync();
+    feedSubscriber(merged({ "dev-1": one, "dev-2": two }));
+    await flush();
+
+    // dev-2 is retired: it is no longer in the merge at all.
+    feedSubscriber(merged({ "dev-1": one }));
+    await flush();
+    expect(registeredWatchers.find((watcher) => watcher.entity === "run-2").disposed).toBe(true);
+    expect(registeredWatchers.find((watcher) => watcher.entity === "run-1").disposed).toBe(false);
+  });
+
   it("leaves a device with no context alone — nothing can be read for it", async () => {
     const one = snapshot([branchItem()]);
     sync.startCacheSync();

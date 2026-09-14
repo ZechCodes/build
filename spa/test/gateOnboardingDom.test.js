@@ -50,8 +50,6 @@ vi.mock("../src/connection.js", () => ({
   openDeviceSettingsSession: async () => answering,
   syncHome: () => {},
   forgetHomeFollow: () => {},
-  setConn: () => {},
-  CONNECTION_STATUS: { connected: "", connecting: "", deviceOffline: "", noDevices: "" },
 }));
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own
 // test, and this one is about what the gate does with the key it is handed.

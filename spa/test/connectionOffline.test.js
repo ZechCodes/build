@@ -111,7 +111,7 @@ beforeEach(() => {
   resetApplication();
   stopFeed();
   document.body.innerHTML =
-    '<div id="root"></div><div id="devpick"></div><div id="conn"></div><div id="compose"></div><div id="inbox-list"></div>';
+    '<div id="root"></div><div id="devpick"></div><div id="compose"></div><div id="inbox-list"></div>';
   document.body.className = "";
   App.gated = false;
   App.poll = null;

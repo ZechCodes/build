@@ -9,7 +9,6 @@
 // reachable, which is the only one the user can do anything about.
 
 import * as transport from "@build/secure-transport";
-import { $ } from "./dom.js";
 import { RELAY_URL } from "./config.js";
 import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
@@ -35,28 +34,6 @@ import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
-
-/// Connection status has no chip of its own any more — the status line under the
-/// rail is the device picker and nothing else. The state that needs saying is
-/// an account with nothing that can answer, and the gate's waiting screen says
-/// it. Kept as a no-op-when-absent writer so every caller stays unchanged.
-export function setConn(html) {
-  const el = $("#conn");
-  if (el) el.innerHTML = html;
-}
-
-/** Every state the status line can be in, minted here so the gate's wording and
- *  the running app's cannot drift apart. A dot with no colour is the healthy
- *  one. */
-const chip = (words, dot) => `<span class="dot"${dot ? ` style="background:${dot}"` : ""}></span>${words}`;
-
-export const CONNECTION_STATUS = {
-  connected: chip("connected"),
-  reconnecting: chip("reconnecting…", "var(--amber)"),
-  connecting: chip("connecting…", "var(--amber)"),
-  deviceOffline: chip("device offline", "var(--amber)"),
-  noDevices: chip("no devices", "var(--dim)"),
-};
 
 /** What every socket to this account's relay needs, whoever is opening it and
  *  whatever they mean to do with it: the endpoint, the crypto, and the device
@@ -232,7 +209,6 @@ function landSession(session) {
   // late device just opened — gets its own board watcher and reads at once.
   joinFeed(context);
   syncHome(context);
-  paintConnectionStatus();
   greetLiveBridge(context);
   upgradeToPeer(context); // in the background: the user is live already
   return context;
@@ -378,7 +354,6 @@ export function goOffline(deviceId) {
   // Home may have moved off it — and if it has not, the surfaces that follow
   // home still have to say the device they are about is offline.
   syncHome(context);
-  paintConnectionStatus();
   resume(deviceId);
 }
 
@@ -446,14 +421,4 @@ function reconnectFor(deviceId) {
   }
   if (!unconnected.has(deviceId)) unconnected.set(deviceId, { timer: null, delay: 0, resuming: false });
   return unconnected.get(deviceId);
-}
-
-// ---- what the status line says -----------------------------------------------
-
-/** The status line's chip. There is no banner over the app any more: while some
- *  machine is reachable the rail's greyed rows say all there is to say about
- *  the one that is not, and when none is the gate holds the app and its waiting
- *  screen names the machines the account is waiting for (views/gate.js). */
-export function paintConnectionStatus() {
-  setConn(liveContexts().length ? CONNECTION_STATUS.connected : CONNECTION_STATUS.reconnecting);
 }

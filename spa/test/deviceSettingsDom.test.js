@@ -22,8 +22,6 @@ vi.mock("../src/connection.js", () => ({
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   syncHome: () => {},
   forgetHomeFollow: () => {},
-  setConn: () => {},
-  CONNECTION_STATUS: {},
 }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo }));

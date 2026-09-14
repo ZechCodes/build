@@ -140,7 +140,6 @@ async function loseAndReturn(replacement) {
 
 beforeEach(() => {
   resetApplication();
-  document.body.innerHTML = '<div id="conn"></div>';
   document.body.className = "";
   changed.length = 0;
   opened.length = 0;

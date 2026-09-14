@@ -40,8 +40,6 @@ vi.mock("../src/connection.js", () => ({
   openDeviceSettingsSession: async () => null,
   syncHome: () => {},
   forgetHomeFollow: () => {},
-  setConn: () => {},
-  CONNECTION_STATUS: {},
 }));
 vi.mock("../src/api.js", () => ({
   revokeDevice: (...args) => revokeDevice(...args),

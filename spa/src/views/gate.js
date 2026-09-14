@@ -10,7 +10,7 @@
 import { $ } from "../dom.js";
 import { allDevicesOfflineText, deviceUnreachableText, esc } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
-import { CONNECTION_STATUS, openDeviceSessions, setConn } from "../connection.js";
+import { openDeviceSessions } from "../connection.js";
 import { knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
@@ -76,7 +76,6 @@ function handBackToReader() {
   holding = false;
   setGate(false);
   paintDevicePicker();
-  setConn(CONNECTION_STATUS.connected);
   startFeed();
 }
 
@@ -216,7 +215,6 @@ function bindPairing() {
 // the same screen, above the code the bridge will print.
 async function renderOnboarding() {
   setGate(true);
-  setConn(CONNECTION_STATUS.noDevices);
   $("#root").innerHTML = onboardingStepsHtml();
   bindPairing();
   await mountDownloads($("#root"), {
@@ -255,7 +253,6 @@ function waitingText() {
 
 function renderWaiting(devices) {
   setGate(true);
-  setConn(CONNECTION_STATUS.deviceOffline);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
       <h1 style="margin:0 0 6px">Waiting for your device</h1>
@@ -273,7 +270,6 @@ function renderWaiting(devices) {
 
 export async function boot() {
   setGate(true);
-  setConn(CONNECTION_STATUS.connecting);
   const devices = await refreshDevices();
   if (!devices.length) {
     await renderOnboarding();

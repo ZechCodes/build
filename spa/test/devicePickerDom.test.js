@@ -16,8 +16,6 @@ vi.mock("../src/connection.js", () => ({
   syncHome: vi.fn(),
   forgetHomeFollow: vi.fn(),
   openDeviceSettingsSession: vi.fn(),
-  setConn: vi.fn(),
-  CONNECTION_STATUS: {},
 }));
 vi.mock("../src/core/inboxView.js", () => ({ inboxListRouteChanged: vi.fn(), mountInboxList: vi.fn(), setInboxView: vi.fn() }));
 import { initDevicePicker, paintDevicePicker } from "../src/devices.js";

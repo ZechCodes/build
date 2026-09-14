@@ -365,6 +365,7 @@ export function startFeed(intervalMs)      // one tick + one board watcher per l
 export function stopFeed()
 export function refreshFeed(deviceId = null) // all live contexts, or one
 export function dropFeedDevice(deviceId)   // called by retireDeviceContext: delete entry, deliver merge
+export function deliverFeed()              // hand every subscriber the merge as it stands; no RPC — connection.js calls it when home moves
 export function primaryRunIdFor(feed, projectKey)
 ```
 `tick(context)` writes `byDevice.set(context.deviceId, …)` only if

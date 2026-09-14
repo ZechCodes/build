@@ -36,7 +36,7 @@ import {
 import { retargetTerminals, terminalsRideOn } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
-import { joinFeed } from "./core/taskFeed.js";
+import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 import { allDevicesOfflineText, offlineBannerText } from "./core/text.js";
 
 /// Connection status has no chip of its own any more — the status line under the
@@ -239,6 +239,11 @@ function followHomeContext(context) {
   pointAliasesAt(context);
   handTerminalsToHome();
   paintDevicePicker();
+  // Every surface about "here" — the composer's destinations, the toolbar, the
+  // capture decision page, the agent rail — keeps the home device's slice of
+  // the snapshot it was last handed. Home moving is news about all of them and
+  // about no bridge, so it is told from what the devices have already said.
+  deliverFeed();
   if (!context?.session || context.offline) return;
   // The gate's first session, a reconnect, a new home device: this is where
   // captures taken with no device to send them to are handed over.

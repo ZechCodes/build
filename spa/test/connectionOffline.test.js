@@ -39,7 +39,9 @@ vi.mock("../src/core/composeView.js", async (importOriginal) => ({
 const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 
 const { App, disposeApplicationScope } = await import("../src/app.js");
-const { contextFor, knownContexts, liveContexts } = await import("../src/core/deviceContexts.js");
+const { contextFor, deviceFeedView, knownContexts, liveContexts } = await import(
+  "../src/core/deviceContexts.js"
+);
 const { claimHomeContext, goOffline, openDeviceSessions, resume, setHomeDevice } = await import(
   "../src/connection.js"
 );
@@ -47,6 +49,7 @@ const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js"
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
+const { initCompose, openCompose } = await import("../src/core/composeView.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
@@ -68,7 +71,7 @@ function fakeSession(deviceId) {
     deviceId,
     call: vi.fn(async (method) => {
       if (method === "board.list") return { items: [{ id: `${deviceId}-row`, project_id: "proj-1", title: "Work" }] };
-      if (method === "project.list") return { projects: [{ project_id: "proj-1", name: "Repo" }] };
+      if (method === "project.list") return { projects: [{ project_id: "proj-1", name: `${deviceId} repo` }] };
       return {};
     }),
     peer: vi.fn(),
@@ -88,7 +91,7 @@ beforeEach(() => {
   disposeApplicationScope();
   stopFeed();
   document.body.innerHTML =
-    '<div id="root"></div><div id="devpick"></div><div id="offbar" hidden><span id="offbar-text"></span></div><div id="conn"></div><div id="inbox-list"></div>';
+    '<div id="root"></div><div id="devpick"></div><div id="offbar" hidden><span id="offbar-text"></span></div><div id="conn"></div><div id="compose"></div><div id="inbox-list"></div>';
   document.body.className = "";
   opened = [];
   unreachable = new Set();
@@ -121,6 +124,17 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
 });
+
+/** Open the composer's manual panel, read the projects it offers, and close it
+ *  again — the box takes its destinations from the home device's slice of the
+ *  feed as that slice is delivered, which is what a home move has to move. */
+function projectsOffered() {
+  openCompose();
+  document.querySelector("#compose-advanced").click();
+  const names = [...document.querySelectorAll("#compose-project option")].map((option) => option.textContent);
+  document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  return names;
+}
 
 const bannerText = () => document.getElementById("offbar-text").textContent;
 const bannerShown = () => !document.getElementById("offbar").hidden;
@@ -382,6 +396,38 @@ describe("per-device connections", () => {
     expect(stayed.close).not.toHaveBeenCalled();
     expect(contextFor("dev-a").session).toBe(stayed);
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // Home is what every surface about "here" is about: the composer's
+  // destinations, the toolbar's projects, the capture decision page, the agent
+  // rail. Each of them reads the home device's slice out of a snapshot as it
+  // arrives and keeps it, so a home move that delivers nothing leaves them all
+  // on the device the user just moved away from until some device's next tick —
+  // a full minute while pushes are carrying the news.
+  it("delivers a snapshot when home moves, so the surfaces about here follow", async () => {
+    await connectEveryDevice();
+    startFeed(60000);
+    await flush();
+    let here = null;
+    const stop = subscribeFeed((snapshot) => (here = deviceFeedView(snapshot)));
+    expect(here.items.map((item) => item.deviceId)).toEqual(["dev-a"]);
+
+    await setHomeDevice("dev-b");
+
+    expect(here.items.map((item) => item.deviceId)).toEqual(["dev-b"]);
+    stop();
+  });
+
+  it("offers the new home device's projects the moment home moves", async () => {
+    await connectEveryDevice();
+    initCompose();
+    startFeed(60000);
+    await flush();
+    expect(projectsOffered()).toEqual(["dev-a repo"]);
+
+    await setHomeDevice("dev-b");
+
+    expect(projectsOffered()).toEqual(["dev-b repo"]);
   });
 
   it("pauses only the calls of the device that went offline", async () => {

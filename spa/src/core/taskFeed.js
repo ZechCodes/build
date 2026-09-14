@@ -29,7 +29,11 @@ export function subscribeFeed(fn) {
 
 const merged = () => mergeFeeds(byDevice, App.devices.map((device) => device.id));
 
-function deliver() {
+/** Hand every subscriber the merge as it stands, with nothing asked of any
+ *  bridge. The polls deliver after they read; this is for the other reason a
+ *  surface's answer changes — the home device moved, so the slice each
+ *  here-surface keeps is about a different machine now. */
+export function deliverFeed() {
   const snapshot = merged();
   subscribers.forEach((fn) => fn(snapshot));
 }
@@ -55,7 +59,7 @@ async function tick(context) {
     ]);
     if (!context.active()) return;
     byDevice.set(context.deviceId, liveFeedSnapshot(board, projectList, context.deviceId));
-    deliver();
+    deliverFeed();
   } catch {
     /* offline / transient — the next tick retries */
   }
@@ -77,7 +81,7 @@ async function seedDeviceFromCache(deviceId) {
   // Nothing in flight survives a reload: the verbs the last session watched
   // settled long ago, and the live answer names whatever is running now.
   byDevice.set(deviceId, { ...record.value, pending: [], cached: true });
-  deliver();
+  deliverFeed();
 }
 
 /** Every device the account knows paints from its own cache — the rail is the
@@ -136,7 +140,7 @@ export function stopFeed() {
 export function dropFeedDevice(deviceId) {
   watchers.get(deviceId)?.dispose();
   watchers.delete(deviceId);
-  if (byDevice.delete(deviceId)) deliver();
+  if (byDevice.delete(deviceId)) deliverFeed();
 }
 
 /** Force an immediate refresh (after adding a project, adopting, …) — every

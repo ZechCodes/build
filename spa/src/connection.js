@@ -247,16 +247,13 @@ function followHomeContext(context) {
   });
 }
 
-/** Home is chosen once and never moves on its own: the sticky device claims it
- *  when it answers, and a device that lands later takes nothing from whoever
- *  holds it. A landing by the home device itself is that device coming back. */
+/** Home belongs to the device the user picked, whenever that device is online:
+ *  it takes home as it lands, however long it took and whoever answered first.
+ *  Any other device takes nothing from whoever holds it; a landing by the home
+ *  device itself is that device coming back, and re-points the aliases at it. */
 function settleHome(context) {
-  const home = homeContext();
-  if (home) {
-    if (home === context) followHomeContext(context);
-    return;
-  }
-  if (onlineStickyDeviceId(App.devices, App.selectedDeviceId) === context.deviceId) followHomeContext(context);
+  const picked = onlineStickyDeviceId(App.devices, App.selectedDeviceId) === context.deviceId;
+  if (picked || homeContext() === context) followHomeContext(context);
 }
 
 /** Name a context home when no device holds it yet — what the gate does with

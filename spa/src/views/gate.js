@@ -34,9 +34,9 @@ async function enterApp() {
   App._connecting = true;
   try {
     // Every online device is opened at once; the app comes up on whichever
-    // answers first rather than waiting out the slowest one. A sticky device
-    // that is online claims home as it lands, so this only names one when
-    // nobody has.
+    // answers first rather than waiting out the slowest one. That device holds
+    // home only until the user's picked device lands and takes it, so this
+    // names one only while nobody has.
     home = await openDeviceSessions().first;
   } finally {
     App._connecting = false;

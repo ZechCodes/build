@@ -321,6 +321,28 @@ describe("per-device connections", () => {
     expect(contexts.map((context) => context.deviceId)).toEqual(["dev-a", "dev-b"]);
   });
 
+  // The pick is where creation goes and what the picker names, so a race
+  // between two bridges must not decide it. The quicker device holds home only
+  // until the picked one lands.
+  it("hands home to the picked device even when another one answers first", async () => {
+    App.selectedDeviceId = "dev-b";
+    slowMs.set("dev-b", 20);
+
+    const sessions = openDeviceSessions();
+    claimHomeContext(await sessions.first); // the gate names whoever landed first
+    expect(App.session).toBe(lastSession("dev-a"));
+
+    await vi.advanceTimersByTimeAsync(20);
+    await sessions.settled;
+    await flush();
+
+    expect(App.session).toBe(lastSession("dev-b"));
+    expect(App.call).toBe(lastSession("dev-b").call);
+    expect(App.cacheScope).toBe(contextFor("dev-b").cacheScope);
+    expect(App.selectedDeviceId).toBe("dev-b"); // the pick itself is untouched
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]); // and nothing was closed
+  });
+
   it("re-points the aliases and the terminals on a new home device, and closes nothing", async () => {
     await connectEveryDevice();
     const stayed = lastSession("dev-a");

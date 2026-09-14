@@ -44,6 +44,7 @@ vi.mock("../src/devices.js", () => ({
 // creeps back in.
 const answering = { deviceId: "d1", session: {}, call: async () => ({}) };
 vi.mock("../src/connection.js", () => ({
+  chooseCreationDevice: () => {},
   openDeviceSessions: () => ({ first: Promise.resolve(answering), settled: Promise.resolve([answering]) }),
   openDeviceSettingsSession: async () => answering,
   syncHome: () => {},

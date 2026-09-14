@@ -43,10 +43,10 @@ vi.mock("../src/core/composeView.js", async (importOriginal) => ({
 const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 
 const { App, disposeApplicationScope, rememberSelectedDevice } = await import("../src/app.js");
-const { contextFor, deviceFeedView, knownContexts, liveContexts } = await import(
+const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts } = await import(
   "../src/core/deviceContexts.js"
 );
-const { goOffline, openDeviceSessions, resume, syncHome } = await import("../src/connection.js");
+const { chooseCreationDevice, goOffline, openDeviceSessions, resume, syncHome } = await import("../src/connection.js");
 const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, offlineBannerText } = await import("../src/core/text.js");
@@ -90,6 +90,7 @@ let unsubscribe = () => {};
 
 beforeEach(() => {
   vi.useFakeTimers();
+  localStorage.clear();
   disposeApplicationScope();
   stopFeed();
   document.body.innerHTML =
@@ -464,6 +465,22 @@ describe("per-device connections", () => {
     expect(captures.flush).toHaveBeenCalled(); // the new home takes what nobody could send
     expect(stayed.close).not.toHaveBeenCalled();
     expect(contextFor("dev-a").session).toBe(stayed);
+    expect(liveIds()).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // The account has one control for home — Settings → Creation device — and it
+  // is the only writer of the pick. It remembers the machine and takes it in
+  // hand; it opens nothing, because every device that can answer is already up.
+  it("remembers the creation device the account picked, and follows it", async () => {
+    await connectEveryDevice();
+    captures.flush.mockClear();
+
+    chooseCreationDevice("dev-b");
+
+    expect(App.selectedDeviceId).toBe("dev-b");
+    expect(localStorage.getItem("build.selectedDeviceId")).toBe("dev-b");
+    expect(homeContext().deviceId).toBe("dev-b");
+    expect(captures.flush).toHaveBeenCalledTimes(1);
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
 

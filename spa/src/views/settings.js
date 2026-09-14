@@ -6,6 +6,8 @@ import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
 import { projectRoute } from "../core/projectModel.js";
 import { refreshDevices } from "../devices.js";
+import { chooseCreationDevice } from "../connection.js";
+import { creationDeviceId } from "../core/devicePolicy.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
@@ -45,6 +47,15 @@ function asSaved(catalog, saved) {
   };
 }
 
+/** The paired machines, as the creation choice offers them: the account's own
+ *  list, in its own order, with the machine creation goes to today shown. */
+function creationDeviceOptionsHtml(devices, chosenId) {
+  const options = devices
+    .map((device) => `<option value="${esc(device.id)}"${device.id === chosenId ? " selected" : ""}>${esc(device.name)}</option>`)
+    .join("");
+  return options || '<option value="">No devices yet</option>';
+}
+
 export async function renderSettings() {
   $("#root").innerHTML = `
     <div class="board-head"><div><h1>Settings</h1><p>Your keys, your custody.</p></div></div>
@@ -66,6 +77,14 @@ export async function renderSettings() {
       <div class="row"><span class="k">Ciphertext sizes</span><span class="v">how big each encrypted blob is</span></div>
       <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
       <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
+    </div>
+    <div class="panel">
+      <h3>🖥️ Creation device</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">The inbox and the projects rail show every device. This is the one that takes new work.</div>
+      <div class="field" style="max-width:340px">
+        <label for="creationdev">New projects and captures go to</label>
+        <select id="creationdev" disabled><option>loading…</option></select>
+      </div>
     </div>
     <div class="panel">
       <h3>🤖 Agent defaults</h3>
@@ -199,6 +218,17 @@ export async function renderSettings() {
     $("#defeffort").onchange = () => store({ ...current, effort: $("#defeffort").value }, "Saved.");
   }
 
+  /** The one control for home: which machine new projects and captures go to.
+   *  Mounted once the account list has been read, since the list is what it
+   *  offers. */
+  function mountCreationDevice() {
+    const select = $("#creationdev");
+    if (!select) return;
+    select.innerHTML = creationDeviceOptionsHtml(App.devices, creationDeviceId(App.devices, App.selectedDeviceId));
+    select.disabled = App.devices.length === 0;
+    select.onchange = () => chooseCreationDevice(select.value);
+  }
+
   // Pick a different projects folder (any directory).
   $("#changedir").onclick = () =>
     openBrowser({
@@ -286,6 +316,7 @@ export async function renderSettings() {
   };
   await refreshDeviceList();
   $("#adddev").onclick = () => openAddDevice(refreshDeviceList);
+  mountCreationDevice();
 
   // The same block the first-run gate mounts — one renderer, two hosts. It is
   // the only thing here that asks the api rather than the bridge, and nothing

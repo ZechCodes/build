@@ -5,6 +5,7 @@ const { App, openSession, openBrowser } = vi.hoisted(() => ({
 }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/connection.js", () => ({
+  chooseCreationDevice: () => {},
   openDeviceSettingsSession: openSession,
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   syncHome: () => {},

@@ -15,7 +15,7 @@ import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
-import { App, pointAliasesAt } from "./app.js";
+import { App, pointAliasesAt, rememberSelectedDevice } from "./app.js";
 import {
   adoptDeviceSession,
   closeQuietly,
@@ -259,6 +259,19 @@ function followHomeContext(context) {
   flushCaptures().catch(() => {
     /* still unreachable: the queue keeps them for the next session */
   });
+}
+
+/**
+ * Send new projects and captures to this machine from now on.
+ *
+ * The account's one control for home (Settings → Creation device), and its only
+ * writer: the pick is remembered, and whoever home is now is taken in hand.
+ * Nothing is opened and nothing is closed — every paired device that can answer
+ * is already live, and this says only where creation goes.
+ */
+export function chooseCreationDevice(deviceId) {
+  rememberSelectedDevice(deviceId);
+  syncHome();
 }
 
 /**

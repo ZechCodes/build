@@ -584,7 +584,8 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* Rows of controls, not surfaces: their box still spans to the seam (the
    toolbar's rule is the pane's own line) while the buttons and boxes on them
    stop a gutter short of it. */
-.gp-toolbar { container-type:inline-size; padding:12px var(--pane-gutter) 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.gp-toolbar { container-type:inline-size; display:flex; align-items:center;
+  min-height:var(--surface-head); padding:6px var(--pane-gutter) 6px var(--pane-gutter); border-bottom:1px solid var(--line); }
 /* Below the stacking width there is no divider to clear — the rail floats over
    this column instead of sitting beside it — so the column's own left gutter
    goes, and the split's left inset with the column's right gutter leave the
@@ -767,7 +768,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .actionbar .hint { color:var(--dim); font-size:12.5px; }
 .actionbar .right { margin-left:auto; display:flex; gap:10px; }
 /* git repo-management toolbar (v2) */
-.gittoolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.gittoolbar { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 /* Icons in the bar are sized to the text beside them, once, for the whole bar.
    The pack's SVGs carry an intrinsic 24px — twice the mini button's own font —
    so an unsized one does not just look wrong, it makes its button taller than

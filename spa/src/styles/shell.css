@@ -13,6 +13,12 @@
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:38px;     /* the view column's top row — what a full console clears */
+  /* The row below it: the ref picker, the git action bar and the conversation
+     panel's head sit side by side across the work surface, one per column, and
+     read as one line only if all three stop on the same number. Stated here
+     with --toolbar-h because the two rows are the surface's chrome together;
+     styles.css and styles/surfaces.css both read it. */
+  --surface-head:46px;
   --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
   /* What the collapsed toolbar clears: the floating toggle's 12px offset, its
      box, and the 8px gap before the toolbar content. */
@@ -576,7 +582,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   display:flex; flex-direction:column; min-height:0;
   border-left:1px solid var(--line); }
 .rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 9px 8px 14px;
-  min-height:46px; border-bottom:1px solid var(--line); background:var(--panel); }
+  min-height:var(--surface-head); border-bottom:1px solid var(--line); background:var(--panel); }
 .rail-harness-icon { flex:none; width:20px; height:20px; display:grid; place-items:center;
   color:var(--ink); }
 .rail-harness-icon svg { display:block; width:20px; height:20px; }

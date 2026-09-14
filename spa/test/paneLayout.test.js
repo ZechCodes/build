@@ -1099,6 +1099,55 @@ describe("the rail surface menu", () => {
   });
 });
 
+// ---- the row of heads across the top of a work surface ----------------------
+// The reviewer's screenshot: at desktop width the ref picker (left of the
+// pane), the git action bar (middle) and the conversation panel's head (right)
+// sat side by side at three different heights, so their bottom borders stepped
+// down across the frame. They are one row of chrome and have to read as one
+// line — which means one number, stated once, that all three stop on.
+describe("the row of heads across a work surface", () => {
+  const SURFACE_HEADS = [".workspace-refbar", ".gp-toolbar", ".rail-head"];
+
+  /** The same question asked of any of the three sheets: the three bars live in
+   *  three files and are only actually pinned together when they are read
+   *  together. */
+  const headRule = (selector) =>
+    [...cssRules(), ...rulesIn(strippedSurfaces)].find(
+      (rule) => rule.selector === selector && enclosingAtRuleOf(rule) === null,
+    );
+
+  it("states the shared height once, beside the row above it", () => {
+    // One token across all three sheets — a second definition is a second
+    // number, and two numbers are what put the borders on different lines.
+    expect((stylesSource + strippedSurfaces).match(/--surface-head:/g) || []).toHaveLength(1);
+    expect(tokensAt(1400)["--surface-head"]).toBe("46px");
+    // It is the sibling of the view column's own top row, one row down.
+    expect(tokensAt(1400)["--toolbar-h"]).toBe("38px");
+  });
+
+  it("gives all three bars that one height and centres what they carry", () => {
+    for (const selector of SURFACE_HEADS) {
+      const rule = headRule(selector);
+      expect([selector, !!rule]).toEqual([selector, true]);
+      expect([selector, declaration(rule.body, "min-height")]).toEqual([selector, "var(--surface-head)"]);
+      // A bar taller than its contents has to say where they sit in it, or the
+      // three sets of controls line up at three different heights inside one
+      // shared box.
+      expect([selector, declaration(rule.body, "display")]).toEqual([selector, "flex"]);
+      expect([selector, declaration(rule.body, "align-items")]).toEqual([selector, "center"]);
+      // …and one border under the row, so the shared height is a shared line.
+      expect([selector, declaration(rule.body, "border-bottom")]).toEqual([selector, "1px solid var(--line)"]);
+    }
+  });
+
+  it("lets each bar's own contents take its width", () => {
+    // The bars are flex rows now; the one thing on each has to fill it rather
+    // than shrink to its text.
+    expect(declaration(headRule(".workspace-refpicker").body, "flex")).toBe("1 1 auto");
+    expect(declaration(headRule(".gittoolbar").body, "flex")).toBe("1 1 auto");
+  });
+});
+
 describe("the git toolbar's menus", () => {
   // The reviewer's screenshot: the Push menu opened upward from the git bar and
   // the navigation bar above cut it off. The bar sits at the top of its pane,

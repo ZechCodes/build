@@ -246,8 +246,13 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .docmarker.addressed:hover { background:var(--green); color:var(--bg); }
 /* A heading with an unsent comment on it, marked while the comment is pending. */
 .plan .dochl { background:var(--hl-bg); color:var(--hl-ink); border-radius:4px; }
-.workspace-refbar { position:relative; flex:none; min-width:0; max-width:100%; padding:8px var(--pane-gutter); border-bottom:1px solid var(--line); }
-.workspace-refpicker { position:relative; min-width:0; max-width:100%; }
+/* The rail's own head, and the left end of the surface's head row: it stops on
+   the height the git bar beside it and the conversation panel's head stop on
+   (--surface-head, styles/shell.css), so the three bottom borders are one line
+   across the frame. */
+.workspace-refbar { position:relative; flex:none; display:flex; align-items:center; min-width:0; max-width:100%;
+  min-height:var(--surface-head); padding:6px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.workspace-refpicker { position:relative; flex:1 1 auto; min-width:0; max-width:100%; }
 .workspace-reftrigger { width:100%; min-width:0; display:flex; align-items:center; gap:7px; padding:7px 8px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--panel); cursor:pointer; text-align:left; transition:border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast); }
 .workspace-reftrigger:hover:not(:disabled) { border-color:var(--line3); background:var(--panel2); }
 .workspace-reftrigger:focus-visible { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring); }

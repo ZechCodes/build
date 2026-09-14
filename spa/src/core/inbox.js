@@ -151,7 +151,9 @@ const pendingItem = (row) => ({
 export function mergePendingRows(items = [], pending = []) {
   const rows = [...(items || [])];
   const cardOf = (row) => (item) => {
-    if (row.primary) return !!item.primary && item.project_id === row.project_id;
+    // The account-wide name of the project, not the bare id one machine minted:
+    // every machine has a `proj-1`, and the rail lists all of them.
+    if (row.primary) return !!item.primary && item.projectKey === row.projectKey;
     const id = entityIdOf(item);
     return id !== null && (id === row.entity_id || id === row.checkout_id);
   };

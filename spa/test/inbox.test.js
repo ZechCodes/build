@@ -247,7 +247,10 @@ describe("what the inbox lists", () => {
 describe("the rows a lifecycle verb in flight leaves", () => {
   const creating = (over = {}) => ({
     entity_id: "wt-new",
+    // Stamped on every row by the feed (core/feedMerge.js), pending ones too.
+    deviceId: "dev-1",
     project_id: "p1",
+    projectKey: "dev-1/p1",
     project: "relaydb",
     title: "mascot spike",
     branch: "build/mascot-spike",
@@ -377,6 +380,37 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(entries[0].key).toBe("branch:dev-1/p1:main");
     expect(entries[0].facts).toBe("Creating…");
     expect(entries[0].placeholder).toBe(false);
+  });
+
+  // Two machines both mint a `p1`, so what names the project on a pending row
+  // is the account-wide name. Matching on the bare id would say the laptop's
+  // adopt on the desktop's primary card — whichever of them the merge listed
+  // first.
+  it("says it on the primary card of the device the verb is running on", () => {
+    const primaryOn = (deviceId) =>
+      branch({
+        deviceId,
+        projectKey: `${deviceId}/p1`,
+        branch: "main",
+        run_id: null,
+        worktree_id: null,
+        primary: true,
+        can_finish: false,
+        anchor: ago(1),
+      });
+    const items = mergePendingRows(
+      [primaryOn("dev-2"), primaryOn("dev-1")],
+      [
+        creating({
+          entity_id: "run-new",
+          checkout_id: "wt-repo-root",
+          primary: true,
+          title: "relaydb",
+        }),
+      ],
+    );
+    expect(items).toHaveLength(2);
+    expect(items.filter((item) => item.pending).map((item) => item.projectKey)).toEqual(["dev-1/p1"]);
   });
 
   it("reads a state it has never heard of as work in flight, not as nothing", () => {

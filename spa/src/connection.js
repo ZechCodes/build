@@ -27,7 +27,6 @@ import {
 import {
   markDeviceOnline,
   markDeviceOffline,
-  paintDevicePicker,
   pinnedDeviceTransportKey,
 } from "./devices.js";
 import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
@@ -226,17 +225,18 @@ export function forgetHomeFollow() {
   followedHomeId = null;
 }
 
-/** Take the home device in hand: whose link the terminals ride, what the
- *  picker names, and who is offered the captures nobody could send. Home is
- *  read off the account list and the pick, so nothing here writes who it is —
- *  everything a home move touches happens here, once. */
+/** Take the home device in hand: whose link the terminals ride, whose slice the
+ *  surfaces about "here" read, and who is offered the captures nobody could
+ *  send. The device picker is not among them — it is a filter over the account
+ *  list and says nothing about where creation goes. Home is read off the
+ *  account list and the pick, so nothing here writes who it is; everything a
+ *  home move touches happens here, once. */
 function followHomeContext(context) {
   followedHomeId = context.deviceId;
   // The terminal socket reads the device it wants only as it connects, and a
   // healthy one never reconnects on its own: home moving is one of the two
   // things that makes it drop and re-point (a route change is the other).
   followTerminalDevice();
-  paintDevicePicker();
   // Every surface about "here" — the composer's destinations, the toolbar, the
   // capture decision page, the agent rail — keeps the home device's slice of
   // the snapshot it was last handed. Home moving is news about all of them and

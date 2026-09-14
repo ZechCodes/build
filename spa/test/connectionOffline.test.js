@@ -61,7 +61,9 @@ const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts } =
 const { chooseCreationDevice, goOffline, openDeviceSessions, resume, retireDevice, syncHome } = await import(
   "../src/connection.js"
 );
-const { markDeviceOffline, markDeviceOnline } = await import("../src/devices.js");
+const { initDevicePicker, markDeviceOffline, markDeviceOnline, paintDevicePicker } = await import(
+  "../src/devices.js"
+);
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { allDevicesOfflineText, deviceUnreachableText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
@@ -589,6 +591,22 @@ describe("per-device connections", () => {
   // The account has one control for home — Settings → Creation device — and it
   // is the only writer of the pick. It remembers the machine and takes it in
   // hand; it opens nothing, because every device that can answer is already up.
+  // The picker is a filter over the account's list — which machines the rail
+  // shows — and says nothing about where creation goes. Repainting it on a home
+  // move shut it in the reader's hand for nothing.
+  it("leaves an open device picker open when home moves", async () => {
+    await connectEveryDevice();
+    initDevicePicker();
+    paintDevicePicker();
+    document.querySelector(".device-picker-toggle").click();
+    expect(document.querySelector(".device-picker-menu").hidden).toBe(false);
+
+    chooseCreationDevice("dev-b");
+    await flush();
+
+    expect(document.querySelector(".device-picker-menu").hidden).toBe(false);
+  });
+
   it("remembers the creation device the account picked, and follows it", async () => {
     await connectEveryDevice();
     captures.flush.mockClear();

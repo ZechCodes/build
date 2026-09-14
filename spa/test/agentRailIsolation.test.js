@@ -35,7 +35,8 @@ vi.mock("../src/core/agentCanvas.js", () => ({
   }),
 }));
 
-const { App, adoptApplicationScope, disposeApplicationScope } = await import("../src/app.js");
+const { resetApplication } = await import("../src/app.js");
+const { adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
@@ -94,6 +95,9 @@ let calls;
 let rail;
 let call;
 
+/** The one machine these cases work: what the rail is handed to write into. */
+const device = () => contextFor("device-1");
+
 const mountBranch = () => {
   rail = mountAgentRail(host(), {
     kind: "branch",
@@ -101,8 +105,8 @@ const mountBranch = () => {
     projectId: "project-1",
     branch: "build/isolation",
     autofocusComposer: true,
-    cacheScope: App.cacheScope,
-    chatRepository: App.chatRepository,
+    cacheScope: device().cacheScope,
+    chatRepository: device().chatRepository,
   });
   return flush();
 };
@@ -134,7 +138,7 @@ beforeEach(async () => {
     }
     return {};
   });
-  adoptApplicationScope({ deviceId: "device-1", call });
+  adoptDeviceSession({ deviceId: "device-1", call });
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 });
@@ -142,7 +146,7 @@ beforeEach(async () => {
 afterEach(() => {
   rail?.dispose();
   rail = null;
-  disposeApplicationScope();
+  resetApplication();
   resetChangeEvents();
   vi.useRealTimers();
 });
@@ -159,7 +163,7 @@ describe("agent rail chat ownership", () => {
       if (postCount > 1) return { posted_sequence: 8 };
       return new Promise((_, reject) => (rejectPost = reject));
     });
-    adoptApplicationScope({ deviceId: "device-1", call });
+    adoptDeviceSession({ deviceId: "device-1", call });
     await mountBranch();
 
     bubble("agent-b").click();
@@ -257,7 +261,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((resolve) => (resolveDetail = resolve));
     });
-    adoptApplicationScope({ deviceId: "device-1", call });
+    adoptDeviceSession({ deviceId: "device-1", call });
     await mountBranch();
 
     expect(input()).toBeNull();
@@ -292,7 +296,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((resolve) => (resolveAdd = resolve));
     });
-    adoptApplicationScope({ deviceId: "device-1", call });
+    adoptDeviceSession({ deviceId: "device-1", call });
     await mountBranch();
 
     const provisionalInput = input();
@@ -325,7 +329,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((resolve) => (resolveAdd = resolve));
     });
-    adoptApplicationScope({ deviceId: "device-1", call });
+    adoptDeviceSession({ deviceId: "device-1", call });
     await mountBranch();
 
     addBubble().click();
@@ -361,7 +365,7 @@ describe("agent rail chat ownership", () => {
       }
       return { entity_id: "run-1", agent: agent("created-agent", 1) };
     });
-    adoptApplicationScope({ deviceId: "device-1", call });
+    adoptDeviceSession({ deviceId: "device-1", call });
     await mountBranch();
 
     writeDraft("start the agent");
@@ -378,7 +382,7 @@ describe("agent rail chat ownership", () => {
       }
       return baseCall(method, params);
     });
-    adoptApplicationScope({ deviceId: "device-1", call: reconnectedCall });
+    adoptDeviceSession({ deviceId: "device-1", call: reconnectedCall });
     rail.dispose();
     rail = null;
     document.body.innerHTML = '<div id="agent-rail"></div>';
@@ -411,7 +415,7 @@ describe("agent rail chat ownership", () => {
       }
       return originalCall(method, params);
     });
-    adoptApplicationScope({ deviceId: "device-1", call: oldCall });
+    adoptDeviceSession({ deviceId: "device-1", call: oldCall });
     await mountBranch();
 
     writeDraft("start after reconnect");
@@ -429,7 +433,7 @@ describe("agent rail chat ownership", () => {
       if (method === "agent.start") return { agent_id: "created-agent" };
       return originalCall(method, params);
     });
-    adoptApplicationScope({ deviceId: "device-1", call: newCall });
+    adoptDeviceSession({ deviceId: "device-1", call: newCall });
     host().querySelector(".chat-recovery-entry button").click();
     await flush();
 
@@ -451,7 +455,7 @@ describe("agent rail chat ownership", () => {
       calls.push({ method, params });
       return new Promise((_, reject) => (rejectCreation = reject));
     });
-    adoptApplicationScope({ deviceId: "device-1", call: heldCall });
+    adoptDeviceSession({ deviceId: "device-1", call: heldCall });
     await mountBranch();
 
     bubble("agent-b").click();
@@ -509,8 +513,8 @@ describe("agent rail chat ownership", () => {
       issueId: "issue-1",
       autofocusComposer: true,
       selection,
-      cacheScope: App.cacheScope,
-      chatRepository: App.chatRepository,
+      cacheScope: device().cacheScope,
+      chatRepository: device().chatRepository,
     });
     await flush();
 

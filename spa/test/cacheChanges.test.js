@@ -41,8 +41,8 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = "";
-  const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
-  setCacheDevice("dev-1");
+  const { scopeFor } = await import("../src/core/cacheScope.js");
+  scopeFor("dev-1"); // the machine these reads are addressed to
   scopeOf = scopeFor;
   cache = await import("../src/core/localCache.js");
   ({ mountGitPane } = await import("../src/core/gitPane.js"));

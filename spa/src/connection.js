@@ -15,7 +15,7 @@ import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
-import { App, pointAliasesAt, rememberSelectedDevice } from "./app.js";
+import { App, rememberSelectedDevice } from "./app.js";
 import {
   adoptDeviceSession,
   closeQuietly,
@@ -234,12 +234,12 @@ export function forgetHomeFollow() {
   followedHomeId = null;
 }
 
-/** Take the home device in hand: what the App.* aliases copy, whose link the
- *  terminals ride, what the picker names, and who is offered the captures
- *  nobody could send. Everything a home move touches happens here, once. */
+/** Take the home device in hand: whose link the terminals ride, what the
+ *  picker names, and who is offered the captures nobody could send. Home is
+ *  read off the account list and the pick, so nothing here writes who it is —
+ *  everything a home move touches happens here, once. */
 function followHomeContext(context) {
   followedHomeId = context.deviceId;
-  pointAliasesAt(context);
   // The terminal socket reads the device it wants only as it connects, and a
   // healthy one never reconnects on its own: home moving is one of the two
   // things that makes it drop and re-point (a route change is the other).

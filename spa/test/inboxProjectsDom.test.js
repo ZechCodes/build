@@ -191,7 +191,7 @@ beforeEach(async () => {
   App.call = vi.fn(async () => ({ ok: true }));
   // Every row in the rail names the device it came from; the home device is
   // what a route that names none is about.
-  (await import("../src/app.js")).adoptApplicationScope({ deviceId: "dev-1", call: App.call });
+  adoptDeviceSession({ deviceId: "dev-1", call: App.call });
   // The other device on the account answers for its own rows: the rail can only
   // work a device it holds a session for.
   adoptDeviceSession({ deviceId: "dev-2", call: awayCall });

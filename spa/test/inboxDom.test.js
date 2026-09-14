@@ -33,7 +33,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
 // each test takes a fresh module graph rather than a reset switch the app would
 // never call.
 let App;
-let adoptApplicationScope;
 let adoptDeviceSession;
 let setContextOffline;
 let mountInboxList;
@@ -42,11 +41,15 @@ let rememberDeviceFilter;
 let subscribeInboxAttentionCount;
 let attentionCount = 0;
 
-/** What the home device answers with. Until stage 3 the App.* aliases ARE the
- *  home context's fields, so handing the app a call and handing the device one
- *  are a single act — a test that hands over a new call is a reconnect. */
+// The bridge on the home device, as the last homeAnswersWith left it: the spy
+// every "did the rail ask the machine this row is on?" is read off.
+let homeCall;
+
+/** What the home device answers with: adopting a session for it again is that
+ *  bridge reconnecting, so a test that hands over a new call is a reconnect. */
 const homeAnswersWith = (call) => {
-  adoptApplicationScope({ deviceId: "dev-1", call });
+  homeCall = call;
+  adoptDeviceSession({ deviceId: "dev-1", call });
   return call;
 };
 
@@ -155,7 +158,7 @@ const feed = (items, pending = [], devices = null) => {
 
 beforeEach(async () => {
   vi.resetModules();
-  ({ App, adoptApplicationScope } = await import("../src/app.js"));
+  ({ App } = await import("../src/app.js"));
   ({ adoptDeviceSession, setContextOffline } = await import("../src/core/deviceContexts.js"));
   ({ mountInboxList, markSeen } = await import("../src/core/inboxView.js"));
   ({ rememberDeviceFilter } = await import("../src/core/deviceFilter.js"));
@@ -347,14 +350,14 @@ describe("the inbox rail", () => {
   it("opens an entry to its work item and tells the bridge it was read", async () => {
     rowFor("run-1").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
     expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 
   it("opens an issue by its own id", async () => {
     rowFor("iss-1").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "iss-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "iss-1" });
     expect(location.hash).toBe("#/device/dev-1/project/p2/issue/iss-1");
   });
 
@@ -362,7 +365,7 @@ describe("the inbox rail", () => {
     feed([branchRow({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, unread: false })]);
     document.querySelector('#inbox-list .inbox-entry[data-key="branch:dev-1/p1:main"]').click();
     await flush();
-    expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("entity.seen", expect.anything());
     expect(location.hash).toBe("#/device/dev-1/project/p1/branch/main/changes");
   });
 
@@ -371,7 +374,7 @@ describe("the inbox rail", () => {
   // window is no claim about the messages below its floor.
   it("carries the floor of the reader's window onto the wire", async () => {
     await markSeen("run-1", "ag-1", 341);
-    expect(App.call).toHaveBeenCalledWith("entity.seen", {
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", {
       entity_id: "run-1",
       agent_id: "ag-1",
       read_from_sequence: 341,
@@ -386,12 +389,12 @@ describe("the inbox rail", () => {
     await markSeen("run-2", "ag-1", null);
 
     expect(awayCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-2", agent_id: "ag-1" });
-    expect(App.call).not.toHaveBeenCalledWith("entity.seen", { entity_id: "run-2", agent_id: "ag-1" });
+    expect(homeCall).not.toHaveBeenCalledWith("entity.seen", { entity_id: "run-2", agent_id: "ag-1" });
   });
 
   it("names no floor for a conversation that arrived whole", async () => {
     await markSeen("run-1", "ag-1", null);
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1", agent_id: "ag-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1", agent_id: "ag-1" });
   });
 
   it("marks the entry the route stands on", async () => {
@@ -421,13 +424,13 @@ describe("the inbox rail", () => {
   it("deletes a branch on Done, dismisses its row at once, and reads the entry", async () => {
     menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
-    expect(App.call).toHaveBeenCalledWith("branch.finish", {
+    expect(homeCall).toHaveBeenCalledWith("branch.finish", {
       project_id: "p1",
       branch: "build/login",
       action: "delete",
     });
     expect(rowFor("run-1")).toBeNull(); // gone before the daemon catches up
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
     expect(refreshFeed).toHaveBeenCalled();
   });
 
@@ -450,7 +453,7 @@ describe("the inbox rail", () => {
     expect(scrim.textContent).toContain("Delete branch build/login");
     scrim.querySelector("[data-confirm-cancel]").click();
     await flush();
-    expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("branch.finish", expect.anything());
   });
 
   // An issue whose branch was deleted unmerged comes back asking for somebody:
@@ -459,14 +462,14 @@ describe("the inbox rail", () => {
     feed([branchRow({ issue_id: "iss-9" })]);
     menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(true);
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
-    expect(App.call).not.toHaveBeenCalledWith("entity.seen", { entity_id: "iss-9" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
+    expect(homeCall).not.toHaveBeenCalledWith("entity.seen", { entity_id: "iss-9" });
   });
 
   it("keeps the row when the confirmation is declined", async () => {
     menuItem(rowFor("run-1"), "[data-done]").click();
     await answerConfirm(false);
-    expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("branch.finish", expect.anything());
     expect(rowFor("run-1")).toBeTruthy();
   });
 
@@ -526,7 +529,7 @@ describe("the inbox rail", () => {
     );
     document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("plan.archive", { plan_id: "iss-1" });
+    expect(homeCall).toHaveBeenCalledWith("plan.archive", { plan_id: "iss-1" });
   });
 
   // The reviewer's screenshot: a menu that could only be shut by choosing.
@@ -557,7 +560,7 @@ describe("the inbox rail", () => {
     expect(rowFor("run-1").querySelector(".inbox-menu")).toBeTruthy();
     menuItem(rowFor("run-1"), "[data-mute]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
+    expect(homeCall).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
   });
 
   it("mutes an entry the instant the menu item is pressed, before entity.mute answers", async () => {
@@ -576,7 +579,7 @@ describe("the inbox rail", () => {
     rowFor("run-1").querySelector("[data-menu]").click();
     await flush();
     expect(rowFor("run-1").querySelector("[data-mute] .mt").textContent).toBe("Unmute");
-    expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
+    expect(homeCall).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
   });
 
   it("puts the mute back and says why when entity.mute is refused", async () => {
@@ -639,7 +642,7 @@ describe("the inbox rail", () => {
     document.querySelector("[data-recent-toggle]").click();
     rowFor("run-old").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-old" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-old" });
     expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Fold/changes");
   });
 
@@ -659,7 +662,7 @@ describe("the inbox rail", () => {
     expect(attentionCount).toBe(0);
 
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
     expect(refreshFeed).toHaveBeenCalled();
     expect(rowFor("run-1")).toBeNull();
     expect(rowFor("iss-1")).toBeTruthy();
@@ -712,7 +715,7 @@ describe("the inbox rail", () => {
 
     feed([branchRow(), issueRow()]);
     expect(rowFor("run-1")).toBeNull();
-    const dismissals = App.call.mock.calls.filter(([method]) => method === "entity.dismiss");
+    const dismissals = homeCall.mock.calls.filter(([method]) => method === "entity.dismiss");
     expect(dismissals).toHaveLength(1);
   });
 
@@ -763,7 +766,7 @@ describe("the inbox rail", () => {
     expect(rowFor("run-1").className).toContain("inbox-muted");
     menuItem(rowFor("run-1"), "[data-mute]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: false });
+    expect(homeCall).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: false });
     expect(location.hash).toBe("");
   });
 });
@@ -872,7 +875,7 @@ describe("captures on the rail", () => {
     expect(row.textContent).toContain("Deciding where this goes");
     row.click();
     await flush();
-    expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("entity.seen", expect.anything());
   });
 
   // The daemon keeps an unread row visible (unread beats dismissed), so the
@@ -884,7 +887,7 @@ describe("captures on the rail", () => {
     await flush();
     menuItem(rowFor("run-1"), "[data-dismiss]").click();
     await flush();
-    const calls = App.call.mock.calls.map(([method]) => method);
+    const calls = homeCall.mock.calls.map(([method]) => method);
     expect(calls.indexOf("entity.seen")).toBeGreaterThan(-1);
     expect(calls.indexOf("entity.seen")).toBeLessThan(calls.indexOf("entity.dismiss"));
   });
@@ -901,7 +904,7 @@ describe("captures on the rail", () => {
     menuItem(rowFor("wt-9"), "[data-dismiss]").click();
     expect(rowFor("wt-9")).toBeNull(); // gone before the daemon answers
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "wt-9" });
+    expect(homeCall).toHaveBeenCalledWith("entity.dismiss", { entity_id: "wt-9" });
   });
 
   // The primary checkout names no entity at all, so the clear names the row by
@@ -918,8 +921,8 @@ describe("captures on the rail", () => {
     open.querySelector("[data-dismiss]").click();
     expect(document.querySelector('.inbox-entry[data-key="branch:dev-1/p1:main"]')).toBeNull();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { project_id: "p1", primary: true });
-    expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+    expect(homeCall).toHaveBeenCalledWith("entity.dismiss", { project_id: "p1", primary: true });
+    expect(homeCall).not.toHaveBeenCalledWith("entity.seen", expect.anything());
     expect(refreshFeed).toHaveBeenCalled();
   });
 
@@ -986,7 +989,7 @@ describe("captures on the rail", () => {
     row.click();
     await flush();
     expect(location.hash).toBe("#/capture/capture-1");
-    expect(App.call).not.toHaveBeenCalledWith("capture.answer", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("capture.answer", expect.anything());
   });
 
   it("opens the decision page for a capture the router is still deciding", async () => {
@@ -1016,7 +1019,7 @@ describe("captures on the rail", () => {
     captureRowFor("capture-2").querySelector("[data-capture-retry]").click();
     await flush();
 
-    const rerouted = App.call.mock.calls.filter(([method]) => method === "capture.reroute");
+    const rerouted = homeCall.mock.calls.filter(([method]) => method === "capture.reroute");
     expect(rerouted.map(([, params]) => params.capture_id)).toEqual(["capture-1", "capture-2"]);
   });
 
@@ -1024,7 +1027,7 @@ describe("captures on the rail", () => {
     feed([captureFeedRow({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed" })]);
     captureRowFor("capture-1").querySelector("[data-capture-retry]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1" });
+    expect(homeCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1" });
   });
 
   const routedCapture = (over = {}) =>
@@ -1048,7 +1051,7 @@ describe("captures on the rail", () => {
     expect(picker).toBeTruthy();
     picker.querySelector('[data-reroute-project="p2"][data-reroute-kind="issue"]').click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1", project_id: "p2", kind: "issue" });
+    expect(homeCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1", project_id: "p2", kind: "issue" });
   });
 
   it("names the branch it is rerouted to, offering the ones the project has", async () => {
@@ -1065,7 +1068,7 @@ describe("captures on the rail", () => {
     field.value = "build/csv-export";
     captureRowFor("capture-1").querySelector('[data-reroute-project="p1"][data-reroute-kind="branch"]').click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.reroute", {
+    expect(homeCall).toHaveBeenCalledWith("capture.reroute", {
       capture_id: "capture-1",
       project_id: "p1",
       kind: "branch",
@@ -1102,7 +1105,7 @@ describe("captures on the rail", () => {
     await flush();
     captureRowFor("capture-1").querySelector('[data-reroute-project="p2"][data-reroute-kind="branch"]').click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1", project_id: "p2", kind: "branch" });
+    expect(homeCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "capture-1", project_id: "p2", kind: "branch" });
   });
 
   it("says on the row when a reroute is refused", async () => {
@@ -1136,7 +1139,7 @@ describe("a row on another device", () => {
     await flush();
     expect(location.hash).toBe("#/device/dev-2/project/p1/branch/build%2Faway/changes");
     expect(awayCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-2" });
-    expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("entity.seen", expect.anything());
   });
 
   it("clears, finishes and mutes on its own device", async () => {
@@ -1153,9 +1156,9 @@ describe("a row on another device", () => {
     await flush();
     expect(awayCall).toHaveBeenCalledWith("entity.mute", { entity_id: "run-4", muted: true });
 
-    expect(App.call).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
-    expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
-    expect(App.call).not.toHaveBeenCalledWith("entity.mute", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("branch.finish", expect.anything());
+    expect(homeCall).not.toHaveBeenCalledWith("entity.mute", expect.anything());
   });
 
   it("is greyed and its verbs are shut while its device is offline", async () => {
@@ -1231,7 +1234,7 @@ describe("a row on another device", () => {
 
     home.click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
+    expect(homeCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
     expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 });

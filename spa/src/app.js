@@ -12,13 +12,8 @@ import { renderResolving } from "./views/resolving.js";
 import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
-import { adoptCacheScope, clearCacheScope } from "./core/cacheScope.js";
-import {
-  adoptDeviceSession,
-  contextFor,
-  resetDeviceContexts,
-  retireDeviceContext,
-} from "./core/deviceContexts.js";
+import { clearCacheScope } from "./core/cacheScope.js";
+import { resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 import { forgetHomeFollow } from "./connection.js";
 import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
@@ -28,18 +23,17 @@ const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 // pick, because this is where both are read off the browser at boot.
 export const DEVICE_FILTER_KEY = "build.deviceFilter";
 
+// What the app holds that is nobody's machine in particular: where the reader
+// is standing, what the mounted view owes a teardown, and the account's device
+// list. Everything that belongs to a machine — its transport, its cache scope,
+// its drafts, whether it can answer — is held on that machine's context
+// (core/deviceContexts.js), because the app is on all of them at once.
 export const App = {
-  call: null, // RPC into the live E2EE session (session.call)
-  session: null, // { call, deviceId, close }
-  cacheScope: null, // captured ownership of browser cache reads/writes
-  chatRepository: null, // drafts/controllers owned by the current device scope
   viewingContext: createViewingContext({ enabled: false }),
   route: { name: "inbox" },
   poll: null, // the current view's change watcher (core/changeEvents.js)
   viewDispose: null, // the current view's teardown (terminal panes, observers)
   routeLeaveGuard: null, // async veto owned by the mounted view (for unsaved work)
-  offline: false,
-  offlineSince: null, // ms timestamp stamped by goOffline(), cleared on restore
 
   gated: true, // gate screens own #root until a session is live
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
@@ -59,90 +53,27 @@ export const App = {
 
 };
 
-// The compatibility aliases: the home device's context, copied onto App as
-// plain fields. Plain, because tests and unmigrated surfaces assign App.call
-// directly. Stage 3 deletes the six fields and everything below them here.
-const ALIAS_DEFAULTS = Object.freeze({
-  session: null,
-  call: null,
-  cacheScope: null,
-  chatRepository: null,
-  offline: false,
-  offlineSince: null,
-});
-
-/** Take each alias off the context, or leave it empty when there is no context
- *  to take it off. */
-function copyAliasesFrom(context) {
-  for (const [field, empty] of Object.entries(ALIAS_DEFAULTS)) App[field] = context?.[field] ?? empty;
-}
-
-/** Say which context the App.* aliases follow, cacheScope's own ambient alias
- *  included. No surface reads that alias any more — each one takes its scope
- *  from the context its route names — and stage 3 retires it with the rest. */
-export function pointAliasesAt(context) {
-  const home = context || null;
-  copyAliasesFrom(home);
-  adoptCacheScope(home?.deviceId || null);
-  return home;
-}
-
 /**
- * Adopt a session as the home device's: the registry creates or retargets that
- * device's context, and the aliases follow it. Reconnecting the same device
- * only replaces its transport.
+ * Put the application back to its just-loaded state: no route guard, no route
+ * attempt in flight, nobody being read, no device open, no terminals on any
+ * machine and no cache addressed.
  *
- * The compatibility shim, not the production path. Nothing in connection.js
- * calls it any more — moving home closes nothing, and every other device stays
- * live and keeps filling the inbox. What is left is the surface
- * adoptApplicationScope speaks through, and its retire-on-another-device is
- * what appScope.test.js pins. Stage 3 deletes both with that file.
+ * The current product signs out by leaving this document, so nothing in the
+ * running app calls this — it is what an embedder or future in-place auth
+ * would call before replacing the account, and what a suite calls between
+ * cases so one test's devices cannot answer the next one's reads.
  */
-export function adoptHomeSession(session) {
-  const previous = contextFor(shimmedDeviceId);
-  const context = adoptDeviceSession(session);
-  shimmedDeviceId = context.deviceId;
-  if (previous && previous !== context) retireSwitchedDevice(previous.deviceId);
-  pointAliasesAt(context);
-  return context;
-}
-
-// The device this shim last handed the app to. Home itself is derived from the
-// account list and the pick, so this is not a second answer to that question —
-// only what the shim needs to know which device it is leaving. Stage 3 deletes
-// it with the shim.
-let shimmedDeviceId = null;
-
-// A device the shim above handed home to somebody else: it goes, with the
-// harness catalog it held and the reader's position it filled.
-function retireSwitchedDevice(deviceId) {
-  retireDeviceContext(deviceId);
-  App.viewingContext.clear();
-}
-
-/** Bind application chat state to a live device, given a session-shaped
- * { deviceId, call }. The registry is the real adoption; this is what the
- * callers that still speak in scopes say. */
-export function adoptApplicationScope(session) {
-  return adoptHomeSession(session).chatRepository;
-}
-
-/** Explicit auth/application teardown hook. The current product signs out by
- * leaving this document, but embedders and future in-place auth can call this
- * before replacing the account. */
-export function disposeApplicationScope() {
+export function resetApplication() {
   routeAttempt += 1;
   pendingLeaveDecision = null;
   App.routeLeaveGuard = null;
   App.viewingContext?.setEnabled?.(false);
   resetDeviceContexts();
-  shimmedDeviceId = null;
   // The terminals are on nobody now, so the next route that names a device is a
   // move however familiar the name, and home has been followed for nobody.
   terminalRouteDeviceId = null;
   forgetHomeFollow();
   clearCacheScope();
-  pointAliasesAt(null);
 }
 
 export function rememberSelectedDevice(deviceId) {

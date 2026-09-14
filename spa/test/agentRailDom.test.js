@@ -81,7 +81,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { currentCacheScope, setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor } = await import("../src/core/cacheScope.js");
 const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
@@ -167,7 +167,7 @@ const railAddress = (over = {}) => ({
   deviceId: "dev-1",
   projectId: "p1",
   branch: "build/login",
-  cacheScope: currentCacheScope(),
+  cacheScope: scopeFor("dev-1"),
   chatRepository: App.chatRepository,
   call: (method, params) => App.call(method, params),
   ...over,
@@ -184,7 +184,7 @@ beforeEach(async () => {
   resetAgentRailMemory();
   resetOptimistic();
   resetDeviceContexts(); // and with them the last test's harness catalog
-  setCacheDevice("dev-1");
+  scopeFor("dev-1"); // the machine these reads are addressed to
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
@@ -207,7 +207,7 @@ beforeEach(async () => {
     if (method === "thread.post") return { posted_sequence: 7 };
     return {};
   });
-  App.chatRepository = createChatRepository({ scope: currentCacheScope(), call: (method, params) => App.call(method, params) });
+  App.chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => App.call(method, params) });
   // The machine the rail is mounted on: its bridge is what the harness catalog
   // comes from.
   adoptDeviceSession(sessionAnswering(App));

@@ -52,7 +52,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 
@@ -85,7 +85,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetConsoleMemory();
   feedSnapshot = { items: [homeRow], projects: [] };
-  setCacheDevice("dev-1");
+  scopeFor("dev-1"); // the machine these reads are addressed to
   await wipeCache();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });

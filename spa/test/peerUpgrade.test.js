@@ -53,8 +53,8 @@ vi.mock("../src/core/changeEvents.js", () => ({
   greetBridge: (...args) => greetings.greet(...args),
 }));
 const changed = [];
-const { App, disposeApplicationScope } = await import("../src/app.js");
-const { contextFor } = await import("../src/core/deviceContexts.js");
+const { App, resetApplication } = await import("../src/app.js");
+const { adoptDeviceSession, contextFor, setContextOffline } = await import("../src/core/deviceContexts.js");
 
 // Every channel the terminals were sent to ride, in order: what the manager
 // reads off the context of the device it follows each time it is told to look.
@@ -139,13 +139,11 @@ async function loseAndReturn(replacement) {
 }
 
 beforeEach(() => {
-  disposeApplicationScope();
+  resetApplication();
   document.body.innerHTML = '<div id="conn"></div>';
   document.body.className = "";
   changed.length = 0;
   opened.length = 0;
-  App.offline = false;
-  App.session = null;
   App.devices = [];
   App.selectedDeviceId = null;
   globalThis.RTCPeerConnection = class {};
@@ -173,7 +171,7 @@ describe("the upgrade policy", () => {
 
     await greetLiveBridge(context);
 
-    expect(App.chatRepository.threadPostOperations()).toEqual({
+    expect(context.chatRepository.threadPostOperations()).toEqual({
       version: 1,
       statusMethod: "thread.operation",
     });
@@ -325,11 +323,13 @@ describe("the upgrade policy", () => {
 });
 
 describe("device settings connections", () => {
-  it("opens the named device without adopting it or inheriting the active device's offline state", async () => {
-    const current = fakeSession();
+  it("opens the named device without adopting it or disturbing a registered device", async () => {
+    // The settings page opens its own socket to one machine. Nothing about that
+    // socket reaches the registry: the device the app is already holding — here
+    // one it has marked offline — is still the context it was, still offline.
+    const held = adoptDeviceSession(fakeSession("dev-a"));
+    setContextOffline("dev-a", { offline: true });
     const settings = { ...fakeSession(), deviceId: "dev-b" };
-    App.session = current;
-    App.offline = true;
     relay.openRelaySession.mockResolvedValueOnce(settings);
     const onLost = vi.fn();
     await expect(openDeviceSettingsSession("dev-b", { onLost })).resolves.toBe(settings);
@@ -339,8 +339,9 @@ describe("device settings connections", () => {
     expect(options.getPinnedDeviceKey).toBeTypeOf("function");
     expect(options.isPaused).toBeUndefined();
     expect(options.onLost).toBe(onLost);
-    expect(App.session).toBe(current);
-    expect(App.offline).toBe(true);
+    expect(contextFor("dev-b")).toBe(null);
+    expect(contextFor("dev-a")).toBe(held);
+    expect(held.offline).toBe(true);
   });
   it("closes a mismatched session before exposing any RPC", async () => {
     const wrong = fakeSession();

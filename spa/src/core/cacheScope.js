@@ -30,7 +30,6 @@ function createCacheScope(deviceId) {
 }
 
 const scopes = new Map(); // deviceId → the scope that device's surfaces captured
-let homeScope = null; // the compatibility alias below: the home device's scope
 
 /** This device's scope, created on the first ask and the same object until it
  *  is released. Falsy device ids have no scope: there is nothing to address. */
@@ -50,32 +49,9 @@ export function releaseScope(deviceId) {
   if (!scope) return;
   scopes.delete(deviceId);
   scope.dispose();
-  if (homeScope === scope) homeScope = null;
-}
-
-/** Point the compatibility alias at a device, keeping every other device's
- *  scope exactly where it is. */
-export function adoptCacheScope(deviceId) {
-  homeScope = scopeFor(deviceId);
-  return homeScope;
 }
 
 /** Release every device (tests, sign-out). */
 export function clearCacheScope() {
   for (const deviceId of [...scopes.keys()]) releaseScope(deviceId);
-  homeScope = null;
-}
-
-export function currentCacheScope() {
-  return homeScope;
-}
-
-// Compatibility for surfaces not yet migrated to capture the scope object.
-// New code should read the scope from the device context it is working on.
-export function setCacheDevice(deviceId) {
-  return adoptCacheScope(deviceId);
-}
-
-export function cacheDeviceId() {
-  return homeScope?.deviceId || null;
 }

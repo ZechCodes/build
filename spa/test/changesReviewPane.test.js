@@ -11,7 +11,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const { mountGitPane } = await import("../src/core/gitPane.js");
 const { createReviewPlug } = await import("../src/core/changesReview.js");
-const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor } = await import("../src/core/cacheScope.js");
 const { worktreeOf } = await import("./gitWireFixture.js");
 
 const tree = worktreeOf({ "src/a.js": "new line", "uv.lock": "locked" });
@@ -68,7 +68,7 @@ async function mount({ clean = false, deviceId = "dev-1" } = {}) {
 
 beforeEach(() => {
   document.body.innerHTML = "";
-  setCacheDevice("dev-1");
+  scopeFor("dev-1"); // the machine these reads are addressed to
   errors = [];
   window.addEventListener("error", (event) => errors.push(event.message));
   vi.spyOn(console, "error").mockImplementation((...args) => errors.push(String(args[0])));

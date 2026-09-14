@@ -44,7 +44,7 @@ vi.mock("../src/core/composeView.js", async (importOriginal) => ({
 }));
 const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 
-const { App, disposeApplicationScope, rememberSelectedDevice } = await import("../src/app.js");
+const { App, resetApplication, rememberSelectedDevice } = await import("../src/app.js");
 const { contextFor, deviceFeedView, homeContext, knownContexts, liveContexts } = await import(
   "../src/core/deviceContexts.js"
 );
@@ -94,7 +94,7 @@ let unsubscribe = () => {};
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
-  disposeApplicationScope();
+  resetApplication();
   stopFeed();
   document.body.innerHTML =
     '<div id="root"></div><div id="devpick"></div><div id="conn"></div><div id="compose"></div><div id="inbox-list"></div>';
@@ -132,7 +132,7 @@ beforeEach(() => {
 afterEach(() => {
   unsubscribe();
   stopFeed();
-  disposeApplicationScope();
+  resetApplication();
   vi.clearAllTimers();
   vi.useRealTimers();
 });
@@ -180,17 +180,17 @@ describe("per-device connections", () => {
     // Its rows are still the account's rows — greyed by the rail, not removed.
     expect(feed.items.map((item) => item.deviceId)).toEqual(["dev-a", "dev-b"]);
     expect(held()).toBe(false); // the account still has a machine to stand on
-    // dev-a is home, so the aliases the composer and the frozen views read must
-    // say so — the banner's silence is about the account, not about them.
-    expect(App.offline).toBe(true);
-    expect(App.offlineSince).toBe(contextFor("dev-a").offlineSince);
+    // The account still lists dev-a online, so it is still where creation would
+    // go — and what the composer reads off it is that it cannot answer.
+    expect(homeContext()).toBe(contextFor("dev-a"));
+    expect(homeContext().offline).toBe(true);
   });
 
   // The relay says a bridge went before that session is lost, so the account
   // lists it offline first — and with nothing else online there is no home left
-  // to name. The aliases still describe that device, and what they have to say
-  // about it now is that it is offline: the alternative is a composer that
-  // thinks it can send and a view that never freezes.
+  // to name. Every device the app holds is still held, marked offline and
+  // stamped with when it went: the composer queues, the views freeze, and
+  // nothing is thrown away.
   it("says the last device is offline, with no home left to name", async () => {
     await connectEveryDevice();
     unreachable.add("dev-a");
@@ -202,8 +202,9 @@ describe("per-device connections", () => {
     goOffline("dev-a");
     await flush();
 
-    expect(App.offline).toBe(true);
-    expect(App.offlineSince).toBe(contextFor("dev-a").offlineSince);
+    expect(homeContext()).toBe(null);
+    expect(contextFor("dev-a").offline).toBe(true);
+    expect(contextFor("dev-a").offlineSince).toBeTypeOf("number");
     expect(held()).toBe(true);
   });
 
@@ -352,7 +353,7 @@ describe("per-device connections", () => {
     expect(openedFor("dev-b")).toHaveLength(1);
     expect(contextFor("dev-b").session).toBe(other);
     expect(other.close).not.toHaveBeenCalled();
-    expect(App.offline).toBe(false); // home is back, and the aliases say so
+    expect(homeContext()).toBe(contextFor("dev-a")); // and it is home again
   });
 
   // A device that has never answered here has no context to keep a resume off,
@@ -414,7 +415,7 @@ describe("per-device connections", () => {
     expect(contextFor("dev-b").session).toBe(lastSession("dev-b"));
     // It joined the account, it did not take it over: home is untouched, and
     // the captures waiting for a device are not offered to it.
-    expect(App.session).toBe(lastSession("dev-a"));
+    expect(homeContext()?.session).toBe(lastSession("dev-a"));
     expect(captures.flush).not.toHaveBeenCalled();
   });
 
@@ -459,15 +460,14 @@ describe("per-device connections", () => {
 
     const sessions = openDeviceSessions();
     await sessions.first; // the quicker device landed, and it is not the picked one
-    expect(App.session).toBe(null); // nothing is home until the device the pick names answers
+    expect(homeContext()).toBe(null); // nothing is home until the device the pick names answers
 
     await vi.advanceTimersByTimeAsync(20);
     await sessions.settled;
     await flush();
 
-    expect(App.session).toBe(lastSession("dev-b"));
-    expect(App.call).toBe(lastSession("dev-b").call);
-    expect(App.cacheScope).toBe(contextFor("dev-b").cacheScope);
+    expect(homeContext()).toBe(contextFor("dev-b"));
+    expect(homeContext().session).toBe(lastSession("dev-b"));
     expect(App.selectedDeviceId).toBe("dev-b"); // the pick itself is untouched
     expect(liveIds()).toEqual(["dev-a", "dev-b"]); // and nothing was closed
   });
@@ -489,31 +489,30 @@ describe("per-device connections", () => {
     await sessions.settled;
     await flush();
 
-    expect(App.session).toBe(lastSession("dev-b"));
+    expect(homeContext()?.session).toBe(lastSession("dev-b"));
     expect(terminals.followTerminalDevice).toHaveBeenCalled();
   });
 
   // Home is not a pointer anybody holds: it is what the account list and the
   // pick say. The relay saying the picked bridge went is news about home, so
-  // everything that follows home — the aliases, the terminals, the picker, the
-  // surfaces about here — moves to the device that can still answer.
+  // everything that follows home — the terminals, the picker, the surfaces
+  // about here — moves to the device that can still answer.
   it("home falls back to the first online device when the picked one is marked offline by the relay", async () => {
     App.selectedDeviceId = "dev-b";
     await connectEveryDevice();
-    expect(App.session).toBe(lastSession("dev-b"));
+    expect(homeContext()?.session).toBe(lastSession("dev-b"));
     terminals.followTerminalDevice.mockClear();
 
     unreachable.add("dev-b");
     markDeviceOffline("dev-b"); // another live session hears that bridge go
     await flush();
 
-    expect(App.session).toBe(lastSession("dev-a"));
-    expect(App.call).toBe(lastSession("dev-a").call);
-    expect(App.offline).toBe(false); // the device home moved to is answering
+    expect(homeContext()).toBe(contextFor("dev-a"));
+    expect(homeContext().offline).toBe(false); // the device home moved to is answering
     expect(terminals.followTerminalDevice).toHaveBeenCalled();
   });
 
-  it("re-points the aliases and the terminals on a new home device, and closes nothing", async () => {
+  it("moves home and the terminals to a device already open, and closes nothing", async () => {
     await connectEveryDevice();
     const stayed = lastSession("dev-a");
     const home = lastSession("dev-b");
@@ -522,9 +521,8 @@ describe("per-device connections", () => {
     syncHome();
 
     expect(App.selectedDeviceId).toBe("dev-b");
-    expect(App.session).toBe(home);
-    expect(App.call).toBe(home.call);
-    expect(App.cacheScope).toBe(contextFor("dev-b").cacheScope);
+    expect(homeContext()).toBe(contextFor("dev-b"));
+    expect(homeContext().session).toBe(home);
     expect(terminals.followTerminalDevice).toHaveBeenCalled();
     expect(captures.flush).toHaveBeenCalled(); // the new home takes what nobody could send
     expect(stayed.close).not.toHaveBeenCalled();
@@ -596,7 +594,7 @@ describe("per-device connections", () => {
     markDeviceOnline("dev-b"); // …and the relay says it is back
     await flush();
 
-    expect(App.session).toBe(lastSession("dev-b"));
+    expect(homeContext()?.session).toBe(lastSession("dev-b"));
     expect(captures.flush).toHaveBeenCalledTimes(1);
   });
 

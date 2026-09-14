@@ -5,8 +5,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { App, pointAliasesAt } from "../src/app.js";
-import { currentCacheScope } from "../src/core/cacheScope.js";
+import { App } from "../src/app.js";
 import {
   adoptDeviceSession,
   canAnswer,
@@ -58,7 +57,7 @@ describe("the device context registry", () => {
     expect(first.active()).toBe(true);
   });
 
-  it("keeps a re-adopted device's scope and repository, and takes its new transport", () => {
+  it("keeps a re-adopted device's controllers and drafts, and sends on the new transport", () => {
     const context = adoptDeviceSession(fakeSession("dev-a"));
     const { cacheScope, chatRepository } = context;
     const controller = chatRepository.controller({
@@ -101,6 +100,48 @@ describe("the device context registry", () => {
     expect(contextFor("dev-b")).toBe(staying);
     expect(staying.cacheScope.active()).toBe(true);
     expect(staying.session.close).not.toHaveBeenCalled();
+  });
+
+  // A controller is addressed against its device's scope: retiring the device
+  // takes the address away, so a pane still holding one cannot write a draft or
+  // a message into a machine the app has let go of.
+  it("shuts a retired device's controllers", () => {
+    const context = adoptDeviceSession(fakeSession("dev-a"));
+    const controller = context.chatRepository.controller({
+      entityId: "run-1",
+      agentId: "agent-1",
+      conversationId: "thread-1",
+    });
+
+    retireDeviceContext("dev-a");
+
+    expect(() => controller.writeDraft({ body: "too late" })).toThrow(/no longer active/);
+    expect(controller.threadState.active()).toBe(false);
+  });
+
+  // The transport a submission was accepted on is the one it finishes on: a
+  // reconnect landing mid-flight must not make the new socket answer for a send
+  // the old one already took, or the message goes out twice.
+  it("a send accepted before a reconnect goes out on the transport that accepted it", async () => {
+    let release;
+    const first = fakeSession("dev-a");
+    first.call = vi.fn(() => new Promise((resolve) => { release = resolve; }));
+    const reconnected = fakeSession("dev-a");
+    const controller = adoptDeviceSession(first).chatRepository.controller({
+      entityId: "run-1",
+      agentId: "agent-1",
+      conversationId: "thread-1",
+    });
+    controller.writeDraft({ body: "captured" });
+    const submission = controller.captureSubmission();
+    const pending = controller.post(submission);
+
+    adoptDeviceSession(reconnected);
+    release({ operation_id: submission.operationId });
+    await pending;
+
+    expect(first.call).toHaveBeenCalledTimes(1);
+    expect(reconnected.call).not.toHaveBeenCalled();
   });
 
   it("lists the open, unpaused contexts in device-list order, unknown devices last", () => {
@@ -206,25 +247,6 @@ describe("the device context registry", () => {
     expect(routeContext(null)).toBe(null);
   });
 
-  it("points the ambient cache-scope alias at the home device too", () => {
-    // Surfaces not yet migrated read currentCacheScope() while they mount. It
-    // has to name whichever device the aliases were last pointed at, or those
-    // reads address no cache at all.
-    const first = adoptDeviceSession(fakeSession("dev-a"));
-    const second = adoptDeviceSession(fakeSession("dev-b"));
-
-    pointAliasesAt(first);
-
-    expect(currentCacheScope()).toBe(first.cacheScope);
-
-    pointAliasesAt(second);
-
-    expect(currentCacheScope()).toBe(second.cacheScope);
-
-    pointAliasesAt(null);
-
-    expect(currentCacheScope()).toBe(null);
-  });
 });
 
 // The surfaces about where you are — the toolbar, the capture decision page —

@@ -16,8 +16,8 @@ export const deviceNameOf = (devices, deviceId) =>
   (devices || []).find((device) => device.id === deviceId)?.name || null;
 
 /**
- * The home device: where creation goes, what the App.* aliases point at, and
- * the device a link that names none is about.
+ * The home device: where creation goes, and the device a link that names none
+ * is about.
  *
  * The sticky choice while that device can answer, else whichever device can —
  * first in the account's own order, so every surface that falls back falls back

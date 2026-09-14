@@ -9,7 +9,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { renderFilesTab } = await import("../src/views/files.js");
 
@@ -22,7 +22,7 @@ const treeNames = (host) =>
 
 beforeEach(async () => {
   document.body.innerHTML = "";
-  setCacheDevice("dev-1");
+  scopeFor("dev-1"); // the machine these reads are addressed to
   await wipeCache();
 });
 

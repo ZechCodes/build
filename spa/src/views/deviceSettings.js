@@ -3,8 +3,8 @@
 //
 // The page keeps its own transport so browsing another machine cannot redirect
 // workspace requests, or a late folder selection, to a different host. That is
-// also why every panel here is handed this page's caller: the account page
-// holds what is the account's, and each of these answers belong to one machine.
+// also why every panel here is handed this page's caller: the account page holds
+// what is the account's, and every answer on this one belongs to this machine.
 import { $ } from "../dom.js";
 import { deviceOfflineText, esc } from "../core/text.js";
 import { App } from "../app.js";
@@ -22,10 +22,10 @@ import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSettin
  *  itself on this page's connection, so the page stands them up in one pass and
  *  adding another is a line here. */
 const BRIDGE_PANELS = [
-  { html: agentModesPanelHtml, mount: (host, options) => mountAgentModes(host, options) },
-  { html: defaultHarnessPanelHtml, mount: (host, options) => mountDefaultHarness(host, options) },
+  { html: agentModesPanelHtml, mount: mountAgentModes },
+  { html: defaultHarnessPanelHtml, mount: mountDefaultHarness },
   { html: isolationPanelHtml, mount: (host, options) => mountIsolation(host, { ...options, target: ACCOUNT_ISOLATION }) },
-  { html: triageSettingPanelHtml, mount: (host, options) => mountTriageSetting(host, options) },
+  { html: triageSettingPanelHtml, mount: mountTriageSetting },
 ];
 
 export async function renderDeviceSettings() {
@@ -38,7 +38,7 @@ export async function renderDeviceSettings() {
   }
   root.innerHTML = `
     <a class="btn mini" href="#/account/settings">Account settings</a>
-    <div class="board-head"><div><h1>${esc(device.name)} settings</h1><p>Settings for this device.</p></div></div>
+    <div class="board-head"><div><h1>${esc(device.name)} settings</h1><p>The projects this machine holds, and how agents run on it.</p></div></div>
     <div id="device-projects-panel"></div>
     <div class="panel">
       <h3>Projects folder</h3>
@@ -99,7 +99,10 @@ export async function renderDeviceSettings() {
     const readProjects = mountDeviceProjects(projectsHost, {
       callRpc,
       deviceName: device.name,
-      onProjectCreated: () => refreshFeed(),
+      // The rail is where the new project is looked for next: the app's own
+      // context for this machine reads it again. It has none while the machine
+      // has never answered the app itself, and then there is nothing to re-read.
+      onProjectCreated: () => refreshFeed(device.id),
     });
     await readProjects();
     const options = { callRpc, onSaved: refreshAccountCatalog };

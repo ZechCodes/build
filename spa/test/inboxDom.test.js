@@ -74,8 +74,27 @@ const workspace = (overrides = {}) => {
   };
 };
 
-const feed = (workspaces, projects = [project("project-1", "Payments"), project("project-2", "Website")]) => {
-  snapshot = { items: [], pending: [], projects, workspaces, devices: { "dev-1": { items: [], projects, workspaces } } };
+/** A capture the router has not placed yet: work the account is holding, in no
+ *  project and so under no block. */
+const capture = (over = {}) => ({
+  kind: "capture",
+  capture_id: "cap-1",
+  deviceId: "dev-1",
+  project_id: "",
+  projectKey: "",
+  title: "fix the redirect",
+  text: "fix the redirect",
+  state: "routing",
+  created_at: "2026-09-02T12:00:00Z",
+  ...over,
+});
+
+const feed = (
+  workspaces,
+  projects = [project("project-1", "Payments"), project("project-2", "Website")],
+  items = [],
+) => {
+  snapshot = { items, pending: [], projects, workspaces, devices: { "dev-1": { items, projects, workspaces } } };
   deliver();
 };
 
@@ -136,6 +155,22 @@ describe("the workspace inbox", () => {
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1", "workspace:dev-1/workspace-2"]);
     expect(rows()[0].textContent).toContain("Payments");
     expect(rows()[0].textContent).toContain("2 pushes · +8 −3");
+  });
+
+  // A capture is unfinished business that belongs to no project yet — the
+  // router has not said where it goes — so it stands above the workspaces
+  // rather than under any of them, on both faces.
+  it("lists a capture nothing has routed yet above the workspaces", () => {
+    feed([workspace()], undefined, [capture()]);
+
+    expect(rows().map((row) => row.dataset.key)).toEqual(["capture:cap-1", "workspace:dev-1/workspace-1"]);
+    expect(rows()[0].textContent).toContain("fix the redirect");
+
+    setInboxView("projects");
+
+    expect([...document.querySelectorAll("#inbox-list .inbox-unsorted .inbox-entry")].map((row) => row.dataset.key)).toEqual([
+      "capture:cap-1",
+    ]);
   });
 
   it("keeps an archived workspace out when a refreshed feed still carries it", () => {

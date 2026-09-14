@@ -20,6 +20,7 @@ import { confirmAction } from "./confirm.js";
 import {
   activeEntryKey,
   branchDoneConfirm,
+  captureEntries,
   dismissParamsOf,
   entryKeyOf,
   inboxEmptyHtml,
@@ -148,7 +149,11 @@ function draw() {
   publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
-  const shown = withDeviceNames(workspaceEntries(workspaces, projects, projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf })));
+  // The captures first: they are the account's unfinished business and belong
+  // to no project, so they stand above the workspace rows on the flat face and
+  // above the blocks on the other.
+  const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+  const shown = withDeviceNames([...captureEntries(rows), ...workspaceEntries(workspaces, projects, rows)]);
   list.onclick = onListClick;
   list.onkeydown = onCaptureKeydown;
   // A different face is a different list: the one is emptied for the other,

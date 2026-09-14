@@ -468,6 +468,18 @@ function isListed(item) {
   return !(item.kind === "issue" && item.implementation_active);
 }
 
+/** The captures the rail lists: what this client is holding because no machine
+ *  could take it, and what the router has not placed yet. A capture belongs to
+ *  no project until it is routed — at which point it stops being a capture and
+ *  becomes the work it was routed to — so these stand above the workspaces
+ *  rather than under any project's block. */
+export function captureEntries(items = []) {
+  return items
+    .filter((item) => item.kind === "capture" && isListed(item))
+    .map(toCaptureEntry)
+    .sort(byAnchor);
+}
+
 /** Oldest anchor first. A row nobody can date sorts under the ones somebody
  *  can — unknown age is not evidence of being old. */
 function byAnchor(left, right) {

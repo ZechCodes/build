@@ -46,13 +46,14 @@ import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { homeProjectKey } from "./deviceContexts.js";
 import { openableHere, openableHereRows, paintDeviceState, verbCall } from "./inboxDevices.js";
+import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
 import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
-import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
+import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 import { publishInboxAttentionCount } from "./inboxAttention.js";
 
@@ -64,8 +65,6 @@ let projects = [];
 let entries = [];
 let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
 let openMenuKey = null;
-let rerouteKey = null; // the capture row whose destination picker is open
-let rerouteBranchProject = null; // the project in that picker whose branch field is open
 // Whether each Recent is open, once the user has said — keyed by whose Recent
 // it is: the inbox's, or one project block's. A scope nobody has spoken for
 // lets its partition decide (it opens when the list above it is thin).
@@ -78,9 +77,7 @@ let folds = new Map();
 // called — which is what the create it offers is titled with — and the bare
 // project id every RPC still wants.
 let blocksPainted = new Map();
-const capturesBeingRerouted = new Set();
 const errors = new Map(); // row key → the message its row is showing
-const captureErrors = new Map(); // capture id → the message its row is showing
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
@@ -180,7 +177,7 @@ function draw() {
   const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
   const nowMs = Date.now();
   list.onclick = onListClick;
-  list.onkeydown = onListKeydown;
+  list.onkeydown = onCaptureKeydown;
   // A different face is a different list: the one is emptied for the other,
   // and every paint after that reconciles in place.
   if (list.dataset.view !== view) {
@@ -201,12 +198,11 @@ function rowUi(showProject) {
   return {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
-    rerouteKey,
     projects,
-    rerouteBranchProject,
+    ...reroutePicker(),
     // The branches that project already has, off the same feed rows the
     // compose panel offers: one source for "which branches are there".
-    rerouteBranches: branchOptions(items, rerouteBranchProject),
+    rerouteBranches: branchOptions(items, reroutePicker().rerouteBranchProject),
     showProject,
     folded: new Set(),
     // The block holding the branch or issue the route stands on. A capture's
@@ -352,7 +348,7 @@ function paintRecent(host, partition, ui, scope) {
  *  selector out of it. */
 function paintErrors(list) {
   list.querySelectorAll(".inbox-entry").forEach((row) => {
-    const message = errors.get(row.dataset.key) || captureErrors.get(row.dataset.capture);
+    const message = errors.get(row.dataset.key) || captureError(row.dataset.capture);
     const slot = message && row.querySelector("[data-done-error], [data-capture-error]");
     if (!slot) return;
     slot.textContent = message;
@@ -403,6 +399,20 @@ function pressed(controls, target) {
   return false;
 }
 
+/** One control per attribute the head paints, in the order a press is read in:
+ *  the innermost control wins, so the fold and the + are asked for before the
+ *  name they sit beside. Each is handed the element that was pressed. */
+const BLOCK_CONTROLS = [
+  ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
+  ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
+  ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
+  ["data-new-project", () => openNewProject()],
+];
+
+/** Every control the list holds, innermost first: a row's own verbs, then what
+ *  a capture row can do to its route, then a block's head. */
+const LIST_CONTROLS = [...ROW_CONTROLS, ...CAPTURE_CONTROLS, ...BLOCK_CONTROLS];
+
 /// Every control in the list, answered in one place.
 ///
 /// A row's element survives the paints, but a control inside it does not have
@@ -414,9 +424,7 @@ function onListClick(event) {
   // A control the row's device cannot answer for is shut, not hidden: the
   // reader can see the verb and reads why it is unavailable on it.
   if (target.closest('[aria-disabled="true"]')) return;
-  if (pressed(ROW_CONTROLS, target)) return;
-  if (captureClicked(target)) return;
-  if (pressed(BLOCK_CONTROLS, target)) return;
+  if (pressed(LIST_CONTROLS, target)) return;
   // The row's own controls answer for themselves; everything else on it opens.
   const row = target.closest(".inbox-entry");
   if (row && !target.closest(".inbox-actions")) openEntry(entryOf(row.dataset.key));
@@ -440,17 +448,8 @@ function openMenu(key) {
 //
 // What a block's head can do: fold, open the project's checkout, and create —
 // a branch or an issue, on the one create surface, scoped to the block's
-// project. And the one control above every block: a new project.
-
-/** One control per attribute the head paints, in the order a press is read in:
- *  the innermost control wins, so the fold and the + are asked for before the
- *  name they sit beside. Each is handed the element that was pressed. */
-const BLOCK_CONTROLS = [
-  ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
-  ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
-  ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
-  ["data-new-project", () => openNewProject()],
-];
+// project. And the one control above every block: a new project. Which press
+// is which is the table BLOCK_CONTROLS, up with the other control tables.
 
 /** The block's name opens the project's checkout, when it has one. */
 function openBlockHead(projectKey) {
@@ -493,115 +492,6 @@ function expandFold(projectKey) {
   folds.set(projectKey, false);
   persistProjectFolds(folds, localStorage);
   draw();
-}
-
-// ---- capture rows -------------------------------------------------------------
-//
-// The two things a row can do to a route: retry one that gave up, and send the
-// capture somewhere else. Both go through the daemon's own capture verbs — a
-// reroute by hand and a route by the router are the same kind of thing
-// afterwards.
-//
-// Answering the router is not one of them. What to do with a capture is a
-// decision with several shapes — the router's own choices, a destination named
-// by hand, words, or abandoning it — and the row opens the page that holds all
-// of them (views/captureDecision.js) rather than hosting the thinnest one.
-
-/** The capture controls, answered off the same one listener. True when the press
- *  was one of them. */
-function captureClicked(target) {
-  const retry = target.closest("[data-capture-retry]");
-  if (retry) {
-    rerouteCapture(retry.dataset.captureRetry, null);
-    return true;
-  }
-  const reroute = target.closest("[data-capture-reroute]");
-  if (reroute) {
-    const key = `capture:${reroute.dataset.captureReroute}`;
-    rerouteKey = rerouteKey === key ? null : key;
-    rerouteBranchProject = null;
-    draw();
-    return true;
-  }
-  // Branch is the one destination with something left to say, so it discloses
-  // the field that says it instead of dispatching on the spot.
-  const branchOpen = target.closest("[data-reroute-branch-open]");
-  if (branchOpen) {
-    openRerouteBranch(branchOpen.dataset.rerouteBranchOpen);
-    return true;
-  }
-  const destination = target.closest("[data-reroute-project]");
-  if (destination) {
-    dispatchReroute(destination);
-    return true;
-  }
-  return false;
-}
-
-function openRerouteBranch(projectId) {
-  rerouteBranchProject = rerouteBranchProject === projectId ? null : projectId;
-  draw();
-  // The field is found through the list that was just painted, never through a
-  // selector built out of an id the daemon minted.
-  if (rerouteBranchProject) $("#inbox-list")?.querySelector("[data-reroute-branch]")?.focus();
-}
-
-function dispatchReroute(control) {
-  const row = control.closest(".capture-entry");
-  const named = control.dataset.rerouteKind === "branch" ? branchFieldValue(control) : "";
-  rerouteKey = null;
-  rerouteBranchProject = null;
-  rerouteCapture(row.dataset.capture, {
-    projectId: control.dataset.rerouteProject,
-    kind: control.dataset.rerouteKind,
-    branch: named,
-  });
-}
-
-/** Enter in the branch field is the Dispatch beside it. */
-function onListKeydown(event) {
-  if (event.key !== "Enter") return;
-  const field = event.target.closest("[data-reroute-branch]");
-  if (!field) return;
-  event.preventDefault();
-  field.closest(".reroute-branch").querySelector("[data-reroute-kind='branch']").click();
-}
-
-/** The branch named beside a Dispatch button, "" when the field is empty or
- *  the destination was chosen without one. */
-function branchFieldValue(control) {
-  const field = control.closest(".reroute-branch")?.querySelector("[data-reroute-branch]");
-  return field ? field.value.trim() : "";
-}
-
-/** With a destination this routes by hand; with none it re-fires the router,
- *  which is what the retry on a failed route is. */
-async function rerouteCapture(captureId, destination) {
-  if (capturesBeingRerouted.has(captureId)) return;
-  capturesBeingRerouted.add(captureId);
-  captureErrors.delete(captureId);
-  try {
-    const rerouted = await verbCall(entryOf(`capture:${captureId}`))("capture.reroute", rerouteParams(captureId, destination));
-    // The answer carries the new routing, and for a capture that has already
-    // settled it is the only thing that will: the feed stopped carrying it, so
-    // nothing else would ever correct the row's "→ project as issue".
-    adoptCaptureRecord(rerouted);
-    await refreshFeed();
-  } catch (error) {
-    captureErrors.set(captureId, messageOf(error));
-  } finally {
-    capturesBeingRerouted.delete(captureId);
-    draw();
-  }
-}
-
-/** What a reroute asks for: a destination, or nothing at all — which is the
- *  retry, and means "decide again". A branch carries the name when one was
- *  given; with none the daemon names it after what was said. */
-function rerouteParams(captureId, destination) {
-  if (!destination) return { capture_id: captureId };
-  const params = { capture_id: captureId, project_id: destination.projectId, kind: destination.kind };
-  return destination.branch ? { ...params, branch: destination.branch } : params;
 }
 
 /** Opening an entry reads it — every agent on it — and goes where it lives. */
@@ -705,6 +595,7 @@ export function mountInboxList() {
   }
   mounted = true;
   folds = loadProjectFolds(localStorage);
+  initCaptureRows({ onChange: draw, entryOf });
   subscribePendingCaptures(drawFromFeed);
   subscribeOptimistic(INBOX_SCOPE, draw);
   subscribeFeed((feed) => {

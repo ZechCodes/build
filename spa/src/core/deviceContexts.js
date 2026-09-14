@@ -12,6 +12,7 @@ import { releaseScope, scopeFor } from "./cacheScope.js";
 import { homeDeviceId } from "./devicePolicy.js";
 import { createChatRepository } from "./chatRepository.js";
 import { deviceView } from "./feedMerge.js";
+import { createModelCatalog } from "./modelCatalog.js";
 import { disarmChangeEvents } from "./changeEvents.js";
 import { dropFeedDevice } from "./taskFeed.js";
 
@@ -47,6 +48,9 @@ function createDeviceContext(deviceId) {
      *  the cache: what a late answer must ask before it writes anything. */
     active: () => contexts.get(deviceId) === context && Boolean(context.cacheScope?.active()),
   };
+  // What this bridge offers to start work with, held here rather than on the
+  // app: the machine is what the answer is about (core/modelCatalog.js).
+  Object.assign(context, createModelCatalog(context));
   contexts.set(deviceId, context);
   return context;
 }

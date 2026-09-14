@@ -262,3 +262,81 @@ describe("one device's view of the feed", () => {
     expect(deviceFeedView(merged)).toEqual({ items: [], projects: [] });
   });
 });
+
+// The harnesses a machine offers are that machine's: two bridges on one account
+// can be built from different releases and offer different agents. So the
+// answer is held on the context that asked for it, and it is asked for once.
+describe("one device's model catalog", () => {
+  /** A bridge that answers models.list with `answer`, and nothing else. */
+  const bridgeOffering = (deviceId, answer) => ({
+    ...fakeSession(deviceId),
+    call: vi.fn(async (method) => (method === "models.list" ? answer : {})),
+  });
+
+  const offering = (id) => ({ providers: [{ id, label: id, models: [], efforts: [] }] });
+  const listsCalled = (context) => context.session.call.mock.calls.filter(([method]) => method === "models.list").length;
+
+  it("answers one models.list per device and hands the same catalog back after", async () => {
+    const first = adoptDeviceSession(bridgeOffering("dev-a", offering("claude")));
+    const second = adoptDeviceSession(bridgeOffering("dev-b", offering("codex")));
+
+    const held = await first.modelCatalog();
+
+    expect(held.providers[0].id).toBe("claude");
+    expect((await second.modelCatalog()).providers[0].id).toBe("codex");
+    expect(await first.modelCatalog()).toBe(held);
+    expect(listsCalled(first)).toBe(1);
+    expect(listsCalled(second)).toBe(1);
+  });
+
+  // An older bridge has no models.list at all. Its catalog is the empty one, so
+  // every selector offers the harness's own default — which is exactly what
+  // that bridge supports — rather than the surface failing to paint.
+  it("answers an empty catalog from a bridge without the RPC", async () => {
+    const session = fakeSession("dev-a");
+    session.call = vi.fn(async () => {
+      throw new Error("unknown method: models.list");
+    });
+
+    const catalog = await adoptDeviceSession(session).modelCatalog();
+
+    expect(catalog.providers).toHaveLength(1);
+    expect(catalog.providers[0].models).toEqual([]);
+    expect(catalog.providers[0].efforts).toEqual([]);
+  });
+
+  it("reads models.list again on refreshModelCatalog and replaces what it held", async () => {
+    let offered = offering("claude");
+    const session = fakeSession("dev-a");
+    session.call = vi.fn(async () => offered);
+    const context = adoptDeviceSession(session);
+
+    expect((await context.modelCatalog()).providers[0].id).toBe("claude");
+
+    offered = offering("codex");
+
+    expect((await context.refreshModelCatalog()).providers[0].id).toBe("codex");
+    expect((await context.modelCatalog()).providers[0].id).toBe("codex");
+    expect(listsCalled(context)).toBe(2);
+  });
+
+  // A read can outlive the device it was asked of. Its answer still belongs to
+  // whoever asked, but it must not become the catalog of anything afterwards.
+  it("populates nothing from an answer that lands after the device was retired", async () => {
+    let release;
+    const session = fakeSession("dev-a");
+    session.call = vi.fn(() => new Promise((resolve) => { release = resolve; }));
+    const retiring = adoptDeviceSession(session);
+    const late = retiring.modelCatalog();
+
+    retireDeviceContext("dev-a");
+    release(offering("retired-device"));
+
+    expect((await late).providers[0].id).toBe("retired-device");
+
+    const readopted = adoptDeviceSession(bridgeOffering("dev-a", offering("landed-again")));
+
+    expect(readopted).not.toBe(retiring);
+    expect((await readopted.modelCatalog()).providers[0].id).toBe("landed-again");
+  });
+});

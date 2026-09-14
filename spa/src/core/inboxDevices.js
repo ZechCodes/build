@@ -10,10 +10,15 @@
 // — the create dialog — asks the same way, by device id.
 
 import { canAnswer, contextFor, homeContext } from "./deviceContexts.js";
+import { EMPTY_CATALOG } from "./modelCatalog.js";
 
 /** What a device that cannot answer offers: nothing to call, and the words its
  *  rows and their menus are titled with. */
 const NO_DEVICE = Object.freeze({ call: null, disabled: "Device offline" });
+
+/** The machine a surface is about: the one it names, or the one creation goes
+ *  to when it names none. */
+const contextOf = (deviceId) => (deviceId ? contextFor(deviceId) : homeContext());
 
 /**
  * What one machine offers right now: `{ call, disabled }`.
@@ -23,9 +28,23 @@ const NO_DEVICE = Object.freeze({ call: null, disabled: "Device offline" });
  * none, and so does a surface that is about nowhere in particular.
  */
 export function deviceTarget(deviceId) {
-  const context = deviceId ? contextFor(deviceId) : homeContext();
+  const context = contextOf(deviceId);
   if (!canAnswer(context)) return NO_DEVICE;
   return { call: context.call, disabled: false };
+}
+
+/**
+ * The harnesses one machine offers, for a surface that starts work there.
+ *
+ * Asked the same way a call is, so no reader compares device ids or falls back
+ * to an account-wide answer: the composer asks for home's, the create dialog
+ * and the agent rail for the machine of the address they were given. A machine
+ * that cannot answer offers the empty catalog — the harness's own default, and
+ * nothing to choose between — rather than the last machine's list.
+ */
+export function deviceCatalog(deviceId) {
+  const context = contextOf(deviceId);
+  return canAnswer(context) ? context.modelCatalog() : Promise.resolve(EMPTY_CATALOG);
 }
 
 /** The call a surface about one machine makes: that machine's, or one that

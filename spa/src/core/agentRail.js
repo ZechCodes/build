@@ -128,7 +128,7 @@ const STATUS_TEXT_SELECTOR = ".rail-status-text";
 const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
 const SURFACE_MENU_CLASS = "rail-surface-menu";
 const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
-const SURFACE_MENU_LABEL = "⋯";
+const SURFACE_MENU_LABEL = "⋮";
 const SURFACE_MENU_TITLE = "Open a surface";
 const AGENT_NOT_YET_BORN = "ghost";
 
@@ -429,8 +429,8 @@ function surfaceMenuRegionHtml(options) {
 function railRemoveButtonHtml(who, removable) {
   if (!removable) return "";
   const removeTitle = `Remove ${who} from this branch`;
-  return `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
-        aria-label="${esc(removeTitle)}">−</button>`;
+  return `<button type="button" class="btn mini rail-remove" title="${esc(removeTitle)}"
+        aria-label="${esc(removeTitle)}">Done</button>`;
 }
 
 /** The TUI toggle, or nothing for an agent with no basement to show. */
@@ -447,9 +447,8 @@ export function panelHeadHtml(who, mode, { provider = "", removable = false, has
     ${harnessIconHtml(provider)}
     ${railWhoHtml(who, heading)}
     ${railTuiButtonHtml(mode, hasTerminal)}
+    ${railRemoveButtonHtml(who, removable)}
     ${surfaceMenuRegionHtml(surfaceOptions)}
-    ${railRemoveButtonHtml(who, removable)}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
-      aria-label="Collapse the conversation">›</button>
   </div>`;
 }
 
@@ -989,15 +988,7 @@ export function mountAgentRail(host, context) {
     }
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent();
-    const collapse = panel.querySelector(".rail-collapse");
-    if (collapse) {
-      collapse.onclick = () => {
-        expanded = false;
-        writeExpanded(false);
-        disposeTui();
-        paint();
-      };
-    }
+
   };
 
   // ---- chat -----------------------------------------------------------------

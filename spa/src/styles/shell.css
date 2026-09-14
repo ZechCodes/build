@@ -565,7 +565,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-surface-menu .splitmenu { top:calc(100% + 6px); bottom:auto; }
 .rail-remove { flex:none; }
 .rail-remove:hover { background:var(--red-bg); color:var(--red); }
-.rail-collapse { flex:none; }
 /* flex:1 — the scroller takes what the pinned composer below leaves it.
    overflow-anchor:none — the conversation grows at the bottom, so a browser
    that adjusts scrollTop to keep whatever it anchored on still is correcting

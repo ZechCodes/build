@@ -20,6 +20,7 @@ vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
 import { App } from "../src/app.js";
+import { SMALLEST_THREAD_PAGE } from "../src/core/thread.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -57,6 +58,18 @@ beforeEach(() => {
 });
 
 describe("workspace surface", () => {
+  it("bounds the unused conversation on its initial workspace detail read", async () => {
+    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.call = vi.fn(async () => workspace);
+
+    await renderWorkspace();
+
+    expect(App.call).toHaveBeenCalledWith("workspace.get", {
+      workspace_id: "ws-1",
+      ...SMALLEST_THREAD_PAGE,
+    });
+  });
+
   it("scopes Files to a directory while terminals stay workspace scoped", async () => {
     App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     App.call = vi.fn(async () => workspace);

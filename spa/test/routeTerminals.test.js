@@ -8,9 +8,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn() }));
 
-// Only the move is stood in for — and it answers the way the real one does:
-// whether the shells are now typing at the machine the route names. Which
-// machine that is stays the manager's own question, asked here with its real
+// Only the move is stood in for, and what it answers is whether the shells are
+// now typing at the machine the route names — told to it here, case by case,
+// rather than worked out again: WHEN a machine can take them is the manager's
+// own rule and is proved on the manager (terminalManager.test.js). Which machine
+// the route names stays the manager's question too, asked here with its real
 // answer.
 vi.mock("../src/terminal/manager.js", async (importOriginal) => ({
   ...(await importOriginal()),
@@ -25,10 +27,9 @@ vi.mock("../src/core/inboxShell.js", () => ({ inboxRouteChanged: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ toolbarRouteChanged: () => {} }));
 
 const { App, render } = await import("../src/app.js");
-const { canAnswer, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import(
+const { adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import(
   "../src/core/deviceContexts.js"
 );
-const { terminalDeviceId } = await import("../src/terminal/manager.js");
 
 /** A machine with an open session: only one the client can reach is a machine a
  *  surface — and so a shell — can stand on. */
@@ -56,10 +57,10 @@ beforeEach(() => {
   App.selectedDeviceId = "dev-a"; // home is the workshop; the links below are the laptop
   openSession("dev-a");
   openSession("dev-b");
+  terminals.followTerminalDevice.mockReturnValue(true); // the shells take every move
   App.route = { name: "inbox" };
   render(); // settle on "no device named", whatever the last case left
   terminals.followTerminalDevice.mockClear();
-  terminals.followTerminalDevice.mockImplementation(() => canAnswer(contextFor(terminalDeviceId())));
 });
 
 describe("the device a rendered route names", () => {
@@ -123,7 +124,7 @@ describe("the device a rendered route names", () => {
   // the move is not recorded until it has happened — otherwise the machine
   // coming back would find the app already believing the shells had moved.
   it("takes the terminals to a route's device once it can answer", () => {
-    setContextOffline("dev-b");
+    terminals.followTerminalDevice.mockReturnValue(false); // that machine cannot take them yet
     App.route = branchOn("dev-b");
 
     render();
@@ -131,7 +132,7 @@ describe("the device a rendered route names", () => {
 
     expect(terminals.followTerminalDevice).toHaveBeenCalledTimes(2); // nothing took them
 
-    setContextOffline("dev-b", { offline: false });
+    terminals.followTerminalDevice.mockReturnValue(true); // it landed
     render();
     render();
 

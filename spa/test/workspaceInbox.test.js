@@ -103,4 +103,26 @@ describe("workspace inbox rows", () => {
     ]);
     expect(clean.facts).toBe("0 pushes · +0 −0");
   });
+
+  // A checkout the bridge could not build has no work to summarize, and saying
+  // the summary is unavailable reads as a hiccup in the reporting rather than
+  // as the thing that went wrong. The row wears the word the switcher wears for
+  // the same workspace, and the first line of the reason when there is one.
+  it("says a workspace failed, with the first line of why, rather than an unavailable summary", () => {
+    const [failed] = entriesOf([
+      {
+        id: "workspace-1",
+        project_id: "project-1",
+        status: "failed",
+        directories: [
+          { source_id: "api", is_git: true, status: "ready" },
+          { source_id: "web", status: "failed", error: "failed to make directory '/src/.git/worktrees/web': directory exists\nhint: reuse it" },
+        ],
+      },
+    ]);
+    expect(failed.facts).toBe("Failed: failed to make directory '/src/.git/worktrees/web': directory exists");
+
+    const [silent] = entriesOf([{ id: "workspace-2", project_id: "project-1", status: "failed" }]);
+    expect(silent.facts).toBe("Failed");
+  });
 });

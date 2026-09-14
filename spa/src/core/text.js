@@ -44,6 +44,15 @@ export const deviceAppBehindText = (name, version) =>
 export const deviceBridgeBehindText = (name, version) =>
   `${name || "That device"} speaks Build API ${version || "unknown"}, which is older than this app — update its bridge to open it.`;
 
+/** What a workspace whose checkout the bridge could not build says, wherever it
+ *  is listed — the rail row and the toolbar's switcher both. The reason's first
+ *  line only: a list row is one line, and the whole of a git error belongs on
+ *  the surface that offers the retry. */
+export const workspaceFailedText = (reason) => {
+  const first = String(reason || "").split("\n").map((line) => line.trim()).find(Boolean);
+  return first ? `Failed: ${first}` : "Failed";
+};
+
 /** The short mark a control whose machine cannot answer wears: the title on a
  *  greyed row, the reason a shut menu item gives, and the words a call to that
  *  machine is refused with. A label, not a sentence — the sentences above are

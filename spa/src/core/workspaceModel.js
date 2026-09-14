@@ -1,3 +1,5 @@
+import { workspaceFailedText } from "./text.js";
+
 export function directoryId(directory) {
   return directory?.source_id || directory?.id || null;
 }
@@ -13,6 +15,19 @@ export function selectedDirectory(workspace, sourceId) {
  * a workspace route or opens a directory asks here, so the rule is one rule. */
 export const directoryTab = (directory, wanted = "changes") =>
   directory?.is_git === false ? "files" : wanted || "changes";
+
+/** Why a workspace failed, as its bridge told it: the checkout is one build per
+ * directory, and the first directory that could not be made carries the
+ * message. Empty when the bridge said nothing — a failure is still a failure. */
+const workspaceFailure = (workspace) =>
+  (workspace?.directories || []).map((directory) => directory.error).find(Boolean) || "";
+
+/** What a workspace's state says wherever it is listed — the rail's rows and
+ * the toolbar's switcher. The bridge's own word for every state it reports; for
+ * a checkout it could not build, the one failure wording (core/text.js), so the
+ * two lists never disagree about the same workspace. */
+export const workspaceStatusText = (workspace) =>
+  (workspace?.status === "failed" ? workspaceFailedText(workspaceFailure(workspace)) : workspace?.status) || "";
 
 export function workspaceScope(workspaceId, sourceId) {
   return workspaceId && sourceId ? { workspace_id: workspaceId, source_id: sourceId } : null;

@@ -31,14 +31,21 @@ import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
-import { workspaceRun } from "./workspaceModel.js";
+import { workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
 /** Work still local to every Git directory in a durable workspace. The bridge
  * omits the summary when even one repository cannot be read, so absence must
- * remain visibly unknown rather than looking like a clean workspace. */
-function workspaceFacts(summary) {
+ * remain visibly unknown rather than looking like a clean workspace.
+ *
+ * A checkout the bridge could not build has no work to summarize at all, and
+ * calling that an unavailable summary reads as a hiccup in the reporting rather
+ * than as the thing that went wrong. It says what the toolbar's switcher says
+ * for the same workspace. */
+function workspaceFacts(workspace) {
+  if (workspace.status === "failed") return workspaceStatusText(workspace);
+  const summary = workspace.work_summary;
   const values = summary && [summary.pushes, summary.additions, summary.deletions];
   if (!values || values.some((value) => !Number.isSafeInteger(value) || value < 0)) return "Work summary unavailable";
   return `${summary.pushes} ${summary.pushes === 1 ? "push" : "pushes"} · +${summary.additions} −${summary.deletions}`;
@@ -75,7 +82,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     // Only the bridge can establish that every Git directory is clean. A
     // missing value is unknown and must never expose the one-tap archive.
     clean: workspace.status === "ready" && workspace.work_summary?.clean === true,
-    facts: workspaceFacts(workspace.work_summary),
+    facts: workspaceFacts(workspace),
     route: workspaceRoute(workspace),
     anchorMs: ms(firstText(workspace.created_at, workspace.updated_at)),
     lastActivityMs: ms(workspace.updated_at),

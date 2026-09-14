@@ -42,7 +42,7 @@ import { stampWorkspace } from "./feedMerge.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { workspaceRoute } from "./projectModel.js";
-import { directoryTab } from "./workspaceModel.js";
+import { directoryTab, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
@@ -499,7 +499,7 @@ function workspaceMenuEntries() {
     key: `workspace:${workspace.workspaceKey}`,
     html: `<button class="mi${workspace.current ? " current" : ""}" data-workspace="${esc(workspace.workspaceKey)}" type="button" role="menuitem">
       <span class="mt">${esc(workspace.name)}</span>
-      <span class="md">${esc(workspace.status || "")}</span></button>`,
+      <span class="md">${esc(workspaceStatusText(workspace))}</span></button>`,
   }));
 }
 

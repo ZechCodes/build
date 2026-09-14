@@ -220,6 +220,26 @@ describe("the workspace toolbar", () => {
     expect(menu().querySelector('[data-create="workspace"]')).toBeTruthy();
   });
 
+  // The switcher and the rail row are two lists of the same workspaces, so a
+  // checkout the bridge could not build says one thing in both places
+  // (core/text.js `workspaceFailedText`).
+  it("says a failed workspace failed, and why, in the words the rail row uses", async () => {
+    await standOnWorkspace();
+    const broken = {
+      ...payments,
+      id: "ws-2",
+      workspace_id: "ws-2",
+      name: "prototype",
+      status: "failed",
+      directories: [{ source_id: "web", status: "failed", error: "directory exists\nhint: reuse it" }],
+    };
+    workshopHolds({ p1: [payments, broken] });
+    toolbarRouteChanged();
+    await flush();
+    const row = openJump("workspace").querySelector('[data-workspace="dev-1/ws-2"]');
+    expect(row.querySelector(".md").textContent).toBe("Failed: directory exists");
+  });
+
   it("goes to the workspace you pick", async () => {
     await standOnWorkspace();
     const sandbox = { ...payments, id: "ws-2", workspace_id: "ws-2", name: "prototype", directories: [] };

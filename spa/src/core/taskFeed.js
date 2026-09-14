@@ -13,8 +13,6 @@ import { watchChanges } from "./changeEvents.js";
 import { liveFeedSnapshot, mergeFeeds } from "./feedMerge.js";
 import { readCached } from "./localCache.js";
 
-export { liveFeedSnapshot };
-
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
 const watchers = new Map(); // deviceId → the board watcher polling it

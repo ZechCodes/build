@@ -14,17 +14,6 @@
 
 import { deviceKey } from "./deviceKey.js";
 
-/** The collections a snapshot carries, in the order the wire names them. */
-const COLLECTIONS = Object.freeze([
-  "items",
-  "plans",
-  "runs",
-  "externalWorktrees",
-  "pending",
-  "primaryChanges",
-  "projects",
-]);
-
 /** Where each collection comes from on the wire. The redesigned feed is one row
  *  per work item; the legacy collections below still ship, and still feed what
  *  has not moved over yet — including the lifecycle verbs whose git is running
@@ -37,6 +26,10 @@ const WIRE_FIELDS = Object.freeze({
   pending: "pending",
   primaryChanges: "primary_changes",
 });
+
+/** The collections a snapshot carries: the board's, in the order the wire names
+ *  them, and the projects that come from the second read. */
+const COLLECTIONS = Object.freeze([...Object.keys(WIRE_FIELDS), "projects"]);
 
 const EMPTY_VIEW = Object.freeze({
   ...Object.fromEntries(COLLECTIONS.map((field) => [field, Object.freeze([])])),

@@ -6,7 +6,6 @@ import {
   branchNamePreview,
   projectMenuModel,
   toolbarIdentity,
-  workMenuModel,
   workspaceDirectoryModel,
   workspaceMenuModel,
 } from "../src/core/toolbarModel.js";
@@ -215,67 +214,6 @@ describe("the unread each menu counts", () => {
     expect(projectMenuModel({ projects, items: [captureRow({ project_id: "", projectKey: null })], projectKey: "dev-1/p1" })[0].unreadCount).toBe(0);
   });
 
-  it("carries each branch's and issue's own count on the work menu", () => {
-    const items = [branchRow({ unread: true, unread_count: 2 }), issueRow({ unread: true, unread_count: 3 }), branchRow({ branch: "build/quiet" })];
-    expect(workMenuModel({ items, projectKey: "dev-1/p1" }).map((entry) => [entry.label, entry.unreadCount])).toEqual([
-      ["Add a health endpoint", 3],
-      ["build/login", 2],
-      ["build/quiet", 0],
-    ]);
-  });
-});
-
-describe("the branch-and-issue selector's menu", () => {
-  const items = [branchRow(), issueRow(), branchRow({ project_id: "p2", projectKey: "dev-1/p2", branch: "build/spike", resume_at: ago(10) })];
-
-  it("carries the work inside the scoped project, and no other project's", () => {
-    const work = workMenuModel({ items, projectKey: "dev-1/p1" });
-    expect(work.map((entry) => entry.label)).toEqual(["Add a health endpoint", "build/login"]);
-    expect(work[1].route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" });
-    expect(work[0].route).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" });
-  });
-
-  it("follows the scope to another project", () => {
-    expect(workMenuModel({ items, projectKey: "dev-1/p2" }).map((entry) => entry.label)).toEqual(["build/spike"]);
-  });
-
-  it("filters by what the work is called", () => {
-    expect(workMenuModel({ items, projectKey: "dev-1/p1", query: "login" }).map((entry) => entry.label)).toEqual(["build/login"]);
-    // An issue is findable by its title, a branch by its letters.
-    expect(workMenuModel({ items, projectKey: "dev-1/p1", query: "health" }).map((entry) => entry.kind)).toEqual(["issue"]);
-    expect(workMenuModel({ items, projectKey: "dev-1/p1", query: "blgn" }).map((entry) => entry.label)).toEqual(["build/login"]);
-    // A project's name is not a work item's, so it filters the work away.
-    expect(workMenuModel({ items, projectKey: "dev-1/p1", query: "mascot" })).toEqual([]);
-  });
-
-  it("leaves out what no URL can name", () => {
-    const detached = branchRow({ branch: null, worktree_id: "wt-9" });
-    expect(workMenuModel({ items: [detached, issueRow()], projectKey: "dev-1/p1" }).map((entry) => entry.kind)).toEqual(["issue"]);
-  });
-
-  it("has nothing to offer before a project is scoped", () => {
-    expect(workMenuModel({ items })).toEqual([]);
-  });
-
-  // The account's work, on every machine: two devices each hold a `p1`, and the
-  // menu of one of them lists only its own.
-  it("the work menu is the scoped projectKey's work only", () => {
-    const theirs = branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "build/away" });
-    expect(workMenuModel({ items: [...items, theirs], projectKey: "dev-2/p1" }).map((entry) => entry.label)).toEqual([
-      "build/away",
-    ]);
-    expect(workMenuModel({ items: [...items, theirs], projectKey: "dev-1/p1" }).map((entry) => entry.label)).toEqual([
-      "Add a health endpoint",
-      "build/login",
-    ]);
-  });
-
-  it("menu routes carry deviceId", () => {
-    const theirs = branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", branch: "build/away" });
-    const [away] = workMenuModel({ items: [theirs], projectKey: "dev-2/p1" });
-    expect(away.route).toEqual({ name: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/away", tab: "changes" });
-    expect(away.key).toBe("branch:dev-2/p1:build/away");
-  });
 });
 
 describe("the branch a typed name becomes", () => {

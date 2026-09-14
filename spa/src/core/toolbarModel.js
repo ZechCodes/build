@@ -1,7 +1,7 @@
 // Pure identities and menu rows for the view-area toolbar. Workspace routes
 // show one workspace switcher and directory tabs; its popup moves between the
-// scoped project's workspaces and the project list. Legacy work routes keep
-// their project selector and static item identity. core/toolbar.js renders and wires it.
+// scoped project's workspaces and the project list. core/toolbar.js renders and
+// wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
 import { deviceTags, projectNameOf } from "./inboxProjects.js";
@@ -19,36 +19,12 @@ export function branchNamePreview(name) {
   return slug ? `build/${slug}` : "";
 }
 
-const ms = (iso) => {
-  const parsed = Date.parse(iso || "");
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
 /** What one feed row is owed on the badge. The bridge sends the flag and the
  *  count off the same fact, so a row flagged with no count still weighs one. */
 function unreadOf(item) {
   const count = Number(item && item.unread_count) || 0;
   if (count > 0) return count;
   return item && item.unread ? 1 : 0;
-}
-
-/** One feed row as the menu lists it. `key` names it in the DOM — by the
- *  account-wide project name, since both machines mint a `proj-1` with a `main`
- *  in it; `route` is where picking it goes, on the machine it is on. */
-function toEntry(item) {
-  const isIssue = item.kind === "issue";
-  return {
-    key: isIssue ? `issue:${item.issue_id}` : `branch:${item.projectKey}:${item.branch}`,
-    kind: item.kind,
-    label: isIssue ? item.title || "(untitled issue)" : item.branch || "(detached)",
-    detail: isIssue ? "Issue" : item.title || "",
-    unreadCount: unreadOf(item),
-    working: !!item.working,
-    route: isIssue
-      ? { name: "issue", deviceId: item.deviceId, projectId: item.project_id, id: item.issue_id }
-      : { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" },
-    resumeMs: ms(item.resume_at),
-  };
 }
 
 /** The project selector's menu: every machine's projects, the scoped one
@@ -76,22 +52,6 @@ export function projectMenuModel({ projects = [], items = [], devices = [], proj
     unreadCount: items.reduce((total, item) => total + (item.projectKey === project.projectKey ? unreadOf(item) : 0), 0),
   }));
   return fuzzyRank(entries, query, (entry) => entry.name);
-}
-
-/** The item selector's menu: the branches and issues of the scoped project —
- *  the one on the machine the scope names, never another machine's project of
- *  the same bare id —
- *  most recently touched first, filtered by what they are called.
- *
- *  A row with no branch to name it by is nameable by no URL, so it is not on a
- *  menu whose whole job is navigation. */
-export function workMenuModel({ items = [], projectKey = null, query = "" } = {}) {
-  const work = items
-    .filter((item) => item.projectKey === projectKey)
-    .filter((item) => (item.kind === "issue" ? !!item.issue_id : !!item.branch))
-    .map(toEntry)
-    .sort((a, b) => b.resumeMs - a.resumeMs || a.label.localeCompare(b.label));
-  return fuzzyRank(work, query, (entry) => `${entry.label} ${entry.detail}`);
 }
 
 /** Workspaces registered for one project, filtered by their human name. A

@@ -45,7 +45,7 @@ const rowKey = (deviceId, entityId) => `${deviceId}|${entityId}`;
 const syncContext = (context) =>
   context && {
     deviceId: context.deviceId,
-    call: context.call,
+    call: context.rpc,
     requestScope: context.cacheScope,
     active: () => context.active(),
   };

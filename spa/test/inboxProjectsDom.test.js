@@ -9,6 +9,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { callerReaches } from "./deviceSessionFixture.js";
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 let feedItems = [];
@@ -373,13 +375,15 @@ describe("the projects face", () => {
     expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ "dev-1/p1": false });
   });
 
-  it("opens the new-repository sheet from the top, on the machine creation goes to", () => {
+  it("opens the new-repository sheet from the top, on the machine creation goes to", async () => {
     list().querySelector("[data-new-project]").click();
     expect(openNewRepo).toHaveBeenCalledTimes(1);
     // The sheet is handed the creation device's own connection and its name;
     // it asks nothing about devices itself.
-    expect(openNewRepo.mock.calls[0][1]).toEqual({ callRpc: homeCall, deviceName: "workshop" });
-    openNewRepo.mock.calls[0][0]();
+    const [onDone, options] = openNewRepo.mock.calls[0];
+    expect(options.deviceName).toBe("workshop");
+    expect(await callerReaches(options.callRpc, homeCall)).toBe(true);
+    onDone();
     expect(refreshFeed).toHaveBeenCalled();
   });
 

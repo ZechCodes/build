@@ -440,7 +440,7 @@ function openSettingsFor(project) {
     notifyError("Project settings can't be opened", deviceOfflineNotice(project.deviceId));
     return;
   }
-  openProjectSettings(project.id, { callRpc: context.call });
+  openProjectSettings(project.id, { callRpc: context.rpc });
 }
 
 // ---- mounting ----------------------------------------------------------------

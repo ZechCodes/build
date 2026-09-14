@@ -60,7 +60,8 @@ vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: (deviceId) => cont
 const registerDevice = (deviceId, call = (...args) => App.call(...args)) => {
   const context = {
     deviceId,
-    call,
+    // The registry hands out the device's caller, not one session's.
+    rpc: call,
     cacheScope: { deviceId, active: () => true },
     active: () => contexts.get(deviceId) === context,
   };

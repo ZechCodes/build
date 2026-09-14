@@ -23,3 +23,19 @@ export const sessionAnswering = (app, deviceId = "dev-1") => ({
   ...fakeSession(deviceId),
   call: (...args) => app.call(...args),
 });
+
+let probes = 0;
+
+/**
+ * Whether a caller a surface was handed reaches this bridge.
+ *
+ * The registry hands out the device's own caller, not the session's — a
+ * reconnect swaps the transport under a surface that stays mounted — so
+ * comparing it with a session's spy proves nothing. Ask through it and see
+ * where the question lands.
+ */
+export async function callerReaches(callRpc, bridge) {
+  const probe = `probe.${(probes += 1)}`;
+  await callRpc(probe);
+  return bridge.mock.calls.some(([method]) => method === probe);
+}

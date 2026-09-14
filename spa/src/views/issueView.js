@@ -35,7 +35,9 @@ export async function renderIssue() {
     mountDeviceNotice(root, deviceId); // …and hands the link back when it lands
     return;
   }
-  const callRpc = context.call;
+  // The device's caller, not the session's: a drop and resume under this
+  // surface replaces the transport, and the surface keeps asking the machine.
+  const callRpc = context.rpc;
   root.innerHTML = '<div id="tabbody" class="flush"></div>';
   // This machine answers now. If it goes while the surface is open, what was
   // read stays on screen and the strip says whose state that is.

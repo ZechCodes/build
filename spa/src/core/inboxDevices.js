@@ -34,7 +34,7 @@ const contextOf = (deviceId) => (deviceId ? contextFor(deviceId) : homeContext()
 export function deviceTarget(deviceId) {
   const context = contextOf(deviceId);
   if (!canAnswer(context)) return NO_DEVICE;
-  return { call: context.call, disabled: false };
+  return { call: context.rpc, disabled: false };
 }
 
 /**
@@ -130,7 +130,7 @@ function openControl(control) {
 export function creationTarget(refusal) {
   const context = homeContext();
   if (canAnswer(context)) {
-    return { callRpc: context.call, deviceName: deviceNameOf(App.devices, context.deviceId) };
+    return { callRpc: context.rpc, deviceName: deviceNameOf(App.devices, context.deviceId) };
   }
   notifyError(refusal, allDevicesOfflineText());
   return null;

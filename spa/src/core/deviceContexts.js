@@ -14,6 +14,7 @@ import { createChatRepository } from "./chatRepository.js";
 import { deviceView } from "./feedMerge.js";
 import { createModelCatalog } from "./modelCatalog.js";
 import { disarmChangeEvents } from "./changeEvents.js";
+import { deviceOfflineMark } from "./text.js";
 import { dropFeedDevice } from "./taskFeed.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
@@ -38,6 +39,18 @@ function createDeviceContext(deviceId) {
     deviceId,
     session: null, // { deviceId, call, onPush, peer, onCarrier, close } or null while offline
     call: null, // session.call, retargeted on every re-adoption
+    /** The one spelling of "ask this machine", and the only caller anything
+     *  outside this module holds. A reconnect replaces the transport under a
+     *  surface that is still mounted: a caller captured at mount would go on
+     *  asking a session that is closed, and every call it made would be refused
+     *  for want of a carrier on a surface still claiming to be live. This reads
+     *  whichever session the device is on when the call is made; a call already
+     *  in flight settles on the session that accepted it.
+     *
+     *  Takes what a session's call takes — `(method, params, timeoutMs)` —
+     *  passed straight through, so an argument the caller left out stays left
+     *  out and the session's own defaults apply. */
+    rpc: (...asked) => (context.call ? context.call(...asked) : Promise.reject(new Error(deviceOfflineMark))),
     cacheScope: scopeFor(deviceId),
     chatRepository: null,
     offline: false, // written only by setContextOffline (connection.js owns the policy)

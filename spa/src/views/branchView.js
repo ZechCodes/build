@@ -191,10 +191,12 @@ export async function renderBranch() {
   let reviewPlug = null; // ONE instance per backing, so pending comments survive
   let reviewKey = null;
 
-  // This mounted route belongs to the session that created it. A reconnect
-  // disposes the view, but any operation already awaiting a reply must finish
-  // on that original session instead of recovering the device's newest caller.
-  const callRpc = context.call;
+  // How everything below asks this machine. It is the device's caller, not the
+  // session's: the machine can drop and resume under a mounted surface, and the
+  // surface goes on asking the machine rather than the socket it was built
+  // over. An operation already awaiting a reply still finishes on the session
+  // that accepted it.
+  const callRpc = context.rpc;
   // The frozen treatment every pane shows while its machine is unreachable: one
   // device going offline says nothing about the others.
   const isOffline = () => context.offline;

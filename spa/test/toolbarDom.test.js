@@ -6,6 +6,8 @@ import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { callerReaches } from "./deviceSessionFixture.js";
+
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const NOW = Date.now();
@@ -462,10 +464,12 @@ describe("the ⋯", () => {
   // The sheet reads and writes one project on one machine. It is handed that
   // machine's caller, so it never has to ask which device it is on — and the
   // project id it sends stays the bare one that machine's daemon minted.
-  it("opens project settings with the scoped device's call", () => {
+  it("opens project settings with the scoped device's call", async () => {
     bar().querySelector('[data-select="more"]').click();
     menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings).toHaveBeenCalledWith("p1", { callRpc: workshopCall });
+    const [projectId, options] = openProjectSettings.mock.calls.at(-1);
+    expect(projectId).toBe("p1");
+    expect(await callerReaches(options.callRpc, workshopCall)).toBe(true);
   });
 
   // A machine that answered once keeps its context through an outage — the
@@ -552,7 +556,9 @@ describe("an account with more than one device", () => {
     expect(names()).toEqual(["relaydb", "build/login"]);
     bar().querySelector('[data-select="more"]').click();
     menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings).toHaveBeenCalledWith("p1", { callRpc: workshopCall });
+    const [projectId, options] = openProjectSettings.mock.calls.at(-1);
+    expect(projectId).toBe("p1");
+    expect(await callerReaches(options.callRpc, workshopCall)).toBe(true);
 
     rememberDeviceFilter(null);
     feed = savedFeed;

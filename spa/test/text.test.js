@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { esc, humanAge, offlineBannerText } from "../src/core/text.js";
+import { allDevicesOfflineText, esc, humanAge, offlineBannerText } from "../src/core/text.js";
 
 describe("esc", () => {
   it("escapes the HTML-significant characters and stringifies nullish", () => {
@@ -42,5 +42,15 @@ describe("offlineBannerText", () => {
     expect(text).toContain("tasks will resume when it reconnects");
     // Carries a rendered clock time (locale-formatted h:mm).
     expect(text).toMatch(/\d{1,2}:\d{2}/);
+  });
+});
+
+describe("allDevicesOfflineText", () => {
+  it("says every device is offline, in plain words", () => {
+    // With nothing reachable there is no device to name and no time that means
+    // anything: the banner says what is true and what happens next.
+    const text = allDevicesOfflineText();
+    expect(text).toContain("All devices are offline");
+    expect(text).toContain("tasks will resume when one reconnects");
   });
 });

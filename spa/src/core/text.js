@@ -18,6 +18,11 @@ export function offlineBannerText(name, sinceMs) {
   return `${name} unreachable since ${time} — tasks will resume when it reconnects.`;
 }
 
+/** The banner for the state where nothing is reachable: no device to name, and
+ *  no time that would mean anything, so it says what is true and what happens. */
+export const allDevicesOfflineText = () =>
+  "All devices are offline — tasks will resume when one reconnects.";
+
 /** Human-scale age: <60s "just now", <1h "Nm ago", <1d "Nh ago", else "Nd ago". */
 export function humanAge(seconds) {
   const s = Math.max(0, Math.floor(seconds || 0));

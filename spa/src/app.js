@@ -65,13 +65,20 @@ const ALIAS_DEFAULTS = Object.freeze({
   offlineSince: null,
 });
 
+/** Take each alias off the context, or leave it empty when there is no context
+ *  to take it off. */
+function copyAliasesFrom(context) {
+  for (const [field, empty] of Object.entries(ALIAS_DEFAULTS)) App[field] = context?.[field] ?? empty;
+}
+
 /** Say which context the App.* aliases follow. That includes cacheScope's own
  *  ambient alias, which surfaces still read as currentCacheScope() while they
- *  mount. */
+ *  mount — and which is where the device they are on is kept. */
 export function pointAliasesAt(context) {
-  for (const [field, empty] of Object.entries(ALIAS_DEFAULTS)) App[field] = context?.[field] ?? empty;
-  adoptCacheScope(context?.deviceId || null);
-  return context || null;
+  const home = context || null;
+  copyAliasesFrom(home);
+  adoptCacheScope(home?.deviceId || null);
+  return home;
 }
 
 /**

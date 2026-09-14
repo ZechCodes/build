@@ -93,7 +93,6 @@ describe("the Changes surface, opened on its review aggregate", () => {
     pane.dispose();
   });
 
-
   it("still mounts the git toolbar's own verbs", async () => {
     const { container, pane } = await mount();
     expect(container.querySelector(".gtfetch")).toBeTruthy();

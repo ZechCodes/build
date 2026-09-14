@@ -11,6 +11,7 @@ import {
   composeManualAwayNote,
   composeOfflineNote,
   composePlaceholder,
+  composePromptHtml,
   composeShortcutFires,
   flushCaptureQueue,
   loadCaptureQueue,
@@ -285,6 +286,12 @@ describe("what the box says about the machine it sends to", () => {
     expect(composePlaceholder("Laptop")).toBe("Capture on Laptop");
     expect(composePlaceholder(null)).toBe("What do you want to get done?");
     expect(composePlaceholder("")).toBe("What do you want to get done?");
+  });
+
+  // Shut and open, it is the same question: the shut box asks it on the rail and
+  // the open box asks it again in the field. One sentence, said once.
+  it("asks the shut box's question when it cannot name a device", () => {
+    expect(composePromptHtml()).toContain(composePlaceholder(null));
   });
 
   it("names the device it is holding a capture for", () => {

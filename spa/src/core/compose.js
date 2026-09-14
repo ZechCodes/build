@@ -183,9 +183,14 @@ export function routedCaptureExpired(tracked, nowMs) {
 
 // ---- the box -----------------------------------------------------------------
 
+/** The question the composer asks when it is not naming a machine: on the box
+ *  at rest, and in the open box while this client cannot say where the capture
+ *  is going. One sentence, minted once. */
+const PLAIN_QUESTION = "What do you want to get done?";
+
 /** The compose affordance at rest: one line, the whole question. */
 export function composePromptHtml() {
-  return `<button class="compose-prompt" id="compose-open" type="button">What do you want to get done?</button>`;
+  return `<button class="compose-prompt" id="compose-open" type="button">${PLAIN_QUESTION}</button>`;
 }
 
 /**
@@ -260,8 +265,7 @@ export function manualRouteDestination(kind, created, projectId) {
 
 /** The line the open box asks with: the machine the capture is going to, when
  *  this client can name it, and the plain question when it cannot. */
-export const composePlaceholder = (deviceName) =>
-  deviceName ? `Capture on ${deviceName}` : "What do you want to get done?";
+export const composePlaceholder = (deviceName) => (deviceName ? `Capture on ${deviceName}` : PLAIN_QUESTION);
 
 /** What the box says about a capture it cannot send yet: which machine it is
  *  waiting for, and that the text is kept meanwhile — the difference between a

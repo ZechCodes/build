@@ -22,9 +22,10 @@ export function offlineBannerText(name, sinceMs) {
   return `${name} unreachable since ${time} — tasks will resume when it reconnects.`;
 }
 
-/** What a work surface says when its link names a machine this client has no
- *  session with: there is nothing to read or write until that machine answers. */
-export const unopenedDeviceText = (name) =>
+/** What a work surface says when the machine its link names cannot answer —
+ *  gone offline, or never opened on this client: there is nothing to read and
+ *  nothing to write until that machine is back. */
+export const deviceOfflineText = (name) =>
   `${name || "That device"} isn't connected, so this can't be opened right now.`;
 
 /** The banner for the state where nothing is reachable: no device to name, and

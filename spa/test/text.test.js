@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { allDevicesOfflineText, esc, humanAge, messageOf, offlineBannerText } from "../src/core/text.js";
+import { allDevicesOfflineText, deviceOfflineText, esc, humanAge, messageOf, offlineBannerText } from "../src/core/text.js";
 
 describe("esc", () => {
   it("escapes the HTML-significant characters and stringifies nullish", () => {
@@ -62,5 +62,19 @@ describe("allDevicesOfflineText", () => {
     const text = allDevicesOfflineText();
     expect(text).toContain("All devices are offline");
     expect(text).toContain("tasks will resume when one reconnects");
+  });
+});
+
+describe("deviceOfflineText", () => {
+  it("names the device that cannot be reached and says what that means here", () => {
+    // The one sentence a work surface prints in place of itself, whether the
+    // machine its link names has gone offline or was never opened here.
+    const text = deviceOfflineText("Zech's MacBook");
+    expect(text).toContain("Zech's MacBook");
+    expect(text).toContain("isn't connected");
+  });
+
+  it("falls back to plain words when the account has no name for the device", () => {
+    expect(deviceOfflineText(null)).toContain("That device");
   });
 });

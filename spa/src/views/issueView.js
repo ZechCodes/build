@@ -9,7 +9,7 @@
 import { $ } from "../dom.js";
 import { App, go, loadModelCatalog } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
-import { unopenedDeviceHtml } from "../core/deviceNotice.js";
+import { deviceOfflineHtml } from "../core/deviceNotice.js";
 import { routeContext } from "../core/deviceContexts.js";
 import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
@@ -29,7 +29,7 @@ export async function renderIssue() {
   const context = routeContext(App.route);
   root.className = "surface";
   if (!context) {
-    root.innerHTML = unopenedDeviceHtml(deviceId);
+    root.innerHTML = deviceOfflineHtml(deviceId);
     return;
   }
   const callRpc = context.call;

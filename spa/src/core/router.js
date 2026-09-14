@@ -50,18 +50,18 @@ const termOf = (segment) => (isTermTab(segment) ? { term: segment } : null);
 
 const inbox = () => ({ name: "inbox" });
 
+/** `<workspaceId>[/directory/<sourceId>][/<tab>]`. The directory is optional,
+ *  so the tab is whichever segment follows whatever came before it. */
 function workspaceRoute(projectId, parts) {
   if (!parts[0]) return inbox();
-  const hasDirectory = parts[1] === "directory";
-  const route = {
+  const [sourceId, tabSegment] = parts[1] === "directory" ? [parts[2], parts[3]] : [undefined, parts[1]];
+  return {
     name: "workspace",
     projectId,
     workspaceId: parts[0],
-    sourceId: hasDirectory ? parts[2] : undefined,
-    tab: BRANCH_TABS.has(hasDirectory ? parts[3] : parts[1]) ? (hasDirectory ? parts[3] : parts[1]) : "changes",
+    ...(sourceId ? { sourceId } : null),
+    tab: branchTab(tabSegment),
   };
-  if (!route.sourceId) delete route.sourceId;
-  return route;
 }
 
 /** A legacy stage deep-link: `<tab>/<stageId>` where the tab is one of the

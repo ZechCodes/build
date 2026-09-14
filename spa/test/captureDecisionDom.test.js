@@ -53,12 +53,16 @@ let surface;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
+// Every destination the router can offer is a branch: filing an issue is
+// retired (core/captureDecision.js drops an issue option that names no branch),
+// so a fixture offering one would be asserting about a choice the page never
+// paints.
 const option = (over = {}) => ({
   id: "option-1",
-  label: "File as an issue on relaydb",
+  label: "Continue the login work",
   project_id: "p1",
-  kind: "issue",
-  branch: null,
+  kind: "branch",
+  branch: "build/login",
   ...over,
 });
 
@@ -79,7 +83,7 @@ const asking = ({ question: asked, ...over } = {}) =>
       text: "Which project is the login redirect in?",
       asked_at: "2026-08-15T10:00:01Z",
       answer: null,
-      options: [option(), option({ id: "option-2", label: "Continue the login work", kind: "branch", branch: "build/login" })],
+      options: [option(), option({ id: "option-2", label: "Start the CSV export", branch: "build/csv-export" })],
       chosen_option_id: null,
       ...(asked || {}),
     },
@@ -160,16 +164,16 @@ describe("the capture decision page", () => {
     expect(homeCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
     expect(host.textContent).toContain("fix the login redirect");
     expect(host.textContent).toContain("Which project is the login redirect in?");
-    expect(choices().map((choice) => choice.dataset.captureOption)).toEqual(["option-2"]);
+    expect(choices().map((choice) => choice.dataset.captureOption)).toEqual(["option-1", "option-2"]);
     expect(choices()[0].textContent).toContain("relaydb · branch build/login");
     expect(host.textContent).toContain("Waiting for your answer");
   });
 
   it("answers with the choice that was tapped, and shows the router deciding again", async () => {
-    record = capture({ state: "routing", question: { ...asking().question, answer: "…", chosen_option_id: "option-2" } });
+    record = capture({ state: "routing", question: { ...asking().question, answer: "…", chosen_option_id: "option-1" } });
     choices()[0].click();
     await flush();
-    expect(homeCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" });
+    expect(homeCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-1" });
     expect(refreshFeed).toHaveBeenCalled();
     expect(host.textContent).toContain("Deciding where this goes");
   });

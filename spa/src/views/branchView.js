@@ -199,27 +199,24 @@ export async function renderBranch() {
   const adoptingHere = () => adopterFor(branchScope(row, projectId));
 
   let rail = null;
+  // The work item and the machine it is on — the address the console and the
+  // rail are both mounted at, minted once so the two cannot drift apart.
+  const workAddress = {
+    kind: "branch",
+    deviceId,
+    projectId,
+    branch,
+    call: callRpc,
+    cacheScope: context.cacheScope,
+  };
   const ensureBranchChrome = () => {
-    if (!consolePanel)
-      consolePanel = mountConsole($("#console-region"), {
-        kind: "branch",
-        deviceId,
-        projectId,
-        branch,
-        call: callRpc,
-        cacheScope: context.cacheScope,
-      });
+    if (!consolePanel) consolePanel = mountConsole($("#console-region"), { ...workAddress });
     if (!rail)
       rail = mountAgentRail($("#agent-rail"), {
-        kind: "branch",
-        deviceId,
-        projectId,
-        branch,
+        ...workAddress,
         selection: agentSelection,
         adopting: adoptingHere,
         autofocusComposer,
-        call: callRpc,
-        cacheScope: context.cacheScope,
         chatRepository: context.chatRepository,
       });
   };

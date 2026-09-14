@@ -51,29 +51,20 @@ export async function renderIssue() {
     history.replaceState(null, "", hashFromRoute(App.route));
   };
 
+  // The work item and the machine it is on — the address the console and the
+  // rail are both mounted at, minted once so the two cannot drift apart.
+  const workAddress = { kind: "issue", deviceId, projectId, issueId: id, call: callRpc, cacheScope: context.cacheScope };
   // An issue's agent runs on the primary checkout, so that is the directory its
   // console opens terminals in.
-  const consolePanel = mountConsole($("#console-region"), {
-    kind: "issue",
-    deviceId,
-    projectId,
-    issueId: id,
-    call: callRpc,
-    cacheScope: context.cacheScope,
-  });
+  const consolePanel = mountConsole($("#console-region"), { ...workAddress });
   // An issue carries exactly one agent session, and this is where you talk to
   // it — including the first message, which is what starts it. The surface
   // beside the rail reads and writes that same conversation, so both are given
   // the one handle that says which agent it is.
   const agentSelection = createAgentSelection();
   const rail = mountAgentRail($("#agent-rail"), {
-    kind: "issue",
-    deviceId,
-    projectId,
-    issueId: id,
+    ...workAddress,
     selection: agentSelection,
-    call: callRpc,
-    cacheScope: context.cacheScope,
     chatRepository: context.chatRepository,
   });
 

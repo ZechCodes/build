@@ -383,8 +383,6 @@ function paintMenuShell() {
   };
 }
 
-/** Every row the menu offers, answered in one place — a row that has just
- *  arrived is live without having been wired. */
 /** The project half's pick: the menu moves to what is inside that project,
  *  which is its workspaces — read from that project's own machine. A legacy
  *  branch or issue route stays readable in the bar's sentence, but it is not a

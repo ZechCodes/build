@@ -266,10 +266,11 @@ function followHomeContext(context) {
  * already home, because what the aliases copy off it is not what it was.
  */
 export function syncHome(landed = null) {
+  const followed = followedHomeId();
   // Nothing at all is online, so the account names no home: the aliases stay on
   // the device they were already following and read it again, which is how they
-  // come to say it has gone offline.
-  const followed = followedHomeId();
+  // come to say it has gone offline. At boot they are on nobody yet, which is
+  // how the device the pick names keeps home while it is still handshaking.
   const home = homeContext() || contextFor(followed);
   if (home && (home.deviceId !== followed || home === landed)) followHomeContext(home);
 }

@@ -51,9 +51,18 @@ const parse = (html) => {
 let started = [];
 let panel = null;
 
+const branchAddress = (over = {}) => ({
+  kind: "branch",
+  deviceId: "dev-1",
+  projectId: "p1",
+  branch: "build/login",
+  call: (...args) => App.call(...args),
+  ...over,
+});
+
 const openConsole = async (termIds) => {
   manager.listTerminals.mockResolvedValue(termIds.map((term_id) => ({ term_id })));
-  panel = mountConsole(region(), { kind: "branch", projectId: "p1", branch: "build/login" });
+  panel = mountConsole(region(), branchAddress());
   await flush();
   region().querySelector(".console-bar").click();
   await flush();
@@ -132,7 +141,7 @@ describe("the head the mount paints", () => {
 
   it("offers no + where there is no checkout to open a shell in", async () => {
     App.call = vi.fn(async () => ({ project_id: "p1", branch: "loose", run_id: null, worktree_id: null, primary: false }));
-    panel = mountConsole(region(), { kind: "branch", projectId: "p1", branch: "loose" });
+    panel = mountConsole(region(), branchAddress({ branch: "loose" }));
     await flush();
     await settleMotion();
     expect(strip()).toBeTruthy();

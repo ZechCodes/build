@@ -21,7 +21,7 @@
 // painted.
 
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
+import { esc, unopenedDeviceText } from "../core/text.js";
 import { App, go, markRoute } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
 import { tabShellHtml } from "../core/tabshell.js";
@@ -37,7 +37,9 @@ import { initialBranchState, projectGitState } from "./branchSeed.js";
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
-import { homeContext, homeProjectKey } from "../core/deviceContexts.js";
+import { routeContext } from "../core/deviceContexts.js";
+import { routeProjectKey } from "../core/deviceKey.js";
+import { deviceNameOf } from "../core/devicePolicy.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { refreshFeed } from "../core/taskFeed.js";
@@ -92,6 +94,15 @@ export function shouldRetainDirtyFilesPane(tab, pane) {
 
 const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "primary" : "none")}`;
 
+/** Where the Files tab is standing: the URL says, so a sent link opens the same
+ *  file and a reload keeps the reader's place. Pure. */
+const openPlaceOf = (route) => (route.file ? { path: route.file, line: route.line || null } : null);
+
+/** What a link to a machine this client has no session with can show: its name,
+ *  and why there is nothing under it. */
+const unopenedDeviceHtml = (deviceId) =>
+  `<div class="empty">${esc(unopenedDeviceText(deviceNameOf(App.devices, deviceId)))}</div>`;
+
 function mountPlainChanges(host, onInitialize) {
   App.routeLeaveGuard = null;
   host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host"><div class="railtabs"></div></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
@@ -101,16 +112,25 @@ function mountPlainChanges(host, onInitialize) {
 export async function renderBranch() {
   const root = $("#root");
   const { deviceId, projectId, branch } = App.route;
+  // The machine this link is about, read once: everything mounted below is
+  // handed its caller, its cache scope, its conversations and its offline mark
+  // from here, so no pane has to ask which device it is on.
+  const context = routeContext(App.route);
+  // The account's name for this project — the pair (device, project), since
+  // every machine mints a `p1`.
+  const projectKey = routeProjectKey(App.route);
   let tab = App.route.tab || "changes";
   // Consumed once: only the navigation the toolbar's create form just fired
   // means it, and a later revisit to this same branch must not keep stealing
   // focus back to the composer.
   const autofocusComposer = App.focusComposerOnMount;
   App.focusComposerOnMount = false;
-  // Where the Files tab is standing: the URL says, so a sent link opens the
-  // same file and a reload keeps the reader's place.
-  const openAt = App.route.file ? { path: App.route.file, line: App.route.line || null } : null;
+  const openAt = openPlaceOf(App.route);
   root.className = "surface";
+  if (!context) {
+    root.innerHTML = unopenedDeviceHtml(deviceId);
+    return;
+  }
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   /** Changes/Files, painted into whichever rail the mounted pane just built
    *  (.crail-host or .ftree — both flex columns ending in a slot for exactly
@@ -127,7 +147,7 @@ export async function renderBranch() {
     }
     bar.innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
     bar.querySelectorAll("[data-tab]").forEach((cell) => {
-      cell.onclick = () => go({ name: "branch", projectId, branch, tab: cell.dataset.tab });
+      cell.onclick = () => go({ name: "branch", deviceId, projectId, branch, tab: cell.dataset.tab });
     });
     return true;
   };
@@ -169,10 +189,13 @@ export async function renderBranch() {
   let reviewPlug = null; // ONE instance per backing, so pending comments survive
   let reviewKey = null;
 
-  // This mounted route belongs to the session that created it. A device switch
+  // This mounted route belongs to the session that created it. A reconnect
   // disposes the view, but any operation already awaiting a reply must finish
-  // on that original session instead of recovering the newly-current App.call.
-  const callRpc = App.call;
+  // on that original session instead of recovering the device's newest caller.
+  const callRpc = context.call;
+  // The frozen treatment every pane shows while its machine is unreachable: one
+  // device going offline says nothing about the others.
+  const isOffline = () => context.offline;
   // Two surfaces here can mutate an unclaimed checkout first — the rail's first
   // message and the review's first comment or action — and near-simultaneous
   // adoptions would ask for two owners of one checkout. Both take their adopter
@@ -182,20 +205,29 @@ export async function renderBranch() {
 
   let rail = null;
   const ensureBranchChrome = () => {
-    if (!consolePanel) consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
+    if (!consolePanel)
+      consolePanel = mountConsole($("#console-region"), {
+        kind: "branch",
+        deviceId,
+        projectId,
+        branch,
+        call: callRpc,
+        cacheScope: context.cacheScope,
+      });
     if (!rail)
       rail = mountAgentRail($("#agent-rail"), {
         kind: "branch",
+        deviceId,
         projectId,
         branch,
         selection: agentSelection,
         adopting: adoptingHere,
         autofocusComposer,
+        call: callRpc,
+        cacheScope: context.cacheScope,
+        chatRepository: context.chatRepository,
       });
   };
-  // The account-wide name of the project this surface is on, minted where
-  // every route's is (core/deviceContexts.js).
-  const routeProjectKey = () => homeProjectKey(projectId);
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
@@ -221,7 +253,7 @@ export async function renderBranch() {
     const name = facts.branch;
     // A cancel throws BEFORE any RPC: the button restores and no notice appears.
     if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
-    const inboxKey = branchInboxKey(row, { projectId, branch: name, projectKey: routeProjectKey() });
+    const inboxKey = branchInboxKey(row, { projectId, branch: name, projectKey });
     if (isPending(INBOX_SCOPE, inboxKey)) return;
     const finishing = runOptimistic({
       scope: INBOX_SCOPE,
@@ -232,9 +264,9 @@ export async function renderBranch() {
             kind: "branch",
             entityId: entityIdOf(row),
             issueId: row && row.issue_id,
-            // Which machine the branch is on: the verb goes to that device, and
-            // until a route can name one this surface is the home device's.
-            deviceId: homeContext()?.deviceId || null,
+            // Which machine the branch is on: the link said, and the verb goes
+            // to that device.
+            deviceId,
             projectId,
             branch: name,
             // The issue ends with the branch only when the work landed;
@@ -283,7 +315,7 @@ export async function renderBranch() {
   setToolbarVerb(paintFinish);
 
   const navigate = {
-    openFile: ({ path, line }) => go({ name: "branch", projectId, branch, tab: "files", file: path, line }),
+    openFile: ({ path, line }) => go({ name: "branch", deviceId, projectId, branch, tab: "files", file: path, line }),
   };
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
@@ -300,7 +332,8 @@ export async function renderBranch() {
           callRpc,
           navigate,
           getTask: () => (row ? row.run : null),
-          isOffline: () => App.offline,
+          isOffline,
+          cacheScope: context.cacheScope,
           agentSelection,
           viewingContext: App.viewingContext,
           // A merge is the work landing: the issue it implements ends with it.
@@ -313,7 +346,8 @@ export async function renderBranch() {
           callRpc,
           navigate,
           adopting: adopterFor(scope),
-          isOffline: () => App.offline,
+          isOffline,
+          cacheScope: context.cacheScope,
           viewingContext: App.viewingContext,
           // Adoption keeps the URL — the same branch now stands on a run, so
           // the surface re-resolves and the Changes rail re-mounts run-backed.
@@ -345,6 +379,7 @@ export async function renderBranch() {
       pane = renderFilesTab(host, {
         scope,
         callRpc,
+        cacheScope: context.cacheScope,
         openAt,
         viewingContext: App.viewingContext,
         // Moving within the tab: the URL keeps up without the surface being
@@ -382,6 +417,7 @@ export async function renderBranch() {
     pane = mountGitPane(host, {
       scope,
       callRpc,
+      cacheScope: context.cacheScope,
       agentCommitOptions: row && row.run ? taskAgentCommitOptions(row.run.state, row.run.goal) : [],
       review: reviewFor(scope),
       agentSelection,

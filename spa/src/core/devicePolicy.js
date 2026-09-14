@@ -10,6 +10,11 @@ export function onlineStickyDeviceId(devices, selectedDeviceId) {
   return sticky ? sticky.id : null;
 }
 
+/** What the account calls a device, or null when the list has never heard of
+ *  it — the one place a device id is turned into words. */
+export const deviceNameOf = (devices, deviceId) =>
+  (devices || []).find((device) => device.id === deviceId)?.name || null;
+
 /**
  * The home device: where creation goes, what the App.* aliases point at, and
  * the device a link that names none is about.

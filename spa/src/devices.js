@@ -7,6 +7,7 @@ import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
+import { deviceNameOf } from "./core/devicePolicy.js";
 import { openDeviceSessions, setHomeDevice, syncHome } from "./connection.js";
 
 export async function refreshDevices() {
@@ -19,7 +20,7 @@ export async function refreshDevices() {
 const deviceFor = (deviceId) => App.devices.find((device) => device.id === deviceId) || null;
 
 export function deviceName(deviceId) {
-  return deviceFor(deviceId)?.name || null;
+  return deviceNameOf(App.devices, deviceId);
 }
 
 /**

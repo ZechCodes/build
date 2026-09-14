@@ -7,7 +7,6 @@
 // shared terminal socket (terminal/manager.js), demuxed by term_id, so opening
 // the console costs no second connection.
 
-import { App } from "../app.js";
 import {
   DEFAULT_OPEN_SIZE,
   consoleKey,
@@ -30,7 +29,6 @@ import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
-import { currentCacheScope } from "./cacheScope.js";
 import { deviceFeedView } from "./deviceContexts.js";
 import { entityIdOf } from "./entityId.js";
 import { readCached, writeCached } from "./localCache.js";
@@ -148,12 +146,14 @@ export function consoleHeadHtml(size) {
  *
  * `context` is `{ kind: "branch", projectId, branch }` or
  * `{ kind: "issue", projectId, issueId }` — the same address the agent rail
- * takes. Returns `{ dispose(), toggle(), size() }`; disposing tears down the
- * client view only, and never the server PTYs.
+ * takes — plus the machine that checkout is on: its `deviceId`, its `call` and
+ * its `cacheScope`, all handed down by the view the link opened. Returns
+ * `{ dispose(), toggle(), size() }`; disposing tears down the client view only,
+ * and never the server PTYs.
  */
 export function mountConsole(host, context) {
   if (!host) return { dispose() {}, toggle() {}, size: () => "collapsed" };
-  const cacheScope = currentCacheScope();
+  const cacheScope = context.cacheScope;
   const key = consoleKey(context);
   const manager = terminalManager();
   // A pre-redesign `term-<n>` URL asked for one terminal in particular; that is
@@ -192,7 +192,7 @@ export function mountConsole(host, context) {
     if (context.kind === "issue") return consoleScope(context, null);
     let row = null;
     try {
-      row = await App.call("branch.get", {
+      row = await context.call("branch.get", {
         project_id: context.projectId,
         branch: context.branch,
         ...SMALLEST_THREAD_PAGE,
@@ -207,13 +207,13 @@ export function mountConsole(host, context) {
 
   /** The feed's row for this branch, read off the shared snapshot without
    *  subscribing — the replay-to-late-subscribers path, used synchronously.
-   *  The home device's rows, not the merge: the checkout this console stands in
-   *  is on one machine, and every machine mints a `proj-1`. */
+   *  One device's rows, not the merge: the checkout this console stands in is
+   *  on the machine the link named, and every machine mints a `proj-1`. */
   const feedRowNow = () => {
     let row = null;
     const unsubscribe = subscribeFeed((feed) => {
       row =
-        deviceFeedView(feed).items.find(
+        deviceFeedView(feed, context.deviceId).items.find(
           (item) => item.kind === "branch" && item.project_id === context.projectId && item.branch === context.branch,
         ) || null;
     });

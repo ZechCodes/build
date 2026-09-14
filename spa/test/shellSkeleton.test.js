@@ -25,9 +25,11 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 
 const { App, render } = await import("../src/app.js");
+const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { railStartsCollapsed } = await import("../src/core/inboxShell.js");
 const { consoleHeadHtml } = await import("../src/core/console.js");
 
@@ -61,12 +63,26 @@ beforeEach(() => {
   App.call = vi.fn(async (method, params) => rpc(method, params));
   App.poll = null;
   App.viewDispose = null;
+  App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
+  App.selectedDeviceId = "dev-1";
 });
+
+/** A work route is about one machine: the view reads its caller off that
+ *  device's context, so a surface case opens the device its route names. */
+const openDevice = () =>
+  adoptDeviceSession({
+    deviceId: "dev-1",
+    call: (...args) => App.call(...args),
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
+  });
 
 afterEach(() => {
   if (App.poll) clearInterval(App.poll);
   App.poll = null;
   App.viewDispose = null;
+  resetDeviceContexts();
 });
 
 describe("the shell's markup", () => {
@@ -173,7 +189,8 @@ describe("render dispatch", () => {
   });
 
   it("mounts the branch surface with its two tabs and the console slot", async () => {
-    App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
+    openDevice();
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
     const tabs = [...root().querySelectorAll(".railtabs [data-tab]")].map((cell) => cell.dataset.tab);
@@ -191,15 +208,18 @@ describe("render dispatch", () => {
   });
 
   it("navigates between the branch tabs by URL", async () => {
-    App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
+    openDevice();
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
     root().querySelector('.railtabs [data-tab="files"]').click();
-    expect(location.hash).toBe("#/project/p-1/branch/build%2Flogin/files");
+    // The link the tab writes keeps the machine the surface is standing on.
+    expect(location.hash).toBe("#/device/dev-1/project/p-1/branch/build%2Flogin/files");
   });
 
   it("mounts the issue surface as two columns, no tabs", async () => {
-    App.route = { name: "issue", projectId: "p-1", id: "i-1" };
+    openDevice();
+    App.route = { name: "issue", deviceId: "dev-1", projectId: "p-1", id: "i-1" };
     render();
     await flush();
     expect(root().querySelector(".ivsplit")).toBeTruthy();
@@ -230,7 +250,8 @@ describe("render dispatch", () => {
   });
 
   it("hands each view a clean #root and runs the outgoing view's teardown", async () => {
-    App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
+    openDevice();
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
     expect(document.querySelector("#console-region .console-bar")).toBeTruthy();

@@ -48,7 +48,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { setCacheDevice } = await import("../src/core/cacheScope.js");
+const { scopeFor, setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 
@@ -62,8 +62,15 @@ const tabs = () => [...region().querySelectorAll(".console-tab-name")].map((cell
 
 let panel = null;
 
-const mountAndOpen = async () => {
-  panel = mountConsole(region(), { kind: "branch", projectId: "p1", branch: "build/login" });
+const mountAndOpen = async (deviceId = "dev-1") => {
+  panel = mountConsole(region(), {
+    kind: "branch",
+    deviceId,
+    projectId: "p1",
+    branch: "build/login",
+    call: (...args) => App.call(...args),
+    cacheScope: scopeFor(deviceId),
+  });
   await flush();
   bar().click();
   await flush();
@@ -124,35 +131,13 @@ describe("the cached tab list", () => {
 });
 
 // The rail merges every device's rows, and every machine mints a `p1`. The
-// console stands in one checkout on one machine — the home device's, until a
-// route can name its own — so the row it addresses the tab cache with is that
+// console stands in one checkout on one machine — the one the link that opened
+// the surface named — so the row it addresses the tab cache with is that
 // device's, not whichever `p1` the merge happens to list first.
 describe("an account with more than one device", () => {
-  let resetDeviceContexts;
-
-  afterEach(() => {
-    if (resetDeviceContexts) resetDeviceContexts();
-    resetDeviceContexts = null;
-    App.devices = [];
-    App.selectedDeviceId = null;
-  });
-
-  it("addresses the tab cache with the home device's row", async () => {
-    const contexts = await import("../src/core/deviceContexts.js");
-    resetDeviceContexts = contexts.resetDeviceContexts;
-    App.devices = [
-      { id: "dev-2", name: "Desktop", status: "online" },
-      { id: "dev-1", name: "This device", status: "online" },
-    ];
-    App.selectedDeviceId = "dev-1"; // home is the device the pick names
-    contexts.adoptDeviceSession({
-      deviceId: "dev-1",
-      call: (...args) => App.call(...args),
-      close: () => {},
-      peer: () => {},
-      onCarrier: () => {},
-    });
-    // The desktop's own build/login sorts first in the merge.
+  it("addresses the tab cache with the route device's row", async () => {
+    // The desktop's own build/login sorts first in the merge, and this console
+    // is the desktop's: its run is what the saved tabs are filed under.
     const theirs = { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-9", worktree_id: "wt-9", deviceId: "dev-2" };
     feedSnapshot = {
       items: [theirs, homeRow],
@@ -160,12 +145,19 @@ describe("an account with more than one device", () => {
       devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [homeRow], projects: [] } },
     };
     await writeCached(
+      { deviceId: "dev-2", entityId: "run-9", kind: "tabs" },
+      { scope: { run_id: "run-9" }, termIds: ["term-1"] },
+    );
+    // This machine's own row is cached too, under a different device and a
+    // different run: reading it here would paint two tabs instead of one.
+    await writeCached(
       { deviceId: "dev-1", entityId: "run-3", kind: "tabs" },
-      { scope: { run_id: "run-3" }, termIds: ["term-1"] },
+      { scope: { run_id: "run-3" }, termIds: ["term-4", "term-5"] },
     );
     App.call = vi.fn(() => new Promise(() => {}));
     manager.listTerminals.mockImplementation(() => new Promise(() => {}));
-    await mountAndOpen();
+
+    await mountAndOpen("dev-2");
 
     expect(tabs()).toEqual(["Terminal 1"]);
   });

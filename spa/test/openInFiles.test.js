@@ -251,13 +251,26 @@ describe("the file the route names", () => {
 
   let App;
   let renderBranch;
+  let resetDeviceContexts;
 
   beforeEach(async () => {
     vi.resetModules();
     document.body.innerHTML = bodyHtml;
-    location.hash = "#/p/p1/branch/build%2Flogin/files";
+    location.hash = "#/device/dev-1/project/p1/branch/build%2Flogin/files";
     ({ App } = await import("../src/app.js"));
     ({ renderBranch } = await import("../src/views/branchView.js"));
+    // The surface takes its caller from the machine its link names.
+    let adoptDeviceSession;
+    ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+    App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
+    App.selectedDeviceId = "dev-1";
+    adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => App.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
     document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
   });
 
@@ -266,6 +279,7 @@ describe("the file the route names", () => {
     App.poll = null;
     if (App.viewDispose) App.viewDispose();
     App.viewDispose = null;
+    resetDeviceContexts();
   });
 
   const answering = (asked) =>
@@ -282,7 +296,7 @@ describe("the file the route names", () => {
   it("opens the Files tab on the file the URL names", async () => {
     const asked = [];
     App.call = answering(asked);
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files", file: "src/a.js", line: 2 };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files", file: "src/a.js", line: 2 };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".fppath")?.textContent).toBe("src/a.js"));
@@ -309,7 +323,7 @@ describe("the file the route names", () => {
       if (method === "run.diff") return { patch: "" };
       return {};
     });
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".gittoolbar")).toBeTruthy());
@@ -323,7 +337,7 @@ describe("the file the route names", () => {
   it("leaves an ordinary visit to the Files tab at the root", async () => {
     const asked = [];
     App.call = answering(asked);
-    App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "files" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "files" };
     await renderBranch();
     await flush();
     await vi.waitFor(() => expect(document.querySelector(".ffile")).toBeTruthy());

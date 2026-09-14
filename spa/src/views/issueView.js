@@ -8,7 +8,10 @@
 
 import { $ } from "../dom.js";
 import { App, go, loadModelCatalog } from "../app.js";
+import { esc, unopenedDeviceText } from "../core/text.js";
 import { hashFromRoute } from "../core/router.js";
+import { deviceNameOf } from "../core/devicePolicy.js";
+import { routeContext } from "../core/deviceContexts.js";
 import { mountIssueView } from "../core/issueView.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -19,10 +22,18 @@ import "../styles/surfaces.css";
 export async function renderIssue() {
   const root = $("#root");
   const id = App.route.id;
+  const deviceId = App.route.deviceId || null;
   let projectId = App.route.projectId || null;
   let selectedStageId = App.route.stage || null;
-  const callRpc = App.call;
+  // The machine this link is about: its caller, its cache and its conversations
+  // are what the surface, the rail and the console below are built on.
+  const context = routeContext(App.route);
   root.className = "surface";
+  if (!context) {
+    root.innerHTML = `<div class="empty">${esc(unopenedDeviceText(deviceNameOf(App.devices, deviceId)))}</div>`;
+    return;
+  }
+  const callRpc = context.call;
   root.innerHTML = '<div id="tabbody" class="flush"></div>';
 
   // Looking at an issue is seeing it — the dot settles until it moves again.
@@ -33,6 +44,7 @@ export async function renderIssue() {
   const syncHash = () => {
     App.route = {
       name: "issue",
+      ...(deviceId ? { deviceId } : {}),
       ...(projectId ? { projectId } : {}),
       id,
       ...(selectedStageId ? { stage: selectedStageId } : {}),
@@ -42,13 +54,29 @@ export async function renderIssue() {
 
   // An issue's agent runs on the primary checkout, so that is the directory its
   // console opens terminals in.
-  const consolePanel = mountConsole($("#console-region"), { kind: "issue", projectId, issueId: id });
+  const consolePanel = mountConsole($("#console-region"), {
+    kind: "issue",
+    deviceId,
+    projectId,
+    issueId: id,
+    call: callRpc,
+    cacheScope: context.cacheScope,
+  });
   // An issue carries exactly one agent session, and this is where you talk to
   // it — including the first message, which is what starts it. The surface
   // beside the rail reads and writes that same conversation, so both are given
   // the one handle that says which agent it is.
   const agentSelection = createAgentSelection();
-  const rail = mountAgentRail($("#agent-rail"), { kind: "issue", projectId, issueId: id, selection: agentSelection });
+  const rail = mountAgentRail($("#agent-rail"), {
+    kind: "issue",
+    deviceId,
+    projectId,
+    issueId: id,
+    selection: agentSelection,
+    call: callRpc,
+    cacheScope: context.cacheScope,
+    chatRepository: context.chatRepository,
+  });
 
   const view = mountIssueView($("#tabbody"), {
     issueId: id,

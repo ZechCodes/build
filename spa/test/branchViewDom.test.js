@@ -64,7 +64,7 @@ beforeEach(async () => {
     peer: () => {},
     onCarrier: () => {},
   });
-  App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+  App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
   // core/toolbar.js isn't mounted in this file — Done paints into its verb
   // slot (setToolbarVerb), so stand in for the one thing branchView.js needs
   // there: the slot existing, the way it always does once the app has booted.
@@ -88,7 +88,7 @@ describe("the branch surface", () => {
 
   it("browses a plain folder without calling branch or git RPCs", async () => {
     const { stopFeed } = await import("../src/core/taskFeed.js");
-    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "files" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "files" };
     App.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: [] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: false, base_branch: "main" }] };
@@ -110,7 +110,7 @@ describe("the branch surface", () => {
   it("offers Git initialization in Changes and remounts Git after it succeeds", async () => {
     const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
     let initialized = false;
-    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     App.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: initialized ? [{ ...row, branch: "main", primary: true, worktree_id: null }] : [] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized, base_branch: "main" }] };
@@ -139,7 +139,7 @@ describe("the branch surface", () => {
 
   it("shows initialization failures and leaves a retry enabled", async () => {
     const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
-    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     App.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: [] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: false }] };
@@ -175,7 +175,7 @@ describe("the branch surface", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
     let initialized = false;
-    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     App.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: [] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized }] };
@@ -208,41 +208,6 @@ describe("the branch surface", () => {
     renderBranch(); // never resolves here — the first read is still in flight
     await flush();
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
-    stopFeed();
-  });
-
-  // The rail merges every device's rows and every machine mints a `p1`. The
-  // branch a route names is on the home device, so the row the surface stands
-  // up from has to be that device's: another machine's `p1` would hand this one
-  // a checkout it has never heard of.
-  it("stands the surface up from the home device's row, not another machine's", async () => {
-    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
-    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
-    App.devices = [
-      { id: "dev-2", name: "Desktop", status: "online" },
-      { id: "dev-1", name: "This device", status: "online" },
-    ];
-    // The desktop sorts first in the merge, so a bare-id lookup finds its row.
-    adoptDeviceSession({
-      deviceId: "dev-2",
-      call: async (method) => {
-        if (method === "board.list") return { items: [{ ...row, branch: "main", primary: true, worktree_id: null }] };
-        if (method === "project.list") return { projects: [{ project_id: "p1", name: "their notes", is_git: true }] };
-        return {};
-      },
-      close: () => {},
-      peer: () => {},
-      onCarrier: () => {},
-    });
-    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "changes" };
-    App.call = vi.fn(async (method) => {
-      if (method === "board.list") return { items: [] };
-      if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: false }] };
-      return {};
-    });
-    await refreshFeed();
-    await renderBranch();
-    expect(document.querySelector("#init-git")).toBeTruthy();
     stopFeed();
   });
 
@@ -339,6 +304,118 @@ describe("the branch surface", () => {
 
     expect(document.querySelector("#branchback"), "the empty state was rebuilt").toBe(back);
     vi.useRealTimers();
+  });
+});
+
+// Every machine mints a `p1`, and a link names one of them. The surface a route
+// opens is about the machine the route names — not about the machine creation
+// goes to, and not about whichever machine's `p1` the merge happens to list
+// first.
+describe("a branch on another device", () => {
+  let theirCall;
+  let theirRow;
+
+  beforeEach(async () => {
+    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+    App.devices = [
+      { id: "dev-1", name: "This device", status: "online" },
+      { id: "dev-2", name: "Desktop", status: "online" },
+    ];
+    App.selectedDeviceId = "dev-1"; // home stays this machine
+    theirRow = { ...row, branch: "main", primary: true, worktree_id: null };
+    theirCall = vi.fn(async (method) => {
+      if (method === "board.list") return { items: [theirRow] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "their notes", is_git: true }] };
+      if (method === "branch.get") return theirRow;
+      if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
+      if (method === "git.log") return { commits: [] };
+      if (method === "fs.tree") return { path: "", entries: [{ name: "notes.txt", kind: "file", size: 12 }] };
+      if (method === "fs.read")
+        return { mime: "text/plain", size: 12, editable: true, encoding: "utf-8", revision: "n-1", content_b64: btoa("their notes") };
+      return {};
+    });
+    adoptDeviceSession({ deviceId: "dev-2", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} });
+    App.route = { name: "branch", deviceId: "dev-2", projectId: "p1", branch: "main", tab: "changes" };
+    // This machine holds a `p1` of its own, and it is a plain folder: anything
+    // reading it instead of the desktop's says so on the screen.
+    App.call = vi.fn(async (method) => {
+      if (method === "board.list") return { items: [] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "my notes", is_git: false }] };
+      return {};
+    });
+  });
+
+  const reached = (call, method) => call.mock.calls.some(([name]) => name === method);
+  const reachedGit = (call) => call.mock.calls.some(([name]) => name.startsWith("git."));
+
+  it("the view calls the route device's call, not the home device's", async () => {
+    await renderBranch();
+    await flush();
+
+    expect(reached(theirCall, "branch.get")).toBe(true);
+    expect(reachedGit(theirCall)).toBe(true);
+    expect(reached(App.call, "branch.get")).toBe(false);
+    expect(reachedGit(App.call)).toBe(false);
+  });
+
+  it("stands the surface up from the route device's row, not the home device's", async () => {
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    theirCall.mockImplementation(async (method) => {
+      if (method === "board.list") return { items: [theirRow] };
+      if (method === "project.list") return { projects: [{ project_id: "p1", name: "their notes", is_git: true }] };
+      if (method === "branch.get") return new Promise(() => {}); // the first read is still in flight
+      if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
+      if (method === "git.log") return { commits: [] };
+      return {};
+    });
+    await refreshFeed();
+
+    renderBranch();
+    await flush();
+
+    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+    expect(document.querySelector("#init-git")).toBeNull();
+    stopFeed();
+  });
+
+  it("Done finishes on the route's device", async () => {
+    theirRow = finishableRow({ branch: "main", run_id: "run-7" });
+    await renderBranch();
+    await flush();
+    document.querySelector("#tb-verb .btn.mini:not(.caret)").click();
+    await flush();
+    document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(theirCall.mock.calls.find(([method]) => method === "branch.finish")[1]).toEqual({
+      project_id: "p1",
+      branch: "main",
+      action: "delete",
+    });
+    expect(reached(App.call, "branch.finish")).toBe(false);
+  });
+
+  it("the Files tab marks a route that keeps the device", async () => {
+    App.route = { ...App.route, tab: "files" };
+    await renderBranch();
+    await vi.waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
+
+    document.querySelector("#tabbody .ffile").click();
+    await flush();
+
+    expect(App.route.deviceId).toBe("dev-2");
+    expect(location.hash).toContain("#/device/dev-2/project/p1/branch/main/files");
+    expect(location.hash).toContain("path=notes.txt");
+  });
+
+  it("keeps the device on the tab bar's own links", async () => {
+    await renderBranch();
+    await flush();
+
+    document.querySelector('[data-tab="files"]').click();
+    await flush();
+
+    expect(location.hash).toBe("#/device/dev-2/project/p1/branch/main/files");
   });
 });
 

@@ -79,7 +79,13 @@ beforeEach(() => {
   App.call = vi.fn(async () => ({ project_id: "p1", branch: "build/login", run_id: "run-3" }));
 });
 
-const branch = { kind: "branch", projectId: "p1", branch: "build/login" };
+const branch = {
+  kind: "branch",
+  deviceId: "dev-1",
+  projectId: "p1",
+  branch: "build/login",
+  call: (...args) => App.call(...args),
+};
 
 /** An open console on a branch whose checkout resolves. */
 async function openConsole() {

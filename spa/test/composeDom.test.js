@@ -447,7 +447,8 @@ describe("the advanced panel", () => {
       provider: "claude",
       model: "opus",
     });
-    expect(location.hash).toBe("#/project/p1/branch/build%2Flogin/changes");
+    // The branch was made on the machine creation goes to, so the route says so.
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes");
   });
 
   // A dispatch the browser stopped waiting for is still running, and its row is

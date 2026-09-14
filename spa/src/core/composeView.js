@@ -451,11 +451,12 @@ async function submitManual() {
 }
 
 /** The box is done with: shut it, re-read the board, and open what was made
- *  wherever the reply named it. */
+ *  wherever the reply named it — on the machine it was dispatched to, since
+ *  that is the only machine the new branch is on. */
 function settleManualRoute(destination) {
   closeCompose();
   refreshFeed();
-  if (destination) go(destination);
+  if (destination) go({ ...destination, deviceId: captureDeviceId() });
 }
 
 // ---- mounting -----------------------------------------------------------------

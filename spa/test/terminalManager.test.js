@@ -137,16 +137,20 @@ describe("the device the terminals follow", () => {
     expect(socket.options.preferDeviceId()).toBe("dev-a");
   });
 
-  it("and the same for a machine that has gone offline since", () => {
+  // A machine that has answered before is still the machine the work is on: an
+  // outage must not move its shells to another machine under a surface about
+  // this one. They stay put, and the socket's own reconnect brings them back
+  // here when the machine does.
+  it("keeps them on a machine that has gone offline since", () => {
     live("dev-a");
     live("dev-b", { offline: true });
-    const socket = socketOn("dev-a");
+    const socket = socketOn("dev-b");
     App.route = { name: "branch", deviceId: "dev-b", projectId: "p1" };
 
     followTerminalDevice();
 
     expect(socket.drops).toBe(0);
-    expect(socket.options.preferDeviceId()).toBe("dev-a");
+    expect(socket.options.preferDeviceId()).toBe("dev-b");
   });
 
   it("followTerminalDevice hands over the route device's peer term channel", () => {

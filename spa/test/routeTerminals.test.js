@@ -23,7 +23,9 @@ vi.mock("../src/core/inboxShell.js", () => ({ inboxRouteChanged: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ toolbarRouteChanged: () => {} }));
 
 const { App, render } = await import("../src/app.js");
-const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
+const { adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import(
+  "../src/core/deviceContexts.js"
+);
 
 /** A machine with an open session: only one the client can reach is a machine a
  *  surface — and so a shell — can stand on. */
@@ -92,6 +94,21 @@ describe("the device a rendered route names", () => {
     expect(terminals.followTerminalDevice).not.toHaveBeenCalled();
 
     App.route = branchOn("dev-b"); // the feed answered: the same machine all along
+    render();
+
+    expect(terminals.followTerminalDevice).not.toHaveBeenCalled();
+  });
+
+  // The machine dropping out is not the work moving: the surface is still about
+  // the laptop, its shells are the laptop's, and the socket's own reconnect
+  // lands them there again when it comes back. Handing them to the workshop
+  // meanwhile would type at the wrong computer under a link about this one.
+  it("leaves them where they are when that device goes offline", () => {
+    App.route = branchOn("dev-b");
+    render();
+    terminals.followTerminalDevice.mockClear();
+
+    setContextOffline("dev-b");
     render();
 
     expect(terminals.followTerminalDevice).not.toHaveBeenCalled();

@@ -513,7 +513,6 @@ export async function renderBranch() {
   let watcher = null;
   App.viewDispose = () => {
     disposed = true;
-    App.routeLeaveGuard = null;
     // The view ends its own read rather than trusting the shell to clear the
     // slot it put it in.
     if (watcher) watcher.dispose();

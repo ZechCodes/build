@@ -229,8 +229,14 @@ function followRouteDevice() {
  * The server PTYs persist — dispose never closes them. Every render runs this
  * before the next view claims #root, and so does the gate when it takes #root
  * back from a view whose machine has gone.
+ *
+ * The route guard goes with the view that set it. Left standing, it is asked
+ * again for the navigation the NEXT view makes — the resolve hop moving on to
+ * the work item it just found — and a veto there strands the reader on a
+ * holding screen with nowhere to go.
  */
 export function unmountView() {
+  App.routeLeaveGuard = null;
   if (App.poll) {
     App.poll.dispose();
     App.poll = null;

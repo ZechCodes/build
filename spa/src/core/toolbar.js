@@ -29,11 +29,11 @@ import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
-import { deviceFeedView } from "./deviceContexts.js";
 import { notifyError } from "./notify.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
 import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
+import { deviceTagHtml } from "./inboxProjects.js";
 import { patchList } from "./patchList.js";
 import { projectRoute } from "./projectModel.js";
 import "../styles/shell.css";
@@ -41,7 +41,9 @@ import "../styles/shell.css";
 const SCOPE_KEY = "build.toolbar.project";
 
 let feed = { items: [], projects: [] };
-let scopedProjectId = null;
+// The account-wide name of the scoped project (core/deviceKey.js), never the
+// bare id: every machine mints a `proj-1`, and the menu lists them all.
+let scopedProjectKey = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
 let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
@@ -75,25 +77,24 @@ function paintVerb() {
   else host.innerHTML = "";
 }
 
+/** Every machine's projects: the toolbar names one project on one machine, and
+ *  it offers all of them to move to. */
 const projectsOf = () => feed.projects || [];
-const projectNameOf = (projectId) => {
-  const project = projectsOf().find((entry) => entry.id === projectId);
-  return project ? project.name || project.id : "";
-};
+const projectFor = (projectKey) => projectsOf().find((project) => project.projectKey === projectKey) || null;
+/** What a project is called, and "" for no project at all. */
+const nameOf = (project) => (project ? project.name || project.id : "");
 
 /** The project the menu is scoped to: where you are standing, else the last
- *  place you stood, else the first project the device knows. */
-function scopeProjectId() {
-  if (scopedProjectId && projectsOf().some((project) => project.id === scopedProjectId)) return scopedProjectId;
-  const first = projectsOf()[0];
-  return first ? first.id : scopedProjectId;
+ *  place you stood, else the first project the account knows. */
+function scopedProject() {
+  return projectFor(scopedProjectKey) || projectsOf()[0] || null;
 }
 
-function rememberScope(projectId) {
-  if (!projectId || projectId === scopedProjectId) return;
-  scopedProjectId = projectId;
+function rememberScope(projectKey) {
+  if (!projectKey || projectKey === scopedProjectKey) return;
+  scopedProjectKey = projectKey;
   try {
-    localStorage.setItem(SCOPE_KEY, projectId);
+    localStorage.setItem(SCOPE_KEY, projectKey);
   } catch {
     /* private mode: the scope just lasts the session */
   }
@@ -141,9 +142,9 @@ function paint({ entering = false } = {}) {
   const standing = identity();
   // Navigating into a work item scopes the menu to its project — the toolbar
   // reads as one sentence, so the two halves can never name different projects.
-  if (entering && standing.projectId) rememberScope(standing.projectId);
+  if (entering && standing.projectKey) rememberScope(standing.projectKey);
   const shown = {
-    project: standing.project || projectNameOf(scopeProjectId()),
+    project: standing.project || nameOf(scopedProject()),
     kind: standing.kind,
     label: standing.label,
   };
@@ -282,7 +283,7 @@ function onMenuClick(event) {
   }
   const project = event.target.closest("[data-project]");
   if (project) {
-    const selected = projectsOf().find((candidate) => candidate.id === project.dataset.project);
+    const selected = projectFor(project.dataset.project);
     rememberScope(project.dataset.project);
     if (selected?.is_git === false) {
       closeMenu();
@@ -294,7 +295,7 @@ function onMenuClick(event) {
   }
   const work = event.target.closest("[data-work]");
   if (work) {
-    const entry = workMenuModel({ items: feed.items, projectId: scopeProjectId(), query: open.query }).find(
+    const entry = workMenuModel({ items: feed.items, projectKey: scopedProject()?.projectKey, query: open.query }).find(
       (candidate) => candidate.key === work.dataset.work,
     );
     closeMenu();
@@ -305,16 +306,17 @@ function onMenuClick(event) {
   if (create) openCreate(create.dataset.create);
 }
 
-/** The one create surface, on the scoped project. A device with no project
- *  has nowhere to create, and says so. */
+/** The one create surface, on the scoped project and on the machine that
+ *  project is on. An account with no project has nowhere to create, and says
+ *  so. */
 function openCreate(kind) {
-  const projectId = scopeProjectId();
+  const project = scopedProject();
   closeMenu();
-  if (!projectId || !projectsOf().some((project) => project.id === projectId)) {
+  if (!project) {
     notifyError("No project to create in.", "Add a project in Settings first.");
     return;
   }
-  openCreateWork({ projectId, projectName: projectNameOf(projectId), kind });
+  openCreateWork({ projectId: project.id, deviceId: project.deviceId, projectName: nameOf(project), kind });
 }
 
 /** The counter a menu row wears: what is waiting inside it, and nothing at all
@@ -324,19 +326,21 @@ function unreadBadgeHtml(count, what) {
   return `<span class="badge" title="${count} unread in ${esc(what)}">${count}</span>`;
 }
 
-/** The project half's rows: which project, and how much is waiting in it. */
+/** The project half's rows: which project — said with its machine when another
+ *  machine uses the same name — and how much is waiting in it. */
 function projectMenuEntries() {
   const projects = projectMenuModel({
     projects: projectsOf(),
     items: feed.items,
-    projectId: scopeProjectId(),
+    devices: App.devices,
+    projectKey: scopedProject()?.projectKey,
     query: open.query,
   });
   if (!projects.length) return [{ key: "none", html: `<div class="tb-none dim">No project by that name.</div>` }];
   return projects.map((project) => ({
-    key: `project:${project.id}`,
-    html: `<button class="mi${project.current ? " current" : ""}" data-project="${esc(project.id)}" type="button" role="menuitem">
-               <span class="mi-line"><span class="mt">${esc(project.name)}</span>${unreadBadgeHtml(project.unreadCount, project.name)}</span></button>`,
+    key: `project:${project.key}`,
+    html: `<button class="mi${project.current ? " current" : ""}" data-project="${esc(project.key)}" type="button" role="menuitem">
+               <span class="mi-line"><span class="mt">${esc(project.name)}${deviceTagHtml(project)}</span>${unreadBadgeHtml(project.unreadCount, project.name)}</span></button>`,
   }));
 }
 
@@ -350,7 +354,7 @@ function projectMenuShellHtml() {
 
 /** The item half's rows: the scoped project's branches and issues. */
 function workMenuEntries() {
-  const work = workMenuModel({ items: feed.items, projectId: scopeProjectId(), query: open.query });
+  const work = workMenuModel({ items: feed.items, projectKey: scopedProject()?.projectKey, query: open.query });
   if (!work.length) return [{ key: "none", html: `<div class="tb-none dim">Nothing here yet.</div>` }];
   return work.map((entry) => ({
     key: `work:${entry.key}`,
@@ -366,8 +370,8 @@ function workMenuEntries() {
 /** The item half's frame: the filter, the scope line above the rows, and the
  *  two creates at its foot. */
 function workMenuShellHtml() {
-  const scopedName = projectNameOf(scopeProjectId()) || "This project";
-  const project = projectsOf().find((candidate) => candidate.id === scopeProjectId());
+  const project = scopedProject();
+  const scopedName = nameOf(project) || "This project";
   const create = project && project.is_git === false
     ? ""
     : `<div class="tbmenu-foot">
@@ -402,10 +406,10 @@ function openSurfaceMenu(anchor) {
   open.element.querySelectorAll("[data-action]").forEach((row) => {
     row.onclick = () => {
       const action = row.dataset.action;
-      const projectId = scopeProjectId();
+      const project = scopedProject();
       closeMenu();
       if (action === "archive") go({ name: "account", page: "archive" });
-      else if (projectId) openProjectSettings(projectId);
+      else if (project) openProjectSettings(project.id);
     };
   });
 }
@@ -420,12 +424,12 @@ export function initToolbar() {
   }
   mounted = true;
   try {
-    scopedProjectId = localStorage.getItem(SCOPE_KEY) || null;
+    scopedProjectKey = localStorage.getItem(SCOPE_KEY) || null;
   } catch {
-    scopedProjectId = null;
+    scopedProjectKey = null;
   }
   subscribeFeed((next) => {
-    feed = deviceFeedView(next);
+    feed = next;
     paint();
   });
   paint({ entering: true });

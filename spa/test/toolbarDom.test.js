@@ -16,6 +16,8 @@ let feed = {
   items: [
     {
       kind: "branch",
+      deviceId: "dev-1",
+      projectKey: "dev-1/p1",
       project_id: "p1",
       project: "relaydb",
       branch: "build/login",
@@ -28,6 +30,8 @@ let feed = {
     },
     {
       kind: "issue",
+      deviceId: "dev-1",
+      projectKey: "dev-1/p1",
       project_id: "p1",
       project: "relaydb",
       branch: null,
@@ -41,8 +45,8 @@ let feed = {
     },
   ],
   projects: [
-    { id: "p1", name: "relaydb" },
-    { id: "p2", name: "mascot" },
+    { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
+    { id: "p2", deviceId: "dev-1", projectKey: "dev-1/p2", name: "mascot" },
   ],
 };
 // A Set, matching the real module (core/taskFeed.js): this file's own
@@ -74,6 +78,7 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openC
 
 const { App } = await import("../src/app.js");
 const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
+const { splitDeviceKey } = await import("../src/core/deviceKey.js");
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const bar = () => document.querySelector("#toolbar .toolbar");
@@ -89,8 +94,12 @@ beforeEach(() => {
   if (!document.getElementById("shell")) document.body.innerHTML = bodyHtml;
   localStorage.clear();
   App.gated = false;
-  App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+  App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
   App.focusComposerOnMount = false;
+  App.devices = [
+    { id: "dev-1", name: "workshop", status: "online" },
+    { id: "dev-2", name: "laptop", status: "online" },
+  ];
   openCreateWork.mockClear();
   notifyError.mockClear();
   App.call = vi.fn(async (method) => {
@@ -111,7 +120,7 @@ describe("the sentence the toolbar prints", () => {
   });
 
   it("names an issue by its title", () => {
-    App.route = { name: "issue", projectId: "p1", id: "plan-1" };
+    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
     expect(names()).toEqual(["relaydb", "Add a health endpoint"]);
   });
@@ -126,9 +135,9 @@ describe("the sentence the toolbar prints", () => {
 
 describe("the two menus, one per half", () => {
   it("offers no branch or issue creation for a plain folder", async () => {
-    feed = { items: [], projects: [{ id: "p1", name: "notes", is_git: false }] };
+    feed = { items: [], projects: [{ id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "notes", is_git: false }] };
     await refreshFeed();
-    App.route = { name: "branch", projectId: "p1", branch: "main", tab: "files" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "files" };
     toolbarRouteChanged();
     expect(openJump("item").querySelectorAll("[data-create]")).toHaveLength(0);
     feed = savedFeed;
@@ -136,16 +145,13 @@ describe("the two menus, one per half", () => {
   });
 
   it("opens Files when a plain folder is picked from the project menu", async () => {
-    feed = { items: [], projects: [{ id: "p1", name: "notes", is_git: false, base_branch: "main" }] };
+    feed = {
+      items: [],
+      projects: [{ id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "notes", is_git: false, base_branch: "main" }],
+    };
     await refreshFeed();
-    openJump("project").querySelector('[data-project="p1"]').click();
-    // The menu still builds its route without a device on it, so the app parks
-    // it on the resolve hop and looks the project up — which lands on the same
-    // folder, and will land on the picked device's once the menu names one.
-    expect(App.route).toEqual({
-      name: "resolve", kind: "project", projectId: "p1",
-      route: { name: "branch", projectId: "p1", branch: "main", tab: "files" },
-    });
+    openJump("project").querySelector('[data-project="dev-1/p1"]').click();
+    expect(location.hash).toBe("#/device/dev-1/project/p1/branch/main/files");
     feed = savedFeed;
     await refreshFeed();
   });
@@ -180,7 +186,7 @@ describe("the two menus, one per half", () => {
 
   it("hands a picked project to its work list, without leaving the page", () => {
     const popup = openJump("project");
-    popup.querySelector('[data-project="p2"]').click();
+    popup.querySelector('[data-project="dev-1/p2"]').click();
     expect(menu()).toBeTruthy();
     expect(menu().querySelectorAll("[data-project]").length).toBe(0);
     expect(menu().querySelectorAll("[data-work]").length).toBe(0);
@@ -196,14 +202,14 @@ describe("the two menus, one per half", () => {
   it("goes to the work you pick", () => {
     openJump("item").querySelector('[data-work="issue:plan-1"]').click();
     expect(menu()).toBeNull();
-    expect(location.hash).toBe("#/project/p1/issue/plan-1");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/issue/plan-1");
   });
 
   it("reaches the creates from the project half too, through the project you pick", () => {
     App.route = { name: "inbox" };
     toolbarRouteChanged();
     const popup = openJump("project");
-    popup.querySelector('[data-project="p1"]').click();
+    popup.querySelector('[data-project="dev-1/p1"]').click();
     expect([...menu().querySelectorAll("[data-create]")].map((row) => row.dataset.create)).toEqual(["branch", "issue"]);
   });
 
@@ -257,7 +263,7 @@ describe("the jump menu's paint", () => {
       feed = { ...quiet, items: [quiet.items[1], moved] };
       return refreshFeed();
     });
-    const branchRow = popup.querySelector('[data-work="branch:p1:build/login"]');
+    const branchRow = popup.querySelector('[data-work="branch:dev-1/p1:build/login"]');
     expect(popup.querySelector(".tb-filter")).toBe(filter); // never replaced
     expect([...popup.querySelectorAll("[data-work]")]).toEqual(rows);
     expect(records.length).toBeGreaterThan(0);
@@ -275,7 +281,16 @@ describe("the project you pick, against a feed that keeps ticking", () => {
       ...quiet,
       items: [
         ...quiet.items,
-        { kind: "branch", project_id: "p2", project: "mascot", branch: "build/spike", title: "Mascot spike", resume_at: ago(10) },
+        {
+          kind: "branch",
+          deviceId: "dev-1",
+          projectKey: "dev-1/p2",
+          project_id: "p2",
+          project: "mascot",
+          branch: "build/spike",
+          title: "Mascot spike",
+          resume_at: ago(10),
+        },
       ],
     };
     await refreshFeed();
@@ -286,7 +301,7 @@ describe("the project you pick, against a feed that keeps ticking", () => {
   });
 
   it("holds the pick while you stand on another project's branch and the feed ticks", async () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
+    openJump("project").querySelector('[data-project="dev-1/p2"]').click();
     expect(menu().querySelector(".tb-scope span").textContent).toBe("mascot");
     await refreshFeed(); // two seconds later…
     await refreshFeed(); // …and two more
@@ -295,16 +310,16 @@ describe("the project you pick, against a feed that keeps ticking", () => {
   });
 
   it("still marks the picked project as the current one on the way back", async () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
+    openJump("project").querySelector('[data-project="dev-1/p2"]').click();
     await refreshFeed();
     menu().querySelector("[data-projects]").click();
     expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot");
   });
 
   it("re-scopes to the project you navigate into", () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
+    openJump("project").querySelector('[data-project="dev-1/p2"]').click();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    App.route = { name: "issue", projectId: "p1", id: "plan-1" };
+    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
     expect([...openJump("item").querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual([
       "Add a health endpoint",
@@ -318,19 +333,44 @@ describe("creating from the menu", () => {
   // scoped project, on the tab that was picked; the menu is gone by then.
   it("opens the create modal on the Branch tab, scoped to the project the menu is on", () => {
     openJump("item").querySelector('[data-create="branch"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", projectName: "relaydb", kind: "branch" });
+    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "branch" });
     expect(menu()).toBeNull();
   });
 
   it("opens it on the Issue tab for the issue create", () => {
     openJump("item").querySelector('[data-create="issue"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", projectName: "relaydb", kind: "issue" });
+    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue" });
   });
 
   it("creates in the project you picked, not the one you are standing on", () => {
-    openJump("project").querySelector('[data-project="p2"]').click();
+    openJump("project").querySelector('[data-project="dev-1/p2"]').click();
     menu().querySelector('[data-create="branch"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p2", projectName: "mascot", kind: "branch" });
+    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p2", deviceId: "dev-1", projectName: "mascot", kind: "branch" });
+  });
+
+  // The create surface talks to one bridge, and it is the bridge of the project
+  // the menu is on — the bare id it is given means nothing anywhere else.
+  it("creates in the picked project on its own device", async () => {
+    feed = {
+      items: [],
+      projects: [
+        { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", name: "relaydb" },
+        { id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "their relaydb" },
+      ],
+    };
+    await refreshFeed();
+    App.route = { name: "inbox" };
+    toolbarRouteChanged();
+    openJump("project").querySelector('[data-project="dev-2/p1"]').click();
+    menu().querySelector('[data-create="issue"]').click();
+    expect(openCreateWork).toHaveBeenCalledWith({
+      projectId: "p1",
+      deviceId: "dev-2",
+      projectName: "their relaydb",
+      kind: "issue",
+    });
+    feed = savedFeed;
+    await refreshFeed();
   });
 
   it("says so instead of opening anything when the device has no project", async () => {
@@ -355,7 +395,18 @@ describe("the unread counters on the two menus", () => {
       items: [
         { ...quiet.items[0], unread: true, unread_count: 2 },
         { ...quiet.items[1], unread: true, unread_count: 3 },
-        { kind: "branch", project_id: "p2", project: "mascot", branch: "build/spike", title: "", unread: true, unread_count: 4, resume_at: ago(10) },
+        {
+          kind: "branch",
+          deviceId: "dev-1",
+          projectKey: "dev-1/p2",
+          project_id: "p2",
+          project: "mascot",
+          branch: "build/spike",
+          title: "",
+          unread: true,
+          unread_count: 4,
+          resume_at: ago(10),
+        },
       ],
     };
     await refreshFeed();
@@ -402,41 +453,53 @@ describe("the ⋯", () => {
   });
 });
 
-// The toolbar is about where you are, and where you are is one machine. The
-// feed carries every device once the rail merges them, so the toolbar reads the
-// home device's view out of it — which is what keeps it looking exactly as it
-// does on a one-device account.
+// The rail lists every machine's projects and so does the toolbar: the account
+// has one set of projects, and the device is only said out loud where the name
+// alone does not say which machine's project it is.
 describe("an account with more than one device", () => {
-  it("offers the home device's projects, not every device's", async () => {
-    const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
-    App.devices = [
-      { id: "dev-2", name: "Laptop", status: "online" },
-      { id: "dev-1", name: "Desktop", status: "online" },
-    ];
-    App.selectedDeviceId = "dev-1"; // home is the device the pick names
-    adoptDeviceSession({
-      deviceId: "dev-1",
-      call: async () => ({}),
-      close: () => {},
-      peer: () => {},
-      onCarrier: () => {},
-    });
-    const mine = { items: [], projects: [{ id: "p1", name: "relaydb", deviceId: "dev-1", projectKey: "dev-1/p1" }] };
-    const theirs = { items: [], projects: [{ id: "p9", name: "laptop notes", deviceId: "dev-2", projectKey: "dev-2/p9" }] };
-    feed = {
+  it("offers every device's projects, naming the device on a clash", async () => {
+    const mine = {
       items: [],
-      projects: [...mine.projects, ...theirs.projects],
-      devices: { "dev-1": mine, "dev-2": theirs },
+      projects: [
+        { id: "p1", name: "relaydb", deviceId: "dev-1", projectKey: "dev-1/p1" },
+        { id: "p2", name: "mascot", deviceId: "dev-1", projectKey: "dev-1/p2" },
+      ],
     };
+    const theirs = {
+      items: [],
+      projects: [{ id: "p1", name: "relaydb", deviceId: "dev-2", projectKey: "dev-2/p1" }],
+    };
+    feed = { items: [], projects: [...mine.projects, ...theirs.projects], devices: { "dev-1": mine, "dev-2": theirs } };
     await refreshFeed();
     App.route = { name: "inbox" };
     toolbarRouteChanged();
-    openJump("project");
+    const popup = openJump("project");
 
-    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb"]);
+    expect([...popup.querySelectorAll("[data-project]")].map((row) => row.dataset.project)).toEqual([
+      "dev-1/p1",
+      "dev-1/p2",
+      "dev-2/p1",
+    ]);
+    expect(popup.querySelector('[data-project="dev-1/p1"] .mt').textContent).toBe("relaydb workshop");
+    expect(popup.querySelector('[data-project="dev-2/p1"] .mt').textContent).toBe("relaydb laptop");
+    expect(popup.querySelector('[data-project="dev-1/p2"] .mt .dim')).toBeNull();
     feed = savedFeed;
-    resetDeviceContexts();
-    App.devices = [];
-    App.selectedDeviceId = null;
+    await refreshFeed();
+  });
+
+  // The scope outlives the page, and what it stores is the account-wide name of
+  // the project — a bare id names one on every machine.
+  it("the scope key round-trips a projectKey", () => {
+    App.route = { name: "inbox" };
+    toolbarRouteChanged();
+    openJump("project").querySelector('[data-project="dev-1/p2"]').click();
+
+    expect(localStorage.getItem("build.toolbar.project")).toBe("dev-1/p2");
+    expect(splitDeviceKey(localStorage.getItem("build.toolbar.project"))).toEqual({ deviceId: "dev-1", projectId: "p2" });
+
+    // And the scope the key holds is the one the menu comes back to.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    toolbarRouteChanged();
+    expect(openJump("project").querySelector(".mi.current .mt").textContent).toBe("mascot");
   });
 });

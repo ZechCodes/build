@@ -22,15 +22,18 @@ function firstListed(candidates, deviceOrder) {
   return null;
 }
 
+/** The candidate on the home device, when there is a home device to ask about. */
+const atHome = (candidates, homeDeviceId) =>
+  homeDeviceId ? candidates.find((candidate) => candidate.deviceId === homeDeviceId) : null;
+
 /**
  * Which machine's copy the reader meant: the home device's, else the first
  * online device's in the account's order, else whatever came first. Null when
  * there is nothing to pick.
  */
-export function pickDevice(candidates, { homeDeviceId, deviceOrder } = {}) {
+export function pickDevice(candidates, policy = {}) {
   const rows = candidates || [];
-  const atHome = homeDeviceId ? rows.find((row) => row.deviceId === homeDeviceId) : null;
-  return atHome || firstListed(rows, deviceOrder) || rows[0] || null;
+  return atHome(rows, policy.homeDeviceId) || firstListed(rows, policy.deviceOrder) || rows[0] || null;
 }
 
 /** The branch surface a row opens, on the tab the URL named. Null when the row
@@ -82,6 +85,14 @@ const REFERENCE_KINDS = Object.freeze({
 const inNamedProjectFirst = (rows, projectId) =>
   projectId ? [...rows.filter((row) => row.project_id === projectId), ...rows.filter((row) => row.project_id !== projectId)] : rows;
 
+/** Both halves of a snapshot, each defaulted: a feed carrying neither is still
+ *  a feed, with nothing in it to answer by. */
+const bothHalves = (feed) => ({ items: feed?.items || [], projects: feed?.projects || [] });
+
+/** The device rides on the answer; a row that names none (a fixture, a feed
+ *  from before rows were stamped) leaves the route as it found it. */
+const onItsDevice = (route, row) => (route && row.deviceId ? { ...route, deviceId: row.deviceId } : route);
+
 /**
  * The route a reference points at, or null when this feed carries nothing by
  * that id (deleted, or not yet polled — the caller decides whether to wait or
@@ -94,10 +105,8 @@ const inNamedProjectFirst = (rows, projectId) =>
 export function resolveLegacyRoute(ref, feed, policy) {
   const kind = ref ? REFERENCE_KINDS[ref.kind] : null;
   if (!kind) return null;
-  const rows = kind.rows(ref, { items: feed?.items || [], projects: feed?.projects || [] });
+  const rows = kind.rows(ref, bothHalves(feed));
   const chosen = pickDevice(inNamedProjectFirst(rows, ref.projectId), policy);
-  const route = chosen ? kind.route(chosen, ref) : null;
-  // The device rides on the answer; a row that names none (a fixture, a feed
-  // from before rows were stamped) leaves the route as it found it.
-  return route && chosen.deviceId ? { ...route, deviceId: chosen.deviceId } : route;
+  return chosen ? onItsDevice(kind.route(chosen, ref), chosen) : null;
 }
+

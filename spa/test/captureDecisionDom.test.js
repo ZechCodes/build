@@ -11,10 +11,13 @@ const feedProjects = [
   { id: "p2", name: "dotfiles" },
 ];
 const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login" }];
+/** The merge as the feed last delivered it — one device's worth by default, the
+ *  way a single-device fixture reads. */
+let feedSnapshot = { items: feedItems, projects: feedProjects };
 const refreshFeed = vi.fn(async () => {});
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    fn({ items: feedItems, projects: feedProjects });
+    fn(feedSnapshot);
     return () => {};
   },
   refreshFeed: (...args) => refreshFeed(...args),
@@ -101,6 +104,7 @@ beforeEach(async () => {
   App.route = { name: "capture", id: "capture-1" };
   App.gated = false;
   record = asking();
+  feedSnapshot = { items: feedItems, projects: feedProjects };
   refreshFeed.mockClear();
   notifyError.mockClear();
   awayCall.mockClear();
@@ -312,6 +316,45 @@ describe("the capture decision page", () => {
     expect(error.hidden).toBe(false);
     expect(error.textContent).toContain("already been answered");
     expect(notifyError).toHaveBeenCalled();
+  });
+});
+
+// A capture belongs to the machine it was taken on, and home moves. The merged
+// inbox carries every device's captures and names the device each row came from,
+// so the page reads, answers and offers destinations there — not on whichever
+// machine creation goes to now.
+describe("a capture taken on a device that is not home", () => {
+  beforeEach(async () => {
+    surface.dispose();
+    feedSnapshot = {
+      items: [{ kind: "capture", capture_id: "capture-1", deviceId: "dev-2" }],
+      projects: [],
+      devices: {
+        "dev-1": { items: feedItems, projects: feedProjects },
+        "dev-2": { items: [], projects: [{ id: "p9", name: "away notes" }] },
+      },
+    };
+    awayCall.mockImplementation(async () => record);
+    homeCall.mockClear();
+    host.innerHTML = "";
+    surface = mountCaptureDecision(host, "capture-1");
+    await surface.load();
+  });
+
+  it("reads and answers the capture on the machine it is on", async () => {
+    expect(awayCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
+
+    choices()[1].click();
+    await flush();
+
+    expect(awayCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" });
+    expect(homeCall).not.toHaveBeenCalled();
+    expect(App.call).not.toHaveBeenCalled();
+  });
+
+  it("offers that machine's projects as the destinations", () => {
+    const options = [...host.querySelectorAll("#capture-project option")].map((option) => option.textContent);
+    expect(options).toEqual(["away notes"]);
   });
 });
 

@@ -13,11 +13,12 @@
 
 import { go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
-import { deviceFeedView, homeContext } from "./deviceContexts.js";
+import { deviceFeedView } from "./deviceContexts.js";
 import { confirmAction, isConfirmOpen } from "./confirm.js";
 import { notifyError } from "./notify.js";
 import { branchOptions } from "./compose.js";
-import { allDevicesOfflineText, esc, messageOf } from "./text.js";
+import { esc, messageOf } from "./text.js";
+import { deviceCall } from "./inboxDevices.js";
 import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { forgetCaptureRecord } from "./composeView.js";
@@ -35,17 +36,15 @@ import "../styles/shell.css";
 const EDITABLE = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
 /**
- * The machine a capture belongs to.
+ * The machine a capture is on.
  *
- * A capture is taken on the home device and is routed into that device's own
- * projects (00-multi-device-design.md §8), so every call this page makes goes
- * there — read, answer, reroute and cancel alike. With nothing connected there
- * is nobody to ask, and the caller that was going to say so hears it instead.
+ * A capture stays on the machine it was taken on and is routed into that
+ * machine's own projects (00-multi-device-design.md §8) — and the inbox carries
+ * every device's captures, so the row for this one says which machine that is.
+ * Naming nobody means home, which is where a capture with no row yet was taken.
  */
-const askHome = (method, params) => {
-  const home = homeContext();
-  return home ? home.call(method, params) : Promise.reject(new Error(allDevicesOfflineText()));
-};
+const deviceOfCapture = (feed, captureId) =>
+  (feed?.items || []).find((row) => row.kind === "capture" && row.capture_id === captureId)?.deviceId || null;
 
 /**
  * Mount the decision page for one capture into `host`.
@@ -60,18 +59,27 @@ export function mountCaptureDecision(host, captureId) {
   let busy = false; // a mutation is in flight; the page holds still
   let error = "";
   let feed = { items: [], projects: [] };
+  let captureDeviceId = null; // the machine this capture is on, once a snapshot says
   // What the user has typed or chosen, kept beside the page rather than in it:
   // a repaint rebuilds the page, and these are theirs.
   const draft = { projectId: "", kind: "issue", branch: "", answer: "" };
 
   host.innerHTML = '<div class="empty">Reading the capture…</div>';
 
-  // A capture is device-scoped: it was taken for the home device, and the
-  // projects it can be routed to are that device's.
+  // A capture is device-scoped: it is on the machine it was taken on, and the
+  // projects it can be routed to are that machine's. A snapshot that has not
+  // caught up with the capture leaves the last answer standing rather than
+  // sending the page home mid-decision.
   const unsubscribe = subscribeFeed((next) => {
-    feed = deviceFeedView(next);
+    captureDeviceId = deviceOfCapture(next, captureId) || captureDeviceId;
+    feed = deviceFeedView(next, captureDeviceId);
     if (record) drawFromPoll();
   });
+
+  /** Everything this page asks — read, answer, reroute and cancel alike — goes
+   *  to the machine the capture is on, and is refused in the words its inbox row
+   *  is greyed with while that machine is away. */
+  const ask = (method, params) => deviceCall(captureDeviceId)(method, params);
 
   // ---- what the page stands on ------------------------------------------------
 
@@ -232,7 +240,7 @@ export function mountCaptureDecision(host, captureId) {
     error = "";
     draw();
     try {
-      const answered = await askHome("capture.answer", params);
+      const answered = await ask("capture.answer", params);
       draft.answer = ""; // said and gone
       if (answered && answered.id) record = answered;
       await refreshFeed();
@@ -271,7 +279,7 @@ export function mountCaptureDecision(host, captureId) {
     error = "";
     draw();
     try {
-      const routed = await askHome("capture.reroute", manualRouteParams(captureId, draft));
+      const routed = await ask("capture.reroute", manualRouteParams(captureId, draft));
       if (routed && routed.id) record = routed;
       await refreshFeed();
     } catch (failure) {
@@ -293,7 +301,7 @@ export function mountCaptureDecision(host, captureId) {
       scope: INBOX_SCOPE,
       records: [removeRecord(entryKeyOf({ kind: "capture", capture_id: captureId }))],
       call: async () => {
-        await askHome("capture.cancel", { capture_id: captureId });
+        await ask("capture.cancel", { capture_id: captureId });
         forgetCaptureRecord(captureId);
       },
       failureSummary: "The capture could not be cancelled",
@@ -307,7 +315,7 @@ export function mountCaptureDecision(host, captureId) {
     if (disposed) return;
     let capture;
     try {
-      capture = await askHome("capture.get", { capture_id: captureId });
+      capture = await ask("capture.get", { capture_id: captureId });
     } catch (failure) {
       // A device that went away, or a capture that is no longer there. What is
       // already on screen stays; a first read that fails says so.

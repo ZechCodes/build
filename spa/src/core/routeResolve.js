@@ -85,6 +85,11 @@ const REFERENCE_KINDS = Object.freeze({
 const inNamedProjectFirst = (rows, projectId) =>
   projectId ? [...rows.filter((row) => row.project_id === projectId), ...rows.filter((row) => row.project_id !== projectId)] : rows;
 
+/** The rows on the machine the URL named, when it named one: a URL carrying a
+ *  device is not asking which machine it meant, so the other devices' copies of
+ *  the same id are not candidates for it. */
+const onNamedDevice = (rows, deviceId) => (deviceId ? rows.filter((row) => row.deviceId === deviceId) : rows);
+
 /** Both halves of a snapshot, each defaulted: a feed carrying neither is still
  *  a feed, with nothing in it to answer by. */
 const bothHalves = (feed) => ({ items: feed?.items || [], projects: feed?.projects || [] });
@@ -98,14 +103,14 @@ const onItsDevice = (route, row) => (route && row.deviceId ? { ...route, deviceI
  * that id (deleted, or not yet polled — the caller decides whether to wait or
  * land on the inbox).
  *
- * @param ref {kind: 'run'|'worktree'|'issue'|'primary'|'project', id?, projectId?, route?, tab?, stage?}
+ * @param ref {kind: 'run'|'worktree'|'issue'|'primary'|'project', id?, projectId?, deviceId?, route?, tab?, stage?}
  * @param feed {items, projects} — the merge, every device's rows at once
  * @param policy {homeDeviceId, deviceOrder} — which device wins a collision
  */
 export function resolveLegacyRoute(ref, feed, policy) {
   const kind = ref ? REFERENCE_KINDS[ref.kind] : null;
   if (!kind) return null;
-  const rows = kind.rows(ref, bothHalves(feed));
+  const rows = onNamedDevice(kind.rows(ref, bothHalves(feed)), ref.deviceId);
   const chosen = pickDevice(inNamedProjectFirst(rows, ref.projectId), policy);
   return chosen ? onItsDevice(kind.route(chosen, ref), chosen) : null;
 }

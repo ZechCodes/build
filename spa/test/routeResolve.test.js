@@ -136,6 +136,18 @@ describe("resolveLegacyRoute across devices", () => {
     });
   });
 
+  // A URL that names a machine is not asking which one: `#/device/<d>/project/
+  // <p>` says it outright, and the home device's `proj-1` is not what it meant.
+  it("opens the device the URL named rather than asking the policy", () => {
+    expect(resolveLegacyRoute({ kind: "primary", projectId: "proj-1", deviceId: "dev-b" }, collision, policy)).toEqual({
+      name: "branch", deviceId: "dev-b", projectId: "proj-1", branch: "their-main", tab: "changes",
+    });
+  });
+
+  it("answers nothing when the device the URL named carries no such row", () => {
+    expect(resolveLegacyRoute({ kind: "primary", projectId: "proj-1", deviceId: "dev-z" }, collision, policy)).toBeNull();
+  });
+
   it("carries the device onto a resolved issue too", () => {
     const issues = { items: [{ kind: "issue", project_id: "proj-1", issue_id: "i-1", branch: null, deviceId: "dev-b" }] };
     expect(resolveLegacyRoute({ kind: "issue", id: "i-1", stage: "s2" }, issues, policy)).toEqual({

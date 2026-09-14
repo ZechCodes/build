@@ -56,6 +56,17 @@ function creationDeviceOptionsHtml(devices, chosenId) {
   return options || '<option value="">No devices yet</option>';
 }
 
+/** The one control for home: which machine new projects and captures go to.
+ *  Mounted once the account list has been read, since the list is what it
+ *  offers. */
+function mountCreationDevice() {
+  const select = $("#creationdev");
+  if (!select) return;
+  select.innerHTML = creationDeviceOptionsHtml(App.devices, creationDeviceId(App.devices, App.selectedDeviceId));
+  select.disabled = App.devices.length === 0;
+  select.onchange = () => chooseCreationDevice(select.value);
+}
+
 export async function renderSettings() {
   $("#root").innerHTML = `
     <div class="board-head"><div><h1>Settings</h1><p>Your keys, your custody.</p></div></div>
@@ -216,17 +227,6 @@ export async function renderSettings() {
     $("#defmodel").onchange = () =>
       store(reconcileAgentDefaults({ ...current, model: $("#defmodel").value }, { modelChanged: true }), "Saved.");
     $("#defeffort").onchange = () => store({ ...current, effort: $("#defeffort").value }, "Saved.");
-  }
-
-  /** The one control for home: which machine new projects and captures go to.
-   *  Mounted once the account list has been read, since the list is what it
-   *  offers. */
-  function mountCreationDevice() {
-    const select = $("#creationdev");
-    if (!select) return;
-    select.innerHTML = creationDeviceOptionsHtml(App.devices, creationDeviceId(App.devices, App.selectedDeviceId));
-    select.disabled = App.devices.length === 0;
-    select.onchange = () => chooseCreationDevice(select.value);
   }
 
   // Pick a different projects folder (any directory).

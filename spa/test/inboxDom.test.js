@@ -375,6 +375,17 @@ describe("the inbox rail", () => {
     });
   });
 
+  // The read cursor is the daemon's, and only the machine that answered for a
+  // row keeps it: a cursor sent to the wrong bridge names nothing it holds.
+  it("sends a read cursor to the device holding the row", async () => {
+    feed([branchRow(), branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", run_id: "run-2", worktree_id: "wt-2" })]);
+
+    await markSeen("run-2", "ag-1", null);
+
+    expect(awayCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-2", agent_id: "ag-1" });
+    expect(App.call).not.toHaveBeenCalledWith("entity.seen", { entity_id: "run-2", agent_id: "ag-1" });
+  });
+
   it("names no floor for a conversation that arrived whole", async () => {
     await markSeen("run-1", "ag-1", null);
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1", agent_id: "ag-1" });

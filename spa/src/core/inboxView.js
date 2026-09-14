@@ -41,9 +41,9 @@ import {
   runOptimistic,
   subscribeOptimistic,
 } from "./optimistic.js";
-import { entityIdOf } from "./entityId.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
+import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { homeProjectKey, onDeviceStateChanged } from "./deviceContexts.js";
 import {
   homeRowsFirst,
@@ -90,47 +90,6 @@ let folds = new Map();
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
 
-/**
- * Tell the bridge this entry has been read. No agent id means the whole entry —
- * which is what opening it means; a bubble passes its own agent.
- *
- * A reader who holds a WINDOW on a long conversation rather than the whole of
- * it passes the sequence that window starts at, so the daemon moves the read
- * cursor only as far as the reader was actually sent. No floor says what it
- * always said: the conversation arrived whole.
- *
- * `readThroughSequence` is the newest message the reader's viewport actually
- * reached. Reading is per message — a panel showing half of what arrived clears
- * half of it — and no sequence says the reader read to the end of what they
- * hold, which is what opening a whole entry means.
- *
- * This is also the hook for a self-initiated ending: merge and abandon are
- * attention-class events, so a merge the user triggered from this client would
- * otherwise badge its own entry. Whoever runs that verb calls this after it.
- */
-export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null) {
-  if (!entityId) return;
-  try {
-    await verbCall(rowHolding(entityId))("entity.seen", {
-      entity_id: entityId,
-      ...(agentId ? { agent_id: agentId } : {}),
-      ...(typeof readFromSequence === "number" ? { read_from_sequence: readFromSequence } : {}),
-      ...(typeof readThroughSequence === "number" ? { read_through_sequence: readThroughSequence } : {}),
-    });
-  } catch {
-    /* the cursor is the daemon's; a failed clear is re-tried by the next open */
-  }
-}
-
-/** The row the rail is holding for an entity. A caller names an entity and
- *  nothing else — only the feed knows which machine answered for it, and that
- *  is the machine the read cursor belongs to. */
-const rowHolding = (entityId) => mergedItems().find((row) => entityIdOf(row) === entityId) || null;
-
-/** The entries a mutation from this client just ended, cleared in one call. */
-export function noteSelfAction(...entityIds) {
-  return Promise.all([...new Set(entityIds.filter(Boolean))].map((id) => markSeen(id)));
-}
 
 /** A box in the list has the caret. The reconciler keeps a row that is still
  *  there, and the box in it with the words and the caret — so a repaint no
@@ -165,6 +124,10 @@ function publishAttentionCount() {
 const keyOf = (entry) => entry.key;
 
 export const INBOX_SCOPE = "inbox";
+
+// The read cursor has its own module (core/inboxSeen.js); its callers still
+// find it here.
+export { markSeen, noteSelfAction };
 
 // The captures this client is holding or watching stand beside the daemon's
 // own rows; the daemon's copy wins wherever both name the same capture.
@@ -621,7 +584,11 @@ export function mountInboxList() {
     projects = feed.projects || [];
     const live = new Set(items.map(entryKeyOf));
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
-    reconcileOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+    const merged = mergedItems();
+    // Every verb that names only an entity — a read report, a self-action —
+    // finds its row, and so its device, through this.
+    indexRowsByEntity(merged);
+    reconcileOptimistic(INBOX_SCOPE, merged, { keyOf: entryKeyOf });
     drawFromFeed();
   });
 }

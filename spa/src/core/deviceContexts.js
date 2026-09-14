@@ -17,6 +17,21 @@ import { dropFeedDevice } from "./taskFeed.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
 let homeDevice = null; // the device the App.* aliases were last pointed at
+const stateListeners = new Set(); // told when a device's ability to answer changes
+
+/**
+ * Hear when some device starts or stops being able to answer.
+ *
+ * Whether a machine is reachable is not news the feed carries — a row does not
+ * change when the machine behind it goes — so a surface that greys what a lost
+ * device holds is told here instead of waiting out a poll. Returns unsubscribe.
+ */
+export function onDeviceStateChanged(fn) {
+  stateListeners.add(fn);
+  return () => stateListeners.delete(fn);
+}
+
+const announceDeviceState = () => stateListeners.forEach((fn) => fn());
 
 function createDeviceContext(deviceId) {
   const context = {
@@ -64,6 +79,7 @@ export function adoptDeviceSession(session) {
   context.offline = false;
   context.offlineSince = null;
   bindRepository(context, session.call);
+  announceDeviceState(); // this device can answer again
   return context;
 }
 
@@ -114,7 +130,10 @@ export function closeQuietly(session) {
 /** The one writer of a context's offline mark. */
 export function setContextOffline(deviceId, mark = {}) {
   const context = contexts.get(deviceId);
-  if (context) writeOfflineMark(context, mark);
+  if (context) {
+    writeOfflineMark(context, mark);
+    announceDeviceState();
+  }
   return context || null;
 }
 

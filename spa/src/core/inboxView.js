@@ -44,7 +44,7 @@ import {
 import { entityIdOf } from "./entityId.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { homeProjectKey } from "./deviceContexts.js";
+import { homeProjectKey, onDeviceStateChanged } from "./deviceContexts.js";
 import { openableHereBlock, openableHereRows, paintDeviceState, rowFeedView, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
@@ -598,6 +598,10 @@ export function mountInboxList() {
   mounted = true;
   folds = loadProjectFolds(localStorage);
   initCaptureRows({ onChange: draw, entryOf });
+  // A machine going or coming back changes no row, so the feed never says it:
+  // the rail hears it from the registry and repaints, greying what the lost
+  // device holds and shutting the verbs that would have asked it.
+  onDeviceStateChanged(draw);
   subscribePendingCaptures(drawFromFeed);
   subscribeOptimistic(INBOX_SCOPE, draw);
   subscribeFeed((feed) => {

@@ -50,6 +50,18 @@ export function setConn(html) {
   if (el) el.innerHTML = html;
 }
 
+/** What every socket to this account's relay needs, whoever is opening it and
+ *  whatever they mean to do with it: the endpoint, the crypto, and the device
+ *  the relay is to land the session on. */
+const relayDial = (deviceId) => ({
+  relayUrl: RELAY_URL,
+  transport,
+  WebSocketImpl: WebSocket,
+  fetchToken: fetchGatewayToken,
+  getPinnedDeviceKey: pinnedDeviceTransportKey,
+  preferDeviceId: deviceId,
+});
+
 /**
  * A session for one device, with everything that varies by device closed over
  * that device: what pausing means, what being lost means, and whose surfaces a
@@ -60,12 +72,7 @@ export function setConn(html) {
  */
 export function openDeviceSession(deviceId, { waitForDevice = false } = {}) {
   return openRelaySession({
-    relayUrl: RELAY_URL,
-    transport,
-    WebSocketImpl: WebSocket,
-    fetchToken: fetchGatewayToken,
-    getPinnedDeviceKey: pinnedDeviceTransportKey,
-    preferDeviceId: deviceId,
+    ...relayDial(deviceId),
     waitForDevice,
     // One device's offline state pauses one device's calls.
     isPaused: () => contextFor(deviceId)?.offline === true,
@@ -85,16 +92,7 @@ export function openDeviceSession(deviceId, { waitForDevice = false } = {}) {
 /** A settings page owns its connection: it never changes the active workspace,
  * and the active device's offline state must not pause another device's RPCs. */
 export async function openDeviceSettingsSession(deviceId, { onLost } = {}) {
-  const session = await openRelaySession({
-    relayUrl: RELAY_URL,
-    transport,
-    WebSocketImpl: WebSocket,
-    fetchToken: fetchGatewayToken,
-    getPinnedDeviceKey: pinnedDeviceTransportKey,
-    preferDeviceId: deviceId,
-    waitForDevice: false,
-    onLost,
-  });
+  const session = await openRelaySession({ ...relayDial(deviceId), waitForDevice: false, onLost });
   if (session.deviceId !== deviceId) {
     session.close();
     throw new Error("Could not connect to the requested device.");

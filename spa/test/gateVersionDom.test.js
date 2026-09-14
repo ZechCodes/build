@@ -69,6 +69,7 @@ const root = () => document.getElementById("root");
 let adoptBridgeSelection;
 let adoptDeviceSession;
 let contextFor;
+let gate;
 
 /** A paired machine whose bridge has just greeted, with what its greeting
  *  settled: `unsupported` names the side that is behind, and null is a bridge
@@ -87,14 +88,20 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
   ({ adoptBridgeSelection, adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js"));
-  const gate = await import("../src/views/gate.js");
-  // The app is entered: the gate is listening for the account running out of
-  // machines that can answer, which is what stands a version gate up.
-  gate.holdAppWhileNoDeviceAnswers();
+  gate = await import("../src/views/gate.js");
 });
+
+/** The app as the gate hands it over: a machine has answered, and the gate is
+ *  listening for the account running out of machines that can answer — which is
+ *  what stands a version gate up. */
+const enterApp = () => {
+  greeted("d1", { major: 1, version: "1.0.0", unsupported: null });
+  gate.holdAppWhileNoDeviceAnswers();
+};
 
 describe("the version gates", () => {
   it("gates a bridge above every adapter as the app being behind, naming the device", async () => {
+    enterApp();
     greeted("d1", { unsupported: "app", version: "2.0.0" });
     await flush();
 
@@ -107,6 +114,7 @@ describe("the version gates", () => {
   });
 
   it("offers the reload only once the served-version watcher has something newer", async () => {
+    enterApp();
     App.updateAvailable = true;
     greeted("d1", { unsupported: "app", version: "2.0.0" });
     await flush();
@@ -115,6 +123,7 @@ describe("the version gates", () => {
   });
 
   it("gates a bridge below every adapter as the bridge needing updating, with the install line", async () => {
+    enterApp();
     greeted("d1", { unsupported: "bridge", version: "0.9.0" });
     await flush();
 
@@ -126,6 +135,7 @@ describe("the version gates", () => {
   });
 
   it("keeps the gate up when the install line cannot be minted", async () => {
+    enterApp();
     mintInstallCommand.mockRejectedValueOnce(new Error("invite only"));
     greeted("d1", { unsupported: "bridge", version: "0.9.0" });
     await flush();
@@ -135,6 +145,7 @@ describe("the version gates", () => {
   });
 
   it("lets the app back in when a later greeting selects an adapter", async () => {
+    enterApp();
     greeted("d1", { unsupported: "bridge", version: "0.9.0" });
     await flush();
 
@@ -153,6 +164,7 @@ describe("the version gates", () => {
   // machine's business: its rows grey and its surfaces say so, while the
   // account still has a machine to stand on.
   it("leaves the app alone while another machine can still answer", async () => {
+    enterApp();
     App.devices = [
       { id: "d1", name: "studio", status: "online" },
       { id: "d2", name: "laptop", status: "online" },
@@ -167,7 +179,22 @@ describe("the version gates", () => {
     expect(root().querySelector("h1")).toBe(null);
   });
 
+  // A greeting can settle before the gate starts listening — the bridge answers
+  // while the app is still coming up — and nothing announces it a second time.
+  // So the gate reads the account as it starts, not only when it next moves.
+  it("stands a gate up for a greeting that settled before it started listening", async () => {
+    greeted("d1", { unsupported: "app", version: "2.0.0" });
+
+    gate.holdAppWhileNoDeviceAnswers();
+    await flush();
+
+    expect(App.gated).toBe(true);
+    expect(unmountView).toHaveBeenCalled();
+    expect(root().querySelector("h1").textContent).toBe("This app is behind the bridge on studio");
+  });
+
   it("does nothing for a supported selection when no version gate is up", async () => {
+    enterApp();
     greeted("d1", { major: 1, version: "1.0.0", unsupported: null });
     await flush();
 

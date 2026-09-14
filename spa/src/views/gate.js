@@ -59,12 +59,15 @@ async function connectToApp() {
   await openDeviceSessions().first;
   gateGeneration += 1;
   stopWatchingForOnline();
-  holdAppWhileNoDeviceAnswers();
   handBackToReader();
   startCacheSync();
   initInboxRail();
   initToolbar();
   render(); // the hash route survives the gate, so deep links land where they point
+  // Last, because it reads the account as it starts listening: the machine that
+  // answered may have greeted a bridge no adapter here speaks to while the app
+  // was coming up, and the page it has earned is the version gate this stands.
+  holdAppWhileNoDeviceAnswers();
 }
 
 /** Give the page back to the reader: the shell is theirs again, the picker says
@@ -92,10 +95,17 @@ function handBackToReader() {
  * several going is the rail's business: its rows grey and the account carries
  * on. The last one going is the whole app's, because there is no longer a
  * machine for any surface to be about.
+ *
+ * The account is read as this starts listening as well as whenever it moves: a
+ * greeting settles while the app is still coming up, and a bridge no adapter
+ * here speaks to announces that once. A gate that only listened would wait for
+ * news that had already been told.
  */
 export function holdAppWhileNoDeviceAnswers() {
   stopWatchingDevices?.();
-  stopWatchingDevices = onDeviceStateChanged(() => (liveContexts().length ? leaveHold() : holdForDevices()));
+  const readAccount = () => (liveContexts().length ? leaveHold() : holdForDevices());
+  stopWatchingDevices = onDeviceStateChanged(readAccount);
+  readAccount();
 }
 
 /** Nothing can answer: the mounted view goes, and the screen says why. A

@@ -23,8 +23,14 @@ const refreshDevices = vi.fn(() => refresh());
 // the promise of the first one to answer. The fixture's `openSession` is the
 // one that answers.
 let securityStop = "";
+const landed = [];
 const openDeviceSessions = vi.fn(() => {
-  const first = openSession({ preferDeviceId: null });
+  // connection.js registers a machine with the device registry as it lands it;
+  // it is mocked out here, so answering is what puts a context on the registry.
+  const first = openSession({ preferDeviceId: null }).then((context) => {
+    landed.push(context);
+    return context;
+  });
   return { first, settled: first.then((context) => [context], () => []) };
 });
 const render = vi.fn();
@@ -67,6 +73,16 @@ vi.mock("../src/connection.js", () => ({
 }));
 // jsdom is neither a Mac nor a Linux desktop; the platform table has its own
 // test, and this one is about what the gate does with the key it is handed.
+// The registry as the gate reads it: every machine the fixture has answered
+// with. The gate reads it as it starts listening — a greeting can settle while
+// the app is still coming up — so a boot that answered has to be a boot the
+// registry knows about.
+vi.mock("../src/core/deviceContexts.js", () => ({
+  contextFor: (deviceId) => landed.find((context) => context.deviceId === deviceId) || null,
+  knownContexts: () => [...landed],
+  liveContexts: () => [...landed],
+  onDeviceStateChanged: () => () => {},
+}));
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "macos-arm64" }));
 vi.mock("../src/app.js", () => ({
   App: { devices: [], selectedDeviceId: null },
@@ -86,6 +102,7 @@ let boot;
 beforeEach(async () => {
   vi.clearAllMocks();
   devices = [];
+  landed.length = 0;
   securityStop = "";
   downloads = async () => DOWNLOADS;
   openSession = async () => ({});

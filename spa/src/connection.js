@@ -199,7 +199,11 @@ export function greetLiveBridge(context) {
  *  only replaces its transport), the feed starts reading it, the bridge is
  *  greeted, and the peer upgrade runs in the background. */
 function landSession(session) {
-  dropPeerLink(contextFor(session.deviceId)); // it was carrying the session this replaces
+  const previous = contextFor(session.deviceId);
+  dropPeerLink(previous); // it was carrying the session this one replaces
+  // A device holds one session: a resume and a device that came back online can
+  // both land one, and the socket that lost the race is nobody's.
+  if (previous?.session !== session) closeQuietly(previous?.session);
   const context = adoptDeviceSession(session);
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.

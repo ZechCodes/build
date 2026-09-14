@@ -208,6 +208,24 @@ describe("per-device connections", () => {
     expect(App.offline).toBe(false); // home is back, and the aliases say so
   });
 
+  it("hands back a resumed session for a device that came back another way", async () => {
+    await connectEveryDevice();
+    slowMs.set("dev-a", 1000);
+    goOffline("dev-a"); // the device's own resume starts waiting for it
+    await flush();
+    slowMs.delete("dev-a");
+
+    await setHomeDevice("dev-a"); // a connect that does not wait gets there first
+    const live = lastSession("dev-a");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const late = lastSession("dev-a");
+    expect(late).not.toBe(live);
+    expect(late.close).toHaveBeenCalled(); // nothing needs it: the device is live
+    expect(contextFor("dev-a").session).toBe(live);
+    expect(contextFor("dev-a").offline).toBe(false);
+  });
+
   it("connects a device that comes online after boot, without a reload", async () => {
     devices = [online("dev-a", "Laptop"), { id: "dev-b", name: "Desktop", status: "offline" }];
     App.devices = devices;

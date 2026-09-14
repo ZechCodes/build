@@ -24,6 +24,9 @@ import { forgetHomeFollow } from "./connection.js";
 import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
+// Which machines the rail lists (core/deviceFilter.js). Minted here, beside the
+// pick, because this is where both are read off the browser at boot.
+export const DEVICE_FILTER_KEY = "build.deviceFilter";
 
 export const App = {
   call: null, // RPC into the live E2EE session (session.call)
@@ -41,6 +44,10 @@ export const App = {
   gated: true, // gate screens own #root until a session is live
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
+  // Which machines the inbox, the projects face and the project menu list —
+  // null for all of them. It narrows lists and nothing else: no route, no
+  // session and no creation reads it.
+  deviceFilter: localStorage.getItem(DEVICE_FILTER_KEY) || null,
 
   // One-shot: set right before navigating to a branch just cut from the
   // toolbar's create form, so the branch view knows to focus the rail's

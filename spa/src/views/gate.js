@@ -8,7 +8,13 @@
 // it is waiting for, and hands it straight back when one of them lands.
 
 import { $ } from "../dom.js";
-import { allDevicesOfflineText, deviceUnreachableText, esc, waitingForDeviceText } from "../core/text.js";
+import {
+  allDevicesOfflineText,
+  deviceUnreachableText,
+  devicesNotReachedYetText,
+  esc,
+  waitingForDeviceText,
+} from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
 import { openDeviceSessions } from "../connection.js";
 import { contextFor, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
@@ -254,11 +260,7 @@ function paintWaiting(devices) {
   const list = $("#waitlist");
   if (!list) return;
   const intro = $("#waitintro");
-  if (intro) {
-    intro.textContent = devices.some((device) => device.status === "online")
-      ? "Your devices report online, but Build could not reach one yet. It will keep trying automatically — no need to refresh."
-      : "None of your devices are online right now. Start your bridge and Build will connect automatically — no need to refresh.";
-  }
+  if (intro) intro.textContent = waitingText(devices);
   const html = devices
     .map(
       (d) => `
@@ -272,27 +274,37 @@ function paintWaiting(devices) {
   if (list.innerHTML !== html) list.innerHTML = html;
 }
 
-/** Why the page is waiting, in the account's own words: an account with one
- *  machine names it, and says when it went unreachable; an account with several
- *  says the thing that is true of all of them.
+/** Why the page is waiting, one sentence per situation. A machine the account
+ *  calls online that this client has never opened is a handshake still to
+ *  happen, so nothing has gone; once every such machine has been reached and
+ *  lost, the account has run out — named when there is one machine to name,
+ *  and said of all of them when there are several.
  *
- *  It is the account's own list that decides, not what this client happens to
- *  hold. A machine that was already down when the page loaded was never opened
- *  here and has no context, so counting contexts read an account of two
- *  machines as an account of one — and named whichever of them this client had
- *  reached. */
-function waitingText() {
-  if (App.devices.length !== 1) return allDevicesOfflineText();
-  const [device] = App.devices;
-  return deviceUnreachableText(device.name, contextFor(device.id)?.offlineSince || Date.now());
-}
+ *  It is the account's own list that decides which of those it is, not what
+ *  this client happens to hold. A machine that was already down when the page
+ *  loaded was never opened here and has no context, so counting contexts read
+ *  an account of two machines as an account of one — and named whichever of
+ *  them this client had reached. */
+const WAITING_TEXT = {
+  unreached: devicesNotReachedYetText,
+  lone: (devices) => deviceUnreachableText(devices[0].name, contextFor(devices[0].id)?.offlineSince || Date.now()),
+  all: allDevicesOfflineText,
+};
+
+const waitingSituation = (devices) => {
+  const unreached = devices.some((device) => device.status === "online" && !contextFor(device.id));
+  if (unreached) return "unreached";
+  return devices.length === 1 ? "lone" : "all";
+};
+
+const waitingText = (devices) => WAITING_TEXT[waitingSituation(devices)](devices);
 
 function renderWaiting(devices) {
   setGate(true);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
       <h1 style="margin:0 0 6px">${esc(waitingForDeviceText(devices.length))}</h1>
-      <p class="settings-intro" id="waitintro" style="margin:0 0 18px">${esc(waitingText())}</p>
+      <p class="settings-intro" id="waitintro" style="margin:0 0 18px">${esc(waitingText(devices))}</p>
       <div class="panel"><div id="waitlist"></div></div>
       <div class="row" style="margin-top:14px"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
         <button class="btn" id="retrybtn" style="margin-left:auto">Retry now</button>

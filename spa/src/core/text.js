@@ -66,6 +66,12 @@ export const waitingForDeviceText = (deviceCount) =>
 export const allDevicesOfflineText = () =>
   "All devices are offline — tasks will resume when one reconnects.";
 
+/** What it says while the account calls a machine online and this client has
+ *  not got through to it yet — a boot still in the handshake, or one that
+ *  failed. Nothing has gone offline, so nothing is named as having gone. */
+export const devicesNotReachedYetText = () =>
+  "Your devices report online, but Build could not reach one yet. It will keep trying automatically — no need to refresh.";
+
 /** Human-scale age: <60s "just now", <1h "Nm ago", <1d "Nh ago", else "Nd ago". */
 export function humanAge(seconds) {
   const s = Math.max(0, Math.floor(seconds || 0));

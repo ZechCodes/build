@@ -94,6 +94,10 @@ function fakeSession(deviceId) {
     call: vi.fn(async (method) => {
       if (method === "board.list") return { items: [{ id: `${deviceId}-row`, project_id: "proj-1", title: "Work" }] };
       if (method === "project.list") return { projects: [{ project_id: "proj-1", name: `${deviceId} repo` }] };
+      // The rail lists workspaces, so a machine with none paints no rows at
+      // all: each one keeps a checkout of the project both machines name.
+      if (method === "workspace.list")
+        return { workspaces: [{ workspace_id: `${deviceId}-workspace`, project_id: "proj-1", title: "Work", state: "running" }] };
       return {};
     }),
     peer: vi.fn(),
@@ -173,7 +177,7 @@ function projectsOffered() {
 /** Whether the gate is holding the app: nothing can answer, so there is no
  *  route to stand on and the waiting screen owns the page. */
 const held = () => document.body.classList.contains("gated");
-const waitingNote = () => document.getElementById("waitnote")?.textContent || "";
+const waitingNote = () => document.getElementById("waitintro")?.textContent || "";
 const waitingHeading = () => document.querySelector("#root h1")?.textContent || "";
 const liveIds = () => liveContexts().map((context) => context.deviceId);
 

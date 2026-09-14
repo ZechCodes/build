@@ -1,21 +1,28 @@
-// Where a pre-redesign URL waits. Those URLs name a run, a worktree, a plan or
-// a primary checkout by id; the new ones name a branch by (project, branch) or
-// an issue by (project, issue). The feed carries both halves, so this surface
-// holds the screen for one snapshot, rewrites the hash to the work item the id
-// belongs to, and gets out of the way. Nothing carries it → the inbox.
+// Where a URL that does not say enough waits. A pre-redesign URL names a run, a
+// worktree, a plan or a primary checkout by id; the new ones name a branch by
+// (project, branch) and an issue by (project, issue), and a work URL that names
+// no device names a project every machine mints its own `proj-1` of. The feed
+// carries what is missing, so this surface holds the screen until the devices
+// that can answer have, rewrites the hash to the work item, and gets out of the
+// way. Nothing carries it → the inbox.
 //
-// Those URLs name one machine's work — the home device's, until a route can
-// name its own — so the rows they are looked up in are that machine's: every
-// machine mints a `proj-1`, and a primary checkout is named by its project
-// alone. Which is also why it waits for that machine's own answer and not
-// merely for the first one to arrive.
+// Which machine's copy a link opens when several carry it is the same policy
+// creation follows: the home device, else the first device the account lists
+// that is online (core/routeResolve.js).
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { resolveLegacyRoute } from "../core/routeResolve.js";
-import { homeContext, deviceFeedView } from "../core/deviceContexts.js";
+import { homeDeviceId } from "../core/devicePolicy.js";
+import { liveContexts } from "../core/deviceContexts.js";
 import "../styles/shell.css";
+
+/** Which device wins a link several of them could open. */
+const devicePolicy = () => ({
+  homeDeviceId: homeDeviceId(App.devices, App.selectedDeviceId),
+  deviceOrder: App.devices.filter((device) => device.status === "online").map((device) => device.id),
+});
 
 export function renderResolving() {
   const root = $("#root");
@@ -30,7 +37,7 @@ export function renderResolving() {
   const unsubscribe = subscribeFeed((feed) => {
     if (settled || !answersThisLink(feed)) return;
     settled = true;
-    go(resolveLegacyRoute(reference, deviceFeedView(feed).items) || { name: "inbox" });
+    go(resolveLegacyRoute(reference, feed, devicePolicy()) || { name: "inbox" });
   });
   App.viewDispose = unsubscribe;
 }
@@ -39,14 +46,17 @@ export function renderResolving() {
  * Whether this snapshot is the one to look the link up in.
  *
  * Every device seeds from its cache and answers on its own schedule, so the
- * first snapshot delivered is usually somebody else's rows and says nothing
- * about a link that names the home device's work. Wait for that device's own
- * answer — unless it is in no position to give one, where the boot paint it
- * left behind is everything there is and a link has to land somewhere.
+ * first snapshot delivered is usually one machine's rows and says nothing about
+ * whether another one holds a better answer to the same id. Wait until every
+ * device that can answer has — unless none is in a position to, where the boot
+ * paint they left behind is everything there is and a link has to land
+ * somewhere.
  */
 function answersThisLink(feed) {
-  const home = homeContext();
-  if (!home?.session || home.offline) return true;
-  const view = feed.devices?.[home.deviceId];
-  return Boolean(view) && !view.cached;
+  const live = liveContexts();
+  if (!live.length) return true;
+  return live.every((context) => {
+    const view = feed.devices?.[context.deviceId];
+    return Boolean(view) && !view.cached;
+  });
 }

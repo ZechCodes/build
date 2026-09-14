@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// Where a pre-redesign URL waits. Those URLs name one machine's checkout — the
-// home device's, until a route can name its own — so the rows they are looked
-// up in are that machine's and not every device's at once. Every machine mints
-// a `proj-1`, so `#/p/proj-1/changes` says nothing about which one.
+// Where a URL that does not say enough waits. A pre-redesign URL names a run, a
+// worktree, a plan or a primary checkout by id; a work URL with no device in it
+// names a project every machine has its own `proj-1` of. Either way the answer
+// is in the feed — once the devices that can answer have.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -28,6 +28,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
+const { routeFromHash } = await import("../src/core/router.js");
 const { renderResolving } = await import("../src/views/resolving.js");
 const contexts = await import("../src/core/deviceContexts.js");
 
@@ -39,6 +40,16 @@ const primaryRow = (deviceId, branch) => ({
   worktree_id: `wt-${deviceId}`,
   deviceId,
 });
+
+/** A device with an open session, the way the connection registers one. */
+const openSession = (deviceId) =>
+  contexts.adoptDeviceSession({
+    deviceId,
+    call: async () => ({}),
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
+  });
 
 /** A poll answering, the way the feed delivers one: this snapshot, to whoever
  *  the surface subscribed with. */
@@ -52,7 +63,7 @@ function merge(views) {
   const entries = Object.entries(views);
   return {
     items: entries.flatMap(([, view]) => view.items || []),
-    projects: [],
+    projects: entries.flatMap(([, view]) => view.projects || []),
     devices: Object.fromEntries(entries.map(([deviceId, view]) => [deviceId, { projects: [], ...view }])),
   };
 }
@@ -66,20 +77,13 @@ beforeEach(() => {
     { id: "dev-2", name: "Desktop", status: "online" },
     { id: "dev-1", name: "This device", status: "online" },
   ];
-  contexts.setHomeContext(
-    contexts.adoptDeviceSession({
-      deviceId: "dev-1",
-      call: async () => ({}),
-      close: () => {},
-      peer: () => {},
-      onCarrier: () => {},
-    }),
-  );
+  App.selectedDeviceId = "dev-1";
 });
 
 afterEach(() => {
   contexts.resetDeviceContexts();
   App.devices = [];
+  App.selectedDeviceId = null;
   if (App.viewDispose) App.viewDispose();
   App.viewDispose = null;
 });
@@ -87,49 +91,82 @@ afterEach(() => {
 describe("a legacy URL on an account with more than one device", () => {
   it("opens the home device's checkout, not the one that sorts first", async () => {
     // The desktop's own `p1` sorts first in the merge.
+    openSession("dev-1");
+    openSession("dev-2");
     const theirs = primaryRow("dev-2", "their-main");
     const mine = primaryRow("dev-1", "main");
-    feedSnapshot = {
-      items: [theirs, mine],
-      projects: [],
-      devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [mine], projects: [] } },
-    };
+    feedSnapshot = merge({ "dev-2": { items: [theirs] }, "dev-1": { items: [mine] } });
     App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
 
     renderResolving();
 
-    expect(App.route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
+    expect(App.route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
   });
 
   // Every device seeds from its cache and answers on its own schedule, so the
-  // first snapshot delivered is often somebody else's. Resolving on it would
+  // first snapshot delivered is often only one of them. Resolving on it would
   // drop a bookmark on the inbox while the rows that answer it are one poll
-  // away.
-  it("waits for the home device to answer rather than resolving on another one", async () => {
+  // away — or open the wrong machine's copy of the same project id.
+  it("waits until every live device has answered rather than resolving on the first one", async () => {
+    openSession("dev-1");
+    openSession("dev-2");
     const theirs = primaryRow("dev-2", "their-main");
     const mine = primaryRow("dev-1", "main");
     feedSnapshot = merge({ "dev-2": { items: [theirs] } });
     App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
 
     renderResolving();
-    expect(App.route.name).toBe("resolve"); // the desktop says nothing about this link
+    expect(App.route.name).toBe("resolve"); // this device has not said anything yet
 
     deliverFeed(merge({ "dev-2": { items: [theirs] }, "dev-1": { items: [mine] } }));
 
-    expect(App.route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
+    expect(App.route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
   });
 
-  // The boot paint is not the home device answering — but when that device
-  // cannot answer at all, it is everything there is, and a link has to land
-  // somewhere rather than spin.
-  it("resolves from the boot paint when the home device is offline", async () => {
-    const mine = primaryRow("dev-1", "main");
+  // A boot paint is nobody answering — but when no device is in a position to
+  // answer, it is everything there is, and a link has to land somewhere rather
+  // than spin.
+  it("resolves from the boot paint when no device is live", async () => {
+    App.devices = [{ id: "dev-1", name: "This device", status: "offline" }];
+    openSession("dev-1");
     contexts.setContextOffline("dev-1");
+    const mine = primaryRow("dev-1", "main");
     feedSnapshot = merge({ "dev-1": { items: [mine], cached: true } });
     App.route = { name: "resolve", kind: "primary", projectId: "p1", tab: "changes" };
 
     renderResolving();
 
-    expect(App.route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
+    expect(App.route).toEqual({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
+  });
+});
+
+// A link somebody sent before routes carried a device, or one typed by hand:
+// the project id is one every machine mints, so the account is searched and the
+// home device wins.
+describe("a work link with no device in it", () => {
+  it("lands on the home device's copy of the project", async () => {
+    openSession("dev-1");
+    openSession("dev-2");
+    const theirs = { kind: "branch", project_id: "p1", branch: "main", deviceId: "dev-2" };
+    const mine = { kind: "branch", project_id: "p1", branch: "main", deviceId: "dev-1" };
+    feedSnapshot = merge({ "dev-2": { items: [theirs] }, "dev-1": { items: [mine] } });
+    App.route = routeFromHash("#/project/p1/branch/main/files?path=a%2Fb");
+    expect(App.route.kind).toBe("project");
+
+    renderResolving();
+
+    expect(App.route).toEqual({
+      name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "files", file: "a/b",
+    });
+  });
+
+  it("finds a plain folder that has no work row on any device", async () => {
+    openSession("dev-2");
+    feedSnapshot = merge({ "dev-2": { items: [], projects: [{ id: "p1", name: "notes", deviceId: "dev-2" }] } });
+    App.route = routeFromHash("#/project/p1/branch/main/files");
+
+    renderResolving();
+
+    expect(App.route).toEqual({ name: "branch", deviceId: "dev-2", projectId: "p1", branch: "main", tab: "files" });
   });
 });

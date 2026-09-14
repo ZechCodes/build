@@ -46,10 +46,15 @@ function workspaceFacts(summary) {
 
 const firstText = (...values) => values.find(Boolean) || "";
 
+/** How a workspace row is named in the rail's DOM and in every set the wiring
+ *  keeps beside it. Minted here, beside `entryKeyOf`, so the row a paint draws
+ *  and the row an error or a live-key sweep names are the same row. */
+export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspaceKey}`;
+
 function toWorkspaceEntry(workspace, projectNames, conversation) {
   const activity = conversation || { working: workspace.status === "active" };
   return {
-    key: `workspace:${workspace.workspaceKey}`,
+    key: workspaceEntryKey(workspace),
     kind: "workspace",
     workspaceId: workspace.id,
     workspaceKey: workspace.workspaceKey,

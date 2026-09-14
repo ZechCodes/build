@@ -29,6 +29,7 @@ import {
   recentIsOpen,
   recentToggleHtml,
   workspaceEntries,
+  workspaceEntryKey,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
@@ -623,7 +624,7 @@ export function mountInboxList() {
     workspaces = snapshot.workspaces || [];
     const live = new Set([
       ...items.map(entryKeyOf),
-      ...workspaces.map((workspace) => `workspace:${workspace.workspaceKey}`),
+      ...workspaces.map(workspaceEntryKey),
     ]);
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
     const merged = mergedItems();

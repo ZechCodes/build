@@ -235,7 +235,7 @@ let followedHomeId = null;
  *  terminals ride, what the picker names, and who is offered the captures
  *  nobody could send. Everything a home move touches happens here, once. */
 function followHomeContext(context) {
-  followedHomeId = context?.deviceId || null;
+  followedHomeId = context.deviceId;
   pointAliasesAt(context);
   // The terminal socket reads the device it wants only as it connects, and a
   // healthy one never reconnects on its own: home moving is one of the two
@@ -247,7 +247,7 @@ function followHomeContext(context) {
   // the snapshot it was last handed. Home moving is news about all of them and
   // about no bridge, so it is told from what the devices have already said.
   deliverFeed();
-  if (!context?.session || context.offline) return;
+  if (!context.session || context.offline) return;
   // The gate's first session, a reconnect, a new home device: this is where
   // captures taken with no device to send them to are handed over.
   flushCaptures().catch(() => {

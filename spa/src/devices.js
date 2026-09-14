@@ -7,7 +7,7 @@ import { ICON_CHEVRON_DOWN, ICON_SETTINGS } from "./core/icons.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
-import { switchDevice } from "./connection.js";
+import { openDeviceSessions, setHomeDevice } from "./connection.js";
 
 export async function refreshDevices() {
   App.devices = await fetchDevices();
@@ -40,10 +40,12 @@ export function markDeviceOnline(deviceId) {
     refreshDevices();
     return;
   }
-  if (device.status !== "online") {
-    device.status = "online";
-    paintDevicePicker();
-  }
+  if (device.status === "online") return;
+  device.status = "online";
+  paintDevicePicker();
+  // A device that came up after boot joins the account's inbox here, without a
+  // reload: every online device with no live session is opened.
+  openDeviceSessions();
 }
 
 export function markDeviceOffline(deviceId) {
@@ -93,19 +95,19 @@ function setPickerOpen(picker, open) {
   picker.querySelector(".device-picker-toggle").setAttribute("aria-expanded", String(open));
 }
 
-let switchingDevice = false;
+let movingHome = false;
 async function selectDevice(picker, deviceId) {
-  if (switchingDevice) return;
-  switchingDevice = true;
+  if (movingHome) return;
+  movingHome = true;
   setPickerOpen(picker, false);
   try {
-    await switchDevice(deviceId);
+    await setHomeDevice(deviceId);
     paintDevicePicker();
   } catch {
     paintDevicePicker();
     picker.querySelector(".device-picker-error").textContent = "Device unreachable. Try again when it is online.";
   } finally {
-    switchingDevice = false;
+    movingHome = false;
   }
 }
 

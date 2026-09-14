@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 // The upgrade policy, in the order the spec sets it out: connect on the relay,
 // upgrade in the background, migrate both streams when the two channels open,
-// fall back together when they go, and never retry in a loop.
+// fall back together when they go, and never retry in a loop. With a session per
+// device, each device's link is its own — and only the home device's may carry
+// the terminals.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -45,9 +47,15 @@ vi.mock("../src/core/changeEvents.js", () => ({
 }));
 const changed = [];
 const { App, disposeApplicationScope } = await import("../src/app.js");
-const { adoptSession, greetLiveBridge, openAppSession, openDeviceSettingsSession } = await import("../src/connection.js");
+const { claimHomeContext, goOffline, greetLiveBridge, openDeviceSessions, openDeviceSettingsSession } = await import(
+  "../src/connection.js"
+);
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const settle = async () => {
+  await tick();
+  await tick();
+};
 
 /** A carrier as the policy sees it: something to hand over, and a way to say it
  *  is gone. */
@@ -56,11 +64,13 @@ function fakeCarrier(name) {
   return { name, onClose: (fn) => (onClose = fn), drop: () => onClose(), send: () => {}, onEnvelope: () => {} };
 }
 
-function fakeSession() {
+function fakeSession(deviceId = "dev-a") {
   const listeners = new Set();
   return {
-    deviceId: "dev-a",
-    call: vi.fn(async () => ({})),
+    deviceId,
+    // Every answer says which device gave it, so an upgrade can tell the two
+    // bridges apart over its own signaling channel.
+    call: vi.fn(async () => ({ deviceId })),
     peer: vi.fn(),
     onPush: (fn) => {
       listeners.add(fn);
@@ -84,12 +94,48 @@ const takeCandidate = (deliver) => (push) => {
   if (push.type === "rtc.ice") deliver(push.candidate);
 };
 
+const opened = []; // every relay options bag, in the order the app asked for them
+
+/** Answer each device with the session written for it. */
+function relayAnswers(sessions) {
+  relay.openRelaySession.mockImplementation(async (options) => {
+    opened.push(options);
+    const session = sessions.find((one) => one.deviceId === options.preferDeviceId);
+    if (!session) throw new Error(`no session for ${options.preferDeviceId}`);
+    return session;
+  });
+}
+
+/** Boot the account: every device online, opened at once, and the first one to
+ *  answer is home — what the gate does. */
+async function connect(...sessions) {
+  App.devices = sessions.map((session) => ({ id: session.deviceId, name: "Machine", status: "online" }));
+  relayAnswers(sessions);
+  const opening = openDeviceSessions();
+  claimHomeContext(await opening.first);
+  const contexts = await opening.settled;
+  await settle();
+  return contexts;
+}
+
+/** Lose a live device and let it come back on another session — the one path
+ *  that replaces the session a link was opened for. */
+async function loseAndReturn(replacement) {
+  relayAnswers([replacement]);
+  goOffline(replacement.deviceId);
+  await settle();
+}
+
 beforeEach(() => {
   disposeApplicationScope();
-  document.body.innerHTML = '<div id="offbar"><span id="offbar-text"></span></div><div id="conn"></div>';
+  document.body.innerHTML = '<div id="offbar" hidden><span id="offbar-text"></span></div><div id="conn"></div>';
+  document.body.className = "";
   changed.length = 0;
+  opened.length = 0;
   App.offline = false;
   App.session = null;
+  App.devices = [];
+  App.selectedDeviceId = null;
   globalThis.RTCPeerConnection = class {};
   for (const spy of [peerLink.open, api.fetchIceServers, terminals.terminalsRideOn, relay.openRelaySession]) {
     spy.mockReset();
@@ -102,14 +148,13 @@ beforeEach(() => {
 describe("the upgrade policy", () => {
   it("applies the live bridge's operation capability to its chat repository", async () => {
     delete globalThis.RTCPeerConnection;
-    const session = fakeSession();
-    adoptSession(session);
+    const [context] = await connect(fakeSession());
     greetings.greet.mockImplementationOnce(async (_call, { onGreeting }) => {
       onGreeting({ thread_post_operations: { version: 1, status_method: "thread.operation" } });
       return true;
     });
 
-    await greetLiveBridge();
+    await greetLiveBridge(context);
 
     expect(App.chatRepository.threadPostOperations()).toEqual({
       version: 1,
@@ -126,8 +171,7 @@ describe("the upgrade policy", () => {
     });
     const session = fakeSession();
 
-    adoptSession(session);
-    await tick();
+    await connect(session);
 
     expect(api.fetchIceServers).toHaveBeenCalledTimes(1);
     // The session routes `rtc.*` to the relay itself: this layer just calls it.
@@ -144,9 +188,7 @@ describe("the upgrade policy", () => {
     });
     const session = fakeSession();
 
-    adoptSession(session);
-    await tick();
-    await tick();
+    await connect(session);
 
     expect(session.peer).not.toHaveBeenCalled();
     // Nothing was handed a channel to ride — only the release of whatever the
@@ -159,8 +201,7 @@ describe("the upgrade policy", () => {
     const link = fakeLink();
     peerLink.open.mockResolvedValue(link);
     const session = fakeSession();
-    adoptSession(session);
-    await tick();
+    await connect(session);
     session.peer.mockClear();
     terminals.terminalsRideOn.mockClear();
 
@@ -174,11 +215,10 @@ describe("the upgrade policy", () => {
   it("gives the peer path up when the session it upgraded is replaced", async () => {
     const link = fakeLink();
     peerLink.open.mockResolvedValue(link);
-    adoptSession(fakeSession());
-    await tick();
+    await connect(fakeSession());
 
     peerLink.open.mockResolvedValue(fakeLink());
-    adoptSession(fakeSession());
+    await loseAndReturn(fakeSession());
 
     expect(link.close).toHaveBeenCalledTimes(1);
     expect(terminals.terminalsRideOn).toHaveBeenCalledWith(null);
@@ -192,20 +232,13 @@ describe("the upgrade policy", () => {
       return link;
     });
     const session = fakeSession();
-    const options = [];
-    relay.openRelaySession.mockImplementation(async (o) => {
-      options.push(o);
-      return session;
-    });
-    await openAppSession();
-    adoptSession(session);
-    await tick();
+    await connect(session);
 
     // The session hands every push to both: the link takes the candidates, and
     // the surfaces are told about everything that is not signaling.
     session.push({ type: "rtc.ice", candidate: { candidate: "candidate:1 1 udp" } });
-    options[0].onPush({ type: "rtc.ice", candidate: { candidate: "candidate:1 1 udp" } });
-    options[0].onPush({ type: "entity.changed", id: "run-7" });
+    opened[0].onPush({ type: "rtc.ice", candidate: { candidate: "candidate:1 1 udp" } });
+    opened[0].onPush({ type: "entity.changed", id: "run-7" });
 
     expect(deliverCandidate).toEqual({ candidate: "candidate:1 1 udp" });
     // Every push carries the device it came from: the session was opened for
@@ -215,8 +248,7 @@ describe("the upgrade policy", () => {
 
   it("does not reach for a peer connection a browser does not have", async () => {
     delete globalThis.RTCPeerConnection;
-    adoptSession(fakeSession());
-    await tick();
+    await connect(fakeSession());
     expect(peerLink.open).not.toHaveBeenCalled();
   });
 
@@ -224,8 +256,7 @@ describe("the upgrade policy", () => {
     const link = fakeLink();
     peerLink.open.mockResolvedValue(link);
     const session = fakeSession();
-    adoptSession(session);
-    await tick();
+    await connect(session);
     session.peer.mockClear();
     terminals.terminalsRideOn.mockClear();
 
@@ -239,24 +270,39 @@ describe("the upgrade policy", () => {
   it("keeps each upgrade's candidates its own when one overtakes another", async () => {
     const links = [fakeLink(), fakeLink()];
     const delivered = [];
-    let opened = 0;
+    let opening = 0;
     const sessions = [fakeSession(), fakeSession()];
     peerLink.open.mockImplementation(async ({ onPush }) => {
-      const mine = opened++;
+      const mine = opening++;
       // A real link gives its subscription back when it is torn down, and takes
       // back its own and nobody else's.
       links[mine].close.mockImplementation(onPush(takeCandidate((c) => delivered.push([mine, c]))));
       return links[mine];
     });
 
-    adoptSession(sessions[0]);
-    await tick();
-    adoptSession(sessions[1]); // the first link is torn down as this one is adopted
-    await tick();
+    await connect(sessions[0]);
+    await loseAndReturn(sessions[1]); // the first link is torn down as this one is adopted
 
     sessions[0].push({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
     sessions[1].push({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
     expect(delivered).toEqual([[1, { candidate: "candidate:9 1 udp" }]]);
+  });
+
+  it("hands the terminal channel over only from the home device's link", async () => {
+    const links = { "dev-a": fakeLink(), "dev-b": fakeLink() };
+    peerLink.open.mockImplementation(async ({ signal }) => links[(await signal("rtc.hello", {})).deviceId]);
+    const home = fakeSession("dev-a");
+    const other = fakeSession("dev-b");
+
+    await connect(home, other);
+
+    // Both devices ride their own app channel; the terminal stream is one
+    // socket on one machine, so only home's term channel is handed over.
+    expect(home.peer).toHaveBeenCalledWith(links["dev-a"].app);
+    expect(other.peer).toHaveBeenCalledWith(links["dev-b"].app);
+    const handedOver = terminals.terminalsRideOn.mock.calls.flat().filter(Boolean);
+    expect(handedOver).toHaveLength(1);
+    expect(handedOver[0]).toBe(links["dev-a"].term);
   });
 });
 

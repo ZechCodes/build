@@ -32,9 +32,12 @@ vi.mock("../src/devices.js", () => ({
   refreshDevices: (...args) => refreshDevices(...args),
   paintDevicePicker: () => {},
 }));
+// The gate opens every online device at once and carries on the moment the
+// first one answers; the context it is handed is what the app calls home.
+const homeContext = { deviceId: "d1", session: {}, call: async () => ({}) };
 vi.mock("../src/connection.js", () => ({
-  openAppSession: async () => ({}),
-  adoptSession: () => {},
+  openDeviceSessions: () => ({ first: Promise.resolve(homeContext), settled: Promise.resolve([homeContext]) }),
+  claimHomeContext: () => {},
   greetLiveBridge: () => {},
   setConn: () => {},
 }));

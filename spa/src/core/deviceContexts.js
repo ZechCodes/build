@@ -89,6 +89,7 @@ export function retireDeviceContext(deviceId) {
   if (!context) return null;
   contexts.delete(deviceId);
   if (homeDevice === deviceId) homeDevice = null;
+  clearTimeout(context.reconnect.timer); // a retired device stops trying to come back
   context.chatRepository?.dispose();
   dropFeedDevice(deviceId);
   disarmChangeEvents(deviceId);

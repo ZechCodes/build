@@ -4,9 +4,8 @@
 
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
-import { onlineStickyDeviceId } from "../core/devicePolicy.js";
 import { App, render } from "../app.js";
-import { openAppSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
+import { claimHomeContext, greetLiveBridge, openDeviceSessions, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -31,15 +30,18 @@ function setGate(on) {
 
 async function enterApp() {
   if (App._connecting) return;
+  let home = null;
   App._connecting = true;
   try {
-    // Honor an explicit device choice when that device is online; otherwise
-    // whichever of the user's devices answers first.
-    const preferDeviceId = onlineStickyDeviceId(App.devices, App.selectedDeviceId);
-    adoptSession(await openAppSession({ preferDeviceId }));
+    // Every online device is opened at once; the app comes up on whichever
+    // answers first rather than waiting out the slowest one. A sticky device
+    // that is online claims home as it lands, so this only names one when
+    // nobody has.
+    home = await openDeviceSessions().first;
   } finally {
     App._connecting = false;
   }
+  claimHomeContext(home);
   if (App._watch) {
     clearInterval(App._watch);
     App._watch = null;
@@ -50,7 +52,7 @@ async function enterApp() {
   // Before the surfaces mount, so they take the cadence this bridge earns: a
   // bridge that pushes lets them stand down to the safety poll, and one that
   // does not leaves every interval exactly where it has always been.
-  greetLiveBridge();
+  greetLiveBridge(home);
   startFeed();
   startCacheSync();
   initInboxRail();

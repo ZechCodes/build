@@ -39,8 +39,8 @@ export function terminalManager() {
       WebSocketImpl: WebSocket,
       getToken: fetchGatewayToken,
       getPinnedDeviceKey: pinnedDeviceTransportKey,
-      // The terminals follow the app session's device (falling back to the
-      // user's sticky choice), re-evaluated on every reconnect; switchDevice
+      // The terminals follow the home device's session (falling back to the
+      // user's sticky choice), re-evaluated on every reconnect; setHomeDevice
       // calls retargetTerminals() to force that reconnect.
       preferDeviceId: () => App.session?.deviceId || App.selectedDeviceId || null,
     });
@@ -73,7 +73,7 @@ export function terminalsRideOn(carrier) {
 }
 
 /**
- * Re-point the terminal socket at the app session's (new) device. A healthy
+ * Re-point the terminal socket at the home device. A healthy
  * socket never reconnects on its own — the liveness ping keeps it pinned to the
  * old device — so a device switch must drop it; the auto-reconnect then re-reads
  * preferDeviceId, attaches to the new device, and re-attaches every open tab.

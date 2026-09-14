@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { App, go, switchDevice } = vi.hoisted(() => ({ App: {}, go: vi.fn(), switchDevice: vi.fn() }));
+const { App, go, setHomeDevice } = vi.hoisted(() => ({ App: {}, go: vi.fn(), setHomeDevice: vi.fn() }));
 vi.mock("../src/app.js", () => ({ App, go }));
 vi.mock("../src/api.js", () => ({ fetchDevices: vi.fn() }));
-vi.mock("../src/connection.js", () => ({ switchDevice, setConn: vi.fn() }));
+vi.mock("../src/connection.js", () => ({ setHomeDevice, openDeviceSessions: vi.fn(), setConn: vi.fn() }));
 vi.mock("../src/core/inboxView.js", () => ({ inboxListRouteChanged: vi.fn(), mountInboxList: vi.fn(), setInboxView: vi.fn() }));
 import { initDevicePicker, paintDevicePicker } from "../src/devices.js";
 beforeEach(() => {
@@ -29,13 +29,13 @@ describe("custom device picker", () => {
     document.querySelector(".device-picker-toggle").click();
     document.querySelector('[data-settings-device="b"]').click();
     expect(go).toHaveBeenCalledWith({ name: "device", id: "b" });
-    expect(switchDevice).not.toHaveBeenCalled();
+    expect(setHomeDevice).not.toHaveBeenCalled();
     expect(document.querySelector(".device-picker-menu").hidden).toBe(true);
   });
-  it("switches devices from the device action", async () => {
+  it("sets the home device from the device action", async () => {
     document.querySelector(".device-picker-toggle").click();
     document.querySelector('[data-select-device="b"]').click();
-    expect(switchDevice).toHaveBeenCalledWith("b");
+    expect(setHomeDevice).toHaveBeenCalledWith("b");
   });
   it("supports arrow navigation and Escape returns focus to the trigger", () => {
     const toggle = document.querySelector(".device-picker-toggle");

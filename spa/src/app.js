@@ -21,6 +21,7 @@ import {
   retireDeviceContext,
 } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
+import { forgetHomeFollow } from "./connection.js";
 import { followTerminalDevice, terminalDeviceId } from "./terminal/manager.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
@@ -133,8 +134,9 @@ export function disposeApplicationScope() {
   resetDeviceContexts();
   shimmedDeviceId = null;
   // The terminals are on nobody now, so the next route that names a device is a
-  // move however familiar the name.
+  // move however familiar the name, and home has been followed for nobody.
   terminalRouteDeviceId = null;
+  forgetHomeFollow();
   clearCacheScope();
   pointAliasesAt(null);
   App.modelCatalog = null;

@@ -66,6 +66,7 @@ function createDeviceContext(deviceId) {
     adapter: null, // the API adapter this bridge's greeting installed, or null
     apiVersion: null, // the `api_version` it greeted with
     unsupported: null, // "app" | "bridge" when no adapter here speaks to it
+    greeted: null, // this session's greeting, once one is in flight (connection.js)
     offline: false, // written only by setContextOffline (connection.js owns the policy)
     offlineSince: null,
     peerLink: null,
@@ -104,6 +105,7 @@ export function adoptBridgeSelection(context, selection, adapter) {
   context.adapter = adapter || null;
   context.apiVersion = selection?.version || null;
   context.unsupported = selection?.unsupported || null;
+  releaseGreeting(context); // this bridge has said what it speaks
   announceDeviceState(); // an unsupported bridge is a machine that cannot answer
   return context;
 }
@@ -113,6 +115,38 @@ function forgetBridgeSelection(context) {
   context.adapter = null;
   context.apiVersion = null;
   context.unsupported = null;
+  releaseGreeting(context); // whoever was waiting on the last one waits on the next
+  armGreeting(context);
+}
+
+// What releases each device's armed greeting, kept beside the contexts rather
+// than on them: a promise's own settle is not something a surface should be
+// able to reach for.
+const greetingReleases = new Map(); // context → release
+
+/**
+ * Arm this device's greeting: the promise a reader that must not ask before the
+ * bridge has answered waits on.
+ *
+ * A session is adopted before it is greeted, and the machine answering a
+ * reconnect may not be the one that answered last — a bridge is restarted,
+ * updated, or replaced — so what the last greeting settled says nothing about
+ * this one. The feed is the reader (core/taskFeed.js): it goes to the session
+ * directly, so it is the one read that would otherwise be sent before this
+ * bridge had said which API major it speaks.
+ */
+function armGreeting(context) {
+  context.greeted = new Promise((release) => greetingReleases.set(context, release));
+}
+
+/** This device's greeting has settled, however it settled: an adapter was
+ *  selected, a side was named behind, or the session died with nothing said.
+ *  connection.js releases that last one, so a lost greeting never leaves a
+ *  device unread. */
+export function releaseGreeting(context) {
+  if (!context) return;
+  greetingReleases.get(context)?.();
+  greetingReleases.delete(context);
 }
 
 /**
@@ -198,6 +232,7 @@ export function retireDeviceContext(deviceId) {
   closeQuietly(context.session);
   context.session = null;
   context.call = null;
+  releaseGreeting(context); // nothing will greet it now
   announceDeviceState(); // this device can answer nothing, ever again
   return context;
 }

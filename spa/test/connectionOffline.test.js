@@ -79,6 +79,10 @@ const away = (id, name) => ({ ...online(id, name), status: "offline" });
 
 const openedFor = (deviceId) => opened.filter((options) => options.preferDeviceId === deviceId);
 
+/** How many times this machine's bridge has been asked for its board. */
+const boardReads = (deviceId) =>
+  (lastSession(deviceId)?.call.mock.calls || []).filter(([method]) => method === "board.list").length;
+
 let opened = [];
 let unreachable = new Set();
 // Machines the relay offers a key for that is not the key this account pinned.
@@ -88,12 +92,18 @@ const handedOut = new Map(); // deviceId → the sessions that device was given,
 
 const lastSession = (deviceId) => (handedOut.get(deviceId) || []).at(-1);
 
+// What a machine's bridge does when it is greeted, where a case wants to say:
+// answer when the test lets it, or refuse `session.hello` the way a bridge that
+// predates it does. Unnamed machines answer at once.
+const greetings = new Map(); // deviceId → () => Promise
+
 /** A bridge session as the connection layer uses it: something to call, a
  *  carrier to hand over, and a way to say it is gone. */
 function fakeSession(deviceId) {
   const session = {
     deviceId,
     call: vi.fn(async (method) => {
+      if (method === "session.hello" && greetings.has(deviceId)) return greetings.get(deviceId)();
       if (method === "board.list") return { items: [{ id: `${deviceId}-row`, project_id: "proj-1", title: "Work" }] };
       if (method === "project.list") return { projects: [{ project_id: "proj-1", name: `${deviceId} repo` }] };
       // The rail lists workspaces, so a machine with none paints no rows at
@@ -133,6 +143,7 @@ beforeEach(() => {
   unreachable = new Set();
   impostors = new Set();
   slowMs = new Map();
+  greetings.clear();
   handedOut.clear();
   feed = null;
   devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
@@ -199,6 +210,44 @@ async function connectEveryDevice() {
 }
 
 describe("per-device connections", () => {
+  // The greeting is what says which API major this bridge speaks. A read issued
+  // before it lands is a read whose answer this tab may not be able to make
+  // sense of — and on a bridge the greeting then calls unsupported, it is a
+  // machine that has already been asked something it will not be asked again.
+  // So the feed's first read of a machine waits for that machine's greeting,
+  // and for no other machine's.
+  it("asks a machine for nothing until its own greeting has settled", async () => {
+    let greet;
+    greetings.set("dev-a", () => new Promise((settle) => { greet = settle; }));
+    openDeviceSessions();
+    await flush();
+    startFeed(60000);
+    await flush();
+
+    expect(boardReads("dev-a")).toBe(0);
+    expect(boardReads("dev-b")).toBeGreaterThan(0); // the other machine is not held up
+
+    greet({});
+    await flush();
+
+    expect(boardReads("dev-a")).toBeGreaterThan(0);
+  });
+
+  // A bridge that predates `session.hello` refuses the verb, and that refusal is
+  // the whole of the feature detection: it has answered. Waiting on a greeting
+  // must not be waiting on a greeting that can never arrive.
+  it("reads a machine whose bridge refuses the greeting", async () => {
+    greetings.set("dev-a", async () => {
+      throw new Error("unknown method: session.hello");
+    });
+
+    await connectEveryDevice();
+    startFeed(60000);
+    await flush();
+
+    expect(boardReads("dev-a")).toBeGreaterThan(0);
+  });
+
   it("keeps a lost device known and offline while another device answers", async () => {
     await connectEveryDevice();
     startFeed(60000);

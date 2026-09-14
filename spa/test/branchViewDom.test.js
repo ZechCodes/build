@@ -63,17 +63,22 @@ beforeEach(async () => {
   // account lists the device online and the pick names it. (The aliases are
   // left alone; pointing bridge.call at the delegate below would have it call
   // itself.)
-  let adoptDeviceSession;
-  ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+  let adoptBridgeSelection, adoptDeviceSession;
+  ({ adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } = await import(
+    "../src/core/deviceContexts.js"
+  ));
   App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
   App.selectedDeviceId = "dev-1";
-  adoptDeviceSession({
+  const context = adoptDeviceSession({
     deviceId: "dev-1",
     call: (...args) => bridge.call(...args),
     close: () => {},
     peer: () => {},
     onCarrier: () => {},
   });
+  // Its bridge has greeted, the way connection.js leaves every machine it
+  // lands: the feed reads no device before that greeting has settled.
+  adoptBridgeSelection(context, { major: 1, version: "1.0.0" }, {});
   App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
   // core/toolbar.js isn't mounted in this file — Done paints into its verb
   // slot (setToolbarVerb), so stand in for the one thing branchView.js needs
@@ -366,7 +371,12 @@ describe("a branch on another device", () => {
         return { mime: "text/plain", size: 12, editable: true, encoding: "utf-8", revision: "n-1", content_b64: btoa("their notes") };
       return {};
     });
-    adoptDeviceSession({ deviceId: "dev-2", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} });
+    const { adoptBridgeSelection } = await import("../src/core/deviceContexts.js");
+    adoptBridgeSelection(
+      adoptDeviceSession({ deviceId: "dev-2", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} }),
+      { major: 1, version: "1.0.0" },
+      {},
+    );
     App.route = { name: "branch", deviceId: "dev-2", projectId: "p1", branch: "main", tab: "changes" };
     // This machine holds a `p1` of its own, and it is a plain folder: anything
     // reading it instead of the desktop's says so on the screen.
@@ -553,7 +563,12 @@ describe("a branch on a device this client has not opened", () => {
     await renderBranch();
     expect(document.getElementById("tabbody")).toBeNull();
 
-    adoptDeviceSession({ deviceId: "dev-3", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} });
+    const { adoptBridgeSelection } = await import("../src/core/deviceContexts.js");
+    adoptBridgeSelection(
+      adoptDeviceSession({ deviceId: "dev-3", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} }),
+      { major: 1, version: "1.0.0" },
+      {},
+    );
     await flush();
 
     expect(document.getElementById("root").textContent).not.toContain("isn't connected");

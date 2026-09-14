@@ -23,6 +23,7 @@ import {
   contextFor,
   homeContext,
   liveContexts,
+  releaseGreeting,
   retireDeviceContext,
   setContextOffline,
 } from "./core/deviceContexts.js";
@@ -180,7 +181,13 @@ export function retireDevice(deviceId) {
 /** Greet a device that is live and unpaused: feature-detect push invalidation,
  *  subscribe that session to it, and read everything it has once. Not awaited by
  *  its callers — a slow greeting must not hold up the app, and a surface mounted
- *  before it lands is re-timed the moment it does. */
+ *  before it lands is re-timed the moment it does.
+ *
+ *  Adopting the session armed this device's greeting (core/deviceContexts.js),
+ *  and the selection this one settles is what releases it. A greeting that
+ *  settles nothing — the session died before it said anything — is released
+ *  here instead: the feed waits on that promise, and a machine whose greeting
+ *  went missing must not be left unread for ever. */
 export function greetLiveBridge(context) {
   const session = context?.session;
   if (!session) return Promise.resolve(false);
@@ -200,9 +207,15 @@ export function greetLiveBridge(context) {
       adoptBridgeSelection(context, selection, adapter);
       return adapter;
     },
-  }).catch(() => {
-    /* the session died mid-greeting; the next one greets again */
-  });
+  })
+    .catch(() => {
+      /* the session died mid-greeting; the next one greets again */
+    })
+    .finally(() => {
+      // Only this session's own: a newer one has armed a greeting of its own,
+      // and what this one failed to say is no answer about that bridge.
+      if (context.session === session) releaseGreeting(context);
+    });
 }
 
 // ---- landing a session, and which device is home -----------------------------
@@ -223,11 +236,14 @@ function landSession(session) {
   // Every later carrier change re-establishes the session on the wire it took:
   // session.hello, and a read of every mounted surface.
   session.onCarrier(() => greetLiveBridge(context));
+  // What this bridge speaks is asked for before anything else is asked of it,
+  // and nothing waits on the answer but this device's own first read.
+  greetLiveBridge(context);
   // A device the feed is not polling yet — the account's first session, one a
-  // late device just opened — gets its own board watcher and reads at once.
+  // late device just opened — gets its own board watcher and reads it as soon
+  // as its greeting is in.
   joinFeed(context);
   syncHome(context);
-  greetLiveBridge(context);
   upgradeToPeer(context); // in the background: the user is live already
   return context;
 }

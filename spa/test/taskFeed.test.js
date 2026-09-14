@@ -40,11 +40,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** A device the account knows and a live session on it, which is what the feed
- *  polls: contexts, not the App's fields. */
+/** A device the account knows and a live session on it whose bridge has
+ *  greeted, which is what the feed polls: contexts, not the App's fields. The
+ *  greeting is what says which API major the bridge speaks, and connection.js
+ *  settles it for every machine it lands — the feed reads none before it has. */
 function device(deviceId, call) {
   App.devices = [...App.devices, { id: deviceId, name: deviceId, status: "online" }];
-  return adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
+  const context = adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
+  adoptBridgeSelection(context, { major: 1, version: "1.0.0" }, {});
+  return context;
 }
 
 /** An empty board and project list, answered by whichever device asks. */

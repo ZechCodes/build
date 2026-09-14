@@ -52,8 +52,20 @@ export function primaryRunIdFor(feed, projectKey) {
  *  rows it last gave stay in the merge, greyed by the rail, until it can answer
  *  again. A context that was retired (or whose scope stopped addressing the
  *  cache) while its answer was in flight has nothing to say about now, so its
- *  answer is dropped rather than merged. */
+ *  answer is dropped rather than merged.
+ *
+ *  This is the one read that goes out on the session rather than through the
+ *  context's caller, so it is also the one that has to wait: a bridge says which
+ *  API major it speaks in its greeting, and until that has settled asking it
+ *  anything is asking for an answer in a shape this tab may not be able to read.
+ *  `context.greeted` is that machine's greeting and no other's (connection.js),
+ *  so a slow bridge holds up its own device and nobody else's. */
 async function tick(context) {
+  const greeting = context?.greeted;
+  await greeting;
+  // A reconnect landed while this one waited: what to wait for now is the
+  // greeting of the session the device is on, and the watcher asks again.
+  if (greeting !== context?.greeted) return;
   if (!canAnswer(context) || !context.active()) return;
   try {
     const [board, projectList, workspaceList] = await Promise.all([

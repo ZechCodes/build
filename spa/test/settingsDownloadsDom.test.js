@@ -31,9 +31,10 @@ const call = vi.fn(async (method) => {
   return {};
 });
 
+// No device context is registered here, so the creation device's catalog is the
+// empty one — which is all this page's downloads block cares about.
 vi.mock("../src/app.js", () => ({
-  App: { call: (...args) => call(...args) },
-  loadModelCatalog: async () => CATALOG,
+  App: { call: (...args) => call(...args), devices: [], selectedDeviceId: null },
   go: vi.fn(),
 }));
 vi.mock("../src/api.js", () => ({

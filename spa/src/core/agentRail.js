@@ -17,7 +17,7 @@
 // polls the bridge for it (branch.get / issue.get), and every agent it renders
 // comes off that payload's agents[].
 
-import { App, go, loadModelCatalog } from "../app.js";
+import { App, go } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
@@ -61,6 +61,7 @@ import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } 
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { deviceFeedView } from "./deviceContexts.js";
+import { deviceCatalog } from "./inboxDevices.js";
 import { createConversationCache } from "./conversationCache.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
@@ -2025,11 +2026,12 @@ export function mountAgentRail(host, context) {
     paint();
   }
   refresh();
-  // The harnesses and their models, fetched once per session (app.js caches it).
-  // The new-agent view leads with the account's default, which is this answer's
-  // to give, so a paint that lands before it holds the client's own first
-  // harness and moves when the answer does.
-  loadModelCatalog().then((answer) => {
+  // The harnesses and their models, asked of the machine this rail is mounted
+  // on and held there (core/modelCatalog.js). The new-agent view leads with
+  // that bridge's default, which is this answer's to give, so a paint that
+  // lands before it holds the client's own first harness and moves when the
+  // answer does.
+  deviceCatalog(context.deviceId).then((answer) => {
     if (disposed) return;
     catalog = answer;
     paint();

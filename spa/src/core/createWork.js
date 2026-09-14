@@ -23,7 +23,7 @@
 
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
-import { deviceCall } from "./inboxDevices.js";
+import { deviceCall, deviceCatalog } from "./inboxDevices.js";
 import { refreshFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -40,7 +40,9 @@ const CHOICE_PREFIX = "create-choice";
 
 const LEADING_ROW = 0;
 
-const catalog = () => App.modelCatalog || { providers: [] };
+/** What the dialog offers to start work with until its machine has answered:
+ *  nothing but the harness's own default. */
+const NO_CATALOG = Object.freeze({ providers: [] });
 
 /** What a tab's preload holds before it has been asked for: requested and
  *  done are two facts, and until the answer is in the rows have nothing to say. */
@@ -108,13 +110,13 @@ async function readBranches({ askDevice, projectId }) {
  *  behind it until the first message (the bridge dispatches planning on that
  *  post). An empty harness choice sends nothing, and the daemon's own default
  *  stands. */
-const issueAction = (projectId, goal, choice) => ({
+const issueAction = (state, goal) => ({
   call: {
     method: "issue.create",
-    params: { goal, project_id: projectId, dispatch: false, ...agentChoiceParams(catalog(), choice) },
+    params: { goal, project_id: state.projectId, dispatch: false, ...agentChoiceParams(state.catalog, state.choice) },
   },
   land: (answer) => ({
-    route: { name: "issue", projectId: answer.project_id || projectId, id: answer.issue_id || answer.plan_id },
+    route: { name: "issue", projectId: answer.project_id || state.projectId, id: answer.issue_id || answer.plan_id },
     focusComposer: false,
   }),
 });
@@ -164,11 +166,11 @@ const CREATE_TABS = {
     empty: "Describe the issue first.",
     fieldHtml: (value) =>
       `<textarea id="create-work-input" rows="3" placeholder="e.g. Add a /health endpoint that returns build SHA and uptime…">${esc(value)}</textarea>`,
-    underHtml: (state) => agentChoicePanelHtml(catalog(), state.choice, { prefix: CHOICE_PREFIX, open: state.choiceOpen }),
+    underHtml: (state) => agentChoicePanelHtml(state.catalog, state.choice, { prefix: CHOICE_PREFIX, open: state.choiceOpen }),
     previewHtml: () => "",
     action: (state) => {
       const goal = (state.values.issue || "").trim();
-      return goal ? issueAction(state.projectId, goal, state.choice) : null;
+      return goal ? issueAction(state, goal) : null;
     },
     onTyped: () => null,
     handleKey: (event, controls) => {
@@ -181,9 +183,9 @@ const CREATE_TABS = {
 };
 
 /** The dialog's inside. `state`: { projectId, projectName, kind, values, busy,
- *  error, choice, choiceOpen, loaded, highlight }, where `loaded` holds what
- *  each tab has preloaded by its kind: { requested, done, rows, error }.
- *  Everything user-supplied is escaped. */
+ *  error, choice, catalog, choiceOpen, loaded, highlight }, where `loaded`
+ *  holds what each tab has preloaded by its kind: { requested, done, rows,
+ *  error }. Everything user-supplied is escaped. */
 export function createWorkBodyHtml(state) {
   const tab = CREATE_TABS[state.kind];
   const value = state.values[state.kind] || "";
@@ -232,6 +234,7 @@ export function openCreateWork({ projectId, deviceId, projectName, kind = "branc
     busy: false,
     error: "",
     choice: loadAgentDefaults(),
+    catalog: NO_CATALOG,
     choiceOpen: false,
     loaded: {},
     highlight: NOTHING_HIGHLIGHTED,
@@ -243,6 +246,13 @@ export function openCreateWork({ projectId, deviceId, projectName, kind = "branc
   };
   const { body, close } = openModal({ dialogHtml: createWorkHtml(state), scrimId: "create-scrim", onClose: dismiss });
   const controls = { moveHighlight, submit };
+
+  // The harnesses on offer are the project's machine's, so the form opens on
+  // what any bridge supports and repaints when that one has said what it has.
+  deviceCatalog(deviceId).then((answer) => {
+    state.catalog = answer;
+    if (!dismissed) paint();
+  });
 
   /** What the tab being looked at preloads, asked for once per tab. An answer
    *  that lands after the modal was dismissed is kept off the closing dialog. */

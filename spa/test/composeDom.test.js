@@ -39,6 +39,9 @@ let adoptCaptureRecord;
 let forgetCaptureRecord;
 let subscribePendingCaptures;
 let CAPTURE_QUEUE_KEY;
+let adoptDeviceSession;
+let resetDeviceContexts;
+let modelCatalog;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const $ = (selector) => document.querySelector(selector);
@@ -81,24 +84,49 @@ beforeEach(async () => {
   ({ initCompose, flushCaptures, pendingCaptureRows, adoptCaptureRecord, forgetCaptureRecord, subscribePendingCaptures } =
     await import("../src/core/composeView.js"));
   ({ CAPTURE_QUEUE_KEY } = await import("../src/core/compose.js"));
+  ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   App.route = { name: "inbox" };
   App.gated = false;
   App.offline = false;
-  App.modelCatalog = {
+  // The harnesses the composer offers are the creation device's, so the one
+  // device on this account answers for them.
+  modelCatalog = {
     default_provider: "claude",
     providers: [
       { id: "claude", label: "Claude Code", models: [{ id: "opus", label: "Opus", supports_effort: true }], efforts: ["low"] },
     ],
   };
   App.call = vi.fn(async (method) => {
+    if (method === "models.list") return modelCatalog;
     if (method === "capture.create") return captureRecord();
     if (method === "capture.get") return captureRecord();
     if (method === "issue.create") return { project_id: "p1", issue_id: "iss-3" };
     if (method === "branch.dispatch") return { project_id: "p1", branch: "build/login", run_id: "run-1", agent_id: "agent-1" };
     return { ok: true };
   });
+  App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
+  App.selectedDeviceId = "dev-1";
+  homeAnswering();
   initCompose();
 });
+
+afterEach(() => {
+  resetDeviceContexts?.();
+  App.devices = [];
+  App.selectedDeviceId = null;
+});
+
+/** The device creation goes to, answering through whatever App.call is standing
+ *  at the time — a test that hands over a new one is that bridge answering
+ *  differently, not another machine. */
+const homeAnswering = () =>
+  adoptDeviceSession({
+    deviceId: "dev-1",
+    call: (...args) => App.call(...args),
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
+  });
 
 describe("where compose lives", () => {
   it("is pinned at the inbox rail's top, above the entries", () => {
@@ -317,13 +345,16 @@ describe("while the device is away", () => {
 });
 
 describe("the advanced panel", () => {
-  const openAdvanced = () => {
+  // The panel's harness picker is filled from the creation device's catalog, so
+  // opening it is a round trip the tests below wait out.
+  const openAdvanced = async () => {
     press("c");
     $("#compose-advanced").click();
+    await flush();
   };
 
-  it("offers the projects, the two things work can be, and the branches there are", () => {
-    openAdvanced();
+  it("offers the projects, the two things work can be, and the branches there are", async () => {
+    await openAdvanced();
     expect([...document.querySelectorAll("#compose-project option")].map((option) => option.value)).toEqual(["p1", "p2"]);
     expect($('[data-compose-kind="issue"]')).toBeTruthy();
     expect($('[data-compose-kind="branch"]')).toBeTruthy();
@@ -331,8 +362,8 @@ describe("the advanced panel", () => {
     expect([...document.querySelectorAll("#compose-branches option")].map((option) => option.value)).toEqual(["build/login"]);
   });
 
-  it("carries the harness picker — agent, model and effort — on the same panel", () => {
-    openAdvanced();
+  it("carries the harness picker — agent, model and effort — on the same panel", async () => {
+    await openAdvanced();
     $("[data-agent-choice-toggle]").click();
     // Both agents, whatever the bridge has listed models for: dispatching needs
     // only a harness. The Claude Code entry is the carrier this account's
@@ -345,7 +376,7 @@ describe("the advanced panel", () => {
   });
 
   it("files an inert issue and opens it, without troubling the router", async () => {
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "add a /health endpoint");
     $("#compose-project").value = "p2";
     $("#compose-project").dispatchEvent(new Event("change", { bubbles: true }));
@@ -362,7 +393,7 @@ describe("the advanced panel", () => {
   });
 
   it("dispatches a branch, with the harness the panel names", async () => {
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     type("#compose-branch", "build/login");
@@ -391,7 +422,7 @@ describe("the advanced panel", () => {
       timedOut.uncertain = true;
       throw timedOut;
     });
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     $("#compose-manual-go").click();
@@ -401,7 +432,7 @@ describe("the advanced panel", () => {
   });
 
   it("dispatches an untouched branch with the agent displayed when the account default is not offered", async () => {
-    App.modelCatalog = {
+    modelCatalog = {
       default_provider: "pi",
       providers: [
         { id: "pi", label: "Pi", models: [], efforts: [] },
@@ -409,7 +440,7 @@ describe("the advanced panel", () => {
         { id: "codex", label: "Codex", models: [], efforts: [] },
       ],
     };
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     type("#compose-branch", "build/login");
@@ -428,7 +459,7 @@ describe("the advanced panel", () => {
     App.call = vi.fn(async () => {
       throw new Error("unknown project_id: p9");
     });
-    openAdvanced();
+    await openAdvanced();
     type("#compose-text", "add a /health endpoint");
     $("#compose-manual-go").click();
     await flush();
@@ -442,11 +473,7 @@ describe("the advanced panel", () => {
 // rail's feed carries every device — both of them mint a `p1` — so the box
 // reads the home device's slice out of it rather than the merge.
 describe("an account with more than one device", () => {
-  let resetDeviceContexts;
-
   const twoDevices = async () => {
-    let adoptDeviceSession;
-    ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
     App.devices = [
       { id: "dev-2", name: "Desktop", status: "online" },
       { id: "dev-1", name: "Laptop", status: "online" },
@@ -464,22 +491,8 @@ describe("an account with more than one device", () => {
     feedItems = [...theirs.items, ...mine.items];
     feedProjects = [...theirs.projects, ...mine.projects];
     feedDevices = { "dev-2": theirs, "dev-1": mine };
-    adoptDeviceSession({
-      deviceId: "dev-1",
-      call: (...args) => App.call(...args),
-      close: () => {},
-      peer: () => {},
-      onCarrier: () => {},
-    });
     await refreshFeed();
   };
-
-  afterEach(() => {
-    if (resetDeviceContexts) resetDeviceContexts();
-    resetDeviceContexts = null;
-    App.devices = [];
-    App.selectedDeviceId = null;
-  });
 
   it("offers the home device's projects and branches, not every device's", async () => {
     await twoDevices();

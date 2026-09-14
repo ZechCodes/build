@@ -11,9 +11,10 @@
 // session sends it. The text is never the thing that is lost.
 
 import { $ } from "../dom.js";
-import { App, go, loadModelCatalog } from "../app.js";
+import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { deviceFeedView } from "./deviceContexts.js";
+import { deviceCatalog } from "./inboxDevices.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { isConfirmOpen } from "./confirm.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -176,9 +177,9 @@ function paintPrompt() {
   host.querySelector("#compose-open").onclick = () => openCompose();
 }
 
-function catalog() {
-  return App.modelCatalog || { default_provider: "", providers: [] };
-}
+// What the creation device offers to start work with, as far as this client
+// knows: empty until that machine has answered, and replaced when it does.
+let catalog = { default_provider: "", providers: [] };
 
 /** The manual panel: where the work goes, what it becomes there, and which
  *  harness picks it up. Rendered only while its disclosure is open. */
@@ -206,7 +207,7 @@ function advancedHtml() {
              .join("")}</datalist>`
         : `<div class="compose-note dim">Nothing runs until you open it and send the first message.</div>`
     }
-    ${agentChoicePanelHtml(catalog(), box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen })}
+    ${agentChoicePanelHtml(catalog, box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen })}
     <button class="btn mini primary compose-manual" id="compose-manual-go" type="button"${box.busy ? " disabled" : ""}>${
       box.kind === "branch" ? "Dispatch to the branch" : "File the issue"
     }</button>
@@ -312,17 +313,18 @@ function wireChoice(host) {
 function repaintChoice(host) {
   const holder = host.querySelector(".agent-choice");
   if (!holder) return;
-  holder.outerHTML = agentChoicePanelHtml(catalog(), box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen });
+  holder.outerHTML = agentChoicePanelHtml(catalog, box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen });
   wireChoice(host);
 }
 
-/** The catalog is the daemon's, so the panel opens on whatever is cached and
- *  repaints once the real one lands. A repaint mid-typing is avoided by only
- *  doing it when the answer actually changed. */
+/** The catalog is the creation device's, so the panel opens on whatever is
+ *  held and repaints once that machine's answer lands. A repaint mid-typing is
+ *  avoided by only doing it when the answer actually changed. */
 function loadCatalogForPanel() {
-  const before = App.modelCatalog;
-  loadModelCatalog()
+  const before = catalog;
+  deviceCatalog(null)
     .then((loaded) => {
+      catalog = loaded;
       if (loaded !== before && box && box.advancedOpen) paintBox({ focus: false });
     })
     .catch(() => {});
@@ -413,7 +415,7 @@ async function submitManual() {
     projectId: box.projectId,
     text,
     branch: box.branch,
-    agentParams: agentChoiceParams(catalog(), box.choice),
+    agentParams: agentChoiceParams(catalog, box.choice),
   });
   try {
     const created = await replyOrNothing(App.call(method, params));

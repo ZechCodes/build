@@ -236,8 +236,20 @@ describe("the Settings page", () => {
       throw new Error("no network in tests");
     });
     const { App } = await import("../src/app.js");
+    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
     const { renderSettings } = await import("../src/views/settings.js");
     App.call = vi.fn(call);
+    // The creation device: the page's harness catalog is that machine's, and
+    // this is the account list and the pick that name it.
+    App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
+    App.selectedDeviceId = "dev-1";
+    adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => App.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
     await renderSettings();
     await flush();
     return App;
@@ -312,7 +324,7 @@ describe("the Settings page", () => {
       agent_modes: { claude: "headless", codex: "tui" },
     };
     let catalogReads = 0;
-    const App = await renderWith(async (method, params) => {
+    await renderWith(async (method, params) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return current;
       if (method === "settings.set") {
@@ -330,7 +342,8 @@ describe("the Settings page", () => {
     await flush();
     await flush();
 
-    expect(App.modelCatalog.agent_modes).toEqual({ claude: "tui", codex: "tui" });
+    // The confirmed save is what the creation defaults offer, whatever the
+    // catalog read that follows it does.
     expect([...document.getElementById("defprovider").options].map(({ value }) => value)).toEqual(["claude", "codex"]);
     expect(claudeMode.disabled).toBe(false);
     expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved.");

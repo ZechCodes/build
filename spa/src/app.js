@@ -12,7 +12,6 @@ import { renderResolving } from "./views/resolving.js";
 import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
-import { normalizeModelCatalog } from "./core/modelPicker.js";
 import { adoptCacheScope, clearCacheScope } from "./core/cacheScope.js";
 import {
   adoptDeviceSession,
@@ -42,7 +41,6 @@ export const App = {
   gated: true, // gate screens own #root until a session is live
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
-  modelCatalog: null, // models.list result, fetched once per session
 
   // One-shot: set right before navigating to a branch just cut from the
   // toolbar's create form, so the branch view knows to focus the rail's
@@ -108,11 +106,10 @@ export function adoptHomeSession(session) {
 // it with the shim.
 let shimmedDeviceId = null;
 
-// A device the shim above handed home to somebody else: it goes, with the model
-// catalog and the reader's position it filled.
+// A device the shim above handed home to somebody else: it goes, with the
+// harness catalog it held and the reader's position it filled.
 function retireSwitchedDevice(deviceId) {
   retireDeviceContext(deviceId);
-  App.modelCatalog = null;
   App.viewingContext.clear();
 }
 
@@ -139,32 +136,6 @@ export function disposeApplicationScope() {
   forgetHomeFollow();
   clearCacheScope();
   pointAliasesAt(null);
-  App.modelCatalog = null;
-}
-
-/** The bridge's provider/model catalog, cached for the session.
- *  An older bridge without the RPC yields empty lists — selectors then offer
- *  only "Harness default", which is exactly what that bridge supports. */
-export async function loadModelCatalog() {
-  if (App.modelCatalog) return App.modelCatalog;
-  const scope = App.cacheScope;
-  const call = App.call;
-  let catalog;
-  try {
-    catalog = normalizeModelCatalog(await call("models.list"));
-  } catch {
-    catalog = normalizeModelCatalog({ models: [], efforts: [] });
-  }
-  // A device switch can overtake this request. Its answer still belongs to the
-  // caller that asked, but it must not become the catalog of the new scope.
-  const stillOwned = scope ? scope === App.cacheScope && scope.active() : call === App.call;
-  if (stillOwned) App.modelCatalog = catalog;
-  return catalog;
-}
-
-export async function refreshModelCatalog() {
-  App.modelCatalog = normalizeModelCatalog(await App.call("models.list"));
-  return App.modelCatalog;
 }
 
 export function rememberSelectedDevice(deviceId) {

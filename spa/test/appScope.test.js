@@ -1,12 +1,10 @@
 // @vitest-environment jsdom
+// The home device's chat repository, as the surfaces that still speak in scopes
+// see it. What a machine holds that is the machine's own — its harness catalog
+// among it — is deviceContexts.test.js's.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  App,
-  adoptApplicationScope,
-  disposeApplicationScope,
-  loadModelCatalog,
-} from "../src/app.js";
+import { App, adoptApplicationScope, disposeApplicationScope } from "../src/app.js";
 
 describe("the application-owned chat repository", () => {
   beforeEach(() => disposeApplicationScope());
@@ -67,20 +65,5 @@ describe("the application-owned chat repository", () => {
 
     expect(oldCall).toHaveBeenCalledTimes(1);
     expect(nextCall).not.toHaveBeenCalled();
-  });
-
-  it("does not let a late catalog from another device populate the new scope", async () => {
-    let releaseOld;
-    const oldCall = vi.fn(() => new Promise((resolve) => { releaseOld = resolve; }));
-    adoptApplicationScope({ deviceId: "device-a", call: oldCall });
-    const stale = loadModelCatalog();
-
-    const nextCall = vi.fn(async () => ({ providers: [{ id: "new-device" }] }));
-    adoptApplicationScope({ deviceId: "device-b", call: nextCall });
-    releaseOld({ providers: [{ id: "old-device" }] });
-    await stale;
-
-    expect(App.modelCatalog).toBe(null);
-    expect((await loadModelCatalog()).providers[0].id).toBe("new-device");
   });
 });

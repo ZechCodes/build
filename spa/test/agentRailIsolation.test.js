@@ -97,6 +97,7 @@ let call;
 const mountBranch = () => {
   rail = mountAgentRail(host(), {
     kind: "branch",
+    deviceId: "device-1",
     projectId: "project-1",
     branch: "build/isolation",
     autofocusComposer: true,
@@ -503,6 +504,7 @@ describe("agent rail chat ownership", () => {
     };
     rail = mountAgentRail(host(), {
       kind: "issue",
+      deviceId: "device-1",
       projectId: "project-1",
       issueId: "issue-1",
       autofocusComposer: true,

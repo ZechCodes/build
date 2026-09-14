@@ -384,8 +384,20 @@ describe("the Settings page", () => {
       throw new Error("no network in tests");
     });
     const { App } = await import("../src/app.js");
+    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
     const { renderSettings } = await import("../src/views/settings.js");
     App.call = vi.fn(call);
+    // The creation device: the page's harness catalog is that machine's, and
+    // this is the account list and the pick that name it.
+    App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
+    App.selectedDeviceId = "dev-1";
+    adoptDeviceSession({
+      deviceId: "dev-1",
+      call: (...args) => App.call(...args),
+      close: () => {},
+      peer: () => {},
+      onCarrier: () => {},
+    });
     await renderSettings();
     await flush();
     return App.call;

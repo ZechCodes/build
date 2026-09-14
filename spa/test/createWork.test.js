@@ -36,9 +36,10 @@ const press = (key, extra = {}) => input().dispatchEvent(new KeyboardEvent("keyd
 const rows = () => [...modal().querySelectorAll("[data-branch-pick]")];
 const rowNames = () => rows().map((row) => row.querySelector(".branch-row-name").textContent);
 const highlighted = () => rows().findIndex((row) => row.getAttribute("aria-selected") === "true");
-/** What the modal did beyond reading the project's branches, which it reads
- *  whenever the Branch tab is up. */
-const mutations = () => App.call.mock.calls.filter(([method]) => method !== "git.branches");
+/** What the modal did beyond the reads it makes whichever tab is up: the
+ *  project's branches, and the machine's harness catalog. */
+const READS = ["git.branches", "models.list"];
+const mutations = () => App.call.mock.calls.filter(([method]) => !READS.includes(method));
 
 const listed = (name, stamps = {}) => ({
   name,
@@ -58,14 +59,18 @@ const heldBy = (kind, id) => ({ holder: { kind, id } });
 
 let navigate;
 let branches;
+let offered;
 
 beforeEach(() => {
   document.body.innerHTML = "";
   localStorage.clear();
-  App.modelCatalog = null;
   App.focusComposerOnMount = false;
   branches = [];
+  // The harnesses this project's machine offers, which is what its bridge says
+  // and nothing the account holds.
+  offered = { default_provider: "claude", providers: [] };
   App.call = vi.fn(async (method) => {
+    if (method === "models.list") return offered;
     if (method === "git.branches") return { current: "main", branches };
     if (method === "run.adopt") return { run_id: "r-7", branch: "feature-x" };
     if (method === "worktree.create") return { project_id: "p1", branch: "build/mascot-model-spike", worktree_id: "wt-9" };
@@ -187,8 +192,29 @@ describe("the create modal", () => {
     expect(modal()).toBeNull();
   });
 
+  // The harness question is put to the machine the project is on: a second
+  // bridge on the account can be a release behind and offer something else.
+  it("offers the harness choice from the project's own device's catalog", async () => {
+    offered = {
+      default_provider: "claude",
+      providers: [
+        { id: "claude", label: "Claude Code", models: [{ id: "opus", label: "Opus" }], efforts: [] },
+        { id: "codex", label: "Codex", models: [], efforts: [] },
+      ],
+    };
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
+    await flush();
+
+    expect(App.call).toHaveBeenCalledWith("models.list");
+    expect([...modal().querySelectorAll("#create-choice-provider option")].map((option) => option.value)).toEqual([
+      "claude",
+      "codex",
+    ]);
+    expect([...modal().querySelectorAll("#create-choice-model option")].map((option) => option.value)).toContain("opus");
+  });
+
   it("files an untouched issue with the agent displayed when the account default is not offered", async () => {
-    App.modelCatalog = {
+    offered = {
       default_provider: "pi",
       providers: [
         { id: "pi", label: "Pi", models: [], efforts: [] },
@@ -197,6 +223,7 @@ describe("the create modal", () => {
       ],
     };
     openCreateWork({ projectId: "p2", deviceId: "dev-1", projectName: "mascot", kind: "issue", navigate });
+    await flush();
     expect(modal().querySelector("#create-choice-provider").value).toBe("claude_adk");
     type("Add a health endpoint");
     modal().querySelector("[data-create-go]").click();
@@ -306,7 +333,7 @@ describe("the create modal's branch picker", () => {
     branches = [listed("feature-x")];
     openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
     await flush();
-    expect(App.call).not.toHaveBeenCalled();
+    expect(App.call).not.toHaveBeenCalledWith("git.branches", expect.anything());
     tab("branch").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("git.branches", { project_id: "p1" });

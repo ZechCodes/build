@@ -7,7 +7,7 @@
 // the URL on the open stage, and mounts the rail and the console beside it.
 
 import { $ } from "../dom.js";
-import { App, go, loadModelCatalog } from "../app.js";
+import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountDeviceNotice } from "../core/deviceNotice.js";
 import { canAnswer, routeContext } from "../core/deviceContexts.js";
@@ -78,7 +78,8 @@ export async function renderIssue() {
     initialStageId: selectedStageId,
     callRpc,
     navigate: go,
-    loadCatalog: loadModelCatalog,
+    // The harnesses on offer are this machine's, held on its context.
+    loadCatalog: context.modelCatalog,
     // The branches an implementation can be sent into are the feed's own branch
     // rows, so the assignment control reads the same list the inbox does.
     loadWorkItems: async () => (await callRpc("board.list")).items || [],

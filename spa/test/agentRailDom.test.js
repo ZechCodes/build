@@ -81,6 +81,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 
 const { App } = await import("../src/app.js");
 const { currentCacheScope, setCacheDevice } = await import("../src/core/cacheScope.js");
+const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
@@ -110,6 +111,8 @@ const branchRow = (over = {}) => ({
 });
 
 let payload = branchRow();
+/** What the machine the rail is mounted on offers to start work with. */
+let catalog = null;
 let calls = [];
 let rail = null;
 
@@ -179,6 +182,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetAgentRailMemory();
   resetOptimistic();
+  resetDeviceContexts(); // and with them the last test's harness catalog
   setCacheDevice("dev-1");
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -190,10 +194,10 @@ beforeEach(async () => {
   markSeen.mockClear();
   mountAgentTab.mockClear();
   notifyError.mockClear();
-  App.modelCatalog = null; // fetched once per session; each test gets its own
+  catalog = CATALOG; // asked for once per device; each test gets its own
   App.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
-    if (method === "models.list") return CATALOG;
+    if (method === "models.list") return catalog;
     if (method === "branch.get") return payload;
     if (method === "issue.get") return payload;
     if (method === "run.adopt") return { run_id: "run-9" };
@@ -203,6 +207,15 @@ beforeEach(async () => {
     return {};
   });
   App.chatRepository = createChatRepository({ scope: currentCacheScope(), call: (method, params) => App.call(method, params) });
+  // The machine the rail is mounted on: its bridge is what the harness catalog
+  // comes from.
+  adoptDeviceSession({
+    deviceId: "dev-1",
+    call: (...args) => App.call(...args),
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
+  });
 });
 
 afterEach(() => {
@@ -1852,7 +1865,7 @@ describe("the chat tab of a branch with no agent", () => {
   // The account decides which carrier "Claude Code" means, and the card is
   // where that answer lands: one name, whichever carrier is behind it.
   it("gives the Claude Code card the carrier the account chose", async () => {
-    App.modelCatalog = { ...CATALOG, default_provider: "claude" };
+    catalog = { ...CATALOG, default_provider: "claude" };
     payload = agentless();
     await mount();
 
@@ -1868,14 +1881,15 @@ describe("the chat tab of a branch with no agent", () => {
   // a stale token clamps, so the view highlights the card it is showing —
   // never nothing at all.
   it("clamps a choice made under the other claude carrier onto the card on offer", async () => {
-    App.modelCatalog = { ...CATALOG, default_provider: "claude" };
+    catalog = { ...CATALOG, default_provider: "claude" };
     payload = agentless();
     await mount();
     card("claude").click();
     await flush();
 
     rail.dispose();
-    App.modelCatalog = CATALOG;
+    catalog = CATALOG;
+    await contextFor("dev-1").refreshModelCatalog();
     await mount();
 
     expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex"]);

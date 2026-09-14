@@ -2,9 +2,10 @@
 //
 // Two places ask the same question — the compose box's advanced panel and the
 // toolbar's create menu — and both mean exactly the same thing by it, so they
-// ask it with the same component. The catalog is the bridge's (models.list, via
-// App.modelCatalog). An empty model or effort means the harness's own default;
-// the provider always resolves against the catalog the panel displays.
+// ask it with the same component. The catalog is one bridge's (models.list,
+// held on that device's context). An empty model or effort means the harness's
+// own default; the provider always resolves against the catalog the panel
+// displays.
 
 import { esc } from "./text.js";
 import {

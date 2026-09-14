@@ -16,6 +16,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   stopFeed: () => {},
   refreshFeed: async () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 vi.mock("../src/core/inboxView.js", () => ({
   markSeen: async () => {},
@@ -28,6 +29,7 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: () => {} }) }));
 
 const { App } = await import("../src/app.js");
+const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
@@ -58,6 +60,8 @@ const branchRow = (agentOver = {}) => ({
 let payload = branchRow();
 let calls = [];
 let rail = null;
+/** What the machine this rail is mounted on offers to start work with. */
+let catalog = { default_provider: "claude", providers: [] };
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
@@ -150,18 +154,29 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
   payload = branchRow();
+  catalog = { default_provider: "claude", providers: [] };
   App.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
+    if (method === "models.list") return catalog;
     if (method === "branch.get") return payload;
     if (method === "thread.post") return { posted_sequence: 7 };
     return {};
+  });
+  // The machine the rail is mounted on, which is the one its harness catalog
+  // comes from.
+  adoptDeviceSession({
+    deviceId: "dev-1",
+    call: (...args) => App.call(...args),
+    close: () => {},
+    peer: () => {},
+    onCarrier: () => {},
   });
 });
 
 afterEach(() => {
   if (rail) rail.dispose();
   rail = null;
-  App.modelCatalog = null;
+  resetDeviceContexts();
   document.body.innerHTML = "";
   vi.useRealTimers();
 });
@@ -307,7 +322,7 @@ describe("the conversation header's menu", () => {
 
 describe("the model a surface row names", () => {
   it("says what the account's catalog calls it, and the raw id when it knows none", async () => {
-    App.modelCatalog = {
+    catalog = {
       default_provider: "claude",
       providers: [
         { id: "claude", label: "Claude Code", models: [{ id: "claude-opus-5[1m]", label: "Opus 5 · 1m" }], efforts: [] },

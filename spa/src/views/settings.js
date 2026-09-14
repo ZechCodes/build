@@ -21,7 +21,8 @@ import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHar
 import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
 import { ACCOUNT_ISOLATION, isolationLabel, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
 import { mountTriageSetting, triageSettingPanelHtml } from "../core/triageSetting.js";
-import { loadModelCatalog, refreshModelCatalog } from "../app.js";
+import { homeContext } from "../core/deviceContexts.js";
+import { deviceCatalog } from "../core/inboxDevices.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
@@ -31,6 +32,19 @@ import {
   providerOptionsHtml,
   creatableCatalog,
 } from "../core/modelPicker.js";
+
+/** The creation device's catalog as this page's own confirmed saves leave it.
+ *  A save is answered by the bridge before the catalog reports it, so the
+ *  creation defaults below would otherwise offer what the account no longer
+ *  says until the next read lands — or for good, if that read is refused. */
+function asSaved(catalog, saved) {
+  if (!saved) return catalog;
+  return {
+    ...catalog,
+    default_provider: saved.default_harness ?? catalog.default_provider,
+    agent_modes: saved.agent_modes ?? catalog.agent_modes,
+  };
+}
 
 export async function renderSettings() {
   $("#root").innerHTML = `
@@ -123,21 +137,20 @@ export async function renderSettings() {
   };
   await refresh();
   const callRpc = (method, params) => App.call(method, params);
+  // What a panel on this page has just saved and had confirmed. The creation
+  // defaults below are built from the creation device's catalog, which still
+  // reports the old answer until it is re-read — and may refuse to be re-read
+  // at all — so what was confirmed is laid over it either way.
+  let saved = null;
   const syncModelCatalog = async (settings) => {
-    if (App.modelCatalog) {
-      App.modelCatalog = {
-        ...App.modelCatalog,
-        default_provider: settings.default_harness ?? App.modelCatalog.default_provider,
-        agent_modes: settings.agent_modes ?? App.modelCatalog.agent_modes,
-      };
-      await mountAgentDefaults();
-    }
+    saved = settings;
+    await mountAgentDefaults();
     try {
-      await refreshModelCatalog();
-      await mountAgentDefaults();
+      await homeContext()?.refreshModelCatalog();
     } catch {
       // Confirmed settings already keep this page's creation defaults current.
     }
+    await mountAgentDefaults();
   };
   await mountAgentModes($("#root"), { callRpc, onSaved: syncModelCatalog });
   await mountDefaultHarness($("#root"), { callRpc, onSaved: syncModelCatalog });
@@ -156,13 +169,7 @@ export async function renderSettings() {
   async function mountAgentDefaults() {
     const providerSelect = $("#defprovider");
     if (!providerSelect) return;
-    let catalog = { default_provider: "claude", providers: [] };
-    try {
-      catalog = await loadModelCatalog();
-    } catch {
-      providerSelect.innerHTML = '<option value="">(agent catalog unavailable — is your device online?)</option>';
-      return;
-    }
+    const catalog = asSaved(await deviceCatalog(null), saved);
     let current = loadAgentDefaults();
     const note = $("#defsaved");
 

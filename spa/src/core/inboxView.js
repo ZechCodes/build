@@ -423,12 +423,20 @@ function openBlockHead(projectKey) {
 
 /** The + opens the create surface on this block's project, with the block
  *  unfolded so the new row has somewhere visible to land. The create surface
- *  talks to one bridge, which knows its projects by the bare id it minted. */
+ *  talks to one bridge — the machine this block is on — which knows its
+ *  projects by the bare id it minted. */
 function createInBlock(projectKey) {
   const block = blockOf(projectKey);
   expandFold(projectKey);
   closeMenu();
-  if (block) openCreateWork({ projectId: block.id, projectName: block.name, kind: "branch", navigate: goFromInbox });
+  if (!block) return;
+  openCreateWork({
+    projectId: block.id,
+    deviceId: block.deviceId,
+    projectName: block.name,
+    kind: "branch",
+    navigate: goFromInbox,
+  });
 }
 
 /** The one control above every block: a project this device does not have yet. */

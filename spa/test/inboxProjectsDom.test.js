@@ -337,7 +337,7 @@ describe("the projects face", () => {
     blockFor("dev-1/p2").querySelector('[data-project-create="dev-1/p2"]').click();
     expect(openCreateWork).toHaveBeenCalledTimes(1);
     const [options] = openCreateWork.mock.calls[0];
-    expect(options).toMatchObject({ projectId: "p2", projectName: "dotfiles", kind: "branch" });
+    expect(options).toMatchObject({ projectId: "p2", deviceId: "dev-1", projectName: "dotfiles", kind: "branch" });
     expect(typeof options.navigate).toBe("function");
   });
 
@@ -459,7 +459,7 @@ describe("the projects face", () => {
     feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
     feed(feedItems);
     blockFor("dev-2/p1").querySelector("[data-project-create]").click();
-    expect(openCreateWork.mock.calls[0][0]).toMatchObject({ projectId: "p1", projectName: "relaydb" });
+    expect(openCreateWork.mock.calls[0][0]).toMatchObject({ projectId: "p1", deviceId: "dev-2", projectName: "relaydb" });
   });
 
   // The block of a device that cannot answer stays on the rail — its work has

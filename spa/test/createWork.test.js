@@ -12,10 +12,17 @@ vi.mock("../src/core/taskFeed.js", () => ({
   startFeed: () => {},
   stopFeed: () => {},
   primaryRunIdFor: () => null,
+  dropFeedDevice: () => {},
 }));
 
 const { App } = await import("../src/app.js");
+const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { openCreateWork, createWorkHtml, CREATE_KINDS } = await import("../src/core/createWork.js");
+
+/** A device on the account, answering with `call`. The dialog is opened on one
+ *  project on one machine, and everything it asks for goes to that machine. */
+const deviceAnswering = (deviceId, call) =>
+  adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const modal = () => document.querySelector("#create-scrim .modal");
@@ -67,12 +74,17 @@ beforeEach(() => {
   });
   refreshFeed.mockClear();
   navigate = vi.fn();
+  resetDeviceContexts();
+  // The project's own machine answers, through whatever App.call is standing at
+  // the time — a test that hands over a new one is that bridge answering
+  // differently, not another machine.
+  deviceAnswering("dev-1", (...args) => App.call(...args));
 });
 
 describe("the create modal", () => {
   it("offers a Branch tab and an Issue tab, and opens on the one asked for, named for the project", () => {
     expect(CREATE_KINDS).toEqual(["branch", "issue"]);
-    openCreateWork({ projectId: "p1", projectName: "relaydb", kind: "issue", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
     expect(modal().querySelector("h3").textContent).toBe("New in relaydb");
     expect([...modal().querySelectorAll("[data-create-tab]")].map((t) => [t.dataset.createTab, t.getAttribute("aria-selected")])).toEqual([
       ["branch", "false"],
@@ -84,7 +96,7 @@ describe("the create modal", () => {
   });
 
   it("opens on Branch by default, with no harness question, and previews the branch the daemon will name", () => {
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     expect(tab("branch").getAttribute("aria-selected")).toBe("true");
     expect(input().tagName).toBe("INPUT");
     expect(modal().querySelector(".agent-choice")).toBeNull();
@@ -93,7 +105,7 @@ describe("the create modal", () => {
   });
 
   it("keeps what was typed on each tab when switching between them", () => {
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     type("a branch name");
     tab("issue").click();
     expect(input().value).toBe("");
@@ -105,12 +117,12 @@ describe("the create modal", () => {
   });
 
   it("cuts the branch, closes, re-reads the feed, and opens it through the caller's navigate with the composer focused", async () => {
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     type("Mascot Model Spike!");
     modal().querySelector("[data-create-go]").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "Mascot Model Spike!" });
-    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "build/mascot-model-spike", tab: "changes" });
+    expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/mascot-model-spike", tab: "changes" });
     expect(App.focusComposerOnMount).toBe(true);
     expect(refreshFeed).toHaveBeenCalled();
     expect(modal()).toBeNull();
@@ -122,7 +134,7 @@ describe("the create modal", () => {
   // Creating, and it opens itself when the record settles.
   it("closes and leaves the board carrying the row when the create answers without a branch", async () => {
     App.call = vi.fn(async () => ({ project_id: "p1", pending_worktree_id: "wt-pending" }));
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     type("mascot spike");
     modal().querySelector("[data-create-go]").click();
     await flush();
@@ -139,7 +151,7 @@ describe("the create modal", () => {
       timedOut.uncertain = true;
       throw timedOut;
     });
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     type("mascot spike");
     modal().querySelector("[data-create-go]").click();
     await flush();
@@ -155,7 +167,7 @@ describe("the create modal", () => {
       timedOut.uncertain = true;
       throw timedOut;
     });
-    openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });
+    openCreateWork({ projectId: "p2", deviceId: "dev-1", projectName: "mascot", kind: "issue", navigate });
     type("Add a health endpoint");
     modal().querySelector("[data-create-go]").click();
     await flush();
@@ -165,12 +177,12 @@ describe("the create modal", () => {
   });
 
   it("files an issue that starts nothing, carrying the harness choice", async () => {
-    openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });
+    openCreateWork({ projectId: "p2", deviceId: "dev-1", projectName: "mascot", kind: "issue", navigate });
     type("Add a health endpoint");
     modal().querySelector("[data-create-go]").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("issue.create", expect.objectContaining({ goal: "Add a health endpoint", project_id: "p2", dispatch: false }));
-    expect(navigate).toHaveBeenCalledWith({ name: "issue", projectId: "p1", id: "plan-9" });
+    expect(navigate).toHaveBeenCalledWith({ name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-9" });
     expect(App.focusComposerOnMount).toBe(false);
     expect(modal()).toBeNull();
   });
@@ -184,7 +196,7 @@ describe("the create modal", () => {
         { id: "codex", label: "Codex", models: [], efforts: [] },
       ],
     };
-    openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });
+    openCreateWork({ projectId: "p2", deviceId: "dev-1", projectName: "mascot", kind: "issue", navigate });
     expect(modal().querySelector("#create-choice-provider").value).toBe("claude_adk");
     type("Add a health endpoint");
     modal().querySelector("[data-create-go]").click();
@@ -198,14 +210,14 @@ describe("the create modal", () => {
   });
 
   it("submits a branch on Enter, and an issue only on a modified Enter", async () => {
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     type("spike");
     press("Enter");
     await flush();
     expect(App.call).toHaveBeenCalledWith("worktree.create", expect.anything());
 
     App.call.mockClear();
-    openCreateWork({ projectId: "p1", projectName: "relaydb", kind: "issue", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
     type("a goal");
     press("Enter");
     await flush();
@@ -216,7 +228,7 @@ describe("the create modal", () => {
   });
 
   it("refuses an empty answer instead of creating something unnamed", async () => {
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     modal().querySelector("[data-create-go]").click();
     await flush();
     expect(modal().querySelector(".create-error").textContent).toBe("Name it first.");
@@ -231,7 +243,7 @@ describe("the create modal", () => {
     App.call = vi.fn(async () => {
       throw new Error("a branch named build/scratch already exists");
     });
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     type("scratch");
     modal().querySelector("[data-create-go]").click();
     await flush();
@@ -242,11 +254,11 @@ describe("the create modal", () => {
   });
 
   it("closes on Cancel and on Escape, creating nothing", async () => {
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     modal().querySelector("[data-create-cancel]").click();
     await motionBeat();
     expect(modal()).toBeNull();
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await motionBeat();
     expect(modal()).toBeNull();
@@ -264,7 +276,7 @@ describe("the create modal", () => {
 describe("the create modal's branch picker", () => {
   const openOnBranches = async (rowsListed) => {
     branches = rowsListed;
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     await flush();
   };
 
@@ -292,7 +304,7 @@ describe("the create modal's branch picker", () => {
 
   it("asks for the branches only when the Branch tab is the one being looked at", async () => {
     branches = [listed("feature-x")];
-    openCreateWork({ projectId: "p1", projectName: "relaydb", kind: "issue", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", kind: "issue", navigate });
     await flush();
     expect(App.call).not.toHaveBeenCalled();
     tab("branch").click();
@@ -322,7 +334,7 @@ describe("the create modal's branch picker", () => {
     rows()[0].click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", branch: "feature-x" });
-    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "feature-x", tab: "changes" });
+    expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "feature-x", tab: "changes" });
     expect(App.focusComposerOnMount).toBe(true);
     expect(refreshFeed).toHaveBeenCalled();
     expect(modal()).toBeNull();
@@ -334,7 +346,7 @@ describe("the create modal's branch picker", () => {
     await flush();
     expect(App.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", worktree_id: "wt-3" });
     expect(App.call).not.toHaveBeenCalledWith("worktree.create", expect.anything());
-    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "feature-elsewhere", tab: "changes" });
+    expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "feature-elsewhere", tab: "changes" });
     expect(App.focusComposerOnMount).toBe(false);
   });
 
@@ -343,7 +355,7 @@ describe("the create modal's branch picker", () => {
     rows()[0].click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("run.adopt", { project_id: "p1", primary: true });
-    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
+    expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" });
   });
 
   it("just opens a branch a run already owns", async () => {
@@ -352,7 +364,7 @@ describe("the create modal's branch picker", () => {
     rows()[0].click();
     await flush();
     expect(mutations()).toEqual([]);
-    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "feature-run", tab: "changes" });
+    expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "feature-run", tab: "changes" });
     expect(App.focusComposerOnMount).toBe(false);
   });
 
@@ -424,7 +436,7 @@ describe("the create modal's branch picker", () => {
         if (method !== "git.branches") resolve({});
       }),
     );
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     await flush();
     type("!!!");
     expect(modal().querySelector(".branch-picker-note")).toBeNull();
@@ -441,7 +453,7 @@ describe("the create modal's branch picker", () => {
         if (method !== "git.branches") resolve({});
       }),
     );
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     await flush();
     const focus = vi.spyOn(HTMLElement.prototype, "focus");
     try {
@@ -492,18 +504,57 @@ describe("the create modal's branch picker", () => {
     expect(modal()).toBeNull();
   });
 
+  // The bare id the dialog was opened on names a project on every machine, so
+  // everything it does — the listing it reads, the create it asks for, and the
+  // route it opens — belongs to the machine the project is on.
+  it("routes to the created work with the device it was scoped to", async () => {
+    deviceAnswering("dev-2", async (method) => {
+      if (method === "git.branches") return { current: "main", branches: [] };
+      if (method === "worktree.create") return { project_id: "p1", branch: "build/away-spike", worktree_id: "wt-2" };
+      return {};
+    });
+    openCreateWork({ projectId: "p1", deviceId: "dev-2", projectName: "their relaydb", navigate });
+    type("Away spike");
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(navigate).toHaveBeenCalledWith({
+      name: "branch",
+      deviceId: "dev-2",
+      projectId: "p1",
+      branch: "build/away-spike",
+      tab: "changes",
+    });
+  });
+
+  it("calls the scoped device's bridge, not the home alias", async () => {
+    const awayCall = vi.fn(async (method) => {
+      if (method === "git.branches") return { current: "main", branches: [] };
+      return { project_id: "p1", issue_id: "plan-2", plan_id: "plan-2" };
+    });
+    deviceAnswering("dev-2", awayCall);
+    openCreateWork({ projectId: "p1", deviceId: "dev-2", projectName: "their relaydb", kind: "issue", navigate });
+    type("Add a health endpoint");
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(awayCall).toHaveBeenCalledWith(
+      "issue.create",
+      expect.objectContaining({ goal: "Add a health endpoint", project_id: "p1", dispatch: false }),
+    );
+    expect(App.call).not.toHaveBeenCalled();
+  });
+
   it("still cuts a branch by name when the listing itself cannot be read", async () => {
     App.call = vi.fn(async (method) => {
       if (method === "git.branches") throw new Error("not a git repository");
       return { project_id: "p1", branch: "build/spike" };
     });
-    openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "relaydb", navigate });
     await flush();
     expect(modal().querySelector(".branch-picker-note").textContent).toContain("not a git repository");
     type("spike");
     press("Enter");
     await flush();
     expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "spike" });
-    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "build/spike", tab: "changes" });
+    expect(navigate).toHaveBeenCalledWith({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/spike", tab: "changes" });
   });
 });

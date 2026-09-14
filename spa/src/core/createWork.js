@@ -23,6 +23,7 @@
 
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
+import { verbCall } from "./inboxDevices.js";
 import { refreshFeed } from "./taskFeed.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
@@ -94,9 +95,9 @@ function branchPickerHtml(state) {
 /** The project's branches, and the reason there are none to show. A listing
  *  that could not be read still leaves the field able to cut a branch by name,
  *  so the failure is an answer here and not a throw. */
-async function readBranches(projectId) {
+async function readBranches({ callRpc, projectId }) {
   try {
-    const listing = await App.call("git.branches", { project_id: projectId });
+    const listing = await callRpc("git.branches", { project_id: projectId });
     return { rows: (listing && listing.branches) || [], error: "" };
   } catch (error) {
     return { rows: [], error: error.message || String(error) };
@@ -210,11 +211,18 @@ export function createWorkHtml(state) {
 }
 
 /**
- * Open the create modal on `kind`'s tab, for the project named. `navigate` is
- * how the thing made is opened — the rail passes its own, which puts the rail
- * away on a narrow viewport. Returns { close }.
+ * Open the create modal on `kind`'s tab, for the project named — and for the
+ * machine it is on, since `proj-1` names a different project on every one of
+ * them. Everything this dialog asks for goes to that machine's bridge, and the
+ * work it makes opens there. `navigate` is how the thing made is opened — the
+ * rail passes its own, which puts the rail away on a narrow viewport. Returns
+ * { close }.
  */
-export function openCreateWork({ projectId, projectName, kind = "branch", navigate = go }) {
+export function openCreateWork({ projectId, deviceId, projectName, kind = "branch", navigate = go }) {
+  // Asked once, at the open: one bridge answers this dialog for its whole life,
+  // and a machine that cannot answer refuses in the words the rail greys its
+  // rows with (core/inboxDevices.js).
+  const callRpc = verbCall({ deviceId });
   const state = {
     projectId,
     projectName: projectName || projectId,
@@ -244,7 +252,7 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     const slot = state.loaded[state.kind];
     if (slot.requested) return;
     slot.requested = true;
-    const { rows, error } = await load(state.projectId);
+    const { rows, error } = await load({ callRpc, projectId: state.projectId });
     slot.rows = rows;
     slot.error = error;
     slot.done = true;
@@ -338,7 +346,7 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     paint();
     let answer = null;
     try {
-      answer = action.call ? await replyOrNothing(App.call(action.call.method, action.call.params)) : null;
+      answer = action.call ? await replyOrNothing(callRpc(action.call.method, action.call.params)) : null;
     } catch (error) {
       state.busy = false;
       state.error = error.message || String(error);
@@ -350,7 +358,8 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     refreshFeed();
     if (!landed.route) return;
     App.focusComposerOnMount = landed.focusComposer;
-    navigate(landed.route);
+    // The work was made on one machine; the route that opens it says which.
+    navigate({ ...landed.route, deviceId });
   }
 
   wire((state.values[state.kind] || "").length);

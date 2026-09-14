@@ -1116,46 +1116,41 @@ describe("captures on the rail", () => {
   });
 });
 
-// Every row in the rail names the machine that answered for it. A row from
-// another device is the account's row as much as any other — its verbs work,
-// and they work against ITS device — but no route can name a device yet, so it
-// opens nowhere until stage 2 gives routes one.
+// Every row in the rail names the machine that answered for it, and its route
+// names that machine too: a row from another device is the account's row as
+// much as any other — it opens, and everything it does it does against ITS
+// device.
 describe("a row on another device", () => {
   const awayRow = (over = {}) =>
     branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", run_id: "run-2", branch: "build/away", ...over });
 
-  it("is unroutable and titled so the reader knows it is coming", () => {
+  it("opens on its own device and is read there", async () => {
     feed([awayRow()]);
     const row = rowFor("run-2");
-    expect(row.className).toContain("inbox-unroutable");
-    expect(row.title).toContain("Opens once this page can name its device");
-  });
+    expect(row.className).not.toContain("inbox-unroutable");
 
-  it("goes nowhere when it is pressed, and is read on its own device", async () => {
-    feed([awayRow()]);
-    rowFor("run-2").click();
+    row.click();
     await flush();
-    expect(location.hash).toBe("");
+    expect(location.hash).toBe("#/device/dev-2/project/p1/branch/build%2Faway/changes");
     expect(awayCall).toHaveBeenCalledWith("entity.seen", { entity_id: "run-2" });
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
   });
 
-  it("clears on its own device", async () => {
-    feed([awayRow()]);
+  it("clears, finishes and mutes on its own device", async () => {
+    feed([awayRow(), awayRow({ run_id: "run-3", branch: "build/other" }), awayRow({ run_id: "run-4", branch: "build/third" })]);
     menuItem(rowFor("run-2"), "[data-dismiss]").click();
     await flush();
     expect(awayCall).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-2" });
-    expect(App.call).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
-  });
 
-  it("finishes and mutes on its own device too", async () => {
-    feed([awayRow(), awayRow({ run_id: "run-3", branch: "build/other" })]);
-    menuItem(rowFor("run-2"), "[data-done]").click();
+    menuItem(rowFor("run-3"), "[data-done]").click();
     await answerConfirm(true);
-    expect(awayCall).toHaveBeenCalledWith("branch.finish", { project_id: "p1", branch: "build/away", action: "delete" });
-    menuItem(rowFor("run-3"), "[data-mute]").click();
+    expect(awayCall).toHaveBeenCalledWith("branch.finish", { project_id: "p1", branch: "build/other", action: "delete" });
+
+    menuItem(rowFor("run-4"), "[data-mute]").click();
     await flush();
-    expect(awayCall).toHaveBeenCalledWith("entity.mute", { entity_id: "run-3", muted: true });
+    expect(awayCall).toHaveBeenCalledWith("entity.mute", { entity_id: "run-4", muted: true });
+
+    expect(App.call).not.toHaveBeenCalledWith("entity.dismiss", expect.anything());
     expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
     expect(App.call).not.toHaveBeenCalledWith("entity.mute", expect.anything());
   });
@@ -1207,7 +1202,6 @@ describe("a row on another device", () => {
   it("leaves the home device's own rows alone", async () => {
     feed([branchRow(), awayRow()]);
     const home = rowFor("run-1");
-    expect(home.className).not.toContain("inbox-unroutable");
     expect(home.className).not.toContain("inbox-offline");
     expect(menuItem(home, "[data-dismiss]").getAttribute("aria-disabled")).toBe(null);
 

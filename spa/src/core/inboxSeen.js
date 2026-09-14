@@ -46,9 +46,9 @@ export async function markSeen(entityId, agentId, readFromSequence = null, readT
 
 /** The row holding an entity, off the index the last snapshot minted. A caller
  *  names an entity and nothing else — only the feed knows which machine
- *  answered for it, and that is the machine the read cursor belongs to. A row
- *  the feed does not name is the home device's: stage 1 opens no other
- *  machine's work, so no other machine's can be being read. */
+ *  answered for it, and that is the machine the read cursor belongs to. An
+ *  entity no row names is nobody's in particular, and its cursor goes home
+ *  (core/inboxDevices.js). */
 const rowHolding = (entityId) => rowsByEntity.get(entityId) || null;
 
 /** Every row that names an entity, by that id — minted with each snapshot

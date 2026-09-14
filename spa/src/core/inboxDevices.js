@@ -1,18 +1,12 @@
 // Which device a row in the rail belongs to, and what that means for the row.
 //
 // The inbox is one list across every machine on the account, so a row names the
-// device that answered for it. Two things follow, and both live here.
-//
-// A verb on a row must reach THAT device: clearing a row the laptop answered
-// for through the desktop's session would clear nothing. So every verb asks
-// this module for its call, and a device that cannot answer right now hands
-// back one that refuses in the same words the row is greyed with — the verb
-// sites are written once, for every row, whichever machine it came from.
-//
-// And until a route can name a device (stage 2), a row on any device but the
-// home one has nowhere to open: `#/project/proj-1` would land on whichever
-// machine the page is pointed at, and every machine mints a `proj-1`. Such a
-// row still works — it just does not open, and it says why.
+// device that answered for it, and a verb on a row must reach THAT device:
+// clearing a row the laptop answered for through the desktop's session would
+// clear nothing. So every verb asks this module for its call, and a device that
+// cannot answer right now hands back one that refuses in the same words the row
+// is greyed with — the verb sites are written once, for every row, whichever
+// machine it came from.
 
 import { contextFor, homeContext } from "./deviceContexts.js";
 
@@ -39,42 +33,6 @@ export function verbCall(row) {
   const { call, disabled } = verbTarget(row);
   return call || (() => Promise.reject(new Error(disabled)));
 }
-
-/**
- * The same rows, the home device's first.
- *
- * A route carries no device until stage 2, and every machine mints a `proj-1`
- * with a `main` in it — so a route naming a project and a branch can stand on
- * two rows, and the one it means is the home device's. A row this client holds
- * itself names no device and is the home device's too. Stage 2 reads the device
- * off the route and this goes.
- */
-export function homeRowsFirst(rows) {
-  const home = homeContext()?.deviceId;
-  const mine = (row) => !row.deviceId || row.deviceId === home;
-  return [...rows.filter(mine), ...rows.filter((row) => !mine(row))];
-}
-
-/** What a row on another device is titled with instead of what it opens. */
-export const AWAY_TITLE = "Opens once this page can name its device";
-
-/** Stage 1 only. A row or a block on any device but the home one opens
- *  nowhere; stage 2 gives routes a device and deletes this. A row this client
- *  holds itself names no device and is the home device's to open. */
-export function openableHere(row) {
-  if (!row.deviceId || row.deviceId === homeContext()?.deviceId) return row;
-  return { ...row, route: null, title: AWAY_TITLE };
-}
-
-export const openableHereRows = (rows) => rows.map(openableHere);
-
-/** A project block and everything under it, likewise: a block on another device
- *  opens no checkout, and neither do its rows or its Recent. */
-export const openableHereBlock = (block) => ({
-  ...openableHere(block),
-  entries: openableHereRows(block.entries),
-  recent: openableHereRows(block.recent),
-});
 
 /**
  * After the paint: grey what no device can answer for right now, and shut the

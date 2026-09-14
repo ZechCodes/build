@@ -285,7 +285,7 @@ describe("the projects face", () => {
 
   it("highlights the block holding the branch or issue the route stands on", () => {
     expect(list().querySelector(".inbox-project.active")).toBeNull();
-    App.route = { name: "branch", projectId: "p2", branch: "x", tab: "changes" };
+    App.route = { name: "branch", deviceId: "dev-1", projectId: "p2", branch: "x", tab: "changes" };
     feed(feedItems);
     expect([...list().querySelectorAll(".inbox-project.active")].map((block) => block.dataset.project)).toEqual(["dev-1/p2"]);
     App.route = { name: "capture", id: "cap-1" };
@@ -482,7 +482,7 @@ describe("the projects face", () => {
     expect(openCreateWork).not.toHaveBeenCalled();
   });
 
-  it("opens no checkout from the head of a block on another device", () => {
+  it("opens the checkout of a block on another device, on that device", () => {
     feedProjects.push({ id: "p1", deviceId: "dev-2", projectKey: "dev-2/p1", name: "relaydb" });
     feed([
       primaryRow(),
@@ -490,9 +490,9 @@ describe("the projects face", () => {
     ]);
 
     const head = blockFor("dev-2/p1").querySelector("[data-project-open]");
-    expect(head.classList.contains("inbox-unroutable")).toBe(true);
+    expect(head.classList.contains("inbox-unroutable")).toBe(false);
     head.click();
-    expect(location.hash).toBe("");
+    expect(location.hash).toBe("#/device/dev-2/project/p1/branch/main/changes");
   });
 
   it("touches nothing when the feed repeats what it already said", () => {

@@ -43,9 +43,10 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
+import { deviceKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
-import { deviceFeedView, homeProjectKey, onDeviceStateChanged } from "./deviceContexts.js";
-import { homeRowsFirst, openableHereBlock, openableHereRows, paintDeviceState, verbCall } from "./inboxDevices.js";
+import { deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
+import { paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
@@ -164,9 +165,7 @@ function rowUi(showProject) {
   // A reroute goes to the machine holding the capture, so the destinations it
   // offers are that machine's — its projects, and the branches they have.
   const destinations = deviceFeedView(snapshot, entryOf(picker.rerouteKey)?.deviceId);
-  // A route names no device yet, so the row it stands on is looked for among
-  // the home device's rows before anybody else's.
-  const activeKey = activeEntryKey(App.route, homeRowsFirst(entries));
+  const activeKey = activeEntryKey(App.route, entries);
   return {
     activeKey,
     openMenuKey,
@@ -183,20 +182,19 @@ function rowUi(showProject) {
   };
 }
 
-/** The block the route stands in, named the way every block is named. The row
- *  the route opens says which device it is on; a route that matches no row is
- *  the home device's project. */
+/** The block the route stands in, named the way every block is named: the row
+ *  the route opens says so, and a route that matches no row still names its own
+ *  machine and project (core/deviceKey.js). */
 function activeProjectKey(activeKey) {
   const standing = entries.find((entry) => entry.key === activeKey);
   if (standing) return standing.projectKey || null;
-  return homeProjectKey(App.route.projectId);
+  const { deviceId, projectId } = App.route;
+  return deviceId && projectId ? deviceKey(deviceId, projectId) : null;
 }
 
 /** The inbox face: one list, Recent at its end. */
 function drawInbox(list, shown, nowMs) {
-  const partition = inboxEntries({ items: shown, nowMs });
-  const live = openableHereRows(partition.entries);
-  const recent = openableHereRows(partition.recent);
+  const { entries: live, recent } = inboxEntries({ items: shown, nowMs });
   // Every row on screen, Recent included: what the route stands on and what a
   // click resolves to do not care which section a row sits in.
   entries = [...live, ...recent];
@@ -209,9 +207,7 @@ function drawInbox(list, shown, nowMs) {
 /** The projects face: the new-project control, the unrouted captures on their
  *  own, then a block per project with its rows and its own Recent. */
 function drawProjects(list, shown, nowMs) {
-  const face = projectBlocks({ items: shown, projects, devices: App.devices, nowMs });
-  const unsorted = openableHereRows(face.unsorted);
-  const blocks = face.blocks.map(openableHereBlock);
+  const { unsorted, blocks } = projectBlocks({ items: shown, projects, devices: App.devices, nowMs });
   entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
   const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));

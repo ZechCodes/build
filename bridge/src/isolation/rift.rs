@@ -7,8 +7,8 @@ use std::process::Output;
 use std::time::Duration;
 
 use super::{
-    checkout_name, local_branch_ref, rift_marker_names, teardown_in_git_dir, write_rift_marker,
-    BranchTeardown, Isolation, IsolationBackend, WorktreeError,
+    checkout_name, directory_name, local_branch_ref, rift_marker_names, teardown_in_git_dir,
+    write_rift_marker, BranchTeardown, Isolation, IsolationBackend, WorktreeError,
 };
 use crate::git_process::{git_failure, run_command_with_deadline, run_git, run_git_with_deadline};
 
@@ -225,7 +225,9 @@ impl RiftBackend {
             &[OsStr::new("init"), source.as_os_str(), OsStr::new("--here")],
             RIFT_MATERIALIZE_DEADLINE,
         )?;
-        let name = checkout_name(destination).ok_or_else(|| {
+        // `--name` is the directory Rift is told to make under `--into`, not
+        // the name the record is keyed by, so it stays the path's last segment.
+        let name = directory_name(destination).ok_or_else(|| {
             WorktreeError::Refused(format!(
                 "directory path has no name: {}",
                 destination.display()
@@ -311,7 +313,10 @@ impl IsolationBackend for RiftBackend {
         let parent = path.parent().ok_or_else(|| {
             WorktreeError::Refused(format!("checkout path has no parent: {}", path.display()))
         })?;
-        let name = checkout_name(path).ok_or_else(|| {
+        // As above: Rift creates `<parent>/<name>`, so this is the directory
+        // the caller asked for. Its record is found again by path, and read
+        // back under `checkout_name` in `holds_record` and `teardown_record`.
+        let name = directory_name(path).ok_or_else(|| {
             WorktreeError::Refused(format!(
                 "checkout path has no directory name: {}",
                 path.display()

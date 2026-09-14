@@ -136,14 +136,59 @@ impl ResolvedIsolation {
     }
 }
 
-/// What the checkout at `path` is called: its directory's name, whatever made
-/// it. Git names a linked worktree after its directory and a clone has no
-/// other name, so this is the one name every backend calls a checkout by. A
-/// path with no directory to be called by is no checkout, as a path with no
-/// `.git` is none for [`Isolation::of`].
+/// What separates the workspace from the mount in the name a workspace mount
+/// is registered under. Two hyphens, because one is ordinary inside either
+/// half and the pair is what tells the halves apart at a glance.
+pub const WORKSPACE_MOUNT_SEPARATOR: &str = "--";
+
+/// What the checkout at `path` is called — the one name every backend keys its
+/// record of it by, and the one name any caller may ask a backend about.
+///
+/// A checkout that is one mount of a multi-directory workspace is called
+/// `<workspace directory>--<mount>`. Every workspace of a project mounts the
+/// same source under the same mount name (`repo`), and a source repository
+/// keeps one registry for every checkout cut from it, so the bare mount would
+/// have a project's second workspace asking for the record its first already
+/// holds. Workspace directory names are unique within a project and mount names
+/// are unique within a workspace, so the pair is unique.
+///
+/// Every other checkout — one sitting directly under a worktrees root, which is
+/// the shape every registry already on a user's machine was written with —
+/// keeps its directory's name, so nothing registered before this rule has to be
+/// migrated to go on verifying.
+///
+/// The two are told apart by the path alone, so every caller reaches the same
+/// answer without being told which kind it holds: the parent of a workspace
+/// mount is a workspace root, and a workspace root is the directory holding the
+/// manifest. A path with no directory to be called by is no checkout, as a path
+/// with no `.git` is none for [`Isolation::of`].
 pub fn checkout_name(path: &Path) -> Option<String> {
+    let directory = directory_name(path)?;
+    match workspace_of(path) {
+        Some(workspace) => Some(format!("{workspace}{WORKSPACE_MOUNT_SEPARATOR}{directory}")),
+        None => Some(directory),
+    }
+}
+
+/// The name of the checkout's own directory: the last segment of its path,
+/// whatever it is registered under. This is what a provider is told to create
+/// — `rift create --name` makes `<parent>/<name>` — so it must stay the name
+/// the path spells even where the record is keyed by something longer.
+pub fn directory_name(path: &Path) -> Option<String> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// The workspace directory `path` is a mount of, or `None` when it is not a
+/// mount at all. Read from the path itself: the parent is a workspace root
+/// exactly when it holds the manifest a workspace persists before anything is
+/// provisioned beneath it.
+fn workspace_of(path: &Path) -> Option<String> {
+    let parent = path.parent()?;
+    if !parent.join(crate::workspace::MANIFEST_FILE).is_file() {
+        return None;
+    }
+    directory_name(parent)
 }
 
 /// The ref a repository keeps a local branch under: `refs/heads/<branch>`.
@@ -400,8 +445,9 @@ pub trait IsolationBackend: Send + Sync {
     ) -> Result<(), WorktreeError>;
 
     /// Delete the checkout at `path` and this backend's own record of it. A
-    /// checkout is named by its directory, so the name is the path's own and no
-    /// caller can pass one that disagrees with it. Absence is success.
+    /// checkout is named by [`checkout_name`] of its path, so the name is the
+    /// path's own and no caller can pass one that disagrees with it. Absence is
+    /// success.
     fn remove(&self, project: &Path, path: &Path) -> Result<(), WorktreeError>;
 
     /// Canonical paths of every checkout of `project` this backend can find
@@ -416,7 +462,9 @@ pub trait IsolationBackend: Send + Sync {
     /// Clear this backend's stale records of checkouts that no longer exist.
     fn prune(&self, project: &Path) -> Result<(), WorktreeError>;
 
-    /// Whether this backend holds a record of a checkout called `name`.
+    /// Whether this backend holds a record of a checkout called `name` — the
+    /// name [`checkout_name`] gives its path, which is the only name a record
+    /// is ever keyed by.
     fn holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError>;
 
     /// What teardown of the checkout called `name` owns, read from this
@@ -470,8 +518,10 @@ mod tests {
         assert_eq!(Isolation::of(&dir.path().join("nothing-here")), None);
     }
 
-    /// A checkout is called by its directory, whatever made it — and a path
-    /// with no directory to be called by is no checkout at all.
+    /// A checkout directly under a worktrees root is called by its directory,
+    /// whatever made it — and a path with no directory to be called by is no
+    /// checkout at all. This is the shape every registry already on disk was
+    /// written with, so it must keep answering to the same name.
     #[test]
     fn a_checkout_is_named_by_its_directory() {
         assert_eq!(
@@ -484,6 +534,41 @@ mod tests {
         );
         assert_eq!(checkout_name(Path::new("/")), None);
         assert_eq!(checkout_name(Path::new("")), None);
+    }
+
+    /// One mount of a workspace carries the workspace's directory in its name.
+    /// The mount alone is `repo` in every workspace of a project and the source
+    /// repository keeps one registry for all of them, so the bare mount would
+    /// have the second workspace asking for the record the first holds. The
+    /// manifest beside the mount is what says the parent is a workspace root —
+    /// the same path without it is an ordinary checkout, named by its
+    /// directory, so nothing already registered has to be migrated.
+    #[test]
+    fn a_workspace_mount_is_named_by_its_workspace_and_its_mount() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("csv-export");
+        let mount = workspace.join("repo");
+        std::fs::create_dir_all(&mount).unwrap();
+
+        assert_eq!(
+            checkout_name(&mount),
+            Some("repo".to_string()),
+            "without the manifest the parent is no workspace root"
+        );
+
+        std::fs::write(workspace.join(crate::workspace::MANIFEST_FILE), "{}").unwrap();
+
+        assert_eq!(
+            checkout_name(&mount),
+            Some("csv-export--repo".to_string()),
+            "the manifest beside it makes the parent a workspace root"
+        );
+        assert_eq!(
+            checkout_name(&workspace),
+            Some("csv-export".to_string()),
+            "the workspace root itself is not one of its own mounts"
+        );
+        assert_eq!(checkout_name(Path::new("/")), None);
     }
 
     #[test]

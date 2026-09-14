@@ -89,12 +89,16 @@ const capture = (over = {}) => ({
   ...over,
 });
 
+// `devices` is each machine's own slice of the same snapshot, which is what a
+// surface about one machine reads (core/deviceContexts.js `deviceFeedView`):
+// the reroute picker offers the projects of the machine holding the capture.
 const feed = (
   workspaces,
   projects = [project("project-1", "Payments"), project("project-2", "Website")],
   items = [],
+  devices = { "dev-1": { items, projects, workspaces } },
 ) => {
-  snapshot = { items, pending: [], projects, workspaces, devices: { "dev-1": { items, projects, workspaces } } };
+  snapshot = { items, pending: [], projects, workspaces, devices };
   deliver();
 };
 
@@ -392,5 +396,255 @@ describe("an account with more than one device", () => {
     expect(App.route).toBe(standing);
     rememberDeviceFilter(null);
     expect(rows()).toHaveLength(2);
+  });
+});
+
+// ---- captures ----------------------------------------------------------------
+//
+// A capture on the rail is a route in progress: unfinished business the router
+// has not placed yet. The row is where that routing is made visible and
+// reversible — it opens the page that decides, retries a route that gave up,
+// and sends the capture somewhere else — and everything it asks, it asks the
+// machine holding the capture.
+
+const captureRowFor = (id) => document.querySelector(`.capture-entry[data-capture="${id}"]`);
+const flush = () => new Promise((done) => setTimeout(done, 0));
+
+/** A branch the feed still carries. The rail no longer lists branches, but the
+ *  reroute picker still offers the ones a project already has. */
+const branchRow = (over = {}) => {
+  const base = { kind: "branch", deviceId: "dev-1", project_id: "project-1", branch: "build/login", run_id: "run-1", ...over };
+  return { ...base, projectKey: key(base.deviceId, base.project_id) };
+};
+
+/** A capture the router has placed, which opens where it put it. */
+const routedCapture = (over = {}) =>
+  capture({
+    state: "routed",
+    project_id: "project-1",
+    project: "Payments",
+    branch: "build/login",
+    routing: { project_id: "project-1", kind: "branch", target_id: "build/login" },
+    ...over,
+  });
+
+/** A capture whose route gave up: the one state that carries a retry. */
+const failedCapture = (over = {}) =>
+  capture({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed", ...over });
+
+describe("captures on the rail", () => {
+  // A capture leaves the inbox by being routed, so there is nothing to clear —
+  // and no entity to clear it on.
+  it("offers no way to clear a capture", () => {
+    feed([workspace()], undefined, [capture()]);
+    const row = captureRowFor("cap-1");
+    expect(row.querySelector("[data-dismiss]")).toBeNull();
+    expect(row.querySelector("[data-menu]")).toBeNull();
+  });
+
+  it("opens the decision page for a capture the router is still deciding", async () => {
+    feed([], undefined, [capture()]);
+    expect(captureRowFor("cap-1").textContent).toContain("Deciding where this goes");
+    captureRowFor("cap-1").click();
+    await flush();
+    expect(navigate).toHaveBeenCalledWith({ name: "capture", id: "cap-1" });
+    // A capture holds no conversation, so there is nothing to read through.
+    expect(workshopCall).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+  });
+
+  // Answering the router is a decision, not a text field wedged into a row:
+  // the row is the conversation entry, and it opens the page that decides.
+  it("opens the decision page for a capture the router is asking about", async () => {
+    feed([], undefined, [
+      capture({
+        state: "unrouted",
+        unread: true,
+        unread_count: 1,
+        unread_reason: "router_question",
+        question: { text: "Which project?", asked_at: "t", answer: null },
+      }),
+    ]);
+    const row = captureRowFor("cap-1");
+    expect(row.textContent).toContain("Which project?");
+    expect(row.querySelector("[data-capture-answer]")).toBeNull();
+    row.click();
+    await flush();
+    expect(navigate).toHaveBeenCalledWith({ name: "capture", id: "cap-1" });
+    expect(workshopCall).not.toHaveBeenCalledWith("capture.answer", expect.anything());
+  });
+
+  it("opens a routed capture where it was routed, on its own machine", async () => {
+    feed([], undefined, [routedCapture()]);
+    captureRowFor("cap-1").click();
+    await flush();
+    expect(navigate).toHaveBeenCalledWith({
+      name: "branch",
+      deviceId: "dev-1",
+      projectId: "project-1",
+      branch: "build/login",
+      tab: "changes",
+    });
+  });
+
+  it("re-fires the router on a route that gave up", async () => {
+    feed([], undefined, [failedCapture()]);
+    captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
+    await flush();
+    expect(workshopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-1" });
+    expect(laptopCall).not.toHaveBeenCalled();
+  });
+
+  it("retries one failed route while another retry is still in flight", async () => {
+    workshopCall.mockImplementation((method) => (method === "capture.reroute" ? new Promise(() => {}) : Promise.resolve({})));
+    feed([], undefined, [failedCapture(), failedCapture({ capture_id: "cap-2" })]);
+
+    captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
+    await flush();
+    captureRowFor("cap-2").querySelector("[data-capture-retry]").click();
+    await flush();
+
+    const rerouted = workshopCall.mock.calls.filter(([method]) => method === "capture.reroute");
+    expect(rerouted.map(([, params]) => params.capture_id)).toEqual(["cap-1", "cap-2"]);
+  });
+
+  it("says on the row when a reroute is refused", async () => {
+    workshopCall.mockImplementation(async (method) => {
+      if (method === "capture.reroute") throw new Error("unknown project_id: project-9");
+      return {};
+    });
+    feed([], undefined, [failedCapture()]);
+    captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
+    await vi.waitFor(() => expect(captureRowFor("cap-1").querySelector("[data-capture-error]").hidden).toBe(false));
+    expect(captureRowFor("cap-1").querySelector("[data-capture-error]").textContent).toContain("unknown project_id");
+  });
+
+  it("sends a capture somewhere else through the picker on its row", async () => {
+    feed([], undefined, [routedCapture()]);
+    captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+
+    const picker = captureRowFor("cap-1").querySelector(".reroute-menu");
+    expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual([
+      "Payments",
+      "Website",
+    ]);
+
+    picker.querySelector('[data-reroute-branch-open="project-2"]').click();
+    await flush();
+    captureRowFor("cap-1").querySelector('[data-reroute-project="project-2"][data-reroute-kind="branch"]').click();
+    await flush();
+
+    // A branch left unnamed is the daemon naming it after what was said.
+    expect(workshopCall).toHaveBeenCalledWith("capture.reroute", {
+      capture_id: "cap-1",
+      project_id: "project-2",
+      kind: "branch",
+    });
+  });
+
+  it("names the branch it is rerouted to, offering the ones the project has", async () => {
+    feed([], undefined, [branchRow(), routedCapture()]);
+    captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
+    await flush();
+
+    const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
+    expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
+      "build/login",
+    ]);
+
+    field.value = "build/csv-export";
+    captureRowFor("cap-1").querySelector('[data-reroute-project="project-1"][data-reroute-kind="branch"]').click();
+    await flush();
+    expect(workshopCall).toHaveBeenCalledWith("capture.reroute", {
+      capture_id: "cap-1",
+      project_id: "project-1",
+      kind: "branch",
+      branch: "build/csv-export",
+    });
+  });
+
+  // The list is rewritten whole on every feed tick, and naming a branch is
+  // typing into a box that lives in it.
+  it("holds the feed off the branch box while it is being typed into", async () => {
+    feed([], undefined, [routedCapture()]);
+    captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
+    await flush();
+
+    const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
+    field.focus();
+    field.value = "build/csv";
+
+    feed([workspace()], undefined, [routedCapture()]); // a tick with something new to say
+    expect(captureRowFor("cap-1").querySelector("[data-reroute-branch]")).toBe(field);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["capture:cap-1"]); // held back while typing
+
+    field.blur();
+    feed([workspace()], undefined, [routedCapture()]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["capture:cap-1", "workspace:dev-1/workspace-1"]);
+  });
+});
+
+describe("a capture on another device", () => {
+  // A reroute goes to the machine holding the capture, and that daemon knows
+  // only the projects it minted itself — every machine has a `project-1`. So
+  // the picker offers that device's projects and the branches they already have.
+  it("offers its own device's projects when its capture is rerouted", async () => {
+    const theirProject = project("project-1", "their notes", "dev-2");
+    const theirCapture = routedCapture({ deviceId: "dev-2", projectKey: key("dev-2", "project-1"), project: "their notes" });
+    const theirBranch = branchRow({ deviceId: "dev-2", branch: "build/away", run_id: "run-2" });
+    const mine = { items: [branchRow()], projects: [project("project-1", "Payments")], workspaces: [] };
+    const theirs = { items: [theirBranch, theirCapture], projects: [theirProject], workspaces: [] };
+    feed([], [...mine.projects, ...theirs.projects], [...mine.items, ...theirs.items], { "dev-1": mine, "dev-2": theirs });
+
+    captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    const picker = captureRowFor("cap-1").querySelector(".reroute-menu");
+    expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual(["their notes"]);
+
+    picker.querySelector('[data-reroute-branch-open="project-1"]').click();
+    await flush();
+    expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
+      "build/away",
+    ]);
+  });
+
+  it("sends the reroute to the machine holding the capture, not the home one", async () => {
+    const theirCapture = failedCapture({ deviceId: "dev-2", projectKey: key("dev-2", "project-1") });
+    feed([], undefined, [theirCapture]);
+    captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
+    await flush();
+    expect(laptopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-1" });
+    expect(workshopCall).not.toHaveBeenCalledWith("capture.reroute", expect.anything());
+  });
+
+  // A capture this client has just sent is on the rail before any device's feed
+  // carries it, and it is on exactly one machine: the one creation goes to. The
+  // picker narrows the rail to one machine, so it reaches that row like every
+  // other.
+  it("the filter hides a capture this client is still holding", async () => {
+    const host = document.createElement("div");
+    host.id = "compose";
+    document.getElementById("inbox-rail").insertBefore(host, document.getElementById("inbox-list"));
+    const { initCompose } = await import("../src/core/composeView.js");
+    const record = { id: "cap-9", text: "ship it", created_at: "2026-09-02T12:00:00Z", state: "routing", routing: null };
+    workshopCall.mockImplementation(async (method) => (method.startsWith("capture.") ? record : {}));
+    initCompose();
+
+    document.querySelector("#compose-open").click();
+    document.querySelector("#compose-text").value = "ship it";
+    document.querySelector("#compose-send").click();
+    await flush();
+    expect(captureRowFor("cap-9")).toBeTruthy();
+
+    rememberDeviceFilter("dev-2");
+    expect(captureRowFor("cap-9")).toBeNull();
+
+    rememberDeviceFilter("dev-1");
+    expect(captureRowFor("cap-9")).toBeTruthy();
+    rememberDeviceFilter(null);
   });
 });

@@ -26,7 +26,7 @@
 // a tick it has nothing new to say.
 
 import { $ } from "../dom.js";
-import { esc } from "./text.js";
+import { deviceOfflineText, esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
@@ -34,6 +34,8 @@ import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
 import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
 import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
+import { contextFor } from "./deviceContexts.js";
+import { deviceNameOf } from "./devicePolicy.js";
 import { patchList } from "./patchList.js";
 import { projectRoute } from "./projectModel.js";
 import "../styles/shell.css";
@@ -413,9 +415,22 @@ function openSurfaceMenu(anchor) {
       const project = scopedProject();
       closeMenu();
       if (action === "archive") go({ name: "account", page: "archive" });
-      else if (project) openProjectSettings(project.id);
+      else if (project) openSettingsFor(project);
     };
   });
+}
+
+/** A project's settings are a read and a write on the machine that project
+ *  lives on, so the sheet is handed that machine's caller and asks nothing
+ *  about devices itself. The id it sends stays the bare one that machine's
+ *  daemon minted. A machine this client cannot reach has nothing to show. */
+function openSettingsFor(project) {
+  const context = contextFor(project.deviceId);
+  if (!context) {
+    notifyError("Project settings can't be opened", deviceOfflineText(deviceNameOf(App.devices, project.deviceId)));
+    return;
+  }
+  openProjectSettings(project.id, { callRpc: context.call });
 }
 
 // ---- mounting ----------------------------------------------------------------

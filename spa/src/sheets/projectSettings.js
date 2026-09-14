@@ -8,13 +8,14 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
-import { App } from "../app.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
     <input id="${id}" style="width:100%" value="${esc(value || "")}" readonly /></div>`;
 
-export function openProjectSettings(projectId, { callRpc = (method, params) => App.call(method, params) } = {}) {
+/** Opened with the caller of the machine this project is on: whoever opens the
+ *  sheet has already resolved that, so nothing here asks which device it is. */
+export function openProjectSettings(projectId, { callRpc }) {
   const sheet = $("#sheet");
   sheet.innerHTML = `<h3>Project settings</h3><div class="sub">Loading…</div>`;
   $("#scrim").classList.add("show");

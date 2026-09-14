@@ -79,6 +79,13 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openC
 const { App } = await import("../src/app.js");
 const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
+const { adoptDeviceSession, retireDeviceContext } = await import("../src/core/deviceContexts.js");
+
+/** What each machine answers. A sheet the toolbar opens is handed the caller of
+ *  the machine the project it is about lives on, so the two are told apart. */
+const workshopCall = vi.fn(async () => ({}));
+const laptopCall = vi.fn(async () => ({}));
+const openSession = (deviceId, call) => adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const bar = () => document.querySelector("#toolbar .toolbar");
@@ -102,6 +109,9 @@ beforeEach(() => {
   ];
   openCreateWork.mockClear();
   notifyError.mockClear();
+  openProjectSettings.mockClear();
+  openSession("dev-1", workshopCall);
+  openSession("dev-2", laptopCall);
   App.call = vi.fn(async (method) => {
     if (method === "worktree.create") return { project_id: "p1", branch: "build/mascot-model-spike", worktree_id: "wt-9" };
     if (method === "issue.create") return { project_id: "p1", issue_id: "plan-9", plan_id: "plan-9" };
@@ -443,7 +453,24 @@ describe("the ⋯", () => {
     bar().querySelector('[data-select="more"]').click();
     expect([...menu().querySelectorAll("[data-action]")].map((row) => row.dataset.action)).toEqual(["archive", "settings"]);
     menu().querySelector('[data-action="settings"]').click();
-    expect(openProjectSettings).toHaveBeenCalledWith("p1");
+    expect(openProjectSettings.mock.calls[0][0]).toBe("p1");
+  });
+
+  // The sheet reads and writes one project on one machine. It is handed that
+  // machine's caller, so it never has to ask which device it is on — and the
+  // project id it sends stays the bare one that machine's daemon minted.
+  it("opens project settings with the scoped device's call", () => {
+    bar().querySelector('[data-select="more"]').click();
+    menu().querySelector('[data-action="settings"]').click();
+    expect(openProjectSettings).toHaveBeenCalledWith("p1", { callRpc: workshopCall });
+  });
+
+  it("says which machine is missing rather than opening settings it cannot read", () => {
+    retireDeviceContext("dev-1");
+    bar().querySelector('[data-select="more"]').click();
+    menu().querySelector('[data-action="settings"]').click();
+    expect(openProjectSettings).not.toHaveBeenCalled();
+    expect(notifyError.mock.calls[0][1]).toContain("workshop isn't connected");
   });
 
   it("sends Archive to the account page that owns it", () => {

@@ -281,7 +281,8 @@ async function refreshEntity(key) {
 }
 
 /** The one walk over the held rows by device: a device's rows are replaced
- *  wholesale, or leave with it. Another device's rows are never touched. */
+ *  wholesale, or leave with it. Another device's rows are never touched.
+ *  `namesDevice` is asked about a DEVICE ID, not a row. */
 function dropRowsOf(namesDevice) {
   for (const [key, held] of activeRows) {
     if (namesDevice(held.deviceId)) activeRows.delete(key);
@@ -291,7 +292,7 @@ function dropRowsOf(namesDevice) {
 /** The rows of one device's view worth keeping records for, replacing whatever
  *  that device named last time and leaving every other device's alone. */
 function keepActiveRows(deviceId, view, active) {
-  dropRowsOf((held) => held === deviceId);
+  dropRowsOf((heldDeviceId) => heldDeviceId === deviceId);
   for (const row of view.items || []) {
     const entityId = entityIdOf(row);
     if (entityId && active.has(entityId)) activeRows.set(rowKey(deviceId, entityId), { deviceId, entityId, row });
@@ -372,7 +373,7 @@ async function syncDeviceSnapshot(deviceId, view) {
  *  rows it named go, their watchers with them, and its background tier comes
  *  down. */
 function forgetDevicesMissingFrom(devices) {
-  dropRowsOf((deviceId) => !(deviceId in devices));
+  dropRowsOf((heldDeviceId) => !(heldDeviceId in devices));
   for (const [deviceId, watchers] of backgroundWatchers) {
     if (deviceId in devices) continue;
     watchers.forEach((watcher) => watcher.dispose());

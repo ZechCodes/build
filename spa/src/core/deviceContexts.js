@@ -10,6 +10,7 @@
 import { App } from "../app.js";
 import { adoptCacheScope, releaseScope, scopeFor } from "./cacheScope.js";
 import { createChatRepository } from "./chatRepository.js";
+import { deviceView } from "./feedMerge.js";
 import { disarmChangeEvents } from "./changeEvents.js";
 import { dropFeedDevice } from "./taskFeed.js";
 
@@ -125,6 +126,14 @@ function writeOfflineMark(context, { offline = true, sinceMs = null }) {
  *  over homeDeviceId(App.devices, App.selectedDeviceId). */
 export function homeContext() {
   return homeDevice ? contextFor(homeDevice) : null;
+}
+
+/** The home device's slice of a merged feed snapshot. A surface about where you
+ *  are — the toolbar, the capture decision page — is about one machine, so it
+ *  reads the feed through this rather than every device's rows at once. */
+export function homeFeedView(snapshot) {
+  const view = deviceView(snapshot, homeContext()?.deviceId);
+  return { items: view.items || [], projects: view.projects || [] };
 }
 
 /** Called by pointAliasesAt (app.js) — pointing the aliases at a context and

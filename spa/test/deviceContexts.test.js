@@ -11,6 +11,7 @@ import {
   adoptDeviceSession,
   contextFor,
   homeContext,
+  homeFeedView,
   knownContexts,
   liveContexts,
   resetDeviceContexts,
@@ -155,5 +156,25 @@ describe("the device context registry", () => {
     pointAliasesAt(null);
 
     expect(currentCacheScope()).toBe(null);
+  });
+});
+
+// The surfaces about where you are — the toolbar, the capture decision page —
+// are about one machine, so they read the home device's slice of the merged
+// feed rather than every device's rows at once.
+describe("the home device's view of the feed", () => {
+  const mine = { items: [{ id: "a" }], projects: [{ id: "p1" }] };
+  const theirs = { items: [{ id: "b" }], projects: [{ id: "p9" }] };
+  const merged = { items: [...mine.items, ...theirs.items], devices: { "dev-a": mine, "dev-b": theirs } };
+
+  it("reads the home device's rows and projects out of a merged snapshot", () => {
+    pointAliasesAt(adoptDeviceSession(fakeSession("dev-a")));
+    adoptDeviceSession(fakeSession("dev-b"));
+
+    expect(homeFeedView(merged)).toEqual({ items: mine.items, projects: mine.projects });
+  });
+
+  it("answers empty collections while no device is home", () => {
+    expect(homeFeedView(merged)).toEqual({ items: [], projects: [] });
   });
 });

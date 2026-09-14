@@ -29,8 +29,7 @@ import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
-import { deviceView } from "./feedMerge.js";
-import { homeContext } from "./deviceContexts.js";
+import { homeFeedView } from "./deviceContexts.js";
 import { notifyError } from "./notify.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openCreateWork } from "./createWork.js";
@@ -42,13 +41,6 @@ import "../styles/shell.css";
 const SCOPE_KEY = "build.toolbar.project";
 
 let feed = { items: [], projects: [] };
-
-/** The toolbar is about where you are, and where you are is one machine: the
- *  home device's view of the merged feed. */
-const homeFeedView = (snapshot) => {
-  const view = deviceView(snapshot, homeContext()?.deviceId);
-  return { items: view.items || [], projects: view.projects || [] };
-};
 let scopedProjectId = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;

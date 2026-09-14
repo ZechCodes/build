@@ -7,13 +7,14 @@
 // Those URLs name one machine's work — the home device's, until a route can
 // name its own — so the rows they are looked up in are that machine's: every
 // machine mints a `proj-1`, and a primary checkout is named by its project
-// alone.
+// alone. Which is also why it waits for that machine's own answer and not
+// merely for the first one to arrive.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { resolveLegacyRoute } from "../core/routeResolve.js";
-import { homeFeedView } from "../core/deviceContexts.js";
+import { homeContext, homeFeedView } from "../core/deviceContexts.js";
 import "../styles/shell.css";
 
 export function renderResolving() {
@@ -27,9 +28,25 @@ export function renderResolving() {
   const reference = App.route;
   let settled = false;
   const unsubscribe = subscribeFeed((feed) => {
-    if (settled) return;
+    if (settled || !answersThisLink(feed)) return;
     settled = true;
     go(resolveLegacyRoute(reference, homeFeedView(feed).items) || { name: "inbox" });
   });
   App.viewDispose = unsubscribe;
+}
+
+/**
+ * Whether this snapshot is the one to look the link up in.
+ *
+ * Every device seeds from its cache and answers on its own schedule, so the
+ * first snapshot delivered is usually somebody else's rows and says nothing
+ * about a link that names the home device's work. Wait for that device's own
+ * answer — unless it is in no position to give one, where the boot paint it
+ * left behind is everything there is and a link has to land somewhere.
+ */
+function answersThisLink(feed) {
+  const home = homeContext();
+  if (!home?.session || home.offline) return true;
+  const view = feed.devices?.[home.deviceId];
+  return Boolean(view) && !view.cached;
 }

@@ -228,8 +228,12 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
    something is shut and says why. */
 .inbox-offline { opacity:.62; }
 .inbox-offline .mi[aria-disabled="true"] { opacity:.55; cursor:default; }
-/* And the word that says which of the two the grey means. */
+/* And the word that says which of the two the grey means. It is on line one,
+   at the row's right edge — which is also where the actions overlay fades in.
+   So a greyed row keeps the overlay's width out of that line: hovering a row
+   must not take the one word saying why the row is grey. */
 .inbox-away { flex:none; font-size:11px; }
+.inbox-offline > .inbox-body > .inbox-line:first-child { padding-right:var(--inbox-actions-room); }
 /* A checkout with no branch is on no URL, so its row opens nothing. */
 .inbox-unroutable { cursor:default; }
 .inbox-entry .warn { font-size:11px; }
@@ -249,7 +253,10 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
    room for buttons. The overlay carries the row's own background so the
    title it covers reads as covered, not collided. The menu reuses the split
    button's popover. */
-.inbox-entry { position:relative; }
+/* --inbox-actions-room is what this overlay costs the row's right edge — the
+   ⋯ button and the fade it carries — stated once here, and reserved on a
+   greyed row's first line above. */
+.inbox-entry { position:relative; --inbox-actions-room:34px; }
 .inbox-actions { position:absolute; top:4px; right:4px; display:flex;
   align-items:center; gap:2px; opacity:0; pointer-events:none;
   background:var(--bg); border-radius:6px; padding-left:6px;

@@ -8,6 +8,31 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
+const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
+
+/** Every rule whose selector list is exactly `selector`, as one property →
+ *  value map in cascade order — the sheet states a selector more than once, and
+ *  what the browser ends up with is the merge. Comments go first, so a brace
+ *  inside prose is never read as a rule. */
+function ruleOf(selector) {
+  const blocks = shellCss
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("}")
+    .map((part) => part.split("{"))
+    .filter((parts) => parts.length > 1 && parts.at(-2).trim().replace(/\s+/g, " ") === selector)
+    .map((parts) => parts.at(-1));
+  if (!blocks.length) throw new Error(`no rule for "${selector}" in styles/shell.css`);
+  return Object.fromEntries(
+    blocks
+      .flatMap((block) => block.split(";"))
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => [
+        declaration.slice(0, declaration.indexOf(":")).trim(),
+        declaration.slice(declaration.indexOf(":") + 1).trim(),
+      ]),
+  );
+}
 
 let feedItems = [];
 const feedProjects = [
@@ -1293,6 +1318,33 @@ describe("a row on another device", () => {
     rememberDeviceFilter(null);
 
     expect(rows().map((row) => row.dataset.entity)).toEqual(["run-1", "run-2"]);
+  });
+
+  // What a greyed row LOOKS like is the stylesheet's, and jsdom computes no
+  // layout: no test here can see two boxes overlap. What can be pinned is the
+  // structure the sheet is written against, and the rules themselves.
+  describe("what a greyed row's own chrome may cover", () => {
+    beforeEach(() => {
+      setContextOffline("dev-2", { offline: true });
+      feed([awayRow()]);
+    });
+
+    // The reported defect: hovering a greyed row faded the actions overlay in
+    // over the away word, and the one word saying why the row was grey vanished
+    // under the ⋯ button exactly while the reader was pointing at it.
+    it("reserves the actions' width on the line the away word shares with them", () => {
+      const row = rowFor("run-2");
+      const line = row.querySelector(".inbox-body > .inbox-line");
+      expect(line.querySelector(".inbox-away")).not.toBeNull();
+      expect(row.querySelector(":scope > .inbox-actions")).not.toBeNull();
+
+      // Both are on the row's right edge, so the line keeps that much width for
+      // itself — measured once, where the overlay's own width is stated.
+      expect(ruleOf(".inbox-entry")).toHaveProperty("--inbox-actions-room");
+      expect(ruleOf(".inbox-offline > .inbox-body > .inbox-line:first-child")["padding-right"]).toBe(
+        "var(--inbox-actions-room)",
+      );
+    });
   });
 
   it("leaves the home device's own rows alone", async () => {

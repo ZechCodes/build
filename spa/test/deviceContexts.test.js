@@ -32,12 +32,15 @@ const fakeSession = (deviceId) => ({
 
 const deviceIdsOf = (contexts) => contexts.map((context) => context.deviceId);
 
-const listed = (...devices) => devices.map(([id, status]) => ({ id, status }));
+/** The account's device list as the app reads it: an id and whether that
+ *  device can answer. */
+const online = (id) => ({ id, status: "online" });
+const offline = (id) => ({ id, status: "offline" });
 
 /** Name a device home the way the running app does: the account lists it
  *  online and the user's pick names it. */
 function adoptHome(deviceId) {
-  App.devices = listed([deviceId, "online"]);
+  App.devices = [online(deviceId)];
   App.selectedDeviceId = deviceId;
   return adoptDeviceSession(fakeSession(deviceId));
 }
@@ -129,7 +132,7 @@ describe("the device context registry", () => {
   });
 
   it("calls home the picked device while it is online, else the first online device, else nothing", () => {
-    App.devices = listed(["dev-a", "online"], ["dev-b", "online"]);
+    App.devices = [online("dev-a"), online("dev-b")];
     const first = adoptDeviceSession(fakeSession("dev-a"));
     const second = adoptDeviceSession(fakeSession("dev-b"));
 
@@ -141,11 +144,11 @@ describe("the device context registry", () => {
 
     expect(homeContext()).toBe(first);
 
-    App.devices = listed(["dev-a", "offline"], ["dev-b", "online"]);
+    App.devices = [offline("dev-a"), online("dev-b")];
 
     expect(homeContext()).toBe(second);
 
-    App.devices = listed(["dev-a", "offline"], ["dev-b", "offline"]);
+    App.devices = [offline("dev-a"), offline("dev-b")];
 
     expect(homeContext()).toBe(null);
   });
@@ -154,7 +157,7 @@ describe("the device context registry", () => {
   // first can still be handshaking when the second one lands. Home is that
   // device's, and nobody else's, from the moment it answers.
   it("names no home while the device it would name has no context yet", () => {
-    App.devices = listed(["dev-a", "online"], ["dev-b", "online"]);
+    App.devices = [online("dev-a"), online("dev-b")];
     const second = adoptDeviceSession(fakeSession("dev-b"));
 
     expect(homeContext()).toBe(null);
@@ -171,7 +174,7 @@ describe("the device context registry", () => {
 
   // A work surface is about the machine its link names, whoever is home.
   it("reads the route's device, and nothing for a route without one or a device with no context", () => {
-    App.devices = listed(["dev-a", "online"], ["dev-b", "online"]);
+    App.devices = [online("dev-a"), online("dev-b")];
     App.selectedDeviceId = "dev-a";
     const first = adoptDeviceSession(fakeSession("dev-a"));
     const second = adoptDeviceSession(fakeSession("dev-b"));

@@ -71,9 +71,17 @@ export function pointAliasesAt(context) {
   return setHomeContext(context);
 }
 
-/** Adopt a session as the home device's: the registry creates or retargets
- * that device's context, and the aliases follow it. Reconnecting the same
- * device only replaces its transport. */
+/**
+ * Adopt a session as the home device's: the registry creates or retargets that
+ * device's context, and the aliases follow it. Reconnecting the same device
+ * only replaces its transport.
+ *
+ * The compatibility shim, not the production path. Nothing in connection.js
+ * calls it any more — moving home closes nothing, and every other device stays
+ * live and keeps filling the inbox. What is left is the surface
+ * adoptApplicationScope speaks through, and its retire-on-another-device is
+ * what appScope.test.js pins. Stage 3 deletes both with that file.
+ */
 export function adoptHomeSession(session) {
   const previous = homeContext();
   const context = adoptDeviceSession(session);
@@ -82,9 +90,8 @@ export function adoptHomeSession(session) {
   return context;
 }
 
-// Stage 1 still runs one home session at a time, so switching devices retires
-// the device the app was on, with the model catalog and the reader's position
-// it filled. A later package keeps both contexts live and this goes away.
+// A device the shim above handed home to somebody else: it goes, with the model
+// catalog and the reader's position it filled.
 function retireSwitchedDevice(deviceId) {
   retireDeviceContext(deviceId);
   App.modelCatalog = null;

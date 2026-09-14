@@ -140,11 +140,13 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
 }
 
 /**
- * renderFilesTab(body, { scope, callRpc }) — mount the browser into `body`.
- * `scope` is the plain server-resolved scope object ({task_id} / {project_id[,
- * worktree_id]}) spread into every fs.* call; `callRpc(method, params)` is the
- * app RPC (fs.* ride the app session, not the terminal socket). No polling —
- * fetches only on navigation/selection. Returns { dispose() }.
+ * renderFilesTab(body, { scope, callRpc, cacheScope }) — mount the browser into
+ * `body`. `scope` is the plain server-resolved scope object ({task_id} /
+ * {project_id[, worktree_id]}) spread into every fs.* call; `callRpc(method,
+ * params)` is the app RPC (fs.* ride the app session, not the terminal socket);
+ * `cacheScope` is the cache of the machine that checkout is on, handed down by
+ * the view, and a mount without one saves nothing. No polling — fetches only on
+ * navigation/selection. Returns { dispose() }.
  */
 export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt = null, onFileOpen = null, viewingContext = null }) {
   let disposed = false;

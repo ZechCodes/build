@@ -58,9 +58,9 @@ export function reviewMergeOptions(adopted, base, primary = false) {
 }
 
 /**
- * createTaskReview({ taskId, callRpc, getTask, isOffline, agentSelection,
- *   onMerged }) → { mount(host), unmount() } — the gitPane review plug for a
- * task.
+ * createTaskReview({ taskId, callRpc, cacheScope, getTask, isOffline,
+ *   agentSelection, onMerged }) → { mount(host), unmount() } — the gitPane
+ * review plug for a task.
  *
  * getTask() returns the task view's freshest run payload. The conversation
  * belongs to the agent that owns it; this plug owns only the diff, the pending

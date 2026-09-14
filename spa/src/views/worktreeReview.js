@@ -46,7 +46,8 @@ export function unadoptableHint(meta) {
 }
 
 /**
- * createWorktreeReview({ projectId, worktreeId, callRpc, adopting, ... }) →
+ * createWorktreeReview({ projectId, worktreeId, callRpc, cacheScope, adopting,
+ *   ... }) →
  *   { mount(host), unmount(), getBase() } — the gitPane review plug.
  *
  * `adopting` is the view's shared createAdoptingCall: the first mutating action

@@ -118,6 +118,23 @@ describe("the machine's own panels", () => {
     expect(session.call).toHaveBeenCalledWith("models.list");
   });
 
+  it("stands no panel up for a machine it cannot reach, and stands them up on retry", async () => {
+    App.devices[0].status = "offline";
+    await renderDeviceSettings();
+    await flush();
+
+    // Six panels all saying the machine is away say nothing six times; the page
+    // says it once, where the way back on is.
+    expect(document.querySelector("#projlist")).toBeNull();
+    expect(document.getElementById("defaultharness")).toBeNull();
+    expect(document.querySelector("#device-settings-status").textContent).toContain("Bring this device online");
+
+    document.querySelector("#device-settings-retry").click();
+    await flush();
+    expect(document.querySelector("#projlist").textContent).toContain("relaydb");
+    expect(document.getElementById("defaultharness").value).toBe("claude");
+  });
+
   it("refreshes that device's model catalog when a harness setting is saved", async () => {
     await renderDeviceSettings();
     await flush();

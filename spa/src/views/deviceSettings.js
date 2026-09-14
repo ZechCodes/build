@@ -6,7 +6,7 @@
 // also why every panel here is handed this page's caller: the account page
 // holds what is the account's, and each of these answers belong to one machine.
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
+import { deviceOfflineText, esc } from "../core/text.js";
 import { App } from "../app.js";
 import { openDeviceSettingsSession } from "../connection.js";
 import { contextFor } from "../core/deviceContexts.js";
@@ -39,7 +39,7 @@ export async function renderDeviceSettings() {
   root.innerHTML = `
     <a class="btn mini" href="#/account/settings">Account settings</a>
     <div class="board-head"><div><h1>${esc(device.name)} settings</h1><p>Settings for this device.</p></div></div>
-    ${deviceProjectsPanelHtml()}
+    <div id="device-projects-panel"></div>
     <div class="panel">
       <h3>Projects folder</h3>
       <p class="dim">New projects and cloned repositories will be kept in this folder on ${esc(device.name)}. Existing projects stay where they are.</p>
@@ -48,7 +48,7 @@ export async function renderDeviceSettings() {
       <p id="device-settings-status" role="status" aria-live="polite"></p>
       <button class="btn mini" id="device-settings-retry" hidden>Retry</button>
     </div>
-    ${BRIDGE_PANELS.map((panel) => panel.html()).join("")}`;
+    <div id="device-bridge-panels"></div>`;
   const pathLabel = root.querySelector("#device-projects-path");
   const change = root.querySelector("#device-projects-change");
   const status = root.querySelector("#device-settings-status");
@@ -67,8 +67,11 @@ export async function renderDeviceSettings() {
     closeBrowser();
     session?.close();
   };
+  // Nothing here can be read or written without the connection, so a panel that
+  // asks after it has gone is refused in the account's own words for a machine
+  // that is not there.
   const callRpc = (...asked) => {
-    if (!active || !session) return Promise.reject(new Error("Device settings are no longer open."));
+    if (!active || !session) return Promise.reject(new Error(deviceOfflineText(device.name)));
     return session.call(...asked);
   };
   // The account's copy of what this machine offers is what these panels just
@@ -83,15 +86,25 @@ export async function renderDeviceSettings() {
       // The next surface that asks this machine for its harnesses reads it again.
     }
   };
-  const mountBridgePanels = async () => {
+  // Every panel here is this machine's answer, so none of them exists until the
+  // machine is answering: a page that cannot connect says that once, in its
+  // status line, rather than standing up six panels that all say it again. The
+  // markup is rebuilt on each connection, so a reconnect starts from what the
+  // machine says now and not from the last one's refusal.
+  const standUpPanels = async () => {
+    const projectsHost = root.querySelector("#device-projects-panel");
+    const bridgeHost = root.querySelector("#device-bridge-panels");
+    projectsHost.innerHTML = deviceProjectsPanelHtml();
+    bridgeHost.innerHTML = BRIDGE_PANELS.map((panel) => panel.html()).join("");
+    const readProjects = mountDeviceProjects(projectsHost, {
+      callRpc,
+      deviceName: device.name,
+      onProjectCreated: () => refreshFeed(),
+    });
+    await readProjects();
     const options = { callRpc, onSaved: refreshAccountCatalog };
-    for (const panel of BRIDGE_PANELS) await panel.mount(root, options);
+    for (const panel of BRIDGE_PANELS) await panel.mount(bridgeHost, options);
   };
-  const readProjects = mountDeviceProjects(root, {
-    callRpc,
-    deviceName: device.name,
-    onProjectCreated: () => refreshFeed(),
-  });
   const save = async (path) => {
     const attempt = connectionAttempt;
     const owner = session;
@@ -150,8 +163,7 @@ export async function renderDeviceSettings() {
       pathLabel.textContent = settings.projects_dir;
       status.textContent = "";
       change.disabled = false;
-      await readProjects();
-      await mountBridgePanels();
+      await standUpPanels();
     } catch (error) {
       if (!current()) return;
       session?.close();
@@ -165,7 +177,7 @@ export async function renderDeviceSettings() {
   retry.onclick = connect;
   if (device.status !== "online") {
     pathLabel.textContent = "Unavailable while offline";
-    status.textContent = "Bring this device online, then retry to choose its projects folder.";
+    status.textContent = "Bring this device online, then retry to read its settings.";
     retry.hidden = false;
     return;
   }

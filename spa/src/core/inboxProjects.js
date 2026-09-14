@@ -67,6 +67,22 @@ export function clashingProjectNames(projects) {
   return new Set([...devicesByName].filter(([, devices]) => devices.size > 1).map(([name]) => name));
 }
 
+/** What each project in a set wears to say which device it is on, by project
+ *  key: the `{ clash, deviceName }` deviceTagHtml reads. Whether a name needs
+ *  its device said is a fact about the whole set, so the set is asked once and
+ *  every project reads itself out of that one answer. The rail's blocks and the
+ *  toolbar's menu rows are both minted here, so they wear the same tag. */
+export function deviceTags(projects, devices = []) {
+  const clashes = clashingProjectNames(projects);
+  const deviceNames = new Map(devices.map((device) => [device.id, device.name]));
+  return new Map(
+    projects.map((project) => [
+      project.projectKey,
+      { clash: clashes.has(projectNameOf(project)), deviceName: deviceNames.get(project.deviceId) || null },
+    ]),
+  );
+}
+
 /** The device a project is on, said after its name — only on a name two
  *  devices share, so an account with one device reads exactly as it always has.
  *  Takes anything carrying `{ clash, deviceName }`: the rail's blocks and the
@@ -106,16 +122,14 @@ function blockRoute(project, primary) {
 /** One project's block, before it is ranked. `id` stays the bare project id —
  *  that is what every RPC and every create surface wants — while `key`,
  *  `projectKey` and the folds are the account-wide name. */
-function blockFor(project, { entries, recent, primary, deviceName, clashes }) {
-  const name = projectNameOf(project);
+function blockFor(project, { entries, recent, primary, tag }) {
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
     projectKey: project.projectKey,
     deviceId: project.deviceId,
-    deviceName,
-    clash: clashes.has(name),
-    name,
+    ...tag,
+    name: projectNameOf(project),
     isGit: project.is_git !== false,
     entries,
     recent,
@@ -145,15 +159,13 @@ export function projectBlocks({ items = [], projects = [], devices = [], nowMs =
   const under = (entries, key) => entries.filter((entry) => entry.projectKey === key);
   const unrouted = (entries) => entries.filter((entry) => !entry.projectKey);
   const named = projectsNamed(projects, items);
-  const clashes = clashingProjectNames([...named.values()]);
-  const deviceNames = new Map(devices.map((device) => [device.id, device.name]));
+  const tags = deviceTags([...named.values()], devices);
   const blocks = [...named].map(([key, project]) => {
     const block = blockFor(project, {
       entries: under(inbox.entries, key),
       recent: under(inbox.recent, key),
       primary: items.find((row) => row.kind === "branch" && row.primary && row.projectKey === key),
-      deviceName: deviceNames.get(project.deviceId) || null,
-      clashes,
+      tag: tags.get(key),
     });
     return { ...block, rank: rankOf(block, liveRank, quietRank) };
   });

@@ -8,6 +8,7 @@ import {
   blockIsFolded,
   clashingProjectNames,
   deviceTagHtml,
+  deviceTags,
   newProjectButtonHtml,
   projectBlockHtml,
   projectBlocks,
@@ -388,6 +389,24 @@ describe("two devices in one rail", () => {
     expect(blocks.map((block) => block.clash)).toEqual([true, true]);
     expect(deviceTagHtml(blocks[1])).toBe(' <span class="dim">laptop</span>');
     expect(projectHeadHtml(blocks[1], {})).toContain('<span class="dim">laptop</span>');
+  });
+
+  // One answer for a whole set of projects: whether a name needs its device
+  // said is a fact about the set, and the rail's blocks and the toolbar's menu
+  // rows read the same answer so they wear the same tag.
+  it("answers what each project in a set wears, by project key", () => {
+    const tags = deviceTags([projects[0], on("dev-2", { id: "p1", name: "relaydb" }), projects[1]], devices);
+    expect(tags.get("dev-1/p1")).toEqual({ clash: true, deviceName: "workshop" });
+    expect(tags.get("dev-2/p1")).toEqual({ clash: true, deviceName: "laptop" });
+    expect(tags.get("dev-1/p2")).toEqual({ clash: false, deviceName: "workshop" });
+    expect(deviceTagHtml(tags.get("dev-1/p2"))).toBe("");
+  });
+
+  it("names no device for a project on a machine the account list has not caught up with", () => {
+    expect(deviceTags([on("dev-9", { id: "p1", name: "relaydb" })], devices).get("dev-9/p1")).toEqual({
+      clash: false,
+      deviceName: null,
+    });
   });
 
   it("says nothing about the device when the names already tell them apart", () => {

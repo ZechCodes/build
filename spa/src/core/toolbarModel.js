@@ -8,7 +8,7 @@
 // both names. Everything here is pure; core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
-import { clashingProjectNames } from "./inboxProjects.js";
+import { deviceTags } from "./inboxProjects.js";
 import { routeProjectKey } from "./deviceKey.js";
 
 /** The branch the daemon will cut for a typed name, mirrored for the preview
@@ -69,21 +69,16 @@ function toEntry(item) {
  *  and the captures waiting to be routed there — because the project itself
  *  holds no conversation of its own to be unread in. */
 export function projectMenuModel({ projects = [], items = [], devices = [], projectKey = null, query = "" } = {}) {
-  const clashes = clashingProjectNames(projects);
-  const deviceNames = new Map(devices.map((device) => [device.id, device.name]));
-  const entries = projects.map((project) => {
-    const name = project.name || project.id;
-    return {
-      key: project.projectKey,
-      id: project.id,
-      deviceId: project.deviceId,
-      name,
-      deviceName: deviceNames.get(project.deviceId) || null,
-      clash: clashes.has(name),
-      current: project.projectKey === projectKey,
-      unreadCount: items.reduce((total, item) => total + (item.projectKey === project.projectKey ? unreadOf(item) : 0), 0),
-    };
-  });
+  const tags = deviceTags(projects, devices);
+  const entries = projects.map((project) => ({
+    key: project.projectKey,
+    id: project.id,
+    deviceId: project.deviceId,
+    name: project.name || project.id,
+    ...tags.get(project.projectKey),
+    current: project.projectKey === projectKey,
+    unreadCount: items.reduce((total, item) => total + (item.projectKey === project.projectKey ? unreadOf(item) : 0), 0),
+  }));
   return fuzzyRank(entries, query, (entry) => entry.name);
 }
 

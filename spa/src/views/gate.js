@@ -52,10 +52,7 @@ async function enterApp() {
   } finally {
     App._connecting = false;
   }
-  if (App._watch) {
-    clearInterval(App._watch);
-    App._watch = null;
-  }
+  stopWatchingForOnline();
   holdAppWhileNoDeviceAnswers();
   handBackToReader();
   startCacheSync();
@@ -111,18 +108,27 @@ function holdForDevices() {
  *  its own joinFeed finds it already polling. */
 function leaveHold() {
   if (!holding) return;
+  stopWatchingForOnline();
   handBackToReader();
   render();
 }
 
+/** Stop the waiting screen's poll. Every way back into the app runs this: a
+ *  poll left armed fires at an app the reader is already standing in, enters it
+ *  again, and builds the rail, the toolbar and the route over whatever was
+ *  mounted. */
+function stopWatchingForOnline() {
+  clearInterval(App._watch);
+  App._watch = null;
+}
+
 // Poll for a device to come online, then connect automatically.
 function watchForOnline() {
-  if (App._watch) clearInterval(App._watch);
+  stopWatchingForOnline();
   App._watch = setInterval(async () => {
     const devices = await refreshDevices();
     if (!devices.length) {
-      clearInterval(App._watch);
-      App._watch = null;
+      stopWatchingForOnline();
       await renderOnboarding();
       return;
     }

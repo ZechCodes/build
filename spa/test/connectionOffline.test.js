@@ -14,10 +14,11 @@ let devices = [];
 vi.mock("../src/core/session.js", () => ({
   openRelaySession: (options) => relay.openRelaySession(options),
 }));
+const account = vi.hoisted(() => ({ fetchDevices: null }));
 vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",
   fetchIceServers: async () => [],
-  fetchDevices: async () => devices,
+  fetchDevices: (...args) => account.fetchDevices(...args),
 }));
 vi.mock("../src/terminal/manager.js", () => ({
   followTerminalDevice: (...args) => terminals.followTerminalDevice(...args),
@@ -136,6 +137,7 @@ beforeEach(() => {
   peer.open = async () => {
     throw new Error("no peer path in jsdom");
   };
+  account.fetchDevices = vi.fn(async () => devices);
   relay.openRelaySession.mockReset();
   relay.openRelaySession.mockImplementation(async (options) => {
     opened.push(options);
@@ -325,6 +327,44 @@ describe("per-device connections", () => {
     expect(viewDispose).toHaveBeenCalled();
     expect(App.poll).toBe(null);
     expect(App.viewDispose).toBe(null);
+  });
+
+  // "Retry now" starts the waiting screen polling for a device. A machine that
+  // comes back some other way — a resume landing through the hold listener —
+  // hands the app straight back, and the poll left armed re-enters the app over
+  // a reader already standing in it: the rail, the toolbar and the route are
+  // all built again, and whatever was mounted is dropped.
+  it("stops the waiting screen's poll when a device lands another way", async () => {
+    await connectEveryDevice();
+    startFeed(60000);
+    await flush();
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
+    goOffline("dev-a");
+    goOffline("dev-b");
+    await flush();
+    expect(held()).toBe(true);
+
+    devices = [away("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    document.getElementById("retrybtn").click();
+    await flush();
+    routes.renderInbox.mockClear();
+
+    // The bridge comes back, and its own resume is what lands it.
+    unreachable.delete("dev-a");
+    devices = [online("dev-a", "Laptop"), away("dev-b", "Desktop")];
+    App.devices = devices;
+    await resume("dev-a");
+    await flush();
+    expect(held()).toBe(false);
+    expect(routes.renderInbox).toHaveBeenCalledTimes(1);
+    account.fetchDevices.mockClear();
+
+    await vi.advanceTimersByTimeAsync(7000);
+
+    expect(account.fetchDevices).not.toHaveBeenCalled();
+    expect(routes.renderInbox).toHaveBeenCalledTimes(1);
   });
 
   // And the way back is the same signal: the machine that answers hands the

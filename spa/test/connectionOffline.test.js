@@ -455,6 +455,29 @@ describe("per-device connections", () => {
     expect(App.viewDispose).toBe(null);
   });
 
+  // The screen's foot is one line about what the app is doing and the two things
+  // a reader can do about it. It was no row at all — nothing styles a bare
+  // `.row`, so the ⟳ was pinned against the frame and the buttons crowded the
+  // sentence, and the button's inline `margin-left:auto` did nothing to an
+  // element that was never in a flex row. It is a row now, and says so.
+  it("lays the waiting screen's foot out as one row", async () => {
+    await connectEveryDevice();
+    startFeed(60000);
+    await flush();
+    unreachable.add("dev-a");
+    unreachable.add("dev-b");
+    goOffline("dev-a");
+    goOffline("dev-b");
+    await flush();
+    expect(held()).toBe(true);
+
+    const foot = document.getElementById("watchmsg").parentElement;
+    expect(foot.className.split(/\s+/)).toContain("wait-row");
+    expect([...foot.children].map((child) => child.id)).toEqual(["watchmsg", "retrybtn", "addmore"]);
+    // Where each of them sits is the sheet's to say, not the markup's.
+    expect(document.getElementById("retrybtn").getAttribute("style")).toBe(null);
+  });
+
   // "Retry now" starts the waiting screen polling for a device. A machine that
   // comes back some other way — a resume landing through the hold listener —
   // hands the app straight back, and the poll left armed re-enters the app over

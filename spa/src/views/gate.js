@@ -316,8 +316,8 @@ function renderWaiting(devices) {
       <h1 style="margin:0 0 6px">${esc(waitingForDeviceText(devices.length))}</h1>
       <p class="settings-intro" id="waitintro" style="margin:0 0 18px">${esc(waitingText(devices))}</p>
       <div class="panel"><div id="waitlist"></div></div>
-      <div class="row" style="margin-top:14px"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
-        <button class="btn" id="retrybtn" style="margin-left:auto">Retry now</button>
+      <div class="wait-row"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
+        <button class="btn" id="retrybtn">Retry now</button>
         <button class="btn" id="addmore">Add another device…</button></div>
       <div class="adderr" id="oerr"></div>
     </div>`;

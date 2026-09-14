@@ -834,6 +834,14 @@ textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); 
 .addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
 .addproj input.path { flex:1; }
 .adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
+/* The waiting screen's foot: one line saying what the app is doing, then the
+   two things a reader can do about it. A bare `.row` is styled by nothing, so
+   the ⟳ leading the sentence sat against the frame and the buttons crowded the
+   end of it. The sentence takes the free width, the buttons keep theirs, and
+   they wrap under it rather than squeezing it where there is no room. */
+.wait-row { display:flex; align-items:center; flex-wrap:wrap; gap:10px 12px; margin-top:14px; }
+.wait-row .dim { flex:1 1 auto; min-width:0; }
+.wait-row .btn { flex:none; }
 /* Add project is a centered modal, so it does not need the bottom-sheet inset.
    Its error slot should take space only when it has a message. */
 #sheet:has(#nrerr) { padding-bottom:22px; }

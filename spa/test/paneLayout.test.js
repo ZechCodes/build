@@ -1200,3 +1200,21 @@ describe("the console toggle on a phone", () => {
     expect(declaration(phoneRule(".rail-panel").body, "bottom")).toBe("0");
   });
 });
+
+describe("the waiting screen's foot", () => {
+  // Nothing styles a bare `.row`, so the line that says what the app is doing
+  // sat against the frame with the ⟳ clipped at its left edge and the two
+  // buttons crowded onto the end of the sentence. It is laid out as a row: the
+  // sentence takes the free width, the buttons keep theirs, and they wrap under
+  // it rather than squeezing it where there is no room.
+  it("is a row that wraps rather than crowding its sentence", () => {
+    const row = baseRule(".wait-row");
+    expect(declaration(row.body, "display")).toBe("flex");
+    expect(declaration(row.body, "align-items")).toBe("center");
+    expect(declaration(row.body, "flex-wrap")).toBe("wrap");
+    expect(declaration(row.body, "gap")).toBe("10px 12px");
+
+    expect(declaration(baseRule(".wait-row .dim").body, "flex")).toBe("1 1 auto");
+    expect(declaration(baseRule(".wait-row .btn").body, "flex")).toBe("none");
+  });
+});

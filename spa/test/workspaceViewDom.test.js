@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mountGitPane, mountConsole, mountAgentRail, renderFilesTab } = vi.hoisted(() => ({
   mountGitPane: vi.fn((host) => {
@@ -21,6 +21,8 @@ vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
 import { App } from "../src/app.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
+import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
+import { fakeSession } from "./deviceSessionFixture.js";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const workspace = {
@@ -46,6 +48,17 @@ const initOptions = {
   source: { path: "/srv/projects/assets", is_git: false, available: true },
 };
 
+// A workspace is a checkout on one machine, so every answer this surface reads
+// comes from the machine the route names. The account has two other devices
+// throughout: one paired and answering, one listed but never opened here.
+const device = (deviceId, answer = async () => ({})) => {
+  const call = vi.fn(answer);
+  adoptDeviceSession({ ...fakeSession(deviceId), call });
+  return call;
+};
+
+let elsewhere;
+
 beforeEach(() => {
   document.body.innerHTML = '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   mountGitPane.mockClear();
@@ -54,26 +67,41 @@ beforeEach(() => {
   renderFilesTab.mockClear();
   App.viewDispose = null;
   App.viewingContext = { clear() {} };
+  App.devices = [
+    { id: "dev-1", name: "this machine", status: "online" },
+    { id: "dev-2", name: "laptop", status: "online" },
+    { id: "dev-3", name: "workshop", status: "offline" },
+  ];
+  elsewhere = device("dev-2");
+});
+
+afterEach(() => {
+  // Nothing this surface does is ever asked of a machine the route does not
+  // name, whichever pane, dialog or late answer does the asking.
+  expect(elsewhere).not.toHaveBeenCalled();
+  App.viewDispose?.();
+  App.viewDispose = null;
+  resetDeviceContexts();
 });
 
 describe("workspace surface", () => {
   it("scopes Files to a directory while terminals stay workspace scoped", async () => {
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async () => workspace);
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => workspace);
     await renderWorkspace();
     expect(renderFilesTab.mock.calls[0][1].scope).toEqual({ workspace_id: "ws-1", source_id: "assets" });
     expect(App.routeLeaveGuard).toBe(renderFilesTab.mock.results[0].value.canLeave);
     renderFilesTab.mock.calls[0][1].onFileOpen("logo.svg");
     expect(App.route.file).toBe("logo.svg");
-    expect(mountConsole).toHaveBeenCalledWith(expect.anything(), { kind: "workspace", workspaceId: "ws-1" });
+    expect(mountConsole).toHaveBeenCalledWith(expect.anything(), { kind: "workspace", workspaceId: "ws-1", deviceId: "dev-1" });
     expect(mountAgentRail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       kind: "workspace", workspaceId: "ws-1", projectId: "p-1",
     }));
   });
 
   it("keeps the current ref and explains a checkout that would overwrite changes", async () => {
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
-    App.call = vi.fn(async (method, params) => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+    const call = device("dev-1", async (method, params) => {
       if (method === "workspace.get") return workspace;
       if (method === "git.refs") return {
         current: { kind: "branch", name: "main", full_ref: "refs/heads/main" },
@@ -91,7 +119,7 @@ describe("workspace surface", () => {
     document.querySelector("[data-ref-kind=tag]").click();
     document.querySelector('[data-ref="refs/tags/v1"]').click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("git.checkout_ref", {
+    expect(call).toHaveBeenCalledWith("git.checkout_ref", {
       workspace_id: "ws-1", source_id: "repo", full_ref: "refs/tags/v1",
     });
     expect(document.querySelector(".workspace-reftrigger-name").textContent).toBe("main");
@@ -99,8 +127,8 @@ describe("workspace surface", () => {
   });
 
   it("restores Files and Changes tabs after a successful ref checkout remounts the Git pane", async () => {
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
-    App.call = vi.fn(async (method) => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+    device("dev-1", async (method) => {
       if (method === "workspace.get") return workspace;
       if (method === "git.refs") return {
         current: { kind: "branch", name: "main", full_ref: "refs/heads/main" },
@@ -125,8 +153,8 @@ describe("workspace surface", () => {
   it("does not remount a Git pane after its source has been left", async () => {
     let finishCheckout;
     const checkout = new Promise((resolve) => { finishCheckout = resolve; });
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
-    App.call = vi.fn(async (method) => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+    device("dev-1", async (method) => {
       if (method === "workspace.get") return workspace;
       if (method === "git.refs") return {
         current: { kind: "branch", name: "main", full_ref: "refs/heads/main" },
@@ -147,22 +175,22 @@ describe("workspace surface", () => {
   });
 
   it("does not offer Finish for a ready workspace", async () => {
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async () => ({ ...workspace, status: "ready" }));
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => ({ ...workspace, status: "ready" }));
     await renderWorkspace();
     expect(document.querySelector("[data-workspace-action]")).toBeNull();
   });
 
   it("refreshes a failed workspace pane after Retry without replacing its terminal console", async () => {
     const failedWorkspace = { ...workspace, status: "failed" };
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => method === "workspace.retry" ? { ...workspace, status: "ready" } : failedWorkspace);
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    const call = device("dev-1", async (method) => method === "workspace.retry" ? { ...workspace, status: "ready" } : failedWorkspace);
     await renderWorkspace();
     const firstGuard = App.routeLeaveGuard;
     expect(document.querySelector("[data-workspace-action]").textContent).toBe("Retry");
     document.querySelector("[data-workspace-action]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("workspace.retry", { workspace_id: "ws-1" });
+    expect(call).toHaveBeenCalledWith("workspace.retry", { workspace_id: "ws-1" });
     expect(renderFilesTab).toHaveBeenCalledTimes(2);
     expect(App.routeLeaveGuard).not.toBe(firstGuard);
     expect(mountConsole).toHaveBeenCalledTimes(1);
@@ -184,8 +212,8 @@ describe("workspace surface", () => {
       status: "ready",
       directories: mixedWorkspace.directories.map((directory) => ({ ...directory, status: "ready" })),
     };
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => method === "workspace.retry" ? repaired : mixedWorkspace);
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async (method) => method === "workspace.retry" ? repaired : mixedWorkspace);
     await renderWorkspace();
     const originalPane = renderFilesTab.mock.results[0].value;
     const originalGuard = App.routeLeaveGuard;
@@ -198,8 +226,8 @@ describe("workspace surface", () => {
   });
 
   it("initializes a workspace copy without remounting Files or navigating away", async () => {
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files", file: "draft.md" };
-    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files", file: "draft.md" };
+    const call = device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? {
       workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
       outcomes: [{ target: "workspace", status: "initialized", is_git: true }],
       source: { source_id: "assets", path: "/srv/projects/assets", is_git: false },
@@ -212,7 +240,7 @@ describe("workspace surface", () => {
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
+    expect(call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
     expect([...document.querySelectorAll(".railtabs [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
     expect(App.route).toMatchObject({ tab: "files", file: "draft.md" });
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
@@ -225,8 +253,8 @@ describe("workspace surface", () => {
 
   it("describes independent repositories and lets a failed target be retried", async () => {
     let calls = 0;
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    const call = device("dev-1", async (method) => {
       if (method === "workspace.git_init_options") return initOptions;
       if (method !== "workspace.init_git") return plainWorkspace;
       calls += 1;
@@ -256,14 +284,14 @@ describe("workspace surface", () => {
     expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry original source");
     document.querySelector("[data-confirm-init-git]").click();
     await flush();
-    expect(App.call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "source" });
+    expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "source" });
   });
 
   it("ignores an initialization response after the workspace view is disposed", async () => {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
     await renderWorkspace();
     document.querySelector("[data-init-git]").click();
     await flush();
@@ -278,8 +306,8 @@ describe("workspace surface", () => {
 
   it("keeps both failures visible and retries both targets together", async () => {
     let attempts = 0;
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    const call = device("dev-1", async (method) => {
       if (method === "workspace.git_init_options") return initOptions;
       if (method !== "workspace.init_git") return plainWorkspace;
       attempts += 1;
@@ -304,12 +332,12 @@ describe("workspace surface", () => {
     expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both");
     document.querySelector("[data-confirm-init-git]").click();
     await flush();
-    expect(App.call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" });
+    expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" });
   });
 
   it("can reopen initialization after Escape dismisses the dialog", async () => {
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : plainWorkspace);
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    const call = device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : plainWorkspace);
     await renderWorkspace();
     document.querySelector("[data-init-git]").click();
     await flush();
@@ -319,13 +347,13 @@ describe("workspace surface", () => {
     document.querySelector("[data-init-git]").click();
     await flush();
     expect(document.querySelector(".modal-workspace-init")).not.toBeNull();
-    expect(App.call).toHaveBeenCalledTimes(3);
+    expect(call).toHaveBeenCalledTimes(3);
   });
 
   it("discovers a plain original source after reloading a Git workspace copy", async () => {
     const initializedCopy = { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] };
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async (method) => method === "workspace.git_init_options" ? {
       ...initOptions, workspace: { ...initOptions.workspace, is_git: true },
     } : initializedCopy);
     await renderWorkspace();
@@ -341,8 +369,8 @@ describe("workspace surface", () => {
       workspace: { ...initOptions.workspace, is_git: true, needs_reconciliation: true },
       source: { ...initOptions.source, is_git: true },
     };
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = vi.fn(async (method) => method === "workspace.git_init_options" ? reconciliationOptions : method === "workspace.init_git" ? {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async (method) => method === "workspace.git_init_options" ? reconciliationOptions : method === "workspace.init_git" ? {
       workspace: initializedCopy, source: { id: "assets", is_git: true },
       results: [{ target: "workspace", status: "already_initialized", is_git: true }],
     } : initializedCopy);
@@ -358,18 +386,21 @@ describe("workspace surface", () => {
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 
-  it("does not publish a Git initialization response from a replaced device RPC", async () => {
+  // A late answer is published only where it was asked for. The machine the
+  // route names is what says which surface that is: once the reader has moved
+  // to another device's workspace, the answer this one asked for belongs to a
+  // surface that is no longer on screen, whether or not the view was disposed.
+  it("does not publish a Git initialization response once the route has moved to another machine", async () => {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
-    const originalCall = vi.fn(async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
-    App.route = { name: "workspace", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
-    App.call = originalCall;
+    device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     await renderWorkspace();
     document.querySelector("[data-init-git]").click();
     await flush();
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    App.call = vi.fn();
+    App.route = { ...App.route, deviceId: "dev-2" };
     finish({
       workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
       source: { id: "assets", is_git: false }, results: [{ target: "workspace", status: "initialized", is_git: true }],
@@ -377,5 +408,18 @@ describe("workspace surface", () => {
     await flush();
     expect([...document.querySelectorAll(".railtabs [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files"]);
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
+  });
+
+  // A link can name a machine this client has never opened — another device's
+  // workspace, pasted in. There is nothing to read under it, so the surface
+  // says which machine is missing instead of asking it anything.
+  it("names the machine when the route's device has no context, and asks nothing", async () => {
+    App.route = { name: "workspace", deviceId: "dev-3", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+
+    await renderWorkspace();
+
+    expect(document.querySelector("#root .empty").textContent).toContain("workshop");
+    expect(renderFilesTab).not.toHaveBeenCalled();
+    expect(mountConsole).not.toHaveBeenCalled();
   });
 });

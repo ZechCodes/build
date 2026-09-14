@@ -29,6 +29,11 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
 import { entryRoute, inboxEntries } from "./inbox.js";
 import { projectRoute } from "./projectModel.js";
 
+/** What a project is called on the rail: its name, or the bare id when the
+ *  device has given it none. Minted here and read here — the clash set and the
+ *  block that looks itself up in it have to agree on the same string. */
+const projectNameOf = (project) => project.name || project.id;
+
 /** The blocks' identity and names: every device's projects in the order they
  *  arrived, plus one for any project a row names that its device has not
  *  listed — the row is still work, and it is still somewhere.
@@ -55,7 +60,7 @@ function projectsNamed(projects, items) {
 export function clashingProjectNames(projects) {
   const devicesByName = new Map();
   for (const project of projects) {
-    const name = project.name || project.id;
+    const name = projectNameOf(project);
     if (!devicesByName.has(name)) devicesByName.set(name, new Set());
     devicesByName.get(name).add(project.deviceId);
   }
@@ -100,15 +105,16 @@ function blockRoute(project, primary) {
 /** One project's block, before it is ranked. `id` stays the bare project id —
  *  that is what every RPC and every create surface wants — while `key`,
  *  `projectKey` and the folds are the account-wide name. */
-function blockFor(project, { entries, recent, primary, deviceName, clash }) {
+function blockFor(project, { entries, recent, primary, deviceName, clashes }) {
+  const name = projectNameOf(project);
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
     projectKey: project.projectKey,
     deviceId: project.deviceId,
     deviceName,
-    clash,
-    name: project.name || project.id,
+    clash: clashes.has(name),
+    name,
     isGit: project.is_git !== false,
     entries,
     recent,
@@ -146,7 +152,7 @@ export function projectBlocks({ items = [], projects = [], devices = [], nowMs =
       recent: under(inbox.recent, key),
       primary: items.find((row) => row.kind === "branch" && row.primary && row.projectKey === key),
       deviceName: deviceNames.get(project.deviceId) || null,
-      clash: clashes.has(project.name || project.id),
+      clashes,
     });
     return { ...block, rank: rankOf(block, liveRank, quietRank) };
   });

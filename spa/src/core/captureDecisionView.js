@@ -11,13 +11,13 @@
 // caret, because rewriting the page would take the words, the caret and, on a
 // phone, the keyboard with it.
 
-import { App, go } from "../app.js";
+import { go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
-import { deviceFeedView } from "./deviceContexts.js";
+import { deviceFeedView, homeContext } from "./deviceContexts.js";
 import { confirmAction, isConfirmOpen } from "./confirm.js";
 import { notifyError } from "./notify.js";
 import { branchOptions } from "./compose.js";
-import { esc, messageOf } from "./text.js";
+import { allDevicesOfflineText, esc, messageOf } from "./text.js";
 import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { forgetCaptureRecord } from "./composeView.js";
@@ -33,6 +33,19 @@ import {
 import "../styles/shell.css";
 
 const EDITABLE = new Set(["INPUT", "TEXTAREA", "SELECT"]);
+
+/**
+ * The machine a capture belongs to.
+ *
+ * A capture is taken on the home device and is routed into that device's own
+ * projects (00-multi-device-design.md §8), so every call this page makes goes
+ * there — read, answer, reroute and cancel alike. With nothing connected there
+ * is nobody to ask, and the caller that was going to say so hears it instead.
+ */
+const askHome = (method, params) => {
+  const home = homeContext();
+  return home ? home.call(method, params) : Promise.reject(new Error(allDevicesOfflineText()));
+};
 
 /**
  * Mount the decision page for one capture into `host`.
@@ -219,7 +232,7 @@ export function mountCaptureDecision(host, captureId) {
     error = "";
     draw();
     try {
-      const answered = await App.call("capture.answer", params);
+      const answered = await askHome("capture.answer", params);
       draft.answer = ""; // said and gone
       if (answered && answered.id) record = answered;
       await refreshFeed();
@@ -258,7 +271,7 @@ export function mountCaptureDecision(host, captureId) {
     error = "";
     draw();
     try {
-      const routed = await App.call("capture.reroute", manualRouteParams(captureId, draft));
+      const routed = await askHome("capture.reroute", manualRouteParams(captureId, draft));
       if (routed && routed.id) record = routed;
       await refreshFeed();
     } catch (failure) {
@@ -280,7 +293,7 @@ export function mountCaptureDecision(host, captureId) {
       scope: INBOX_SCOPE,
       records: [removeRecord(entryKeyOf({ kind: "capture", capture_id: captureId }))],
       call: async () => {
-        await App.call("capture.cancel", { capture_id: captureId });
+        await askHome("capture.cancel", { capture_id: captureId });
         forgetCaptureRecord(captureId);
       },
       failureSummary: "The capture could not be cancelled",
@@ -294,7 +307,7 @@ export function mountCaptureDecision(host, captureId) {
     if (disposed) return;
     let capture;
     try {
-      capture = await App.call("capture.get", { capture_id: captureId });
+      capture = await askHome("capture.get", { capture_id: captureId });
     } catch (failure) {
       // A device that went away, or a capture that is no longer there. What is
       // already on screen stays; a first read that fails says so.

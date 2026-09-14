@@ -50,7 +50,10 @@ export function createWorkHtml(state) {
 
 export function openCreateWork({ projectId, deviceId, projectName, navigate = go }) {
   const state = { projectId, deviceId, projectName: projectName || projectId || "project", name: "", isolation: "", busy: false, error: "" };
-  const askDevice = deviceCall(deviceId);
+  // Read at the press, never captured at the mount: a machine that was away
+  // when the dialog opened is asked the moment it is back, which is the way the
+  // composer and the capture page ask too (core/inboxDevices.js).
+  const askDevice = (method, params) => deviceCall(deviceId)(method, params);
   let dismissed = false;
   let close;
   const dismiss = () => {

@@ -22,7 +22,9 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
+const { adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import(
+  "../src/core/deviceContexts.js"
+);
 const { CREATE_KINDS, createWorkHtml, openCreateWork, workspaceCreateParams } = await import("../src/core/createWork.js");
 
 /** A device on the account, answering with `call`. */
@@ -125,6 +127,24 @@ describe("workspace creation", () => {
     modal().querySelector("[data-create-cancel]").click();
     await motionBeat();
     expect(modal()).toBeNull();
+  });
+
+  // The dialog outlives an outage: a machine that was away when it opened is
+  // asked the moment it is back, because the caller is read at the press and
+  // never captured at the mount.
+  it("creates on a machine that comes back while the dialog is open", async () => {
+    setContextOffline("dev-1");
+    openCreateWork({ projectId: "p1", deviceId: "dev-1", projectName: "Payments", navigate });
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(bridge.call).not.toHaveBeenCalled();
+    expect(modal().querySelector(".create-error").textContent).toContain("connected project");
+
+    setContextOffline("dev-1", { offline: false });
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(bridge.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1" });
+    expect(navigate).toHaveBeenCalled();
   });
 
   it("escapes project names", () => {

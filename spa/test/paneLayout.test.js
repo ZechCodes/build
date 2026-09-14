@@ -1480,6 +1480,25 @@ describe("the bubble strip on a phone", () => {
     );
   });
 
+  it("fits the unpinned card between the toolbar and the strip at every console size", () => {
+    // The card stands on the console and the strip, and it hangs from the
+    // toolbar: its height has to clear all three or its top leaves the column.
+    // It cleared two — the console's share was in the bottom and missing from
+    // the height — so with the console at half the card's top was 54px above
+    // the toolbar and the Done control in its head was off the screen entirely.
+    // jsdom computes no layout: what is pinned is that the height is measured
+    // from the same room the bottom is.
+    const card = phoneRule("#agent-rail.rail-popover .rail-panel");
+    const height = declaration(card.body, "height");
+    expect(height).toBe(
+      "min(62vh, calc(100% - var(--toolbar-h) - var(--agent-strip) - var(--console-space) - 26px))",
+    );
+    for (const stood of declaration(card.body, "bottom").match(/var\(--[\w-]+\)/g)) {
+      expect([stood, height.includes(stood)]).toEqual([stood, true]);
+    }
+    expect(height).toContain("var(--toolbar-h)");
+  });
+
   it("opens the unpinned card above the strip, pointing down at its bubble", () => {
     const card = phoneRule("#agent-rail.rail-popover .rail-panel");
     expect(card).toBeTruthy();

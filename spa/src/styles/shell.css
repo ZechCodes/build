@@ -934,10 +934,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     box-shadow:0 8px 24px var(--shadow-soft); }
   /* Unpinned, the same room read as a card: it sits ABOVE the strip and points
      down at the bubble it was opened from, because that is where the strip is
-     now. */
+     now. Its height clears everything its bottom stands on AND the toolbar it
+     hangs from — a height that left the console's share out put the card's top
+     off the head of the column, and the Done control in that head with it. */
   #agent-rail.rail-popover .rail-panel { left:6px; right:6px; width:auto;
     top:auto; bottom:calc(var(--console-space) + var(--agent-strip) + 8px);
-    height:min(62vh, calc(100% - var(--toolbar-h) - var(--agent-strip) - 26px)); }
+    height:min(62vh, calc(100% - var(--toolbar-h) - var(--agent-strip) - var(--console-space) - 26px)); }
   #agent-rail.rail-popover .rail-panel::before { top:auto; right:auto;
     bottom:-6px; left:clamp(14px, var(--rail-anchor, 50%), calc(100% - 14px));
     margin:0 0 0 -5px;

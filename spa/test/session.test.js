@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { DEFAULT_RPC_TIMEOUT_MS, openRelaySession, replyOrNothing } from "../src/core/session.js";
+import { ApiError, selectAdapter } from "../src/core/bridgeApi/index.js";
 
 // ---- fakes -------------------------------------------------------------------
 
@@ -108,6 +109,70 @@ describe("openRelaySession", () => {
       envelope: { frameFields: { payload: { id: payload.id, ok: false, error: "no such run" } } },
     });
     await expect(reply).rejects.toThrow("no such run");
+  });
+
+  it("keeps a coded refusal's wire fields on the rejection", async () => {
+    const { promise, ws } = await startOpen();
+    const init = await completeHandshake(ws);
+    const session = await promise;
+    const reply = session.call("run.get", { run_id: "x" });
+    await tick();
+    const { payload } = ws.sent.at(-1).envelope.frameFields;
+    ws.serverSend({
+      type: "e2ee_envelope",
+      session_id: init.session_id,
+      envelope: {
+        frameFields: {
+          payload: { id: payload.id, ok: false, error: "no such run", error_code: "not_found", details: { run_id: "x" } },
+        },
+      },
+    });
+    await expect(reply).rejects.toMatchObject({ error_code: "not_found", details: { run_id: "x" } });
+  });
+
+  it("takes an options object as the third argument and stamps a background priority", async () => {
+    const { promise, ws } = await startOpen();
+    await completeHandshake(ws);
+    const session = await promise;
+    session.call("git.status", { run_id: "x" }, { priority: "background" }).catch(() => {});
+    session.call("board.list", {}, 5000).catch(() => {});
+    session.call("run.get", {}, { timeoutMs: 5000 }).catch(() => {});
+    await tick();
+    const payloads = ws.sent.slice(-3).map((m) => m.envelope.frameFields.payload);
+    expect(payloads[0].priority).toBe("background");
+    expect(payloads[1]).not.toHaveProperty("priority");
+    expect(payloads[2]).not.toHaveProperty("priority");
+  });
+
+  it("routes calls and their refusals through the installed adapter", async () => {
+    const { promise, ws } = await startOpen();
+    const init = await completeHandshake(ws);
+    const session = await promise;
+    expect(session.adapter()).toBe(null);
+
+    const installed = session.installAdapter(selectAdapter({ api_version: "1.1.0" }));
+    expect(session.adapter()).toBe(installed);
+    expect(installed.capabilities.errors.codes).toBe(true);
+
+    const reply = session.call("run.get", { run_id: "x" });
+    await tick();
+    const { payload } = ws.sent.at(-1).envelope.frameFields;
+    expect(payload.method).toBe("run.get");
+    ws.serverSend({
+      type: "e2ee_envelope",
+      session_id: init.session_id,
+      envelope: {
+        frameFields: { payload: { id: payload.id, ok: false, error: "no such run", error_code: "not_found" } },
+      },
+    });
+    const error = await reply.catch((thrown) => thrown);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.code).toBe("not_found");
+    expect(error.message).toBe("no such run");
+
+    // A bridge nobody speaks to leaves the session with no adapter at all.
+    expect(session.installAdapter({ unsupported: "app", version: "2.0.0" })).toBe(null);
+    expect(session.adapter()).toBe(null);
   });
 
   it("hands the bridge's unsolicited pushes to onPush", async () => {

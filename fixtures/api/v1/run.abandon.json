@@ -1,0 +1,114 @@
+{
+  "method": "run.abandon",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7"
+  },
+  "result": {
+    "run_id": "run-7",
+    "implementation_id": "run-7",
+    "issue_id": "issue-3",
+    "plan_id": "issue-3",
+    "goal": "Add the api/v1 facade",
+    "state": "review",
+    "needs_attention": true,
+    "unread": true,
+    "unread_count": 2,
+    "unread_reason": "report",
+    "muted": false,
+    "dismissed": false,
+    "attention": {
+      "resume_at": "2026-09-13T10:04:11Z",
+      "interacted": true,
+      "seen": false,
+      "anchor": "2026-09-12T09:00:00Z"
+    },
+    "branch": "build/wire",
+    "base_branch": "main",
+    "base_sha": "1f0c9a7b5e2d4c5566778899aabbccddeeff0011",
+    "worktree_path": "/home/dev/.build-worktrees/proj/wire",
+    "summary": "Facade landed; fixtures next",
+    "project": "proj",
+    "project_id": "proj-1",
+    "harness": "Claude Code",
+    "provider": "claude_code",
+    "model": "opus",
+    "effort": "high",
+    "thread": {
+      "items": [],
+      "total": 0
+    },
+    "agents": [
+      {
+        "id": "agent-1",
+        "conversation_id": "conv-1",
+        "ordinal": 1,
+        "provider": "claude_code",
+        "model": "opus",
+        "effort": "high",
+        "active_model": "opus",
+        "state": "live",
+        "unread_count": 2,
+        "read_through_sequence": 0,
+        "working": true,
+        "working_time": {
+          "since": "2026-09-13T10:11:00Z",
+          "seconds": 60
+        },
+        "choice_revision": 1,
+        "has_terminal": true,
+        "can_interrupt": true,
+        "created_at": "2026-09-13T09:00:00Z"
+      }
+    ],
+    "triage": {
+      "based_on": "8b1a9953c4611296",
+      "hunks": [
+        {
+          "hunk_id": "src/lib.rs:1",
+          "level": "critical",
+          "rationale": "the wire shape changes here"
+        }
+      ],
+      "overrides": [],
+      "stale": false
+    },
+    "triage_enabled": true,
+    "auto_advance": false,
+    "current_stage_id": "stage-2",
+    "adopted": false,
+    "primary": false,
+    "can_finish": true,
+    "created_at": "2026-09-12T09:00:00Z",
+    "updated_at": "2026-09-13T10:04:11Z",
+    "state_changed_at": "2026-09-13T10:03:02Z",
+    "stages": [
+      {
+        "id": "stage-1",
+        "state": "validated_passed",
+        "start_sha": "aa11bb22cc33dd44ee55ff6677889900aabbccdd",
+        "built_sha": "bb22cc33dd44ee55ff6677889900aabbccddeeff",
+        "completion_sha": "cc33dd44ee55ff6677889900aabbccddeeff0011",
+        "publication": "pushed",
+        "validation": {
+          "passed": true,
+          "findings": "Everything the stage doc asked for is present.",
+          "notes_for_next_stage": "The typed params are in place."
+        }
+      },
+      {
+        "id": "stage-2",
+        "state": "building",
+        "start_sha": "cc33dd44ee55ff6677889900aabbccddeeff0011",
+        "publication": "local"
+      }
+    ]
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

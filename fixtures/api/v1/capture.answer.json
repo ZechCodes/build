@@ -1,0 +1,44 @@
+{
+  "method": "capture.answer",
+  "since": "1.0.0",
+  "params": {
+    "capture_id": "capture-9af2",
+    "option_id": "option-1"
+  },
+  "result": {
+    "id": "capture-9af2",
+    "text": "remember to bump the relay timeout",
+    "created_at": "2026-09-13T09:40:11.900Z",
+    "anchor_at": "2026-09-13T09:40:11.900Z",
+    "state": "routing",
+    "routing": null,
+    "question": {
+      "text": "Which project is this for?",
+      "asked_at": "2026-09-13T09:40:13.221Z",
+      "answer": "build \u2014 route this to project proj-1 as an issue",
+      "options": [
+        {
+          "id": "option-1",
+          "label": "build",
+          "project_id": "proj-1",
+          "kind": "issue",
+          "branch": null
+        },
+        {
+          "id": "option-2",
+          "label": "relay, on hotfix-relay",
+          "project_id": "proj-2",
+          "kind": "branch",
+          "branch": "hotfix-relay"
+        }
+      ],
+      "chosen_option_id": "option-1"
+    }
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
+}

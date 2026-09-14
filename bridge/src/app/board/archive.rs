@@ -13,7 +13,7 @@ use super::super::AppState;
 impl AppState {
     /// Archived plans and external worktrees for one project, grouped by kind.
     /// Canonical project path is the durable join because project ids remint.
-    pub(in crate::app) fn archive_list(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn archive_list(&self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project = self
             .projects
@@ -52,7 +52,7 @@ impl AppState {
     /// record it left behind are ONE branch row. `(project, branch)` is the
     /// join: a deleted checkout's path no longer canonicalizes, so the worktree
     /// id cannot be recomputed from a run whose files are gone.
-    pub(in crate::app) fn archived_list(&self) -> Value {
+    pub(crate) fn archived_list(&self) -> Value {
         let mut items: Vec<Value> = self
             .plans
             .iter()

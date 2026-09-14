@@ -19,7 +19,7 @@ const createRepository = (call = vi.fn(async () => ({}))) => {
   });
 };
 
-const operationContract = JSON.parse(readFileSync(resolve("../fixtures/chat_operation_contract.json"), "utf8"));
+const operationContract = JSON.parse(readFileSync(resolve("../fixtures/api/v1/thread.post.json"), "utf8")).operations;
 
 describe("chat controller ownership", () => {
   it("deep-freezes viewing context at submission and reuses it on retry", async () => {

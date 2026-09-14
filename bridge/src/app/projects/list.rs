@@ -26,7 +26,7 @@ impl AppState {
     /// repository and volume probes to the deferred-read drain. The answer is
     /// a coherent snapshot: registration changes while the probes run affect
     /// the next list request, not this one.
-    pub(in crate::app) fn defer_project_list(&mut self) -> Value {
+    pub(crate) fn defer_project_list(&mut self) -> Value {
         let projects = self
             .projects
             .iter()

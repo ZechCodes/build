@@ -1,0 +1,29 @@
+{
+  "method": "run.finish",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7",
+    "action": "delete"
+  },
+  "result": {
+    "complete": true,
+    "repositories": [
+      {
+        "directory_id": "wsdir-1",
+        "pushed": true
+      },
+      {
+        "directory_id": "wsdir-2",
+        "pushed": false,
+        "reason": "no upstream configured"
+      }
+    ]
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

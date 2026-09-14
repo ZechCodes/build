@@ -794,7 +794,7 @@ impl AppState {
     /// default. That field is only a creation template after migration: every
     /// existing agent keeps and edits its own settings, including agents on the
     /// same provider.
-    pub(in crate::app) fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let creation_id = optional_nonempty_string(params, "creation_id")?.map(str::to_string);
         if creation_id.as_ref().is_some_and(|id| id.len() > 128) {
@@ -891,7 +891,7 @@ impl AppState {
     /// harness's name. A live session is untouched —
     /// the choice is what the NEXT start spends, which is exactly what the
     /// menu offers.
-    pub(in crate::app) fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         if self.plans.contains_key(&entity_id) {
             return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
@@ -1016,7 +1016,7 @@ impl AppState {
     /// nothing can route to — the same hazard
     /// [`retire_agent_tabs`](Self::retire_agent_tabs) exists for — so its session is
     /// killed and reaped and everything that could reach it goes too.
-    pub(in crate::app) fn agent_remove(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn agent_remove(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         let agent_id = require_str(params, "agent_id")?;
         if self.plans.contains_key(&entity_id) {
@@ -1121,7 +1121,7 @@ impl AppState {
     }
 
     /// `agent.list` — the entity's agents, in rail order.
-    pub(in crate::app) fn agent_list(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn agent_list(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         Ok(json!({
             "entity_id": entity_id,

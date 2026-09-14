@@ -1,0 +1,14 @@
+{
+  "method": "changes.unsubscribe",
+  "since": "1.1.0",
+  "params": {
+    "subscription_id": "s-focus"
+  },
+  "result": {
+    "ok": true
+  },
+  "errors": [
+    "invalid_params",
+    "unavailable"
+  ]
+}

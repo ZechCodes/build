@@ -1,0 +1,46 @@
+{
+  "method": "triage.override",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7",
+    "hunk_id": "h3f2a1b0",
+    "direction": "surface",
+    "note": "This one changes the key derivation."
+  },
+  "result": {
+    "run_id": "run-7",
+    "hunk_id": "h3f2a1b0",
+    "direction": "surface",
+    "path": "src/crypto.rs",
+    "rule": {
+      "pattern": "src/crypto.rs",
+      "direction": "surface",
+      "count": 2
+    },
+    "triage": {
+      "based_on": "9f3c1a0b7e2d4c55",
+      "hunks": [
+        {
+          "hunk_id": "h3f2a1b0",
+          "level": "low",
+          "rationale": "Formatting only.",
+          "group": "formatting"
+        }
+      ],
+      "overrides": [
+        {
+          "hunk_id": "h3f2a1b0",
+          "direction": "surface",
+          "note": "This one changes the key derivation.",
+          "at": "2026-09-13T10:12:00Z"
+        }
+      ],
+      "stale": false
+    }
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

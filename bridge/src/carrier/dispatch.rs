@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use super::SessionSender;
-use crate::timing::{FrameClock, FrameTimer, QueuedFrame};
+use crate::timing::{FrameClock, FrameTimer, Priority, QueuedFrame};
 use crate::transport::{Frame, CLOSE_FRAME_TYPE, SENDER_DEVICE};
 
 /// A frame's dispatcher and the clock shared by its queue and app-lock phases.
@@ -64,6 +64,22 @@ const DISPATCH_WORKERS: usize = 8;
 /// is known instead of growing until the process dies.
 const DISPATCH_QUEUE_DEPTH: usize = 256;
 
+/// How many of the workers may be running background frames at once. The
+/// background tier pulls a whole feed — every worktree's status, every file
+/// tree — and it does so on a timer nobody is watching, so it gets two workers
+/// and no more: six are always there for the surface the human is looking at,
+/// however deep the background queue is. Two rather than one because the tier's
+/// own work is mostly waiting on git, and one slow worktree must not stop the
+/// tier from ever reaching the next one.
+const BACKGROUND_WORKERS: usize = 2;
+
+/// The envelope field naming a queue, and the one value that is not the
+/// default. Absent, unknown, or not a string all read as foreground: the field
+/// is the client's claim about its own urgency, and the safe reading of a claim
+/// this bridge does not recognise is "somebody is waiting for this".
+const PRIORITY_FIELD: &str = "priority";
+const BACKGROUND_PRIORITY: &str = "background";
+
 /// How many frames may wait on one ordered lane. A lane carries one terminal's
 /// input, acks and resizes — frames whose handlers are a write to a pty fd — so a
 /// lane this deep holds far more than the largest paste burst a client can make
@@ -111,16 +127,50 @@ struct FoldedRead {
     /// the one whose arrival the answer is guaranteed to postdate.
     sender: SessionSender,
     frame: Frame,
+    /// The queue whose marker is expected to take this fold. It only ever moves
+    /// one way — background to foreground, when a foreground caller joins — so
+    /// nobody folded into a background pull inherits its wait.
+    priority: Priority,
     /// The request id of every folded frame, in arrival order. Each one is
     /// answered — see [`Dispatcher`] on why none of them may simply be dropped.
     ids: Vec<Value>,
     queued: QueuedFrame,
 }
 
+impl FoldedRead {
+    /// Add one more caller to this fold, and answer it from the newest frame of
+    /// the set — so the one answer postdates the last question it answers.
+    ///
+    /// A foreground caller joining a background fold takes the fold with it:
+    /// nobody the human is waiting on queues behind the background tier.
+    fn join(
+        &mut self,
+        id: Value,
+        sender: SessionSender,
+        frame: Frame,
+        priority: Priority,
+    ) -> Folded {
+        self.ids.push(id);
+        self.sender = sender;
+        self.frame = frame;
+        if priority == Priority::Foreground && self.priority == Priority::Background {
+            self.priority = Priority::Foreground;
+            self.queued.promote();
+            return Folded::Promoted;
+        }
+        Folded::Joined
+    }
+}
+
 /// What became of a read offered to the fold.
 enum Folded {
     /// It joined a fold already waiting; that fold's one answer covers it.
     Joined,
+    /// It joined a background fold as a foreground caller: the fold moves to the
+    /// foreground queue, which costs one more marker there. Whichever marker a
+    /// worker takes first runs the read; the other finds the fold gone and does
+    /// nothing, exactly as a marker for an already-computed read always has.
+    Promoted,
     /// It is the first of its kind: it now heads a fold that needs a queue slot.
     Heads,
     /// The fold it would have joined is full; it runs on its own. Boxed to keep
@@ -176,14 +226,25 @@ enum LaneMessage {
 /// and surfaces as "board.list timed out". So the fold saves the *compute*, not
 /// the reply: the one result is pushed back once per waiting id.
 ///
+/// The pool takes from two queues, not one. A frame whose envelope says
+/// `"priority": "background"` — the tier that keeps the unfocused workspaces
+/// warm — joins the background queue, and a free worker takes foreground first,
+/// so the surface a human is looking at never queues behind a feed-wide pull.
+/// At most [`BACKGROUND_WORKERS`] of the pool run background frames at once.
+/// The fold crosses the two: a background read that matches a queued foreground
+/// one is answered by it, and a foreground read that joins a background one
+/// takes the fold to the foreground queue rather than inheriting its wait.
+///
 /// A read that arrives after its twin has started running is not folded into it —
 /// it gets its own compute. The client asked at a moment the running answer
 /// predates, and serving a snapshot older than the question is how a board goes
 /// stale and stays stale.
 pub(super) struct Dispatcher {
     handler: FrameHandler,
-    /// The shared pool queue. Bounded: a full queue makes the read loop wait.
-    jobs: mpsc::Sender<QueuedWork>,
+    /// The two shared pool queues, foreground and background. Both bounded: a
+    /// full queue makes the read loop wait, and it waits per queue, so a flood
+    /// of background pulls cannot fill the slot a foreground frame needs.
+    jobs: [mpsc::Sender<QueuedWork>; 2],
     /// (session_id, term_id) → its serial lane. Behind its own lock, held
     /// only long enough to clone a lane's sender, so no lock crosses an await
     /// and every carrier can dispatch through one shared dispatcher.
@@ -200,48 +261,58 @@ impl Dispatcher {
     }
 
     pub(super) fn with_capacity(handler: FrameHandler, queue_depth: usize, workers: usize) -> Self {
-        let (jobs, rx) = mpsc::channel::<QueuedWork>(queue_depth.max(1));
-        // One queue, many workers: whoever is free takes the next frame.
-        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        let depth = queue_depth.max(1);
+        let (foreground, foreground_rx) = mpsc::channel::<QueuedWork>(depth);
+        let (background, background_rx) = mpsc::channel::<QueuedWork>(depth);
+        // Two queues, many workers: whoever is free takes the next foreground
+        // frame, and only a worker holding one of the background permits may
+        // take a background one.
+        let queues = Arc::new(Queues {
+            foreground: tokio::sync::Mutex::new(foreground_rx),
+            background: tokio::sync::Mutex::new(background_rx),
+            background_slots: Arc::new(Semaphore::new(BACKGROUND_WORKERS)),
+        });
         let folded_reads: Arc<Mutex<HashMap<ReadKey, FoldedRead>>> =
             Arc::new(Mutex::new(HashMap::new()));
         for _ in 0..workers.max(1) {
-            let rx = rx.clone();
-            let handler = handler.clone();
-            let folded_reads = folded_reads.clone();
-            tokio::spawn(async move {
-                loop {
-                    let work = rx.lock().await.recv().await;
-                    let Some(work) = work else { break };
-                    match work {
-                        QueuedWork::Frame(job) => run_job(&handler, job).await,
-                        QueuedWork::FoldedRead(key) => {
-                            // Taking the entry out is what closes the fold: from
-                            // here on, the same read queues afresh behind us.
-                            let folded = folded_reads.lock().unwrap().remove(&key);
-                            if let Some(folded) = folded {
-                                run_folded_read(&handler, folded).await;
-                            }
-                        }
-                    }
-                }
-            });
+            tokio::spawn(work_loop(
+                handler.clone(),
+                Arc::clone(&queues),
+                Arc::clone(&folded_reads),
+            ));
         }
         Dispatcher {
             handler,
-            jobs,
+            jobs: [foreground, background],
             lanes: Mutex::new(HashMap::new()),
             folded_reads,
+        }
+    }
+
+    /// The queue a frame of this priority joins.
+    fn queue(&self, priority: Priority) -> &mpsc::Sender<QueuedWork> {
+        match priority {
+            Priority::Foreground => &self.jobs[0],
+            Priority::Background => &self.jobs[1],
         }
     }
 
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
-        let queued = self.handler.clock.queued();
         match ordered_lane(&sender, &frame) {
-            Some(key) => self.dispatch_in_order(key, sender, frame, queued).await,
-            None => self.dispatch_to_pool(sender, frame, queued).await,
+            // A terminal's frames are scheduled by its lane and by nothing else:
+            // its stream is the client's own typing, never a background pull, and
+            // a `priority` on one of them means nothing here.
+            Some(key) => {
+                let queued = self.handler.clock.queued();
+                self.dispatch_in_order(key, sender, frame, queued).await;
+            }
+            None => {
+                let priority = frame_priority(&frame);
+                let queued = self.handler.clock.queued_at(priority);
+                self.dispatch_to_pool(priority, sender, frame, queued).await;
+            }
         }
     }
 
@@ -275,20 +346,33 @@ impl Dispatcher {
     /// identical read already waiting if there is one. A fold that heads the
     /// queue and finds no worker left to take it is unparked again, so no frame
     /// waits in a map nothing will ever drain.
-    async fn dispatch_to_pool(&self, sender: SessionSender, frame: Frame, queued: QueuedFrame) {
-        let work = match read_key(&sender, &frame) {
-            None => QueuedWork::Frame(Job {
+    async fn dispatch_to_pool(
+        &self,
+        priority: Priority,
+        sender: SessionSender,
+        frame: Frame,
+        queued: QueuedFrame,
+    ) {
+        let job = |sender, frame, queued| {
+            QueuedWork::Frame(Job {
                 sender,
                 frame,
                 queued,
-            }),
-            Some(key) => match self.fold_into_queued_read(key.clone(), sender, frame, queued) {
-                Folded::Joined => return,
-                Folded::Heads => QueuedWork::FoldedRead(key),
-                Folded::Overflowed(job) => QueuedWork::Frame(*job),
-            },
+            })
         };
-        if let Err(mpsc::error::SendError(QueuedWork::FoldedRead(key))) = self.jobs.send(work).await
+        let (queue, work) = match read_key(&sender, &frame) {
+            None => (priority, job(sender, frame, queued)),
+            Some(key) => {
+                match self.fold_into_queued_read(key.clone(), priority, sender, frame, queued) {
+                    Folded::Joined => return,
+                    Folded::Heads => (priority, QueuedWork::FoldedRead(key)),
+                    Folded::Promoted => (Priority::Foreground, QueuedWork::FoldedRead(key)),
+                    Folded::Overflowed(job) => (priority, QueuedWork::Frame(*job)),
+                }
+            }
+        };
+        if let Err(mpsc::error::SendError(QueuedWork::FoldedRead(key))) =
+            self.queue(queue).send(work).await
         {
             self.folded_reads.lock().unwrap().remove(&key);
         }
@@ -299,6 +383,7 @@ impl Dispatcher {
     fn fold_into_queued_read(
         &self,
         key: ReadKey,
+        priority: Priority,
         sender: SessionSender,
         frame: Frame,
         queued: QueuedFrame,
@@ -307,12 +392,7 @@ impl Dispatcher {
         let mut folded_reads = self.folded_reads.lock().unwrap();
         match folded_reads.get_mut(&key) {
             Some(waiting) if waiting.ids.len() < MAX_FOLDED_READS => {
-                waiting.ids.push(id);
-                // Run the newest frame of the fold, so the answer postdates the
-                // last question it answers.
-                waiting.sender = sender;
-                waiting.frame = frame;
-                Folded::Joined
+                waiting.join(id, sender, frame, priority)
             }
             // A full fold: this read takes a queue slot of its own, which is what
             // puts the caller back under the queue's bound.
@@ -327,6 +407,7 @@ impl Dispatcher {
                     FoldedRead {
                         sender,
                         frame,
+                        priority,
                         ids: vec![id],
                         queued,
                     },
@@ -402,6 +483,80 @@ impl Dispatcher {
     }
 }
 
+/// The two pool queues and the permits that bound the background one.
+struct Queues {
+    foreground: tokio::sync::Mutex<mpsc::Receiver<QueuedWork>>,
+    background: tokio::sync::Mutex<mpsc::Receiver<QueuedWork>>,
+    /// One permit per background frame that may be running. A worker holds its
+    /// permit for as long as it runs the frame it took, so the pool never has
+    /// more than [`BACKGROUND_WORKERS`] of them in flight.
+    background_slots: Arc<Semaphore>,
+}
+
+/// One worker: take work, run it, repeat, until both queues are closed.
+async fn work_loop(
+    handler: FrameHandler,
+    queues: Arc<Queues>,
+    folded_reads: Arc<Mutex<HashMap<ReadKey, FoldedRead>>>,
+) {
+    // The permit, when there is one, lives exactly as long as the background
+    // frame it admitted.
+    while let Some((work, _permit)) = next_work(&queues).await {
+        run_work(&handler, &folded_reads, work).await;
+    }
+}
+
+/// The next frame this worker should run, and the background permit it needed
+/// to take it.
+///
+/// Foreground first, always: the branches are biased, so a worker offered both
+/// takes the frame somebody is waiting on. The background branch takes a permit
+/// before it looks at its queue, which is what keeps six workers free — a worker
+/// that cannot get a permit simply waits on foreground alone. Both branches are
+/// cancel-safe (`recv` and `acquire_owned` both are), so the branch that loses
+/// leaves neither a frame nor a permit behind.
+async fn next_work(queues: &Arc<Queues>) -> Option<(QueuedWork, Option<OwnedSemaphorePermit>)> {
+    tokio::select! {
+        biased;
+        work = next_of(&queues.foreground) => work.map(|work| (work, None)),
+        taken = next_background(queues) => taken,
+    }
+}
+
+async fn next_of(queue: &tokio::sync::Mutex<mpsc::Receiver<QueuedWork>>) -> Option<QueuedWork> {
+    queue.lock().await.recv().await
+}
+
+async fn next_background(
+    queues: &Arc<Queues>,
+) -> Option<(QueuedWork, Option<OwnedSemaphorePermit>)> {
+    let permit = Arc::clone(&queues.background_slots)
+        .acquire_owned()
+        .await
+        .ok()?;
+    Some((next_of(&queues.background).await?, Some(permit)))
+}
+
+/// Run one thing off a queue: a frame, or the marker standing for a fold.
+async fn run_work(
+    handler: &FrameHandler,
+    folded_reads: &Mutex<HashMap<ReadKey, FoldedRead>>,
+    work: QueuedWork,
+) {
+    match work {
+        QueuedWork::Frame(job) => run_job(handler, job).await,
+        QueuedWork::FoldedRead(key) => {
+            // Taking the entry out is what closes the fold: from here on, the
+            // same read queues afresh behind us. A marker whose fold is already
+            // gone — the second marker of a promoted fold — has nothing to run.
+            let folded = folded_reads.lock().unwrap().remove(&key);
+            if let Some(folded) = folded {
+                run_folded_read(handler, folded).await;
+            }
+        }
+    }
+}
+
 /// One serial lane: runs what it is sent, one at a time, in arrival order,
 /// until its last sender is dropped.
 fn spawn_lane(handler: FrameHandler) -> mpsc::Sender<LaneMessage> {
@@ -429,6 +584,15 @@ fn ordered_lane(sender: &SessionSender, frame: &Frame) -> Option<(String, String
         .and_then(|params| params.get("term_id"))
         .and_then(Value::as_str)?;
     Some((sender.session_id().to_string(), term_id.to_string()))
+}
+
+/// The queue this frame asked for. See [`PRIORITY_FIELD`]: only the exact word
+/// [`BACKGROUND_PRIORITY`] moves a frame out of the foreground queue.
+fn frame_priority(frame: &Frame) -> Priority {
+    match frame.payload.get(PRIORITY_FIELD).and_then(Value::as_str) {
+        Some(BACKGROUND_PRIORITY) => Priority::Background,
+        _ => Priority::Foreground,
+    }
 }
 
 /// What this frame asks, if it is a read whose answer can serve another caller
@@ -464,6 +628,7 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
         frame,
         ids,
         queued,
+        priority: _,
     } = folded;
     let answer = match run_handler(handler, &sender, frame, queued).await {
         None => return,
@@ -1432,6 +1597,192 @@ mod dispatcher_tests {
             vec![CLOSE_FRAME_TYPE.to_string(), "hold".to_string()],
             "the {method} queued behind the close never ran"
         );
+    }
+
+    /// A background frame says so in its envelope; everything else is
+    /// foreground by omission.
+    fn background_request(id: u64, method: &str, params: Value) -> Frame {
+        let mut frame = request(id, method, params);
+        frame.payload["priority"] = json!("background");
+        frame
+    }
+
+    /// A handler that parks every `hold` frame on an [`OffLockGate`], so a test
+    /// can keep an exact number of workers occupied and count who got in.
+    fn gated_by(gate: crate::test_support::off_lock::OffLockGate) -> FrameHandler {
+        FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            move |_sender, frame, _timer| {
+                if frame.payload["method"] == "hold" {
+                    gate.arrive();
+                }
+                json!({ "id": frame.payload["id"], "ok": true })
+            },
+        )
+    }
+
+    /// The wedge this step exists for: the background tier pulls a whole feed at
+    /// once, and the surface the human is looking at must not queue behind it.
+    /// Eight background frames arrive; two occupy workers, six wait, and the
+    /// foreground `board.list` is answered while every one of them is still held.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_foreground_read_answers_while_eight_background_frames_wait() {
+        let (gate, held) = crate::test_support::off_lock::OffLockGate::new();
+        let handler = gated_by(gate);
+        let clock = Arc::clone(&handler.clock);
+        let dispatcher = Dispatcher::with_capacity(handler, 256, DISPATCH_WORKERS);
+        let (sender, mut rx, key) = SessionSender::observable("s-priority");
+
+        for id in 1..=8u64 {
+            dispatcher
+                .dispatch(sender.clone(), background_request(id, "hold", json!({})))
+                .await;
+        }
+        for _ in 0..BACKGROUND_WORKERS {
+            held.wait_for_arrival();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !held.has_pending_arrival(),
+            "a background frame never occupies a third worker"
+        );
+        let stats = clock.stats();
+        assert_eq!(
+            stats["queues"]["background"]["depth"], 6,
+            "six background frames wait for one of the two slots: {stats}"
+        );
+
+        dispatcher
+            .dispatch(sender.clone(), request(9, "board.list", json!({})))
+            .await;
+        let answer = next_push(&mut rx, &key, SLOW_FRAME).await;
+        assert_eq!(
+            answer["id"], 9,
+            "the foreground read overtook the whole background queue"
+        );
+
+        for _ in 0..8 {
+            held.release();
+        }
+        for _ in 0..8 {
+            next_push(&mut rx, &key, PATIENTLY).await;
+        }
+    }
+
+    /// Terminal traffic is a stream per terminal, scheduled by its lane and by
+    /// nothing else: a `priority` on a terminal frame changes nothing, even with
+    /// every background slot taken.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_terminal_lane_is_unaffected_by_priority() {
+        let (gate, held) = crate::test_support::off_lock::OffLockGate::new();
+        let dispatcher = Dispatcher::with_capacity(gated_by(gate), 256, BACKGROUND_WORKERS);
+        let (sender, mut rx, key) = SessionSender::observable("s-lane");
+
+        for id in 1..=BACKGROUND_WORKERS as u64 {
+            dispatcher
+                .dispatch(sender.clone(), background_request(id, "hold", json!({})))
+                .await;
+        }
+        for _ in 0..BACKGROUND_WORKERS {
+            held.wait_for_arrival();
+        }
+
+        dispatcher
+            .dispatch(
+                sender.clone(),
+                background_request(9, "term.input", json!({ "term_id": "t1" })),
+            )
+            .await;
+        assert_eq!(
+            next_push(&mut rx, &key, PATIENTLY).await["id"],
+            9,
+            "the terminal's lane ran it whatever its envelope claimed"
+        );
+
+        for _ in 0..BACKGROUND_WORKERS {
+            held.release();
+        }
+    }
+
+    /// The fold is about the question, not about who is in a hurry: a background
+    /// pull that matches a read already queued is answered by it, for one compute.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_background_read_folds_into_a_queued_foreground_one() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let handler = counting_handler(gate.clone(), computed.clone(), started);
+        let dispatcher = Dispatcher::with_capacity(handler, 256, 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-cross-fold");
+
+        dispatcher
+            .dispatch(sender.clone(), request(0, "hold", json!({})))
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("the only worker is busy");
+
+        dispatcher
+            .dispatch(sender.clone(), request(1, "git.status", json!({})))
+            .await;
+        dispatcher
+            .dispatch(
+                sender.clone(),
+                background_request(2, "git.status", json!({})),
+            )
+            .await;
+        gate.store(false, Ordering::SeqCst);
+
+        let mut ids = answered_ids(&mut rx, &key, 3).await;
+        ids.sort_by_key(|id| id.as_u64().unwrap_or_default());
+        assert_eq!(ids, vec![json!(0), json!(1), json!(2)]);
+        assert_eq!(
+            *computed.lock().unwrap(),
+            vec![("git.status".to_string(), json!({}))],
+            "the background pull cost no second compute"
+        );
+    }
+
+    /// The other direction of the same fold: a foreground read that joins a
+    /// background one must not inherit its wait. The fold moves to the
+    /// foreground queue, where a free worker takes it at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_foreground_read_joining_a_background_fold_is_answered_at_once() {
+        let (gate, held) = crate::test_support::off_lock::OffLockGate::new();
+        let dispatcher = Dispatcher::with_capacity(gated_by(gate), 256, BACKGROUND_WORKERS + 1);
+        let (sender, mut rx, key) = SessionSender::observable("s-promote");
+
+        for id in 1..=BACKGROUND_WORKERS as u64 {
+            dispatcher
+                .dispatch(sender.clone(), background_request(id, "hold", json!({})))
+                .await;
+        }
+        for _ in 0..BACKGROUND_WORKERS {
+            held.wait_for_arrival();
+        }
+
+        // No background slot is free, so this one waits in the background queue.
+        dispatcher
+            .dispatch(
+                sender.clone(),
+                background_request(8, "board.list", json!({})),
+            )
+            .await;
+        dispatcher
+            .dispatch(sender.clone(), request(9, "board.list", json!({})))
+            .await;
+
+        let mut ids = answered_ids(&mut rx, &key, 2).await;
+        ids.sort_by_key(|id| id.as_u64().unwrap_or_default());
+        assert_eq!(
+            ids,
+            vec![json!(8), json!(9)],
+            "the promoted fold answered both callers with the workers still held"
+        );
+
+        for _ in 0..BACKGROUND_WORKERS {
+            held.release();
+        }
     }
 
     use crate::timing::{recording_clock, SLOW_FRAME};

@@ -398,7 +398,10 @@ impl AppState {
     /// diffstat), plus the ride-along external-worktree and primary-changes
     /// summaries. Legacy issues remain available through their direct read
     /// APIs, but no longer participate in this active-work surface.
-    pub(in crate::app) fn board_list(&mut self) -> Value {
+    ///
+    /// `pub(crate)`, not `pub(in crate::app)`: `api::v1::board` serves
+    /// `board.list` from here.
+    pub(crate) fn board_list(&mut self) -> Value {
         self.sweep_vanished_runs();
         let runs: Vec<Value> = {
             let ids: Vec<String> = self

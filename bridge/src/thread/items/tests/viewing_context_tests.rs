@@ -75,3 +75,65 @@ fn selection_line_end_requires_a_start() {
     };
     assert!(context.validate().unwrap_err().contains("line range"));
 }
+
+/// Forward compatibility: `viewing_context` rides v1 request paths
+/// (`thread.post`, `run.message`, `plan.message`, `issue.send_notes`), and a
+/// v1 request never refuses a field this bridge predates — a newer SPA that
+/// names something here must still be able to talk to an older bridge.
+#[test]
+fn viewing_context_accepts_a_field_this_bridge_predates() {
+    let context: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "focus": "editor",
+        "items": [{ "kind": "file", "path": "src/lib.rs" }]
+    }))
+    .expect("an unknown top-level field is ignored");
+
+    assert_eq!(context.validate(), Ok(()));
+    assert_eq!(
+        context.items,
+        vec![ViewingContextItem::File {
+            path: "src/lib.rs".into()
+        }],
+        "the known fields survive the unknown one"
+    );
+}
+
+#[test]
+fn a_viewing_context_item_accepts_a_field_this_bridge_predates() {
+    let context: ViewingContext = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "items": [
+            { "kind": "file", "path": "src/lib.rs", "pinned": true },
+            {
+                "kind": "selection",
+                "path": "src/app.rs",
+                "text": "selected",
+                "line_start": 4,
+                "line_end": 5,
+                "collapsed": false
+            }
+        ]
+    }))
+    .expect("an unknown field inside an item is ignored");
+
+    assert_eq!(context.validate(), Ok(()));
+    assert_eq!(
+        context.items,
+        vec![
+            ViewingContextItem::File {
+                path: "src/lib.rs".into()
+            },
+            ViewingContextItem::Selection {
+                path: "src/app.rs".into(),
+                text: "selected".into(),
+                line_start: Some(4),
+                line_end: Some(5),
+                side: None,
+                unsaved: false,
+                truncated: false,
+            },
+        ],
+        "the known fields survive the unknown ones"
+    );
+}

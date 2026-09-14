@@ -1,0 +1,28 @@
+{
+  "method": "workspace.finish",
+  "since": "1.1.0",
+  "params": {
+    "workspace_id": "ws-3f2a91c4"
+  },
+  "result": {
+    "complete": false,
+    "repositories": [
+      {
+        "directory_id": "ws-3f2a91c4:source-1",
+        "pushed": true
+      },
+      {
+        "directory_id": "ws-3f2a91c4:source-2",
+        "pushed": false,
+        "reason": "uncommitted changes"
+      }
+    ]
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

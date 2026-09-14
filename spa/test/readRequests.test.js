@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { coordinatedRead } from "../src/core/readRequests.js";
+import { coordinatedRead, requestPriorityFields } from "../src/core/readRequests.js";
 
 const deferred = () => {
   let resolve;
@@ -112,5 +112,23 @@ describe("coordinatedRead", () => {
     expect(load).not.toHaveBeenCalled();
     await nextTurn();
     await expect(read).resolves.toBe("warm");
+  });
+});
+
+describe("the request envelope's priority", () => {
+  it("stamps background onto the envelope and leaves foreground bare", () => {
+    expect(requestPriorityFields("background")).toEqual({ priority: "background" });
+    expect(requestPriorityFields("foreground")).toEqual({});
+    expect(requestPriorityFields(undefined)).toEqual({});
+  });
+
+  it("hands each load the envelope fields its own priority rides with", async () => {
+    const foregroundLoad = vi.fn().mockResolvedValue("live");
+    await coordinatedRead({ key: "envelope-foreground", load: foregroundLoad });
+    expect(foregroundLoad).toHaveBeenCalledWith({});
+
+    const backgroundLoad = vi.fn().mockResolvedValue("warm");
+    await coordinatedRead({ key: "envelope-background", priority: "background", load: backgroundLoad });
+    expect(backgroundLoad).toHaveBeenCalledWith({ priority: "background" });
   });
 });

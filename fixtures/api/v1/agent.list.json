@@ -1,0 +1,30 @@
+{
+  "method": "agent.list",
+  "since": "1.0.0",
+  "params": { "entity_id": "run-7" },
+  "result": {
+    "entity_id": "run-7",
+    "agents": [
+      {
+        "id": "agent-1",
+        "conversation_id": "conversation-3",
+        "ordinal": 1,
+        "provider": "claude",
+        "model": "sonnet",
+        "effort": "medium",
+        "active_model": "sonnet",
+        "state": "live",
+        "unread_count": 2,
+        "unread_reason": "message",
+        "read_through_sequence": 36,
+        "working": true,
+        "working_time": { "since": "2026-09-13T10:02:11Z", "seconds": 74 },
+        "choice_revision": 4,
+        "has_terminal": true,
+        "can_interrupt": true,
+        "created_at": "2026-09-13T09:40:00Z"
+      }
+    ]
+  },
+  "errors": ["not_found", "invalid_params", "internal"]
+}

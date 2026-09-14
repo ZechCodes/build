@@ -111,10 +111,7 @@ impl DeferredGitWork for WorkspaceGitInitWork {
 }
 
 impl AppState {
-    pub(in crate::app) fn workspace_git_init_options(
-        &mut self,
-        params: &Value,
-    ) -> Result<Value, String> {
+    pub(crate) fn workspace_git_init_options(&mut self, params: &Value) -> Result<Value, String> {
         let workspace_id = require_str(params, "workspace_id")?;
         let source_id = require_str(params, "source_id")?;
         let directory = self.resolve_workspace_directory(&workspace_id, &source_id)?;
@@ -153,7 +150,7 @@ impl AppState {
         }))
     }
 
-    pub(in crate::app) fn workspace_init_git(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn workspace_init_git(&mut self, params: &Value) -> Result<Value, String> {
         let workspace_id = require_str(params, "workspace_id")?;
         let source_id = require_str(params, "source_id")?;
         let targets = parse_git_init_targets(require_str(params, "target")?.as_str())?;

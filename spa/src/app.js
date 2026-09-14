@@ -34,6 +34,7 @@ export const App = {
   offlineSince: null, // ms timestamp stamped by goOffline(), cleared on restore
 
   gated: true, // gate screens own #root until a session is live
+  updateAvailable: false, // the served-version watcher found a newer bundle than this one
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
   modelCatalog: null, // models.list result, fetched once per session

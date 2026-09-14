@@ -1,0 +1,15 @@
+{
+  "method": "issue.delete",
+  "since": "1.0.0",
+  "params": {
+    "issue_id": "issue-7"
+  },
+  "result": {
+    "ok": true
+  },
+  "errors": [
+    "not_found",
+    "conflict",
+    "internal"
+  ]
+}

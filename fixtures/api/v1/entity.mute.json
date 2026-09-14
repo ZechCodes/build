@@ -1,0 +1,16 @@
+{
+  "method": "entity.mute",
+  "since": "1.0.0",
+  "params": {
+    "entity_id": "run-7",
+    "muted": true
+  },
+  "result": {
+    "entity_id": "run-7",
+    "muted": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params"
+  ]
+}

@@ -484,8 +484,12 @@ pub const MAX_VIEWING_CONTEXT_ITEMS: usize = 100;
 pub const MAX_VIEWING_CONTEXT_PATH_BYTES: usize = 4 * 1024;
 pub const MAX_VIEWING_CONTEXT_EXCERPT_BYTES: usize = 32 * 1024;
 
+/// What the reviewer was looking at when they wrote. Deliberately WITHOUT
+/// `deny_unknown_fields`: this rides v1 request paths (`thread.post`,
+/// `run.message`, `plan.message`, `issue.send_notes`), where a newer SPA may
+/// name a field this bridge predates and must not be refused for it. An
+/// unknown field is ignored here and dropped on the way back out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ViewingContext {
     pub version: u8,
     pub items: Vec<ViewingContextItem>,
@@ -505,8 +509,10 @@ pub enum SelectionSide {
     New,
 }
 
+/// One thing on screen. Ignores an unknown field for the same reason
+/// [`ViewingContext`] does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ViewingContextItem {
     File {
         path: String,

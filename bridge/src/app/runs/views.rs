@@ -92,7 +92,7 @@ pub(in crate::app) fn run_stage_progress_str(state: &StageProgressState) -> Stri
 }
 
 impl AppState {
-    pub(in crate::app) fn run_get(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn run_get(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         // Which conversation, and how much of it: the rail's open bubble names

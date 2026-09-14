@@ -75,7 +75,7 @@ impl AppState {
     /// Browse host directories so the user can pick a repo without typing a path.
     /// Returns the canonical path, its parent (for "up"), whether it is itself a git
     /// repo, and its subdirectories (each flagged if it is a git repo).
-    pub(in crate::app) fn fs_list(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn fs_list(&self, params: &Value) -> Result<Value, String> {
         let path = match params
             .get("path")
             .and_then(Value::as_str)
@@ -117,7 +117,7 @@ impl AppState {
     /// The parent follows `fs.list`'s host-browsing authority; accepting the
     /// child separately keeps traversal and implicit parent creation out of the
     /// mutation surface.
-    pub(in crate::app) fn fs_mkdir(&self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn fs_mkdir(&self, params: &Value) -> Result<Value, String> {
         let parent_value = require_str(params, "parent")?;
         let parent = std::fs::canonicalize(expand_tilde(&parent_value))
             .map_err(|error| format!("cannot open parent folder: {error}"))?;
@@ -146,7 +146,7 @@ impl AppState {
     /// One directory level of a worktree-backed scope (spec §4.2): server-side
     /// scope resolution, the shared fence, `.git` skipped, dirs before
     /// files+symlinks, each group case-insensitive.
-    pub(in crate::app) fn fs_tree(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn fs_tree(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
         let path = params
@@ -189,7 +189,7 @@ impl AppState {
 
     /// Read one file from a worktree-backed scope, base64 always, capped at the
     /// source limit or the larger bounded media limit server-side.
-    pub(in crate::app) fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
         let path = require_str(params, "path")?;
@@ -230,7 +230,7 @@ impl AppState {
     /// Replace an existing editable text file after verifying the exact bytes
     /// the editor opened. The descriptor-relative helper holds the fenced
     /// parent through the atomic rename, defeating ancestor symlink swaps.
-    pub(in crate::app) fn fs_write(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn fs_write(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
         let path = require_str(params, "path")?;

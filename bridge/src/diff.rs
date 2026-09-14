@@ -8,9 +8,6 @@
 //! outside `.build/`?* — so the UI can flag a planning agent that wrote code.
 
 use std::path::Path;
-use std::time::Duration;
-
-use tokio::sync::mpsc;
 
 /// Where plan-phase work is supposed to stay confined.
 pub const PLAN_SCOPE_PREFIX: &str = ".build/";
@@ -254,11 +251,17 @@ pub(crate) fn canonical_patch_options() -> git2::DiffOptions {
 /// The options both dirty-workdir paths share. `with_untracked_content` is the
 /// one difference: the review surface loads new files so it can print them, the
 /// stat surface never does — it counts their lines off disk instead.
+///
+/// The `a/` and `b/` prefixes are pinned: libgit2 otherwise honours the
+/// machine's own `diff.mnemonicPrefix`, and a hunk id hashed over `i/` and
+/// `w/` would not be the id every other device computes.
 fn dirty_workdir_options(with_untracked_content: bool) -> git2::DiffOptions {
     let mut opts = canonical_patch_options();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(with_untracked_content)
+        .old_prefix("a")
+        .new_prefix("b")
         .max_size(LARGE_FILE_BYTES as i64);
     opts
 }
@@ -719,67 +722,6 @@ pub fn hunk_ids(patch: &str) -> Vec<String> {
         .into_iter()
         .map(|hunk| hunk.hunk_id)
         .collect()
-}
-
-/// A live, debounced stream of recomputed diffs for a worktree. Holds the fs
-/// watcher and the worker thread alive; dropping it stops watching.
-pub struct DiffWatcher {
-    _watcher: notify::RecommendedWatcher,
-}
-
-/// Begin watching `worktree_path`; every burst of filesystem changes is debounced
-/// by `debounce`, then a freshly recomputed [`WorktreeDiff`] is sent on the
-/// returned channel. The first diff is sent immediately so subscribers start with
-/// current state.
-pub fn watch(
-    worktree_path: &Path,
-    base_branch: &str,
-    debounce: Duration,
-) -> Result<(DiffWatcher, mpsc::UnboundedReceiver<WorktreeDiff>), DiffError> {
-    use notify::Watcher;
-
-    let (raw_tx, raw_rx) = std::sync::mpsc::channel::<()>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = raw_tx.send(());
-        }
-    })
-    .map_err(notify_to_git)?;
-    watcher
-        .watch(worktree_path, notify::RecursiveMode::Recursive)
-        .map_err(notify_to_git)?;
-
-    let (diff_tx, diff_rx) = mpsc::unbounded_channel();
-
-    // Send the current diff straight away so a subscriber starts from truth.
-    if let Ok(initial) = diff_against_base(worktree_path, base_branch) {
-        let _ = diff_tx.send(initial);
-    }
-
-    let worktree_path = worktree_path.to_path_buf();
-    let base_branch = base_branch.to_string();
-    std::thread::spawn(move || {
-        // Block for the first event of a burst, then drain until quiet for
-        // `debounce`, recompute once, and emit.
-        while raw_rx.recv().is_ok() {
-            while raw_rx.recv_timeout(debounce).is_ok() {}
-            match diff_against_base(&worktree_path, &base_branch) {
-                Ok(diff) => {
-                    if diff_tx.send(diff).is_err() {
-                        break; // receiver dropped
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-    });
-
-    Ok((DiffWatcher { _watcher: watcher }, diff_rx))
-}
-
-/// notify and git2 errors don't share a type; carry the message through git2's.
-fn notify_to_git(err: notify::Error) -> DiffError {
-    DiffError::Git(git2::Error::from_str(&err.to_string()))
 }
 
 /// The primary checkout's uncommitted delta: HEAD's tree vs the working
@@ -1648,33 +1590,5 @@ diff --git a/app.py b/app.py
                 assert_eq!(hunk.header, want["header"].as_str().unwrap(), "{name}");
             }
         }
-    }
-
-    #[tokio::test]
-    async fn watcher_pushes_a_recomputed_diff_on_change() {
-        let (dir, repo) = init_repo();
-        // Keep the tempdir alive for the whole test.
-        let _keep = &dir;
-
-        let (_watcher, mut rx) = watch(&repo, "main", Duration::from_millis(50)).unwrap();
-
-        // First message is the immediate baseline (empty).
-        let initial = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("baseline diff arrives")
-            .unwrap();
-        assert_eq!(initial.stat(), DiffStat::default());
-
-        // Touch a file; expect a debounced, recomputed diff that sees it.
-        std::fs::write(repo.join("changed.txt"), "x\n").unwrap();
-        let updated = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .expect("change diff arrives")
-            .unwrap();
-        assert!(
-            updated.files().iter().any(|f| f.path == "changed.txt"),
-            "watcher should report the new file, got {:?}",
-            updated.files()
-        );
     }
 }

@@ -152,8 +152,19 @@ function dropPeerLink() {
   link.close();
 }
 
+let bridgeSelectedListener = () => {};
+
+/** Hear what every greeting selects for the bridge that answered it: the
+ *  adapter's selection, or `{ unsupported: "app" | "bridge", version }` for a
+ *  bridge no adapter here speaks to. The connection gate registers the two
+ *  version gates here (wire spec step 2.5). One listener; the last wins. */
+export function onBridgeSelected(fn) {
+  bridgeSelectedListener = fn;
+}
+
 /** Greet a session that is live and unpaused: feature-detect push invalidation,
- *  subscribe this session to it, and read everything once. Not awaited by its
+ *  subscribe this session to it, select and install the API adapter for the
+ *  bridge that answered, and read everything once. Not awaited by its
  *  callers — a slow greeting must not hold up the app, and a surface mounted
  *  before it lands is re-timed the moment it does. */
 export function greetLiveBridge() {
@@ -163,6 +174,12 @@ export function greetLiveBridge() {
   return greetBridge(session.call, {
     isCurrent: () => App.session === session && App.chatRepository === repository,
     onGreeting: (greeting) => repository?.configureCapabilities(greeting),
+    // The session first, so a gate that lets the app back in finds it there.
+    install: (selection) => {
+      const adapter = session.installAdapter(selection);
+      bridgeSelectedListener(selection);
+      return adapter;
+    },
   }).catch(() => {
     /* the session died mid-greeting; the next one greets again */
   });

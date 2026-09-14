@@ -15,6 +15,7 @@ mod board;
 mod board_index;
 mod captures;
 mod config;
+mod facts;
 mod fs;
 mod git;
 mod issues;
@@ -26,6 +27,7 @@ mod runs;
 mod runtime;
 mod streams;
 mod transactions;
+mod watchers;
 mod workspaces;
 mod worktrees;
 
@@ -86,12 +88,17 @@ pub(in crate::app) use self::runtime::agents::endpoints::{
 pub(in crate::app) use self::runtime::agents::records::{
     record_activity, PumpWake, SelfReport, NO_ANSWER_SESSION_ENDED, SESSION_DIED_SUMMARY,
 };
+/// How a deferred reply is held to its verb's declared result type; see
+/// [`runtime::deferred::DeferredResultCheck`].
+pub(crate) use self::runtime::deferred::DeferredResultCheck;
 #[cfg(test)]
 pub use self::runtime::deferred::OffLockGate;
 #[cfg(test)]
 pub(in crate::app) use self::runtime::deferred::OffLockGateHandle;
+/// The `changes.*` verbs' off-lock half; see [`runtime::deferred::WatchAnswer`].
+pub(crate) use self::runtime::deferred::WatchAnswer;
 pub(in crate::app) use self::runtime::deferred::{
-    DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
+    DeferredJob, DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
 };
 pub(in crate::app) use self::runtime::delivery::preflight::{
     chosen_option_id, deliver, NEW_THREAD_MESSAGES_PROMPT, WORKING_INDICATOR_NOTICE,
@@ -228,6 +235,8 @@ use crate::transport::{self, Frame};
 #[cfg(test)]
 use crate::worktree::{git_remote_origin, git_stdout, WorktreeManager};
 pub(crate) use crate::{encoding::b64encode, fs_scope::fenced_scope_path};
+use facts::FactsHandle;
+use watchers::WorktreeWatchers;
 
 mod conversations;
 mod qa;
@@ -322,6 +331,11 @@ pub struct AppState {
     /// seconds; every other frame, every terminal pump and the relay's own
     /// read loop need this mutex while they run.
     deferred_work: Option<DeferredWork>,
+    /// The result type `api/v1` declares for the verb that filled
+    /// [`AppState::deferred_work`], as a check the published value must pass.
+    /// Set by [`AppState::expect_deferred_result`] and taken with the work it
+    /// belongs to; a verb the facade does not serve leaves it `None`.
+    deferred_result_check: Option<DeferredResultCheck>,
     /// Rows a lifecycle verb has claimed and not yet settled: the board's
     /// carrier for a checkout being cut or discarded right now, and the claim
     /// that keeps a second verb off the same name, branch or checkout while its
@@ -398,6 +412,12 @@ pub struct AppState {
     /// changes holding this state's mutex, and the flusher SENDS them holding
     /// no lock at all. See [`crate::changes`].
     changes: Arc<ChangeBus>,
+    /// The filesystem watchers on the worktrees subscriptions cover, and the
+    /// board's worktree roots they are reconciled against. See
+    /// [`watchers::WorktreeWatchers`].
+    watchers: Arc<WorktreeWatchers>,
+    /// Where the bus's facts source finds this state once it is shared.
+    facts_handle: FactsHandle,
     /// What every frame's four durations are recorded against.
     ///
     /// It lives on the state rather than beside it because the state is what
@@ -462,6 +482,9 @@ impl AppState {
         let state_root = context.state_root.clone();
         let bridge_exe = context.bridge_exe.clone();
         let agent = build_agent(qa_agent, context);
+        let watchers = WorktreeWatchers::new();
+        let facts_handle = FactsHandle::default();
+        let changes = facts::bus_with_sources(DEFAULT_COALESCE_WINDOW, &watchers, &facts_handle);
         let workspaces =
             crate::workspace::WorkspaceRegistry::recover(worktrees_root.join("workspaces"))
                 .unwrap_or_else(|error| {
@@ -498,6 +521,7 @@ impl AppState {
             #[cfg(test)]
             off_lock_project_list_gate: None,
             deferred_work: None,
+            deferred_result_check: None,
             pending_rows: Vec::new(),
             #[cfg(test)]
             force_stale_diff_caches: false,
@@ -516,7 +540,9 @@ impl AppState {
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
             peers: SessionPeers::with_factory(Arc::new(NoPeerFactory)),
-            changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
+            changes,
+            watchers,
+            facts_handle,
             frame_clock: FrameClock::new(),
         };
         if let Some(repo_path) = repo_path {
@@ -598,16 +624,21 @@ impl AppState {
     /// can spawn pump tasks (see the `self_handle` field).
     pub fn shared(self) -> Arc<Mutex<AppState>> {
         let state = Arc::new(Mutex::new(self));
-        let changes = {
+        let (changes, watchers) = {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
-            Arc::clone(&app.changes)
+            let _ = app.facts_handle.set(Arc::downgrade(&state));
+            app.watchers.set_roots(app.worktree_roots());
+            (Arc::clone(&app.changes), Arc::clone(&app.watchers))
         };
         // The flusher runs on a task of its own and never takes this mutex —
         // that is the whole reason the bus is not a field it would have to
         // lock. A build with no runtime under it (the synchronous unit tests)
-        // gets no flusher and simply never sends.
-        ChangeBus::spawn_flusher(changes);
+        // gets no flusher and simply never sends. The watcher reconciler is
+        // the same shape: it starts watchers, which is a tree walk, so it too
+        // runs off this mutex.
+        ChangeBus::spawn_flusher(Arc::clone(&changes));
+        WorktreeWatchers::spawn_reconciler(watchers, changes);
         state
     }
 
@@ -617,12 +648,18 @@ impl AppState {
         Arc::clone(&self.changes)
     }
 
+    /// The per-worktree watchers — how the subscribe verbs and the board
+    /// reconcile which checkouts are watched.
+    pub(in crate::app) fn watchers(&self) -> Arc<WorktreeWatchers> {
+        Arc::clone(&self.watchers)
+    }
+
     /// Tests only: coalesce over a shorter window, so a push test does not have
     /// to sleep out the production one. Must precede [`AppState::shared`] —
     /// that is where the flusher takes its handle.
     #[cfg(test)]
     fn with_change_window(mut self, window: Duration) -> Self {
-        self.changes = ChangeBus::new(window);
+        self.changes = facts::bus_with_sources(window, &self.watchers, &self.facts_handle);
         self
     }
 }

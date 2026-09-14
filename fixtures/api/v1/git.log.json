@@ -1,0 +1,29 @@
+{
+  "method": "git.log",
+  "since": "1.0.0",
+  "params": {
+    "run_id": "run-7",
+    "limit": 30,
+    "skip": 0
+  },
+  "result": {
+    "branch": "build/wire",
+    "more": true,
+    "commits": [
+      {
+        "short": "1f0c9a7",
+        "hash": "1f0c9a7b5e2d4c5566778899aabbccddeeff0011",
+        "subject": "Add the api/v1 facade",
+        "author": "Dev",
+        "email": "dev@example.com",
+        "time": 1789012345,
+        "ahead_of_base": true
+      }
+    ]
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

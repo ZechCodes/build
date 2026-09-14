@@ -1,0 +1,15 @@
+{
+  "method": "plan.doc",
+  "since": "1.0.0",
+  "params": {
+    "plan_id": "plan-7"
+  },
+  "result": {
+    "plan_path": ".build/plan/plan.md",
+    "contents": "# Add push subscriptions\n"
+  },
+  "errors": [
+    "not_found",
+    "internal"
+  ]
+}

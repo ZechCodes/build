@@ -17,7 +17,7 @@ impl AppState {
     /// names a branch that already exists — here or on a remote — and Build
     /// borrows it a directory, cutting nothing. `name` is words to cut a new
     /// branch after, and no branch of that spelling is consulted.
-    pub(in crate::app) fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let (title, existing_branch, branch) = match (
             params.get("branch").and_then(Value::as_str),
@@ -69,7 +69,7 @@ impl AppState {
     /// `branch.get` — resolve `(project_id, branch)` to the work item behind
     /// it, with the full underlying run view (`run_view`) when a run owns the
     /// branch and `run: null` when the checkout is bare.
-    pub(in crate::app) fn branch_get(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn branch_get(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let branch = require_str(params, "branch")?;
         if !self.projects.iter().any(|p| p.id == project_id) {

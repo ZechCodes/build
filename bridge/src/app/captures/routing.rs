@@ -1,7 +1,7 @@
 use super::capture_json;
 #[cfg(test)]
 use crate::app::MCP_CONTROL_METHOD;
-use crate::app::{issue_session, AppState, DeferredWork, PendingAgentTurn, TabKey, TurnText};
+use crate::app::{issue_session, AppState, DeferredJob, PendingAgentTurn, TabKey, TurnText};
 use crate::mcp::{BridgeAction, DoneReport, DoneStatus};
 use crate::plan::PlanState;
 use crate::store::now_rfc3339;
@@ -82,13 +82,13 @@ impl AppState {
         &mut self,
         capture_id: &str,
         action: BridgeAction,
-    ) -> (Result<Value, String>, Option<DeferredWork>) {
+    ) -> (Result<Value, String>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
         let answered = self.on_router_mcp_action(capture_id, action);
         if answered.is_err() {
             self.drop_turns_queued_since(queued_before);
         }
-        (answered, self.deferred_work.take())
+        (answered, self.take_deferred())
     }
 
     /// Put the router on a capture: a session in a scratch directory of its

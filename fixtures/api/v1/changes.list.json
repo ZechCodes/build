@@ -1,0 +1,26 @@
+{
+  "method": "changes.list",
+  "since": "1.1.0",
+  "params": {},
+  "result": {
+    "subscriptions": [
+      {
+        "subscription_id": "s-focus",
+        "scope": { "kind": "entity", "id": "run-7" },
+        "kinds": ["state", "thread", "git", "files"],
+        "mode": "realtime",
+        "priority": "foreground"
+      },
+      {
+        "subscription_id": "s-bg",
+        "scope": { "kind": "all" },
+        "kinds": ["state", "thread", "git"],
+        "mode": { "batch_ms": 30000 },
+        "priority": "background"
+      }
+    ]
+  },
+  "errors": [
+    "unavailable"
+  ]
+}

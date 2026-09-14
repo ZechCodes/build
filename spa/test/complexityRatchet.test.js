@@ -21,8 +21,11 @@ import { describe, it, expect } from "vitest";
 // Main's toolbar/composer extraction and chat state ownership together retire
 // four counted functions, with no new exemption added.
 // The editable file viewer splits file-selection setup from its async read.
-// Capture routing is branch-only now, so its manual form no longer exceeds the cap.
-const RATCHETED_FUNCTIONS = 69;
+// 69 since cacheSync's snapshot handler became four named steps: the active
+// rows, the eviction, the watcher set, and the entities entering it.
+// 68 since capture routing is branch-only, so its manual form no longer
+// exceeds the cap.
+const RATCHETED_FUNCTIONS = 68;
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const DISABLE = "eslint-disable-next-line complexity";

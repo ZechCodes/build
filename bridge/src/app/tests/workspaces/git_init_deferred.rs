@@ -8,7 +8,7 @@ fn init_request(workspace: &Value, target: &str) -> Value {
     })
 }
 
-fn dispatch_init(state: &mut AppState, params: &Value) -> DeferredWork {
+fn dispatch_init(state: &mut AppState, params: &Value) -> DeferredJob {
     let (dispatched, deferred) = state.dispatch_deferring("workspace.init_git", params);
     assert_eq!(dispatched.unwrap(), Value::Null);
     deferred.expect("git initialization defers its filesystem work")

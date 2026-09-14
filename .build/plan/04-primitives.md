@@ -453,7 +453,7 @@ export function withDeviceOrResolve(route)
 `app.js`: `applyRoute` and `markRoute` call `withDeviceOrResolve` first.
 Test: `router.test.js` (device routes round-trip; device-less project routes
 become `resolve/project` carrying the inner route; legacy unchanged;
-`complexityRatchet.test.js` still 70).
+`complexityRatchet.test.js` still 68).
 
 ### 2.10 Inbox verbs per device — stage 1, `core/inboxView.js`
 
@@ -572,7 +572,12 @@ stage 2 (all reachable from `branchView.js:34-35` (imports), `:384`
 (`renderFilesTab`) and `:421` (`mountGitPane`); `:337`/`:349` mount the
 task and worktree reviews).
 
-### Ratcheted functions in files the stages edit (`complexityRatchet.test.js` pins 70)
+### Ratcheted functions in files the stages edit (`complexityRatchet.test.js` pins 68)
+
+The count was 70 when this doc was written; two were retired since, one per
+stage so far (`syncDeviceSnapshot` in stage 1, the `hashFromRoute` writer table
+in stage 2). Stage 3's rule is the same as every stage's: no function joins the
+list, and the number only goes down.
 
 | function | line | score | stage | what must not happen |
 | --- | --- | --- | --- | --- |
